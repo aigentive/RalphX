@@ -181,6 +181,18 @@ async fn service_forwards_crud_operations() {
         .unwrap();
     assert_eq!(listed.len(), 1);
 
+    let task_lists = service.list_task_lists(&scope).await.unwrap();
+    assert_eq!(task_lists.len(), 1);
+    let list_tasks = service
+        .list_tasks_for_list(
+            &scope,
+            &task_lists[0].list_id,
+            AgentTaskListOptions { include_done: true },
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_tasks.len(), 1);
+
     let updated = service
         .update_task(
             &scope,

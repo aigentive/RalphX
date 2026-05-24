@@ -14,9 +14,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-
-const PREFERRED_WORKSPACE_OPEN_TARGET_KEY =
-  "ralphx:agents:preferred-workspace-open-target";
+import {
+  readPreferredWorkspaceOpenTargetId,
+  resolvePreferredWorkspaceOpenTarget,
+  subscribePreferredWorkspaceOpenTargetId,
+  writePreferredWorkspaceOpenTargetId,
+} from "@/lib/workspace-open-targets";
 
 interface AgentsWorkspaceOpenControlProps {
   targets: readonly WorkspaceOpenTarget[];
@@ -24,31 +27,16 @@ interface AgentsWorkspaceOpenControlProps {
   onOpenTarget: (targetId: string) => void;
 }
 
-function readPreferredTargetId(): string | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  return window.localStorage.getItem(PREFERRED_WORKSPACE_OPEN_TARGET_KEY);
-}
-
-function writePreferredTargetId(targetId: string): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  window.localStorage.setItem(PREFERRED_WORKSPACE_OPEN_TARGET_KEY, targetId);
-}
-
 export const AgentsWorkspaceOpenControl = memo(function AgentsWorkspaceOpenControl({
   targets,
   openingTargetId = null,
   onOpenTarget,
 }: AgentsWorkspaceOpenControlProps) {
-  const [preferredTargetId, setPreferredTargetId] = useState(readPreferredTargetId);
+  const [preferredTargetId, setPreferredTargetId] = useState(
+    readPreferredWorkspaceOpenTargetId,
+  );
   const preferredTarget = useMemo(
-    () =>
-      targets.find((target) => target.id === preferredTargetId) ??
-      targets[0] ??
-      null,
+    () => resolvePreferredWorkspaceOpenTarget(targets, preferredTargetId),
     [preferredTargetId, targets],
   );
   const openingTarget = useMemo(
@@ -59,6 +47,11 @@ export const AgentsWorkspaceOpenControl = memo(function AgentsWorkspaceOpenContr
     [openingTargetId, targets],
   );
   const displayedTarget = openingTarget ?? preferredTarget;
+
+  useEffect(
+    () => subscribePreferredWorkspaceOpenTargetId(setPreferredTargetId),
+    [],
+  );
 
   useEffect(() => {
     if (
@@ -76,7 +69,7 @@ export const AgentsWorkspaceOpenControl = memo(function AgentsWorkspaceOpenContr
 
   const openTarget = (target: WorkspaceOpenTarget) => {
     setPreferredTargetId(target.id);
-    writePreferredTargetId(target.id);
+    writePreferredWorkspaceOpenTargetId(target.id);
     onOpenTarget(target.id);
   };
   const PreferredIcon =

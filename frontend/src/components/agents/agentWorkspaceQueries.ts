@@ -49,6 +49,20 @@ export const agentWorkspaceKeys = {
     "conversation-agent-tasks",
     conversationId,
   ] as const,
+  agentTaskLists: (conversationId: string | null | undefined) => [
+    "agents",
+    "conversation-agent-task-lists",
+    conversationId,
+  ] as const,
+  agentTaskListTasks: (
+    conversationId: string | null | undefined,
+    taskListId: string | null | undefined,
+  ) => [
+    "agents",
+    "conversation-agent-task-list-tasks",
+    conversationId,
+    taskListId,
+  ] as const,
   prAnnotations: (conversationId: string | null | undefined) => [
     "agents",
     "workspace-pr-annotations",
@@ -136,6 +150,9 @@ export function invalidateWorkspaceQueries(
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.agentTasks(conversationId),
+    }),
+    queryClient.invalidateQueries({
+      queryKey: agentWorkspaceKeys.agentTaskLists(conversationId),
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.prAnnotations(conversationId),

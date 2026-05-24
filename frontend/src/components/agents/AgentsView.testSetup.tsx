@@ -35,6 +35,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getAgentConversationWorkspaceFreshnessMock: vi.fn(),
   listAgentConversationWorkspacesByProjectMock: vi.fn(),
   listWorkspaceOpenTargetsMock: vi.fn(),
+  openAgentConversationWorkspacePathMock: vi.fn(),
   listConversationsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
   setAgentConversationWorkspacePrSupervisionMock: vi.fn(),
@@ -63,6 +64,8 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getWorkspaceUnstagedDiffMock: vi.fn(),
   getWorkspaceCumulativeDiffMock: vi.fn(),
   listAgentTasksMock: vi.fn(),
+  listAgentTaskListsMock: vi.fn(),
+  listAgentTaskListTasksMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   integratedChatPanelRenderMock: vi.fn(),
@@ -136,6 +139,7 @@ const {
   getAgentConversationWorkspaceFreshnessMock,
   listAgentConversationWorkspacesByProjectMock,
   listWorkspaceOpenTargetsMock,
+  openAgentConversationWorkspacePathMock,
   listConversationsMock,
   publishAgentConversationWorkspaceMock,
   setAgentConversationWorkspacePrSupervisionMock,
@@ -164,6 +168,8 @@ const {
   getWorkspaceUnstagedDiffMock,
   getWorkspaceCumulativeDiffMock,
   listAgentTasksMock,
+  listAgentTaskListsMock,
+  listAgentTaskListTasksMock,
   toastErrorMock,
   toastSuccessMock,
   integratedChatPanelRenderMock,
@@ -181,6 +187,89 @@ const {
 export function getAgentsViewTestMocks() {
   return agentsViewTestMocks;
 }
+
+vi.mock("react-virtuoso", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+
+  type VirtuosoMockRange = {
+    startIndex: number;
+    endIndex: number;
+  };
+  type VirtuosoMockProps = {
+    className?: string;
+    computeItemKey?: (index: number, item: unknown) => React.Key;
+    data?: unknown[];
+    "data-testid"?: string;
+    endReached?: (index: number) => void;
+    itemContent?: (index: number, item: unknown) => React.ReactNode;
+    rangeChanged?: (range: VirtuosoMockRange) => void;
+    scrollerRef?: (node: HTMLElement | Window | null) => void;
+    style?: React.CSSProperties;
+    totalCount?: number;
+  };
+
+  const Virtuoso = React.forwardRef<unknown, VirtuosoMockProps>(function MockVirtuoso(
+    props,
+    ref
+  ) {
+    const {
+      className,
+      computeItemKey,
+      data: dataProp,
+      itemContent,
+      rangeChanged,
+      scrollerRef,
+      style,
+      totalCount,
+    } = props;
+    const data =
+      dataProp ??
+      Array.from({ length: totalCount ?? 0 }, () => undefined);
+    const endIndex = data.length - 1;
+
+    React.useImperativeHandle(
+      ref,
+      () => ({
+        getState: (stateCb: (state: unknown) => void) => {
+          stateCb({
+            ranges: [],
+            scrollTop: 0,
+          });
+        },
+        scrollToIndex: vi.fn(),
+      }),
+      []
+    );
+
+    React.useEffect(() => {
+      if (endIndex < 0) {
+        return;
+      }
+      rangeChanged?.({ startIndex: 0, endIndex });
+    }, [endIndex, rangeChanged]);
+
+    const setScrollerRef = React.useCallback((node: HTMLDivElement | null) => {
+      scrollerRef?.(node);
+    }, [scrollerRef]);
+
+    return (
+      <div
+        ref={setScrollerRef}
+        data-testid={props["data-testid"] ?? "mock-virtuoso"}
+        className={className}
+        style={style}
+      >
+        {data.map((item, index) => (
+          <div key={computeItemKey?.(index, item) ?? index}>
+            {itemContent?.(index, item)}
+          </div>
+        ))}
+      </div>
+    );
+  });
+
+  return { Virtuoso };
+});
 
 export function mockHarnessProviders(
   settings: AgentProvidersSettingsResponse = defaultProviderSettings,
@@ -555,6 +644,8 @@ vi.mock("@/api/chat", () => ({
     getAgentRunningStates: (...args: unknown[]) => getAgentRunningStatesMock(...args),
     listWorkspaceOpenTargets: (...args: unknown[]) =>
       listWorkspaceOpenTargetsMock(...args),
+    openAgentConversationWorkspacePath: (...args: unknown[]) =>
+      openAgentConversationWorkspacePathMock(...args),
     getBulkWorkspacePublicationStates: vi.fn().mockResolvedValue({}),
   },
 }));
@@ -606,6 +697,10 @@ vi.mock("@/api/diff", () => ({
 vi.mock("@/api/agent-tasks", () => ({
   agentTaskApi: {
     listConversationTasks: (...args: unknown[]) => listAgentTasksMock(...args),
+    listConversationTaskLists: (...args: unknown[]) =>
+      listAgentTaskListsMock(...args),
+    listConversationTaskListTasks: (...args: unknown[]) =>
+      listAgentTaskListTasksMock(...args),
   },
 }));
 
@@ -1050,6 +1145,7 @@ export function setupAgentsViewTest() {
   getAgentConversationWorkspaceFreshnessMock.mockReset();
   listAgentConversationWorkspacesByProjectMock.mockReset();
   listWorkspaceOpenTargetsMock.mockReset();
+  openAgentConversationWorkspacePathMock.mockReset();
   listConversationsMock.mockReset();
   publishAgentConversationWorkspaceMock.mockReset();
   setAgentConversationWorkspacePrSupervisionMock.mockReset();
@@ -1076,6 +1172,8 @@ export function setupAgentsViewTest() {
   getWorkspaceUnstagedDiffMock.mockReset();
   getWorkspaceCumulativeDiffMock.mockReset();
   listAgentTasksMock.mockReset();
+  listAgentTaskListsMock.mockReset();
+  listAgentTaskListTasksMock.mockReset();
   precomputePrDescriptionMock.mockReset();
   toastErrorMock.mockReset();
   toastSuccessMock.mockReset();
@@ -1115,6 +1213,7 @@ export function setupAgentsViewTest() {
   });
   listAgentConversationWorkspacesByProjectMock.mockResolvedValue([]);
   listWorkspaceOpenTargetsMock.mockResolvedValue([]);
+  openAgentConversationWorkspacePathMock.mockResolvedValue(undefined);
   listConversationsMock.mockResolvedValue([]);
   getPlanBranchesMock.mockResolvedValue([]);
   listIdeationSessionsMock.mockResolvedValue([]);
@@ -1137,6 +1236,8 @@ export function setupAgentsViewTest() {
   getWorkspaceUnstagedDiffMock.mockResolvedValue("");
   getWorkspaceCumulativeDiffMock.mockResolvedValue("");
   listAgentTasksMock.mockResolvedValue([]);
+  listAgentTaskListsMock.mockResolvedValue([]);
+  listAgentTaskListTasksMock.mockResolvedValue([]);
   precomputePrDescriptionMock.mockResolvedValue({
     conversationId: "conversation-1",
     status: "skipped",

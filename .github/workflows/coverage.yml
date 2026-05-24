@@ -633,32 +633,56 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: coverage-artifacts
+        continue-on-error: true
 
-      - name: Validate coverage artifacts
+      - name: Validate coverage artifacts (with retry)
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_RUST: ${{ needs.changes.outputs.run_rust }}
+          RUN_FRONTEND: ${{ needs.changes.outputs.run_frontend }}
+          RUN_PLUGINS: ${{ needs.changes.outputs.run_plugins }}
         run: |
           set -euo pipefail
 
-          require_file() {
-            local path="$1"
-            if [[ ! -s "${path}" ]]; then
-              echo "::error::Required coverage file is missing or empty: ${path}"
-              exit 1
+          validate_artifacts() {
+            if [[ "${RUN_RUST}" == "true" ]]; then
+              [[ -s coverage-artifacts/coverage-rust-lib-1/lcov.info ]] || return 1
+              [[ -s coverage-artifacts/coverage-rust-lib-2/lcov.info ]] || return 1
+              [[ -s coverage-artifacts/coverage-rust-ipc/lcov.info ]] || return 1
             fi
+            if [[ "${RUN_FRONTEND}" == "true" ]]; then
+              [[ -s coverage-artifacts/coverage-frontend/lcov.info ]] || return 1
+            fi
+            if [[ "${RUN_PLUGINS}" == "true" ]]; then
+              [[ -s coverage-artifacts/coverage-plugin-internal-mcp/lcov.info ]] || return 1
+              [[ -s coverage-artifacts/coverage-plugin-external-mcp/lcov.info ]] || return 1
+            fi
+            return 0
           }
 
-          if [[ "${{ needs.changes.outputs.run_rust }}" == "true" ]]; then
-            require_file coverage-artifacts/coverage-rust-lib-1/lcov.info
-            require_file coverage-artifacts/coverage-rust-lib-2/lcov.info
-            require_file coverage-artifacts/coverage-rust-ipc/lcov.info
-          fi
-          if [[ "${{ needs.changes.outputs.run_frontend }}" == "true" ]]; then
-            require_file coverage-artifacts/coverage-frontend/lcov.info
-          fi
-          if [[ "${{ needs.changes.outputs.run_plugins }}" == "true" ]]; then
-            require_file coverage-artifacts/coverage-plugin-internal-mcp/lcov.info
-            require_file coverage-artifacts/coverage-plugin-external-mcp/lcov.info
-          fi
+          MAX_RETRIES=3
+          RETRY_DELAY=15
+
+          for attempt in $(seq 1 "${MAX_RETRIES}"); do
+            if [[ ${attempt} -gt 1 ]]; then
+              echo "::warning::Attempt ${attempt}/${MAX_RETRIES}: re-downloading coverage artifacts after ${RETRY_DELAY}s..."
+              sleep "${RETRY_DELAY}"
+              rm -rf coverage-artifacts
+              gh run download "${{ github.run_id }}" -D coverage-artifacts 2>&1 || true
+            fi
+
+            if validate_artifacts; then
+              echo "Coverage artifacts validated successfully (attempt ${attempt}/${MAX_RETRIES})"
+              exit 0
+            fi
+
+            echo "Attempt ${attempt}/${MAX_RETRIES}: some coverage artifacts are missing or empty"
+            ls -laR coverage-artifacts/ 2>/dev/null || echo "coverage-artifacts/ directory not found"
+          done
+
+          echo "::error::Required coverage artifacts still missing after ${MAX_RETRIES} attempts"
+          exit 1
 
       - name: Report unavailable Codecov upload
         if: env.CODECOV_TOKEN == ''
