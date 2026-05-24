@@ -1624,12 +1624,12 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
-    fireEvent.click(await screen.findByTestId("agents-open-pr"));
+    fireEvent.click(await screen.findByTestId("agents-open-pr-url"));
 
     expect(openUrlMock).toHaveBeenCalledWith("https://github.com/mock/project/pull/78");
   });
 
-  it("uses the review subtitle for purpose and shows the readable PR URL", async () => {
+  it("shows the PR link with readable URL in the compact metadata strip", async () => {
     renderPane(
       "publish",
       workspace({
@@ -1639,12 +1639,9 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
-    expect(
-      screen.getByText("Review this agent workspace before publishing its draft PR.")
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/Project default \(main\) →/)).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-metadata-strip")).toBeInTheDocument();
     const prUrl = await screen.findByTestId("agents-open-pr-url");
-    expect(prUrl).toHaveTextContent("github.com/mock/project/pull/78");
+    expect(prUrl).toHaveTextContent("PR #78");
     fireEvent.click(prUrl);
 
     expect(openUrlMock).toHaveBeenCalledWith("https://github.com/mock/project/pull/78");
