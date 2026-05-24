@@ -324,7 +324,7 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         },
     ];
 
-    persist_timeline_snapshot(
+    let streaming_items = persist_timeline_snapshot(
         &Some(state.chat_timeline_repo.clone()),
         &conversation_id.as_str(),
         &message_id,
@@ -332,6 +332,9 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         ChatTimelineItemStatus::Streaming,
     )
     .await;
+    assert_eq!(streaming_items.len(), 3);
+    assert_eq!(streaming_items[0].status, ChatTimelineItemStatus::Streaming);
+    assert_eq!(streaming_items[1].tool_call_id.as_deref(), Some("tool-1"));
 
     let page = state
         .chat_timeline_repo
@@ -356,7 +359,7 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
     );
     assert!(page.items[2].tool_result_preview.is_none());
 
-    persist_timeline_snapshot(
+    let finalized_items = persist_timeline_snapshot(
         &Some(state.chat_timeline_repo.clone()),
         &conversation_id.as_str(),
         &message_id,
@@ -364,6 +367,10 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         ChatTimelineItemStatus::Finalized,
     )
     .await;
+    assert_eq!(finalized_items.len(), 3);
+    assert!(finalized_items
+        .iter()
+        .all(|item| item.status == ChatTimelineItemStatus::Finalized));
 
     let finalized = state
         .chat_timeline_repo
@@ -427,7 +434,7 @@ async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() 
         text: "ignored".to_string(),
     }];
 
-    persist_timeline_snapshot(
+    let missing_repo_items = persist_timeline_snapshot(
         &None,
         &conversation_id.as_str(),
         &Some("assistant-message-missing-repo".to_string()),
@@ -435,7 +442,7 @@ async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() 
         ChatTimelineItemStatus::Streaming,
     )
     .await;
-    persist_timeline_snapshot(
+    let missing_message_items = persist_timeline_snapshot(
         &Some(state.chat_timeline_repo.clone()),
         &conversation_id.as_str(),
         &None,
@@ -443,6 +450,8 @@ async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() 
         ChatTimelineItemStatus::Streaming,
     )
     .await;
+    assert!(missing_repo_items.is_empty());
+    assert!(missing_message_items.is_empty());
 
     let mut no_conversation = ChatMessage::user_in_session(IdeationSessionId::new(), "ignored");
     no_conversation.conversation_id = None;

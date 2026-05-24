@@ -2506,6 +2506,58 @@ describe("ChatMessageList - Scroll Behavior", () => {
 
       await waitFor(() => expect(scrollToMock).toHaveBeenCalled());
     });
+
+    it("pins to true bottom when an existing child task tool receives an error", async () => {
+      const childTool: ToolCall = {
+        id: "toolu-child-read",
+        name: "Read",
+        arguments: { file_path: "src/child.ts" },
+      };
+      const task: StreamingTask = {
+        toolUseId: "toolu-task-1",
+        toolName: "Task",
+        description: "Inspect child files",
+        subagentType: "Explore",
+        model: "sonnet",
+        status: "running",
+        startedAt: Date.now(),
+        childToolCalls: [childTool],
+      };
+      const failedTask: StreamingTask = {
+        ...task,
+        childToolCalls: [
+          {
+            ...childTool,
+            error: "file unavailable",
+          },
+        ],
+      };
+      const blocks: StreamingContentBlock[] = [
+        { type: "task", toolUseId: task.toolUseId },
+      ];
+
+      const { rerender } = render(
+        <ChatMessageList
+          {...defaultProps}
+          isAgentRunning={true}
+          streamingTasks={new Map([[task.toolUseId, task]])}
+          streamingContentBlocks={blocks}
+        />
+      );
+      await screen.findByTestId("mock-virtuoso");
+      scrollToMock.mockClear();
+
+      rerender(
+        <ChatMessageList
+          {...defaultProps}
+          isAgentRunning={true}
+          streamingTasks={new Map([[failedTask.toolUseId, failedTask]])}
+          streamingContentBlocks={blocks}
+        />
+      );
+
+      await waitFor(() => expect(scrollToMock).toHaveBeenCalled());
+    });
   });
 
   describe("pending tool call fallback indicator", () => {
