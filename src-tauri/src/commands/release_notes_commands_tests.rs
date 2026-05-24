@@ -144,3 +144,41 @@ fn returns_missing_response_when_no_candidate_reads() {
     assert_eq!(response.body, None);
     assert_eq!(response.source, ReleaseNotesSource::Missing);
 }
+
+#[test]
+fn read_release_notes_from_candidates_reads_real_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let notes_path = dir
+        .path()
+        .join(RELEASE_NOTES_DIR)
+        .join("v0.9.0.md");
+    std::fs::create_dir_all(notes_path.parent().unwrap()).unwrap();
+    std::fs::write(&notes_path, "## v0.9.0\n\nReal file content").unwrap();
+
+    let response = read_release_notes_from_candidates(
+        "0.9.0",
+        vec![(notes_path, ReleaseNotesSource::DevelopmentCheckout)],
+    );
+
+    assert_eq!(response.version, "0.9.0");
+    assert_eq!(
+        response.body.as_deref(),
+        Some("## v0.9.0\n\nReal file content")
+    );
+    assert_eq!(response.source, ReleaseNotesSource::DevelopmentCheckout);
+}
+
+#[test]
+fn read_release_notes_from_candidates_returns_missing_for_nonexistent() {
+    let response = read_release_notes_from_candidates(
+        "0.1.0",
+        vec![(
+            PathBuf::from("/nonexistent/release-notes/v0.1.0.md"),
+            ReleaseNotesSource::BundledResource,
+        )],
+    );
+
+    assert_eq!(response.version, "0.1.0");
+    assert_eq!(response.body, None);
+    assert_eq!(response.source, ReleaseNotesSource::Missing);
+}

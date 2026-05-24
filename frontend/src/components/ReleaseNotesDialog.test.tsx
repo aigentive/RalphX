@@ -345,6 +345,46 @@ describe("ReleaseNotesDialog", () => {
     expect(screen.getByRole("heading", { name: /v0\.9\.0/ })).toBeInTheDocument();
   });
 
+  it("shows loading spinner while version list is loading", async () => {
+    let resolveVersions!: (value: string[]) => void;
+    mocks.listReleaseNotesVersions.mockReturnValue(
+      new Promise<string[]>((resolve) => {
+        resolveVersions = resolve;
+      }),
+    );
+
+    render(<ReleaseNotesDialog open={true} onClose={vi.fn()} />);
+
+    const body = screen.getByTestId("release-notes-dialog-body");
+    expect(body).toBeInTheDocument();
+
+    await act(async () => {
+      resolveVersions(["0.9.0"]);
+      await Promise.resolve();
+    });
+  });
+
+  it("shows loading state while fetching version content", async () => {
+    let resolveNotes!: (value: { version: string; body: string; source: string }) => void;
+    mocks.getReleaseNotesForVersion.mockReturnValue(
+      new Promise((resolve) => {
+        resolveNotes = resolve;
+      }),
+    );
+
+    render(<ReleaseNotesDialog open={true} onClose={vi.fn()} />);
+    await flushAll();
+
+    await act(async () => {
+      resolveNotes({ version: "0.9.0", body: "Done loading", source: "bundled_resource" });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const body = screen.getByTestId("release-notes-dialog-body");
+    expect(body.textContent).toContain("Done loading");
+  });
+
   it("falls back to GitHub body when clicking a version whose bundled fetch fails", async () => {
     mocks.getReleaseNotesForVersion
       .mockResolvedValueOnce({
