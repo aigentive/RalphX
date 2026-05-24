@@ -42,7 +42,6 @@ import {
   writeAgentTerminal,
   type AgentTerminalEvent,
   type AgentTerminalSnapshot,
-  type AgentTerminalStatus,
 } from "@/api/terminal";
 import type { AgentConversationWorkspace } from "@/api/chat";
 import { Button } from "@/components/ui/button";
@@ -72,6 +71,8 @@ import { compactTerminalPath } from "./agentTerminalPaths";
 import { loadAgentTerminalRuntime } from "./agentTerminalRuntime";
 import {
   AGENT_TERMINAL_COLLAPSED_HEIGHT,
+  useAgentTerminalStore,
+  type AgentTerminalCachedStatus,
   type AgentTerminalPlacement,
 } from "./agentTerminalStore";
 
@@ -94,7 +95,7 @@ const TERMINAL_MIN_COLS = 80;
 const TERMINAL_MIN_ROWS = 20;
 const HEADER_DRAG_CLICK_SUPPRESSION_MS = 150;
 const HEADER_DRAG_START_THRESHOLD_PX = 4;
-type AgentTerminalDisplayStatus = AgentTerminalStatus | "closed";
+type AgentTerminalDisplayStatus = AgentTerminalCachedStatus;
 
 type DeferredFrameJob = { frame: number | null; timer: number | null };
 type DragEventWithOptionalTransfer = { dataTransfer?: DataTransfer };
@@ -180,7 +181,11 @@ export function AgentTerminalDrawer({
   const headerDragMovedRef = useRef(false);
   const headerDockDragActiveRef = useRef(false);
   const headerDragClickTimerRef = useRef<number | null>(null);
-  const [status, setStatus] = useState<AgentTerminalDisplayStatus>("closed");
+  const cachedStatus = useAgentTerminalStore(
+    (state) => state.statusByConversationId[conversationId] ?? "closed",
+  );
+  const setCachedTerminalStatus = useAgentTerminalStore((state) => state.setStatus);
+  const [status, setStatus] = useState<AgentTerminalDisplayStatus>(cachedStatus);
   const [cwd, setCwd] = useState(workspace.worktreePath);
   const [branchName, setBranchName] = useState(workspace.branchName);
   const [isFocused, setIsFocused] = useState(false);
@@ -204,6 +209,18 @@ export function AgentTerminalDrawer({
       : status;
 
   const terminalTheme = useMemo(() => readTerminalTheme(), []);
+
+  useEffect(() => {
+    setStatus(cachedStatus);
+  }, [cachedStatus]);
+
+  const updateStatus = useCallback(
+    (nextStatus: AgentTerminalDisplayStatus) => {
+      setStatus(nextStatus);
+      setCachedTerminalStatus(conversationId, nextStatus);
+    },
+    [conversationId, setCachedTerminalStatus],
+  );
 
   const fitTerminal = useCallback(() => {
     const terminal = terminalRef.current;
@@ -300,12 +317,15 @@ export function AgentTerminalDrawer({
     });
   }, [cancelDockMove, dockElement, fitAndReportSize, hasDocked, portalRoot]);
 
-  const applySnapshot = useCallback((snapshot: AgentTerminalSnapshot) => {
-    setStatus(snapshot.status);
-    setIsTerminalStarted(true);
-    setCwd(snapshot.cwd);
-    setBranchName(snapshot.workspaceBranch);
-  }, []);
+  const applySnapshot = useCallback(
+    (snapshot: AgentTerminalSnapshot) => {
+      updateStatus(snapshot.status);
+      setIsTerminalStarted(true);
+      setCwd(snapshot.cwd);
+      setBranchName(snapshot.workspaceBranch);
+    },
+    [updateStatus],
+  );
 
   const applyEvent = useCallback((event: AgentTerminalEvent) => {
     if (event.conversationId !== conversationId || event.terminalId !== terminalId) {
@@ -339,7 +359,7 @@ export function AgentTerminalDrawer({
     }
 
     if (event.type === "started" || event.type === "restarted") {
-      setStatus("running");
+      updateStatus("running");
       setIsTerminalStarted(true);
       if (event.type === "restarted") {
         terminal?.reset();
@@ -358,24 +378,24 @@ export function AgentTerminalDrawer({
     }
 
     if (event.type === "exited") {
-      setStatus("exited");
+      updateStatus("exited");
       terminal?.write("\r\n[terminal exited]\r\n");
       return;
     }
 
     if (event.type === "error") {
-      setStatus("error");
+      updateStatus("error");
       if (event.message) {
         terminal?.write(`\r\n[terminal error] ${event.message}\r\n`);
       }
     }
-  }, [conversationId, terminalId]);
+  }, [conversationId, terminalId, updateStatus]);
 
   const showControlError = useCallback((error: unknown) => {
     const message = error instanceof Error ? error.message : "Terminal command failed";
-    setStatus("error");
+    updateStatus("error");
     terminalRef.current?.write(`\r\n[terminal error] ${message}\r\n`);
-  }, []);
+  }, [updateStatus]);
 
   useEffect(() => {
     if (!shouldHydrateTerminal) {
@@ -516,7 +536,7 @@ export function AgentTerminalDrawer({
             return;
           }
           setIsHydrating(false);
-          setStatus("error");
+          updateStatus("error");
           const message = error instanceof Error ? error.message : "Failed to open terminal";
           terminalRef.current?.write(`\r\n[terminal error] ${message}\r\n`);
         });
@@ -557,6 +577,7 @@ export function AgentTerminalDrawer({
     showControlError,
     terminalId,
     terminalTheme,
+    updateStatus,
   ]);
 
   useEffect(() => {
@@ -632,7 +653,7 @@ export function AgentTerminalDrawer({
     }
 
     onCollapse();
-    setStatus("closed");
+    updateStatus("closed");
     setIsHydrating(false);
     setIsClearing(false);
     setIsRestarting(false);
@@ -640,7 +661,7 @@ export function AgentTerminalDrawer({
     hydrationCompleteRef.current = false;
     bufferedEventsRef.current = [];
     void closeAgentTerminal({ conversationId, terminalId }).catch(() => undefined);
-  }, [conversationId, isHydrating, onCollapse, status, terminalId]);
+  }, [conversationId, isHydrating, onCollapse, status, terminalId, updateStatus]);
 
   const handleExpandToggle = useCallback(() => {
     if (expanded) {
