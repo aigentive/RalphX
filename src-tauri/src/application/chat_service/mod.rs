@@ -202,7 +202,15 @@ fn registry_entry_blocks_send_because_run_inactive(
 
     match run_status {
         Some(AgentRunStatus::Running) => false,
-        Some(_) => true,
+        Some(_) => {
+            if cleanup_caller == RegistryCleanupCaller::ReadOnly
+                && info.pid != 0
+                && is_process_alive(info.pid)
+            {
+                return false;
+            }
+            true
+        }
         None => {
             let age = now.signed_duration_since(info.started_at);
             if info.pid == 0 && !cleanup_caller.permits_pid_zero_cleanup() {
@@ -4291,7 +4299,7 @@ mod stale_registry_gate_tests {
     }
 
     #[test]
-    fn terminal_agent_run_unblocks_registry_entry() {
+    fn terminal_agent_run_unblocks_send_gate_registry_entry() {
         let now = chrono::Utc::now();
         let info = registry_info(std::process::id(), now - chrono::Duration::minutes(5));
 
@@ -4299,17 +4307,30 @@ mod stale_registry_gate_tests {
             &info,
             Some(AgentRunStatus::Completed),
             now,
-            RegistryCleanupCaller::ReadOnly,
+            RegistryCleanupCaller::SendGate,
         ));
         assert!(registry_entry_blocks_send_because_run_inactive(
             &info,
             Some(AgentRunStatus::Failed),
             now,
-            RegistryCleanupCaller::ReadOnly,
+            RegistryCleanupCaller::SendGate,
         ));
         assert!(registry_entry_blocks_send_because_run_inactive(
             &info,
             Some(AgentRunStatus::Cancelled),
+            now,
+            RegistryCleanupCaller::SendGate,
+        ));
+    }
+
+    #[test]
+    fn terminal_agent_run_does_not_let_read_only_cleanup_kill_live_process() {
+        let now = chrono::Utc::now();
+        let info = registry_info(std::process::id(), now - chrono::Duration::minutes(5));
+
+        assert!(!registry_entry_blocks_send_because_run_inactive(
+            &info,
+            Some(AgentRunStatus::Completed),
             now,
             RegistryCleanupCaller::ReadOnly,
         ));
