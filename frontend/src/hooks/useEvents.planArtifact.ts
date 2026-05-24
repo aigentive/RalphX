@@ -66,6 +66,17 @@ export function usePlanArtifactEvents() {
         });
       }
     };
+    const invalidateAgentSessionPlan = (sessionId: string | null | undefined) => {
+      if (!sessionId) {
+        return;
+      }
+      queryClientRef.current.invalidateQueries({
+        queryKey: ["agents", "session-plan", sessionId],
+      });
+      queryClientRef.current.invalidateQueries({
+        queryKey: ["agents", "plan-approval", sessionId],
+      });
+    };
 
     // Listen for created events
     unsubscribes.push(
@@ -125,6 +136,7 @@ export function usePlanArtifactEvents() {
           queryClientRef.current.invalidateQueries({
             queryKey: ideationKeys.sessionDetail(sessionId),
           });
+          invalidateAgentSessionPlan(sessionId);
           invalidateAgentArtifacts(artifact.id);
         }
       })
@@ -182,6 +194,7 @@ export function usePlanArtifactEvents() {
             queryClientRef.current.invalidateQueries({
               queryKey: ideationKeys.sessionDetail(sessionId),
             });
+            invalidateAgentSessionPlan(sessionId);
             invalidateAgentArtifacts(artifact.id, artifactId, previousArtifactId);
             return;
           }
@@ -225,6 +238,7 @@ export function usePlanArtifactEvents() {
               queryClientRef.current.invalidateQueries({
                 queryKey: ideationKeys.sessionDetail(session.id),
               });
+              invalidateAgentSessionPlan(session.id);
               invalidateAgentArtifacts(artifact.id, artifactId, previousArtifactId);
             }
           }
@@ -235,6 +249,7 @@ export function usePlanArtifactEvents() {
             queryClientRef.current.invalidateQueries({
               queryKey: ideationKeys.sessionDetail(currentActiveSessionId),
             });
+            invalidateAgentSessionPlan(currentActiveSessionId);
           }
         }
       })

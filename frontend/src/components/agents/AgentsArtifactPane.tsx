@@ -223,6 +223,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const canHydrateIdeationArtifacts = Boolean(
     focusedIdeationSessionId ||
       workspace?.mode === "ideation" ||
+      workspace?.mode === "plan" ||
       workspace?.linkedIdeationSessionId ||
       workspace?.linkedPlanBranchId,
   );
@@ -358,6 +359,14 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       (!shouldUseSessionPlanQuery || !!attachedSessionId),
     staleTime: 5_000,
   });
+  const planArtifact = planArtifactQuery.data ?? null;
+  const isPlanHydrating =
+    shouldLoadIdeationData &&
+    effectiveActiveTab === "plan" &&
+    !planArtifact &&
+    !!attachedSessionId &&
+    ((!!planArtifactId && planArtifactQuery.isFetching) ||
+      (!planArtifactId && sessionQuery.isFetching));
   const verificationQuery = useVerificationStatus(
     shouldLoadVerificationData ? attachedSessionId ?? undefined : undefined,
   );
@@ -608,8 +617,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           session={session}
           sessionTitle={sessionData?.session.title ?? null}
           taskMode={taskMode}
-          planArtifact={planArtifactQuery.data ?? null}
-          isPlanLoading={planArtifactQuery.isLoading}
+          planArtifact={planArtifact}
+          isPlanLoading={isPlanHydrating}
           onPlanUpdated={handlePlanUpdated}
           dependencyGraph={dependencyGraph}
           proposals={proposals}

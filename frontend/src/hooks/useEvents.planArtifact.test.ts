@@ -192,6 +192,12 @@ describe("usePlanArtifactEvents", () => {
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
         queryKey: ["ideation", "session", "session-1"],
       });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "session-plan", "session-1"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "plan-approval", "session-1"],
+      });
     });
 
     it("tier 1 match returns early — does not also process tier 2 or 3", () => {
@@ -213,9 +219,15 @@ describe("usePlanArtifactEvents", () => {
       // Tier 1 returned early — one store update, plus the session and artifact
       // cache invalidations owned by that tier only.
       expect(mockSetPlanArtifact).toHaveBeenCalledTimes(1);
-      expect(mockInvalidateQueries).toHaveBeenCalledTimes(3);
+      expect(mockInvalidateQueries).toHaveBeenCalledTimes(5);
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
         queryKey: ["ideation", "session", "session-1"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "session-plan", "session-1"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "plan-approval", "session-1"],
       });
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
         queryKey: ["agents", "artifact", "artifact-2"],
@@ -281,6 +293,9 @@ describe("usePlanArtifactEvents", () => {
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
         queryKey: ["ideation", "session", "session-1"],
       });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "session-plan", "session-1"],
+      });
     });
 
     it("matches session by artifactId when planArtifactId already updated to new value", () => {
@@ -329,6 +344,9 @@ describe("usePlanArtifactEvents", () => {
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
         queryKey: ["ideation", "session", "session-other"],
       });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "session-plan", "session-other"],
+      });
     });
   });
 
@@ -357,6 +375,9 @@ describe("usePlanArtifactEvents", () => {
       expect(mockUpdateSession).not.toHaveBeenCalled();
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
         queryKey: ["ideation", "session", "session-active"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "session-plan", "session-active"],
       });
     });
 
@@ -402,7 +423,7 @@ describe("usePlanArtifactEvents", () => {
       });
 
       expect(mockSetPlanArtifact).toHaveBeenCalledTimes(1);
-      expect(mockInvalidateQueries).toHaveBeenCalledTimes(3);
+      expect(mockInvalidateQueries).toHaveBeenCalledTimes(5);
     });
 
     it("same created event emitted twice → only processed once", () => {
