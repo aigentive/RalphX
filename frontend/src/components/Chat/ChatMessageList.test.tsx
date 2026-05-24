@@ -273,6 +273,71 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(emptyFooterSpacer).toBeUndefined();
     });
 
+    it("pins to true bottom on initial load when the scroller does not resize", () => {
+      vi.useFakeTimers();
+      vi.stubEnv("VITEST", "");
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+      const originalResizeObserver = globalThis.ResizeObserver;
+
+      class QuietResizeObserver implements ResizeObserver {
+        disconnect = vi.fn();
+        observe = vi.fn();
+        unobserve = vi.fn();
+      }
+
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        value: QuietResizeObserver,
+        configurable: true,
+        writable: true,
+      });
+
+      try {
+        render(<ChatMessageList {...defaultProps} />);
+        const scroller = screen.getByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 620,
+          scrollTop: 60,
+        });
+        scrollToMock.mockClear();
+
+        act(() => {
+          vi.advanceTimersByTime(300);
+        });
+
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 120, behavior: "auto" });
+        act(() => {
+          vi.advanceTimersByTime(120);
+        });
+        scroller.scrollTop = 60;
+        scrollToMock.mockClear();
+
+        act(() => {
+          vi.advanceTimersByTime(380);
+        });
+
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 120, behavior: "auto" });
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        if (originalResizeObserver === undefined) {
+          Reflect.deleteProperty(globalThis, "ResizeObserver");
+        } else {
+          Object.defineProperty(globalThis, "ResizeObserver", {
+            value: originalResizeObserver,
+            configurable: true,
+            writable: true,
+          });
+        }
+        vi.unstubAllEnvs();
+        vi.useRealTimers();
+      }
+    });
+
     it("keeps a visual placeholder cover until the initial transcript paint settles", async () => {
       const onInitialPaintReady = vi.fn();
 

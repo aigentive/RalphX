@@ -47,9 +47,10 @@ import { cn } from "@/lib/utils";
 import { isTranscriptRootReadyForReveal } from "./ChatMessageList.readiness";
 import {
   getScrollBottomDelta,
-  getTrueBottomScrollTop,
   isScrollElementVisuallyAtBottom,
+  scrollElementToTrueBottom,
   shouldShowScrollToBottomControl,
+  shouldStickToBottom,
   VISUAL_BOTTOM_EPSILON_PX,
 } from "./ChatMessageList.scroll";
 import {
@@ -480,6 +481,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const agentRunningRef = useRef(isAgentRunning);
     const conversationLastUserMessageIdRef = useRef<string | null>(lastUserMessageId);
     const conversationAgentRunningRef = useRef(isAgentRunning);
+    const scrollToTimestampRef = useRef(scrollToTimestamp);
     // rAF reconciliation refs — used to keep isAtBottom accurate when footer grows
     const scrollerElRef = useRef<HTMLElement | null>(null);
     const reconcileRafRef = useRef<number | null>(null);
@@ -913,6 +915,20 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       conversationId, // Reset isAtBottom when conversation changes
     });
 
+    useEffect(() => {
+      scrollToTimestampRef.current = scrollToTimestamp;
+    }, [scrollToTimestamp]);
+
+    const shouldKeepBottomPinned = useCallback(
+      (activeScrollToTimestamp: string | null | undefined = scrollToTimestampRef.current) =>
+        shouldStickToBottom({
+          scrollToTimestamp: activeScrollToTimestamp,
+          isAtBottom: isAtBottomRef.current,
+          isVisuallyAtBottom: isVisuallyAtBottomRef.current,
+        }),
+      [isAtBottomRef],
+    );
+
     // Window advancement follows the same bottom-range contract as chat auto-scroll.
     // Exact visual-bottom tracking can drift false during Virtuoso/footer growth even
     // while the user is still close enough to the tail to be following the live run.
@@ -921,7 +937,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         return getNextStreamingTranscriptWindow(
           prev,
           liveStreamingTranscriptWindow,
-          isAtBottom
+          isAtBottom,
         );
       });
     }, [isAtBottom, liveStreamingTranscriptWindow]);
@@ -939,7 +955,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           setIsVisuallyAtBottom(true);
           return;
         }
-        const target = getTrueBottomScrollTop(el);
+        const target = scrollElementToTrueBottom(el, behavior);
         logger.debug("[ChatScroll] scrollToTrueBottom", {
           scrollHeight: el.scrollHeight,
           clientHeight: el.clientHeight,
@@ -947,7 +963,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           target,
           behavior,
         });
-        el.scrollTo({ top: target, behavior });
         setIsVisuallyAtBottom(true);
         // Eagerly mark atBottom=true so followOutput re-engages without waiting
         // for scrollend.
@@ -995,14 +1010,20 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     );
 
     // Streaming auto-scroll — followOutput only fires on totalCount changes,
-    // NOT on Footer height growth. Pin to the true DOM bottom when the user is
-    // still within the sticky-bottom range so footer/meta growth is included.
+    // NOT on Footer height growth. Pin to the true DOM bottom while the user is
+    // still inside the sticky bottom zone so footer/meta growth is included.
     useEffect(() => {
       if (scrollToTimestamp || !hasFooterStreamingContent) return;
-      if (isVisuallyAtBottomRef.current || isAtBottomRef.current) {
+      if (shouldKeepBottomPinned(scrollToTimestamp)) {
         scrollToTrueBottom("auto");
       }
-    }, [footerContentHash, hasFooterStreamingContent, isAtBottomRef, scrollToTimestamp, scrollToTrueBottom]);
+    }, [
+      footerContentHash,
+      hasFooterStreamingContent,
+      scrollToTimestamp,
+      scrollToTrueBottom,
+      shouldKeepBottomPinned,
+    ]);
 
     useEffect(() => {
       return () => {
@@ -1054,12 +1075,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       agentRunningRef.current = isAgentRunning;
     }, [isAgentRunning, scheduleBottomPin]);
 
-    // Keep scrollToTimestamp accessible via ref (avoids stale closure in ResizeObserver callback)
-    const scrollToTimestampRef = useRef(scrollToTimestamp);
-    useEffect(() => {
-      scrollToTimestampRef.current = scrollToTimestamp;
-    }, [scrollToTimestamp]);
-
     // rAF-throttled DOM reconciliation — keeps isAtBottom accurate when Virtuoso doesn't detect footer growth.
     // Runs outside React render cycle (DOM event handler, not useEffect) — no render loop risk.
     // rAF fires post-paint, so scrollHeight reads don't force layout recalc during React commit phase.
@@ -1101,19 +1116,19 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     );
 
     const handleScrollerResize = useCallback(() => {
-      const wasStickyToBottom = isVisuallyAtBottomRef.current || isAtBottomRef.current;
+      const shouldFollowBottom = shouldKeepBottomPinned();
       if (scrollerResizeRafRef.current !== null) {
         cancelAnimationFrame(scrollerResizeRafRef.current);
       }
       scrollerResizeRafRef.current = requestAnimationFrame(() => {
         scrollerResizeRafRef.current = null;
-        if (wasStickyToBottom && !scrollToTimestampRef.current) {
+        if (shouldFollowBottom) {
           scrollToTrueBottom("auto");
           return;
         }
         reconcileScrollerBottomState();
       });
-    }, [isAtBottomRef, reconcileScrollerBottomState, scrollToTrueBottom]);
+    }, [reconcileScrollerBottomState, scrollToTrueBottom, shouldKeepBottomPinned]);
 
     const disconnectScrollerResizeObserver = useCallback(() => {
       scrollerResizeObserverRef.current?.disconnect();
@@ -1216,15 +1231,14 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           // Read from refs — always current, no stale closure
           if (
             hasFooterStreamingContentRef.current &&
-            (isVisuallyAtBottomRef.current || isAtBottomRef.current) &&
-            !scrollToTimestampRef.current
+            shouldKeepBottomPinned()
           ) {
             scrollToTrueBottom("auto");
           }
         });
       });
       footerObserverRef.current.observe(el);
-    }, [isAtBottomRef, scrollToTrueBottom]);
+    }, [scrollToTrueBottom, shouldKeepBottomPinned]);
 
     // Cleanup Footer ResizeObserver and rAF on unmount
     useEffect(() => {
@@ -1357,7 +1371,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           const el = scrollerElRef.current;
           if (!el) return;
           const delta = el.scrollHeight - el.clientHeight - el.scrollTop;
-          if (delta > AT_BOTTOM_THRESHOLD) {
+          if (delta > VISUAL_BOTTOM_EPSILON_PX) {
             scrollToTrueBottom("auto");
           }
         };
@@ -1388,6 +1402,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
       observer.observe(scroller);
 
+      // ResizeObserver can miss the initial virtual-list settlement when the
+      // scroller element itself does not resize. Keep the old settled-resize
+      // path, but also run the first bottom pin on the normal markdown delay.
+      const fallbackTimer = setTimeout(doScroll, MARKDOWN_RENDER_DELAY_MS);
+
       // Safety timeout: 3s max — disconnect + force scroll if debounce never settles
       const safetyTimer = setTimeout(() => {
         observer.disconnect();
@@ -1397,6 +1416,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       return () => {
         observer.disconnect();
         clearTimeout(debounceTimer);
+        clearTimeout(fallbackTimer);
         clearTimeout(safetyTimer);
         verifyTimers.forEach(clearTimeout);
       };
@@ -1415,10 +1435,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         return;
       }
 
-      if (isVisuallyAtBottomRef.current) {
+      if (shouldKeepBottomPinned(scrollToTimestamp)) {
         scheduleBottomPin("new timeline item appended");
       }
-    }, [lastItemIndex, scheduleBottomPin, scrollToTimestamp, timeline.length]);
+    }, [lastItemIndex, scheduleBottomPin, scrollToTimestamp, shouldKeepBottomPinned, timeline.length]);
 
     const footerContent = useMemo(() => {
       if (!hasFooterStreamingContent) {
