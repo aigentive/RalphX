@@ -52,6 +52,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   listIdeationSessionsMock: vi.fn(),
   getLatestChildSessionIdMock: vi.fn(),
   getWorkspaceChangesMock: vi.fn(),
+  getWorkspaceChangeSummaryMock: vi.fn(),
   getWorkspaceReviewMock: vi.fn(),
   getWorkspaceDiffMock: vi.fn(),
   getWorkspaceCommitsMock: vi.fn(),
@@ -156,6 +157,7 @@ const {
   listIdeationSessionsMock,
   getLatestChildSessionIdMock,
   getWorkspaceChangesMock,
+  getWorkspaceChangeSummaryMock,
   getWorkspaceReviewMock,
   getWorkspaceDiffMock,
   getWorkspaceCommitsMock,
@@ -669,6 +671,8 @@ vi.mock("@/api/diff", () => ({
   diffApi: {
     getAgentConversationWorkspaceFileChanges: (...args: unknown[]) =>
       getWorkspaceChangesMock(...args),
+    getAgentConversationWorkspaceChangeSummary: (...args: unknown[]) =>
+      getWorkspaceChangeSummaryMock(...args),
     getAgentConversationWorkspaceReview: (...args: unknown[]) =>
       getWorkspaceReviewMock(...args),
     getAgentConversationWorkspaceFileDiff: (...args: unknown[]) =>
@@ -1161,6 +1165,7 @@ export function setupAgentsViewTest() {
   getPlanBranchesMock.mockReset();
   listIdeationSessionsMock.mockReset();
   getWorkspaceChangesMock.mockReset();
+  getWorkspaceChangeSummaryMock.mockReset();
   getWorkspaceReviewMock.mockReset();
   getWorkspaceDiffMock.mockReset();
   getWorkspaceCommitsMock.mockReset();
@@ -1220,6 +1225,11 @@ export function setupAgentsViewTest() {
   listIdeationSessionsMock.mockResolvedValue([]);
   mockAgentSidebarData([]);
   getWorkspaceChangesMock.mockResolvedValue([]);
+  getWorkspaceChangeSummaryMock.mockResolvedValue({
+    supportsWorktreeModes: true,
+    staged: { fileCount: 0, additions: 0, deletions: 0 },
+    unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+  });
   getWorkspaceReviewMock.mockResolvedValue({
     changes: [],
     commits: [],

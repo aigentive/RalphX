@@ -22,6 +22,7 @@ const {
   getAgentRunningStatesMock,
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
+  getWorkspaceChangeSummaryMock,
   getWorkspaceReviewMock,
   integratedChatPanelRenderMock,
   preloadAgentTerminalExperienceMock,
@@ -438,46 +439,37 @@ describe("AgentsView performance", () => {
     fireEvent.focus(textbox);
     await new Promise((resolve) => window.setTimeout(resolve, 500));
 
+    expect(getWorkspaceChangeSummaryMock).not.toHaveBeenCalled();
     expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
 
     fireEvent.change(textbox, { target: { value: "typing while summary waits" } });
     await new Promise((resolve) => window.setTimeout(resolve, 500));
 
+    expect(getWorkspaceChangeSummaryMock).not.toHaveBeenCalled();
     expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
 
     await waitFor(
-      () => expect(getWorkspaceReviewMock).toHaveBeenCalledTimes(1),
+      () => expect(getWorkspaceChangeSummaryMock).toHaveBeenCalledTimes(1),
       { timeout: 2_000 }
     );
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
   });
 
-  it("refreshes the composer diff summary while the edit agent is generating", async () => {
+  it("refreshes the composer diff summary while the edit agent is generating without polling full review", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({ mode: "edit" })
     );
-    getWorkspaceReviewMock
+    getWorkspaceChangeSummaryMock
       .mockResolvedValueOnce({
-        changes: [],
-        commits: [],
-        baseRef: "main",
-        headRef: "HEAD",
         supportsWorktreeModes: true,
+        staged: { fileCount: 0, additions: 0, deletions: 0 },
+        unstaged: { fileCount: 0, additions: 0, deletions: 0 },
       })
       .mockResolvedValue({
-        changes: [
-          {
-            path: "src/live-change.ts",
-            status: "modified",
-            additions: 12,
-            deletions: 3,
-            isGenerated: false,
-          },
-        ],
-        commits: [],
-        baseRef: "main",
-        headRef: "HEAD",
         supportsWorktreeModes: true,
+        staged: { fileCount: 0, additions: 0, deletions: 0 },
+        unstaged: { fileCount: 1, additions: 12, deletions: 3 },
       });
     resetAgentSessionState({
       selectedProjectId: "project-1",
@@ -492,18 +484,21 @@ describe("AgentsView performance", () => {
 
     expect(screen.getByTestId("agents-conversation-submit")).toHaveTextContent("Stop");
 
-    await waitFor(() => expect(getWorkspaceReviewMock).toHaveBeenCalledTimes(1), {
+    await waitFor(() => expect(getWorkspaceChangeSummaryMock).toHaveBeenCalledTimes(1), {
       timeout: 3_000,
     });
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
     expect(
       screen.queryByTestId("agents-composer-workspace-changes")
     ).not.toBeInTheDocument();
 
     await waitFor(
-      () => expect(getWorkspaceReviewMock.mock.calls.length).toBeGreaterThanOrEqual(2),
+      () => expect(getWorkspaceChangeSummaryMock.mock.calls.length).toBeGreaterThanOrEqual(2),
       { timeout: 5_000 },
     );
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
     await screen.findByTestId("agents-composer-workspace-changes");
+    expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Unstaged");
     expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
       "1 file",
     );

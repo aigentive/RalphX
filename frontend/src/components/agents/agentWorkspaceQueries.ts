@@ -44,6 +44,11 @@ export const agentWorkspaceKeys = {
     "workspace-review",
     conversationId,
   ] as const,
+  changeSummary: (conversationId: string | null | undefined) => [
+    "agents",
+    "workspace-change-summary",
+    conversationId,
+  ] as const,
   agentTasks: (conversationId: string | null | undefined) => [
     "agents",
     "conversation-agent-tasks",
@@ -147,6 +152,9 @@ export function invalidateWorkspaceQueries(
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.review(conversationId),
+    }),
+    queryClient.invalidateQueries({
+      queryKey: agentWorkspaceKeys.changeSummary(conversationId),
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.agentTasks(conversationId),

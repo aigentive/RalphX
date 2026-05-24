@@ -118,3 +118,15 @@ export const AgentWorkspaceReviewResponseSchema = z.object({
   head_ref: z.string(),
   supports_worktree_modes: z.boolean().default(true),
 });
+
+export const AgentWorkspaceChangeBucketSummarySchema = z.object({
+  file_count: z.number(),
+  additions: z.number(),
+  deletions: z.number(),
+});
+
+export const AgentWorkspaceChangeSummaryResponseSchema = z.object({
+  supports_worktree_modes: z.boolean().default(true),
+  staged: AgentWorkspaceChangeBucketSummarySchema,
+  unstaged: AgentWorkspaceChangeBucketSummarySchema,
+});

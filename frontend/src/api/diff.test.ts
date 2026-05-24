@@ -342,6 +342,27 @@ describe("diff api", () => {
     });
   });
 
+  it("loads and transforms the compact agent workspace change summary", async () => {
+    mockInvoke.mockResolvedValue({
+      supports_worktree_modes: true,
+      staged: { file_count: 1, additions: 7, deletions: 2 },
+      unstaged: { file_count: 2, additions: 12, deletions: 3 },
+    });
+
+    const summary =
+      await diffApi.getAgentConversationWorkspaceChangeSummary("conversation-1");
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "get_agent_conversation_workspace_change_summary",
+      { conversationId: "conversation-1" }
+    );
+    expect(summary).toEqual({
+      supportsWorktreeModes: true,
+      staged: { fileCount: 1, additions: 7, deletions: 2 },
+      unstaged: { fileCount: 2, additions: 12, deletions: 3 },
+    });
+  });
+
   it("transforms agent workspace review fields without invoking Tauri", () => {
     const review = transformAgentWorkspaceReview({
       changes: [
