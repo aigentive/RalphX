@@ -2171,6 +2171,47 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(getNextStreamingTranscriptWindow(previous, live, true)).toBe(live);
     });
 
+    it("keeps advancing live transcript blocks when still inside the bottom range", async () => {
+      vi.stubEnv("VITEST", "");
+      mockIsAtBottom = true;
+      mockIsAtBottomRef.current = true;
+      const initialBlocks: StreamingContentBlock[] = [
+        { type: "text", text: "Live update before visual drift" },
+      ];
+      const nextBlocks: StreamingContentBlock[] = [
+        ...initialBlocks,
+        { type: "text", text: "Live update after visual drift" },
+      ];
+
+      try {
+        const { rerender } = render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={[]}
+            isSending={true}
+            streamingContentBlocks={initialBlocks}
+          />
+        );
+
+        await waitFor(() => {
+          expect(mockHandleAtBottomStateChange).toHaveBeenCalledWith(false);
+        });
+
+        rerender(
+          <ChatMessageList
+            {...defaultProps}
+            messages={[]}
+            isSending={true}
+            streamingContentBlocks={nextBlocks}
+          />
+        );
+
+        expect(await screen.findByText("Live update after visual drift")).toBeInTheDocument();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
     it("drops empty compacted older text while keeping recent live text visible", () => {
       const blocks: StreamingContentBlock[] = [
         { type: "text", text: "   " },
