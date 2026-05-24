@@ -1,7 +1,7 @@
 import {
   AlertTriangle,
   CheckCircle2,
-  FileText,
+  ExternalLink,
   GitPullRequestArrow,
   GitBranch,
   Loader2,
@@ -50,7 +50,6 @@ import { useConfirmation } from "@/hooks/useConfirmation";
 import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { PublishEventLog } from "./AgentsPublishEventLog";
-import { PublishFact } from "./AgentsPublishFact";
 import { PublishPipelineSteps } from "./AgentsPublishPipelineSteps";
 import {
   PublishWorkspaceDialog,
@@ -825,29 +824,67 @@ export function AgentPublishPanel({
           )}
         </section>
         <section
-          className="rounded-lg border p-4"
+          className="rounded-lg border px-3 py-2"
           style={{
-            background: "var(--bg-surface)",
+            backgroundColor: "var(--bg-surface)",
             borderColor: "var(--border-subtle)",
+            borderStyle: "solid",
+            borderWidth: "1px",
           }}
+          data-testid="agents-publish-metadata-strip"
         >
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-[var(--text-primary)]">
-                Review Changes
-              </div>
-              <div className="mt-1 text-xs text-[var(--text-muted)]">
-                {isPipelineOwnedWorkspace
-                  ? "Review this ideation workspace's execution branch and pull request."
-                  : "Review this agent workspace before publishing its draft PR."}
-              </div>
-            </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs">
+            <span className="inline-flex min-w-0 items-center gap-1.5" style={{ color: "var(--text-secondary)" }}>
+              <GitBranch className="h-3 w-3 shrink-0" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
+              <span className="truncate font-medium" style={{ color: "var(--text-primary)" }}>{branch}</span>
+              <span style={{ color: "var(--text-muted)" }} aria-hidden="true">&rarr;</span>
+              <span className="truncate" style={{ color: "var(--text-muted)" }}>{base}</span>
+            </span>
+
+            <span className="hidden @xs:inline-block" style={{ color: "var(--border-subtle)" }} aria-hidden="true">|</span>
+
+            <span className="inline-flex min-w-0 items-center gap-1.5" style={{ color: "var(--text-secondary)" }}>
+              <GitPullRequestArrow className="h-3 w-3 shrink-0" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
+              {workspace.publicationPrUrl ? (
+                <button
+                  type="button"
+                  className="inline-flex min-w-0 items-center gap-1 truncate bg-transparent p-0 text-left font-medium transition-colors hover:text-[var(--accent-primary)]"
+                  style={{ color: "var(--text-primary)" }}
+                  onClick={() => void openUrl(workspace.publicationPrUrl!)}
+                  data-testid="agents-open-pr-url"
+                  aria-label={`Open ${prUrlLabel ?? "pull request"}`}
+                >
+                  {prLabel}
+                  <ExternalLink className="h-2.5 w-2.5 shrink-0" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
+                </button>
+              ) : (
+                <span className="truncate font-medium" style={{ color: "var(--text-primary)" }}>{prLabel}</span>
+              )}
+            </span>
+
+            <span className="hidden @xs:inline-block" style={{ color: "var(--border-subtle)" }} aria-hidden="true">|</span>
+
             <span
-              className="rounded-full border px-2.5 py-1 text-xs capitalize"
+              className="rounded-full border px-2 py-0.5 text-[0.6875rem] capitalize"
               data-testid="agents-publish-status-pill"
               style={{
                 borderColor: "var(--overlay-weak)",
                 color: "var(--text-secondary)",
+              }}
+            >
+              {workspace.mode === "edit"
+                ? "Edit"
+                : isPipelineOwnedWorkspace
+                  ? "Plan"
+                  : workspace.mode}
+            </span>
+
+            <span
+              className="rounded-full border px-2 py-0.5 text-[0.6875rem] capitalize"
+              data-testid="agents-publish-push-status-pill"
+              style={{
+                borderColor: "var(--overlay-weak)",
+                color: "var(--text-muted)",
               }}
             >
               {terminalPublicationLabel ??
@@ -858,57 +895,9 @@ export function AgentPublishPanel({
             </span>
           </div>
 
-          <div className="mt-4 grid gap-3 @md:grid-cols-2">
-            <PublishFact icon={GitBranch} label="Branch" value={branch} />
-            <PublishFact
-              icon={FileText}
-              label="Base"
-              value={base}
-              description={freshness?.baseBlockReason ?? null}
-            />
-            <PublishFact
-              icon={GitPullRequestArrow}
-              label="Pull Request"
-              value={prLabel}
-              description={prUrlLabel}
-              descriptionAction={
-                workspace.publicationPrUrl
-                  ? {
-                      label: `Open ${prUrlLabel}`,
-                      testId: "agents-open-pr-url",
-                      onClick: async () => {
-                        await openUrl(workspace.publicationPrUrl!);
-                      },
-                    }
-                  : undefined
-              }
-              action={
-                workspace.publicationPrUrl
-                  ? {
-                      label: "Open pull request",
-                      testId: "agents-open-pr",
-                      onClick: async () => {
-                        await openUrl(workspace.publicationPrUrl!);
-                      },
-                    }
-                  : undefined
-              }
-            />
-            <PublishFact
-              icon={CheckCircle2}
-              label="Mode"
-              value={
-                workspace.mode === "edit"
-                  ? "Edit agent"
-                  : isPipelineOwnedWorkspace
-                    ? "Ideation plan"
-                    : workspace.mode
-              }
-            />
-          </div>
           {prAnnotationSummary && (
             <div
-              className="mt-3 rounded-md border px-3 py-2 text-xs"
+              className="mt-2 rounded-md border px-2.5 py-1.5 text-[0.6875rem]"
               data-testid="agents-pr-annotations-summary"
               style={{
                 backgroundColor: "var(--bg-subtle)",
