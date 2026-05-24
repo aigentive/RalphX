@@ -27,6 +27,7 @@ import {
   AGENT_TERMINAL_COLLAPSED_HEIGHT,
   AGENT_TERMINAL_DEFAULT_HEIGHT,
   useAgentTerminalStore,
+  type AgentTerminalCachedStatus,
   type AgentTerminalDock,
   type AgentTerminalPlacement,
 } from "./agentTerminalStore";
@@ -80,18 +81,22 @@ function isNativePositionInsideElement(
 function AgentTerminalLoadingShell({
   height,
   expanded,
+  terminalStatus,
   workspace,
   dockElement,
   onToggleExpanded,
 }: {
   height: number;
   expanded: boolean;
+  terminalStatus: AgentTerminalCachedStatus;
   workspace: AgentConversationWorkspace;
   dockElement: HTMLElement | null;
   onToggleExpanded: () => void;
 }) {
   const branchLabel = formatBranchDisplay(workspace.branchName).short;
   const displayCwd = compactTerminalPath(workspace.worktreePath);
+  const statusLabel =
+    expanded ? "Opening" : terminalStatus === "closed" ? "Closed" : terminalStatus;
   const shell = (
     <div
       className="relative shrink-0 overflow-hidden border-t"
@@ -135,7 +140,7 @@ function AgentTerminalLoadingShell({
           className="h-1 w-1 rounded-full"
           style={{ backgroundColor: "var(--text-muted)" }}
         />
-        <span>{expanded ? "Opening" : "Closed"}</span>
+        <span>{statusLabel}</span>
         <span className="min-w-0 truncate font-mono" style={{ color: "var(--text-muted)" }}>
           {branchLabel}
         </span>
@@ -540,6 +545,9 @@ export function AgentsTerminalRegion({
     hasAutoOpenArtifacts,
   });
   const contentMounted = useAfterPaintMounted(canRender);
+  const terminalStatus = useAgentTerminalStore((state) =>
+    conversationId ? state.statusByConversationId[conversationId] ?? "closed" : "closed",
+  );
   const setTerminalHeight = useAgentTerminalStore((state) => state.setHeight);
   const setTerminalOpen = useAgentTerminalStore((state) => state.setOpen);
   const setTerminalPlacement = useAgentTerminalStore((state) => state.setPlacement);
@@ -606,6 +614,7 @@ export function AgentsTerminalRegion({
       <AgentTerminalLoadingShell
         height={height}
         expanded={isExpanded}
+        terminalStatus={terminalStatus}
         workspace={workspace}
         dockElement={dockElement}
         onToggleExpanded={handleTerminalShellToggle}
@@ -619,6 +628,7 @@ export function AgentsTerminalRegion({
         <AgentTerminalLoadingShell
           height={height}
           expanded={isExpanded}
+          terminalStatus={terminalStatus}
           workspace={workspace}
           dockElement={dockElement}
           onToggleExpanded={handleTerminalShellToggle}
