@@ -323,12 +323,10 @@ function buildFinalizedContentBlocks(
   }
 
   const blocks = streamingContentBlocks
+    .filter((block): block is Exclude<StreamingContentBlock, { type: "task" }> => block.type !== "task")
     .map((block): ContentBlockItem | null => {
       if (block.type === "text") {
         return block.text.trim().length > 0 ? { type: "text", text: block.text } : null;
-      }
-      if (block.type === "task") {
-        return null;
       }
       return contentBlockFromToolCall(block.toolCall);
     })

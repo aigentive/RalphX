@@ -1061,6 +1061,34 @@ describe("useConversationTimelineWindow", () => {
 
   it("upserts finalized text content when content blocks are absent", () => {
     const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [{
+        ...mockMessage2,
+        id: "assistant-final",
+        content: "Stale final text",
+      }],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [{
+              ...mockMessage2,
+              id: "assistant-final",
+              content: "Stale final text",
+            }],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 1,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
     queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
       chatKeys.conversationTimeline("conv-1"),
       {
@@ -1078,6 +1106,17 @@ describe("useConversationTimelineWindow", () => {
       contentBlocks: null,
       providerHarness: "codex",
       providerSessionId: "thread-final",
+      upstreamProvider: "openai",
+      providerProfile: "default",
+      logicalModel: "gpt-5.5",
+      effectiveModelId: "gpt-5.5-2026-05-01",
+      logicalEffort: "medium",
+      effectiveEffort: "medium",
+      inputTokens: 11,
+      outputTokens: 17,
+      cacheCreationTokens: 3,
+      cacheReadTokens: 5,
+      estimatedUsd: 0.0123,
     };
 
     expect(upsertFinalizedMessageIntoConversationCache(queryClient, "conv-1", finalized)).toBe(true);
@@ -1092,7 +1131,23 @@ describe("useConversationTimelineWindow", () => {
       content: "Plain final text",
       providerHarness: "codex",
       providerSessionId: "thread-final",
+      upstreamProvider: "openai",
+      providerProfile: "default",
+      logicalModel: "gpt-5.5",
+      effectiveModelId: "gpt-5.5-2026-05-01",
+      logicalEffort: "medium",
+      effectiveEffort: "medium",
+      inputTokens: 11,
+      outputTokens: 17,
+      cacheCreationTokens: 3,
+      cacheReadTokens: 5,
+      estimatedUsd: 0.0123,
     });
+    expect(
+      queryClient.getQueryData<ConversationQueryData>(
+        chatKeys.conversation("conv-1")
+      )?.messages
+    ).toContainEqual(finalized);
   });
 
   it("does not upsert finalized messages without renderable content", () => {
@@ -1116,6 +1171,45 @@ describe("useConversationTimelineWindow", () => {
         chatKeys.conversationTimeline("conv-1")
       )?.pages[0]?.items
     ).toEqual([]);
+  });
+
+  it("does not update finalized or render-ready caches when the newest timeline page is missing", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [undefined as unknown as ConversationTimelinePageResponse],
+        pageParams: [null],
+      },
+    );
+
+    expect(upsertFinalizedMessageIntoConversationCache(queryClient, "conv-1", {
+      ...mockMessage2,
+      id: "assistant-final",
+      content: "Done",
+      contentBlocks: [{ type: "text", text: "Done" }],
+    })).toBe(false);
+    expect(upsertRenderReadyMessageIntoConversationCache(queryClient, "conv-1", {
+      message: {
+        id: "assistant-final",
+        role: "assistant",
+        content: "Done",
+        created_at: "2026-01-24T10:02:00Z",
+      },
+      timeline_items: [{
+        id: "block:assistant-final:0",
+        message_id: "assistant-final",
+        sequence: 1,
+        block_index: 0,
+        role: "assistant",
+        kind: "text",
+        status: "finalized",
+        content: "Done",
+        content_blocks: [{ type: "text", text: "Done" }],
+        created_at: "2026-01-24T10:02:00Z",
+        updated_at: "2026-01-24T10:02:01Z",
+      }],
+    })).toBe(false);
   });
 
   it("stores composer reference metadata on optimistic user messages", () => {

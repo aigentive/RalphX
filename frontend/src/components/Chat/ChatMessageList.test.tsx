@@ -2558,6 +2558,56 @@ describe("ChatMessageList - Scroll Behavior", () => {
 
       await waitFor(() => expect(scrollToMock).toHaveBeenCalled());
     });
+
+    it("pins to true bottom when the scroller resizes while sticky", async () => {
+      const callbacks: ResizeObserverCallback[] = [];
+      const originalResizeObserver = globalThis.ResizeObserver;
+      class MockResizeObserver implements ResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          callbacks.push(callback);
+        }
+        disconnect = vi.fn();
+        observe = vi.fn();
+        unobserve = vi.fn();
+      }
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        value: MockResizeObserver,
+        configurable: true,
+        writable: true,
+      });
+
+      try {
+        mockIsAtBottom = false;
+        mockIsAtBottomRef.current = true;
+        render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={createMessages(2)}
+            isAgentRunning={true}
+            streamingContentBlocks={[{ type: "text", text: "Growing footer" }]}
+          />
+        );
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        scrollToMock.mockClear();
+
+        act(() => {
+          callbacks[0]?.([], {} as ResizeObserver);
+        });
+
+        await waitFor(() => expect(scrollToMock).toHaveBeenCalled());
+        expect(scroller).toBeInTheDocument();
+      } finally {
+        if (originalResizeObserver === undefined) {
+          Reflect.deleteProperty(globalThis, "ResizeObserver");
+        } else {
+          Object.defineProperty(globalThis, "ResizeObserver", {
+            value: originalResizeObserver,
+            configurable: true,
+            writable: true,
+          });
+        }
+      }
+    });
   });
 
   describe("pending tool call fallback indicator", () => {

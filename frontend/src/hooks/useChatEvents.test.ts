@@ -1360,6 +1360,37 @@ describe("useChatEvents", () => {
       });
     });
 
+    it("builds final cache content from streaming text when payload content is omitted", () => {
+      mockUpsertFinalizedMessageIntoConversationCache.mockReturnValue(true);
+      const props = makeProps({
+        streamingContentBlocks: [{ type: "text", text: "Streamed final answer" }],
+      });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:message_created", {
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          role: "assistant",
+          message_id: "msg-final",
+          created_at: "2026-01-24T10:00:00Z",
+        });
+      });
+
+      expect(mockUpsertFinalizedMessageIntoConversationCache).toHaveBeenCalledWith(
+        expect.anything(),
+        CONV_ID,
+        expect.objectContaining({
+          id: "msg-final",
+          content: "Streamed final answer",
+          contentBlocks: [{ type: "text", text: "Streamed final answer" }],
+        }),
+      );
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID, "summary"],
+      });
+    });
+
     it("skips live cache synthesis for ideation messages without render-ready payloads", () => {
       const props = makeProps({
         contextType: "ideation" as ContextType,

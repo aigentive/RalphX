@@ -204,6 +204,8 @@ fn message_render_ready_payload_serializes_canonical_message_and_timeline() {
     item.tool_name = Some("Read".to_string());
     item.input_json = Some(serde_json::json!({ "file_path": "src/app.ts" }).to_string());
     item.result_json = Some(serde_json::json!("ok").to_string());
+    item.raw_block_json =
+        Some(serde_json::json!({ "diff_context": { "file_path": "src/app.ts" } }).to_string());
     item.finalized_at = Some(item.updated_at);
 
     let payload =
@@ -224,6 +226,10 @@ fn message_render_ready_payload_serializes_canonical_message_and_timeline() {
     assert_eq!(
         value["timeline_items"][0]["tool_call"]["detail_ref"]["timeline_item_id"],
         "block:msg-1:1"
+    );
+    assert_eq!(
+        value["timeline_items"][0]["tool_call"]["diff_context"]["file_path"],
+        "src/app.ts"
     );
 }
 
