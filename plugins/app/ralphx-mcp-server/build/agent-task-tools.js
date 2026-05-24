@@ -15,7 +15,7 @@ const dependencyListProperty = {
 export const AGENT_TASK_TOOLS = [
     {
         name: "create_agent_task",
-        description: "Create a lightweight agent task in the current RalphX conversation/run ledger. Use it for todo items, delegated work, and dependencies that agents need to coordinate.",
+        description: "Create a lightweight agent task in the current RalphX conversation/run ledger. Use it for multi-step todo items, delegated work, and dependencies that agents need to coordinate. Do not create a task for genuinely single-step work; non-trivial work should be decomposed into multiple concrete tasks before claiming.",
         inputSchema: {
             type: "object",
             properties: {
@@ -71,7 +71,7 @@ export const AGENT_TASK_TOOLS = [
     },
     {
         name: "update_agent_task",
-        description: "Update an agent task's fields, owner, state, metadata, or dependencies. Metadata is merged; keys with null values are removed.",
+        description: "Update an agent task's fields, owner, state, metadata, or dependencies. Metadata is merged; keys with null values are removed. Use state=dropped to clean up an accidental single-task ledger before continuing without the ledger.",
         inputSchema: {
             type: "object",
             properties: {
@@ -102,7 +102,7 @@ export const AGENT_TASK_TOOLS = [
     },
     {
         name: "claim_agent_task",
-        description: "Claim a ready agent task for an agent and move it to active. The backend rejects claims while unresolved blockers remain.",
+        description: "Claim a ready agent task for an agent and move it to active. The backend rejects claims while unresolved blockers remain or when the ledger has only one meaningful task; decompose the ledger or mark the lone task dropped before continuing.",
         inputSchema: {
             type: "object",
             properties: {
@@ -118,7 +118,7 @@ export const AGENT_TASK_TOOLS = [
     },
     {
         name: "complete_agent_task",
-        description: "Mark an agent task done and optionally merge completion metadata into the task.",
+        description: "Mark an agent task done and optionally merge completion metadata into the task. The backend rejects completion of an accidental single-task ledger; decompose it or mark the lone task dropped instead.",
         inputSchema: {
             type: "object",
             properties: {
