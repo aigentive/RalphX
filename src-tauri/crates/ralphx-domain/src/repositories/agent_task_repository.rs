@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 
 use crate::domain::entities::{
-    AgentTaskCreate, AgentTaskDetail, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
-    AgentTaskSummary,
+    AgentTaskCreate, AgentTaskDetail, AgentTaskListId, AgentTaskListSummary,
+    AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope, AgentTaskSummary,
 };
 use crate::error::AppResult;
 
@@ -28,6 +28,16 @@ pub trait AgentTaskRepository: Send + Sync {
     async fn list_tasks(
         &self,
         scope: &AgentTaskScope,
+        options: AgentTaskListOptions,
+    ) -> AppResult<Vec<AgentTaskSummary>>;
+
+    async fn list_task_lists(&self, scope: &AgentTaskScope)
+        -> AppResult<Vec<AgentTaskListSummary>>;
+
+    async fn list_tasks_for_list(
+        &self,
+        scope: &AgentTaskScope,
+        list_id: &AgentTaskListId,
         options: AgentTaskListOptions,
     ) -> AppResult<Vec<AgentTaskSummary>>;
 

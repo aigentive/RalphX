@@ -35,6 +35,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getAgentConversationWorkspaceFreshnessMock: vi.fn(),
   listAgentConversationWorkspacesByProjectMock: vi.fn(),
   listWorkspaceOpenTargetsMock: vi.fn(),
+  openAgentConversationWorkspacePathMock: vi.fn(),
   listConversationsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
   setAgentConversationWorkspacePrSupervisionMock: vi.fn(),
@@ -63,6 +64,8 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getWorkspaceUnstagedDiffMock: vi.fn(),
   getWorkspaceCumulativeDiffMock: vi.fn(),
   listAgentTasksMock: vi.fn(),
+  listAgentTaskListsMock: vi.fn(),
+  listAgentTaskListTasksMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   integratedChatPanelRenderMock: vi.fn(),
@@ -136,6 +139,7 @@ const {
   getAgentConversationWorkspaceFreshnessMock,
   listAgentConversationWorkspacesByProjectMock,
   listWorkspaceOpenTargetsMock,
+  openAgentConversationWorkspacePathMock,
   listConversationsMock,
   publishAgentConversationWorkspaceMock,
   setAgentConversationWorkspacePrSupervisionMock,
@@ -164,6 +168,8 @@ const {
   getWorkspaceUnstagedDiffMock,
   getWorkspaceCumulativeDiffMock,
   listAgentTasksMock,
+  listAgentTaskListsMock,
+  listAgentTaskListTasksMock,
   toastErrorMock,
   toastSuccessMock,
   integratedChatPanelRenderMock,
@@ -555,6 +561,8 @@ vi.mock("@/api/chat", () => ({
     getAgentRunningStates: (...args: unknown[]) => getAgentRunningStatesMock(...args),
     listWorkspaceOpenTargets: (...args: unknown[]) =>
       listWorkspaceOpenTargetsMock(...args),
+    openAgentConversationWorkspacePath: (...args: unknown[]) =>
+      openAgentConversationWorkspacePathMock(...args),
     getBulkWorkspacePublicationStates: vi.fn().mockResolvedValue({}),
   },
 }));
@@ -606,6 +614,10 @@ vi.mock("@/api/diff", () => ({
 vi.mock("@/api/agent-tasks", () => ({
   agentTaskApi: {
     listConversationTasks: (...args: unknown[]) => listAgentTasksMock(...args),
+    listConversationTaskLists: (...args: unknown[]) =>
+      listAgentTaskListsMock(...args),
+    listConversationTaskListTasks: (...args: unknown[]) =>
+      listAgentTaskListTasksMock(...args),
   },
 }));
 
@@ -1050,6 +1062,7 @@ export function setupAgentsViewTest() {
   getAgentConversationWorkspaceFreshnessMock.mockReset();
   listAgentConversationWorkspacesByProjectMock.mockReset();
   listWorkspaceOpenTargetsMock.mockReset();
+  openAgentConversationWorkspacePathMock.mockReset();
   listConversationsMock.mockReset();
   publishAgentConversationWorkspaceMock.mockReset();
   setAgentConversationWorkspacePrSupervisionMock.mockReset();
@@ -1076,6 +1089,8 @@ export function setupAgentsViewTest() {
   getWorkspaceUnstagedDiffMock.mockReset();
   getWorkspaceCumulativeDiffMock.mockReset();
   listAgentTasksMock.mockReset();
+  listAgentTaskListsMock.mockReset();
+  listAgentTaskListTasksMock.mockReset();
   precomputePrDescriptionMock.mockReset();
   toastErrorMock.mockReset();
   toastSuccessMock.mockReset();
@@ -1115,6 +1130,7 @@ export function setupAgentsViewTest() {
   });
   listAgentConversationWorkspacesByProjectMock.mockResolvedValue([]);
   listWorkspaceOpenTargetsMock.mockResolvedValue([]);
+  openAgentConversationWorkspacePathMock.mockResolvedValue(undefined);
   listConversationsMock.mockResolvedValue([]);
   getPlanBranchesMock.mockResolvedValue([]);
   listIdeationSessionsMock.mockResolvedValue([]);
@@ -1137,6 +1153,8 @@ export function setupAgentsViewTest() {
   getWorkspaceUnstagedDiffMock.mockResolvedValue("");
   getWorkspaceCumulativeDiffMock.mockResolvedValue("");
   listAgentTasksMock.mockResolvedValue([]);
+  listAgentTaskListsMock.mockResolvedValue([]);
+  listAgentTaskListTasksMock.mockResolvedValue([]);
   precomputePrDescriptionMock.mockResolvedValue({
     conversationId: "conversation-1",
     status: "skipped",

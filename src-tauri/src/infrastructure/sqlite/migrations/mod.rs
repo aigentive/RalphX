@@ -363,9 +363,12 @@ mod v20260520150000_atlassian_oauth_tests;
 mod v20260521150003_agent_workspace_source_pull_request;
 #[cfg(test)]
 mod v20260521150003_agent_workspace_source_pull_request_tests;
+mod v20260523152748_agent_task_list_slices;
+#[cfg(test)]
+mod v20260523152748_agent_task_list_slices_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260521150003;
+pub const SCHEMA_VERSION: i64 = 20260523152748;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1029,6 +1032,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260521150003,
         name: "agent_workspace_source_pull_request",
         migrate: v20260521150003_agent_workspace_source_pull_request::migrate,
+    },
+    Migration {
+        version: 20260523152748,
+        name: "agent_task_list_slices",
+        migrate: v20260523152748_agent_task_list_slices::migrate,
     },
 ];
 

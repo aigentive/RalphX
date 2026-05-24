@@ -49,6 +49,15 @@ pub trait ChatAttachmentRepository: Send + Sync {
     /// Delete an attachment
     async fn delete(&self, id: &ChatAttachmentId) -> AppResult<()>;
 
+    /// Move pending (unsent) attachments from one conversation to another.
+    /// Only attachments with message_id = NULL are moved.
+    /// Returns the number of attachments re-parented.
+    async fn reparent_pending_attachments(
+        &self,
+        from_conversation_id: &ChatConversationId,
+        to_conversation_id: &ChatConversationId,
+    ) -> AppResult<usize>;
+
     /// Delete all attachments for a conversation (called when conversation is deleted)
     async fn delete_by_conversation_id(
         &self,

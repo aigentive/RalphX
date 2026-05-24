@@ -53,8 +53,8 @@ pub use agent_conversation_workspace::{
 };
 pub use agent_task::{
     merge_agent_task_metadata, AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList,
-    AgentTaskListId, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope, AgentTaskState,
-    AgentTaskStateChange, AgentTaskSummary,
+    AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch,
+    AgentTaskScope, AgentTaskState, AgentTaskStateChange, AgentTaskSummary,
 };
 pub use event_type::{EventType, ParseEventTypeError};
 pub use api_key::{

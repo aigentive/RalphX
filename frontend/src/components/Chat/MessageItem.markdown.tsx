@@ -8,12 +8,55 @@
  */
 
 import React, { useState, useCallback } from "react";
-import { Copy, Check } from "lucide-react";
-import { openPath } from "@tauri-apps/plugin-opener";
+import {
+  Check,
+  ChevronDown,
+  Code2,
+  Copy,
+  FolderOpen,
+  Loader2,
+} from "lucide-react";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { logger } from "@/lib/logger";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  resolvePreferredWorkspaceOpenTarget,
+} from "@/lib/workspace-open-targets";
+import { useMessageFileLinkContext } from "./MessageFileLinkContext";
 
 const PROSE_MAX_WIDTH = "min(85%, 620px)";
+
+const ASCII_ART_RE =
+  /[+\-|=]{3,}|[┌┐└┘├┤┬┴┼─│╔╗╚╝╠╣╦╩╬═║░▓█▒╮╰╯╭]{2,}/;
+
+function looksLikeAsciiArt(children: React.ReactNode): boolean {
+  const text = extractText(children);
+  if (!text) return false;
+  return ASCII_ART_RE.test(text);
+}
+
+function extractText(node: React.ReactNode): string {
+  if (typeof node === "string") return node;
+  if (typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join("");
+  if (node && typeof node === "object" && "props" in node) {
+    const el = node as React.ReactElement<{ children?: React.ReactNode }>;
+    return extractText(el.props.children);
+  }
+  return "";
+}
 
 // ============================================================================
 // Code Block with Copy Button
@@ -60,8 +103,7 @@ export function CodeBlock({ children, language }: CodeBlockProps) {
           style={{
             fontFamily: "var(--font-mono)",
             color: "var(--text-primary)",
-            whiteSpace: "pre-wrap",
-            overflowWrap: "break-word",
+            whiteSpace: "pre",
           }}
         >
           {children}
@@ -114,21 +156,168 @@ function fileHref(path: string): string {
   return `file://${path}`;
 }
 
+function normalizePathForCompare(path: string): string {
+  const normalized = path.replace(/\/+$/, "");
+  return normalized || "/";
+}
+
+function isPathInsideWorkspace(path: string, workspaceRootPath: string): boolean {
+  const normalizedPath = normalizePathForCompare(path);
+  const normalizedRoot = normalizePathForCompare(workspaceRootPath);
+  return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
+}
+
+function textFromReactNode(node: React.ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+  if (Array.isArray(node)) {
+    return node.map(textFromReactNode).join("");
+  }
+  return "file";
+}
+
+async function openLocalFilePath(path: string): Promise<void> {
+  try {
+    await openPath(path);
+    return;
+  } catch (openError) {
+    try {
+      await revealItemInDir(path);
+    } catch (revealError) {
+      logger.warn("[chat] Failed to open local file link", {
+        path,
+        openError,
+        revealError,
+      });
+    }
+  }
+}
+
+function WorkspaceMarkdownFileLink({
+  path,
+  children,
+}: {
+  path: string;
+  children: React.ReactNode;
+}) {
+  const fileLinkContext = useMessageFileLinkContext();
+  if (!fileLinkContext) {
+    return null;
+  }
+
+  const preferredTarget = resolvePreferredWorkspaceOpenTarget(
+    fileLinkContext.targets,
+    fileLinkContext.preferredTargetId,
+  );
+  if (!preferredTarget) {
+    return null;
+  }
+
+  const linkLabel = textFromReactNode(children);
+  const isOpening = fileLinkContext.openingPath === path;
+  const displayedTarget =
+    isOpening && fileLinkContext.openingTargetId
+      ? fileLinkContext.targets.find((target) => target.id === fileLinkContext.openingTargetId) ??
+        preferredTarget
+      : preferredTarget;
+
+  const openTarget = (targetId: string) => {
+    fileLinkContext.onOpenPath(path, targetId);
+  };
+
+  return (
+    <span className="inline-flex max-w-full items-baseline gap-0.5 align-baseline">
+      <button
+        type="button"
+        className="min-w-0 cursor-pointer break-words p-0 text-left underline hover:no-underline disabled:cursor-default disabled:opacity-70"
+        style={{ color: "var(--accent-primary)" }}
+        onClick={() => openTarget(preferredTarget.id)}
+        disabled={isOpening}
+        aria-label={`Open ${linkLabel} in ${displayedTarget.label}`}
+        data-testid="chat-workspace-file-link"
+      >
+        {children}
+      </button>
+      <DropdownMenu>
+        <Tooltip>
+          <DropdownMenuTrigger asChild>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm p-0 align-baseline transition-colors hover:bg-[var(--overlay-faint)] disabled:opacity-70"
+                style={{ color: "var(--accent-primary)" }}
+                disabled={isOpening}
+                aria-label={`Open options for ${linkLabel}`}
+                data-testid="chat-workspace-file-link-options"
+              >
+                {isOpening ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <ChevronDown className="h-3 w-3" />
+                )}
+              </button>
+            </TooltipTrigger>
+          </DropdownMenuTrigger>
+          <TooltipContent side="top" className="text-xs">
+            Open options
+          </TooltipContent>
+        </Tooltip>
+        <DropdownMenuContent align="start" className="min-w-[180px]">
+          {fileLinkContext.targets.map((target) => {
+            const Icon = target.kind === "fileManager" ? FolderOpen : Code2;
+            const selected = target.id === preferredTarget.id;
+            const label =
+              target.kind === "fileManager"
+                ? `Reveal in ${target.label}`
+                : `Open in ${target.label}`;
+            return (
+              <DropdownMenuItem
+                key={target.id}
+                onClick={() => openTarget(target.id)}
+              >
+                <Icon className="h-4 w-4" />
+                <span>{label}</span>
+                {selected ? <Check className="ml-auto h-3.5 w-3.5" /> : null}
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </span>
+  );
+}
+
 export function MarkdownLink({
   href,
   children,
   ...props
 }: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
   const localFilePath = parseLocalFileHref(href);
+  const fileLinkContext = useMessageFileLinkContext();
+  const useWorkspaceFileLink = Boolean(
+    localFilePath &&
+      fileLinkContext &&
+      fileLinkContext.targets.length > 0 &&
+      isPathInsideWorkspace(localFilePath, fileLinkContext.workspaceRootPath),
+  );
 
   const handleClick = useCallback(
     (event: React.MouseEvent<HTMLAnchorElement>) => {
       if (!localFilePath) return;
       event.preventDefault();
-      void openPath(localFilePath);
+      void openLocalFilePath(localFilePath);
     },
     [localFilePath],
   );
+
+  if (useWorkspaceFileLink && localFilePath) {
+    return (
+      <WorkspaceMarkdownFileLink path={localFilePath}>
+        {children}
+      </WorkspaceMarkdownFileLink>
+    );
+  }
 
   return (
     <a
@@ -153,18 +342,18 @@ export const markdownComponents = {
     ...props
   }: React.HTMLAttributes<HTMLElement>) => {
     const match = /language-(\w+)/.exec(className || "");
+    const content = String(children);
     const isBlock = Boolean(match);
-    if (isBlock) {
+    const isMultiline = content.includes("\n");
+    if (isBlock || isMultiline) {
       return (
-        <CodeBlock language={match?.[1]}>{String(children).trim()}</CodeBlock>
+        <CodeBlock language={match?.[1]}>{content.trim()}</CodeBlock>
       );
     }
     return (
       <code
         className="px-1 py-px rounded text-[0.75rem] break-words"
         style={{
-          /* Soft inline code chip — distinguishable as code without
-             dominating dense paragraphs that contain many spans. */
           backgroundColor: "var(--overlay-faint)",
           color: "var(--text-primary)",
           fontFamily: "var(--font-mono)",
@@ -176,11 +365,25 @@ export const markdownComponents = {
     );
   },
   pre: ({ children }: React.HTMLAttributes<HTMLPreElement>) => <>{children}</>,
-  p: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
-    <p className="leading-relaxed [&:not(:last-child)]:mb-2" style={{ maxWidth: PROSE_MAX_WIDTH }} {...props}>
-      {children}
-    </p>
-  ),
+  p: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => {
+    if (looksLikeAsciiArt(children)) {
+      const { className: _cls, style: _sty, ...rest } = props;
+      return (
+        <pre
+          className="leading-relaxed [&:not(:last-child)]:mb-2 text-[0.75rem] overflow-x-auto"
+          style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}
+          {...(rest as React.HTMLAttributes<HTMLPreElement>)}
+        >
+          {children}
+        </pre>
+      );
+    }
+    return (
+      <p className="leading-relaxed [&:not(:last-child)]:mb-2" style={{ maxWidth: PROSE_MAX_WIDTH }} {...props}>
+        {children}
+      </p>
+    );
+  },
   h1: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
     <h1 className="text-lg font-bold mb-2" style={{ maxWidth: PROSE_MAX_WIDTH }} {...props}>
       {children}
