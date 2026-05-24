@@ -1901,6 +1901,22 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
             "prompt for {agent_name} should restrict umbrella tasks to non-independent work"
         );
         assert!(
+            prompt.contains(
+                "Do not claim, activate, or complete a ledger with only one meaningful task"
+            ),
+            "prompt for {agent_name} should explain the single-task ledger progression guard"
+        );
+        assert!(
+            prompt.contains(
+                "mark that accidental task `dropped` before continuing without the ledger"
+            ),
+            "prompt for {agent_name} should explain single-step cleanup"
+        );
+        assert!(
+            prompt.contains("use `state=dropped` to clean up an accidental single-task ledger"),
+            "prompt for {agent_name} should tie cleanup to the live update tool"
+        );
+        assert!(
             prompt.contains("Do not create one umbrella task for multiple independent fixes, checks, audit items, or investigation streams"),
             "prompt for {agent_name} should forbid umbrella tasks for independent work"
         );

@@ -1139,6 +1139,7 @@ fn build_generated_agent_task_appendix(
                 "<rule>Do not create a ledger item for a single straightforward action with no meaningful intermediate state.</rule>",
                 "<rule>Do not create a ledger item for a trivial command request where the result can be returned immediately.</rule>",
                 "<rule>Do not create a ledger item for a one-location text or comment edit that needs no planning or validation beyond the edit itself.</rule>",
+                "<rule>If you already created one task for genuinely single-step work, mark that accidental task `dropped` before continuing without the ledger.</rule>",
                 "</when_not_required>",
                 "<mandatory_start_sequence>",
                 "<step>Before search, read, edit, shell, or other tool-backed work, call `list_agent_tasks`.</step>",
@@ -1153,6 +1154,7 @@ fn build_generated_agent_task_appendix(
                 "<rule>Mark a task `active` before doing substantial work on it, not after the work is already complete.</rule>",
                 "<rule>Mark completion immediately after the task is actually complete; do not batch completions at the end.</rule>",
                 "<rule>Do not mark a task `done` while tests are failing, implementation is partial, required files are missing, or unresolved blockers remain.</rule>",
+                "<rule>Do not claim, activate, or complete a ledger with only one meaningful task; decompose it into multiple concrete tasks or mark the lone accidental task `dropped`.</rule>",
                 "<rule>If you are blocked, keep the blocked task active or open and create or update a concrete blocker task when useful.</rule>",
                 "</state_rules>",
                 "<breakdown_rules>",
@@ -1180,14 +1182,14 @@ fn build_generated_agent_task_appendix(
         lines.push(format!("<rule>Use `{tool}` for concrete work items with a clear title and details; connect blockers with `blocked_by` or `blocks` when ordering matters.</rule>"));
     }
     if let Some(tool) = claim_tool {
-        lines.push(format!("<rule>Use `{tool}` before starting a ready ledger item; the backend rejects claims that still have unresolved blockers.</rule>"));
+        lines.push(format!("<rule>Use `{tool}` before starting a ready ledger item; the backend rejects claims that still have unresolved blockers or a single-task ledger. If rejected, decompose the ledger or mark the lone accidental task `dropped`.</rule>"));
     } else if let Some(tool) = update_tool {
         lines.push(format!(
             "<rule>Use `{tool}` to mark a task `active` only when its unresolved blockers are clear.</rule>"
         ));
     }
     if let Some(tool) = update_tool {
-        lines.push(format!("<rule>Use `{tool}` to update fields, owner, state, metadata, or dependency links as the plan changes.</rule>"));
+        lines.push(format!("<rule>Use `{tool}` to update fields, owner, state, metadata, or dependency links as the plan changes; use `state=dropped` to clean up an accidental single-task ledger.</rule>"));
     }
     if let Some(tool) = complete_tool {
         lines.push(format!("<rule>Use `{tool}` when the item is actually done, optionally adding concise completion metadata.</rule>"));
