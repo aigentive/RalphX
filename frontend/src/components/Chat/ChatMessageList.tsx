@@ -501,6 +501,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const footerPrevHeightRef = useRef<number>(-1); // -1 = uninitialized sentinel
     const footerMountedRef = useRef(false); // H2 fix: skip initial mount observation
     const hasFooterStreamingContentRef = useRef(false);
+    const lastRenderedRowObserverRef = useRef<ResizeObserver | null>(null);
+    const lastRenderedRowResizeRafRef = useRef<number | null>(null);
+    const lastRenderedRowPrevHeightRef = useRef<number>(-1);
+    const lastRenderedRowMountedRef = useRef(false);
     const transcriptRootRef = useRef<HTMLDivElement | null>(null);
     const initialPaintReadyFrameRef = useRef<number | null>(null);
     const initialPaintReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1009,6 +1013,24 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       [preferredScrollBehavior, scrollToTrueBottom]
     );
 
+    const scheduleStickyResizeBottomPin = useCallback(
+      (
+        rafRef: React.MutableRefObject<number | null>,
+        shouldRun?: () => boolean,
+      ) => {
+        if (rafRef.current !== null) {
+          cancelAnimationFrame(rafRef.current);
+        }
+        rafRef.current = requestAnimationFrame(() => {
+          rafRef.current = null;
+          if ((shouldRun?.() ?? true) && shouldKeepBottomPinned()) {
+            scrollToTrueBottom("auto");
+          }
+        });
+      },
+      [scrollToTrueBottom, shouldKeepBottomPinned],
+    );
+
     // Streaming auto-scroll — followOutput only fires on totalCount changes,
     // NOT on Footer height growth. Pin to the true DOM bottom while the user is
     // still inside the sticky bottom zone so footer/meta growth is included.
@@ -1221,24 +1243,13 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }
         footerPrevHeightRef.current = newHeight;
 
-        // M1 fix: Cancel-reschedule rAF — don't skip if pending.
-        // Rapid sequential resizes each get a scroll attempt; the last one wins.
-        if (footerResizeRafRef.current) {
-          cancelAnimationFrame(footerResizeRafRef.current);
-        }
-        footerResizeRafRef.current = requestAnimationFrame(() => {
-          footerResizeRafRef.current = null;
-          // Read from refs — always current, no stale closure
-          if (
-            hasFooterStreamingContentRef.current &&
-            shouldKeepBottomPinned()
-          ) {
-            scrollToTrueBottom("auto");
-          }
-        });
+        scheduleStickyResizeBottomPin(
+          footerResizeRafRef,
+          () => hasFooterStreamingContentRef.current,
+        );
       });
       footerObserverRef.current.observe(el);
-    }, [scrollToTrueBottom, shouldKeepBottomPinned]);
+    }, [scheduleStickyResizeBottomPin]);
 
     // Cleanup Footer ResizeObserver and rAF on unmount
     useEffect(() => {
@@ -1248,6 +1259,53 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         if (footerResizeRafRef.current) {
           cancelAnimationFrame(footerResizeRafRef.current);
           footerResizeRafRef.current = null;
+        }
+      };
+    }, []);
+
+    const handleLastRenderedRowRef = useCallback((el: HTMLDivElement | null) => {
+      if (lastRenderedRowObserverRef.current) {
+        lastRenderedRowObserverRef.current.disconnect();
+        lastRenderedRowObserverRef.current = null;
+      }
+      if (lastRenderedRowResizeRafRef.current !== null) {
+        cancelAnimationFrame(lastRenderedRowResizeRafRef.current);
+        lastRenderedRowResizeRafRef.current = null;
+      }
+      lastRenderedRowMountedRef.current = false;
+      lastRenderedRowPrevHeightRef.current = -1;
+
+      if (!el || typeof ResizeObserver === "undefined") {
+        return;
+      }
+
+      lastRenderedRowObserverRef.current = new ResizeObserver((entries) => {
+        const newHeight = entries[0]?.contentRect.height ?? 0;
+
+        if (!lastRenderedRowMountedRef.current) {
+          lastRenderedRowMountedRef.current = true;
+          lastRenderedRowPrevHeightRef.current = newHeight;
+          return;
+        }
+
+        if (newHeight <= lastRenderedRowPrevHeightRef.current) {
+          lastRenderedRowPrevHeightRef.current = newHeight;
+          return;
+        }
+        lastRenderedRowPrevHeightRef.current = newHeight;
+
+        scheduleStickyResizeBottomPin(lastRenderedRowResizeRafRef);
+      });
+      lastRenderedRowObserverRef.current.observe(el);
+    }, [scheduleStickyResizeBottomPin]);
+
+    useEffect(() => {
+      return () => {
+        lastRenderedRowObserverRef.current?.disconnect();
+        lastRenderedRowObserverRef.current = null;
+        if (lastRenderedRowResizeRafRef.current !== null) {
+          cancelAnimationFrame(lastRenderedRowResizeRafRef.current);
+          lastRenderedRowResizeRafRef.current = null;
         }
       };
     }, []);
@@ -1671,7 +1729,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       const composerReferences = parseComposerReferencesFromMetadata(messageMetadata);
 
       return (
-        <div className="px-3 w-full" style={contentContainerStyle}>
+        <div
+          ref={isLastTimelineItem ? handleLastRenderedRowRef : undefined}
+          className="px-3 w-full"
+          data-chat-last-rendered-row={isLastTimelineItem ? "true" : undefined}
+          style={contentContainerStyle}
+        >
           <ContentShell className={contentWidthClassName}>
             <MessageItem
               role={msg.role}
@@ -1701,7 +1764,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           </ContentShell>
         </div>
       );
-    }, [contentWidthClassName, footerContent, getTeammateInfo, handleFooterRef, providerHarness, providerSessionId, timeline.length]);
+    }, [contentWidthClassName, footerContent, getTeammateInfo, handleFooterRef, handleLastRenderedRowRef, providerHarness, providerSessionId, timeline.length]);
 
     if (isTestEnv) {
       return (
@@ -1797,15 +1860,22 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               ? getTeammateInfo(msg.sender)
               : { teammateName: null, teammateColor: null };
             const composerReferences = parseComposerReferencesFromMetadata(messageMetadata);
+            const isLastTimelineItem = index === timeline.length - 1;
 
             return (
-              <div key={`message-${msg.id}`} className="px-3 w-full" style={contentContainerStyle}>
+              <div
+                key={`message-${msg.id}`}
+                ref={isLastTimelineItem ? handleLastRenderedRowRef : undefined}
+                className="px-3 w-full"
+                data-chat-last-rendered-row={isLastTimelineItem ? "true" : undefined}
+                style={contentContainerStyle}
+              >
                 <ContentShell className={contentWidthClassName}>
                   <MessageItem
                     role={msg.role}
                     content={msg.content}
                     createdAt={msg.createdAt}
-                    isLastInList={index === timeline.length - 1}
+                    isLastInList={isLastTimelineItem}
                     toolCalls={msg.toolCalls ?? null}
                     contentBlocks={msg.contentBlocks ?? null}
                     {...(msg.attachments && { attachments: msg.attachments })}
