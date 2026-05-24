@@ -89,6 +89,10 @@ const { publicationGroupCalls } = vi.hoisted(() => ({
 const { latestProjectOrderData } = vi.hoisted(() => ({
   latestProjectOrderData: { current: null as string[] | null },
 }));
+const { runningStatesHook, publicationPollingHook } = vi.hoisted(() => ({
+  runningStatesHook: vi.fn(),
+  publicationPollingHook: vi.fn(),
+}));
 
 vi.mock("react-virtuoso", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
@@ -100,6 +104,7 @@ vi.mock("react-virtuoso", async () => {
     endReached?: (index: number) => void;
     initialScrollTop?: number;
     restoreStateFrom?: VirtuosoMockStateSnapshot;
+    rangeChanged?: (range: VirtuosoMockRange) => void;
     scrollerRef?: (node: HTMLElement | Window | null) => void;
     className?: string;
     style?: React.CSSProperties;
@@ -115,6 +120,7 @@ vi.mock("react-virtuoso", async () => {
         endReached,
         initialScrollTop,
         itemContent,
+        rangeChanged,
         restoreStateFrom,
         scrollerRef,
         style,
@@ -157,6 +163,16 @@ vi.mock("react-virtuoso", async () => {
         }),
         [data.length, testId]
       );
+
+      React.useEffect(() => {
+        if (data.length === 0) {
+          return;
+        }
+        rangeChanged?.({
+          startIndex,
+          endIndex: Math.min(endIndex, data.length - 1),
+        });
+      }, [data.length, endIndex, rangeChanged, startIndex]);
 
       React.useEffect(() => {
         virtuosoMockState.endReachedByTestId.set(testId, () => {
@@ -263,11 +279,11 @@ vi.mock("./useProjectAgentConversations", () => ({
 }));
 
 vi.mock("./useAgentSidebarRunningStates", () => ({
-  useAgentSidebarRunningStates: vi.fn(),
+  useAgentSidebarRunningStates: runningStatesHook,
 }));
 
 vi.mock("./useAgentSidebarPublicationPolling", () => ({
-  useAgentSidebarPublicationPolling: vi.fn(),
+  useAgentSidebarPublicationPolling: publicationPollingHook,
 }));
 
 vi.mock("./useArchivedConversationCounts", () => ({
@@ -669,6 +685,8 @@ describe("AgentsSidebar", () => {
     virtuosoMockState.rangeByTestId.clear();
     virtuosoMockState.resetScrollAfterMountWithoutStateByTestId.clear();
     virtuosoMockState.asyncGetStateByTestId.clear();
+    runningStatesHook.mockClear();
+    publicationPollingHook.mockClear();
     useChatStore.setState({ activeConversationIds: {}, agentStatus: {} });
     useAgentSessionStore.setState({
       expandedProjectIds: { "project-1": true, "project-2": false },
@@ -916,6 +934,109 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-session-conversation-1")).toBeInTheDocument();
     expect(screen.getByTestId("agents-session-conversation-8")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-session-conversation-9")).not.toBeInTheDocument();
+  });
+
+  it("runs project sidebar polling only for the virtual visible rows", async () => {
+    virtuosoMockState.rangeByTestId.set("agents-sidebar-session-list-project-1", {
+      startIndex: 2,
+      endIndex: 4,
+    });
+    conversationsByProject.set("project-1", {
+      data: Array.from({ length: 12 }, (_, index) =>
+        conversation({
+          id: `conversation-visible-${index + 1}`,
+          title: `Agent ${index + 1}`,
+        })
+      ),
+      total: 12,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar();
+
+    await waitFor(() => {
+      const runningCall = [...runningStatesHook.mock.calls]
+        .reverse()
+        .find(([, isVisible]) => isVisible);
+      expect(
+        runningCall?.[0].map((conversationArg: AgentConversation) => conversationArg.id)
+      ).toEqual([
+        "conversation-visible-3",
+        "conversation-visible-4",
+        "conversation-visible-5",
+      ]);
+    });
+
+    const pollingCall = [...publicationPollingHook.mock.calls]
+      .reverse()
+      .find(([, isVisible]) => isVisible);
+    expect(
+      pollingCall?.[0].map((conversationArg: AgentConversation) => conversationArg.id)
+    ).toEqual([
+      "conversation-visible-3",
+      "conversation-visible-4",
+      "conversation-visible-5",
+    ]);
+    expect(Array.from((pollingCall?.[2] as Map<string, string>).keys())).toEqual([
+      "conversation-visible-3",
+      "conversation-visible-4",
+      "conversation-visible-5",
+    ]);
+  });
+
+  it("runs publication sidebar polling only for the virtual visible rows", async () => {
+    useAgentSessionStore.setState({
+      sidebarGroupBy: "publication",
+    });
+    virtuosoMockState.rangeByTestId.set(
+      "agents-sidebar-session-list-publication-active",
+      {
+        startIndex: 1,
+        endIndex: 3,
+      }
+    );
+    conversationsByProject.set("project-1", {
+      data: Array.from({ length: 10 }, (_, index) =>
+        conversation({
+          id: `conversation-publication-visible-${index + 1}`,
+          title: `Agent ${index + 1}`,
+        })
+      ),
+      total: 10,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar();
+
+    await waitFor(() => {
+      const pollingCall = [...publicationPollingHook.mock.calls]
+        .reverse()
+        .find(([, isVisible]) => isVisible);
+      expect(
+        pollingCall?.[0].map((conversationArg: AgentConversation) => conversationArg.id)
+      ).toEqual([
+        "conversation-publication-visible-2",
+        "conversation-publication-visible-3",
+        "conversation-publication-visible-4",
+      ]);
+    });
+
+    const runningCall = [...runningStatesHook.mock.calls]
+      .reverse()
+      .find(([, isVisible]) => isVisible);
+    expect(
+      runningCall?.[0].map((conversationArg: AgentConversation) => conversationArg.id)
+    ).toEqual([
+      "conversation-publication-visible-2",
+      "conversation-publication-visible-3",
+      "conversation-publication-visible-4",
+    ]);
   });
 
   it("measures the rendered session row height for list viewport sizing", async () => {

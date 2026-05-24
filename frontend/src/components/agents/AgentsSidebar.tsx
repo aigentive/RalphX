@@ -43,6 +43,7 @@ import {
 } from "react";
 import {
   Virtuoso,
+  type ListRange,
   type StateSnapshot,
   type VirtuosoHandle,
 } from "react-virtuoso";
@@ -242,6 +243,7 @@ interface ScrollableAgentSessionListProps<T> {
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
   isLoading: boolean;
+  onVisibleRowsChange?: (rows: T[]) => void;
   renderRow: (row: T) => ReactNode;
   rows: T[];
   scrollKey: string;
@@ -254,6 +256,7 @@ function ScrollableAgentSessionList<T>({
   hasNextPage,
   isFetchingNextPage,
   isLoading,
+  onVisibleRowsChange,
   renderRow,
   rows,
   scrollKey,
@@ -267,6 +270,7 @@ function ScrollableAgentSessionList<T>({
   const lastScrollTopRef = useRef(0);
   const [scrollerVersion, setScrollerVersion] = useState(0);
   const rowResizeObserverRef = useRef<ResizeObserver | null>(null);
+  const latestVisibleRangeRef = useRef<ListRange | null>(null);
   const [measuredRowHeight, setMeasuredRowHeight] = useState<number | null>(null);
   const underflowFetchKeyRef = useRef<string | null>(null);
   const nextPageRequestRowCountRef = useRef<number | null>(null);
@@ -311,6 +315,37 @@ function ScrollableAgentSessionList<T>({
     }),
     [rowHeight]
   );
+  const visibleRowsForRange = useCallback(
+    (range: ListRange | null) => {
+      if (rowCount === 0) {
+        return [];
+      }
+      if (!range || range.endIndex < range.startIndex) {
+        return rows.slice(
+          0,
+          Math.min(rowCount, AGENTS_SIDEBAR_MAX_VISIBLE_SESSION_ROWS)
+        );
+      }
+      const startIndex = Math.max(0, range.startIndex);
+      const endIndex = Math.min(rowCount - 1, range.endIndex);
+      if (endIndex < startIndex) {
+        return [];
+      }
+      return rows.slice(startIndex, endIndex + 1);
+    },
+    [rowCount, rows]
+  );
+  const handleRangeChanged = useCallback(
+    (range: ListRange) => {
+      latestVisibleRangeRef.current = range;
+      onVisibleRowsChange?.(visibleRowsForRange(range));
+    },
+    [onVisibleRowsChange, visibleRowsForRange]
+  );
+
+  useEffect(() => {
+    onVisibleRowsChange?.(visibleRowsForRange(latestVisibleRangeRef.current));
+  }, [onVisibleRowsChange, visibleRowsForRange]);
 
   useLayoutEffect(() => {
     latestRowCountRef.current = rowCount;
@@ -596,6 +631,7 @@ function ScrollableAgentSessionList<T>({
         increaseViewportBy={increaseViewportBy}
         initialScrollTop={initialScrollTop}
         itemContent={renderItemContent}
+        rangeChanged={handleRangeChanged}
         {...(restoreStateFrom ? { restoreStateFrom } : {})}
         scrollerRef={handleScrollerRef}
         style={listStyle}
@@ -610,6 +646,21 @@ function ScrollableAgentSessionList<T>({
       )}
     </div>
   );
+}
+
+function areAgentSidebarRowsSameByConversationId(
+  left: AgentSidebarConversationRow[],
+  right: AgentSidebarConversationRow[]
+) {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index]?.conversation.id !== right[index]?.conversation.id) {
+      return false;
+    }
+  }
+  return true;
 }
 
 interface AgentsSidebarProps {
@@ -1609,6 +1660,9 @@ function PublicationStateGroup({
   const [archiveDialogConversation, setArchiveDialogConversation] =
     useState<AgentConversation | null>(null);
   const [openSessionActionsId, setOpenSessionActionsId] = useState<string | null>(null);
+  const [visibleEffectRows, setVisibleEffectRows] = useState<
+    AgentSidebarConversationRow[]
+  >([]);
 
   const openRenameDialog = useCallback((conversation: AgentConversation) => {
     setRenameDraftTitle(conversation.title || "Untitled agent");
@@ -1627,9 +1681,9 @@ function PublicationStateGroup({
   const groupLabel =
     groupQuery.group.label || getSidebarPublicationGroupLabel(publicationState);
   const totalConversationCount = groupQuery.group.total;
-  const visibleConversations = useMemo(
-    () => groupQuery.group.rows.map((row) => toProjectAgentConversation(row.conversation)),
-    [groupQuery.group.rows]
+  const visibleEffectConversations = useMemo(
+    () => visibleEffectRows.map((row) => toProjectAgentConversation(row.conversation)),
+    [visibleEffectRows]
   );
   const selectedConversationInGroup = useMemo(
     () =>
@@ -1648,18 +1702,28 @@ function PublicationStateGroup({
     publicationState,
     selectedConversationInGroup,
   ]);
-  useAgentSidebarRunningStates(visibleConversations, isSidebarVisible && expanded);
+  useAgentSidebarRunningStates(visibleEffectConversations, isSidebarVisible && expanded);
   const publicationCurrentStates = useMemo(() => {
     const map = new Map<string, string>();
-    for (const row of groupQuery.group.rows) {
+    for (const row of visibleEffectRows) {
       map.set(row.conversation.id, row.publicationState);
     }
     return map;
-  }, [groupQuery.group.rows]);
+  }, [visibleEffectRows]);
   useAgentSidebarPublicationPolling(
-    visibleConversations,
+    visibleEffectConversations,
     isSidebarVisible && expanded,
     publicationCurrentStates
+  );
+  const handleVisiblePublicationRowsChange = useCallback(
+    (rows: AgentSidebarConversationRow[]) => {
+      setVisibleEffectRows((currentRows) =>
+        areAgentSidebarRowsSameByConversationId(currentRows, rows)
+          ? currentRows
+          : rows
+      );
+    },
+    []
   );
   const getPublicationRowKey = useCallback(
     (row: AgentSidebarConversationRow) => row.conversation.id,
@@ -1867,6 +1931,7 @@ function PublicationStateGroup({
           hasNextPage={Boolean(groupQuery.hasNextPage)}
           isFetchingNextPage={Boolean(groupQuery.isFetchingNextPage)}
           isLoading={Boolean(groupQuery.isLoading)}
+          onVisibleRowsChange={handleVisiblePublicationRowsChange}
           renderRow={renderPublicationRow}
           rows={groupQuery.group.rows}
           scrollKey={publicationScrollKey}
@@ -2163,6 +2228,9 @@ function ProjectSessionGroup({
   const [archiveDialogConversation, setArchiveDialogConversation] =
     useState<AgentConversation | null>(null);
   const [openSessionActionsId, setOpenSessionActionsId] = useState<string | null>(null);
+  const [visibleEffectRows, setVisibleEffectRows] = useState<
+    AgentSidebarConversationRow[]
+  >([]);
   const expandedProjectIds = useAgentSessionStore((s) => s.expandedProjectIds);
   const setProjectExpanded = useAgentSessionStore((s) => s.setProjectExpanded);
   const expanded = searchQuery.length > 0 ? true : expandedProjectIds[project.id] ?? isFocused;
@@ -2201,21 +2269,35 @@ function ProjectSessionGroup({
     () => visibleRows.map((row) => toProjectAgentConversation(row.conversation)),
     [visibleRows]
   );
+  const visibleEffectConversations = useMemo(
+    () => visibleEffectRows.map((row) => toProjectAgentConversation(row.conversation)),
+    [visibleEffectRows]
+  );
   useAgentSidebarRunningStates(
-    visibleConversations,
+    visibleEffectConversations,
     isSidebarVisible && (showProjectHeader ? expanded : true)
   );
   const projectPublicationCurrentStates = useMemo(() => {
     const map = new Map<string, string>();
-    for (const row of visibleRows) {
+    for (const row of visibleEffectRows) {
       map.set(row.conversation.id, row.publicationState);
     }
     return map;
-  }, [visibleRows]);
+  }, [visibleEffectRows]);
   useAgentSidebarPublicationPolling(
-    visibleConversations,
+    visibleEffectConversations,
     isSidebarVisible && (showProjectHeader ? expanded : true),
     projectPublicationCurrentStates
+  );
+  const handleVisibleProjectRowsChange = useCallback(
+    (rows: AgentSidebarConversationRow[]) => {
+      setVisibleEffectRows((currentRows) =>
+        areAgentSidebarRowsSameByConversationId(currentRows, rows)
+          ? currentRows
+          : rows
+      );
+    },
+    []
   );
   const totalConversationCount = groupQuery.group.total;
   const activeRuntimeCount = visibleConversations.filter((conversation) => {
@@ -2575,6 +2657,7 @@ function ProjectSessionGroup({
               hasNextPage={Boolean(groupQuery.hasNextPage)}
               isFetchingNextPage={Boolean(groupQuery.isFetchingNextPage)}
               isLoading={Boolean(groupQuery.isLoading)}
+              onVisibleRowsChange={handleVisibleProjectRowsChange}
               renderRow={renderProjectRow}
               rows={visibleRows}
               scrollKey={projectScrollKey}
