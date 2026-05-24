@@ -118,6 +118,38 @@ function OptionChip({
   );
 }
 
+function PlanApprovalActionButton({
+  action,
+}: {
+  action: NonNullable<QuestionInputBannerProps["planApprovalAction"]>;
+}) {
+  const isDisabled = Boolean(action.disabled || action.isPending);
+
+  return (
+    <button
+      type="button"
+      onClick={action.onClick}
+      disabled={isDisabled}
+      data-testid="question-plan-approval-action"
+      className="inline-flex h-7 flex-shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[0.6875rem] font-semibold transition-colors"
+      style={{
+        border: "1px solid var(--accent-border)",
+        background: "var(--accent-muted)",
+        color: "var(--accent-primary)",
+        cursor: isDisabled ? "not-allowed" : "pointer",
+        opacity: isDisabled ? 0.65 : 1,
+      }}
+    >
+      {action.isPending ? (
+        <Loader2 className="h-3 w-3 animate-spin" />
+      ) : (
+        <CheckCircle2 className="h-3 w-3" />
+      )}
+      {action.isPending ? "Approving..." : action.label}
+    </button>
+  );
+}
+
 // ============================================================================
 // Main Component
 // ============================================================================
@@ -228,6 +260,10 @@ export function QuestionInputBanner({
               {answeredValue}
             </span>
 
+            {planApprovalAction && (
+              <PlanApprovalActionButton action={planApprovalAction} />
+            )}
+
             {onDismissAnswered && (
               <button
                 type="button"
@@ -281,34 +317,7 @@ export function QuestionInputBanner({
               </span>
 
               {planApprovalAction && (
-                <button
-                  type="button"
-                  onClick={planApprovalAction.onClick}
-                  disabled={planApprovalAction.disabled || planApprovalAction.isPending}
-                  className="inline-flex h-7 flex-shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[0.6875rem] font-semibold transition-colors"
-                  style={{
-                    border: "1px solid var(--accent-border)",
-                    background: "var(--accent-muted)",
-                    color: "var(--accent-primary)",
-                    cursor:
-                      planApprovalAction.disabled || planApprovalAction.isPending
-                        ? "not-allowed"
-                        : "pointer",
-                    opacity:
-                      planApprovalAction.disabled || planApprovalAction.isPending
-                        ? 0.65
-                        : 1,
-                  }}
-                >
-                  {planApprovalAction.isPending ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <CheckCircle2 className="h-3 w-3" />
-                  )}
-                  {planApprovalAction.isPending
-                    ? "Approving..."
-                    : planApprovalAction.label}
-                </button>
+                <PlanApprovalActionButton action={planApprovalAction} />
               )}
 
               {/* Expand/collapse button - only shown when content is near clipping threshold */}

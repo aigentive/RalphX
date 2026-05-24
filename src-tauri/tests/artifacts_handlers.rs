@@ -454,6 +454,13 @@ async fn test_get_session_plan_returns_own_plan_as_not_inherited() {
         Some(false),
         "Own plan should have is_inherited = false"
     );
+    assert_eq!(plan.artifact_type, "specification");
+    assert_eq!(plan.content_type, "inline");
+    assert_eq!(plan.content, "Child's own content");
+    assert!(
+        plan.derived_from.is_empty(),
+        "HTTP artifact responses should serialize an empty derived_from array, not null"
+    );
 }
 
 // ============================================================

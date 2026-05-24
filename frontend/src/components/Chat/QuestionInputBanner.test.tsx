@@ -166,6 +166,26 @@ describe("QuestionInputBanner", () => {
       expect(screen.getByText("Answered:")).toBeInTheDocument();
     });
 
+    it("keeps the plan approval action visible in answered state", async () => {
+      const user = userEvent.setup();
+      const onApprovePlan = vi.fn();
+
+      render(
+        <QuestionInputBanner
+          {...defaultProps}
+          question={null}
+          answeredValue="React"
+          planApprovalAction={{
+            label: "Approve Plan",
+            onClick: onApprovePlan,
+          }}
+        />
+      );
+
+      await user.click(screen.getByTestId("question-plan-approval-action"));
+      expect(onApprovePlan).toHaveBeenCalledTimes(1);
+    });
+
     it("does not render question text or chips in answered state", () => {
       render(
         <QuestionInputBanner

@@ -38,6 +38,10 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base, BaseResolutionResult, BaseStatus,
 };
+use crate::application::agent_planning_session_titles::{
+    hydrate_agent_conversation_planning_session_title,
+    sync_linked_planning_session_title_from_conversation,
+};
 use crate::application::agent_workspace_bridge::{
     wake_agent_workspace_for_bridge_events,
     wake_agent_workspace_for_bridge_events_with_service_factory,
@@ -522,6 +526,9 @@ async fn ensure_plan_workspace_planning_session_link(
         .spawn_reason("agent_plan_mode")
         .analysis(analysis)
         .build();
+    let session = hydrate_agent_conversation_planning_session_title(state, session)
+        .await
+        .map_err(|error| error.to_string())?;
     let session = state
         .ideation_session_repo
         .create(session)
@@ -531,6 +538,42 @@ async fn ensure_plan_workspace_planning_session_link(
     workspace.linked_ideation_session_id = Some(session.id);
     workspace.linked_plan_branch_id = None;
     workspace.updated_at = chrono::Utc::now();
+    Ok(true)
+}
+
+async fn ensure_plan_workspace_planning_session_link_for_send(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Result<bool, String> {
+    let Some(mut workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(false);
+    };
+
+    if workspace.mode != AgentConversationWorkspaceMode::Plan {
+        return Ok(false);
+    }
+
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
+
+    if !ensure_plan_workspace_planning_session_link(state, &project, &mut workspace).await? {
+        return Ok(false);
+    }
+
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(true)
 }
 
@@ -3114,25 +3157,13 @@ pub async fn switch_agent_conversation_mode_for_state(
                 && (workspace.linked_ideation_session_id.is_some()
                     || workspace.linked_plan_branch_id.is_some())
                 && !preserve_planning_session_link;
-            let mut changed = workspace.mode != target_mode || should_detach_inactive_owner;
+            let changed = workspace.mode != target_mode || should_detach_inactive_owner;
             if workspace.mode != target_mode {
                 workspace.mode = target_mode;
             }
             if should_detach_inactive_owner {
                 workspace.linked_ideation_session_id = None;
                 workspace.linked_plan_branch_id = None;
-            }
-            if target_mode == AgentConversationWorkspaceMode::Plan {
-                let project_id = ProjectId::from_string(conversation.context_id.clone());
-                let project = state
-                    .project_repo
-                    .get_by_id(&project_id)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| format!("Project not found: {}", conversation.context_id))?;
-                changed |=
-                    ensure_plan_workspace_planning_session_link(state, &project, &mut workspace)
-                        .await?;
             }
             if changed {
                 workspace.updated_at = chrono::Utc::now();
@@ -3175,9 +3206,6 @@ pub async fn switch_agent_conversation_mode_for_state(
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-                let mut workspace = workspace;
-                ensure_plan_workspace_planning_session_link(state, &project, &mut workspace)
-                    .await?;
                 Some(
                     state
                         .agent_conversation_workspace_repo
@@ -3417,6 +3445,15 @@ pub async fn send_agent_message(
     }
     if let Some(conversation_id) = conversation_id_override.as_ref() {
         invalidate_agent_workspace_pr_description_cache(conversation_id);
+        if context_type == ChatContextType::Project
+            && ensure_plan_workspace_planning_session_link_for_send(state.inner(), conversation_id)
+                .await?
+        {
+            let _ = app.emit(
+                "agent:workspace_changed",
+                serde_json::json!({ "conversation_id": conversation_id.as_str() }),
+            );
+        }
     }
     let attachment_ids = parse_chat_attachment_ids(&input.attachment_ids)?;
 
@@ -6901,6 +6938,9 @@ pub async fn update_agent_conversation_title(
         .update_title(&conversation_id, &title)
         .await
         .map_err(|e| e.to_string())?;
+    sync_linked_planning_session_title_from_conversation(state.inner(), &conversation_id, &title)
+        .await
+        .map_err(|e| e.to_string())?;
 
     let conversation = state
         .chat_conversation_repo
@@ -6934,6 +6974,7 @@ mod tests {
         build_agent_workspace_publish_repair_message_for_target,
         build_agent_workspace_repair_message_for_target, cached_agent_workspace_freshness,
         create_agent_conversation, emit_agent_conversation_fork_events,
+        ensure_plan_workspace_planning_session_link_for_send,
         existing_pr_retarget_block_reason, fork_agent_conversation,
         fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
         get_agent_conversation_summary_for_app_state,
@@ -10857,7 +10898,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn switching_to_plan_creates_linked_planning_session_and_edit_preserves_it() {
+    async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_preserves_it() {
         let state = AppState::new_test();
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let repo_path = temp.path().join("repo");
@@ -10880,6 +10921,7 @@ mod tests {
             .expect("project persisted");
         let mut conversation = ChatConversation::new_project(project_id);
         conversation.id = conversation_id.clone();
+        conversation.title = Some("Review CLI gaps".to_string());
         conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
         state
             .chat_conversation_repo
@@ -10905,13 +10947,34 @@ mod tests {
             .as_ref()
             .expect("plan workspace should be returned");
         assert_eq!(plan_workspace.mode, "plan");
-        let session_id = IdeationSessionId::from_string(
-            plan_workspace
-                .linked_ideation_session_id
-                .as_ref()
-                .expect("plan workspace should link a planning session")
-                .clone(),
+        assert!(
+            plan_workspace.linked_ideation_session_id.is_none(),
+            "idle Plan mode should not create an empty planning session"
         );
+        assert!(plan_workspace.linked_plan_branch_id.is_none());
+
+        let created_for_send =
+            ensure_plan_workspace_planning_session_link_for_send(&state, &conversation_id)
+                .await
+                .expect("first Plan send should ensure a planning session");
+        assert!(created_for_send);
+        let second_ensure =
+            ensure_plan_workspace_planning_session_link_for_send(&state, &conversation_id)
+                .await
+                .expect("existing planning session should be reused");
+        assert!(!second_ensure);
+
+        let plan_workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup succeeds")
+            .expect("plan workspace should persist");
+        let session_id = plan_workspace
+            .linked_ideation_session_id
+            .as_ref()
+            .expect("first Plan send should link a planning session")
+            .clone();
         let session = state
             .ideation_session_repo
             .get_by_id(&session_id)
@@ -10920,6 +10983,8 @@ mod tests {
             .expect("planning session should exist");
         let conversation_id_string = conversation_id.as_str();
         assert_eq!(session.session_flow, IdeationSessionFlow::Planning);
+        assert_eq!(session.title.as_deref(), Some("Review CLI gaps"));
+        assert_eq!(session.title_source.as_deref(), Some("auto"));
         assert_eq!(
             session.source_context_type.as_deref(),
             Some("agent_conversation")
@@ -10954,7 +11019,7 @@ mod tests {
         assert_eq!(edit_workspace.mode, "edit");
         assert_eq!(
             edit_workspace.linked_ideation_session_id.as_deref(),
-            plan_workspace.linked_ideation_session_id.as_deref()
+            Some(session_id.as_str())
         );
         assert!(edit_workspace.linked_plan_branch_id.is_none());
     }

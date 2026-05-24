@@ -903,10 +903,15 @@ pub struct ArtifactResponse {
     pub id: String,
     pub artifact_type: String,
     pub name: String,
+    pub content_type: String,
     pub content: String,
     pub version: u32,
     pub created_at: String,
     pub created_by: String,
+    pub bucket_id: Option<String>,
+    pub task_id: Option<String>,
+    pub process_id: Option<String>,
+    pub derived_from: Vec<String>,
     /// The artifact ID that was replaced (only set on update responses)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_artifact_id: Option<String>,
@@ -936,19 +941,31 @@ pub struct ArtifactResponse {
 
 impl From<Artifact> for ArtifactResponse {
     fn from(artifact: Artifact) -> Self {
-        let content = match &artifact.content {
-            ArtifactContent::Inline { text } => text.clone(),
-            ArtifactContent::File { path } => format!("[File: {}]", path),
+        let (content_type, content) = match &artifact.content {
+            ArtifactContent::Inline { text } => ("inline".to_string(), text.clone()),
+            ArtifactContent::File { path } => ("file".to_string(), path.clone()),
         };
 
         Self {
             id: artifact.id.to_string(),
-            artifact_type: format!("{:?}", artifact.artifact_type),
+            artifact_type: artifact.artifact_type.to_string(),
             name: artifact.name,
+            content_type,
             content,
             version: artifact.metadata.version,
             created_at: artifact.metadata.created_at.to_rfc3339(),
             created_by: artifact.metadata.created_by.clone(),
+            bucket_id: artifact.bucket_id.map(|id| id.as_str().to_string()),
+            task_id: artifact.metadata.task_id.map(|id| id.as_str().to_string()),
+            process_id: artifact
+                .metadata
+                .process_id
+                .map(|id| id.as_str().to_string()),
+            derived_from: artifact
+                .derived_from
+                .iter()
+                .map(|id| id.as_str().to_string())
+                .collect(),
             previous_artifact_id: None,
             session_id: None,
             is_inherited: None,

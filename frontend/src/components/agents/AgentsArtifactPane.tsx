@@ -355,8 +355,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         : artifactApi.get(planArtifactId!),
     enabled:
       shouldLoadIdeationData &&
-      !!planArtifactId &&
-      (!shouldUseSessionPlanQuery || !!attachedSessionId),
+      (shouldUseSessionPlanQuery ? !!attachedSessionId : !!planArtifactId),
     staleTime: 5_000,
   });
   const planArtifact = planArtifactQuery.data ?? null;
@@ -365,8 +364,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     effectiveActiveTab === "plan" &&
     !planArtifact &&
     !!attachedSessionId &&
-    ((!!planArtifactId && planArtifactQuery.isFetching) ||
-      (!planArtifactId && sessionQuery.isFetching));
+    (planArtifactQuery.isFetching || sessionQuery.isFetching);
   const verificationQuery = useVerificationStatus(
     shouldLoadVerificationData ? attachedSessionId ?? undefined : undefined,
   );

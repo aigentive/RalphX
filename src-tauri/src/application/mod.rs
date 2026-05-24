@@ -6,6 +6,7 @@ pub mod agent_lane_resolution;
 pub mod agent_conversation_fork;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
+pub(crate) mod agent_planning_session_titles;
 pub mod agent_workspace_pr_description;
 pub mod agent_workspace_external_pr_reconciliation;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
@@ -212,6 +213,8 @@ mod publish_resilience_tests;
 mod session_export_service_tests;
 #[cfg(test)]
 mod session_namer_agent_tests;
+#[cfg(test)]
+mod agent_planning_session_titles_tests;
 #[cfg(test)]
 mod session_namer_prompt_tests;
 #[cfg(test)]
