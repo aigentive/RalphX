@@ -1371,7 +1371,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           const el = scrollerElRef.current;
           if (!el) return;
           const delta = el.scrollHeight - el.clientHeight - el.scrollTop;
-          if (delta > AT_BOTTOM_THRESHOLD) {
+          if (delta > VISUAL_BOTTOM_EPSILON_PX) {
             scrollToTrueBottom("auto");
           }
         };
@@ -1402,6 +1402,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
       observer.observe(scroller);
 
+      // ResizeObserver can miss the initial virtual-list settlement when the
+      // scroller element itself does not resize. Keep the old settled-resize
+      // path, but also run the first bottom pin on the normal markdown delay.
+      const fallbackTimer = setTimeout(doScroll, MARKDOWN_RENDER_DELAY_MS);
+
       // Safety timeout: 3s max — disconnect + force scroll if debounce never settles
       const safetyTimer = setTimeout(() => {
         observer.disconnect();
@@ -1411,6 +1416,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       return () => {
         observer.disconnect();
         clearTimeout(debounceTimer);
+        clearTimeout(fallbackTimer);
         clearTimeout(safetyTimer);
         verifyTimers.forEach(clearTimeout);
       };
