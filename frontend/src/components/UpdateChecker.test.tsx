@@ -490,20 +490,23 @@ describe("UpdateChecker", () => {
     const toastUi = renderToastById("update-available");
     fireEvent.click(toastUi.getByTestId("update-release-notes-button"));
 
-    // Wait for dialog to fully load its version list
-    for (let i = 0; i < 10; i++) await flushAsyncWork();
+    await act(async () => {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    });
 
     expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
 
+    const updateButton = screen.getByTestId("release-notes-update-button");
+    expect(updateButton).toBeInTheDocument();
+
     mocks.check.mockResolvedValueOnce(versioned);
 
-    const updateButton = screen.queryByTestId("release-notes-update-button");
-    if (updateButton) {
+    await act(async () => {
       fireEvent.click(updateButton);
-      await flushAsyncWork();
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+    });
 
-      expect(mocks.check).toHaveBeenCalledTimes(2);
-    }
+    expect(mocks.check).toHaveBeenCalledTimes(2);
   });
 
   it("handleUpdateFromDialog shows up-to-date toast when no update available", async () => {
@@ -518,22 +521,24 @@ describe("UpdateChecker", () => {
     const toastUi = renderToastById("update-available");
     fireEvent.click(toastUi.getByTestId("update-release-notes-button"));
 
-    for (let i = 0; i < 10; i++) await flushAsyncWork();
+    await act(async () => {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    });
 
     expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
 
     mocks.check.mockResolvedValueOnce(null);
 
-    const updateButton = screen.queryByTestId("release-notes-update-button");
-    if (updateButton) {
+    const updateButton = screen.getByTestId("release-notes-update-button");
+    await act(async () => {
       fireEvent.click(updateButton);
-      await flushAsyncWork();
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+    });
 
-      expect(mocks.toastSuccess).toHaveBeenCalledWith(
-        "RalphX is up to date.",
-        expect.objectContaining({ id: "update-check-result" }),
-      );
-    }
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      "RalphX is up to date.",
+      expect.objectContaining({ id: "update-check-result" }),
+    );
   });
 
   it("handleUpdateFromDialog shows error toast when check fails", async () => {
@@ -548,22 +553,24 @@ describe("UpdateChecker", () => {
     const toastUi = renderToastById("update-available");
     fireEvent.click(toastUi.getByTestId("update-release-notes-button"));
 
-    for (let i = 0; i < 10; i++) await flushAsyncWork();
+    await act(async () => {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    });
 
     expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
 
     mocks.check.mockRejectedValueOnce(new Error("network error"));
 
-    const updateButton = screen.queryByTestId("release-notes-update-button");
-    if (updateButton) {
+    const updateButton = screen.getByTestId("release-notes-update-button");
+    await act(async () => {
       fireEvent.click(updateButton);
-      await flushAsyncWork();
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+    });
 
-      expect(mocks.toastError).toHaveBeenCalledWith(
-        "Failed to check for updates.",
-        expect.objectContaining({ id: "update-check-result" }),
-      );
-    }
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "Failed to check for updates.",
+      expect.objectContaining({ id: "update-check-result" }),
+    );
   });
 
   it("opens release notes dialog from native menu event", async () => {

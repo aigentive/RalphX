@@ -344,4 +344,32 @@ describe("ReleaseNotesDialog", () => {
 
     expect(screen.getByRole("heading", { name: /v0\.9\.0/ })).toBeInTheDocument();
   });
+
+  it("falls back to GitHub body when clicking a version whose bundled fetch fails", async () => {
+    mocks.getReleaseNotesForVersion
+      .mockResolvedValueOnce({
+        version: "0.9.0",
+        body: "# Release 0.9.0\n\nBundled",
+        source: "bundled_resource",
+      })
+      .mockRejectedValueOnce(new Error("disk error"));
+
+    mocks.fetchReleaseMetadata.mockResolvedValue(
+      makeMetadata([
+        { version: "0.9.0", publishedAt: "2026-05-01T00:00:00Z", body: "GH 0.9.0" },
+        { version: "0.8.0", publishedAt: "2026-04-15T00:00:00Z", body: "GH fallback for 0.8.0" },
+      ]),
+    );
+
+    render(<ReleaseNotesDialog open={true} onClose={vi.fn()} />);
+    await flushAll();
+
+    expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("v0.8.0"));
+    await flushAll();
+
+    const body = screen.getByTestId("release-notes-dialog-body");
+    expect(body.textContent).toContain("GH fallback for 0.8.0");
+  });
 });
