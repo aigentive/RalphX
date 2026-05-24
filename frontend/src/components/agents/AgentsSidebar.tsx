@@ -29,7 +29,23 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
+import {
+  Virtuoso,
+  type StateSnapshot,
+  type VirtuosoHandle,
+} from "react-virtuoso";
 
 import { Button } from "@/components/ui/button";
 import { useConfirmation } from "@/hooks/useConfirmation";
@@ -97,6 +113,98 @@ import { useAgentSidebarRunningStates } from "./useAgentSidebarRunningStates";
 import { useArchivedConversationCounts } from "./useArchivedConversationCounts";
 
 const AGENTS_SEARCH_DEBOUNCE_MS = 180;
+const AGENTS_SIDEBAR_MAX_VISIBLE_SESSION_ROWS = 8;
+const AGENTS_SIDEBAR_FALLBACK_SESSION_ROW_PX = 46;
+const AGENTS_SIDEBAR_SCROLL_MEMORY_LIMIT = 120;
+
+interface AgentSidebarSessionScrollMemory {
+  rowCount?: number;
+  scrollTop: number;
+  stateSnapshot?: StateSnapshot;
+}
+
+interface AgentSidebarSessionScrollUpdate {
+  rowCount?: number;
+  stateSnapshot?: StateSnapshot;
+}
+
+const agentSidebarSessionScrollPositions = new Map<
+  string,
+  AgentSidebarSessionScrollMemory
+>();
+const agentSidebarSessionScrollListeners = new Set<() => void>();
+
+function emitAgentSidebarSessionScrollMemoryChange() {
+  for (const listener of agentSidebarSessionScrollListeners) {
+    listener();
+  }
+}
+
+function subscribeAgentSidebarSessionScrollMemory(listener: () => void) {
+  agentSidebarSessionScrollListeners.add(listener);
+  return () => {
+    agentSidebarSessionScrollListeners.delete(listener);
+  };
+}
+
+function rememberAgentSidebarSessionScroll(
+  scrollKey: string,
+  scrollTop: number,
+  update: AgentSidebarSessionScrollUpdate = {}
+) {
+  const previous = agentSidebarSessionScrollPositions.get(scrollKey);
+  const nextScrollTop = Math.max(0, scrollTop);
+  const baseStateSnapshot = update.stateSnapshot ?? previous?.stateSnapshot;
+  const nextStateSnapshot = baseStateSnapshot
+    ? {
+        ...baseStateSnapshot,
+        scrollTop: nextScrollTop,
+      }
+    : undefined;
+  const nextRowCount = update.rowCount ?? previous?.rowCount;
+  const nextMemory: AgentSidebarSessionScrollMemory = {
+    scrollTop: nextScrollTop,
+  };
+  if (typeof nextRowCount === "number") {
+    nextMemory.rowCount = nextRowCount;
+  }
+  if (nextStateSnapshot) {
+    nextMemory.stateSnapshot = nextStateSnapshot;
+  }
+  const previousRowCount = previous?.rowCount ?? 0;
+  const nextStoredRowCount = nextMemory.rowCount ?? 0;
+  let rowCountChanged = previousRowCount !== nextStoredRowCount;
+  agentSidebarSessionScrollPositions.delete(scrollKey);
+  agentSidebarSessionScrollPositions.set(scrollKey, nextMemory);
+  if (agentSidebarSessionScrollPositions.size > AGENTS_SIDEBAR_SCROLL_MEMORY_LIMIT) {
+    const oldestKey = agentSidebarSessionScrollPositions.keys().next().value;
+    if (oldestKey) {
+      const oldestMemory = agentSidebarSessionScrollPositions.get(oldestKey);
+      agentSidebarSessionScrollPositions.delete(oldestKey);
+      rowCountChanged = rowCountChanged || Boolean(oldestMemory?.rowCount);
+    }
+  }
+  if (!rowCountChanged) {
+    return;
+  }
+  emitAgentSidebarSessionScrollMemoryChange();
+}
+
+function getRememberedAgentSidebarSessionRowCount(scrollKey: string) {
+  return agentSidebarSessionScrollPositions.get(scrollKey)?.rowCount ?? 0;
+}
+
+function useRememberedAgentSidebarSessionRowCount(scrollKey: string) {
+  const getSnapshot = useCallback(
+    () => getRememberedAgentSidebarSessionRowCount(scrollKey),
+    [scrollKey]
+  );
+  return useSyncExternalStore(
+    subscribeAgentSidebarSessionScrollMemory,
+    getSnapshot,
+    () => 0
+  );
+}
 
 const PROJECT_SORT_LABELS: Record<AgentProjectSort, string> = {
   latest: "Latest",
@@ -127,6 +235,382 @@ const STATIC_RECENT_RUNS = [
     time: "yesterday",
   },
 ];
+
+interface ScrollableAgentSessionListProps<T> {
+  fetchNextPage: () => Promise<unknown>;
+  getItemKey: (row: T) => string;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  isLoading: boolean;
+  renderRow: (row: T) => ReactNode;
+  rows: T[];
+  scrollKey: string;
+  testId: string;
+}
+
+function ScrollableAgentSessionList<T>({
+  fetchNextPage,
+  getItemKey,
+  hasNextPage,
+  isFetchingNextPage,
+  isLoading,
+  renderRow,
+  rows,
+  scrollKey,
+  testId,
+}: ScrollableAgentSessionListProps<T>) {
+  const scrollerRef = useRef<HTMLElement | null>(null);
+  const virtuosoRef = useRef<VirtuosoHandle | null>(null);
+  const latestRowCountRef = useRef(0);
+  const latestScrollKeyRef = useRef(scrollKey);
+  const lastScrollMemoryKeyRef = useRef<string | null>(null);
+  const lastScrollTopRef = useRef(0);
+  const [scrollerVersion, setScrollerVersion] = useState(0);
+  const rowResizeObserverRef = useRef<ResizeObserver | null>(null);
+  const [measuredRowHeight, setMeasuredRowHeight] = useState<number | null>(null);
+  const underflowFetchKeyRef = useRef<string | null>(null);
+  const nextPageRequestRowCountRef = useRef<number | null>(null);
+  const rowCount = rows.length;
+  const rowHeight =
+    measuredRowHeight ?? AGENTS_SIDEBAR_FALLBACK_SESSION_ROW_PX;
+  const rememberedScroll = useMemo(
+    () => agentSidebarSessionScrollPositions.get(scrollKey) ?? null,
+    [scrollKey]
+  );
+  const initialScrollTop = rememberedScroll?.scrollTop ?? 0;
+  const rememberedRowCount = rememberedScroll?.rowCount ?? 0;
+  const restoreStateFrom = useMemo<StateSnapshot | undefined>(() => {
+    if (!rememberedScroll?.stateSnapshot) {
+      return undefined;
+    }
+    if (rememberedRowCount > 0 && rowCount < rememberedRowCount) {
+      return undefined;
+    }
+    return {
+      ...rememberedScroll.stateSnapshot,
+      scrollTop: rememberedScroll.scrollTop,
+    };
+  }, [rememberedRowCount, rememberedScroll, rowCount]);
+  const visibleRowSlots = Math.min(
+    Math.max(rowCount, isLoading ? 1 : 0),
+    AGENTS_SIDEBAR_MAX_VISIBLE_SESSION_ROWS
+  );
+  const viewportHeight = visibleRowSlots * rowHeight;
+  const listStyle = useMemo<CSSProperties>(
+    () => ({
+      height: `${viewportHeight}px`,
+      maxHeight: `${AGENTS_SIDEBAR_MAX_VISIBLE_SESSION_ROWS * rowHeight}px`,
+      overflowX: "hidden",
+    }),
+    [rowHeight, viewportHeight]
+  );
+  const increaseViewportBy = useMemo(
+    () => ({
+      bottom: rowHeight * 2,
+      top: rowHeight,
+    }),
+    [rowHeight]
+  );
+
+  useLayoutEffect(() => {
+    latestRowCountRef.current = rowCount;
+    latestScrollKeyRef.current = scrollKey;
+    if (lastScrollMemoryKeyRef.current !== scrollKey) {
+      lastScrollMemoryKeyRef.current = scrollKey;
+      lastScrollTopRef.current = initialScrollTop;
+    }
+  }, [initialScrollTop, rowCount, scrollKey]);
+
+  const saveLatestScrollMemory = useCallback(
+    (stateSnapshot?: StateSnapshot) => {
+      const latestRowCount = latestRowCountRef.current;
+      if (latestRowCount === 0) {
+        return;
+      }
+      rememberAgentSidebarSessionScroll(
+        latestScrollKeyRef.current,
+        lastScrollTopRef.current,
+        {
+          rowCount: latestRowCount,
+          ...(stateSnapshot ? { stateSnapshot } : {}),
+        }
+      );
+    },
+    []
+  );
+  const captureCurrentScrollTop = useCallback(() => {
+    const scrollTop = scrollerRef.current?.scrollTop;
+    if (typeof scrollTop !== "number") {
+      return;
+    }
+    if (scrollTop > 0 || lastScrollTopRef.current === 0) {
+      lastScrollTopRef.current = scrollTop;
+    }
+  }, []);
+
+  const fetchNextPageIfNeeded = useCallback(() => {
+    if (!hasNextPage || isFetchingNextPage) {
+      return;
+    }
+    if (nextPageRequestRowCountRef.current === rowCount) {
+      return;
+    }
+    nextPageRequestRowCountRef.current = rowCount;
+    void Promise.resolve(fetchNextPage()).catch(() => {
+      if (nextPageRequestRowCountRef.current === rowCount) {
+        nextPageRequestRowCountRef.current = null;
+      }
+    });
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage, rowCount]);
+
+  useEffect(() => {
+    if (
+      nextPageRequestRowCountRef.current !== null &&
+      rowCount > nextPageRequestRowCountRef.current
+    ) {
+      nextPageRequestRowCountRef.current = null;
+    }
+  }, [rowCount]);
+
+  const handleScrollerRef = useCallback((node: HTMLElement | Window | null) => {
+    const element = node instanceof HTMLElement ? node : null;
+    if (scrollerRef.current === element) {
+      return;
+    }
+    if (scrollerRef.current) {
+      const previousScrollTop = scrollerRef.current.scrollTop;
+      if (previousScrollTop > 0 || lastScrollTopRef.current === 0) {
+        lastScrollTopRef.current = previousScrollTop;
+      }
+    }
+    scrollerRef.current = element;
+    if (element) {
+      const nextScrollTop = element.scrollTop;
+      if (nextScrollTop > 0 || lastScrollTopRef.current === 0) {
+        lastScrollTopRef.current = nextScrollTop;
+      }
+    }
+    setScrollerVersion((version) => version + 1);
+  }, []);
+  const handleMeasuredRowRef = useCallback((node: HTMLDivElement | null) => {
+    rowResizeObserverRef.current?.disconnect();
+    rowResizeObserverRef.current = null;
+
+    if (!node) {
+      return;
+    }
+
+    const updateRowHeight = () => {
+      const measuredHeight = node.getBoundingClientRect().height || node.offsetHeight;
+      if (measuredHeight <= 0) {
+        return;
+      }
+      const nextHeight = Math.ceil(measuredHeight);
+      setMeasuredRowHeight((currentHeight) =>
+        currentHeight === nextHeight ? currentHeight : nextHeight
+      );
+    };
+
+    updateRowHeight();
+
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(updateRowHeight);
+    observer.observe(node);
+    rowResizeObserverRef.current = observer;
+  }, []);
+
+  const handleEndReached = useCallback(
+    (index: number) => {
+      if (index >= rowCount - 1) {
+        fetchNextPageIfNeeded();
+      }
+    },
+    [fetchNextPageIfNeeded, rowCount]
+  );
+  const computeItemKey = useCallback(
+    (_: number, row: T) => getItemKey(row),
+    [getItemKey]
+  );
+  const renderItemContent = useCallback(
+    (index: number, row: T) => (
+      <div
+        ref={index === 0 ? handleMeasuredRowRef : undefined}
+        className="pb-0.5"
+        data-agent-sidebar-row-slot="true"
+      >
+        {renderRow(row)}
+      </div>
+    ),
+    [handleMeasuredRowRef, renderRow]
+  );
+
+  useEffect(() => {
+    return () => {
+      rowResizeObserverRef.current?.disconnect();
+      rowResizeObserverRef.current = null;
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    return () => {
+      captureCurrentScrollTop();
+      saveLatestScrollMemory();
+    };
+  }, [captureCurrentScrollTop, saveLatestScrollMemory]);
+
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    const virtuoso = virtuosoRef.current;
+    if (!scroller) {
+      return;
+    }
+
+    let frameId: number | null = null;
+    const saveScroll = () => {
+      saveLatestScrollMemory();
+    };
+    const handleScroll = () => {
+      lastScrollTopRef.current = scroller.scrollTop;
+      if (typeof window === "undefined") {
+        saveScroll();
+        return;
+      }
+      if (frameId !== null) {
+        return;
+      }
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        saveScroll();
+      });
+    };
+
+    scroller.addEventListener("scroll", handleScroll, { passive: true });
+
+    return () => {
+      if (frameId !== null && typeof window !== "undefined") {
+        window.cancelAnimationFrame(frameId);
+      }
+      saveLatestScrollMemory();
+      if (virtuoso) {
+        virtuoso.getState((stateSnapshot) => {
+          saveLatestScrollMemory(stateSnapshot);
+        });
+      }
+      scroller.removeEventListener("scroll", handleScroll);
+    };
+  }, [saveLatestScrollMemory, scrollerVersion]);
+
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || rowCount === 0) {
+      return;
+    }
+
+    const savedScrollTop =
+      agentSidebarSessionScrollPositions.get(scrollKey)?.scrollTop ?? 0;
+    const restoreScroll = () => {
+      const nextScrollTop = Math.max(0, savedScrollTop);
+      scroller.scrollTop = nextScrollTop;
+      virtuosoRef.current?.scrollTo?.({ top: nextScrollTop });
+    };
+
+    if (typeof window === "undefined") {
+      restoreScroll();
+      return;
+    }
+
+    restoreScroll();
+    let secondFrameId: number | null = null;
+    const frameId = window.requestAnimationFrame(() => {
+      restoreScroll();
+      secondFrameId = window.requestAnimationFrame(restoreScroll);
+    });
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      if (secondFrameId !== null) {
+        window.cancelAnimationFrame(secondFrameId);
+      }
+    };
+  }, [rowCount, scrollKey, scrollerVersion, viewportHeight]);
+
+  useEffect(() => {
+    if (rowCount === 0 || rowCount >= rememberedRowCount) {
+      return;
+    }
+    fetchNextPageIfNeeded();
+  }, [fetchNextPageIfNeeded, rememberedRowCount, rowCount]);
+
+  useEffect(() => {
+    if (!hasNextPage || isFetchingNextPage || rowCount === 0) {
+      return;
+    }
+
+    const scroller = scrollerRef.current;
+    if (!scroller || scroller.clientHeight <= 0) {
+      return;
+    }
+
+    const fetchKey = `${testId}:${rowCount}`;
+    if (underflowFetchKeyRef.current === fetchKey) {
+      return;
+    }
+
+    if (scroller.scrollHeight <= scroller.clientHeight + 1) {
+      underflowFetchKeyRef.current = fetchKey;
+      fetchNextPageIfNeeded();
+    }
+  }, [
+    fetchNextPageIfNeeded,
+    hasNextPage,
+    isFetchingNextPage,
+    rowCount,
+    scrollerVersion,
+    testId,
+  ]);
+
+  if (rowCount === 0) {
+    if (!isLoading) {
+      return null;
+    }
+
+    return (
+      <div className="py-1.5 text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
+        Loading...
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-2 mt-1" role="group">
+      <Virtuoso
+        ref={virtuosoRef}
+        className="agents-sidebar-session-list"
+        computeItemKey={computeItemKey}
+        data={rows}
+        data-testid={testId}
+        defaultItemHeight={rowHeight}
+        endReached={handleEndReached}
+        increaseViewportBy={increaseViewportBy}
+        initialScrollTop={initialScrollTop}
+        itemContent={renderItemContent}
+        {...(restoreStateFrom ? { restoreStateFrom } : {})}
+        scrollerRef={handleScrollerRef}
+        style={listStyle}
+      />
+      {isFetchingNextPage && (
+        <div
+          className="px-2 pt-1 text-right text-[0.6719rem] font-medium"
+          style={{ color: "var(--text-muted)" }}
+        >
+          Loading...
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface AgentsSidebarProps {
   projects: Project[];
@@ -1085,6 +1569,28 @@ function PublicationStateGroup({
     () => new Map(projects.map((project) => [project.id, project])),
     [projects]
   );
+  const publicationScrollKey = useMemo(
+    () =>
+      [
+        "publication",
+        publicationState,
+        showArchived ? "archived" : "active",
+        searchQuery,
+        rowSort,
+        projectIds.join(","),
+        priorityConversationIds.join(","),
+      ].join("::"),
+    [
+      priorityConversationIds,
+      projectIds,
+      publicationState,
+      rowSort,
+      searchQuery,
+      showArchived,
+    ]
+  );
+  const rememberedPublicationRowCount =
+    useRememberedAgentSidebarSessionRowCount(publicationScrollKey);
   const groupQuery = useAgentSidebarPublicationGroup({
     projectIds,
     publicationState,
@@ -1092,6 +1598,7 @@ function PublicationStateGroup({
     search: searchQuery,
     pinnedConversationIds: priorityConversationIds,
     sort: rowSort,
+    minimumRowCount: rememberedPublicationRowCount,
   });
   const activeConversationIds = useChatStore((s) => s.activeConversationIds);
   const agentStatuses = useChatStore((s) => s.agentStatus);
@@ -1103,18 +1610,18 @@ function PublicationStateGroup({
     useState<AgentConversation | null>(null);
   const [openSessionActionsId, setOpenSessionActionsId] = useState<string | null>(null);
 
-  const openRenameDialog = (conversation: AgentConversation) => {
+  const openRenameDialog = useCallback((conversation: AgentConversation) => {
     setRenameDraftTitle(conversation.title || "Untitled agent");
     setRenameDialogConversation(conversation);
-  };
+  }, []);
 
-  const handleRenameSubmit = async () => {
+  const handleRenameSubmit = useCallback(async () => {
     if (!renameDialogConversation) return;
     const trimmed = renameDraftTitle.trim();
     if (!trimmed) return;
     await onRenameConversation(renameDialogConversation.id, trimmed);
     setRenameDialogConversation(null);
-  };
+  }, [onRenameConversation, renameDialogConversation, renameDraftTitle]);
   const isCurrentPublicationState = expandedPublicationState === publicationState;
   const expanded = searchQuery.length > 0 ? true : isCurrentPublicationState;
   const groupLabel =
@@ -1153,6 +1660,76 @@ function PublicationStateGroup({
     visibleConversations,
     isSidebarVisible && expanded,
     publicationCurrentStates
+  );
+  const getPublicationRowKey = useCallback(
+    (row: AgentSidebarConversationRow) => row.conversation.id,
+    []
+  );
+  const renderPublicationRow = useCallback(
+    (row: AgentSidebarConversationRow) => {
+      const conversation = toProjectAgentConversation(row.conversation);
+      const project = projectById.get(conversation.projectId);
+      const rowKey = getAgentConversationStoreKey(conversation);
+      const activeConversationId = activeConversationIds[rowKey] ?? null;
+      const agentStatus = agentStatuses[rowKey] ?? "idle";
+      const isSelected = selectedConversationId === conversation.id;
+      const isActiveRuntime = activeConversationId === conversation.id;
+      const isPinned = Boolean(pinnedConversationIds[conversation.id]);
+      const runtimeState = getSessionRuntimeState(
+        conversation,
+        isActiveRuntime,
+        agentStatus
+      );
+      const showRuntimeState = runtimeState === "running";
+      const sessionActionsOpen = openSessionActionsId === conversation.id;
+
+      return (
+        <MemoizedAgentSessionRow
+          conversation={conversation}
+          projectName={project?.name ?? conversation.projectId}
+          showProjectNameInMeta
+          refKind={row.refKind}
+          refLabel={row.refLabel}
+          publicationState={row.publicationState}
+          publicationLabel={row.publicationLabel}
+          isSelected={isSelected}
+          isPinned={isPinned}
+          runtimeState={runtimeState}
+          showRuntimeState={showRuntimeState}
+          sessionActionsOpen={sessionActionsOpen}
+          onSelect={() => onSelectConversation(conversation.projectId, conversation)}
+          onRename={() => openRenameDialog(conversation)}
+          onTogglePinned={() => onTogglePinnedConversation(conversation.id)}
+          onFork={() => onForkConversation(conversation)}
+          onRestore={() => onRestoreConversation(conversation)}
+          onArchiveRequest={() => setArchiveDialogConversation(conversation)}
+          setActionsTriggerRef={(node) => {
+            sessionActionsTriggerRefs.current[conversation.id] = node;
+          }}
+          onActionsOpenChange={(open) => {
+            setOpenSessionActionsId(open ? conversation.id : null);
+            if (!open) {
+              requestAnimationFrame(() => {
+                sessionActionsTriggerRefs.current[conversation.id]?.blur();
+              });
+            }
+          }}
+        />
+      );
+    },
+    [
+      activeConversationIds,
+      agentStatuses,
+      openRenameDialog,
+      onForkConversation,
+      onRestoreConversation,
+      onSelectConversation,
+      onTogglePinnedConversation,
+      openSessionActionsId,
+      pinnedConversationIds,
+      projectById,
+      selectedConversationId,
+    ]
   );
 
   return (
@@ -1284,84 +1861,17 @@ function PublicationStateGroup({
       </AlertDialog>
 
       {expanded && (
-        <div className="mb-2 mt-1 flex flex-col gap-0.5" role="group">
-          {groupQuery.group.rows.map((row) => {
-            const conversation = toProjectAgentConversation(row.conversation);
-            const project = projectById.get(conversation.projectId);
-            const rowKey = getAgentConversationStoreKey(conversation);
-            const activeConversationId = activeConversationIds[rowKey] ?? null;
-            const agentStatus = agentStatuses[rowKey] ?? "idle";
-            const isSelected = selectedConversationId === conversation.id;
-            const isActiveRuntime = activeConversationId === conversation.id;
-            const isPinned = Boolean(pinnedConversationIds[conversation.id]);
-            const runtimeState = getSessionRuntimeState(
-              conversation,
-              isActiveRuntime,
-              agentStatus
-            );
-            const showRuntimeState = runtimeState === "running";
-            const sessionActionsOpen = openSessionActionsId === conversation.id;
-
-            return (
-              <AgentSessionRow
-                key={conversation.id}
-                conversation={conversation}
-                projectName={project?.name ?? conversation.projectId}
-                showProjectNameInMeta
-                refKind={row.refKind}
-                refLabel={row.refLabel}
-                publicationState={row.publicationState}
-                publicationLabel={row.publicationLabel}
-                isSelected={isSelected}
-                isPinned={isPinned}
-                runtimeState={runtimeState}
-                showRuntimeState={showRuntimeState}
-                sessionActionsOpen={sessionActionsOpen}
-                onSelect={() => onSelectConversation(conversation.projectId, conversation)}
-                onRename={() => openRenameDialog(conversation)}
-                onTogglePinned={() => onTogglePinnedConversation(conversation.id)}
-                onFork={() => onForkConversation(conversation)}
-                onRestore={() => onRestoreConversation(conversation)}
-                onArchiveRequest={() => setArchiveDialogConversation(conversation)}
-                setActionsTriggerRef={(node) => {
-                  sessionActionsTriggerRefs.current[conversation.id] = node;
-                }}
-                onActionsOpenChange={(open) => {
-                  setOpenSessionActionsId(open ? conversation.id : null);
-                  if (!open) {
-                    requestAnimationFrame(() => {
-                      sessionActionsTriggerRefs.current[conversation.id]?.blur();
-                    });
-                  }
-                }}
-              />
-            );
-          })}
-
-          {groupQuery.group.rows.length > 0 && groupQuery.hasNextPage && (
-            <div className="flex justify-end py-0.5 pr-2">
-              <button
-                type="button"
-                className="inline-flex items-center text-[0.6719rem] font-medium transition-colors"
-                onClick={() => void groupQuery.fetchNextPage()}
-                disabled={groupQuery.isFetchingNextPage}
-                data-testid={`agents-load-more-publication-${publicationState}`}
-                style={{
-                  color: "var(--text-muted)",
-                  opacity: groupQuery.isFetchingNextPage ? 0.7 : 1,
-                }}
-              >
-                {groupQuery.isFetchingNextPage ? "Loading..." : "Load more"}
-              </button>
-            </div>
-          )}
-
-          {groupQuery.isLoading && (
-            <div className="py-1.5 text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
-              Loading...
-            </div>
-          )}
-        </div>
+        <ScrollableAgentSessionList
+          fetchNextPage={groupQuery.fetchNextPage}
+          getItemKey={getPublicationRowKey}
+          hasNextPage={Boolean(groupQuery.hasNextPage)}
+          isFetchingNextPage={Boolean(groupQuery.isFetchingNextPage)}
+          isLoading={Boolean(groupQuery.isLoading)}
+          renderRow={renderPublicationRow}
+          rows={groupQuery.group.rows}
+          scrollKey={publicationScrollKey}
+          testId={`agents-sidebar-session-list-publication-${publicationState}`}
+        />
       )}
     </div>
   );
@@ -1596,6 +2106,8 @@ function AgentSessionRow({
   );
 }
 
+const MemoizedAgentSessionRow = memo(AgentSessionRow);
+
 interface ProjectSessionGroupProps {
   project: Project;
   isFocused: boolean;
@@ -1654,12 +2166,33 @@ function ProjectSessionGroup({
   const expandedProjectIds = useAgentSessionStore((s) => s.expandedProjectIds);
   const setProjectExpanded = useAgentSessionStore((s) => s.setProjectExpanded);
   const expanded = searchQuery.length > 0 ? true : expandedProjectIds[project.id] ?? isFocused;
+  const projectScrollKey = useMemo(
+    () =>
+      [
+        "project",
+        project.id,
+        showArchived ? "archived" : "active",
+        searchQuery,
+        selectedPublicationStates.join(","),
+        priorityConversationIds.join(","),
+      ].join("::"),
+    [
+      priorityConversationIds,
+      project.id,
+      searchQuery,
+      selectedPublicationStates,
+      showArchived,
+    ]
+  );
+  const rememberedProjectRowCount =
+    useRememberedAgentSidebarSessionRowCount(projectScrollKey);
   const groupQuery = useAgentSidebarProjectGroup({
     projectId: project.id,
     archivedOnly: showArchived,
     search: searchQuery,
     publicationStates: selectedPublicationStates,
     pinnedConversationIds: priorityConversationIds,
+    minimumRowCount: rememberedProjectRowCount,
   });
   const activeConversationIds = useChatStore((s) => s.activeConversationIds);
   const agentStatuses = useChatStore((s) => s.agentStatus);
@@ -1694,14 +2227,17 @@ function ProjectSessionGroup({
   }).length;
   const isCurrentProject = expanded && isFocused;
   const handleProjectRowToggle = () => {
-    onFocusProject(project.id);
-    setProjectExpanded(project.id, !expanded);
+    const nextExpanded = !expanded;
+    setProjectExpanded(project.id, nextExpanded);
+    if (nextExpanded) {
+      onFocusProject(project.id);
+    }
   };
-  const openRenameDialog = (conversation: AgentConversation) => {
+  const openRenameDialog = useCallback((conversation: AgentConversation) => {
     setRenameDraftTitle(conversation.title || "Untitled agent");
     setRenameDialogConversation(conversation);
-  };
-  const handleRenameSubmit = async () => {
+  }, []);
+  const handleRenameSubmit = useCallback(async () => {
     if (!renameDialogConversation) {
       return;
     }
@@ -1712,7 +2248,78 @@ function ProjectSessionGroup({
 
     await onRenameConversation(renameDialogConversation.id, trimmed);
     setRenameDialogConversation(null);
-  };
+  }, [onRenameConversation, renameDialogConversation, renameDraftTitle]);
+  const getProjectRowKey = useCallback(
+    (row: AgentSidebarConversationRow) => row.conversation.id,
+    []
+  );
+  const renderProjectRow = useCallback(
+    (row: AgentSidebarConversationRow) => {
+      const conversation = toProjectAgentConversation(row.conversation);
+      const rowKey = getAgentConversationStoreKey(conversation);
+      const activeConversationId = activeConversationIds[rowKey] ?? null;
+      const agentStatus = agentStatuses[rowKey] ?? "idle";
+      const isSelected = selectedConversationId === conversation.id;
+      const isActiveRuntime = activeConversationId === conversation.id;
+      const isPinned = Boolean(pinnedConversationIds[conversation.id]);
+      const runtimeState = getSessionRuntimeState(
+        conversation,
+        isActiveRuntime,
+        agentStatus
+      );
+      const showRuntimeState = runtimeState === "running";
+      const sessionActionsOpen = openSessionActionsId === conversation.id;
+
+      return (
+        <MemoizedAgentSessionRow
+          conversation={conversation}
+          projectName={project.name}
+          showProjectNameInMeta={showProjectNameInMeta}
+          refKind={row.refKind}
+          refLabel={row.refLabel}
+          publicationState={row.publicationState}
+          publicationLabel={row.publicationLabel}
+          isSelected={isSelected}
+          isPinned={isPinned}
+          runtimeState={runtimeState}
+          showRuntimeState={showRuntimeState}
+          sessionActionsOpen={sessionActionsOpen}
+          onSelect={() => onSelectConversation(project.id, conversation)}
+          onRename={() => openRenameDialog(conversation)}
+          onTogglePinned={() => onTogglePinnedConversation(conversation.id)}
+          onFork={() => onForkConversation(conversation)}
+          onRestore={() => onRestoreConversation(conversation)}
+          onArchiveRequest={() => setArchiveDialogConversation(conversation)}
+          setActionsTriggerRef={(node) => {
+            sessionActionsTriggerRefs.current[conversation.id] = node;
+          }}
+          onActionsOpenChange={(open) => {
+            setOpenSessionActionsId(open ? conversation.id : null);
+            if (!open) {
+              requestAnimationFrame(() => {
+                sessionActionsTriggerRefs.current[conversation.id]?.blur();
+              });
+            }
+          }}
+        />
+      );
+    },
+    [
+      activeConversationIds,
+      agentStatuses,
+      onForkConversation,
+      onRestoreConversation,
+      onSelectConversation,
+      onTogglePinnedConversation,
+      openRenameDialog,
+      openSessionActionsId,
+      pinnedConversationIds,
+      project.id,
+      project.name,
+      selectedConversationId,
+      showProjectNameInMeta,
+    ]
+  );
 
   if (
     !groupQuery.isLoading &&
@@ -1962,83 +2569,17 @@ function ProjectSessionGroup({
           </AlertDialog>
 
           {(showProjectHeader ? expanded : true) && (
-            <div className="mb-2 mt-1 flex flex-col gap-0.5" role="group">
-                {visibleRows.map((row) => {
-                  const conversation = toProjectAgentConversation(row.conversation);
-                  const rowKey = getAgentConversationStoreKey(conversation);
-                  const activeConversationId = activeConversationIds[rowKey] ?? null;
-                  const agentStatus = agentStatuses[rowKey] ?? "idle";
-                  const isSelected = selectedConversationId === conversation.id;
-                  const isActiveRuntime = activeConversationId === conversation.id;
-                  const isPinned = Boolean(pinnedConversationIds[conversation.id]);
-                  const runtimeState = getSessionRuntimeState(
-                    conversation,
-                    isActiveRuntime,
-                    agentStatus
-                  );
-                  const showRuntimeState = runtimeState === "running";
-                  const sessionActionsOpen = openSessionActionsId === conversation.id;
-
-                  return (
-                    <AgentSessionRow
-                      key={conversation.id}
-                      conversation={conversation}
-                      projectName={project.name}
-                      showProjectNameInMeta={showProjectNameInMeta}
-                      refKind={row.refKind}
-                      refLabel={row.refLabel}
-                      publicationState={row.publicationState}
-                      publicationLabel={row.publicationLabel}
-                      isSelected={isSelected}
-                      isPinned={isPinned}
-                      runtimeState={runtimeState}
-                      showRuntimeState={showRuntimeState}
-                      sessionActionsOpen={sessionActionsOpen}
-                      onSelect={() => onSelectConversation(project.id, conversation)}
-                      onRename={() => openRenameDialog(conversation)}
-                      onTogglePinned={() => onTogglePinnedConversation(conversation.id)}
-                      onFork={() => onForkConversation(conversation)}
-                      onRestore={() => onRestoreConversation(conversation)}
-                      onArchiveRequest={() => setArchiveDialogConversation(conversation)}
-                      setActionsTriggerRef={(node) => {
-                        sessionActionsTriggerRefs.current[conversation.id] = node;
-                      }}
-                      onActionsOpenChange={(open) => {
-                        setOpenSessionActionsId(open ? conversation.id : null);
-                        if (!open) {
-                          requestAnimationFrame(() => {
-                            sessionActionsTriggerRefs.current[conversation.id]?.blur();
-                          });
-                        }
-                      }}
-                    />
-                    );
-                  })}
-
-                {visibleConversations.length > 0 && groupQuery.hasNextPage && (
-                  <div className="flex justify-end py-0.5 pr-2">
-                    <button
-                      type="button"
-                      className="inline-flex items-center text-[0.6719rem] font-medium transition-colors"
-                      onClick={() => void groupQuery.fetchNextPage()}
-                      disabled={groupQuery.isFetchingNextPage}
-                      data-testid={`agents-load-more-${project.id}`}
-                      style={{
-                        color: "var(--text-muted)",
-                        opacity: groupQuery.isFetchingNextPage ? 0.7 : 1,
-                      }}
-                    >
-                      {groupQuery.isFetchingNextPage ? "Loading..." : "Load more"}
-                    </button>
-                  </div>
-                )}
-
-                {groupQuery.isLoading && (
-                  <div className="py-1.5 text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
-                    Loading...
-                  </div>
-                )}
-            </div>
+            <ScrollableAgentSessionList
+              fetchNextPage={groupQuery.fetchNextPage}
+              getItemKey={getProjectRowKey}
+              hasNextPage={Boolean(groupQuery.hasNextPage)}
+              isFetchingNextPage={Boolean(groupQuery.isFetchingNextPage)}
+              isLoading={Boolean(groupQuery.isLoading)}
+              renderRow={renderProjectRow}
+              rows={visibleRows}
+              scrollKey={projectScrollKey}
+              testId={`agents-sidebar-session-list-${project.id}`}
+            />
           )}
         </div>
     </div>
