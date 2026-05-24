@@ -862,6 +862,8 @@ export function IntegratedChatPanel({
     activeConversationId: effectiveConversationId,
     contextId: currentContextId,
     contextType: currentContextType,
+    streamingToolCalls,
+    streamingContentBlocks,
     setStreamingToolCalls,
     setStreamingContentBlocks,
     setStreamingTasks,

@@ -488,6 +488,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             content: queued_msg.content.clone(),
                             created_at: Some(user_msg_created_at),
                             metadata: user_msg_metadata,
+                            render_ready: None,
                         },
                     );
                 }
@@ -687,6 +688,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             if has_meaningful_output(&response, tools.len(), &queue_stderr) {
                                 super::chat_service_send_background::finalize_structured_assistant_message(
                                     chat_message_repo,
+                                    &chat_timeline_repo,
                                     app_handle.as_ref(),
                                     context_type,
                                     context_id,

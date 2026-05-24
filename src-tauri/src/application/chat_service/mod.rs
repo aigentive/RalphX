@@ -126,10 +126,11 @@ pub use chat_service_streaming::{
 pub use chat_service_types::events::AGENT_MESSAGE_QUEUED;
 pub use chat_service_types::{
     events, AgentChunkPayload, AgentConversationCreatedPayload, AgentErrorPayload,
-    AgentHookPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload, AgentQueueSentPayload,
-    AgentRunCompletedPayload, AgentRunStartedPayload, AgentTaskCompletedPayload,
-    AgentTaskStartedPayload, AgentToolCallPayload, AgentToolCallPreviewFields,
-    ChatConversationWithMessages, ChatServiceError, SendCallerContext, SendResult,
+    AgentHookPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload,
+    AgentMessageRenderReadyPayload, AgentQueueSentPayload, AgentRunCompletedPayload,
+    AgentRunStartedPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
+    AgentToolCallPayload, AgentToolCallPreviewFields, ChatConversationWithMessages,
+    ChatServiceError, SendCallerContext, SendResult,
     TeamArtifactCreatedPayload, TeamCostUpdatePayload, TeamCreatedPayload, TeamDisbandedPayload,
     TeamMessagePayload, TeamTeammateIdlePayload, TeamTeammateShutdownPayload,
     TeamTeammateSpawnedPayload,
@@ -1571,6 +1572,7 @@ impl<R: Runtime> AppChatService<R> {
                         content: error_content.clone(),
                         created_at: Some(assistant_msg_created_at),
                         metadata: None,
+                        render_ready: None,
                     },
                 );
             }
@@ -1865,6 +1867,7 @@ impl<R: Runtime> AppChatService<R> {
                 content: AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE.to_string(),
                 created_at: Some(created_at),
                 metadata: Some(metadata),
+                render_ready: None,
             },
         );
 
@@ -2660,6 +2663,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                                 content: message.to_string(),
                                 created_at: Some(user_msg_created_at),
                                 metadata: persisted_metadata.clone(),
+                                render_ready: None,
                             },
                         );
                     }
@@ -3280,6 +3284,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     content: message.to_string(),
                     created_at: Some(user_msg_created_at),
                     metadata: persisted_metadata.clone(),
+                    render_ready: None,
                 },
             );
         }
@@ -3939,6 +3944,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             content: content.to_string(),
                             created_at: Some(user_msg_created_at),
                             metadata: None,
+                            render_ready: None,
                         },
                     );
 

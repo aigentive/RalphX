@@ -276,16 +276,18 @@ pub(super) async fn persist_timeline_snapshot(
     assistant_message_id: &Option<String>,
     content_blocks: &[ContentBlockItem],
     status: ChatTimelineItemStatus,
-) {
+) -> Vec<ChatTimelineItem> {
     let (Some(repo), Some(message_id)) =
         (chat_timeline_repo.as_ref(), assistant_message_id.as_ref())
     else {
-        return;
+        return Vec::new();
     };
 
     let conversation_id = ChatConversationId::from_string(conversation_id.to_string());
     let message_id = ChatMessageId::from_string(message_id.clone());
     let role = MessageRole::Orchestrator;
+    let mut persisted_items = Vec::new();
+    let mut persistence_failed = false;
 
     for (index, block) in content_blocks.iter().enumerate() {
         let kind = match block {
@@ -338,11 +340,22 @@ pub(super) async fn persist_timeline_snapshot(
             }
         }
 
-        let _ = repo.upsert_item(item).await;
+        match repo.upsert_item(item).await {
+            Ok(item) => persisted_items.push(item),
+            Err(_) => {
+                persistence_failed = true;
+            }
+        }
     }
 
     if status == ChatTimelineItemStatus::Finalized {
         let _ = repo.mark_message_items_finalized(&message_id).await;
+    }
+
+    if persistence_failed {
+        Vec::new()
+    } else {
+        persisted_items
     }
 }
 
@@ -1921,6 +1934,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     .to_string();
                             super::chat_service_send_background::finalize_structured_assistant_message(
                                 repo,
+                                &chat_timeline_repo,
                                 app_handle.as_ref(),
                                 context_type,
                                 context_id,
@@ -1931,19 +1945,6 @@ pub async fn process_stream_background<R: Runtime>(
                                 &processor.tool_calls,
                                 &processor.content_blocks,
                                 split_verification_transcript,
-                            )
-                            .await;
-                            // Mirror the finalize_structured_assistant_message write into the
-                            // timeline-backed chat_message_blocks table. Without this, project
-                            // and task chat turns that end on TurnComplete leave the timeline
-                            // empty and the chat UI shows the response as missing — even though
-                            // chat_messages has the full content.
-                            persist_timeline_snapshot(
-                                &chat_timeline_repo,
-                                &conversation_id_str,
-                                &assistant_message_id,
-                                &processor.content_blocks,
-                                ChatTimelineItemStatus::Finalized,
                             )
                             .await;
                             let turn_usage = processor.current_turn_usage();
