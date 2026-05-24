@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   getTrueBottomScrollTop,
   isScrollElementVisuallyAtBottom,
+  scrollElementToTrueBottom,
   shouldShowScrollToBottomControl,
+  shouldStickToBottom,
   VISUAL_BOTTOM_EPSILON_PX,
 } from "./ChatMessageList.scroll";
 
@@ -131,12 +133,26 @@ describe("ChatMessageList scroll math", () => {
     ).toBe(true);
   });
 
-  it("shows the scroll-to-bottom control for a short timeline when content overflows and is not at bottom", () => {
+  it("hides the scroll-to-bottom control while the user is still inside the sticky bottom threshold", () => {
     expect(
       shouldShowScrollToBottomControl({
         hasScrollerElement: true,
         hasScrollableOverflow: true,
         isAtBottom: true,
+        isLastItemVisible: true,
+        isVisuallyAtBottom: false,
+        scrollToTimestamp: null,
+        timelineLength: 2,
+      })
+    ).toBe(false);
+  });
+
+  it("shows the scroll-to-bottom control when overflowed content is outside the sticky bottom threshold", () => {
+    expect(
+      shouldShowScrollToBottomControl({
+        hasScrollerElement: true,
+        hasScrollableOverflow: true,
+        isAtBottom: false,
         isLastItemVisible: true,
         isVisuallyAtBottom: false,
         scrollToTimestamp: null,
@@ -157,5 +173,52 @@ describe("ChatMessageList scroll math", () => {
         timelineLength: 2,
       })
     ).toBe(false);
+  });
+
+  it("keeps sticky follow active for near-bottom streaming layout growth", () => {
+    expect(
+      shouldStickToBottom({
+        isAtBottom: true,
+        isVisuallyAtBottom: false,
+        scrollToTimestamp: null,
+      })
+    ).toBe(true);
+  });
+
+  it("does not keep sticky follow active after the user scrolls outside the bottom threshold", () => {
+    expect(
+      shouldStickToBottom({
+        isAtBottom: false,
+        isVisuallyAtBottom: false,
+        scrollToTimestamp: null,
+      })
+    ).toBe(false);
+  });
+
+  it("does not keep sticky follow active in history mode", () => {
+    expect(
+      shouldStickToBottom({
+        isAtBottom: true,
+        isVisuallyAtBottom: true,
+        scrollToTimestamp: "2026-01-01T12:00:00.000Z",
+      })
+    ).toBe(false);
+  });
+
+  it("forces the DOM scroll position to the true bottom synchronously", () => {
+    const element = scrollElement({
+      scrollHeight: 1320,
+      clientHeight: 500,
+      scrollTop: 300,
+    });
+    const scrollTo = vi.fn();
+    Object.defineProperty(element, "scrollTo", {
+      configurable: true,
+      value: scrollTo,
+    });
+
+    expect(scrollElementToTrueBottom(element, "smooth")).toBe(820);
+    expect(scrollTo).toHaveBeenCalledWith({ top: 820, behavior: "smooth" });
+    expect(element.scrollTop).toBe(820);
   });
 });

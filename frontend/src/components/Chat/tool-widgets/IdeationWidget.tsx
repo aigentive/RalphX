@@ -236,7 +236,17 @@ function AskUserQuestion({ toolCall, compact }: ToolCallWidgetProps) {
     : preview;
 
   return (
-    <WidgetRow compact={compact}>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 7,
+        padding: compact ? "3px 10px" : "5px 10px",
+        margin: "2px 0",
+        height: compact ? undefined : 26,
+        boxSizing: "border-box",
+      }}
+    >
       <MessageCircleQuestion size={12} style={{ color: colors.accent, flexShrink: 0 }} />
       <span
         style={{
@@ -252,7 +262,7 @@ function AskUserQuestion({ toolCall, compact }: ToolCallWidgetProps) {
         {truncated}
       </span>
       <Badge variant="accent" compact>Question</Badge>
-    </WidgetRow>
+    </div>
   );
 }
 
@@ -475,7 +485,7 @@ export const IdeationWidget = React.memo(function IdeationWidget(props: ToolCall
     case "link_proposals_to_plan":
       return <div data-testid="ideation-widget-link-proposals"><LinkProposals {...props} /></div>;
     case "ask_user_question":
-      return <div data-testid="ideation-widget-ask-question"><AskUserQuestion {...props} /></div>;
+      return <div data-testid="ideation-widget-ask-question" style={props.compact ? undefined : { display: "flow-root" }}><AskUserQuestion {...props} /></div>;
     case "list_session_proposals":
       return <div data-testid="ideation-widget-list-proposals"><ListProposals {...props} /></div>;
     case "get_proposal":
