@@ -5,6 +5,7 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { isRalphxTerminalDockDragActive } from "@/lib/internalDragTypes";
 import { AgentTerminalDrawer } from "./AgentTerminalDrawer";
+import { useAgentTerminalStore } from "./agentTerminalStore";
 
 const {
   listenMock,
@@ -118,6 +119,15 @@ describe("AgentTerminalDrawer", () => {
     restartAgentTerminalMock.mockReset();
     writeAgentTerminalMock.mockReset();
     terminalOpenMock.mockReset();
+    useAgentTerminalStore.setState({
+      openByConversationId: {},
+      heightByConversationId: {},
+      activeTerminalByConversationId: {},
+      statusByConversationId: {},
+      placement: "auto",
+      draggingConversationId: null,
+      dragOverDock: null,
+    });
 
     listenMock.mockResolvedValue(vi.fn());
     openAgentTerminalMock.mockResolvedValue({
@@ -177,6 +187,79 @@ describe("AgentTerminalDrawer", () => {
 
     expect(terminalOpenMock).not.toHaveBeenCalled();
     expect(openAgentTerminalMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps a collapsed remounted terminal header on the last running status", async () => {
+    const firstDockElement = document.createElement("div");
+    const secondDockElement = document.createElement("div");
+    document.body.appendChild(firstDockElement);
+    document.body.appendChild(secondDockElement);
+
+    const { unmount } = render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={true}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          dockElement={firstDockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      rafCallbacks[0]?.(0);
+      await vi.runOnlyPendingTimersAsync();
+      await vi.dynamicImportSettled();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(openAgentTerminalMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("running")).toBeInTheDocument();
+    expect(useAgentTerminalStore.getState().statusByConversationId["conversation-1"]).toBe(
+      "running",
+    );
+
+    unmount();
+    openAgentTerminalMock.mockClear();
+    terminalOpenMock.mockClear();
+
+    render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={false}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          dockElement={secondDockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("agent-terminal-drawer")).toHaveStyle({
+      height: "36px",
+    });
+    expect(screen.getByText("running")).toBeInTheDocument();
+    expect(screen.queryByText("Closed")).not.toBeInTheDocument();
+    expect(openAgentTerminalMock).not.toHaveBeenCalled();
+    expect(terminalOpenMock).not.toHaveBeenCalled();
   });
 
   it("paints the drawer shell before starting xterm hydration", async () => {
