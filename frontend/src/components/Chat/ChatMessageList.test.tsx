@@ -2782,9 +2782,120 @@ describe("ChatMessageList - Scroll Behavior", () => {
 
         act(() => {
           lastRowCallback?.(
+            [{ contentRect: { height: 72 } as DOMRectReadOnly } as ResizeObserverEntry],
+            resizeObserver,
+          );
+        });
+        expect(scrollToMock).not.toHaveBeenCalled();
+
+        act(() => {
+          lastRowCallback?.(
             [{ contentRect: { height: 104 } as DOMRectReadOnly } as ResizeObserverEntry],
             resizeObserver,
           );
+        });
+
+        await waitFor(() =>
+          expect(scrollToMock).toHaveBeenCalledWith({ top: 500, behavior: "auto" })
+        );
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        if (originalResizeObserver === undefined) {
+          Reflect.deleteProperty(globalThis, "ResizeObserver");
+        } else {
+          Object.defineProperty(globalThis, "ResizeObserver", {
+            value: originalResizeObserver,
+            configurable: true,
+            writable: true,
+          });
+        }
+      }
+    });
+
+    it("cancel-reschedules finalized last message row bottom pins while sticky", async () => {
+      const callbacks: ResizeObserverCallback[] = [];
+      const observedTargets: Element[] = [];
+      const queuedRafs: FrameRequestCallback[] = [];
+      const originalResizeObserver = globalThis.ResizeObserver;
+      let nextRafId = 1;
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        queuedRafs.push(cb);
+        return nextRafId++;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      class MockResizeObserver implements ResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          callbacks.push(callback);
+        }
+
+        disconnect = vi.fn();
+        observe = vi.fn((target: Element) => {
+          observedTargets.push(target);
+        });
+        unobserve = vi.fn();
+      }
+
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        value: MockResizeObserver,
+        configurable: true,
+        writable: true,
+      });
+
+      try {
+        mockIsAtBottom = false;
+        mockIsAtBottomRef.current = true;
+        render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={createMessages(2)}
+          />
+        );
+
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 480,
+        });
+        scrollToMock.mockClear();
+        cancelSpy.mockClear();
+
+        const lastRowIndex = observedTargets.findIndex(
+          (target) =>
+            target instanceof HTMLElement &&
+            target.dataset.chatLastRenderedRow === "true",
+        );
+        expect(lastRowIndex).toBeGreaterThanOrEqual(0);
+
+        const lastRowCallback = callbacks[lastRowIndex];
+        const resizeObserver = {} as ResizeObserver;
+        act(() => {
+          lastRowCallback?.(
+            [{ contentRect: { height: 80 } as DOMRectReadOnly } as ResizeObserverEntry],
+            resizeObserver,
+          );
+        });
+        act(() => {
+          lastRowCallback?.(
+            [{ contentRect: { height: 104 } as DOMRectReadOnly } as ResizeObserverEntry],
+            resizeObserver,
+          );
+        });
+        const firstResizeRafId = nextRafId - 1;
+        act(() => {
+          lastRowCallback?.(
+            [{ contentRect: { height: 128 } as DOMRectReadOnly } as ResizeObserverEntry],
+            resizeObserver,
+          );
+        });
+
+        expect(cancelSpy).toHaveBeenCalledWith(firstResizeRafId);
+        expect(scrollToMock).not.toHaveBeenCalled();
+
+        act(() => {
+          queuedRafs.at(-1)?.(0);
         });
 
         await waitFor(() =>

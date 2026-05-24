@@ -1380,17 +1380,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       lastRenderedRowObserverRef.current.observe(el);
     }, [scheduleStickyResizeBottomPin]);
 
-    useEffect(() => {
-      return () => {
-        lastRenderedRowObserverRef.current?.disconnect();
-        lastRenderedRowObserverRef.current = null;
-        if (lastRenderedRowResizeRafRef.current !== null) {
-          cancelAnimationFrame(lastRenderedRowResizeRafRef.current);
-          lastRenderedRowResizeRafRef.current = null;
-        }
-      };
-    }, []);
-
     // Scroll to specific timestamp for history mode (time-travel feature)
     // Finds the first message at or after the given timestamp and scrolls to it
     useEffect(() => {
