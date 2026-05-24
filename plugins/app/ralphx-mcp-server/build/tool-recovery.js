@@ -101,6 +101,17 @@ export function getToolRecoveryHintFromRegistry(tools, toolName) {
                 ...examples.map((example) => `Example payload: ${example}`),
             ].join("\n");
         }
+        case "claim_agent_task":
+        case "complete_agent_task":
+        case "update_agent_task": {
+            const examples = formatToolExamples(tool);
+            return [
+                "A ledger with one meaningful task cannot be claimed, activated, or completed.",
+                "For simple work, call update_agent_task with state=dropped on the lone task, then continue without the ledger.",
+                "For non-trivial work, create multiple concrete tasks first, then claim the ready task.",
+                ...examples.map((example) => `Example payload: ${example}`),
+            ].join("\n");
+        }
         default: {
             const examples = formatToolExamples(tool);
             if (examples.length === 0) {
