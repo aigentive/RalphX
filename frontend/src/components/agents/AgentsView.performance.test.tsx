@@ -6,7 +6,7 @@ import {
   resetAgentSessionState,
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { useChatStore } from "@/stores/chatStore";
@@ -93,6 +93,36 @@ describe("AgentsView performance", () => {
     const drawer = await screen.findByTestId("agent-terminal-drawer");
     expect(drawer).toHaveAttribute("data-expanded", "false");
     expect(preloadAgentTerminalExperienceMock).not.toHaveBeenCalled();
+  });
+
+  it("paints a collapsed terminal shell with the cached running status", async () => {
+    const deferredFrames = holdDeferredFrames();
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" })
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+    useAgentTerminalStore.setState({
+      statusByConversationId: { "conversation-1": "running" },
+    });
+
+    try {
+      renderAgentsView();
+
+      const shellHeader = await screen.findByTestId(
+        "agent-terminal-loading-shell-header"
+      );
+      expect(within(shellHeader).getByText("running")).toBeInTheDocument();
+      expect(screen.getByTestId("agent-terminal-host-chat")).toHaveStyle({
+        height: "36px",
+      });
+      expect(preloadAgentTerminalExperienceMock).not.toHaveBeenCalled();
+    } finally {
+      deferredFrames.restore();
+    }
   });
 
   it("opens the terminal from the first-paint shell header", async () => {

@@ -1410,6 +1410,7 @@ export function setupAgentsViewTest() {
     openByConversationId: {},
     heightByConversationId: {},
     activeTerminalByConversationId: {},
+    statusByConversationId: {},
     placement: "auto",
     draggingConversationId: null,
     dragOverDock: null,

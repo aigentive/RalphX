@@ -5,6 +5,7 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { isRalphxTerminalDockDragActive } from "@/lib/internalDragTypes";
 import { AgentTerminalDrawer } from "./AgentTerminalDrawer";
+import { useAgentTerminalStore } from "./agentTerminalStore";
 
 const {
   listenMock,
@@ -15,6 +16,7 @@ const {
   restartAgentTerminalMock,
   writeAgentTerminalMock,
   terminalOpenMock,
+  terminalEventSafeParseMock,
 } = vi.hoisted(() => ({
   listenMock: vi.fn(),
   openAgentTerminalMock: vi.fn(),
@@ -24,6 +26,7 @@ const {
   restartAgentTerminalMock: vi.fn(),
   writeAgentTerminalMock: vi.fn(),
   terminalOpenMock: vi.fn(),
+  terminalEventSafeParseMock: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -33,7 +36,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@/api/terminal", () => ({
   AGENT_TERMINAL_EVENT: "agent-terminal://event",
   AgentTerminalEventSchema: {
-    safeParse: vi.fn(() => ({ success: false })),
+    safeParse: (...args: unknown[]) => terminalEventSafeParseMock(...args),
   },
   DEFAULT_AGENT_TERMINAL_ID: "default",
   closeAgentTerminal: (...args: unknown[]) => closeAgentTerminalMock(...args),
@@ -118,8 +121,19 @@ describe("AgentTerminalDrawer", () => {
     restartAgentTerminalMock.mockReset();
     writeAgentTerminalMock.mockReset();
     terminalOpenMock.mockReset();
+    terminalEventSafeParseMock.mockReset();
+    useAgentTerminalStore.setState({
+      openByConversationId: {},
+      heightByConversationId: {},
+      activeTerminalByConversationId: {},
+      statusByConversationId: {},
+      placement: "auto",
+      draggingConversationId: null,
+      dragOverDock: null,
+    });
 
     listenMock.mockResolvedValue(vi.fn());
+    terminalEventSafeParseMock.mockReturnValue({ success: false });
     openAgentTerminalMock.mockResolvedValue({
       status: "running",
       cwd: "/tmp/ralphx/agent-conversation",
@@ -177,6 +191,235 @@ describe("AgentTerminalDrawer", () => {
 
     expect(terminalOpenMock).not.toHaveBeenCalled();
     expect(openAgentTerminalMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps a collapsed remounted terminal header on the last running status", async () => {
+    const firstDockElement = document.createElement("div");
+    const secondDockElement = document.createElement("div");
+    document.body.appendChild(firstDockElement);
+    document.body.appendChild(secondDockElement);
+
+    const { unmount } = render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={true}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          dockElement={firstDockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      rafCallbacks[0]?.(0);
+      await vi.runOnlyPendingTimersAsync();
+      await vi.dynamicImportSettled();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(openAgentTerminalMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("running")).toBeInTheDocument();
+    expect(useAgentTerminalStore.getState().statusByConversationId["conversation-1"]).toBe(
+      "running",
+    );
+
+    unmount();
+    openAgentTerminalMock.mockClear();
+    terminalOpenMock.mockClear();
+
+    render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={false}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          dockElement={secondDockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("agent-terminal-drawer")).toHaveStyle({
+      height: "36px",
+    });
+    expect(screen.getByText("running")).toBeInTheDocument();
+    expect(screen.queryByText("Closed")).not.toBeInTheDocument();
+    expect(openAgentTerminalMock).not.toHaveBeenCalled();
+    expect(terminalOpenMock).not.toHaveBeenCalled();
+  });
+
+  it("updates cached terminal status from lifecycle events", async () => {
+    const dockElement = document.createElement("div");
+    document.body.appendChild(dockElement);
+    let terminalEventListener: ((event: { payload: unknown }) => void) | null = null;
+    listenMock.mockImplementation((_eventName, listener) => {
+      terminalEventListener = listener as (event: { payload: unknown }) => void;
+      return Promise.resolve(vi.fn());
+    });
+    terminalEventSafeParseMock.mockImplementation((payload) => ({
+      success: true,
+      data: payload,
+    }));
+
+    render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={true}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          dockElement={dockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      rafCallbacks[0]?.(0);
+      await vi.runOnlyPendingTimersAsync();
+      await vi.dynamicImportSettled();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      terminalEventListener?.({
+        payload: {
+          type: "exited",
+          conversationId: "conversation-1",
+          terminalId: "default",
+          updatedAt: "2026-04-26T00:00:01.000Z",
+        },
+      });
+    });
+
+    expect(useAgentTerminalStore.getState().statusByConversationId["conversation-1"]).toBe(
+      "exited",
+    );
+    expect(screen.getByText("exited")).toBeInTheDocument();
+
+    await act(async () => {
+      terminalEventListener?.({
+        payload: {
+          type: "error",
+          conversationId: "conversation-1",
+          terminalId: "default",
+          message: "session failed",
+          updatedAt: "2026-04-26T00:00:02.000Z",
+        },
+      });
+    });
+
+    expect(useAgentTerminalStore.getState().statusByConversationId["conversation-1"]).toBe(
+      "error",
+    );
+    expect(screen.getByText("error")).toBeInTheDocument();
+  });
+
+  it("caches an error status when initial terminal opening fails", async () => {
+    const dockElement = document.createElement("div");
+    document.body.appendChild(dockElement);
+    openAgentTerminalMock.mockRejectedValue(new Error("open failed"));
+
+    render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={true}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          dockElement={dockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      rafCallbacks[0]?.(0);
+      await vi.runOnlyPendingTimersAsync();
+      await vi.dynamicImportSettled();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(useAgentTerminalStore.getState().statusByConversationId["conversation-1"]).toBe(
+      "error",
+    );
+    expect(screen.getByText("error")).toBeInTheDocument();
+  });
+
+  it("caches an error status when terminal controls fail", async () => {
+    const dockElement = document.createElement("div");
+    document.body.appendChild(dockElement);
+
+    render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={true}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          dockElement={dockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      rafCallbacks[0]?.(0);
+      await vi.runOnlyPendingTimersAsync();
+      await vi.dynamicImportSettled();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    clearAgentTerminalMock.mockRejectedValue(new Error("clear failed"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Clear terminal"));
+      await Promise.resolve();
+    });
+
+    expect(useAgentTerminalStore.getState().statusByConversationId["conversation-1"]).toBe(
+      "error",
+    );
+    expect(screen.getByText("error")).toBeInTheDocument();
   });
 
   it("paints the drawer shell before starting xterm hydration", async () => {
