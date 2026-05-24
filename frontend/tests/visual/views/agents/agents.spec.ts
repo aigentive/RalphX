@@ -515,13 +515,14 @@ async function seedAgentsScenario(page: Page) {
       "uncommitted",
       "unpushed",
     ];
+    const sidebarGroupPageSize = 8;
     const activeSidebarResponse = await mockListAgentSidebarConversations({
       projectIds: ["project-mock-1"],
       includeArchived: false,
       archivedOnly: false,
       publicationStates,
       groupBy: "project",
-      limitPerGroup: 6,
+      limitPerGroup: sidebarGroupPageSize,
       offsets: { "project-mock-1": 0 },
       pinnedConversationIds: [],
     });
@@ -531,7 +532,7 @@ async function seedAgentsScenario(page: Page) {
       archivedOnly: true,
       publicationStates,
       groupBy: "project",
-      limitPerGroup: 6,
+      limitPerGroup: sidebarGroupPageSize,
       offsets: { "project-mock-1": 0 },
       pinnedConversationIds: [],
     });
@@ -558,6 +559,8 @@ async function seedAgentsScenario(page: Page) {
         publicationStates,
         "pinned",
         [],
+        "initial-limit",
+        sidebarGroupPageSize,
       ],
       {
         pages: [activeSidebarGroup],
@@ -578,6 +581,8 @@ async function seedAgentsScenario(page: Page) {
         publicationStates,
         "pinned",
         [],
+        "initial-limit",
+        sidebarGroupPageSize,
       ],
       {
         pages: [archivedSidebarGroup],
