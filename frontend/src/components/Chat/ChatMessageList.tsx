@@ -660,16 +660,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const [streamingTranscriptWindow, setStreamingTranscriptWindow] =
       useState<StreamingTranscriptWindow>(EMPTY_STREAMING_TRANSCRIPT_WINDOW);
 
-    useEffect(() => {
-      setStreamingTranscriptWindow((prev) => {
-        return getNextStreamingTranscriptWindow(
-          prev,
-          liveStreamingTranscriptWindow,
-          isVisuallyAtBottom
-        );
-      });
-    }, [isVisuallyAtBottom, liveStreamingTranscriptWindow]);
-
     const renderedStreamingContentBlocks = streamingTranscriptWindow.contentBlocks;
 
     // Footer content hash — drives the streaming auto-scroll useEffect below.
@@ -938,6 +928,19 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }),
       [isAtBottomRef],
     );
+
+    // Window advancement follows the same bottom-range contract as chat auto-scroll.
+    // Exact visual-bottom tracking can drift false during Virtuoso/footer growth even
+    // while the user is still close enough to the tail to be following the live run.
+    useEffect(() => {
+      setStreamingTranscriptWindow((prev) => {
+        return getNextStreamingTranscriptWindow(
+          prev,
+          liveStreamingTranscriptWindow,
+          isAtBottom,
+        );
+      });
+    }, [isAtBottom, liveStreamingTranscriptWindow]);
 
     // Scroll the actual DOM scroll container to its absolute bottom.
     // This goes past Virtuoso's last list item to include any Footer (streaming

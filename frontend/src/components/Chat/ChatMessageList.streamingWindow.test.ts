@@ -95,4 +95,10 @@ describe("ChatMessageList streaming transcript window", () => {
       )
     ).toBe(EMPTY_STREAMING_TRANSCRIPT_WINDOW);
   });
+
+  it("does not drop the first live window when bottom detection is temporarily false", () => {
+    const live = buildStreamingTranscriptWindow([textBlock(1)], new Map());
+
+    expect(getNextStreamingTranscriptWindow(EMPTY_STREAMING_TRANSCRIPT_WINDOW, live, false)).toBe(live);
+  });
 });
