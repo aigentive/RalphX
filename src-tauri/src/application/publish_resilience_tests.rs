@@ -58,6 +58,23 @@ fn classifies_branch_conflicts_as_agent_fixable() {
 }
 
 #[test]
+fn classifies_dirty_worktree_merge_aborts_as_agent_fixable() {
+    let error = concat!(
+        "merge in existing worktree failed: Git operation error: Merge failed: ",
+        "error: Your local changes to the following files would be overwritten by merge:\n",
+        "\tsrc-tauri/src/application/agent_task_service.rs\n",
+        "Please commit your changes or stash them before you merge.\n",
+        "Aborting"
+    );
+
+    assert_eq!(
+        classify_publish_failure(error),
+        PublishFailureClass::AgentFixable
+    );
+    assert_eq!(publish_push_status_for_failure(error), "needs_agent");
+}
+
+#[test]
 fn classifies_non_fast_forward_push_rejections_as_agent_fixable() {
     let error = "failed to push some refs: updates were rejected because the tip of your current branch is behind its remote counterpart (non-fast-forward)";
 
