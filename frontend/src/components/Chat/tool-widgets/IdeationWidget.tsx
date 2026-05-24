@@ -475,7 +475,7 @@ export const IdeationWidget = React.memo(function IdeationWidget(props: ToolCall
     case "link_proposals_to_plan":
       return <div data-testid="ideation-widget-link-proposals"><LinkProposals {...props} /></div>;
     case "ask_user_question":
-      return <div data-testid="ideation-widget-ask-question"><AskUserQuestion {...props} /></div>;
+      return <div data-testid="ideation-widget-ask-question" style={props.compact ? undefined : { lineHeight: "14px" }}><AskUserQuestion {...props} /></div>;
     case "list_session_proposals":
       return <div data-testid="ideation-widget-list-proposals"><ListProposals {...props} /></div>;
     case "get_proposal":
