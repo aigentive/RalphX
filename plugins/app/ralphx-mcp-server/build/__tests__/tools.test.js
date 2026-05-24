@@ -150,6 +150,14 @@ describe('getToolRecoveryHint', () => {
         expect(hint).toContain('SESSION_ID, ROUND, critic/schema');
         expect(hint).toContain('Example payload:');
     });
+    it('returns cleanup guidance for agent task ledger progression tools', () => {
+        for (const toolName of ['claim_agent_task', 'complete_agent_task', 'update_agent_task']) {
+            const hint = getToolRecoveryHint(toolName);
+            expect(hint).toContain('one meaningful task cannot be claimed, activated, or completed');
+            expect(hint).toContain('state=dropped');
+            expect(hint).toContain('create multiple concrete tasks');
+        }
+    });
     it('returns null for an unknown tool', () => {
         expect(getToolRecoveryHint('not_a_real_tool')).toBeNull();
     });
@@ -1364,6 +1372,17 @@ describe('agent task tools', () => {
         expect(tool?.inputSchema.required).toEqual(expect.arrayContaining(['title', 'details']));
         expect(tool?.inputSchema.properties).not.toHaveProperty('context_type');
         expect(tool?.inputSchema.properties).not.toHaveProperty('actor_agent');
+    });
+    it('agent task tool descriptions explain single-task cleanup and decomposition', () => {
+        const createTool = allTools.find((entry) => entry.name === 'create_agent_task');
+        const updateTool = allTools.find((entry) => entry.name === 'update_agent_task');
+        const claimTool = allTools.find((entry) => entry.name === 'claim_agent_task');
+        const completeTool = allTools.find((entry) => entry.name === 'complete_agent_task');
+        expect(createTool?.description).toContain('Do not create a task for genuinely single-step work');
+        expect(createTool?.description).toContain('decomposed into multiple concrete tasks');
+        expect(updateTool?.description).toContain('state=dropped');
+        expect(claimTool?.description).toContain('only one meaningful task');
+        expect(completeTool?.description).toContain('single-task ledger');
     });
     it.each([ORCHESTRATOR_IDEATION, CHAT_PROJECT, GENERAL_WORKER, WORKER])('%s should expose writable agent task tools', (agent) => {
         expect(toolsByAgent()[agent]).toContain('create_agent_task');
