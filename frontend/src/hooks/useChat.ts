@@ -16,6 +16,8 @@ import {
 import { useEffect, useCallback, useMemo, useRef } from "react";
 import {
   chatApi,
+  parseContentBlocks,
+  parseToolCalls,
   type ChatMessageResponse,
   type ComposerIntegrationReference,
   type ComposerProjectReference,
@@ -220,6 +222,423 @@ function appendMessageToConversationTimeline(
       ...olderPages,
     ],
   };
+}
+
+type FinalizedContentBlock = NonNullable<ChatMessageResponse["contentBlocks"]>[number];
+
+function upsertMessage(messages: ChatMessageResponse[], message: ChatMessageResponse) {
+  const index = messages.findIndex((existing) => existing.id === message.id);
+  if (index < 0) {
+    return [...messages, message];
+  }
+  const next = [...messages];
+  next[index] = message;
+  return next;
+}
+
+function toolCallFromContentBlock(block: FinalizedContentBlock) {
+  if (block.type !== "tool_use") return null;
+  return {
+    id: block.id ?? `tool:${block.name ?? "unknown"}`,
+    name: block.name ?? "unknown",
+    arguments: block.arguments ?? {},
+    ...(block.result !== undefined ? { result: block.result } : {}),
+    ...(block.resultPreviewTruncated !== undefined
+      ? { resultPreviewTruncated: block.resultPreviewTruncated }
+      : {}),
+    ...(block.resultPreviewOriginalBytes !== undefined
+      ? { resultPreviewOriginalBytes: block.resultPreviewOriginalBytes }
+      : {}),
+    ...(block.resultPreviewLineCount !== undefined
+      ? { resultPreviewLineCount: block.resultPreviewLineCount }
+      : {}),
+    ...(block.resultPreviewOmittedLines !== undefined
+      ? { resultPreviewOmittedLines: block.resultPreviewOmittedLines }
+      : {}),
+    ...(block.detailRef ? { detailRef: block.detailRef } : {}),
+    ...(block.parentToolUseId ? { parentToolUseId: block.parentToolUseId } : {}),
+    ...(block.diffContext ? { diffContext: block.diffContext } : {}),
+  };
+}
+
+function createFinalizedTimelineItem(
+  message: ChatMessageResponse,
+  block: FinalizedContentBlock,
+  blockIndex: number,
+  sequence: number
+): ConversationTimelinePageResponse["items"][number] {
+  const toolCall = toolCallFromContentBlock(block);
+  const content = block.type === "text" ? block.text ?? "" : "";
+  const itemId = `block:${message.id}:${blockIndex}`;
+  const asMessage: ChatMessageResponse = {
+    ...message,
+    id: itemId,
+    parentMessageId: message.id,
+    content,
+    toolCalls: toolCall ? [toolCall] : null,
+    contentBlocks: [block],
+    timelineStatus: "finalized",
+    timelineKind: block.type,
+    timelineSequence: sequence,
+  };
+
+  return {
+    id: itemId,
+    conversationId: message.conversationId ?? "",
+    messageId: message.id,
+    runId: null,
+    sequence,
+    blockIndex,
+    role: message.role,
+    kind: block.type,
+    status: "finalized",
+    content,
+    contentBlocks: [block],
+    toolCall,
+    metadata: message.metadata,
+    providerHarness: message.providerHarness ?? null,
+    providerSessionId: message.providerSessionId ?? null,
+    upstreamProvider: message.upstreamProvider ?? null,
+    providerProfile: message.providerProfile ?? null,
+    logicalModel: message.logicalModel ?? null,
+    effectiveModelId: message.effectiveModelId ?? null,
+    logicalEffort: message.logicalEffort ?? null,
+    effectiveEffort: message.effectiveEffort ?? null,
+    inputTokens: message.inputTokens ?? null,
+    outputTokens: message.outputTokens ?? null,
+    cacheCreationTokens: message.cacheCreationTokens ?? null,
+    cacheReadTokens: message.cacheReadTokens ?? null,
+    estimatedUsd: message.estimatedUsd ?? null,
+    createdAt: message.createdAt,
+    updatedAt: message.createdAt,
+    finalizedAt: message.createdAt,
+    asMessage,
+  };
+}
+
+export function upsertFinalizedMessageIntoConversationCache(
+  queryClient: QueryClient,
+  conversationId: string,
+  message: ChatMessageResponse
+): boolean {
+  const contentBlocks =
+    message.contentBlocks && message.contentBlocks.length > 0
+      ? message.contentBlocks
+      : message.content.trim().length > 0
+        ? [{ type: "text" as const, text: message.content }]
+        : [];
+  if (contentBlocks.length === 0) {
+    return false;
+  }
+
+  let updatedTimeline = false;
+  queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+    chatKeys.conversationTimeline(conversationId),
+    (oldData) => {
+      if (!oldData || oldData.pages.length === 0) {
+        return oldData;
+      }
+
+      const [newestPage, ...olderPages] = oldData.pages;
+      if (!newestPage) {
+        return oldData;
+      }
+
+      const retainedItems = newestPage.items.filter(
+        (item) => item.messageId !== message.id && item.asMessage.parentMessageId !== message.id
+      );
+      const baseSequence =
+        Math.max(
+          newestPage.newestLoadedSequence ?? 0,
+          ...retainedItems.map((item) => item.sequence),
+        );
+      const insertedItems = contentBlocks.map((block, index) =>
+        createFinalizedTimelineItem(message, block, index, baseSequence + index + 1)
+      );
+      const items = [...retainedItems, ...insertedItems];
+      const totalItemCount = Math.max(
+        insertedItems.length,
+        newestPage.totalItemCount - (newestPage.items.length - retainedItems.length) + insertedItems.length
+      );
+      updatedTimeline = true;
+
+      return {
+        ...oldData,
+        pages: [
+          {
+            ...newestPage,
+            items,
+            messages: items.map((item) => item.asMessage),
+            totalItemCount,
+            oldestLoadedSequence: items[0]?.sequence ?? null,
+            newestLoadedSequence: items[items.length - 1]?.sequence ?? null,
+          },
+          ...olderPages,
+        ],
+      };
+    }
+  );
+
+  if (!updatedTimeline) {
+    return false;
+  }
+
+  queryClient.setQueryData<ConversationQueryData>(
+    chatKeys.conversation(conversationId),
+    (oldData) => oldData ? { ...oldData, messages: upsertMessage(oldData.messages ?? [], message) } : oldData
+  );
+  queryClient.setQueryData<ConversationHistoryCacheData>(
+    chatKeys.conversationHistory(conversationId),
+    (oldData) => appendMessageToConversationHistory(oldData, message)
+  );
+
+  return true;
+}
+
+export type RenderReadyMessagePayload = {
+  id: string;
+  conversation_id?: string | null;
+  role: string;
+  content: string;
+  metadata?: string | null;
+  tool_calls?: unknown;
+  content_blocks?: unknown;
+  attribution_source?: string | null;
+  provider_harness?: string | null;
+  provider_session_id?: string | null;
+  upstream_provider?: string | null;
+  provider_profile?: string | null;
+  logical_model?: string | null;
+  effective_model_id?: string | null;
+  logical_effort?: string | null;
+  effective_effort?: string | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_creation_tokens?: number | null;
+  cache_read_tokens?: number | null;
+  estimated_usd?: number | null;
+  created_at: string;
+};
+
+export type RenderReadyTimelineItemPayload = {
+  id: string;
+  conversation_id?: string | null;
+  message_id?: string | null;
+  run_id?: string | null;
+  sequence: number;
+  block_index: number;
+  role: string;
+  kind: string;
+  status: string;
+  content: string;
+  content_blocks: unknown;
+  tool_call?: unknown;
+  metadata?: string | null;
+  provider_harness?: string | null;
+  provider_session_id?: string | null;
+  upstream_provider?: string | null;
+  provider_profile?: string | null;
+  logical_model?: string | null;
+  effective_model_id?: string | null;
+  logical_effort?: string | null;
+  effective_effort?: string | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_creation_tokens?: number | null;
+  cache_read_tokens?: number | null;
+  estimated_usd?: number | null;
+  created_at: string;
+  updated_at: string;
+  finalized_at?: string | null;
+};
+
+export type RenderReadyMessageCreatedPayload = {
+  message?: RenderReadyMessagePayload | null;
+  timeline_items?: RenderReadyTimelineItemPayload[] | null;
+};
+
+function messageFromRenderReadyPayload(
+  raw: RenderReadyMessagePayload,
+  fallbackConversationId: string
+): ChatMessageResponse {
+  const toolCalls = parseToolCalls(raw.tool_calls);
+  const contentBlocks = parseContentBlocks(raw.content_blocks);
+  return {
+    id: raw.id,
+    sessionId: null,
+    projectId: null,
+    taskId: null,
+    role: raw.role,
+    content: raw.content,
+    metadata: raw.metadata ?? null,
+    parentMessageId: null,
+    conversationId: raw.conversation_id ?? fallbackConversationId,
+    toolCalls: toolCalls.length > 0 ? toolCalls : null,
+    contentBlocks: contentBlocks.length > 0 ? contentBlocks : null,
+    sender: null,
+    attributionSource: raw.attribution_source ?? null,
+    providerHarness: raw.provider_harness ?? null,
+    providerSessionId: raw.provider_session_id ?? null,
+    upstreamProvider: raw.upstream_provider ?? null,
+    providerProfile: raw.provider_profile ?? null,
+    logicalModel: raw.logical_model ?? null,
+    effectiveModelId: raw.effective_model_id ?? null,
+    logicalEffort: raw.logical_effort ?? null,
+    effectiveEffort: raw.effective_effort ?? null,
+    inputTokens: raw.input_tokens ?? null,
+    outputTokens: raw.output_tokens ?? null,
+    cacheCreationTokens: raw.cache_creation_tokens ?? null,
+    cacheReadTokens: raw.cache_read_tokens ?? null,
+    estimatedUsd: raw.estimated_usd ?? null,
+    createdAt: raw.created_at,
+  };
+}
+
+function timelineItemFromRenderReadyPayload(
+  raw: RenderReadyTimelineItemPayload,
+  fallbackConversationId: string
+): ConversationTimelinePageResponse["items"][number] {
+  const conversationId = raw.conversation_id ?? fallbackConversationId;
+  const contentBlocks = parseContentBlocks(raw.content_blocks);
+  const toolCalls = raw.tool_call ? parseToolCalls([raw.tool_call]) : [];
+  const toolCall = toolCalls[0] ?? null;
+  const asMessage: ChatMessageResponse = {
+    id: raw.id,
+    sessionId: null,
+    projectId: null,
+    taskId: null,
+    role: raw.role,
+    content: raw.content,
+    metadata: raw.metadata ?? null,
+    parentMessageId: raw.message_id ?? null,
+    conversationId,
+    toolCalls: toolCall ? [toolCall] : null,
+    contentBlocks,
+    sender: null,
+    attributionSource: null,
+    providerHarness: raw.provider_harness ?? null,
+    providerSessionId: raw.provider_session_id ?? null,
+    upstreamProvider: raw.upstream_provider ?? null,
+    providerProfile: raw.provider_profile ?? null,
+    logicalModel: raw.logical_model ?? null,
+    effectiveModelId: raw.effective_model_id ?? null,
+    logicalEffort: raw.logical_effort ?? null,
+    effectiveEffort: raw.effective_effort ?? null,
+    inputTokens: raw.input_tokens ?? null,
+    outputTokens: raw.output_tokens ?? null,
+    cacheCreationTokens: raw.cache_creation_tokens ?? null,
+    cacheReadTokens: raw.cache_read_tokens ?? null,
+    estimatedUsd: raw.estimated_usd ?? null,
+    timelineStatus: raw.status,
+    timelineKind: raw.kind,
+    timelineSequence: raw.sequence,
+    createdAt: raw.created_at,
+  };
+
+  return {
+    id: raw.id,
+    conversationId,
+    messageId: raw.message_id ?? null,
+    runId: raw.run_id ?? null,
+    sequence: raw.sequence,
+    blockIndex: raw.block_index,
+    role: raw.role,
+    kind: raw.kind,
+    status: raw.status,
+    content: raw.content,
+    contentBlocks,
+    toolCall,
+    metadata: raw.metadata ?? null,
+    providerHarness: raw.provider_harness ?? null,
+    providerSessionId: raw.provider_session_id ?? null,
+    upstreamProvider: raw.upstream_provider ?? null,
+    providerProfile: raw.provider_profile ?? null,
+    logicalModel: raw.logical_model ?? null,
+    effectiveModelId: raw.effective_model_id ?? null,
+    logicalEffort: raw.logical_effort ?? null,
+    effectiveEffort: raw.effective_effort ?? null,
+    inputTokens: raw.input_tokens ?? null,
+    outputTokens: raw.output_tokens ?? null,
+    cacheCreationTokens: raw.cache_creation_tokens ?? null,
+    cacheReadTokens: raw.cache_read_tokens ?? null,
+    estimatedUsd: raw.estimated_usd ?? null,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
+    finalizedAt: raw.finalized_at ?? null,
+    asMessage,
+  };
+}
+
+export function upsertRenderReadyMessageIntoConversationCache(
+  queryClient: QueryClient,
+  conversationId: string,
+  payload: RenderReadyMessageCreatedPayload
+): boolean {
+  if (!payload.message || !payload.timeline_items || payload.timeline_items.length === 0) {
+    return false;
+  }
+
+  const message = messageFromRenderReadyPayload(payload.message, conversationId);
+  const insertedItems = payload.timeline_items.map((item) =>
+    timelineItemFromRenderReadyPayload(item, conversationId)
+  );
+  let updatedTimeline = false;
+
+  queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+    chatKeys.conversationTimeline(conversationId),
+    (oldData) => {
+      if (!oldData || oldData.pages.length === 0) {
+        return oldData;
+      }
+
+      const [newestPage, ...olderPages] = oldData.pages;
+      if (!newestPage) {
+        return oldData;
+      }
+
+      const retainedItems = newestPage.items.filter(
+        (item) => item.messageId !== message.id && item.asMessage.parentMessageId !== message.id
+      );
+      const items = [...retainedItems, ...insertedItems].sort(
+        (left, right) => left.sequence - right.sequence
+      );
+      const removedCount = newestPage.items.length - retainedItems.length;
+      updatedTimeline = true;
+
+      return {
+        ...oldData,
+        pages: [
+          {
+            ...newestPage,
+            items,
+            messages: items.map((item) => item.asMessage),
+            totalItemCount: Math.max(
+              insertedItems.length,
+              newestPage.totalItemCount - removedCount + insertedItems.length
+            ),
+            oldestLoadedSequence: items[0]?.sequence ?? null,
+            newestLoadedSequence: items[items.length - 1]?.sequence ?? null,
+          },
+          ...olderPages,
+        ],
+      };
+    }
+  );
+
+  if (!updatedTimeline) {
+    return false;
+  }
+
+  queryClient.setQueryData<ConversationQueryData>(
+    chatKeys.conversation(conversationId),
+    (oldData) => oldData ? { ...oldData, messages: upsertMessage(oldData.messages ?? [], message) } : oldData
+  );
+  queryClient.setQueryData<ConversationHistoryCacheData>(
+    chatKeys.conversationHistory(conversationId),
+    (oldData) => appendMessageToConversationHistory(oldData, message)
+  );
+
+  return true;
 }
 
 function removeMessageFromConversationTimeline(
