@@ -122,6 +122,29 @@ describe("AgentsPublishFileDiff", () => {
       expect(screen.getByText("src/components/Foo.tsx")).toBeInTheDocument();
     });
 
+    it("constrains the card to its row content width", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ path: "src/components/Foo.tsx" })}
+            diff={undefined}
+            isExpanded={false}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("publish-file-diff-src/components/Foo.tsx")).toHaveClass(
+        "w-full",
+        "max-w-full",
+      );
+    });
+
     it("renders additions count immediately", () => {
       render(
         withProviders(
