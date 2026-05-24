@@ -2598,7 +2598,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByText(/retry Commit & Publish/i)).toBeInTheDocument();
   });
 
-  it("shows auto-merge request progress after the pull request is published", () => {
+  it("shows auto-merge deferred warning after the pull request is published with waiting status", () => {
     renderPane(
       "publish",
       workspace({
@@ -2614,7 +2614,7 @@ describe("AgentsArtifactPane", () => {
 
     expect(screen.getByTestId("agents-publish-pipeline")).toBeInTheDocument();
     expect(screen.getByTestId("agents-publish-step-auto_merge")).toHaveTextContent(
-      "Request auto-merge",
+      "Auto-merge deferred",
     );
     expect(screen.queryByText(/latest publish attempt failed/i)).not.toBeInTheDocument();
   });

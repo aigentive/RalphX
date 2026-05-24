@@ -58,6 +58,7 @@ import {
 import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
 import { formatPullRequestUrlLabel } from "./agentPublishFormatting";
 import {
+  isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
   getAgentWorkspaceTerminalPublicationLabel,
   getAgentWorkspaceTerminalPublicationStatus,
@@ -433,18 +434,23 @@ export function AgentPublishPanel({
     pendingPrSupervision?.autoMergeDesired ?? workspace.prAutoMergeDesired ?? false;
   const prAutoMergeCurrent = workspace.prAutoMergeCurrent ?? null;
   const prSupervisionStatus = workspace.prSupervisionStatus ?? null;
-  const shouldShowAutoMergeProgress = isAgentWorkspaceAutoMergeRequestPending({
+  const autoMergeArgs = {
     autoMergeDesired: prAutoMergeDesired,
     autoMergeCurrent: prAutoMergeCurrent,
     hasPublishedPr,
     prSupervisionStatus,
     publicationPushStatus: workspace.publicationPushStatus,
     terminalPublicationStatus,
-  });
+  };
+  const shouldShowAutoMergeProgress =
+    isAgentWorkspaceAutoMergeRequestPending(autoMergeArgs);
+  const shouldShowAutoMergeDeferred =
+    isAgentWorkspaceAutoMergeDeferred(autoMergeArgs);
   const shouldShowPublishPipeline =
     effectivePublishing ||
     workspace.publicationPushStatus === "description_failed" ||
-    shouldShowAutoMergeProgress;
+    shouldShowAutoMergeProgress ||
+    shouldShowAutoMergeDeferred;
   const publishDisabled =
     !onPublishWorkspace ||
     isPipelineOwnedWorkspace ||
