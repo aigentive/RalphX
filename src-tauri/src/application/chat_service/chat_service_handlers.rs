@@ -702,6 +702,7 @@ async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
         content,
         sealed_tool_calls.as_deref(),
         sealed_content_blocks.as_deref(),
+        Vec::new(),
     )
     .await;
 }

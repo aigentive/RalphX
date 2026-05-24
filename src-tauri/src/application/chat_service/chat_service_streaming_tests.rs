@@ -13,9 +13,11 @@ use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, HarnessStreamMode};
 use crate::domain::entities::{
     AgentRun, AgentRunUsage, ChatContextType, ChatConversationId, ChatMessage, ChatMessageId,
-    ChatTimelineItemStatus, IdeationSessionId, MessageRole,
+    ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemStatus, ChatTimelinePage,
+    IdeationSessionId, MessageRole,
 };
-use crate::domain::repositories::AgentRunRepository;
+use crate::domain::repositories::{AgentRunRepository, ChatTimelineRepository};
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::{
     AssistantContent, AssistantMessage, ContentBlockItem, StreamMessage, StreamProcessor, ToolCall,
 };
@@ -31,6 +33,51 @@ use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
+
+struct FailingTimelineRepository;
+
+#[async_trait::async_trait]
+impl ChatTimelineRepository for FailingTimelineRepository {
+    async fn upsert_item(&self, _item: ChatTimelineItem) -> AppResult<ChatTimelineItem> {
+        Err(AppError::Infrastructure("timeline write failed".to_string()))
+    }
+
+    async fn get_by_id(&self, _id: &ChatTimelineItemId) -> AppResult<Option<ChatTimelineItem>> {
+        Ok(None)
+    }
+
+    async fn get_page(
+        &self,
+        _conversation_id: &ChatConversationId,
+        limit: u32,
+        before_sequence: Option<i64>,
+    ) -> AppResult<ChatTimelinePage> {
+        Ok(ChatTimelinePage {
+            items: Vec::new(),
+            limit,
+            before_sequence,
+            total_item_count: 0,
+            has_older: false,
+            oldest_loaded_sequence: None,
+            newest_loaded_sequence: None,
+        })
+    }
+
+    async fn count_by_conversation(&self, _conversation_id: &ChatConversationId) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    async fn get_by_conversation(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<ChatTimelineItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn mark_message_items_finalized(&self, _message_id: &ChatMessageId) -> AppResult<()> {
+        Ok(())
+    }
+}
 
 async fn spawn_jsonl_process(lines: &[&str]) -> tokio::process::Child {
     let mut payload = String::new();
@@ -324,7 +371,7 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         },
     ];
 
-    persist_timeline_snapshot(
+    let streaming_items = persist_timeline_snapshot(
         &Some(state.chat_timeline_repo.clone()),
         &conversation_id.as_str(),
         &message_id,
@@ -332,6 +379,9 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         ChatTimelineItemStatus::Streaming,
     )
     .await;
+    assert_eq!(streaming_items.len(), 3);
+    assert_eq!(streaming_items[0].status, ChatTimelineItemStatus::Streaming);
+    assert_eq!(streaming_items[1].tool_call_id.as_deref(), Some("tool-1"));
 
     let page = state
         .chat_timeline_repo
@@ -356,7 +406,7 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
     );
     assert!(page.items[2].tool_result_preview.is_none());
 
-    persist_timeline_snapshot(
+    let finalized_items = persist_timeline_snapshot(
         &Some(state.chat_timeline_repo.clone()),
         &conversation_id.as_str(),
         &message_id,
@@ -364,6 +414,10 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         ChatTimelineItemStatus::Finalized,
     )
     .await;
+    assert_eq!(finalized_items.len(), 3);
+    assert!(finalized_items
+        .iter()
+        .all(|item| item.status == ChatTimelineItemStatus::Finalized));
 
     let finalized = state
         .chat_timeline_repo
@@ -379,6 +433,27 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         .items
         .iter()
         .all(|item| item.finalized_at.is_some()));
+}
+
+#[tokio::test]
+async fn persist_timeline_snapshot_returns_empty_when_any_item_write_fails() {
+    let conversation_id = ChatConversationId::new();
+    let message_id = Some("assistant-message-write-fails".to_string());
+    let repo: Arc<dyn ChatTimelineRepository> = Arc::new(FailingTimelineRepository);
+    let blocks = vec![ContentBlockItem::Text {
+        text: "will fail".to_string(),
+    }];
+
+    let persisted = persist_timeline_snapshot(
+        &Some(repo),
+        &conversation_id.as_str(),
+        &message_id,
+        &blocks,
+        ChatTimelineItemStatus::Finalized,
+    )
+    .await;
+
+    assert!(persisted.is_empty());
 }
 
 #[tokio::test]
@@ -427,7 +502,7 @@ async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() 
         text: "ignored".to_string(),
     }];
 
-    persist_timeline_snapshot(
+    let missing_repo_items = persist_timeline_snapshot(
         &None,
         &conversation_id.as_str(),
         &Some("assistant-message-missing-repo".to_string()),
@@ -435,7 +510,7 @@ async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() 
         ChatTimelineItemStatus::Streaming,
     )
     .await;
-    persist_timeline_snapshot(
+    let missing_message_items = persist_timeline_snapshot(
         &Some(state.chat_timeline_repo.clone()),
         &conversation_id.as_str(),
         &None,
@@ -443,6 +518,8 @@ async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() 
         ChatTimelineItemStatus::Streaming,
     )
     .await;
+    assert!(missing_repo_items.is_empty());
+    assert!(missing_message_items.is_empty());
 
     let mut no_conversation = ChatMessage::user_in_session(IdeationSessionId::new(), "ignored");
     no_conversation.conversation_id = None;
