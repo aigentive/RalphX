@@ -188,6 +188,89 @@ export function getAgentsViewTestMocks() {
   return agentsViewTestMocks;
 }
 
+vi.mock("react-virtuoso", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+
+  type VirtuosoMockRange = {
+    startIndex: number;
+    endIndex: number;
+  };
+  type VirtuosoMockProps = {
+    className?: string;
+    computeItemKey?: (index: number, item: unknown) => React.Key;
+    data?: unknown[];
+    "data-testid"?: string;
+    endReached?: (index: number) => void;
+    itemContent?: (index: number, item: unknown) => React.ReactNode;
+    rangeChanged?: (range: VirtuosoMockRange) => void;
+    scrollerRef?: (node: HTMLElement | Window | null) => void;
+    style?: React.CSSProperties;
+    totalCount?: number;
+  };
+
+  const Virtuoso = React.forwardRef<unknown, VirtuosoMockProps>(function MockVirtuoso(
+    props,
+    ref
+  ) {
+    const {
+      className,
+      computeItemKey,
+      data: dataProp,
+      itemContent,
+      rangeChanged,
+      scrollerRef,
+      style,
+      totalCount,
+    } = props;
+    const data =
+      dataProp ??
+      Array.from({ length: totalCount ?? 0 }, () => undefined);
+    const endIndex = data.length - 1;
+
+    React.useImperativeHandle(
+      ref,
+      () => ({
+        getState: (stateCb: (state: unknown) => void) => {
+          stateCb({
+            ranges: [],
+            scrollTop: 0,
+          });
+        },
+        scrollToIndex: vi.fn(),
+      }),
+      []
+    );
+
+    React.useEffect(() => {
+      if (endIndex < 0) {
+        return;
+      }
+      rangeChanged?.({ startIndex: 0, endIndex });
+    }, [endIndex, rangeChanged]);
+
+    const setScrollerRef = React.useCallback((node: HTMLDivElement | null) => {
+      scrollerRef?.(node);
+    }, [scrollerRef]);
+
+    return (
+      <div
+        ref={setScrollerRef}
+        data-testid={props["data-testid"] ?? "mock-virtuoso"}
+        className={className}
+        style={style}
+      >
+        {data.map((item, index) => (
+          <div key={computeItemKey?.(index, item) ?? index}>
+            {itemContent?.(index, item)}
+          </div>
+        ))}
+      </div>
+    );
+  });
+
+  return { Virtuoso };
+});
+
 export function mockHarnessProviders(
   settings: AgentProvidersSettingsResponse = defaultProviderSettings,
   overrides: Record<string, unknown> = {},
