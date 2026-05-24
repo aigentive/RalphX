@@ -430,15 +430,15 @@ describe("AgentsView publish", () => {
     expect(toggle.querySelector("svg.lucide-check")).not.toBeInTheDocument();
   });
 
-  it("paginates older tasks and reveals them on click", async () => {
+  it("keeps the first active task visible in the collapsed task window", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
     listAgentTasksMock.mockResolvedValue([
       {
         taskId: "task-1",
         taskNumber: 1,
-        title: "Oldest task",
-        state: "done",
+        title: "Oldest active task",
+        state: "active",
         ownerAgent: "worker",
         blockedBy: [],
         blocks: [],
@@ -460,7 +460,7 @@ describe("AgentsView publish", () => {
         taskId: "task-3",
         taskNumber: 3,
         title: "Third task",
-        state: "active",
+        state: "open",
         ownerAgent: "worker",
         blockedBy: [],
         blocks: [],
@@ -495,18 +495,19 @@ describe("AgentsView publish", () => {
       expect(screen.getByTestId("agents-composer-task-list")).toBeInTheDocument(),
     );
 
-    expect(screen.queryByTestId("agents-composer-task-1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-composer-task-1")).toBeInTheDocument();
     expect(screen.getByTestId("agents-composer-task-2")).toBeInTheDocument();
     expect(screen.getByTestId("agents-composer-task-3")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-composer-task-4")).not.toBeInTheDocument();
+
+    const showMoreButton = screen.getByTestId("agents-composer-tasks-show-more");
+    expect(showMoreButton).toHaveTextContent("Show 1 more in this list");
+
+    fireEvent.click(showMoreButton);
+
     expect(screen.getByTestId("agents-composer-task-4")).toBeInTheDocument();
-
-    const showOlderBtn = screen.getByTestId("agents-composer-tasks-show-older");
-    expect(showOlderBtn).toHaveTextContent("Show 1 more in this list");
-
-    fireEvent.click(showOlderBtn);
-
-    expect(screen.getByTestId("agents-composer-task-1")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-composer-tasks-show-older")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-composer-tasks-show-more")).not.toBeInTheDocument();
   });
 
   it("loads previous task lists as grouped history inside the tasks tray", async () => {
