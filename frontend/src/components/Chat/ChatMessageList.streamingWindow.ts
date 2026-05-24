@@ -71,6 +71,9 @@ export function getNextStreamingTranscriptWindow(
       ? previousWindow
       : EMPTY_STREAMING_TRANSCRIPT_WINDOW;
   }
+  if (previousWindow.sourceBlockCount === 0) {
+    return liveWindow;
+  }
   if (!isFollowingLiveTail) {
     return previousWindow;
   }
