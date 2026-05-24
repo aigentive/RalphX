@@ -109,6 +109,8 @@ vi.mock("react-virtuoso", async () => {
       const atBottomStateChange = props.atBottomStateChange as AtBottomStateChange | undefined;
       const followOutput = props.followOutput as FollowOutput | undefined;
       const startReached = props.startReached as StartReached | undefined;
+      const firstItemIndex =
+        typeof props.firstItemIndex === "number" ? props.firstItemIndex : 0;
       const innerRef = React.useRef<HTMLDivElement>(null);
 
       React.useImperativeHandle(ref, () => ({
@@ -147,7 +149,7 @@ vi.mock("react-virtuoso", async () => {
           {Header ? <Header /> : null}
           {data.map((item, i) => (
             <div key={i} data-mock-item-index={i}>
-              {itemContent ? itemContent(i, item) : null}
+              {itemContent ? itemContent(firstItemIndex + i, item) : null}
             </div>
           ))}
         </div>
@@ -2782,7 +2784,8 @@ describe("ChatMessageList - Scroll Behavior", () => {
 
       expect(toolCall).toBeInTheDocument();
       expect(liveAssistantRow).toBeInTheDocument();
-      expect(liveAssistantRow?.querySelector("svg.lucide-bot")).toBeInTheDocument();
+      expect(liveAssistantRow?.querySelector("svg.lucide-bot")).not.toBeInTheDocument();
+      expect(liveAssistantRow?.querySelector('[data-testid="message-assistant-icon-spacer"]')).toBeInTheDocument();
       expect(typingIndicator).toBeInTheDocument();
       expect(typingIndicator.closest('[data-chat-message-item="true"]')).toBeNull();
       expect(liveAssistantRow!.compareDocumentPosition(typingIndicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -3341,7 +3344,141 @@ describe("ChatMessageList - Failed run banner edge cases", () => {
   });
 });
 
+describe("ChatMessageList - Assistant sender grouping", () => {
+  it("hides repeated assistant sender chrome but preserves the gutter for adjacent finalized messages", () => {
+    const messages: ChatMessageData[] = [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "First assistant item.",
+        createdAt: new Date(2026, 0, 1, 12, 0).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+        providerHarness: "codex",
+      },
+      {
+        id: "assistant-2",
+        role: "assistant",
+        content: "Second assistant item.",
+        createdAt: new Date(2026, 0, 1, 12, 20).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+        providerHarness: "codex",
+      },
+    ];
+    render(<ChatMessageList {...defaultProps} messages={messages} />);
+
+    const firstRow = screen
+      .getByText("First assistant item.")
+      .closest('[data-chat-message-item="true"]');
+    const secondRow = screen
+      .getByText("Second assistant item.")
+      .closest('[data-chat-message-item="true"]');
+
+    expect(firstRow?.querySelector("svg.lucide-bot")).toBeInTheDocument();
+    expect(firstRow?.querySelector('[data-testid="message-provider-badge"]')).toBeInTheDocument();
+    expect(secondRow?.querySelector("svg.lucide-bot")).not.toBeInTheDocument();
+    expect(secondRow?.querySelector('[data-testid="message-assistant-icon-spacer"]')).toBeInTheDocument();
+    expect(secondRow?.querySelector('[data-testid="message-provider-badge"]')).not.toBeInTheDocument();
+  });
+
+  it("starts a new assistant group after a user message", () => {
+    const messages: ChatMessageData[] = [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "Earlier assistant item.",
+        createdAt: new Date(2026, 0, 1, 12, 0).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+        providerHarness: "codex",
+      },
+      {
+        id: "user-1",
+        role: "user",
+        content: "User interruption.",
+        createdAt: new Date(2026, 0, 1, 12, 1).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+      },
+      {
+        id: "assistant-2",
+        role: "assistant",
+        content: "Fresh assistant item.",
+        createdAt: new Date(2026, 0, 1, 12, 2).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+        providerHarness: "codex",
+      },
+    ];
+    render(<ChatMessageList {...defaultProps} messages={messages} />);
+
+    const freshAssistantRow = screen
+      .getByText("Fresh assistant item.")
+      .closest('[data-chat-message-item="true"]');
+
+    expect(freshAssistantRow?.querySelector("svg.lucide-bot")).toBeInTheDocument();
+    expect(freshAssistantRow?.querySelector('[data-testid="message-provider-badge"]')).toBeInTheDocument();
+    expect(freshAssistantRow?.querySelector('[data-testid="message-assistant-icon-spacer"]')).not.toBeInTheDocument();
+  });
+});
+
 describe("ChatMessageList - Streaming text/empty edge cases", () => {
+  it("keeps the assistant gutter for text-only streaming content", () => {
+    const blocks: StreamingContentBlock[] = [
+      { type: "text", text: "Live Codex text is still streaming." },
+    ];
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        isAgentRunning={true}
+        streamingContentBlocks={blocks}
+      />
+    );
+
+    const liveAssistantRow = screen
+      .getByText("Live Codex text is still streaming.")
+      .closest('[data-chat-message-item="true"]');
+
+    expect(liveAssistantRow).toBeInTheDocument();
+    expect(liveAssistantRow?.querySelector("svg.lucide-bot")).toBeInTheDocument();
+  });
+
+  it("hides repeated streaming sender chrome while preserving the assistant gutter", () => {
+    const messages: ChatMessageData[] = [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "Previous assistant output.",
+        createdAt: new Date(2026, 0, 1, 12, 0).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+        providerHarness: "codex",
+      },
+    ];
+    const blocks: StreamingContentBlock[] = [
+      { type: "text", text: "Continuation is still streaming." },
+    ];
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={messages}
+        isAgentRunning={true}
+        streamingContentBlocks={blocks}
+        providerHarness="codex"
+      />
+    );
+
+    const liveAssistantRow = screen
+      .getByText("Continuation is still streaming.")
+      .closest('[data-chat-message-item="true"]');
+
+    expect(liveAssistantRow).toBeInTheDocument();
+    expect(liveAssistantRow?.querySelector("svg.lucide-bot")).not.toBeInTheDocument();
+    expect(liveAssistantRow?.querySelector('[data-testid="message-assistant-icon-spacer"]')).toBeInTheDocument();
+    expect(liveAssistantRow?.querySelector('[data-testid="message-provider-badge"]')).not.toBeInTheDocument();
+  });
+
   it("renders without crashing when streamingContentBlocks contains empty text only", () => {
     const blocks: StreamingContentBlock[] = [
       { type: "text", text: "   " },
@@ -3393,6 +3530,48 @@ describe("ChatMessageList - Virtuoso production render path", () => {
   it("renders timeline through Virtuoso path with messages", () => {
     render(<ChatMessageList {...defaultProps} messages={createMessages(3)} />);
     expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+
+  it("preserves grouped assistant gutter when Virtuoso reports absolute item indexes", () => {
+    const messages: ChatMessageData[] = [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "First hydrated assistant item.",
+        createdAt: new Date(2026, 0, 1, 12, 0).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+        providerHarness: "claude",
+      },
+      {
+        id: "assistant-2",
+        role: "assistant",
+        content: "Second hydrated assistant item.",
+        createdAt: new Date(2026, 0, 1, 12, 1).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+        providerHarness: "claude",
+      },
+    ];
+
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={messages}
+        firstItemIndex={40}
+      />
+    );
+
+    const firstRow = screen
+      .getByText("First hydrated assistant item.")
+      .closest('[data-chat-message-item="true"]');
+    const secondRow = screen
+      .getByText("Second hydrated assistant item.")
+      .closest('[data-chat-message-item="true"]');
+
+    expect(firstRow?.querySelector("svg.lucide-bot")).toBeInTheDocument();
+    expect(secondRow?.querySelector("svg.lucide-bot")).not.toBeInTheDocument();
+    expect(secondRow?.querySelector('[data-testid="message-assistant-icon-spacer"]')).toBeInTheDocument();
   });
 
   it("renders Virtuoso path with hook events interleaved", () => {
