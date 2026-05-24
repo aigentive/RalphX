@@ -19,12 +19,9 @@ import {
   agentWorkspaceKeys,
 } from "./agentWorkspaceQueries";
 import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
-import {
-  mapReviewCommitsToDiffViewerCommits,
-  useAgentWorkspaceChangeSummary,
-} from "./useAgentWorkspaceChangeSummary";
+import { useAgentWorkspaceChangeSummary } from "./useAgentWorkspaceChangeSummary";
 
-const ACTIVE_AGENT_REVIEW_REFRESH_MS = 2_500;
+const ACTIVE_AGENT_CHANGE_SUMMARY_REFRESH_MS = 2_500;
 const ACTIVE_AGENT_TASK_REFRESH_MS = 2_500;
 const EMPTY_AGENT_TASKS: AgentTaskSummary[] = [];
 const EMPTY_AGENT_TASK_LISTS: AgentTaskListSummary[] = [];
@@ -374,14 +371,12 @@ function AgentsComposerWorkspaceChangesCardContent({
 }) {
   const [activePanel, setActivePanel] = useState<ComposerContextPanel | null>(null);
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
-  const isReviewRefreshInFlight = useRef(false);
   const wasAgentGenerating = useRef(false);
   const previousIsAgentGenerating = useRef(false);
   const userDismissedTaskPanel = useRef(false);
   const hasObservedTaskSnapshot = useRef(false);
   const previousTaskSignatures = useRef<Map<string, string>>(new Map());
   const taskRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const reviewRefetchRef = useRef<(() => Promise<unknown>) | null>(null);
   const canInspectChanges =
     workspace?.mode === "edit" && workspace.status !== "missing";
   const canScheduleReviewHydration = useDeferredAgentHydration(conversationId);
@@ -398,11 +393,15 @@ function AgentsComposerWorkspaceChangesCardContent({
 
     return () => window.clearTimeout(timer);
   }, [canScheduleReviewHydration, conversationId, pauseHydration]);
-  const reviewQuery = useQuery({
-    queryKey: agentWorkspaceKeys.review(conversationId),
-    queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId),
+  const changeSummaryQuery = useQuery({
+    queryKey: agentWorkspaceKeys.changeSummary(conversationId),
+    queryFn: () => diffApi.getAgentConversationWorkspaceChangeSummary(conversationId),
     enabled: canInspectChanges && canHydrateReview,
     staleTime: AGENT_WORKSPACE_STALE_MS,
+    refetchInterval:
+      canInspectChanges && canHydrateReview && isAgentGenerating
+        ? ACTIVE_AGENT_CHANGE_SUMMARY_REFRESH_MS
+        : false,
   });
   const tasksQuery = useQuery({
     queryKey: agentWorkspaceKeys.agentTasks(conversationId),
@@ -447,35 +446,13 @@ function AgentsComposerWorkspaceChangesCardContent({
       void refetchTaskLists();
     }
   }, [activePanel, canHydrateReview, isAgentGenerating, refetchTaskLists, refetchTasks]);
-  useEffect(() => {
-    reviewRefetchRef.current = reviewQuery.refetch;
-  }, [reviewQuery.refetch]);
-  useEffect(() => {
-    if (!canInspectChanges || !canHydrateReview || !isAgentGenerating) {
-      isReviewRefreshInFlight.current = false;
-      return;
-    }
-
-    const timer = window.setInterval(() => {
-      if (isReviewRefreshInFlight.current) {
-        return;
-      }
-      const refetchReview = reviewRefetchRef.current;
-      if (!refetchReview) {
-        return;
-      }
-      isReviewRefreshInFlight.current = true;
-      void refetchReview().finally(() => {
-        isReviewRefreshInFlight.current = false;
-      });
-    }, ACTIVE_AGENT_REVIEW_REFRESH_MS);
-
-    return () => window.clearInterval(timer);
-  }, [canHydrateReview, canInspectChanges, conversationId, isAgentGenerating]);
-  const review = reviewQuery.data ?? null;
-  const commits = useMemo(() => mapReviewCommitsToDiffViewerCommits(review), [review]);
-  const summary = useAgentWorkspaceChangeSummary({ conversationId, review });
-  const hasCommitSummary = summary.workspaceChangeCount === 0 && commits.length > 0;
+  const liveSummary = changeSummaryQuery.data ?? null;
+  const summary = useAgentWorkspaceChangeSummary({
+    conversationId,
+    review: null,
+    liveSummary,
+    hydrateWorktreeFileLists: activePanel === "changes",
+  });
   const tasks = tasksQuery.data ?? EMPTY_AGENT_TASKS;
   const taskLists = taskListsQuery.data ?? EMPTY_AGENT_TASK_LISTS;
   const previousTaskLists = useMemo(() => taskLists.slice(1), [taskLists]);
@@ -498,10 +475,9 @@ function AgentsComposerWorkspaceChangesCardContent({
   const shouldShowTasks = tasksQuery.isSuccess && tasks.length > 0;
   const shouldShowChanges =
     canInspectChanges &&
-    reviewQuery.isSuccess &&
+    changeSummaryQuery.isSuccess &&
     (summary.workspaceChangeCount > 0 ||
-      summary.currentFiles.length > 0 ||
-      hasCommitSummary);
+      summary.currentFiles.length > 0);
   const shouldShow = shouldShowTasks || shouldShowChanges;
 
   useEffect(() => {
@@ -635,15 +611,11 @@ function AgentsComposerWorkspaceChangesCardContent({
       ? "Unstaged"
       : summary.effectiveMode === "staged"
         ? "Staged"
-        : summary.effectiveMode === "cumulative" && hasCommitSummary
-          ? "All commits"
-          : "Workspace changes";
-  const fileLabel = `${summary.currentFiles.length} ${
-    summary.currentFiles.length === 1 ? "file" : "files"
+        : "Workspace changes";
+  const fileLabel = `${summary.currentFileCount} ${
+    summary.currentFileCount === 1 ? "file" : "files"
   }`;
-  const changesCountLabel = hasCommitSummary
-    ? `${commits.length} ${commits.length === 1 ? "commit" : "commits"}`
-    : fileLabel;
+  const changesCountLabel = fileLabel;
   const allDone = taskProgress.actionable > 0 && taskProgress.done === taskProgress.actionable;
   const hasActive = taskProgress.active > 0;
   const taskCountLabel = allDone

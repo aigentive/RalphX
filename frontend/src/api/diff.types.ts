@@ -104,3 +104,15 @@ export interface AgentWorkspaceReview {
   headRef: string;
   supportsWorktreeModes?: boolean;
 }
+
+export interface AgentWorkspaceChangeBucketSummary {
+  fileCount: number;
+  additions: number;
+  deletions: number;
+}
+
+export interface AgentWorkspaceChangeSummary {
+  supportsWorktreeModes: boolean;
+  staged: AgentWorkspaceChangeBucketSummary;
+  unstaged: AgentWorkspaceChangeBucketSummary;
+}

@@ -2,6 +2,7 @@
 
 import type { z } from "zod";
 import type {
+  AgentWorkspaceChangeSummaryResponseSchema,
   AgentWorkspaceReviewResponseSchema,
   FileChangeSchema,
   FileDiffSchema,
@@ -14,6 +15,8 @@ import type {
   RangeLineSchema,
 } from "./diff.schemas";
 import type {
+  AgentWorkspaceChangeBucketSummary,
+  AgentWorkspaceChangeSummary,
   AgentWorkspaceReview,
   FileChange,
   FileDiff,
@@ -36,6 +39,9 @@ type RawPrAnnotationSourceUnavailable = z.infer<typeof PrAnnotationSourceUnavail
 type RawPrDiffAnnotationsResponse = z.infer<typeof PrDiffAnnotationsResponseSchema>;
 type RawRangeLine = z.infer<typeof RangeLineSchema>;
 type RawAgentWorkspaceReview = z.infer<typeof AgentWorkspaceReviewResponseSchema>;
+type RawAgentWorkspaceChangeSummary = z.infer<
+  typeof AgentWorkspaceChangeSummaryResponseSchema
+>;
 
 export function transformFileChange(raw: RawFileChange): FileChange {
   return {
@@ -146,5 +152,25 @@ export function transformAgentWorkspaceReview(
     baseRef: raw.base_ref,
     headRef: raw.head_ref,
     supportsWorktreeModes: raw.supports_worktree_modes,
+  };
+}
+
+function transformAgentWorkspaceChangeBucketSummary(
+  raw: RawAgentWorkspaceChangeSummary["staged"]
+): AgentWorkspaceChangeBucketSummary {
+  return {
+    fileCount: raw.file_count,
+    additions: raw.additions,
+    deletions: raw.deletions,
+  };
+}
+
+export function transformAgentWorkspaceChangeSummary(
+  raw: RawAgentWorkspaceChangeSummary
+): AgentWorkspaceChangeSummary {
+  return {
+    supportsWorktreeModes: raw.supports_worktree_modes,
+    staged: transformAgentWorkspaceChangeBucketSummary(raw.staged),
+    unstaged: transformAgentWorkspaceChangeBucketSummary(raw.unstaged),
   };
 }
