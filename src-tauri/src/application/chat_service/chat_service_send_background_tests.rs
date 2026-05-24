@@ -9,9 +9,9 @@ use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, ChatAttachment, ChatContextType, ChatConversation,
-    ChatConversationId, ProjectId,
+    ChatConversationId, ChatTimelineItemStatus, ProjectId,
 };
-use crate::infrastructure::agents::claude::ToolCall;
+use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
@@ -932,4 +932,291 @@ async fn finalize_no_output_writes_both_chat_messages_and_timeline_placeholder()
             .contains("Agent completed with no output"),
         "the placeholder block must carry the same note as chat_messages"
     );
+}
+
+#[tokio::test]
+async fn finalize_structured_writes_chat_message_and_finalized_timeline_rows() {
+    use crate::application::chat_service::create_assistant_message;
+    use crate::domain::entities::IdeationSessionId;
+
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let session_id = IdeationSessionId::new();
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed pre-assistant message");
+
+    let tool_calls = vec![ToolCall {
+        id: Some("toolu-read".to_string()),
+        name: "Read".to_string(),
+        arguments: serde_json::json!({ "file_path": "src/app.ts" }),
+        result: Some(serde_json::json!("preview")),
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    }];
+    let content_blocks = vec![
+        ContentBlockItem::Text {
+            text: "Done".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("toolu-read".to_string()),
+            name: "Read".to_string(),
+            arguments: serde_json::json!({ "file_path": "src/app.ts" }),
+            result: Some(serde_json::json!("preview")),
+            parent_tool_use_id: None,
+            diff_context: Some(serde_json::json!({ "file_path": "src/app.ts" })),
+        },
+    ];
+
+    super::finalize_structured_assistant_message::<tauri::Wry>(
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        None,
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        &conversation_id,
+        &pre_assistant_id,
+        "orchestrator",
+        "Done",
+        &tool_calls,
+        &content_blocks,
+        false,
+    )
+    .await;
+
+    let persisted = state
+        .chat_message_repo
+        .get_by_id(&crate::domain::entities::ChatMessageId::from_string(
+            pre_assistant_id.clone(),
+        ))
+        .await
+        .expect("load message")
+        .expect("message persisted");
+    assert_eq!(persisted.content, "Done");
+    assert!(persisted
+        .content_blocks
+        .as_deref()
+        .is_some_and(|raw| raw.contains("toolu-read")));
+
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    let assistant_blocks: Vec<_> = page
+        .items
+        .iter()
+        .filter(|item| {
+            item.message_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == pre_assistant_id)
+        })
+        .collect();
+    assert_eq!(assistant_blocks.len(), 2);
+    assert!(assistant_blocks
+        .iter()
+        .all(|item| item.status == ChatTimelineItemStatus::Finalized));
+    assert_eq!(assistant_blocks[0].text.as_deref(), Some("Done"));
+    assert_eq!(assistant_blocks[1].tool_call_id.as_deref(), Some("toolu-read"));
+    assert_eq!(assistant_blocks[1].tool_status.as_deref(), Some("completed"));
+    assert!(assistant_blocks[1]
+        .raw_block_json
+        .as_deref()
+        .is_some_and(|raw| raw.contains("diff_context")));
+}
+
+#[tokio::test]
+async fn finalize_structured_split_transcript_writes_timeline_for_each_segment() {
+    use crate::application::chat_service::create_assistant_message;
+    use crate::domain::entities::IdeationSessionId;
+
+    let state = AppState::new_test();
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+    let conversation_id = ChatConversationId::new();
+    let session_id = IdeationSessionId::new();
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed pre-assistant message");
+
+    let content_blocks = vec![
+        ContentBlockItem::Text {
+            text: "First segment".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("toolu-read".to_string()),
+            name: "Read".to_string(),
+            arguments: serde_json::json!({ "file_path": "src/app.ts" }),
+            result: Some(serde_json::json!("preview")),
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+        ContentBlockItem::Text {
+            text: "Second segment".to_string(),
+        },
+    ];
+    let tool_calls = vec![ToolCall {
+        id: Some("toolu-read".to_string()),
+        name: "Read".to_string(),
+        arguments: serde_json::json!({ "file_path": "src/app.ts" }),
+        result: Some(serde_json::json!("preview")),
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    }];
+
+    super::finalize_structured_assistant_message::<tauri::test::MockRuntime>(
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        Some(&app_handle),
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        &conversation_id,
+        &pre_assistant_id,
+        "orchestrator",
+        "First segmentSecond segment",
+        &tool_calls,
+        &content_blocks,
+        true,
+    )
+    .await;
+
+    let messages = state
+        .chat_message_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("load conversation messages");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].id.as_str(), pre_assistant_id);
+    assert_eq!(messages[0].content, "First segment");
+    assert_eq!(messages[1].content, "Second segment");
+
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    assert_eq!(page.items.len(), 3);
+    assert!(page
+        .items
+        .iter()
+        .all(|item| item.status == ChatTimelineItemStatus::Finalized));
+    assert_eq!(page.items[0].message_id.as_ref().unwrap().as_str(), pre_assistant_id);
+    assert_eq!(page.items[1].message_id.as_ref().unwrap().as_str(), pre_assistant_id);
+    assert_eq!(
+        page.items[2].message_id.as_ref().unwrap().as_str(),
+        messages[1].id.as_str()
+    );
+}
+
+#[tokio::test]
+async fn exported_finalization_test_helpers_delegate_to_core_paths() {
+    use crate::application::chat_service::{
+        create_assistant_message, finalize_assistant_message_for_test,
+        finalize_structured_assistant_message_for_test,
+    };
+    use crate::domain::entities::{ChatMessageId, IdeationSessionId};
+
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let session_id = IdeationSessionId::new();
+
+    let plain_message = create_assistant_message(
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let plain_message_id = plain_message.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(plain_message)
+        .await
+        .expect("seed plain assistant message");
+    finalize_assistant_message_for_test::<tauri::Wry>(
+        &state.chat_message_repo,
+        None,
+        &conversation_id.as_str(),
+        "ideation",
+        session_id.as_str(),
+        &plain_message_id,
+        "orchestrator",
+        "Plain helper content",
+        None,
+        None,
+    )
+    .await;
+
+    let structured_message = create_assistant_message(
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let structured_message_id = structured_message.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(structured_message)
+        .await
+        .expect("seed structured assistant message");
+    finalize_structured_assistant_message_for_test::<tauri::Wry>(
+        &state.chat_message_repo,
+        None,
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        &conversation_id,
+        &structured_message_id,
+        "orchestrator",
+        "Structured helper content",
+        &[],
+        &[ContentBlockItem::Text {
+            text: "Structured helper content".to_string(),
+        }],
+        false,
+    )
+    .await;
+
+    let plain = state
+        .chat_message_repo
+        .get_by_id(&ChatMessageId::from_string(plain_message_id))
+        .await
+        .expect("load plain helper message")
+        .expect("plain helper message");
+    let structured = state
+        .chat_message_repo
+        .get_by_id(&ChatMessageId::from_string(structured_message_id))
+        .await
+        .expect("load structured helper message")
+        .expect("structured helper message");
+    assert_eq!(plain.content, "Plain helper content");
+    assert_eq!(structured.content, "Structured helper content");
 }

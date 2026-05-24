@@ -22,6 +22,9 @@ import {
   chatKeys,
   getCachedConversationMessages,
   invalidateConversationDataQueries,
+  upsertFinalizedMessageIntoConversationCache,
+  upsertRenderReadyMessageIntoConversationCache,
+  type RenderReadyMessageCreatedPayload,
 } from "@/hooks/useChat";
 import { conversationStatsKey } from "@/hooks/useConversationStats";
 import { getContextConfig } from "@/lib/chat-context-registry";
@@ -29,6 +32,8 @@ import { isProviderRole } from "@/lib/chat/provider-role";
 import type { ContextType } from "@/types/chat-conversation";
 import type { AgentRunCompletedPayload } from "@/types/events";
 import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
+import type { ChatMessageResponse } from "@/api/chat";
+import type { ContentBlockItem } from "@/components/Chat/MessageItem";
 import type { StreamingTask, StreamingContentBlock } from "@/types/streaming-task";
 import type { Unsubscribe } from "@/lib/event-bus";
 import { useChatStore } from "@/stores/chatStore";
@@ -271,6 +276,129 @@ function applyToolCallResultPreview(
   delete toolCall.detailRef;
 }
 
+type AgentMessageCreatedPayload = {
+  conversation_id?: string;
+  context_id?: string;
+  context_type?: string;
+  role?: string;
+  message_id?: string;
+  content?: string;
+  created_at?: string;
+  metadata?: string | null;
+  render_ready?: RenderReadyMessageCreatedPayload | null;
+};
+
+function contentBlockFromToolCall(toolCall: ToolCall): ContentBlockItem {
+  return {
+    type: "tool_use",
+    id: toolCall.id,
+    name: toolCall.name,
+    arguments: toolCall.arguments,
+    ...(toolCall.result !== undefined ? { result: toolCall.result } : {}),
+    ...(toolCall.resultPreviewTruncated !== undefined
+      ? { resultPreviewTruncated: toolCall.resultPreviewTruncated }
+      : {}),
+    ...(toolCall.resultPreviewOriginalBytes !== undefined
+      ? { resultPreviewOriginalBytes: toolCall.resultPreviewOriginalBytes }
+      : {}),
+    ...(toolCall.resultPreviewLineCount !== undefined
+      ? { resultPreviewLineCount: toolCall.resultPreviewLineCount }
+      : {}),
+    ...(toolCall.resultPreviewOmittedLines !== undefined
+      ? { resultPreviewOmittedLines: toolCall.resultPreviewOmittedLines }
+      : {}),
+    ...(toolCall.detailRef ? { detailRef: toolCall.detailRef } : {}),
+    ...(toolCall.parentToolUseId ? { parentToolUseId: toolCall.parentToolUseId } : {}),
+    ...(toolCall.diffContext ? { diffContext: toolCall.diffContext } : {}),
+  };
+}
+
+function buildFinalizedContentBlocks(
+  payload: AgentMessageCreatedPayload,
+  streamingContentBlocks: StreamingContentBlock[],
+  streamingToolCalls: ToolCall[],
+): ContentBlockItem[] | null {
+  if (streamingContentBlocks.some((block) => block.type === "task")) {
+    return null;
+  }
+
+  const blocks = streamingContentBlocks
+    .filter((block): block is Exclude<StreamingContentBlock, { type: "task" }> => block.type !== "task")
+    .map((block): ContentBlockItem | null => {
+      if (block.type === "text") {
+        return block.text.trim().length > 0 ? { type: "text", text: block.text } : null;
+      }
+      return contentBlockFromToolCall(block.toolCall);
+    })
+    .filter((block): block is ContentBlockItem => block != null);
+
+  if (blocks.length > 0) {
+    return blocks;
+  }
+
+  if (streamingToolCalls.length > 0) {
+    return streamingToolCalls.map(contentBlockFromToolCall);
+  }
+
+  const content = payload.content ?? "";
+  return content.trim().length > 0 ? [{ type: "text", text: content }] : null;
+}
+
+function buildFinalizedMessageForCache(
+  payload: AgentMessageCreatedPayload,
+  contentBlocks: ContentBlockItem[],
+): ChatMessageResponse | null {
+  if (!payload.message_id || !payload.conversation_id || !payload.role) {
+    return null;
+  }
+
+  const toolCalls = contentBlocks
+    .filter((block): block is ContentBlockItem & { type: "tool_use" } => block.type === "tool_use")
+    .map((block): ToolCall => ({
+      id: block.id ?? `tool:${block.name ?? "unknown"}`,
+      name: block.name ?? "unknown",
+      arguments: block.arguments ?? {},
+      ...(block.result !== undefined ? { result: block.result } : {}),
+      ...(block.resultPreviewTruncated !== undefined
+        ? { resultPreviewTruncated: block.resultPreviewTruncated }
+        : {}),
+      ...(block.resultPreviewOriginalBytes !== undefined
+        ? { resultPreviewOriginalBytes: block.resultPreviewOriginalBytes }
+        : {}),
+      ...(block.resultPreviewLineCount !== undefined
+        ? { resultPreviewLineCount: block.resultPreviewLineCount }
+        : {}),
+      ...(block.resultPreviewOmittedLines !== undefined
+        ? { resultPreviewOmittedLines: block.resultPreviewOmittedLines }
+        : {}),
+      ...(block.detailRef ? { detailRef: block.detailRef } : {}),
+      ...(block.parentToolUseId ? { parentToolUseId: block.parentToolUseId } : {}),
+      ...(block.diffContext ? { diffContext: block.diffContext } : {}),
+    }));
+  const textContent =
+    payload.content ??
+    contentBlocks
+      .filter((block) => block.type === "text")
+      .map((block) => block.text ?? "")
+      .join("");
+
+  return {
+    id: payload.message_id,
+    sessionId: null,
+    projectId: null,
+    taskId: null,
+    role: payload.role,
+    content: textContent,
+    metadata: payload.metadata ?? null,
+    parentMessageId: null,
+    conversationId: payload.conversation_id,
+    toolCalls: toolCalls.length > 0 ? toolCalls : null,
+    contentBlocks,
+    sender: null,
+    createdAt: payload.created_at ?? new Date().toISOString(),
+  };
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -279,6 +407,8 @@ interface UseChatEventsProps {
   activeConversationId: string | null;
   contextId: string | null;
   contextType: ContextType | null;
+  streamingToolCalls?: ToolCall[];
+  streamingContentBlocks?: StreamingContentBlock[];
   setStreamingToolCalls: Dispatch<SetStateAction<ToolCall[]>>;
   setStreamingContentBlocks: Dispatch<SetStateAction<StreamingContentBlock[]>>;
   setStreamingTasks: Dispatch<SetStateAction<Map<string, StreamingTask>>>;
@@ -296,6 +426,8 @@ export function useChatEvents({
   activeConversationId,
   contextId,
   contextType,
+  streamingToolCalls = [],
+  streamingContentBlocks = [],
   setStreamingToolCalls,
   setStreamingContentBlocks,
   setStreamingTasks,
@@ -304,6 +436,16 @@ export function useChatEvents({
 }: UseChatEventsProps) {
   const bus = useEventBus();
   const queryClient = useQueryClient();
+  const streamingToolCallsRef = useRef(streamingToolCalls);
+  const streamingContentBlocksRef = useRef(streamingContentBlocks);
+
+  useEffect(() => {
+    streamingToolCallsRef.current = streamingToolCalls;
+  }, [streamingToolCalls]);
+
+  useEffect(() => {
+    streamingContentBlocksRef.current = streamingContentBlocks;
+  }, [streamingContentBlocks]);
 
   // Resolve feature flags from registry
   const config = contextType ? getContextConfig(contextType) : null;
@@ -1010,27 +1152,48 @@ export function useChatEvents({
     // 1. Streaming active: streamingContentBlocks visible, last DB assistant message filtered
     // 2. agent:message_created fires: setIsFinalizing(true) + clear streaming state (same batch)
     // 3. Re-render: hasActiveStreaming=false, isFinalizing=true → filter still applies
-    // 4. Subscribe to query cache; when the refetch returns data containing the new message_id,
-    //    call setIsFinalizing(false) and unsubscribe.
-    // 5. Safety timeout (3s) clears isFinalizing if the query never returns the expected message.
+    // 4. Try a lightweight active-tail cache handoff from a backend render-ready
+    //    payload or the live streaming snapshot; if it succeeds, the watcher clears immediately.
+    // 5. Otherwise subscribe to query cache; when the fallback refetch returns
+    //    data containing the new message_id, call setIsFinalizing(false) and unsubscribe.
+    // 6. Safety timeout (3s) clears isFinalizing if the query never returns the expected message.
     // Result: smooth swap with no fixed-delay race condition.
     unsubscribes.push(
-      bus.subscribe<{
-        conversation_id?: string;
-        context_id?: string;
-        context_type?: string;
-        role?: string;
-        message_id?: string;
-      }>("agent:message_created", (payload) => {
+      bus.subscribe<AgentMessageCreatedPayload>("agent:message_created", (payload) => {
         if (!payload.conversation_id) return;
         if (!isRelevant(payload)) return;
 
+        let usedLightweightHandoff = false;
         if (isProviderRole(payload.role)) {
           const convId = payload.conversation_id;
           const assistantMessageId = payload.message_id;
+          const contentBlocks = payload.render_ready || contextType === "ideation"
+            ? null
+            : buildFinalizedContentBlocks(
+              payload,
+              streamingContentBlocksRef.current,
+              streamingToolCallsRef.current,
+            );
+          const finalizedMessage = contentBlocks
+            ? buildFinalizedMessageForCache(payload, contentBlocks)
+            : null;
 
-          // Set isFinalizing=true in same batch as clearing streaming state
+          // Set isFinalizing=true in the same batch as clearing streaming state.
+          // When the active timeline cache can be updated from the canonical
+          // event payload or live stream snapshot, the cache watcher clears
+          // finalizing immediately; otherwise it waits for the DB refetch fallback.
           setIsFinalizing(true);
+          if (payload.render_ready) {
+            usedLightweightHandoff = upsertRenderReadyMessageIntoConversationCache(
+              queryClient,
+              convId,
+              payload.render_ready,
+            );
+          } else {
+            usedLightweightHandoff = finalizedMessage
+              ? upsertFinalizedMessageIntoConversationCache(queryClient, convId, finalizedMessage)
+              : false;
+          }
           setStreamingContentBlocks(prev => prev.length === 0 ? prev : []);
           setStreamingToolCalls(prev => prev.length === 0 ? prev : []);
           setStreamingTasks(prev => prev.size === 0 ? prev : new Map());
@@ -1094,13 +1257,19 @@ export function useChatEvents({
           // If no message_id in payload, the safety timeout alone handles cleanup
         }
 
-        // Cancel in-flight fetches so invalidation starts a fresh refetch
-        // instead of deduplicating with a stale in-flight request.
+        // Cancel in-flight fetches so a stale response cannot overwrite either
+        // the lightweight active-tail handoff or the fallback refetch.
         void queryClient.cancelQueries({ queryKey: chatKeys.conversation(payload.conversation_id), exact: true });
         void queryClient.cancelQueries({ queryKey: chatKeys.conversationSummary(payload.conversation_id) });
         void queryClient.cancelQueries({ queryKey: chatKeys.conversationHistory(payload.conversation_id) });
         void queryClient.cancelQueries({ queryKey: chatKeys.conversationTimeline(payload.conversation_id) });
-        invalidateConversationDataQueries(queryClient, payload.conversation_id);
+        if (isProviderRole(payload.role) && usedLightweightHandoff) {
+          queryClient.invalidateQueries({
+            queryKey: chatKeys.conversationSummary(payload.conversation_id),
+          });
+        } else {
+          invalidateConversationDataQueries(queryClient, payload.conversation_id);
+        }
         queryClient.invalidateQueries({
           queryKey: conversationStatsKey(payload.conversation_id),
         });
