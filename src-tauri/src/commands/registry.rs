@@ -9,6 +9,8 @@ macro_rules! register_tauri_commands {
             commands::release_notes_commands::get_current_release_notes,
             commands::release_notes_commands::get_last_seen_release_notes_version,
             commands::release_notes_commands::mark_release_notes_seen,
+            commands::release_notes_commands::list_release_notes_versions,
+            commands::release_notes_commands::get_release_notes_for_version,
             commands::atlassian_commands::get_atlassian_integration_settings,
             commands::atlassian_commands::save_atlassian_integration_settings,
             commands::atlassian_commands::build_atlassian_oauth_authorization_url,

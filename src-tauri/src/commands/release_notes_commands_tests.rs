@@ -3,6 +3,54 @@ use std::io;
 use std::path::PathBuf;
 
 #[test]
+fn parse_version_from_filename_extracts_semver() {
+    assert_eq!(
+        parse_version_from_filename(Some("v0.9.0.md")),
+        Some("0.9.0".to_string())
+    );
+    assert_eq!(
+        parse_version_from_filename(Some("v0.12.1.md")),
+        Some("0.12.1".to_string())
+    );
+}
+
+#[test]
+fn parse_version_from_filename_rejects_invalid_names() {
+    assert_eq!(parse_version_from_filename(Some("README.md")), None);
+    assert_eq!(parse_version_from_filename(Some("v.md")), None);
+    assert_eq!(parse_version_from_filename(Some("notes.txt")), None);
+    assert_eq!(parse_version_from_filename(None), None);
+}
+
+#[test]
+fn compare_semver_desc_sorts_correctly() {
+    assert_eq!(compare_semver_desc("0.28.0", "0.1.0"), std::cmp::Ordering::Less);
+    assert_eq!(compare_semver_desc("0.1.0", "0.28.0"), std::cmp::Ordering::Greater);
+    assert_eq!(compare_semver_desc("0.9.0", "0.9.0"), std::cmp::Ordering::Equal);
+    assert_eq!(compare_semver_desc("0.9.0", "0.10.0"), std::cmp::Ordering::Greater);
+}
+
+#[test]
+fn collect_versions_deduplicates_and_sorts_descending() {
+    let temp_a = tempfile::tempdir().unwrap();
+    let temp_b = tempfile::tempdir().unwrap();
+
+    for name in ["v0.1.0.md", "v0.9.0.md", "v0.28.0.md", "README.md"] {
+        std::fs::write(temp_a.path().join(name), "").unwrap();
+    }
+    for name in ["v0.9.0.md", "v0.12.0.md"] {
+        std::fs::write(temp_b.path().join(name), "").unwrap();
+    }
+
+    let versions = collect_versions_from_dirs(
+        vec![temp_a.path().to_path_buf(), temp_b.path().to_path_buf()],
+        |path| std::fs::read_dir(path).ok(),
+    );
+
+    assert_eq!(versions, vec!["0.28.0", "0.12.0", "0.9.0", "0.1.0"]);
+}
+
+#[test]
 fn release_notes_filename_normalizes_version() {
     assert_eq!(release_notes_filename("0.9.0").unwrap(), "v0.9.0.md");
     assert_eq!(release_notes_filename("v0.9.0").unwrap(), "v0.9.0.md");
