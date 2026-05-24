@@ -97,6 +97,8 @@ export interface MessageItemProps {
   cacheReadTokens?: number | null | undefined;
   estimatedUsd?: number | null | undefined;
   showAssistantIcon?: boolean | undefined;
+  reserveAssistantIconSpace?: boolean | undefined;
+  showProviderMeta?: boolean | undefined;
   hideMeta?: boolean | undefined;
 }
 
@@ -197,6 +199,8 @@ export const MessageItem = React.memo(function MessageItem({
   cacheReadTokens,
   estimatedUsd,
   showAssistantIcon = true,
+  reserveAssistantIconSpace = showAssistantIcon,
+  showProviderMeta = true,
   hideMeta = false,
 }: MessageItemProps) {
   const isUser = role === "user";
@@ -224,10 +228,13 @@ export const MessageItem = React.memo(function MessageItem({
     cacheReadTokens,
     estimatedUsd,
   });
-  const showProviderMeta =
+  const shouldShowProviderMeta =
+    showProviderMeta &&
     !isUser &&
     !teammateName &&
     (providerHarnessLabel !== null || modelEffortLabel !== null);
+  const shouldReserveAssistantIconSpace =
+    !isUser && !teammateName && reserveAssistantIconSpace;
 
   // Use pre-parsed data directly (parsing now happens at API layer)
   const { contentBlocks: parsedContentBlocks, toolCalls: parsedToolCalls } = useMemo(
@@ -296,8 +303,16 @@ export const MessageItem = React.memo(function MessageItem({
       style={teammateColor ? { borderLeft: `2px solid ${teammateColor}`, paddingLeft: "8px" } : undefined}
     >
       {/* Agent indicator for assistant messages */}
-      {!isUser && !teammateName && showAssistantIcon && (
-        <Bot className={cn("w-3.5 h-3.5 mr-2 shrink-0 text-text-primary/40", showProviderMeta ? "mt-0.5" : "mt-2")} />
+      {shouldReserveAssistantIconSpace && (
+        showAssistantIcon ? (
+          <Bot className={cn("w-3.5 h-3.5 mr-2 shrink-0 text-text-primary/40", shouldShowProviderMeta ? "mt-0.5" : "mt-2")} />
+        ) : (
+          <span
+            aria-hidden="true"
+            className={cn("w-3.5 h-3.5 mr-2 shrink-0", shouldShowProviderMeta ? "mt-0.5" : "mt-2")}
+            data-testid="message-assistant-icon-spacer"
+          />
+        )
       )}
       {/* Teammate name badge */}
       {!isUser && teammateName && (
@@ -312,7 +327,7 @@ export const MessageItem = React.memo(function MessageItem({
       )}
 
       <div className="flex flex-col gap-3 min-w-0 w-full">
-        {showProviderMeta && (
+        {shouldShowProviderMeta && (
           <div
             className="flex items-center gap-2 min-w-0"
             data-testid="message-provider-meta"
@@ -460,5 +475,7 @@ export const MessageItem = React.memo(function MessageItem({
     && prev.cacheReadTokens === next.cacheReadTokens
     && prev.estimatedUsd === next.estimatedUsd
     && prev.showAssistantIcon === next.showAssistantIcon
+    && prev.reserveAssistantIconSpace === next.reserveAssistantIconSpace
+    && prev.showProviderMeta === next.showProviderMeta
     && prev.hideMeta === next.hideMeta;
 });

@@ -255,6 +255,67 @@ function renderSystemCard(
   return null;
 }
 
+function hasSystemCardMetadata(metadata: Record<string, unknown> | null) {
+  return Boolean(metadata?.[AUTO_VERIFICATION_KEY] || metadata?.[VERIFICATION_RESULT_KEY]);
+}
+
+function senderGroupPart(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : "";
+}
+
+function assistantSenderGroupKeyForMessage(
+  message: ChatMessageData,
+  fallbackProviderHarness: string | null | undefined,
+  fallbackProviderSessionId: string | null | undefined,
+): string | null {
+  if (!isProviderRole(message.role)) {
+    return null;
+  }
+  const metadata = parseMessageMetadata(message.metadata);
+  if (hasSystemCardMetadata(metadata)) {
+    return null;
+  }
+  return [
+    "assistant",
+    senderGroupPart(message.sender),
+    senderGroupPart(message.providerHarness ?? fallbackProviderHarness),
+    senderGroupPart(message.providerSessionId ?? fallbackProviderSessionId),
+    senderGroupPart(message.upstreamProvider),
+    senderGroupPart(message.providerProfile),
+  ].join("\u0000");
+}
+
+function assistantSenderGroupKeyForTimelineItem(
+  item: TimelineItem,
+  fallbackProviderHarness: string | null | undefined,
+  fallbackProviderSessionId: string | null | undefined,
+): string | null {
+  if (item.kind === "message") {
+    return assistantSenderGroupKeyForMessage(
+      item.data,
+      fallbackProviderHarness,
+      fallbackProviderSessionId,
+    );
+  }
+  if (item.kind === "streaming") {
+    return [
+      "assistant",
+      "",
+      senderGroupPart(fallbackProviderHarness),
+      senderGroupPart(fallbackProviderSessionId),
+      "",
+      "",
+    ].join("\u0000");
+  }
+  return null;
+}
+
+const DEFAULT_ASSISTANT_GROUP_STATE = {
+  reserveAssistantGutter: false,
+  showSenderHeader: true,
+};
+
 function isMessageAtOrAfter(candidate: ChatMessageData, marker: ChatMessageData) {
   const candidateTime = new Date(candidate.createdAt).getTime();
   const markerTime = new Date(marker.createdAt).getTime();
@@ -744,8 +805,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const hasVisiblePendingToolFallback =
       shouldShowFooterFallback &&
       streamingToolCalls.some((tc) => !shouldHideCompletedProjectOrchestrationToolCall(tc));
-    const shouldShowStreamingAssistantIcon =
-      hasRenderableStreamingWidgets || hasVisiblePendingToolFallback;
     const hasRenderableStreamingText =
       renderedStreamingContentBlocks.some(
         (block) => block.type === "text" && block.text.trim().length > 0
@@ -895,6 +954,28 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
       return items;
     }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, teamFilter, teamMessages, hasFooterStreamingContent]);
+
+    const timelineSenderGroups = useMemo(() => {
+      let previousGroupKey: string | null = null;
+      return timeline.map((item) => {
+        const groupKey = assistantSenderGroupKeyForTimelineItem(
+          item,
+          providerHarness,
+          providerSessionId,
+        );
+        const isContinuation = groupKey !== null && groupKey === previousGroupKey;
+        previousGroupKey = groupKey;
+        return {
+          reserveAssistantGutter: groupKey !== null,
+          showSenderHeader: !isContinuation,
+        };
+      });
+    }, [providerHarness, providerSessionId, timeline]);
+
+    const streamingSenderGroupState =
+      timeline[timeline.length - 1]?.kind === "streaming"
+        ? timelineSenderGroups[timeline.length - 1] ?? DEFAULT_ASSISTANT_GROUP_STATE
+        : DEFAULT_ASSISTANT_GROUP_STATE;
 
     const lastItemIndex = firstItemIndex + timeline.length - 1;
 
@@ -1459,7 +1540,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               contentBlocks={null}
               providerHarness={providerHarness}
               providerSessionId={providerSessionId}
-              showAssistantIcon={shouldShowStreamingAssistantIcon}
+              showAssistantIcon={streamingSenderGroupState.showSenderHeader}
+              reserveAssistantIconSpace={streamingSenderGroupState.reserveAssistantGutter}
+              showProviderMeta={streamingSenderGroupState.showSenderHeader}
               hideMeta
             >
               {streamingTranscriptWindow.hiddenBlockCount > 0 && (
@@ -1551,10 +1634,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     }, [
       hasFooterStreamingContent,
       shouldRenderStreamingContentGroup,
-      shouldShowStreamingAssistantIcon,
       renderedStreamingContentBlocks,
       providerHarness,
       providerSessionId,
+      streamingSenderGroupState,
       activeTypingIndicatorLabel,
       shouldShowActiveTypingIndicator,
       shouldShowFooterFallback,
@@ -1611,7 +1694,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
     // Memoize itemContent — lookup teammate info for team mode messages
     const renderItem = useCallback((index: number, item: TimelineItem) => {
-      const isLastTimelineItem = index === timeline.length - 1;
+      const timelineIndex = index - firstItemIndex;
+      const isLastTimelineItem = timelineIndex === timeline.length - 1;
       if (item.kind === "hook") {
         return (
           <div className="px-3 w-full" style={contentContainerStyle}>
@@ -1649,6 +1733,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         );
       }
       const msg = item.data;
+      const senderGroupState =
+        timelineSenderGroups[timelineIndex] ?? DEFAULT_ASSISTANT_GROUP_STATE;
 
       const messageMetadata = parseMessageMetadata(msg.metadata);
       const systemCard = renderSystemCard(
@@ -1697,11 +1783,14 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               cacheCreationTokens={msg.cacheCreationTokens}
               cacheReadTokens={msg.cacheReadTokens}
               estimatedUsd={msg.estimatedUsd}
+              showAssistantIcon={senderGroupState.showSenderHeader}
+              reserveAssistantIconSpace={senderGroupState.reserveAssistantGutter}
+              showProviderMeta={senderGroupState.showSenderHeader}
             />
           </ContentShell>
         </div>
       );
-    }, [contentWidthClassName, footerContent, getTeammateInfo, handleFooterRef, providerHarness, providerSessionId, timeline.length]);
+    }, [contentWidthClassName, firstItemIndex, footerContent, getTeammateInfo, handleFooterRef, providerHarness, providerSessionId, timeline.length, timelineSenderGroups]);
 
     if (isTestEnv) {
       return (
@@ -1778,6 +1867,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               );
             }
             const msg = item.data;
+            const senderGroupState =
+              timelineSenderGroups[index] ?? DEFAULT_ASSISTANT_GROUP_STATE;
 
             const messageMetadata = parseMessageMetadata(msg.metadata);
             const systemCard = renderSystemCard(
@@ -1825,6 +1916,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                     cacheCreationTokens={msg.cacheCreationTokens}
                     cacheReadTokens={msg.cacheReadTokens}
                     estimatedUsd={msg.estimatedUsd}
+                    showAssistantIcon={senderGroupState.showSenderHeader}
+                    reserveAssistantIconSpace={senderGroupState.reserveAssistantGutter}
+                    showProviderMeta={senderGroupState.showSenderHeader}
                   />
                 </ContentShell>
               </div>
