@@ -5,7 +5,6 @@ import {
   GitPullRequestArrow,
   GitBranch,
   Loader2,
-  Maximize2,
   MoreVertical,
   XCircle,
 } from "lucide-react";
@@ -32,7 +31,6 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { Switch } from "@/components/ui/switch";
 import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
@@ -606,27 +604,6 @@ export function AgentPublishPanel({
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-9 w-9"
-                      onClick={() => setReviewOpen(true)}
-                      disabled={baseBlocked}
-                      data-testid="agents-review-changes"
-                      aria-label="Open changes in full diff dialog"
-                    >
-                      <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    <p>Open in full dialog</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
               {isBranchUpdateNeeded ? (
                 <Button
                   type="button"

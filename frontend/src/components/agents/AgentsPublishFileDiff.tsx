@@ -97,7 +97,7 @@ export function AgentsPublishFileDiff({
 
   return (
     <div
-      className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border"
+      className="flex min-h-0 min-w-0 w-full max-w-full flex-col overflow-hidden rounded-md border"
       data-testid={`publish-file-diff-${file.path}`}
       style={{
         backgroundColor: "var(--bg-surface)",
