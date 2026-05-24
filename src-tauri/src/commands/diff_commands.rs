@@ -2962,6 +2962,41 @@ new file mode 100644
     }
 
     #[tokio::test]
+    async fn change_summary_command_returns_empty_for_branch_backed_context() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        store_agent_workspace_context(
+            &conversation_id,
+            &AgentWorkspaceContext {
+                working_path: worktree_path,
+                base_ref: "HEAD".to_string(),
+                diff_target: Some("agent-branch".to_string()),
+                patch_diff: None,
+                supports_worktree_modes: false,
+            },
+        );
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        let summary =
+            get_agent_conversation_workspace_change_summary(app.state(), conversation_id.as_str())
+                .await
+                .expect("change summary should load");
+
+        assert!(!summary.supports_worktree_modes);
+        assert_eq!(summary.staged.file_count, 0);
+        assert_eq!(summary.staged.additions, 0);
+        assert_eq!(summary.staged.deletions, 0);
+        assert_eq!(summary.unstaged.file_count, 0);
+        assert_eq!(summary.unstaged.additions, 0);
+        assert_eq!(summary.unstaged.deletions, 0);
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
     async fn staged_file_diff_command_returns_head_vs_index_content() {
         let (_tmp, state, conversation_id, worktree_path) =
             create_staged_unstaged_workspace_state().await;
