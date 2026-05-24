@@ -2287,7 +2287,7 @@ describe("AgentsArtifactPane", () => {
     ).toHaveTextContent("Saved base commit is not contained in the default branch");
     expect(screen.queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
     expect(screen.getByTestId("agents-rebase-from-base")).toBeEnabled();
-    expect(screen.getByTestId("agents-review-changes")).toBeDisabled();
+    expect(screen.queryByTestId("agents-review-changes")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("agents-rebase-from-base"));
 
