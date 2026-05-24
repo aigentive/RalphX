@@ -12,7 +12,9 @@ use tracing::Instrument;
 use super::chat_service_context;
 use super::chat_service_helpers::get_assistant_role;
 use super::chat_service_streaming::process_stream_background;
-use super::chat_service_types::{AgentMessageCreatedPayload, AgentRunCompletedPayload};
+use super::chat_service_types::{
+    AgentMessageCreatedPayload, AgentMessageRenderReadyPayload, AgentRunCompletedPayload,
+};
 use super::{event_context, has_meaningful_output, EventContextPayload, StreamingStateCache};
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
@@ -24,11 +26,11 @@ use crate::application::runtime_factory::{
 };
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
-use crate::domain::entities::ChatConversation;
 use crate::domain::entities::{
     AgentRunId, ChatContextType, ChatConversationId, ChatMessageAttribution, InternalStatus,
     SessionPurpose, TaskId,
 };
+use crate::domain::entities::{ChatConversation, ChatTimelineItem};
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
@@ -355,6 +357,19 @@ pub(super) async fn finalize_no_output_assistant_message<R: Runtime>(
     message_id: &str,
     role: &str,
 ) {
+    let placeholder_blocks = vec![
+        crate::infrastructure::agents::claude::ContentBlockItem::Text {
+            text: NO_OUTPUT_NOTE.to_string(),
+        },
+    ];
+    let timeline_items = super::chat_service_streaming::persist_timeline_snapshot(
+        chat_timeline_repo,
+        &conversation_id.as_str(),
+        &Some(message_id.to_string()),
+        &placeholder_blocks,
+        crate::domain::entities::ChatTimelineItemStatus::Finalized,
+    )
+    .await;
     finalize_assistant_message(
         chat_message_repo,
         app_handle,
@@ -364,20 +379,7 @@ pub(super) async fn finalize_no_output_assistant_message<R: Runtime>(
         NO_OUTPUT_NOTE,
         None,
         None,
-    )
-    .await;
-
-    let placeholder_blocks = vec![
-        crate::infrastructure::agents::claude::ContentBlockItem::Text {
-            text: NO_OUTPUT_NOTE.to_string(),
-        },
-    ];
-    super::chat_service_streaming::persist_timeline_snapshot(
-        chat_timeline_repo,
-        &conversation_id.as_str(),
-        &Some(message_id.to_string()),
-        &placeholder_blocks,
-        crate::domain::entities::ChatTimelineItemStatus::Finalized,
+        timeline_items,
     )
     .await;
 }
@@ -391,10 +393,13 @@ pub(super) async fn finalize_assistant_message<R: Runtime>(
     content: &str,
     tool_calls_json: Option<&str>,
     content_blocks_json: Option<&str>,
+    timeline_items: Vec<ChatTimelineItem>,
 ) {
+    let message_id_entity =
+        crate::domain::entities::ChatMessageId::from_string(message_id.to_string());
     let _ = chat_message_repo
         .update_content(
-            &crate::domain::entities::ChatMessageId::from_string(message_id.to_string()),
+            &message_id_entity,
             content,
             tool_calls_json,
             content_blocks_json,
@@ -402,6 +407,21 @@ pub(super) async fn finalize_assistant_message<R: Runtime>(
         .await;
 
     if let Some(handle) = app_handle {
+        let render_ready = if timeline_items.is_empty() {
+            None
+        } else {
+            chat_message_repo
+                .get_by_id(&message_id_entity)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|message| {
+                    AgentMessageRenderReadyPayload::from_message_and_timeline_items(
+                        &message,
+                        timeline_items,
+                    )
+                })
+        };
         let _ = handle.emit(
             "agent:message_created",
             AgentMessageCreatedPayload {
@@ -413,6 +433,7 @@ pub(super) async fn finalize_assistant_message<R: Runtime>(
                 content: content.to_string(),
                 created_at: None,
                 metadata: None,
+                render_ready,
             },
         );
     }
@@ -420,6 +441,7 @@ pub(super) async fn finalize_assistant_message<R: Runtime>(
 
 pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
     app_handle: Option<&AppHandle<R>>,
     context_type: ChatContextType,
     context_id: &str,
@@ -447,6 +469,14 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
             if let Some(first_segment) = segments.first() {
                 let tool_calls_json = serde_json::to_string(&first_segment.tool_calls).ok();
                 let content_blocks_json = serde_json::to_string(&first_segment.content_blocks).ok();
+                let timeline_items = super::chat_service_streaming::persist_timeline_snapshot(
+                    chat_timeline_repo,
+                    &conversation_id.as_str(),
+                    &Some(message_id.to_string()),
+                    &first_segment.content_blocks,
+                    crate::domain::entities::ChatTimelineItemStatus::Finalized,
+                )
+                .await;
                 finalize_assistant_message(
                     chat_message_repo,
                     app_handle,
@@ -456,6 +486,7 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
                     &first_segment.content,
                     tool_calls_json.as_deref(),
                     content_blocks_json.as_deref(),
+                    timeline_items,
                 )
                 .await;
             }
@@ -474,6 +505,14 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
                 }
 
                 if let Ok(created_message) = chat_message_repo.create(extra_message).await {
+                    let timeline_items = super::chat_service_streaming::persist_timeline_snapshot(
+                        chat_timeline_repo,
+                        &conversation_id.as_str(),
+                        &Some(created_message.id.as_str().to_string()),
+                        &segment.content_blocks,
+                        crate::domain::entities::ChatTimelineItemStatus::Finalized,
+                    )
+                    .await;
                     if let Some(handle) = app_handle {
                         let _ = handle.emit(
                             "agent:message_created",
@@ -486,6 +525,11 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
                                 content: created_message.content.clone(),
                                 created_at: None,
                                 metadata: None,
+                                render_ready:
+                                    AgentMessageRenderReadyPayload::from_message_and_timeline_items(
+                                        &created_message,
+                                        timeline_items,
+                                    ),
                             },
                         );
                     }
@@ -497,6 +541,14 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
 
     let tool_calls_json = serde_json::to_string(tool_calls).ok();
     let content_blocks_json = serde_json::to_string(content_blocks).ok();
+    let timeline_items = super::chat_service_streaming::persist_timeline_snapshot(
+        chat_timeline_repo,
+        &conversation_id.as_str(),
+        &Some(message_id.to_string()),
+        content_blocks,
+        crate::domain::entities::ChatTimelineItemStatus::Finalized,
+    )
+    .await;
     finalize_assistant_message(
         chat_message_repo,
         app_handle,
@@ -506,6 +558,7 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
         content,
         tool_calls_json.as_deref(),
         content_blocks_json.as_deref(),
+        timeline_items,
     )
     .await;
 }
@@ -565,6 +618,7 @@ pub async fn finalize_assistant_message_for_test<R: Runtime>(
         content,
         tool_calls_json,
         content_blocks_json,
+        Vec::new(),
     )
     .await;
 }
@@ -585,6 +639,7 @@ pub async fn finalize_structured_assistant_message_for_test<R: Runtime>(
 ) {
     finalize_structured_assistant_message(
         chat_message_repo,
+        &None,
         app_handle,
         context_type,
         context_id,
@@ -985,6 +1040,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 } else if has_output {
                     finalize_structured_assistant_message(
                         &chat_message_repo,
+                        &chat_timeline_repo,
                         app_handle.as_ref(),
                         context_type,
                         &context_id,

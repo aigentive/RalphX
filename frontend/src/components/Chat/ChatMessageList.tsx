@@ -296,6 +296,37 @@ function hasRenderablePersistedContent(message: ChatMessageData) {
   return (message.contentBlocks?.length ?? 0) > 0;
 }
 
+function countCompletedToolCalls(toolCalls: Iterable<ToolCall>): number {
+  let count = 0;
+  for (const toolCall of toolCalls) {
+    if (toolCall.result != null || toolCall.error != null) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function buildStreamingTaskResultSignature(
+  streamingTasks: Map<string, StreamingTask> | undefined
+): string {
+  if (!streamingTasks || streamingTasks.size === 0) {
+    return "";
+  }
+
+  return Array.from(streamingTasks.values())
+    .map((task) => [
+      task.toolUseId,
+      task.status,
+      task.completedAt ?? "",
+      task.totalDurationMs ?? "",
+      task.totalTokens ?? "",
+      task.totalToolUseCount ?? "",
+      task.childToolCalls.length,
+      countCompletedToolCalls(task.childToolCalls),
+    ].join(":"))
+    .join("|");
+}
+
 function getCurrentTurnProviderMessageId(
   messages: ChatMessageData[],
   {
@@ -652,6 +683,18 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
       return count;
     }, [streamingTasks]);
+    const totalChildToolResults = useMemo(() => {
+      if (!streamingTasks || streamingTasks.size === 0) return 0;
+      let count = 0;
+      for (const task of streamingTasks.values()) {
+        count += countCompletedToolCalls(task.childToolCalls);
+      }
+      return count;
+    }, [streamingTasks]);
+    const streamingTaskResultSignature = useMemo(
+      () => buildStreamingTaskResultSignature(streamingTasks),
+      [streamingTasks],
+    );
 
     // Tracks running max of text length across all streaming blocks.
     // State (not a ref) so changes propagate to footerContentHash and trigger autoscroll.
@@ -733,10 +776,20 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       // G1 fix: results update existing blocks (count unchanged) — track result arrivals separately
       toolResultCount: streamingToolCalls.filter(tc => tc.result != null || tc.error != null).length,
       childCallCount: totalChildCalls,
+      childResultCount: totalChildToolResults,
       taskCount: streamingTasks?.size ?? 0,
+      taskResultSignature: streamingTaskResultSignature,
       contentBlockCount: renderedStreamingContentBlocks.length,
       textLengthBucket: Math.floor(cumulativeTextLength / TEXT_LENGTH_BUCKET_SIZE),
-    }), [streamingToolCalls, totalChildCalls, streamingTasks?.size, renderedStreamingContentBlocks.length, cumulativeTextLength]);
+    }), [
+      streamingToolCalls,
+      totalChildCalls,
+      totalChildToolResults,
+      streamingTasks?.size,
+      streamingTaskResultSignature,
+      renderedStreamingContentBlocks.length,
+      cumulativeTextLength,
+    ]);
 
     // Build timeline data for Virtuoso. Always wraps messages as TimelineItem
     // for consistent typing. When hook events exist, they're interleaved and sorted.

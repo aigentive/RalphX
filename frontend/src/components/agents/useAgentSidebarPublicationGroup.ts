@@ -8,7 +8,7 @@ import {
   type AgentSidebarSort,
 } from "@/api/chat";
 
-const AGENT_SIDEBAR_GROUP_PAGE_SIZE = 6;
+export const AGENT_SIDEBAR_GROUP_PAGE_SIZE = 8;
 
 export const agentSidebarConversationKeys = {
   all: ["agents", "sidebar-conversations"] as const,
@@ -65,6 +65,7 @@ export function useAgentSidebarPublicationGroup({
   pinnedConversationIds,
   sort,
   enabled = true,
+  minimumRowCount = 0,
 }: {
   projectIds: string[];
   publicationState: AgentSidebarPublicationState;
@@ -73,6 +74,7 @@ export function useAgentSidebarPublicationGroup({
   pinnedConversationIds: string[];
   sort: AgentSidebarSort;
   enabled?: boolean;
+  minimumRowCount?: number;
 }) {
   return useAgentSidebarGroup({
     groupBy: "publication",
@@ -84,6 +86,7 @@ export function useAgentSidebarPublicationGroup({
     pinnedConversationIds,
     sort,
     enabled,
+    minimumRowCount,
     queryKey: agentSidebarConversationKeys.publicationGroup(
       projectIds,
       publicationState,
@@ -102,6 +105,7 @@ export function useAgentSidebarProjectGroup({
   publicationStates,
   pinnedConversationIds,
   enabled = true,
+  minimumRowCount = 0,
 }: {
   projectId: string | null | undefined;
   archivedOnly: boolean;
@@ -109,6 +113,7 @@ export function useAgentSidebarProjectGroup({
   publicationStates: AgentSidebarPublicationState[];
   pinnedConversationIds: string[];
   enabled?: boolean;
+  minimumRowCount?: number;
 }) {
   return useAgentSidebarGroup({
     groupBy: "project",
@@ -119,6 +124,7 @@ export function useAgentSidebarProjectGroup({
     publicationStates,
     pinnedConversationIds,
     enabled: enabled && Boolean(projectId),
+    minimumRowCount,
     queryKey: agentSidebarConversationKeys.projectGroup(
       projectId,
       archivedOnly,
@@ -139,6 +145,7 @@ function useAgentSidebarGroup({
   pinnedConversationIds,
   sort,
   enabled,
+  minimumRowCount,
   queryKey,
 }: {
   groupBy: AgentSidebarGroupBy;
@@ -150,12 +157,18 @@ function useAgentSidebarGroup({
   pinnedConversationIds: string[];
   sort?: AgentSidebarSort;
   enabled: boolean;
+  minimumRowCount: number;
   queryKey: readonly unknown[];
 }) {
   const normalizedSearch = search.trim();
+  const initialLimitPerGroup = Math.max(
+    AGENT_SIDEBAR_GROUP_PAGE_SIZE,
+    Math.ceil(minimumRowCount)
+  );
   const query = useInfiniteQuery({
-    queryKey,
+    queryKey: [...queryKey, "initial-limit", initialLimitPerGroup] as const,
     queryFn: async ({ pageParam = 0 }) => {
+      const offset = Number(pageParam) || 0;
       const response = await chatApi.listAgentSidebarConversations({
         projectIds,
         includeArchived: archivedOnly,
@@ -164,8 +177,9 @@ function useAgentSidebarGroup({
         publicationStates,
         groupBy,
         ...(sort ? { sort } : {}),
-        limitPerGroup: AGENT_SIDEBAR_GROUP_PAGE_SIZE,
-        offsets: { [groupKey]: pageParam },
+        limitPerGroup:
+          offset === 0 ? initialLimitPerGroup : AGENT_SIDEBAR_GROUP_PAGE_SIZE,
+        offsets: { [groupKey]: offset },
         pinnedConversationIds,
       });
 

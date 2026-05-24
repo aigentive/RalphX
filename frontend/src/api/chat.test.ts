@@ -20,6 +20,7 @@ import {
   getAgentRunStatus,
   getAgentConversationWorkspaceFreshness,
   openAgentConversationWorkspace,
+  openAgentConversationWorkspacePath,
   listAgentConversationWorkspacePublicationEvents,
   listAgentConversationWorkspacesByProject,
   listAgentSidebarConversations,
@@ -1126,6 +1127,27 @@ describe("chat api", () => {
     expect(mockInvoke).toHaveBeenCalledWith(
       "open_agent_conversation_workspace",
       { conversationId: "conversation-1", targetId: "cursor" }
+    );
+  });
+
+  it("opens an agent conversation workspace path when Tauri returns null for Rust unit", async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    await expect(
+      openAgentConversationWorkspacePath(
+        "conversation-1",
+        "cursor",
+        "/tmp/worktree/src/lib.rs"
+      )
+    ).resolves.toBeUndefined();
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "open_agent_conversation_workspace_path",
+      {
+        conversationId: "conversation-1",
+        targetId: "cursor",
+        path: "/tmp/worktree/src/lib.rs",
+      }
     );
   });
 

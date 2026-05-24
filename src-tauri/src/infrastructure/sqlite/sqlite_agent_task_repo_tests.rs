@@ -47,6 +47,124 @@ async fn test_create_and_get_task() {
 }
 
 #[tokio::test]
+async fn test_create_rolls_over_after_current_list_is_terminal() {
+    let db = setup_test_db();
+    let repo = SqliteAgentTaskRepository::from_shared(db.shared_conn());
+    let scope = scope();
+
+    repo.create_task(&scope, create("First slice"))
+        .await
+        .unwrap();
+    repo.update_task(
+        &scope,
+        "1",
+        AgentTaskPatch {
+            state: Some(AgentTaskState::Done),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let second_slice = repo
+        .create_task(&scope, create("Second slice"))
+        .await
+        .unwrap();
+    assert_eq!(second_slice.task.task_number, 1);
+    assert_eq!(second_slice.task.title, "Second slice");
+
+    let current_tasks = repo
+        .list_tasks(&scope, AgentTaskListOptions { include_done: true })
+        .await
+        .unwrap();
+    assert_eq!(current_tasks.len(), 1);
+    assert_eq!(current_tasks[0].task_number, 1);
+    assert_eq!(current_tasks[0].title, "Second slice");
+
+    let current_first = repo.get_task(&scope, "1").await.unwrap().unwrap();
+    assert_eq!(current_first.title, "Second slice");
+
+    let conn = db.shared_conn();
+    let conn = conn.lock().await;
+    let list_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM agent_task_lists", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(list_count, 2);
+}
+
+#[tokio::test]
+async fn test_list_task_lists_and_fetch_previous_list_tasks() {
+    let db = setup_test_db();
+    let repo = SqliteAgentTaskRepository::from_shared(db.shared_conn());
+    let scope = scope();
+
+    repo.create_task(&scope, create("First slice"))
+        .await
+        .unwrap();
+    repo.update_task(
+        &scope,
+        "1",
+        AgentTaskPatch {
+            state: Some(AgentTaskState::Done),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    repo.create_task(&scope, create("Second slice"))
+        .await
+        .unwrap();
+
+    let lists = repo.list_task_lists(&scope).await.unwrap();
+    assert_eq!(lists.len(), 2);
+    assert_eq!(lists[0].list_sequence, 2);
+    assert_eq!(lists[0].task_count, 1);
+    assert_eq!(lists[0].open_count, 1);
+    assert_eq!(lists[1].list_sequence, 1);
+    assert_eq!(lists[1].task_count, 1);
+    assert_eq!(lists[1].done_count, 1);
+
+    let previous_tasks = repo
+        .list_tasks_for_list(
+            &scope,
+            &lists[1].list_id,
+            AgentTaskListOptions { include_done: true },
+        )
+        .await
+        .unwrap();
+    assert_eq!(previous_tasks.len(), 1);
+    assert_eq!(previous_tasks[0].title, "First slice");
+
+    let unresolved_previous_tasks = repo
+        .list_tasks_for_list(&scope, &lists[1].list_id, AgentTaskListOptions::default())
+        .await
+        .unwrap();
+    assert!(unresolved_previous_tasks.is_empty());
+}
+
+#[tokio::test]
+async fn test_create_reuses_current_list_while_task_is_actionable() {
+    let db = setup_test_db();
+    let repo = SqliteAgentTaskRepository::from_shared(db.shared_conn());
+    let scope = scope();
+
+    repo.create_task(&scope, create("Open")).await.unwrap();
+    let second = repo
+        .create_task(&scope, create("Still same slice"))
+        .await
+        .unwrap();
+
+    assert_eq!(second.task.task_number, 2);
+    let include_done = repo
+        .list_tasks(&scope, AgentTaskListOptions { include_done: true })
+        .await
+        .unwrap();
+    assert_eq!(include_done.len(), 2);
+}
+
+#[tokio::test]
 async fn test_dependency_cycle_rejected_and_unresolved_blockers_filtered() {
     let db = setup_test_db();
     let repo = SqliteAgentTaskRepository::from_shared(db.shared_conn());

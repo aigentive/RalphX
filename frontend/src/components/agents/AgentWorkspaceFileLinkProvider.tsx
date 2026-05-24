@@ -1,0 +1,114 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
+
+import { chatApi, type AgentConversationWorkspace } from "@/api/chat";
+import { MessageFileLinkContext } from "@/components/Chat/MessageFileLinkContext";
+import {
+  readPreferredWorkspaceOpenTargetId,
+  subscribePreferredWorkspaceOpenTargetId,
+  writePreferredWorkspaceOpenTargetId,
+} from "@/lib/workspace-open-targets";
+
+function workspacePathOpenErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim()) {
+    return error;
+  }
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+  return "Failed to open file";
+}
+
+interface AgentWorkspaceFileLinkProviderProps {
+  conversationId: string;
+  workspace: AgentConversationWorkspace | null;
+  children: ReactNode;
+}
+
+export function AgentWorkspaceFileLinkProvider({
+  conversationId,
+  workspace,
+  children,
+}: AgentWorkspaceFileLinkProviderProps) {
+  const [preferredTargetId, setPreferredTargetId] = useState(
+    readPreferredWorkspaceOpenTargetId,
+  );
+  const [opening, setOpening] = useState<{
+    path: string;
+    targetId: string;
+  } | null>(null);
+  const workspaceOpenTargetsQuery = useQuery({
+    queryKey: ["workspace-open-targets"],
+    queryFn: chatApi.listWorkspaceOpenTargets,
+    staleTime: Infinity,
+    enabled: Boolean(workspace),
+  });
+  const targets = useMemo(
+    () => workspaceOpenTargetsQuery.data ?? [],
+    [workspaceOpenTargetsQuery.data],
+  );
+  const openWorkspacePathMutation = useMutation({
+    mutationFn: ({ path, targetId }: { path: string; targetId: string }) =>
+      chatApi.openAgentConversationWorkspacePath(conversationId, targetId, path),
+    onMutate: ({ path, targetId }) => {
+      setOpening({ path, targetId });
+    },
+    onSettled: () => {
+      setOpening(null);
+    },
+    onError: (error) => {
+      toast.error(workspacePathOpenErrorMessage(error));
+    },
+  });
+
+  useEffect(
+    () => subscribePreferredWorkspaceOpenTargetId(setPreferredTargetId),
+    [],
+  );
+
+  useEffect(() => {
+    if (
+      targets.length > 0 &&
+      preferredTargetId &&
+      !targets.some((target) => target.id === preferredTargetId)
+    ) {
+      setPreferredTargetId(targets[0]?.id ?? null);
+    }
+  }, [preferredTargetId, targets]);
+
+  const openPath = useCallback(
+    (path: string, targetId: string) => {
+      setPreferredTargetId(targetId);
+      writePreferredWorkspaceOpenTargetId(targetId);
+      openWorkspacePathMutation.mutate({ path, targetId });
+    },
+    [openWorkspacePathMutation],
+  );
+
+  const value = useMemo(
+    () =>
+      workspace && targets.length > 0
+        ? {
+            workspaceRootPath: workspace.worktreePath,
+            targets,
+            preferredTargetId,
+            openingPath: opening?.path ?? null,
+            openingTargetId: opening?.targetId ?? null,
+            onOpenPath: openPath,
+          }
+        : null,
+    [openPath, opening?.path, opening?.targetId, preferredTargetId, targets, workspace],
+  );
+
+  if (!value) {
+    return <>{children}</>;
+  }
+
+  return (
+    <MessageFileLinkContext.Provider value={value}>
+      {children}
+    </MessageFileLinkContext.Provider>
+  );
+}

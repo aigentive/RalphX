@@ -256,6 +256,7 @@ pub use plan_branch_commands::{
 pub use ui_commands::{get_ui_feature_flags, UiFeatureFlagsResponse};
 pub use workspace_open_commands::{
     list_workspace_open_targets, open_agent_conversation_workspace,
+    open_agent_conversation_workspace_path,
     WorkspaceOpenTargetKind, WorkspaceOpenTargetResponse,
 };
 // Plan commands (Active plan management)
