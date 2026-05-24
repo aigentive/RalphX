@@ -33,6 +33,12 @@ const TASK_ROW_HEIGHT_PX = 36;
 
 type ComposerContextPanel = "tasks" | "changes";
 
+interface VisibleTaskWindow {
+  tasks: AgentTaskSummary[];
+  hiddenBefore: number;
+  hiddenAfter: number;
+}
+
 interface AgentsComposerWorkspaceChangesCardProps {
   conversationId: string;
   projectId?: string | null | undefined;
@@ -135,6 +141,33 @@ function taskListStatusLabel(list: AgentTaskListSummary): string {
 
 function taskCountText(count: number): string {
   return `${count} ${count === 1 ? "task" : "tasks"}`;
+}
+
+function visibleTaskWindow(
+  tasks: AgentTaskSummary[],
+  showAllTasks: boolean,
+  visibleTaskCount: number,
+): VisibleTaskWindow {
+  if (showAllTasks || tasks.length <= visibleTaskCount) {
+    return {
+      tasks,
+      hiddenBefore: 0,
+      hiddenAfter: 0,
+    };
+  }
+
+  const firstActiveIndex = tasks.findIndex((task) => task.state === "active");
+  const latestWindowStart = Math.max(tasks.length - visibleTaskCount, 0);
+  const windowStart = firstActiveIndex >= 0
+    ? Math.min(firstActiveIndex, latestWindowStart)
+    : latestWindowStart;
+  const windowEnd = Math.min(windowStart + visibleTaskCount, tasks.length);
+
+  return {
+    tasks: tasks.slice(windowStart, windowEnd),
+    hiddenBefore: windowStart,
+    hiddenAfter: tasks.length - windowEnd,
+  };
 }
 
 function AgentTaskRowLine({
@@ -581,13 +614,13 @@ function AgentsComposerWorkspaceChangesCardContent({
     }
   }, [activePanel, shouldShowChanges, shouldShowTasks]);
 
-  const visibleTasks = useMemo(() => {
-    if (showAllTasks) {
-      return tasks;
-    }
-    return tasks.slice(-VISIBLE_TASK_COUNT);
-  }, [showAllTasks, tasks]);
-  const hiddenTaskCount = tasks.length - visibleTasks.length;
+  const taskWindow = useMemo(
+    () => visibleTaskWindow(tasks, showAllTasks, VISIBLE_TASK_COUNT),
+    [showAllTasks, tasks],
+  );
+  const visibleTasks = taskWindow.tasks;
+  const hiddenTaskRevealRows =
+    (taskWindow.hiddenBefore > 0 ? 1 : 0) + (taskWindow.hiddenAfter > 0 ? 1 : 0);
   const taskHistoryRowReserve =
     previousTaskLists.length > 0 || taskListsQuery.isFetching || taskListsQuery.isError
       ? 30
@@ -764,7 +797,7 @@ function AgentsComposerWorkspaceChangesCardContent({
               maxHeight: activePanel === "tasks" && !showAllTasks
                 ? `${
                     VISIBLE_TASK_COUNT * TASK_ROW_HEIGHT_PX +
-                    (hiddenTaskCount > 0 ? 30 : 0) +
+                    hiddenTaskRevealRows * 30 +
                     taskHistoryRowReserve
                   }px`
                 : "11rem",
@@ -772,7 +805,7 @@ function AgentsComposerWorkspaceChangesCardContent({
           >
             {activePanel === "tasks" ? (
               <div data-testid="agents-composer-task-list">
-                {hiddenTaskCount > 0 && (
+                {taskWindow.hiddenBefore > 0 && (
                   <button
                     type="button"
                     data-testid="agents-composer-tasks-show-older"
@@ -780,7 +813,7 @@ function AgentsComposerWorkspaceChangesCardContent({
                     className="flex w-full items-center justify-center py-1 text-[0.625rem] font-medium transition-colors hover:bg-[var(--bg-hover)]"
                     style={{ color: "var(--text-muted)" }}
                   >
-                    Show {hiddenTaskCount} more in this list
+                    Show {taskWindow.hiddenBefore} earlier in this list
                   </button>
                 )}
                 {visibleTasks.map((task) => (
@@ -799,6 +832,17 @@ function AgentsComposerWorkspaceChangesCardContent({
                     }}
                   />
                 ))}
+                {taskWindow.hiddenAfter > 0 && (
+                  <button
+                    type="button"
+                    data-testid="agents-composer-tasks-show-more"
+                    onClick={() => setShowAllTasks(true)}
+                    className="flex w-full items-center justify-center py-1 text-[0.625rem] font-medium transition-colors hover:bg-[var(--bg-hover)]"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    Show {taskWindow.hiddenAfter} more in this list
+                  </button>
+                )}
                 {taskListsQuery.isLoading && (
                   <div
                     className="px-2 py-1.5 text-[0.6875rem]"
