@@ -89,7 +89,7 @@ export function AgentWorkspaceFileLinkProvider({
 
   const value = useMemo(
     () =>
-      workspace && targets.length > 0
+      workspace
         ? {
             workspaceRootPath: workspace.worktreePath,
             targets,

@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { ToolCallIndicator, type ToolCall } from "./ToolCallIndicator";
 import { makeToolCall } from "./__tests__/chatRenderFixtures";
 import { chatApi } from "@/api/chat";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 vi.mock("@/api/chat", () => ({
   chatApi: {
@@ -328,7 +329,11 @@ describe("ToolCallIndicator", () => {
         arguments: { file_path: "/app/config.json" },
       });
 
-      render(<ToolCallIndicator toolCall={toolCall} />);
+      render(
+        <TooltipProvider delayDuration={0}>
+          <ToolCallIndicator toolCall={toolCall} />
+        </TooltipProvider>
+      );
       expect(screen.getByText("write")).toBeInTheDocument();
       expect(screen.getByText(/\/app\/config.json/i)).toBeInTheDocument();
     });
@@ -339,7 +344,11 @@ describe("ToolCallIndicator", () => {
         arguments: { file_path: "/src/main.rs" },
       });
 
-      render(<ToolCallIndicator toolCall={toolCall} />);
+      render(
+        <TooltipProvider delayDuration={0}>
+          <ToolCallIndicator toolCall={toolCall} />
+        </TooltipProvider>
+      );
       expect(screen.getByText("edit")).toBeInTheDocument();
       expect(screen.getByText(/\/src\/main.rs/i)).toBeInTheDocument();
     });

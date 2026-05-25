@@ -8,15 +8,19 @@
  * - Falls back to null if no file_path or error, letting parent render generic view
  */
 
-import React, { useState, useMemo } from "react";
-import { ChevronDown, ChevronRight, FileEdit, FileText } from "lucide-react";
+import React, { useCallback, useMemo, useState } from "react";
+import { Check, ChevronDown, ChevronRight, Copy, FileEdit, FileText } from "lucide-react";
 import { withAlpha } from "@/lib/theme-colors";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 import type { ToolCall } from "./ToolCallIndicator";
+import { useMessageFileLinkContext } from "./MessageFileLinkContext";
 import {
   type DiffLine,
   type DiffResult,
   extractEditDiff,
   extractWriteDiff,
+  getDiffFilePathDisplay,
   getLineBackground,
   getLineNumColor,
   getLinePrefix,
@@ -57,12 +61,6 @@ function extractDiff(toolCall: ToolCall): DiffResult | null {
   return null;
 }
 
-function shortenPath(filePath: string): string {
-  const parts = filePath.split("/");
-  if (parts.length <= 3) return filePath;
-  return ".../" + parts.slice(-3).join("/");
-}
-
 // ============================================================================
 // Component
 // ============================================================================
@@ -74,18 +72,39 @@ export const DiffToolCallView = React.memo(function DiffToolCallView({
   compact = false,
 }: DiffToolCallViewProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [copiedPath, setCopiedPath] = useState(false);
 
   const diff = useMemo(() => extractDiff(toolCall), [toolCall]);
+  const fileLinkContext = useMessageFileLinkContext();
+  const activeProjectRootPath = useProjectStore(
+    (state) => selectActiveProject(state)?.workingDirectory ?? null
+  );
+  const diffFilePath = diff?.filePath ?? "";
+  const handleCopyPath = useCallback(async () => {
+    if (!diffFilePath) return;
+
+    try {
+      if (!navigator.clipboard) return;
+      await navigator.clipboard.writeText(diffFilePath);
+      setCopiedPath(true);
+      window.setTimeout(() => setCopiedPath(false), 2000);
+    } catch {
+      // Clipboard failures should not interrupt diff review.
+    }
+  }, [diffFilePath]);
 
   // Fall back to null so parent can render generic view
   if (!diff) return null;
 
   const { lines, filePath, additions, deletions } = diff;
+  const workspaceRootPath = fileLinkContext?.workspaceRootPath ?? activeProjectRootPath;
+  const displayFilePath = getDiffFilePathDisplay(filePath, workspaceRootPath);
   const isEdit = toolCall.name.toLowerCase() === "edit";
   const needsCollapse = lines.length > MIN_LINES_FOR_COLLAPSE;
   const showFull = isExpanded || !needsCollapse;
 
   const iconSize = compact ? 12 : 14;
+  const copyIconSize = compact ? 12 : 13;
 
   return (
     <div
@@ -97,69 +116,106 @@ export const DiffToolCallView = React.memo(function DiffToolCallView({
       }}
     >
       {/* Header */}
-      <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className={`w-full flex items-center gap-2 ${compact ? "px-2 py-1.5" : "px-3 py-2"} text-left hover:opacity-80 transition-opacity`}
-        aria-expanded={isExpanded}
-        aria-label={`${toolCall.name} ${filePath}. ${additions} additions, ${deletions} deletions. Click to ${isExpanded ? "collapse" : "expand"}.`}
+      <div
+        className={`w-full flex items-center gap-1.5 ${compact ? "px-2 py-1.5" : "px-3 py-2"}`}
       >
-        {/* Chevron */}
-        {isExpanded ? (
-          <ChevronDown size={iconSize} className="flex-shrink-0" style={{ color: "var(--text-muted)" }} />
-        ) : (
-          <ChevronRight size={iconSize} className="flex-shrink-0" style={{ color: "var(--text-muted)" }} />
-        )}
-
-        {/* Tool icon */}
-        {isEdit ? (
-          <FileEdit size={iconSize} className="flex-shrink-0" style={{ color: "var(--accent-primary)" }} />
-        ) : (
-          <FileText size={iconSize} className="flex-shrink-0" style={{ color: "var(--accent-primary)" }} />
-        )}
-
-        {/* Tool name badge */}
-        <span
-          className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} px-1.5 py-0.5 rounded flex-shrink-0`}
-          style={{
-            backgroundColor: "var(--bg-surface)",
-            color: "var(--text-secondary)",
-            fontFamily: "var(--font-mono)",
-          }}
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="min-w-0 flex flex-1 items-center gap-2 text-left hover:opacity-80 transition-opacity"
+          aria-expanded={isExpanded}
+          aria-label={`${toolCall.name} ${filePath}. ${additions} additions, ${deletions} deletions. Click to ${isExpanded ? "collapse" : "expand"}.`}
         >
-          {toolCall.name}
-        </span>
-
-        {/* File path */}
-        <span
-          className={`${compact ? "text-[0.6875rem]" : "text-xs"} truncate font-mono flex-1 min-w-0`}
-          style={{ color: "var(--text-secondary)" }}
-        >
-          {shortenPath(filePath)}
-        </span>
-
-        {/* Stats badge */}
-        <span className={`flex-shrink-0 flex items-center gap-1 ${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} font-mono`}>
-          {additions > 0 && (
-            <span style={{ color: "var(--status-success)" }}>+{additions}</span>
+          {/* Chevron */}
+          {isExpanded ? (
+            <ChevronDown size={iconSize} className="flex-shrink-0" style={{ color: "var(--text-muted)" }} />
+          ) : (
+            <ChevronRight size={iconSize} className="flex-shrink-0" style={{ color: "var(--text-muted)" }} />
           )}
-          {deletions > 0 && (
-            <span style={{ color: "var(--status-error)" }}>-{deletions}</span>
-          )}
-        </span>
 
-        {/* Streaming indicator */}
-        {isStreaming && (
+          {/* Tool icon */}
+          {isEdit ? (
+            <FileEdit size={iconSize} className="flex-shrink-0" style={{ color: "var(--accent-primary)" }} />
+          ) : (
+            <FileText size={iconSize} className="flex-shrink-0" style={{ color: "var(--accent-primary)" }} />
+          )}
+
+          {/* Tool name badge */}
           <span
-            className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} px-1.5 py-0.5 rounded flex-shrink-0 animate-pulse`}
+            className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} px-1.5 py-0.5 rounded flex-shrink-0`}
             style={{
-              backgroundColor: withAlpha("var(--accent-primary)", 15),
-              color: "var(--accent-primary)",
+              backgroundColor: "var(--bg-surface)",
+              color: "var(--text-secondary)",
+              fontFamily: "var(--font-mono)",
             }}
           >
-            writing...
+            {toolCall.name}
           </span>
-        )}
-      </button>
+
+          {/* File path */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                data-testid="diff-tool-call-file-path"
+                className={`${compact ? "text-[0.6875rem]" : "text-xs"} truncate font-mono flex-1 min-w-0`}
+                style={{ color: "var(--text-secondary)" }}
+              >
+                {displayFilePath}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent
+              side="top"
+              style={{ maxWidth: "min(720px, calc(100vw - 2rem))" }}
+            >
+              <p className="font-mono text-xs break-all">{filePath}</p>
+            </TooltipContent>
+          </Tooltip>
+
+          {/* Stats badge */}
+          <span className={`flex-shrink-0 flex items-center gap-1 ${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} font-mono`}>
+            {additions > 0 && (
+              <span style={{ color: "var(--status-success)" }}>+{additions}</span>
+            )}
+            {deletions > 0 && (
+              <span style={{ color: "var(--status-error)" }}>-{deletions}</span>
+            )}
+          </span>
+
+          {/* Streaming indicator */}
+          {isStreaming && (
+            <span
+              className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} px-1.5 py-0.5 rounded flex-shrink-0 animate-pulse`}
+              style={{
+                backgroundColor: withAlpha("var(--accent-primary)", 15),
+                color: "var(--accent-primary)",
+              }}
+            >
+              writing...
+            </span>
+          )}
+        </button>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              data-testid="diff-tool-call-copy-path"
+              aria-label={copiedPath ? "Copied" : "Copy file path"}
+              onClick={() => void handleCopyPath()}
+              className={`flex shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--bg-hover)] ${compact ? "h-5 w-5" : "h-6 w-6"}`}
+              style={{ color: copiedPath ? "var(--status-success)" : "var(--text-muted)" }}
+            >
+              {copiedPath ? (
+                <Check size={copyIconSize} aria-hidden="true" />
+              ) : (
+                <Copy size={copyIconSize} aria-hidden="true" />
+              )}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="text-xs">
+            {copiedPath ? "Copied" : "Copy path"}
+          </TooltipContent>
+        </Tooltip>
+      </div>
 
       {/* Diff content */}
       <div
