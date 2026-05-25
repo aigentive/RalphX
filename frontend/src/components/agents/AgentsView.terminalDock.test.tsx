@@ -122,6 +122,50 @@ describe("AgentsView terminal docks", () => {
     expect(terminalDrawerUnmountMock).not.toHaveBeenCalled();
   });
 
+  it("updates the placement selector when closing the panel moves the terminal under chat", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "publish",
+          taskMode: "graph",
+        },
+      },
+    });
+    useAgentTerminalStore.setState({
+      openByConversationId: { "conversation-1": true },
+      heightByConversationId: {},
+      activeTerminalByConversationId: {},
+      placement: "panel",
+    });
+
+    renderAgentsView();
+
+    const drawer = await screen.findByTestId("agent-terminal-drawer");
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-artifact-resizable-pane")).toContainElement(drawer)
+    );
+    expect(screen.getByTestId("agent-terminal-placement")).toHaveTextContent("panel");
+
+    fireEvent.click(screen.getByLabelText("Close panel"));
+
+    await waitFor(() => expect(useAgentTerminalStore.getState().placement).toBe("chat"));
+    await waitFor(() =>
+      expect(screen.getByTestId("agent-terminal-host-chat")).toContainElement(
+        screen.getByTestId("agent-terminal-drawer")
+      )
+    );
+    expect(screen.getByTestId("agent-terminal-drawer")).toHaveAttribute(
+      "data-placement",
+      "chat"
+    );
+    expect(screen.getByTestId("agent-terminal-placement")).toHaveTextContent("chat");
+  });
+
   it("persists terminal dock placement from the terminal control", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
