@@ -14,6 +14,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 
 // ============================================================================
 // Types
@@ -39,6 +40,8 @@ export interface MessageAttachmentsProps {
   attachments: MessageAttachment[];
   /** Callback when attachment is clicked (optional - can be placeholder for v1) */
   onClick?: (id: string, filePath: string | undefined) => void;
+  /** Side to align the sent-message attachment group within the chat row. */
+  align?: "start" | "end";
 }
 
 // ============================================================================
@@ -101,6 +104,7 @@ interface AttachmentPreviewEntry {
 export function MessageAttachments({
   attachments,
   onClick,
+  align = "start",
 }: MessageAttachmentsProps) {
   const [failedPreviewIds, setFailedPreviewIds] = useState<Set<string>>(() => new Set());
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
@@ -117,6 +121,7 @@ export function MessageAttachments({
   const fileEntries = attachmentEntries.filter((entry) => entry.previewSrc === null);
   const selectedImageEntry =
     imageEntries.find((entry) => entry.attachment.id === selectedImageId) ?? null;
+  const alignEnd = align === "end";
 
   const markPreviewFailed = (attachmentId: string) => {
     setFailedPreviewIds((current) => {
@@ -129,14 +134,18 @@ export function MessageAttachments({
   };
 
   return (
-    <div className="mb-2 space-y-2">
+    <div
+      data-testid="message-attachment-list"
+      className={cn("mb-2 space-y-2", alignEnd && "self-end")}
+    >
       {imageEntries.length > 0 && (
         <div
           data-testid="attachment-image-grid"
-          className={[
+          className={cn(
             "grid gap-2",
             imageEntries.length === 1 ? "grid-cols-1 max-w-[280px]" : "grid-cols-2 max-w-[420px]",
-          ].join(" ")}
+            alignEnd && "ml-auto",
+          )}
         >
           {imageEntries.map(({ attachment, previewSrc }) => (
             <button
@@ -189,7 +198,7 @@ export function MessageAttachments({
       )}
 
       {fileEntries.length > 0 && (
-        <div className="flex flex-wrap gap-2">
+        <div className={cn("flex flex-wrap gap-2", alignEnd && "justify-end")}>
           {fileEntries.map(({ attachment }) => (
             <AttachmentChip
               key={attachment.id}
