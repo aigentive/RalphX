@@ -2136,6 +2136,7 @@ describe("ChatMessageList - Scroll Behavior", () => {
         scrollToMock.mockClear();
 
         act(() => {
+          scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 120 }));
           scroller.dispatchEvent(new Event("scroll"));
         });
         expect(queuedRafs).toHaveLength(1);
@@ -2876,6 +2877,14 @@ describe("ChatMessageList - Scroll Behavior", () => {
         act(() => {
           callbacks[transcriptRootIndex]?.(
             [{ contentRect: { height: 480 } as DOMRectReadOnly } as ResizeObserverEntry],
+            {} as ResizeObserver,
+          );
+        });
+        expect(scrollToMock).not.toHaveBeenCalled();
+
+        act(() => {
+          callbacks[transcriptRootIndex]?.(
+            [{ contentRect: { height: 456 } as DOMRectReadOnly } as ResizeObserverEntry],
             {} as ResizeObserver,
           );
         });

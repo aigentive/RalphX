@@ -73,6 +73,7 @@ export const AT_BOTTOM_THRESHOLD = 150;
 
 /** Final-pixel settle guard for native wheel/scrollbar bottom attempts. */
 const TRUE_BOTTOM_SETTLE_THRESHOLD_PX = 32;
+const BOTTOM_SCROLL_INTENT_WINDOW_MS = 800;
 
 /** Bucket size for text length change detection during streaming.
  *  ~2 visible lines per trigger (average line ~80 chars at standard chat width → 2 lines × 80 = 160, rounded to 150). */
@@ -552,8 +553,15 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const reconcileRafRef = useRef<number | null>(null);
     const scrollerResizeObserverRef = useRef<ResizeObserver | null>(null);
     const scrollerResizeRafRef = useRef<number | null>(null);
+    const bottomScrollIntentUntilRef = useRef(0);
+    const virtuosoAtBottomSettleRafRef = useRef<number | null>(null);
+    const hasSettledVirtuosoLooseBottomRef = useRef(false);
     const transcriptRootResizeObserverRef = useRef<ResizeObserver | null>(null);
     const transcriptRootResizeRafRef = useRef<number | null>(null);
+    const totalListHeightRafRef = useRef<number | null>(null);
+    const previousTotalListHeightRef = useRef<number>(-1);
+    const transcriptRootPrevHeightRef = useRef<number>(-1);
+    const transcriptRootMountedRef = useRef(false);
     const isTestEnv = import.meta.env.VITEST;
     const [isVisuallyAtBottom, setIsVisuallyAtBottomState] = useState(true);
     const isVisuallyAtBottomRef = useRef(true);
@@ -1144,6 +1152,14 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           clearTimeout(bottomPinTimeoutRef.current);
           bottomPinTimeoutRef.current = null;
         }
+        if (totalListHeightRafRef.current !== null) {
+          cancelAnimationFrame(totalListHeightRafRef.current);
+          totalListHeightRafRef.current = null;
+        }
+        if (virtuosoAtBottomSettleRafRef.current !== null) {
+          cancelAnimationFrame(virtuosoAtBottomSettleRafRef.current);
+          virtuosoAtBottomSettleRafRef.current = null;
+        }
       };
     }, []);
 
@@ -1156,10 +1172,17 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         clearTimeout(bottomPinTimeoutRef.current);
         bottomPinTimeoutRef.current = null;
       }
+      if (virtuosoAtBottomSettleRafRef.current !== null) {
+        cancelAnimationFrame(virtuosoAtBottomSettleRafRef.current);
+        virtuosoAtBottomSettleRafRef.current = null;
+      }
       setIsVisuallyAtBottom(true);
       setHasScrollableOverflow(false);
       setIsLastItemVisible(true);
       lastObservedScrollTopRef.current = null;
+      bottomScrollIntentUntilRef.current = 0;
+      hasSettledVirtuosoLooseBottomRef.current = false;
+      previousTotalListHeightRef.current = -1;
       previousLastItemIndexRef.current = null;
       lastUserMessageIdRef.current = conversationLastUserMessageIdRef.current;
       agentRunningRef.current = conversationAgentRunningRef.current;
@@ -1198,12 +1221,15 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       const previousScrollTop = lastObservedScrollTopRef.current;
       const isScrollingTowardBottom =
         previousScrollTop === null || el.scrollTop >= previousScrollTop;
+      const hasRecentBottomScrollIntent =
+        performance.now() <= bottomScrollIntentUntilRef.current;
       lastObservedScrollTopRef.current = el.scrollTop;
       setHasScrollableOverflow(
         el.scrollHeight > el.clientHeight + VISUAL_BOTTOM_EPSILON_PX
       );
       if (
         !scrollToTimestampRef.current &&
+        hasRecentBottomScrollIntent &&
         atBottom &&
         isScrollingTowardBottom &&
         bottomDelta > VISUAL_BOTTOM_EPSILON_PX &&
@@ -1220,6 +1246,36 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
     }, [handleAtBottomStateChange, isAtBottomRef, scrollToTrueBottom, setIsVisuallyAtBottom]);
 
+    const markBottomScrollIntent = useCallback(() => {
+      bottomScrollIntentUntilRef.current =
+        performance.now() + BOTTOM_SCROLL_INTENT_WINDOW_MS;
+      hasSettledVirtuosoLooseBottomRef.current = false;
+    }, []);
+
+    const handleScrollerWheel = useCallback(
+      (event: WheelEvent) => {
+        if (event.deltaY > 0) {
+          markBottomScrollIntent();
+        }
+      },
+      [markBottomScrollIntent],
+    );
+
+    const handleScrollerPointerDown = useCallback(
+      (event: PointerEvent) => {
+        const target = event.currentTarget;
+        if (!(target instanceof HTMLElement)) {
+          return;
+        }
+
+        const rect = target.getBoundingClientRect();
+        if (event.clientX >= rect.right - 20) {
+          markBottomScrollIntent();
+        }
+      },
+      [markBottomScrollIntent],
+    );
+
     const handleScrollReconcile = useCallback(() => {
       if (reconcileRafRef.current) return; // Already scheduled — skip
       reconcileRafRef.current = requestAnimationFrame(() => {
@@ -1228,16 +1284,62 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       });
     }, [reconcileScrollerBottomState]);
 
+    const scheduleVirtuosoAtBottomSettle = useCallback(() => {
+      if (virtuosoAtBottomSettleRafRef.current !== null) {
+        cancelAnimationFrame(virtuosoAtBottomSettleRafRef.current);
+      }
+
+      virtuosoAtBottomSettleRafRef.current = requestAnimationFrame(() => {
+        virtuosoAtBottomSettleRafRef.current = null;
+        const el = scrollerElRef.current;
+        if (!el || scrollToTimestampRef.current) {
+          return;
+        }
+
+        if (getScrollBottomDelta(el) > VISUAL_BOTTOM_EPSILON_PX) {
+          scrollToTrueBottom("auto");
+        }
+      });
+    }, [scrollToTrueBottom]);
+
     const handleVirtuosoAtBottomStateChange = useCallback(
       (atBottom: boolean) => {
         const el = scrollerElRef.current;
-        setIsVisuallyAtBottom(
-          atBottom && el ? isScrollElementVisuallyAtBottom(el) : atBottom
-        );
+        const visuallyAtBottom =
+          atBottom && el ? isScrollElementVisuallyAtBottom(el) : atBottom;
+        setIsVisuallyAtBottom(visuallyAtBottom);
         handleAtBottomStateChange(atBottom);
+        if (!atBottom) {
+          hasSettledVirtuosoLooseBottomRef.current = false;
+          return;
+        }
+        if (el && !visuallyAtBottom && !hasSettledVirtuosoLooseBottomRef.current) {
+          hasSettledVirtuosoLooseBottomRef.current = true;
+          scheduleVirtuosoAtBottomSettle();
+        }
       },
-      [handleAtBottomStateChange, setIsVisuallyAtBottom],
+      [handleAtBottomStateChange, scheduleVirtuosoAtBottomSettle, setIsVisuallyAtBottom],
     );
+
+    useEffect(() => {
+      if (scrollToTimestamp || !isAtBottom) {
+        return;
+      }
+      if (isVisuallyAtBottom) {
+        return;
+      }
+      if (hasSettledVirtuosoLooseBottomRef.current) {
+        return;
+      }
+
+      hasSettledVirtuosoLooseBottomRef.current = true;
+      scheduleVirtuosoAtBottomSettle();
+    }, [
+      isAtBottom,
+      isVisuallyAtBottom,
+      scheduleVirtuosoAtBottomSettle,
+      scrollToTimestamp,
+    ]);
 
     const handleScrollerResize = useCallback(() => {
       const shouldFollowBottom = shouldKeepBottomPinned();
@@ -1254,6 +1356,28 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       });
     }, [reconcileScrollerBottomState, scrollToTrueBottom, shouldKeepBottomPinned]);
 
+    const handleTotalListHeightChanged = useCallback(
+      (height: number) => {
+        const previousHeight = previousTotalListHeightRef.current;
+        previousTotalListHeightRef.current = height;
+
+        if (previousHeight < 0) {
+          const el = scrollerElRef.current;
+          if (el && getScrollBottomDelta(el) > VISUAL_BOTTOM_EPSILON_PX) {
+            scheduleStickyResizeBottomPin(totalListHeightRafRef);
+          }
+          return;
+        }
+
+        if (height <= previousHeight + VISUAL_BOTTOM_EPSILON_PX) {
+          return;
+        }
+
+        scheduleStickyResizeBottomPin(totalListHeightRafRef);
+      },
+      [scheduleStickyResizeBottomPin],
+    );
+
     const disconnectScrollerResizeObserver = useCallback(() => {
       scrollerResizeObserverRef.current?.disconnect();
       scrollerResizeObserverRef.current = null;
@@ -1269,6 +1393,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       if (!(el instanceof HTMLElement)) {
         if (scrollerElRef.current) {
           scrollerElRef.current.removeEventListener("scroll", handleScrollReconcile);
+          scrollerElRef.current.removeEventListener("wheel", handleScrollerWheel);
+          scrollerElRef.current.removeEventListener("pointerdown", handleScrollerPointerDown);
           scrollerElRef.current = null;
         }
         lastObservedScrollTopRef.current = null;
@@ -1279,6 +1405,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
       if (scrollerElRef.current && scrollerElRef.current !== el) {
         scrollerElRef.current.removeEventListener("scroll", handleScrollReconcile);
+        scrollerElRef.current.removeEventListener("wheel", handleScrollerWheel);
+        scrollerElRef.current.removeEventListener("pointerdown", handleScrollerPointerDown);
         disconnectScrollerResizeObserver();
       }
       if (scrollerElRef.current === el) {
@@ -1289,6 +1417,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       lastObservedScrollTopRef.current = el.scrollTop;
       setHasScrollerElement(true);
       el.addEventListener("scroll", handleScrollReconcile, { passive: true });
+      el.addEventListener("wheel", handleScrollerWheel, { passive: true });
+      el.addEventListener("pointerdown", handleScrollerPointerDown, { passive: true });
       reconcileScrollerBottomState();
       if (typeof ResizeObserver !== "undefined") {
         const observer = new ResizeObserver(handleScrollerResize);
@@ -1297,6 +1427,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
     }, [
       disconnectScrollerResizeObserver,
+      handleScrollerPointerDown,
+      handleScrollerWheel,
       handleScrollReconcile,
       handleScrollerResize,
       reconcileScrollerBottomState,
@@ -1409,7 +1541,23 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         return undefined;
       }
 
-      const observer = new ResizeObserver(() => {
+      transcriptRootMountedRef.current = false;
+      transcriptRootPrevHeightRef.current = -1;
+
+      const observer = new ResizeObserver((entries) => {
+        const newHeight = entries[0]?.contentRect.height ?? 0;
+
+        if (!transcriptRootMountedRef.current) {
+          transcriptRootMountedRef.current = true;
+          transcriptRootPrevHeightRef.current = newHeight;
+          return;
+        }
+
+        if (newHeight === transcriptRootPrevHeightRef.current) {
+          return;
+        }
+        transcriptRootPrevHeightRef.current = newHeight;
+
         scheduleStickyResizeBottomPin(transcriptRootResizeRafRef);
       });
       observer.observe(root);
@@ -1424,6 +1572,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           cancelAnimationFrame(transcriptRootResizeRafRef.current);
           transcriptRootResizeRafRef.current = null;
         }
+        transcriptRootMountedRef.current = false;
+        transcriptRootPrevHeightRef.current = -1;
       };
     }, [scheduleStickyResizeBottomPin]);
 
@@ -1477,9 +1627,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       timelineLength: timeline.length,
     });
     const handleScrollToBottomClick = useCallback(() => {
+      markBottomScrollIntent();
       scrollToTrueBottom(preferredScrollBehavior);
       scheduleBottomPin("manual scroll-to-bottom", preferredScrollBehavior);
-    }, [preferredScrollBehavior, scheduleBottomPin, scrollToTrueBottom]);
+    }, [markBottomScrollIntent, preferredScrollBehavior, scheduleBottomPin, scrollToTrueBottom]);
     const handleScrollToBottomWheel = useCallback(
       (event: React.WheelEvent<HTMLButtonElement>) => {
         if (!shouldShowScrollToBottom) {
@@ -1491,10 +1642,13 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }
 
         event.preventDefault();
+        if (event.deltaY > 0) {
+          markBottomScrollIntent();
+        }
         scrollElementByDelta(el, event.deltaX, event.deltaY);
         handleScrollReconcile();
       },
-      [handleScrollReconcile, isTestEnv, shouldShowScrollToBottom],
+      [handleScrollReconcile, isTestEnv, markBottomScrollIntent, shouldShowScrollToBottom],
     );
 
     const handleRangeChanged = useCallback(
@@ -2076,6 +2230,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           atBottomStateChange={handleVirtuosoAtBottomStateChange}
           atBottomThreshold={AT_BOTTOM_THRESHOLD}
           rangeChanged={handleRangeChanged}
+          totalListHeightChanged={handleTotalListHeightChanged}
           {...(startReachedHandler
             ? { startReached: startReachedHandler }
             : {})}
