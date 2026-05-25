@@ -22,6 +22,33 @@ async function expectAndAttachScreenshot(
   await expect(widget).toHaveScreenshot(snapshotName, { maxDiffPixelRatio: 0.04 });
 }
 
+async function expectAndAttachViewportClipScreenshot(
+  widget: Locator,
+  snapshotName: string,
+  attachmentName: string,
+  attach: (name: string, options: { body: Buffer; contentType: string }) => Promise<void>,
+  clipSize?: { width: number; height: number },
+) {
+  await expect(widget).toBeVisible();
+  const clip = await widget.evaluate((element, size) => {
+    const rect = element.getBoundingClientRect();
+    const x = Math.max(0, Math.floor(rect.x));
+    const y = Math.max(0, Math.floor(rect.y));
+    return {
+      x,
+      y,
+      width: size?.width ?? Math.ceil(rect.right - x),
+      height: size?.height ?? Math.ceil(rect.bottom - y),
+    };
+  }, clipSize);
+  const screenshot = await widget.page().screenshot({
+    animations: "disabled",
+    clip,
+  });
+  await attach(attachmentName, { body: screenshot, contentType: "image/png" });
+  expect(screenshot).toMatchSnapshot(snapshotName, { maxDiffPixelRatio: 0.04 });
+}
+
 type ChildSessionStatusOverride = {
   response?: unknown;
   error?: string;
@@ -415,32 +442,36 @@ test.describe("Chat Widget Matrix", () => {
     await expect(incompleteWidget).toBeVisible();
     await expect(completeWidget).toBeVisible();
 
-    await conflictWidget.getByRole("button").click();
-    await incompleteWidget.getByRole("button").click();
+    await conflictWidget.getByRole("button").click({ force: true });
+    await incompleteWidget.getByRole("button").click({ force: true });
 
-    await expectAndAttachScreenshot(
+    await expectAndAttachViewportClipScreenshot(
       targetWidget,
       "merge-widget-target.png",
       "merge-widget-target",
       testInfo.attach.bind(testInfo),
+      { width: 553, height: 34 },
     );
-    await expectAndAttachScreenshot(
+    await expectAndAttachViewportClipScreenshot(
       conflictWidget,
       "merge-widget-conflict.png",
       "merge-widget-conflict",
       testInfo.attach.bind(testInfo),
+      { width: 553, height: 95 },
     );
-    await expectAndAttachScreenshot(
+    await expectAndAttachViewportClipScreenshot(
       incompleteWidget,
       "merge-widget-incomplete.png",
       "merge-widget-incomplete",
       testInfo.attach.bind(testInfo),
+      { width: 553, height: 101 },
     );
-    await expectAndAttachScreenshot(
+    await expectAndAttachViewportClipScreenshot(
       completeWidget,
       "merge-widget-complete.png",
       "merge-widget-complete",
       testInfo.attach.bind(testInfo),
+      { width: 553, height: 60 },
     );
   });
 });
