@@ -71,6 +71,9 @@ const MARKDOWN_RENDER_DELAY_MS = 300;
  *  Must match exactly so both agree on what "at bottom" means. */
 export const AT_BOTTOM_THRESHOLD = 150;
 
+/** Final-pixel settle guard for native wheel/scrollbar bottom attempts. */
+const TRUE_BOTTOM_SETTLE_THRESHOLD_PX = 32;
+
 /** Bucket size for text length change detection during streaming.
  *  ~2 visible lines per trigger (average line ~80 chars at standard chat width → 2 lines × 80 = 160, rounded to 150). */
 export const TEXT_LENGTH_BUCKET_SIZE = 150;
@@ -545,9 +548,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const scrollToTimestampRef = useRef(scrollToTimestamp);
     // rAF reconciliation refs — used to keep isAtBottom accurate when footer grows
     const scrollerElRef = useRef<HTMLElement | null>(null);
+    const lastObservedScrollTopRef = useRef<number | null>(null);
     const reconcileRafRef = useRef<number | null>(null);
     const scrollerResizeObserverRef = useRef<ResizeObserver | null>(null);
     const scrollerResizeRafRef = useRef<number | null>(null);
+    const transcriptRootResizeObserverRef = useRef<ResizeObserver | null>(null);
+    const transcriptRootResizeRafRef = useRef<number | null>(null);
     const isTestEnv = import.meta.env.VITEST;
     const [isVisuallyAtBottom, setIsVisuallyAtBottomState] = useState(true);
     const isVisuallyAtBottomRef = useRef(true);
@@ -1153,6 +1159,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       setIsVisuallyAtBottom(true);
       setHasScrollableOverflow(false);
       setIsLastItemVisible(true);
+      lastObservedScrollTopRef.current = null;
       previousLastItemIndexRef.current = null;
       lastUserMessageIdRef.current = conversationLastUserMessageIdRef.current;
       agentRunningRef.current = conversationAgentRunningRef.current;
@@ -1188,16 +1195,30 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       const bottomDelta = getScrollBottomDelta(el);
       const atBottom = bottomDelta < AT_BOTTOM_THRESHOLD;
       const visuallyAtBottom = bottomDelta <= VISUAL_BOTTOM_EPSILON_PX;
+      const previousScrollTop = lastObservedScrollTopRef.current;
+      const isScrollingTowardBottom =
+        previousScrollTop === null || el.scrollTop >= previousScrollTop;
+      lastObservedScrollTopRef.current = el.scrollTop;
       setHasScrollableOverflow(
         el.scrollHeight > el.clientHeight + VISUAL_BOTTOM_EPSILON_PX
       );
+      if (
+        !scrollToTimestampRef.current &&
+        atBottom &&
+        isScrollingTowardBottom &&
+        bottomDelta > VISUAL_BOTTOM_EPSILON_PX &&
+        bottomDelta <= TRUE_BOTTOM_SETTLE_THRESHOLD_PX
+      ) {
+        scrollToTrueBottom("auto");
+        return;
+      }
       setIsVisuallyAtBottom(visuallyAtBottom);
 
       // Only reconcile if state disagrees — avoids unnecessary setState
       if (atBottom !== isAtBottomRef.current) {
         handleAtBottomStateChange(atBottom);
       }
-    }, [handleAtBottomStateChange, isAtBottomRef, setIsVisuallyAtBottom]);
+    }, [handleAtBottomStateChange, isAtBottomRef, scrollToTrueBottom, setIsVisuallyAtBottom]);
 
     const handleScrollReconcile = useCallback(() => {
       if (reconcileRafRef.current) return; // Already scheduled — skip
@@ -1250,6 +1271,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           scrollerElRef.current.removeEventListener("scroll", handleScrollReconcile);
           scrollerElRef.current = null;
         }
+        lastObservedScrollTopRef.current = null;
         setHasScrollerElement(false);
         setHasScrollableOverflow(false);
         disconnectScrollerResizeObserver();
@@ -1264,6 +1286,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         return;
       }
       scrollerElRef.current = el;
+      lastObservedScrollTopRef.current = el.scrollTop;
       setHasScrollerElement(true);
       el.addEventListener("scroll", handleScrollReconcile, { passive: true });
       reconcileScrollerBottomState();
@@ -1378,6 +1401,30 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         scheduleStickyResizeBottomPin(lastRenderedRowResizeRafRef);
       });
       lastRenderedRowObserverRef.current.observe(el);
+    }, [scheduleStickyResizeBottomPin]);
+
+    useEffect(() => {
+      const root = transcriptRootRef.current;
+      if (!root || typeof ResizeObserver === "undefined") {
+        return undefined;
+      }
+
+      const observer = new ResizeObserver(() => {
+        scheduleStickyResizeBottomPin(transcriptRootResizeRafRef);
+      });
+      observer.observe(root);
+      transcriptRootResizeObserverRef.current = observer;
+
+      return () => {
+        observer.disconnect();
+        if (transcriptRootResizeObserverRef.current === observer) {
+          transcriptRootResizeObserverRef.current = null;
+        }
+        if (transcriptRootResizeRafRef.current !== null) {
+          cancelAnimationFrame(transcriptRootResizeRafRef.current);
+          transcriptRootResizeRafRef.current = null;
+        }
+      };
     }, [scheduleStickyResizeBottomPin]);
 
     // Scroll to specific timestamp for history mode (time-travel feature)
