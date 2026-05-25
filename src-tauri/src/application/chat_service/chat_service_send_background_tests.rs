@@ -352,6 +352,141 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn queue_processing_success_registers_pid_and_completes_continuation_run() {
+    use crate::domain::agents::AgentHarnessKind;
+
+    let state = AppState::new_test();
+    let message_queue = Arc::clone(&state.message_queue);
+    let running_agent_registry = Arc::clone(&state.running_agent_registry);
+    let agent_run_repo = Arc::clone(&state.agent_run_repo);
+    let chat_message_repo = Arc::clone(&state.chat_message_repo);
+    let chat_timeline_repo = Arc::clone(&state.chat_timeline_repo);
+    let chat_attachment_repo = Arc::clone(&state.chat_attachment_repo);
+    let artifact_repo = Arc::clone(&state.artifact_repo);
+    let activity_event_repo = Arc::clone(&state.activity_event_repo);
+    let task_repo = Arc::clone(&state.task_repo);
+    let ideation_session_repo = Arc::clone(&state.ideation_session_repo);
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("fake-claude");
+    std::fs::write(
+        &cli_path,
+        r#"#!/bin/sh
+cat <<'EOF'
+{"type":"assistant","message":{"content":[{"type":"text","text":"queued continuation response"}]},"session_id":"session-cli"}
+{"type":"result","session_id":"session-cli","is_error":false,"result":"queued continuation response","cost_usd":0.0}
+EOF
+"#,
+    )
+    .expect("write fake cli");
+    let mut permissions = std::fs::metadata(&cli_path)
+        .expect("fake cli metadata")
+        .permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&cli_path, permissions).expect("mark fake cli executable");
+
+    message_queue.queue(
+        ChatContextType::Ideation,
+        "session-success",
+        "Queued message".to_string(),
+    );
+
+    let conversation_id = ChatConversationId::new();
+    let outcome =
+        super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
+            ChatContextType::Ideation,
+            AgentHarnessKind::Claude,
+            "session-success",
+            "session-success",
+            conversation_id,
+            "session-cli",
+            &message_queue,
+            &running_agent_registry,
+            &agent_run_repo,
+            &chat_message_repo,
+            Some(chat_timeline_repo),
+            &chat_attachment_repo,
+            &artifact_repo,
+            &activity_event_repo,
+            &task_repo,
+            &ideation_session_repo,
+            &cli_path,
+            temp.path(),
+            temp.path(),
+            None,
+            None,
+            Some(app_handle),
+            None,
+            false,
+            tokio_util::sync::CancellationToken::new(),
+            Some("chain-queued"),
+            Some("parent-run"),
+            super::StreamingStateCache::new(),
+        )
+        .await;
+
+    assert_eq!(outcome.total_processed, 1);
+    let queued_run_id = outcome
+        .last_run_id
+        .as_deref()
+        .expect("queued continuation run id should be recorded");
+    let queued_run = agent_run_repo
+        .get_by_id(&AgentRunId::from_string(queued_run_id.to_string()))
+        .await
+        .expect("queued run lookup should succeed")
+        .expect("queued run should be persisted");
+    assert_eq!(queued_run.status, AgentRunStatus::Completed);
+    assert_eq!(queued_run.run_chain_id.as_deref(), Some("chain-queued"));
+    assert_eq!(queued_run.parent_run_id.as_deref(), Some("parent-run"));
+    assert!(
+        running_agent_registry
+            .get(&RunningAgentKey::new(
+                ChatContextType::Ideation.to_string(),
+                "session-success"
+            ))
+            .await
+            .is_none(),
+        "successful queued continuation should unregister the runtime key"
+    );
+}
+
+#[tokio::test]
+async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
+    use crate::application::chat_service::{ChatService, MockChatService};
+
+    let service = MockChatService::new();
+    let missing = service
+        .send_queued_message_now(ChatContextType::Task, "task-1", "missing")
+        .await
+        .expect_err("missing queued message should fail");
+    assert!(
+        missing.to_string().contains("Queued message not found"),
+        "missing queued message error should identify the queue lookup failure"
+    );
+
+    let queued = service
+        .queue_message(ChatContextType::Task, "task-1", "queued content", None)
+        .await
+        .expect("queued message should be accepted");
+
+    let result = service
+        .send_queued_message_now(ChatContextType::Task, "task-1", &queued.id)
+        .await
+        .expect("queued message should send through mock service");
+
+    assert_eq!(result.was_queued, false);
+    assert_eq!(
+        service.get_sent_messages().await,
+        vec!["queued content".to_string()]
+    );
+}
+
 #[tokio::test]
 async fn queue_processing_links_selected_attachments_before_spawn_failure() {
     let app_state = AppState::new_test();
