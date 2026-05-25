@@ -332,6 +332,24 @@ impl MessageQueue {
         })
     }
 
+    /// Remove and return a specific queued message by ID.
+    pub fn take(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message_id: &str,
+    ) -> Option<QueuedMessage> {
+        let key = QueueKey::new(context_type, context_id.to_string());
+        let mut queues = self.queues.lock().unwrap();
+        let queue = queues.get_mut(&key)?;
+        let pos = queue.iter().position(|m| m.id == message_id)?;
+        let message = queue.remove(pos);
+        if queue.is_empty() {
+            queues.remove(&key);
+        }
+        Some(message)
+    }
+
     /// Get all queued messages for a context (without removing them)
     pub fn get_queued(
         &self,

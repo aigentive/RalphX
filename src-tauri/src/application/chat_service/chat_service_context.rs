@@ -336,6 +336,7 @@ impl ResolvedChatHarnessCli {
                     request.conversation.context_type,
                     request.entity_status,
                     request.project_id,
+                    Some(AgentHarnessKind::Codex),
                     request.model_override,
                     request.agent_lane_settings_repo.as_ref(),
                 )
@@ -418,6 +419,7 @@ impl ResolvedChatHarnessCli {
                     request.context_type,
                     entity_status.as_deref(),
                     request.project_id,
+                    Some(AgentHarnessKind::Codex),
                     request.model_override,
                     request.agent_lane_settings_repo.as_ref(),
                 )
@@ -2340,6 +2342,7 @@ async fn resolve_noninteractive_spawn_settings(
     context_type: ChatContextType,
     entity_status: Option<&str>,
     project_id: Option<&str>,
+    harness_override: Option<AgentHarnessKind>,
     model_override: Option<&str>,
     agent_lane_settings_repo: Option<&Arc<dyn AgentLaneSettingsRepository>>,
 ) -> ResolvedAgentSpawnSettings {
@@ -2348,7 +2351,7 @@ async fn resolve_noninteractive_spawn_settings(
         project_id,
         context_type,
         entity_status,
-        None,
+        harness_override,
         model_override,
         agent_lane_settings_repo,
     )
@@ -4390,6 +4393,20 @@ exit 0
                 "{} resume prompt should include captured attachment context",
                 harness
             );
+
+            if harness == AgentHarnessKind::Codex {
+                let args = spawnable.get_args_for_test();
+                assert!(
+                    args.windows(2)
+                        .any(|pair| pair[0] == "-m" && pair[1] == "gpt-5.5"),
+                    "Codex project resume should use Codex model defaults, got args: {args:?}"
+                );
+                assert!(
+                    !args.windows(2)
+                        .any(|pair| pair[0] == "-m" && pair[1] == "sonnet"),
+                    "Codex project resume must not inherit Claude model defaults: {args:?}"
+                );
+            }
         }
     }
 

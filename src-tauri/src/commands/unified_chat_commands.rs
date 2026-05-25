@@ -172,8 +172,9 @@ fn parse_chat_attachment_ids(raw_ids: &[String]) -> Result<Vec<ChatAttachmentId>
 
 #[cfg(test)]
 mod chat_attachment_id_parser_tests {
-    use super::parse_chat_attachment_ids;
+    use super::{parse_chat_attachment_ids, QueuedMessageResponse};
     use crate::domain::entities::ChatAttachmentId;
+    use crate::domain::services::QueuedMessage;
 
     #[test]
     fn parses_chat_attachment_ids_and_reports_invalid_values() {
@@ -188,6 +189,17 @@ mod chat_attachment_id_parser_tests {
             parse_chat_attachment_ids(&["not-a-uuid".to_string()]).unwrap_err(),
             "Invalid attachment id: not-a-uuid"
         );
+    }
+
+    #[test]
+    fn queued_message_response_includes_attachment_ids() {
+        let attachment_id = ChatAttachmentId::new();
+        let mut queued = QueuedMessage::new("queued with file".to_string());
+        queued.attachment_ids = vec![attachment_id];
+
+        let response = QueuedMessageResponse::from(queued);
+
+        assert_eq!(response.attachment_ids, vec![attachment_id.to_string()]);
     }
 }
 
@@ -1526,6 +1538,7 @@ pub struct QueuedMessageResponse {
     pub content: String,
     pub created_at: String,
     pub is_editing: bool,
+    pub attachment_ids: Vec<String>,
 }
 
 impl From<QueuedMessage> for QueuedMessageResponse {
@@ -1535,6 +1548,11 @@ impl From<QueuedMessage> for QueuedMessageResponse {
             content: msg.content,
             created_at: msg.created_at,
             is_editing: msg.is_editing,
+            attachment_ids: msg
+                .attachment_ids
+                .into_iter()
+                .map(|attachment_id| attachment_id.to_string())
+                .collect(),
         }
     }
 }
@@ -3557,6 +3575,78 @@ pub async fn delete_queued_agent_message(
         .delete_queued_message(context_type, &context_id, &message_id)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Send a queued message immediately, interrupting the active provider process.
+async fn send_queued_agent_message_now_for_state<R: Runtime + 'static>(
+    context_type: String,
+    context_id: String,
+    message_id: String,
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    team_service: std::sync::Arc<crate::application::TeamService>,
+    app: tauri::AppHandle<R>,
+) -> Result<SendAgentMessageResponse, String> {
+    let context_type = parse_context_type(&context_type)?;
+    let mut service = create_chat_service(state, app, execution_state, Some(team_service));
+
+    if context_type == ChatContextType::Ideation {
+        let session_id = IdeationSessionId::from_string(&context_id);
+        if let Ok(Some(session)) = state.ideation_session_repo.get_by_id(&session_id).await {
+            let is_team = session.team_mode.as_deref().is_some_and(|m| m != "solo");
+            if is_team {
+                service = service.with_team_mode(true);
+            }
+        }
+    }
+
+    if context_type == ChatContextType::TaskExecution {
+        let task_id = TaskId::from_string(context_id.clone());
+        if let Ok(Some(task)) = state.task_repo.get_by_id(&task_id).await {
+            let is_team = task
+                .metadata
+                .as_ref()
+                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                .and_then(|meta| {
+                    meta.get("agent_variant")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == "team")
+                })
+                .unwrap_or(false);
+            if is_team {
+                service = service.with_team_mode(true);
+            }
+        }
+    }
+
+    service
+        .send_queued_message_now(context_type, &context_id, &message_id)
+        .await
+        .map(SendAgentMessageResponse::from)
+        .map_err(|e| e.to_string())
+}
+
+/// Send a queued message immediately, interrupting the active provider process.
+#[tauri::command]
+pub async fn send_queued_agent_message_now(
+    context_type: String,
+    context_id: String,
+    message_id: String,
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
+    app: tauri::AppHandle,
+) -> Result<SendAgentMessageResponse, String> {
+    send_queued_agent_message_now_for_state(
+        context_type,
+        context_id,
+        message_id,
+        &state,
+        &execution_state,
+        team_service.inner().clone(),
+        app,
+    )
+    .await
 }
 
 /// List all conversations for a context
@@ -6995,6 +7085,7 @@ mod tests {
         schedule_external_pr_reconciliation_for_workspace,
         schedule_pr_supervision_recovery_for_conversation_id,
         send_agent_workspace_publish_repair_message_for_target,
+        send_queued_agent_message_now_for_state,
         set_agent_conversation_workspace_pr_supervision_for_state,
         should_defer_agent_workspace_repair_message_for_registry,
         spawn_deferred_agent_workspace_repair_message, store_agent_workspace_freshness,
@@ -7037,7 +7128,7 @@ mod tests {
         ChatMessageId, ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind,
         ChatTimelineItemStatus, ExecutionPlan, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
         IdeationSession, IdeationSessionFlow, IdeationSessionId, MessageRole, PlanBranch,
-        PlanBranchId, PlanBranchStatus, Project, ProjectId,
+        PlanBranchId, PlanBranchStatus, Project, ProjectId, Task,
         DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -7060,6 +7151,81 @@ mod tests {
     use std::time::{Duration, Instant};
     use tauri::test::{mock_builder, mock_context, noop_assets};
     use tauri::Manager;
+
+    fn build_send_now_command_app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
+        mock_builder()
+            .manage(state)
+            .manage(Arc::new(ExecutionState::new()))
+            .manage(Arc::new(TeamService::new_without_events(Arc::new(
+                TeamStateTracker::new(),
+            ))))
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build")
+    }
+
+    #[tokio::test]
+    async fn send_queued_agent_message_now_command_enables_ideation_team_mode() {
+        let state = AppState::new_test();
+        let session = IdeationSession::builder()
+            .project_id(ProjectId::new())
+            .team_mode("team")
+            .build();
+        let session_id = session.id.as_str().to_string();
+        state
+            .ideation_session_repo
+            .create(session)
+            .await
+            .expect("session should persist");
+        let app = build_send_now_command_app(state);
+        let app_state = app.state::<AppState>();
+        let execution_state = app.state::<Arc<ExecutionState>>();
+        let team_service = app.state::<Arc<TeamService>>().inner().clone();
+
+        let error = send_queued_agent_message_now_for_state(
+            "ideation".to_string(),
+            session_id,
+            "missing-message".to_string(),
+            app_state.inner(),
+            execution_state.inner(),
+            team_service,
+            app.handle().clone(),
+        )
+        .await
+        .expect_err("missing queued message should fail after command setup");
+
+        assert!(error.contains("Queued message not found"));
+    }
+
+    #[tokio::test]
+    async fn send_queued_agent_message_now_command_enables_task_team_mode() {
+        let state = AppState::new_test();
+        let mut task = Task::new(ProjectId::new(), "Team execution".to_string());
+        task.metadata = Some(r#"{"agent_variant":"team"}"#.to_string());
+        let task_id = task.id.as_str().to_string();
+        state
+            .task_repo
+            .create(task)
+            .await
+            .expect("task should persist");
+        let app = build_send_now_command_app(state);
+        let app_state = app.state::<AppState>();
+        let execution_state = app.state::<Arc<ExecutionState>>();
+        let team_service = app.state::<Arc<TeamService>>().inner().clone();
+
+        let error = send_queued_agent_message_now_for_state(
+            "task_execution".to_string(),
+            task_id,
+            "missing-message".to_string(),
+            app_state.inner(),
+            execution_state.inner(),
+            team_service,
+            app.handle().clone(),
+        )
+        .await
+        .expect_err("missing queued message should fail after command setup");
+
+        assert!(error.contains("Queued message not found"));
+    }
 
     #[test]
     fn normalized_effort_for_supported_keeps_supported_request_or_default() {

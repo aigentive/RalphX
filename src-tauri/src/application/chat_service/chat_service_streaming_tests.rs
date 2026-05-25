@@ -117,6 +117,26 @@ async fn spawn_interactive_jsonl_process_that_stays_alive(line: &str) -> tokio::
     command.spawn().expect("spawn interactive jsonl fixture")
 }
 
+async fn spawn_codex_jsonl_process_that_stays_alive(lines: &[&str]) -> tokio::process::Child {
+    let mut payload = String::new();
+    for line in lines {
+        payload.push_str(line);
+        payload.push('\n');
+    }
+
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg("printf '%s' \"$RALPHX_STREAM_LINES\"; exec sleep 10")
+        .env("RALPHX_STREAM_LINES", payload)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    command.spawn().expect("spawn codex jsonl fixture")
+}
+
 async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamError> {
     let child = spawn_jsonl_process(lines).await;
     let conversation_id = ChatConversationId::new();
@@ -235,6 +255,51 @@ async fn run_codex_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamE
         false,
     )
     .await
+}
+
+#[tokio::test]
+async fn codex_stream_turn_completed_finishes_without_waiting_for_process_exit() {
+    let child = spawn_codex_jsonl_process_that_stays_alive(&[
+        r#"{"type":"thread.started","thread_id":"codex-thread-queue"}"#,
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"Done."}}"#,
+        r#"{"type":"turn.completed","usage":{"last_token_usage":{"input_tokens":3,"output_tokens":2}}}"#,
+    ])
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        process_codex_stream_background::<MockRuntime>(
+            child,
+            ChatContextType::Ideation,
+            context_id.as_str(),
+            &conversation_id,
+            None::<tauri::AppHandle<MockRuntime>>,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            CancellationToken::new(),
+            StreamingStateCache::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+        ),
+    )
+    .await
+    .expect("Codex turn.completed should not wait for process EOF")
+    .expect("Codex turn.completed should complete successfully");
+
+    assert_eq!(outcome.response_text, "Done.");
+    assert_eq!(outcome.session_id, Some("codex-thread-queue".to_string()));
+    assert_eq!(outcome.turns_finalized, 0);
 }
 
 #[tokio::test]

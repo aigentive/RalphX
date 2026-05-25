@@ -799,6 +799,7 @@ export function IntegratedChatPanel({
     handleSend: handleSendBase,
     handleEditLastQueued,
     handleDeleteQueuedMessage,
+    handleSendQueuedMessageNow,
     handleEditQueuedMessage,
     handleStopAgent,
   } = useChatActions({
@@ -1371,6 +1372,7 @@ export function IntegratedChatPanel({
                     messages={queuedMessages}
                     onEdit={handleEditQueuedMessage}
                     onDelete={handleDeleteQueuedMessage}
+                    onSendNow={handleSendQueuedMessageNow}
                   />
                 </div>
               )}

@@ -275,6 +275,7 @@ macro_rules! register_tauri_commands {
             commands::unified_chat_commands::queue_agent_message,
             commands::unified_chat_commands::get_queued_agent_messages,
             commands::unified_chat_commands::delete_queued_agent_message,
+            commands::unified_chat_commands::send_queued_agent_message_now,
             commands::unified_chat_commands::list_agent_conversations,
             commands::unified_chat_commands::list_agent_conversations_page,
             commands::agent_sidebar_commands::list_agent_sidebar_conversations,

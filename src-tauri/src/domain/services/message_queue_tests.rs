@@ -52,6 +52,28 @@ fn test_get_queued() {
 }
 
 #[test]
+fn test_take_removes_selected_message_without_reordering_remaining() {
+    let queue = MessageQueue::new();
+    let first = queue.queue(ChatContextType::Task, "task-1", "First".to_string());
+    let second = queue.queue(ChatContextType::Task, "task-1", "Second".to_string());
+    let third = queue.queue(ChatContextType::Task, "task-1", "Third".to_string());
+
+    let taken = queue
+        .take(ChatContextType::Task, "task-1", &second.id)
+        .expect("selected queued message should be removed");
+
+    assert_eq!(taken.id, second.id);
+    assert_eq!(taken.content, "Second");
+
+    let remaining = queue.get_queued(ChatContextType::Task, "task-1");
+    assert_eq!(
+        remaining.iter().map(|message| message.id.as_str()).collect::<Vec<_>>(),
+        vec![first.id.as_str(), third.id.as_str()],
+        "taking a selected queued message must preserve the order of the rest"
+    );
+}
+
+#[test]
 fn test_clear() {
     let queue = MessageQueue::new();
 

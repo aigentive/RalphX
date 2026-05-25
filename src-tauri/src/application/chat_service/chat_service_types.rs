@@ -732,6 +732,8 @@ pub struct AgentMessageQueuedPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_ids: Vec<String>,
 }
 
 /// Payload for agent:conversation_created event

@@ -21,13 +21,13 @@ use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    ChatContextType, ChatConversationId, InternalStatus, MessageRole, TaskId,
+    AgentRun, AgentRunId, ChatContextType, ChatConversationId, InternalStatus, MessageRole, TaskId,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, ArtifactRepository, ChatMessageRepository, ChatTimelineRepository,
-    IdeationSessionRepository, TaskRepository,
+    ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatMessageRepository,
+    ChatTimelineRepository, IdeationSessionRepository, TaskRepository,
 };
-use crate::domain::services::MessageQueue;
+use crate::domain::services::{MessageQueue, RunningAgentKey, RunningAgentRegistry};
 use crate::utils::secret_redactor::redact;
 use tokio_util::sync::CancellationToken;
 
@@ -158,6 +158,39 @@ async fn persist_hidden_resume_in_place_marker(
     }
 }
 
+fn build_queued_agent_run(
+    conversation_id: ChatConversationId,
+    harness: AgentHarnessKind,
+    provider_session_id: &str,
+    run_chain_id: Option<&str>,
+    parent_run_id: Option<&str>,
+) -> AgentRun {
+    let mut run = match (run_chain_id, parent_run_id) {
+        (Some(chain_id), Some(parent_id)) => {
+            AgentRun::new_continuation(conversation_id, chain_id.to_string(), parent_id.to_string())
+        }
+        _ => AgentRun::new(conversation_id),
+    };
+    run.harness = Some(harness);
+    run.provider_session_id = Some(provider_session_id.to_string());
+    run
+}
+
+async fn fail_queued_agent_run(
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    registry_key: &RunningAgentKey,
+    run_id: &str,
+    error: &str,
+) {
+    let _ = agent_run_repo
+        .fail(&AgentRunId::from_string(run_id.to_string()), error)
+        .await;
+    running_agent_registry
+        .unregister(registry_key, run_id)
+        .await;
+}
+
 /// Process all queued messages for a context with retry loop.
 ///
 /// Returns the total number of messages processed.
@@ -173,6 +206,8 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     conversation_id: ChatConversationId,
     session_id: &str,
     message_queue: &Arc<MessageQueue>,
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
     chat_timeline_repo: Option<Arc<dyn ChatTimelineRepository>>,
     chat_attachment_repo: &Arc<dyn crate::domain::repositories::ChatAttachmentRepository>,
@@ -334,7 +369,35 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             }
 
             // Emit run_started for the queued message (so frontend shows activity)
-            let queued_run_id = uuid::Uuid::new_v4().to_string();
+            let queued_run = build_queued_agent_run(
+                conversation_id.clone(),
+                harness,
+                session_id,
+                run_chain_id,
+                parent_run_id,
+            );
+            let queued_run_id = queued_run.id.as_str().to_string();
+            if let Err(error) = agent_run_repo.create(queued_run).await {
+                tracing::warn!(
+                    error = %error,
+                    queued_run_id,
+                    conversation_id = %conversation_id,
+                    "[QUEUE] Failed to persist queued continuation agent run"
+                );
+            }
+            let queue_registry_key =
+                RunningAgentKey::new(context_type.to_string(), queue_context_id);
+            let queue_conversation_id = conversation_id.as_str().to_string();
+            running_agent_registry
+                .register(
+                    queue_registry_key.clone(),
+                    0,
+                    queue_conversation_id.clone(),
+                    queued_run_id.clone(),
+                    Some(working_directory.to_string_lossy().to_string()),
+                    Some(cancellation_token.clone()),
+                )
+                .await;
             last_run_id = Some(queued_run_id.clone());
             tracing::info!(
                 queued_run_id = %queued_run_id,
@@ -387,11 +450,19 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                     context_type: context_type.to_string(),
                                     context_id: context_id.to_string(),
                                     agent_run_id: Some(queued_run_id.clone()),
-                                    error,
+                                    error: error.clone(),
                                     stderr: None,
                                 },
                             );
                         }
+                        fail_queued_agent_run(
+                            agent_run_repo,
+                            running_agent_registry,
+                            &queue_registry_key,
+                            &queued_run_id,
+                            &error,
+                        )
+                        .await;
                         continue;
                     }
                 }
@@ -413,11 +484,19 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                     context_type: context_type.to_string(),
                                     context_id: context_id.to_string(),
                                     agent_run_id: Some(queued_run_id.clone()),
-                                    error,
+                                    error: error.clone(),
                                     stderr: None,
                                 },
                             );
                         }
+                        fail_queued_agent_run(
+                            agent_run_repo,
+                            running_agent_registry,
+                            &queue_registry_key,
+                            &queued_run_id,
+                            &error,
+                        )
+                        .await;
                         continue;
                     }
                 };
@@ -579,13 +658,22 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             {
                 Ok(spawnable) => spawnable,
                 Err(err) => {
+                    let error_string = err.to_string();
                     tracing::warn!(
-                        error = %err,
+                        error = %error_string,
                         %context_type,
                         context_id,
                         harness = %harness,
                         "queue spawn blocked"
                     );
+                    fail_queued_agent_run(
+                        agent_run_repo,
+                        running_agent_registry,
+                        &queue_registry_key,
+                        &queued_run_id,
+                        &error_string,
+                    )
+                    .await;
                     return QueueProcessingOutcome {
                         total_processed,
                         last_run_id,
@@ -597,6 +685,27 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             tracing::info!(cmd = ?spawnable, "Spawning CLI agent (queue resume)");
             match spawnable.spawn().await {
                 Ok(child) => {
+                    if let Some(pid) = child.id() {
+                        if let Err(error) = running_agent_registry
+                            .update_agent_process(
+                                &queue_registry_key,
+                                pid,
+                                &queue_conversation_id,
+                                &queued_run_id,
+                                Some(working_directory.to_string_lossy().to_string()),
+                                Some(cancellation_token.clone()),
+                                None,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %error,
+                                queued_run_id,
+                                pid,
+                                "[QUEUE] Failed to update queued continuation process registry"
+                            );
+                        }
+                    }
                     let split_verification_transcript =
                         super::chat_service_send_background::should_split_verification_transcript(
                             context_type,
@@ -647,8 +756,8 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         effective_team_mode_for_harness(team_mode, harness),
                         streaming_state_cache.clone(),
                         None, // Queue processing doesn't have registry in scope
-                        None, // Queue processing doesn't complete agent_run
-                        None,
+                        Some(Arc::clone(agent_run_repo)),
+                        Some(queued_run_id.clone()),
                         None, // Queue processing doesn't track execution slots
                         None, // Queue processing doesn't persist session_id
                         split_verification_transcript,
@@ -706,6 +815,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             // NOTE: Don't emit run_completed here for each queued message.
                             // We emit a single run_completed after ALL queue processing is done,
                             // to prevent UI flickering between messages.
+                            let _ = agent_run_repo
+                                .complete(&AgentRunId::from_string(queued_run_id.clone()))
+                                .await;
                         }
                         Err(e) => {
                             if let crate::application::chat_service::StreamError::ProviderError {
@@ -738,6 +850,23 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                 "Failed to process queued message stream: {}",
                                 error_string
                             );
+                            match &e {
+                                crate::application::chat_service::StreamError::Cancelled {
+                                    ..
+                                } => {
+                                    let _ = agent_run_repo
+                                        .cancel(&AgentRunId::from_string(queued_run_id.clone()))
+                                        .await;
+                                }
+                                _ => {
+                                    let _ = agent_run_repo
+                                        .fail(
+                                            &AgentRunId::from_string(queued_run_id.clone()),
+                                            &error_string,
+                                        )
+                                        .await;
+                                }
+                            }
                             // Emit error event
                             if let Some(ref handle) = app_handle {
                                 let _ = handle.emit(
@@ -754,9 +883,21 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             }
                         }
                     }
+                    running_agent_registry
+                        .unregister(&queue_registry_key, &queued_run_id)
+                        .await;
                 }
                 Err(e) => {
                     tracing::error!("Failed to spawn queued message command: {}", e);
+                    let error_string = e.to_string();
+                    fail_queued_agent_run(
+                        agent_run_repo,
+                        running_agent_registry,
+                        &queue_registry_key,
+                        &queued_run_id,
+                        &error_string,
+                    )
+                    .await;
                     // Emit error event
                     if let Some(ref handle) = app_handle {
                         let _ = handle.emit(

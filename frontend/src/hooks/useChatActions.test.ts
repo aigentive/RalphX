@@ -35,12 +35,14 @@ vi.mock("@/stores/chatStore", () => ({
 
 const mockSendAgentMessage = vi.fn();
 const mockDeleteQueuedAgentMessage = vi.fn();
+const mockSendQueuedAgentMessageNow = vi.fn();
 const mockStopAgent = vi.fn();
 
 vi.mock("@/api/chat", () => ({
   chatApi: {
     sendAgentMessage: (...args: unknown[]) => mockSendAgentMessage(...args),
     deleteQueuedAgentMessage: (...args: unknown[]) => mockDeleteQueuedAgentMessage(...args),
+    sendQueuedAgentMessageNow: (...args: unknown[]) => mockSendQueuedAgentMessageNow(...args),
   },
   stopAgent: (...args: unknown[]) => mockStopAgent(...args),
 }));
@@ -95,6 +97,7 @@ interface SetupOptions {
   storeContextKey?: string;
   selectedTaskId?: string | undefined;
   ideationSessionId?: string | undefined;
+  queueContextId?: string | undefined;
   isPending?: boolean;
   messageCount?: number;
   activeConversationId?: string | null | undefined;
@@ -107,6 +110,7 @@ function setup(opts: SetupOptions = {}) {
     storeContextKey = "task:task-1",
     selectedTaskId = undefined,
     ideationSessionId = undefined,
+    queueContextId = undefined,
     isPending = false,
     messageCount = 5,
     activeConversationId = undefined,
@@ -124,6 +128,7 @@ function setup(opts: SetupOptions = {}) {
     useChatActions({
       contextType,
       contextId,
+      queueContextId,
       storeContextKey,
       selectedTaskId,
       ideationSessionId,
@@ -151,6 +156,13 @@ describe("useChatActions", () => {
       queuedAsPending: false,
     });
     mockDeleteQueuedAgentMessage.mockResolvedValue(true);
+    mockSendQueuedAgentMessageNow.mockResolvedValue({
+      conversationId: "conv-1",
+      agentRunId: "run-now",
+      isNewConversation: false,
+      wasQueued: false,
+      queuedAsPending: false,
+    });
     mockStopAgent.mockResolvedValue(true);
     mockRecoverTaskExecution.mockResolvedValue(true);
     mockSpawnSessionNamer.mockResolvedValue(undefined);
@@ -167,6 +179,33 @@ describe("useChatActions", () => {
       });
 
       expect(mutateAsync).toHaveBeenCalledWith({ content: "hello world", attachmentIds: undefined });
+    });
+
+    it("preserves attachment IDs when a send is queued", async () => {
+      const { result, mutateAsync } = setup();
+      mutateAsync.mockResolvedValue({
+        conversationId: "conv-1",
+        agentRunId: "run-1",
+        isNewConversation: false,
+        wasQueued: true,
+        queuedAsPending: false,
+        queuedMessageId: "q-with-file",
+      });
+
+      await act(async () => {
+        await result.current.handleSend("review attached file", ["att-1"]);
+      });
+
+      expect(mutateAsync).toHaveBeenCalledWith({
+        content: "review attached file",
+        attachmentIds: ["att-1"],
+      });
+      expect(mockActions.queueMessage).toHaveBeenCalledWith(
+        "task:task-1",
+        "review attached file",
+        "q-with-file",
+        ["att-1"]
+      );
     });
 
     it("does not send empty or whitespace-only strings", async () => {
@@ -473,6 +512,60 @@ describe("useChatActions", () => {
     });
   });
 
+  // ── handleSendQueuedMessageNow ──────────────────────────────────
+
+  describe("handleSendQueuedMessageNow", () => {
+    it("deletes locally and asks backend to interrupt and send queued message", async () => {
+      const { result } = setup({
+        contextType: "project",
+        contextId: "project-1",
+        queueContextId: "conv-agent",
+        storeContextKey: "project:conv-agent",
+      });
+
+      await act(async () => {
+        await result.current.handleSendQueuedMessageNow("queued-1");
+      });
+
+      expect(mockActions.deleteQueuedMessage).toHaveBeenCalledWith(
+        "project:conv-agent",
+        "queued-1"
+      );
+      expect(mockSendQueuedAgentMessageNow).toHaveBeenCalledWith(
+        "project",
+        "conv-agent",
+        "queued-1"
+      );
+    });
+
+    it("queues replacement locally when backend cannot send immediately", async () => {
+      mockSendQueuedAgentMessageNow.mockResolvedValue({
+        conversationId: "conv-1",
+        agentRunId: "run-1",
+        isNewConversation: false,
+        wasQueued: true,
+        queuedAsPending: false,
+        queuedMessageId: "queued-replacement",
+      });
+      const { result } = setup();
+
+      await act(async () => {
+        await result.current.handleSendQueuedMessageNow(
+          "queued-1",
+          "send when possible",
+          ["att-1"]
+        );
+      });
+
+      expect(mockActions.queueMessage).toHaveBeenCalledWith(
+        "task:task-1",
+        "send when possible",
+        "queued-replacement",
+        ["att-1"]
+      );
+    });
+  });
+
   // ── handleEditQueuedMessage ─────────────────────────────────────
 
   describe("handleEditQueuedMessage", () => {
@@ -514,6 +607,41 @@ describe("useChatActions", () => {
       });
 
       expect(mockActions.queueMessage).toHaveBeenCalledWith("task:task-1", "updated content", "q-new-1");
+    });
+
+    it("keeps attachment IDs when editing a queued message", async () => {
+      mockSendAgentMessage.mockResolvedValue({
+        conversationId: "conv-1",
+        agentRunId: "run-1",
+        isNewConversation: false,
+        wasQueued: true,
+        queuedMessageId: "q-edited-with-file",
+      });
+
+      const { result } = setup();
+
+      await act(async () => {
+        await result.current.handleEditQueuedMessage(
+          "old-id",
+          "updated content",
+          ["att-1"]
+        );
+      });
+
+      expect(mockSendAgentMessage).toHaveBeenCalledWith(
+        "task",
+        "task-1",
+        "updated content",
+        ["att-1"],
+        undefined,
+        undefined
+      );
+      expect(mockActions.queueMessage).toHaveBeenCalledWith(
+        "task:task-1",
+        "updated content",
+        "q-edited-with-file",
+        ["att-1"]
+      );
     });
 
     it("sets and clears sending spinner", async () => {
