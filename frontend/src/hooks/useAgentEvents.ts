@@ -632,6 +632,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         context_id: string;
         conversation_id?: string | null;
         created_at: string;
+        attachment_ids?: string[];
       }>("agent:message_queued", (payload) => {
         const { message_id, content, context_type, context_id: eventContextId } = payload;
 
@@ -640,7 +641,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           eventContextId,
           payload.conversation_id
         );
-        queueMessage(eventContextKey, content, message_id);
+        queueMessage(eventContextKey, content, message_id, payload.attachment_ids);
       })
     );
 

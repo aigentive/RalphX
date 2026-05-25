@@ -320,6 +320,7 @@ export interface QueuedMessageResponse {
   content: string;
   createdAt: string;
   isEditing: boolean;
+  attachmentIds: string[];
 }
 
 export interface ConversationListPageResponse {
@@ -1443,6 +1444,7 @@ const QueuedMessageResponseSchema = z.object({
   content: z.string(),
   created_at: z.string(),
   is_editing: z.boolean(),
+  attachment_ids: z.array(z.string()).optional().default([]),
 });
 
 type RawQueuedMessage = z.infer<typeof QueuedMessageResponseSchema>;
@@ -1453,6 +1455,7 @@ function transformQueuedMessage(raw: RawQueuedMessage): QueuedMessageResponse {
     content: raw.content,
     createdAt: raw.created_at,
     isEditing: raw.is_editing,
+    attachmentIds: raw.attachment_ids,
   };
 }
 
@@ -1503,6 +1506,7 @@ export const chatApi = {
   sendAgentMessage,
   getQueuedAgentMessages,
   deleteQueuedAgentMessage,
+  sendQueuedAgentMessageNow,
   // Agent lifecycle
   isChatServiceAvailable,
   stopAgent,
@@ -2446,6 +2450,25 @@ export async function deleteQueuedAgentMessage(
     { contextType, contextId, messageId },
     z.boolean()
   );
+}
+
+/**
+ * Send a queued message immediately.
+ *
+ * Interrupts the active provider process for the queue context, then sends the
+ * selected queued payload through the normal provider-session resume path.
+ */
+export async function sendQueuedAgentMessageNow(
+  contextType: ContextType,
+  contextId: string,
+  messageId: string
+): Promise<SendAgentMessageResult> {
+  const raw = await typedInvoke(
+    "send_queued_agent_message_now",
+    { contextType, contextId, messageId },
+    SendAgentMessageResponseSchema
+  );
+  return transformSendAgentMessageResponse(raw);
 }
 
 /**

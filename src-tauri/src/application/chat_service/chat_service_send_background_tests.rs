@@ -8,9 +8,10 @@ use crate::application::interactive_process_registry::{
 use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ChatAttachment, ChatContextType, ChatConversation,
-    ChatConversationId, ChatTimelineItemStatus, ProjectId,
+    AgentConversationWorkspaceMode, AgentRunId, AgentRunStatus, ChatAttachment, ChatContextType,
+    ChatConversation, ChatConversationId, ChatTimelineItemStatus, ProjectId,
 };
+use crate::domain::services::RunningAgentKey;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 use std::path::Path;
 use std::sync::Arc;
@@ -228,6 +229,8 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
         conversation_id,
         "session-cli",
         &app_state.message_queue,
+        &app_state.running_agent_registry,
+        &app_state.agent_run_repo,
         &app_state.chat_message_repo,
         None,
         &app_state.chat_attachment_repo,
@@ -269,6 +272,8 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
 async fn queue_processing_records_run_id_before_spawn_failure() {
     let app_state = AppState::new_test();
     let message_queue = Arc::clone(&app_state.message_queue);
+    let running_agent_registry = Arc::clone(&app_state.running_agent_registry);
+    let agent_run_repo = Arc::clone(&app_state.agent_run_repo);
     let chat_message_repo = Arc::clone(&app_state.chat_message_repo);
     let chat_attachment_repo = Arc::clone(&app_state.chat_attachment_repo);
     let artifact_repo = Arc::clone(&app_state.artifact_repo);
@@ -300,6 +305,8 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
             conversation_id,
             "session-cli",
             &message_queue,
+            &running_agent_registry,
+            &agent_run_repo,
             &chat_message_repo,
             None,
             &chat_attachment_repo,
@@ -323,13 +330,34 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
         .await;
 
     assert_eq!(outcome.total_processed, 1);
-    assert!(outcome.last_run_id.is_some());
+    let queued_run_id = outcome
+        .last_run_id
+        .as_deref()
+        .expect("queued continuation run id should be recorded");
+    let queued_run = agent_run_repo
+        .get_by_id(&AgentRunId::from_string(queued_run_id.to_string()))
+        .await
+        .expect("queued run lookup should succeed")
+        .expect("queued run should be persisted");
+    assert_eq!(queued_run.status, AgentRunStatus::Failed);
+    assert!(
+        running_agent_registry
+            .get(&RunningAgentKey::new(
+                ChatContextType::Ideation.to_string(),
+                "session-spawn-fails"
+            ))
+            .await
+            .is_none(),
+        "spawn failure should not leave queued continuation marked running"
+    );
 }
 
 #[tokio::test]
 async fn queue_processing_links_selected_attachments_before_spawn_failure() {
     let app_state = AppState::new_test();
     let message_queue = Arc::clone(&app_state.message_queue);
+    let running_agent_registry = Arc::clone(&app_state.running_agent_registry);
+    let agent_run_repo = Arc::clone(&app_state.agent_run_repo);
     let chat_message_repo = Arc::clone(&app_state.chat_message_repo);
     let chat_attachment_repo = Arc::clone(&app_state.chat_attachment_repo);
     let artifact_repo = Arc::clone(&app_state.artifact_repo);
@@ -391,6 +419,8 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
             conversation_id,
             "session-cli",
             &message_queue,
+            &running_agent_registry,
+            &agent_run_repo,
             &chat_message_repo,
             None,
             &chat_attachment_repo,

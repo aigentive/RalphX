@@ -8,8 +8,8 @@
  * - Pending/queued visual style (muted, send icon)
  */
 
-import { useState, useCallback, useEffect } from "react";
-import { Check, Pencil, X } from "lucide-react";
+import { useState, useCallback, useEffect, useMemo } from "react";
+import { Check, Paperclip, Pencil, SendHorizontal, X } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -45,19 +45,23 @@ export interface QueuedMessageProps {
   /** The queued message to display */
   message: QueuedMessageType;
   /** Callback when edit is confirmed */
-  onEdit: (id: string, content: string) => void;
+  onEdit: (id: string, content: string, attachmentIds?: string[]) => void;
   /** Callback when delete is requested */
   onDelete: (id: string) => void;
+  /** Callback when this queued message should interrupt the active run and send now */
+  onSendNow?: (id: string, content: string, attachmentIds?: string[]) => void;
 }
 
 // ============================================================================
 // Component
 // ============================================================================
 
-export function QueuedMessage({ message, onEdit, onDelete }: QueuedMessageProps) {
+export function QueuedMessage({ message, onEdit, onDelete, onSendNow }: QueuedMessageProps) {
   const [isEditing, setIsEditing] = useState(message.isEditing);
   const [editContent, setEditContent] = useState(message.content);
   const previewContent = formatQueuedMessageExcerpt(message.content);
+  const attachmentIds = useMemo(() => message.attachmentIds ?? [], [message.attachmentIds]);
+  const attachmentCount = attachmentIds.length;
 
   useEffect(() => {
     setIsEditing(message.isEditing);
@@ -73,10 +77,10 @@ export function QueuedMessage({ message, onEdit, onDelete }: QueuedMessageProps)
 
   const handleSaveEdit = useCallback(() => {
     if (editContent.trim()) {
-      onEdit(message.id, editContent.trim());
+      onEdit(message.id, editContent.trim(), attachmentIds);
       setIsEditing(false);
     }
-  }, [message.id, editContent, onEdit]);
+  }, [message.id, attachmentIds, editContent, onEdit]);
 
   const handleCancelEdit = useCallback(() => {
     setIsEditing(false);
@@ -99,6 +103,10 @@ export function QueuedMessage({ message, onEdit, onDelete }: QueuedMessageProps)
   const handleDelete = useCallback(() => {
     onDelete(message.id);
   }, [message.id, onDelete]);
+
+  const handleSendNow = useCallback(() => {
+    onSendNow?.(message.id, message.content, attachmentIds);
+  }, [message.content, message.id, attachmentIds, onSendNow]);
 
   return (
     <div
@@ -136,13 +144,28 @@ export function QueuedMessage({ message, onEdit, onDelete }: QueuedMessageProps)
               rows={2}
             />
           ) : (
-            <p
-              data-testid="queued-message-content"
-              className="text-sm break-words"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              {previewContent}
-            </p>
+            <>
+              <p
+                data-testid="queued-message-content"
+                className="text-sm break-words"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                {previewContent}
+              </p>
+              {attachmentCount > 0 && (
+                <div
+                  data-testid="queued-message-attachment-count"
+                  className="mt-1 inline-flex items-center gap-1 text-xs"
+                  style={{ color: "var(--text-muted)" }}
+                  aria-label={`${attachmentCount} queued attachment${attachmentCount === 1 ? "" : "s"}`}
+                >
+                  <Paperclip size={12} aria-hidden="true" />
+                  <span>
+                    {attachmentCount} attachment{attachmentCount === 1 ? "" : "s"}
+                  </span>
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -185,6 +208,22 @@ export function QueuedMessage({ message, onEdit, onDelete }: QueuedMessageProps)
               </>
             ) : (
               <>
+                {onSendNow && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        data-testid="queued-message-send-now"
+                        onClick={handleSendNow}
+                        className="p-1 rounded transition-colors hover:bg-opacity-80"
+                        style={{ color: "var(--accent-primary)" }}
+                        aria-label="Send queued message now"
+                      >
+                        <SendHorizontal size={16} />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">Send now</TooltipContent>
+                  </Tooltip>
+                )}
                 {/* Edit button */}
                 <Tooltip>
                   <TooltipTrigger asChild>

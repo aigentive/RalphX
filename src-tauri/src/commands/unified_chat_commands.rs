@@ -164,8 +164,9 @@ fn parse_chat_attachment_ids(raw_ids: &[String]) -> Result<Vec<ChatAttachmentId>
 
 #[cfg(test)]
 mod chat_attachment_id_parser_tests {
-    use super::parse_chat_attachment_ids;
+    use super::{parse_chat_attachment_ids, QueuedMessageResponse};
     use crate::domain::entities::ChatAttachmentId;
+    use crate::domain::services::QueuedMessage;
 
     #[test]
     fn parses_chat_attachment_ids_and_reports_invalid_values() {
@@ -180,6 +181,17 @@ mod chat_attachment_id_parser_tests {
             parse_chat_attachment_ids(&["not-a-uuid".to_string()]).unwrap_err(),
             "Invalid attachment id: not-a-uuid"
         );
+    }
+
+    #[test]
+    fn queued_message_response_includes_attachment_ids() {
+        let attachment_id = ChatAttachmentId::new();
+        let mut queued = QueuedMessage::new("queued with file".to_string());
+        queued.attachment_ids = vec![attachment_id];
+
+        let response = QueuedMessageResponse::from(queued);
+
+        assert_eq!(response.attachment_ids, vec![attachment_id.to_string()]);
     }
 }
 
@@ -1416,6 +1428,7 @@ pub struct QueuedMessageResponse {
     pub content: String,
     pub created_at: String,
     pub is_editing: bool,
+    pub attachment_ids: Vec<String>,
 }
 
 impl From<QueuedMessage> for QueuedMessageResponse {
@@ -1425,6 +1438,11 @@ impl From<QueuedMessage> for QueuedMessageResponse {
             content: msg.content,
             created_at: msg.created_at,
             is_editing: msg.is_editing,
+            attachment_ids: msg
+                .attachment_ids
+                .into_iter()
+                .map(|attachment_id| attachment_id.to_string())
+                .collect(),
         }
     }
 }
@@ -3435,6 +3453,61 @@ pub async fn delete_queued_agent_message(
     service
         .delete_queued_message(context_type, &context_id, &message_id)
         .await
+        .map_err(|e| e.to_string())
+}
+
+/// Send a queued message immediately, interrupting the active provider process.
+#[tauri::command]
+pub async fn send_queued_agent_message_now(
+    context_type: String,
+    context_id: String,
+    message_id: String,
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
+    app: tauri::AppHandle,
+) -> Result<SendAgentMessageResponse, String> {
+    let context_type = parse_context_type(&context_type)?;
+    let mut service = create_chat_service(
+        &state,
+        app,
+        &execution_state,
+        Some(team_service.inner().clone()),
+    );
+
+    if context_type == ChatContextType::Ideation {
+        let session_id = IdeationSessionId::from_string(&context_id);
+        if let Ok(Some(session)) = state.ideation_session_repo.get_by_id(&session_id).await {
+            let is_team = session.team_mode.as_deref().is_some_and(|m| m != "solo");
+            if is_team {
+                service = service.with_team_mode(true);
+            }
+        }
+    }
+
+    if context_type == ChatContextType::TaskExecution {
+        let task_id = TaskId::from_string(context_id.clone());
+        if let Ok(Some(task)) = state.task_repo.get_by_id(&task_id).await {
+            let is_team = task
+                .metadata
+                .as_ref()
+                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                .and_then(|meta| {
+                    meta.get("agent_variant")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == "team")
+                })
+                .unwrap_or(false);
+            if is_team {
+                service = service.with_team_mode(true);
+            }
+        }
+    }
+
+    service
+        .send_queued_message_now(context_type, &context_id, &message_id)
+        .await
+        .map(SendAgentMessageResponse::from)
         .map_err(|e| e.to_string())
 }
 

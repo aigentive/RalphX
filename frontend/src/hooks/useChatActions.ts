@@ -106,6 +106,17 @@ export function useChatActions({
     });
   }, []);
 
+  const queueAcceptedMessage = useCallback(
+    (content: string, queuedMessageId: string, attachmentIds?: string[]) => {
+      if (attachmentIds !== undefined && attachmentIds.length > 0) {
+        queueMessage(storeContextKey, content, queuedMessageId, attachmentIds);
+        return;
+      }
+      queueMessage(storeContextKey, content, queuedMessageId);
+    },
+    [queueMessage, storeContextKey]
+  );
+
   // ── Send ─────────────────────────────────────────────────────────
   const handleSend = useCallback(
     async (
@@ -186,7 +197,7 @@ export function useChatActions({
             });
 
             if (result.wasQueued && result.queuedMessageId != null) {
-              queueMessage(storeContextKey, content, result.queuedMessageId);
+              queueAcceptedMessage(content, result.queuedMessageId, attachmentIds);
             }
 
             if (result.conversationId) {
@@ -224,7 +235,7 @@ export function useChatActions({
           const result = await sendMessage.mutateAsync(params);
           sentResult = result;
           if (result.wasQueued && result.queuedMessageId != null) {
-            queueMessage(storeContextKey, content, result.queuedMessageId);
+            queueAcceptedMessage(content, result.queuedMessageId, attachmentIds);
           }
           if (
             contextType === "ideation" &&
@@ -279,7 +290,7 @@ export function useChatActions({
         setAgentRunning(storeContextKey, false);
       }
     },
-    [sendMessage, contextType, contextId, selectedTaskId, storeContextKey, setAgentRunning, setSending, setActiveConversation, queryClient, ideationSessionId, messageCount, queueMessage, onUserMessageSent, reportSendFailure, activeConversationId]
+    [sendMessage, contextType, contextId, selectedTaskId, storeContextKey, setAgentRunning, setSending, setActiveConversation, queryClient, ideationSessionId, messageCount, queueAcceptedMessage, onUserMessageSent, reportSendFailure, activeConversationId]
   );
 
   // ── Stop Agent ───────────────────────────────────────────────────
@@ -322,9 +333,48 @@ export function useChatActions({
     [deleteQueuedMessage, storeContextKey, contextType, backendQueueContextId]
   );
 
+  // ── Send Queued Message Now ─────────────────────────────────────
+  const handleSendQueuedMessageNow = useCallback(
+    async (messageId: string, content?: string, attachmentIds?: string[]) => {
+      deleteQueuedMessage(storeContextKey, messageId);
+      setSending(storeContextKey, true);
+
+      try {
+        const result = await chatApi.sendQueuedAgentMessageNow(
+          contextType,
+          backendQueueContextId,
+          messageId
+        );
+
+        if (result.wasQueued && result.queuedMessageId != null && content) {
+          queueAcceptedMessage(content, result.queuedMessageId, attachmentIds);
+        } else if (!result.wasQueued) {
+          setAgentRunning(storeContextKey, true);
+        }
+      } catch (err) {
+        if (content) {
+          queueAcceptedMessage(content, messageId, attachmentIds);
+        }
+        reportSendFailure(err);
+      } finally {
+        setSending(storeContextKey, false);
+      }
+    },
+    [
+      backendQueueContextId,
+      contextType,
+      deleteQueuedMessage,
+      queueAcceptedMessage,
+      reportSendFailure,
+      setAgentRunning,
+      setSending,
+      storeContextKey,
+    ]
+  );
+
   // ── Edit Queued Message ──────────────────────────────────────────
   const handleEditQueuedMessage = useCallback(
-    async (messageId: string, newContent: string) => {
+    async (messageId: string, newContent: string, attachmentIds?: string[]) => {
       // Delete old message from backend
       try {
         await chatApi.deleteQueuedAgentMessage(contextType, backendQueueContextId, messageId);
@@ -342,12 +392,12 @@ export function useChatActions({
           contextType,
           contextId,
           newContent,
-          undefined,
+          attachmentIds !== undefined && attachmentIds.length > 0 ? attachmentIds : undefined,
           undefined,
           sendOptions
         );
         if (result.wasQueued && result.queuedMessageId != null) {
-          queueMessage(storeContextKey, newContent, result.queuedMessageId);
+          queueAcceptedMessage(newContent, result.queuedMessageId, attachmentIds);
         }
       } catch (err) {
         reportSendFailure(err);
@@ -357,7 +407,7 @@ export function useChatActions({
     },
     [
       deleteQueuedMessage,
-      queueMessage,
+      queueAcceptedMessage,
       contextType,
       contextId,
       backendQueueContextId,
@@ -382,6 +432,7 @@ export function useChatActions({
     handleSend,
     handleStopAgent,
     handleDeleteQueuedMessage,
+    handleSendQueuedMessageNow,
     handleEditQueuedMessage,
     handleEditLastQueued,
   };

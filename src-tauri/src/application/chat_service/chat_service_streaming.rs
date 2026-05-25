@@ -3142,6 +3142,7 @@ async fn process_codex_stream_background<R: Runtime>(
     let mut completion_signal_tracker = CompletionSignalTracker::default();
     let mut last_emitted_usage = AgentRunUsage::default();
     let mut pending_codex_file_changes: HashMap<String, PendingCodexFileChange> = HashMap::new();
+    let mut codex_turn_completed = false;
     let heartbeat_key = running_agent_registry
         .as_ref()
         .map(|_| RunningAgentKey::new(context_type.to_string(), context_id));
@@ -3461,6 +3462,12 @@ async fn process_codex_stream_background<R: Runtime>(
                     last_emitted_usage = usage.clone();
                 }
             }
+
+            if event.event_type == "turn.completed" {
+                codex_turn_completed = true;
+                let _ = child.start_kill();
+                break;
+            }
         } else if lines_seen > 0 && last_parsed_at.elapsed() >= timeout_config.parse_stall_timeout {
             let _ = child.kill().await;
             flush_content_before_error(
@@ -3541,7 +3548,7 @@ async fn process_codex_stream_background<R: Runtime>(
         &conversation_id_str,
         &assistant_message_id,
         &outcome.content_blocks,
-        if status.success() || outcome.has_meaningful_output() {
+        if status.success() || codex_turn_completed || outcome.has_meaningful_output() {
             ChatTimelineItemStatus::Finalized
         } else {
             ChatTimelineItemStatus::Error
@@ -3561,6 +3568,7 @@ async fn process_codex_stream_background<R: Runtime>(
     }
 
     if !status.success()
+        && !codex_turn_completed
         && !outcome.has_meaningful_output()
         && !completion_signal_tracker.was_called()
     {
