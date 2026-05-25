@@ -19,16 +19,18 @@ export interface QueuedMessageListProps {
   /** Array of queued messages */
   messages: QueuedMessageType[];
   /** Callback when a message is edited */
-  onEdit: (id: string, content: string) => void;
+  onEdit: (id: string, content: string, attachmentIds?: string[]) => void;
   /** Callback when a message is deleted */
   onDelete: (id: string) => void;
+  /** Callback when a queued message should interrupt the active run and send now */
+  onSendNow?: (id: string, content: string, attachmentIds?: string[]) => void;
 }
 
 // ============================================================================
 // Component
 // ============================================================================
 
-export function QueuedMessageList({ messages, onEdit, onDelete }: QueuedMessageListProps) {
+export function QueuedMessageList({ messages, onEdit, onDelete, onSendNow }: QueuedMessageListProps) {
   // Don't render if queue is empty
   if (messages.length === 0) {
     return null;
@@ -74,6 +76,7 @@ export function QueuedMessageList({ messages, onEdit, onDelete }: QueuedMessageL
             message={message}
             onEdit={onEdit}
             onDelete={onDelete}
+            {...(onSendNow ? { onSendNow } : {})}
           />
         ))}
       </div>

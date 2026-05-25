@@ -18,6 +18,7 @@ describe("QueuedMessageList", () => {
     content,
     createdAt: new Date().toISOString(),
     isEditing: false,
+    attachmentIds: [],
     ...overrides,
   });
 
@@ -92,7 +93,7 @@ describe("QueuedMessageList", () => {
     // Save the edit
     await user.click(screen.getByTestId("queued-message-save"));
 
-    expect(onEdit).toHaveBeenCalledWith("msg-1", "Edited message");
+    expect(onEdit).toHaveBeenCalledWith("msg-1", "Edited message", []);
   });
 
   it("passes onDelete callback to QueuedMessage components", async () => {
@@ -108,6 +109,27 @@ describe("QueuedMessageList", () => {
     await user.click(deleteButton);
 
     expect(onDelete).toHaveBeenCalledWith("msg-1");
+  });
+
+  it("passes onSendNow callback to QueuedMessage components", async () => {
+    const user = userEvent.setup();
+    const messages = [createMockMessage("msg-1", "Message 1")];
+    const onEdit = vi.fn();
+    const onDelete = vi.fn();
+    const onSendNow = vi.fn();
+
+    render(
+      <QueuedMessageList
+        messages={messages}
+        onEdit={onEdit}
+        onDelete={onDelete}
+        onSendNow={onSendNow}
+      />
+    );
+
+    await user.click(screen.getByTestId("queued-message-send-now"));
+
+    expect(onSendNow).toHaveBeenCalledWith("msg-1", "Message 1", []);
   });
 
   it("renders messages in correct order", () => {
