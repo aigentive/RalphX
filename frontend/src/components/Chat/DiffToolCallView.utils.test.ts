@@ -9,6 +9,8 @@ import { describe, it, expect } from "vitest";
 import {
   isTaskToolCall,
   isDiffToolCall,
+  getWorkspaceRelativeDiffPath,
+  getDiffFilePathDisplay,
 } from "./DiffToolCallView.utils";
 
 describe("isTaskToolCall", () => {
@@ -130,5 +132,52 @@ describe("isDiffToolCall", () => {
     it("returns false for empty string", () => {
       expect(isDiffToolCall("")).toBe(false);
     });
+  });
+});
+
+describe("diff file path display", () => {
+  it("returns a repo-relative path for files inside the workspace root", () => {
+    expect(
+      getWorkspaceRelativeDiffPath(
+        "/tmp/ralphx/worktrees/conversation-1/frontend/src/App.tsx",
+        "/tmp/ralphx/worktrees/conversation-1"
+      )
+    ).toBe("frontend/src/App.tsx");
+  });
+
+  it("does not treat sibling prefixes as inside the workspace root", () => {
+    expect(
+      getWorkspaceRelativeDiffPath(
+        "/tmp/ralphx/worktrees/conversation-10/frontend/src/App.tsx",
+        "/tmp/ralphx/worktrees/conversation-1"
+      )
+    ).toBeNull();
+  });
+
+  it("preserves the full path when the file is outside the workspace root", () => {
+    expect(
+      getDiffFilePathDisplay(
+        "/tmp/outside/frontend/src/App.tsx",
+        "/tmp/ralphx/worktrees/conversation-1"
+      )
+    ).toBe("/tmp/outside/frontend/src/App.tsx");
+  });
+
+  it("keeps already-relative paths unchanged", () => {
+    expect(
+      getDiffFilePathDisplay(
+        "frontend/src/components/Chat/DiffToolCallView.tsx",
+        "/tmp/ralphx/worktrees/conversation-1"
+      )
+    ).toBe("frontend/src/components/Chat/DiffToolCallView.tsx");
+  });
+
+  it("falls back to the supplied path when no workspace root is known", () => {
+    expect(
+      getDiffFilePathDisplay(
+        "/tmp/ralphx/worktrees/conversation-1/frontend/src/App.tsx",
+        null
+      )
+    ).toBe("/tmp/ralphx/worktrees/conversation-1/frontend/src/App.tsx");
   });
 });

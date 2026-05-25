@@ -122,7 +122,24 @@ describe("AgentWorkspaceFileLinkProvider", () => {
       "/tmp/ralphx/conversation-1",
     );
     expect(screen.getByTestId("preferred-target")).toHaveTextContent("");
-    expect(screen.getByTestId("target-count")).toHaveTextContent("2");
+    await waitFor(() => {
+      expect(screen.getByTestId("target-count")).toHaveTextContent("2");
+    });
+  });
+
+  it("provides workspace root context before open targets finish loading", () => {
+    const pendingTargets = deferred<WorkspaceOpenTarget[]>();
+    vi.mocked(chatApi.listWorkspaceOpenTargets).mockReturnValue(
+      pendingTargets.promise,
+    );
+
+    renderProvider();
+
+    expect(screen.getByTestId("file-link-context")).toHaveTextContent("present");
+    expect(screen.getByTestId("workspace-root")).toHaveTextContent(
+      "/tmp/ralphx/conversation-1",
+    );
+    expect(screen.getByTestId("target-count")).toHaveTextContent("0");
   });
 
   it("opens a workspace path with the selected target and tracks in-flight state", async () => {
