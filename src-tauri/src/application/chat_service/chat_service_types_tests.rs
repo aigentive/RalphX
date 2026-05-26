@@ -1,6 +1,6 @@
 use crate::application::chat_service::{
-    AgentErrorPayload, AgentMessageRenderReadyPayload, AgentRunCompletedPayload,
-    AgentRunStartedPayload,
+    AgentErrorPayload, AgentMessageQueuedPayload, AgentMessageRenderReadyPayload,
+    AgentRunCompletedPayload, AgentRunStartedPayload,
 };
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
@@ -157,6 +157,24 @@ fn agent_error_payload_serializes_agent_run_id_for_terminal_correlation() {
 
     assert_eq!(value["agent_run_id"], "run-1");
     assert!(value.get("agentRunId").is_none());
+}
+
+#[test]
+fn agent_message_queued_payload_serializes_attachment_ids() {
+    let payload = AgentMessageQueuedPayload {
+        message_id: "queued-1".to_string(),
+        content: "queued with file".to_string(),
+        context_type: "project".to_string(),
+        context_id: "conversation-1".to_string(),
+        conversation_id: Some("conversation-1".to_string()),
+        created_at: "2026-01-24T10:00:00Z".to_string(),
+        attachment_ids: vec!["att-1".to_string()],
+    };
+
+    let value = serde_json::to_value(&payload).expect("serialization failed");
+
+    assert_eq!(value["attachment_ids"], serde_json::json!(["att-1"]));
+    assert!(value.get("attachmentIds").is_none());
 }
 
 #[test]

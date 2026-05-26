@@ -215,6 +215,52 @@ export function isTaskToolCall(name: string): boolean {
   return canonical === "task" || canonical === "agent" || canonical === "delegate_start";
 }
 
+function normalizePathSeparators(path: string): string {
+  return path.replace(/\\/g, "/");
+}
+
+function normalizePathForCompare(path: string): string {
+  const normalized = normalizePathSeparators(path).replace(/\/+$/, "");
+  return normalized || "/";
+}
+
+function isAbsolutePath(path: string): boolean {
+  const normalized = normalizePathSeparators(path);
+  return normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized);
+}
+
+export function getWorkspaceRelativeDiffPath(
+  filePath: string,
+  workspaceRootPath: string | null | undefined
+): string | null {
+  if (!filePath || !workspaceRootPath) return null;
+
+  const normalizedFilePath = normalizePathForCompare(filePath);
+  const normalizedRootPath = normalizePathForCompare(workspaceRootPath);
+
+  if (!isAbsolutePath(normalizedFilePath) || !isAbsolutePath(normalizedRootPath)) {
+    return null;
+  }
+
+  if (normalizedFilePath === normalizedRootPath) {
+    return ".";
+  }
+
+  const rootPrefix = `${normalizedRootPath}/`;
+  if (!normalizedFilePath.startsWith(rootPrefix)) {
+    return null;
+  }
+
+  return normalizedFilePath.slice(rootPrefix.length);
+}
+
+export function getDiffFilePathDisplay(
+  filePath: string,
+  workspaceRootPath: string | null | undefined
+): string {
+  return getWorkspaceRelativeDiffPath(filePath, workspaceRootPath) ?? filePath;
+}
+
 /**
  * Extract diff data from an Edit tool call.
  * Edit arguments contain old_string and new_string.

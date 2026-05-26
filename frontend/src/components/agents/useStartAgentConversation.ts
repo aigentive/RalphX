@@ -271,10 +271,12 @@ export function useStartAgentConversation({
         setAgentRunning(storeKey, true);
         setSending(storeKey, true);
 
+        let uploadedAttachmentIds: string[] = [];
         if (files.length > 0) {
-          await Promise.all(
+          const uploadedAttachments = await Promise.all(
             files.map((file) => uploadDraftAttachment(seededConversation.id, file))
           );
+          uploadedAttachmentIds = uploadedAttachments.map((attachment) => attachment.id);
           setAgentActivityLabel(storeKey, "Setup workspace");
         }
 
@@ -336,7 +338,8 @@ export function useStartAgentConversation({
           queueMessage(
             resolvedStoreKey,
             content,
-            result.sendResult.queuedMessageId
+            result.sendResult.queuedMessageId,
+            uploadedAttachmentIds.length > 0 ? uploadedAttachmentIds : undefined
           );
         }
         if (result.sendResult.wasQueued || result.sendResult.queuedAsPending) {

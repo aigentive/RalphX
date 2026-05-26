@@ -609,6 +609,16 @@ pub trait ChatService: Send + Sync {
         message_id: &str,
     ) -> Result<bool, ChatServiceError>;
 
+    /// Send a queued message immediately by interrupting the active provider
+    /// process for this queue context, then relaunching through the normal
+    /// send path with the queued payload.
+    async fn send_queued_message_now(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message_id: &str,
+    ) -> Result<SendResult, ChatServiceError>;
+
     /// Get or create a conversation for a context.
     /// Returns `(conversation, is_new)` where `is_new` is `true` when a new conversation was created.
     async fn get_or_create_conversation(
@@ -888,6 +898,11 @@ impl<R: Runtime> AppChatService<R> {
                 context_id: context_id.to_string(),
                 conversation_id,
                 created_at: queued.created_at.clone(),
+                attachment_ids: queued
+                    .attachment_ids
+                    .iter()
+                    .map(|attachment_id| attachment_id.to_string())
+                    .collect(),
             },
         );
         queued
@@ -3861,6 +3876,113 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             .delete(context_type, context_id, message_id))
     }
 
+    async fn send_queued_message_now(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message_id: &str,
+    ) -> Result<SendResult, ChatServiceError> {
+        let queued_msg = self
+            .message_queue
+            .take(context_type, context_id, message_id)
+            .ok_or_else(|| {
+                ChatServiceError::ContextNotFound(format!(
+                    "Queued message not found for {}/{}: {}",
+                    context_type, context_id, message_id
+                ))
+            })?;
+
+        let restore_queued = |message_queue: &MessageQueue, queued_msg: QueuedMessage| {
+            message_queue.queue_front_existing(context_type, context_id, queued_msg);
+        };
+
+        let (send_context_id, conversation_id_override) = if context_type == ChatContextType::Project
+            && uuid::Uuid::parse_str(context_id).is_ok()
+        {
+            let conversation_id = ChatConversationId::from_string(context_id.to_string());
+            match self
+                .conversation_repo
+                .get_by_id(&conversation_id)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
+            {
+                Ok(Some(conversation)) => {
+                    if conversation.context_type != context_type {
+                        restore_queued(&self.message_queue, queued_msg);
+                        return Err(ChatServiceError::ContextNotFound(format!(
+                            "Conversation {} belongs to {} not {}",
+                            conversation_id, conversation.context_type, context_type
+                        )));
+                    }
+                    (conversation.context_id.clone(), Some(conversation.id))
+                }
+                Ok(None) => (context_id.to_string(), None),
+                Err(error) => {
+                    restore_queued(&self.message_queue, queued_msg);
+                    return Err(error);
+                }
+            }
+        } else {
+            (context_id.to_string(), None)
+        };
+
+        let running_key = RunningAgentKey::new(context_type.to_string(), context_id);
+        let interactive_key = InteractiveProcessKey::new(context_type.to_string(), context_id);
+        let has_running_process = self.running_agent_registry.is_running(&running_key).await
+            || self.ipr().has_process(&interactive_key).await;
+
+        if has_running_process {
+            if let Err(error) = self.stop_agent(context_type, context_id).await {
+                restore_queued(&self.message_queue, queued_msg);
+                return Err(error);
+            }
+        }
+
+        let created_at = queued_msg
+            .created_at_override
+            .as_deref()
+            .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
+            .map(|timestamp| timestamp.with_timezone(&chrono::Utc));
+        let queued_message_id = queued_msg.id.clone();
+        let send_options = SendMessageOptions {
+            metadata: queued_msg.metadata_override.clone(),
+            created_at,
+            harness_override: queued_msg.harness_override,
+            conversation_id_override,
+            composer_project_references: queued_msg.composer_project_references.clone(),
+            composer_integration_references: queued_msg.composer_integration_references.clone(),
+            attachment_ids: queued_msg.attachment_ids.clone(),
+            ..Default::default()
+        };
+        let result = match self
+            .send_message(
+                context_type,
+                &send_context_id,
+                &queued_msg.content,
+                send_options,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                restore_queued(&self.message_queue, queued_msg);
+                return Err(error);
+            }
+        };
+
+        self.emit_event(
+            "agent:queue_sent",
+            AgentQueueSentPayload {
+                message_id: queued_message_id,
+                conversation_id: result.conversation_id.clone(),
+                context_type: context_type.to_string(),
+                context_id: context_id.to_string(),
+            },
+        );
+
+        Ok(result)
+    }
+
     async fn get_or_create_conversation(
         &self,
         context_type: ChatContextType,
@@ -4386,6 +4508,7 @@ mod agent_workspace_send_tests {
     use crate::application::interactive_process_registry::InteractiveProcessKey;
     use crate::application::AppState;
     use crate::commands::ExecutionState;
+    use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
     use crate::domain::entities::{
         AgentConversationWorkspaceMode, AgentRunStatus, ChatContextType, ChatConversation,
         ChatAttachment, ChatAttachmentId, MessageRole, Project, ProjectId, TaskId,
@@ -4782,6 +4905,95 @@ mod agent_workspace_send_tests {
                 .to_string()
                 .contains("edit mode but has no isolated workspace"),
             "missing workspace should produce a clear spawn failure: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_queued_message_now_stops_project_runtime_and_restores_on_launch_failure() {
+        let state = AppState::new_test();
+        let project_dir = tempfile::tempdir().expect("project dir should be created");
+        let project = Project::new(
+            "Queued Send Now Project".to_string(),
+            project_dir.path().to_string_lossy().to_string(),
+        );
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should persist");
+
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.set_provider_session_ref(ProviderSessionRef {
+            harness: AgentHarnessKind::Claude,
+            provider_session_id: "provider-session-1".to_string(),
+        });
+        let conversation_id = conversation.id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+
+        let first = state.message_queue.queue(
+            ChatContextType::Project,
+            conversation_id.as_str(),
+            "wait first".to_string(),
+        );
+        let selected = state.message_queue.queue(
+            ChatContextType::Project,
+            conversation_id.as_str(),
+            "send me now".to_string(),
+        );
+        let third = state.message_queue.queue(
+            ChatContextType::Project,
+            conversation_id.as_str(),
+            "wait third".to_string(),
+        );
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new("project", conversation_id.as_str()),
+                0,
+                conversation_id.as_str().to_string(),
+                "active-run".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let service = state
+            .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+            .with_cli_path(project_dir.path().join("missing-claude-cli"))
+            .with_working_directory(project_dir.path());
+
+        let error = service
+            .send_queued_message_now(
+                ChatContextType::Project,
+                &conversation_id.as_str(),
+                &selected.id,
+            )
+            .await
+            .expect_err("missing CLI should restore the selected queued prompt");
+
+        assert!(
+            error.to_string().contains("Claude CLI not found"),
+            "send-now should resolve the project conversation before attempting launch: {error}"
+        );
+        assert!(
+            !state
+                .running_agent_registry
+                .is_running(&RunningAgentKey::new("project", conversation_id.as_str()))
+                .await,
+            "send-now should stop the active runtime key before relaunch"
+        );
+
+        let queued = state
+            .message_queue
+            .get_queued(ChatContextType::Project, &conversation_id.as_str());
+        assert_eq!(
+            queued.iter().map(|message| message.id.as_str()).collect::<Vec<_>>(),
+            vec![selected.id.as_str(), first.id.as_str(), third.id.as_str()],
+            "failed immediate launch should restore the selected prompt at the front"
         );
     }
 }

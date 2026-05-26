@@ -43,7 +43,27 @@ test.describe("Ideation Chat Replay", () => {
       await scrollToBottom.click();
     }
     await expect(scrollToBottom).toBeHidden();
-    await expect(panel).toHaveScreenshot("ideation-chat-replay.png", {
+    await page.waitForTimeout(150);
+    const clip = await panel.evaluate((root) => {
+      const scroller = root.querySelector("[data-virtuoso-scroller]") as HTMLElement | null;
+      if (scroller) {
+        const top = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        scroller.scrollTo({ top, behavior: "auto" });
+        scroller.scrollTop = top;
+        scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+      }
+      const rect = root.getBoundingClientRect();
+      const x = Math.max(0, Math.floor(rect.x));
+      const y = Math.max(0, Math.floor(rect.y));
+      return {
+        x,
+        y,
+        width: Math.ceil(rect.right - x),
+        height: Math.ceil(rect.bottom - y),
+      };
+    });
+    const screenshot = await page.screenshot({ animations: "disabled", clip });
+    expect(screenshot).toMatchSnapshot("ideation-chat-replay.png", {
       maxDiffPixelRatio: 0.01,
     });
   });

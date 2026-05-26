@@ -1046,6 +1046,28 @@ export async function mockDeleteQueuedAgentMessage(
   return existing.length !== filtered.length;
 }
 
+export async function mockSendQueuedAgentMessageNow(
+  contextType: ContextType,
+  contextId: string,
+  messageId: string
+): Promise<SendAgentMessageResult> {
+  const key = `${contextType}:${contextId}`;
+  const existing = mockQueuedMessages.get(key) ?? [];
+  const selected = existing.find((message) => message.id === messageId);
+  mockQueuedMessages.set(
+    key,
+    existing.filter((message) => message.id !== messageId)
+  );
+  return {
+    conversationId: contextId,
+    agentRunId: `mock-run-${messageId}`,
+    isNewConversation: false,
+    wasQueued: false,
+    queuedAsPending: false,
+    queuedMessageId: selected ? null : undefined,
+  };
+}
+
 export async function mockIsChatServiceAvailable(): Promise<boolean> {
   // Chat is not available in mock mode
   return false;
@@ -1120,6 +1142,7 @@ export const mockChatApi = {
   sendAgentMessage: mockSendAgentMessage,
   getQueuedAgentMessages: mockGetQueuedAgentMessages,
   deleteQueuedAgentMessage: mockDeleteQueuedAgentMessage,
+  sendQueuedAgentMessageNow: mockSendQueuedAgentMessageNow,
   isChatServiceAvailable: mockIsChatServiceAvailable,
   stopAgent: mockStopAgent,
   isAgentRunning: mockIsAgentRunning,

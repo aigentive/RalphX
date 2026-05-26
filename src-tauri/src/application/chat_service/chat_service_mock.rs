@@ -234,6 +234,38 @@ impl ChatService for MockChatService {
             .delete(context_type, context_id, message_id))
     }
 
+    async fn send_queued_message_now(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message_id: &str,
+    ) -> Result<SendResult, ChatServiceError> {
+        let queued_msg = self
+            .message_queue
+            .take(context_type, context_id, message_id)
+            .ok_or_else(|| {
+                ChatServiceError::ContextNotFound(format!(
+                    "Queued message not found for {}/{}: {}",
+                    context_type, context_id, message_id
+                ))
+            })?;
+
+        self.send_message(
+            context_type,
+            context_id,
+            &queued_msg.content,
+            SendMessageOptions {
+                metadata: queued_msg.metadata_override.clone(),
+                harness_override: queued_msg.harness_override,
+                composer_project_references: queued_msg.composer_project_references.clone(),
+                composer_integration_references: queued_msg.composer_integration_references.clone(),
+                attachment_ids: queued_msg.attachment_ids.clone(),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
     async fn get_or_create_conversation(
         &self,
         context_type: ChatContextType,
