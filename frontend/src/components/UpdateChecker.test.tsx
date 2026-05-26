@@ -338,6 +338,32 @@ describe("UpdateChecker", () => {
     expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
   });
 
+  it("opens update toast release notes for the update version when metadata is stale", async () => {
+    mocks.check.mockResolvedValue({
+      ...update,
+      version: "0.31.1",
+      currentVersion: "0.31.0",
+      body: "## RalphX.app 0.31.1\n\nStabilizes active chat recovery",
+    });
+    mocks.listReleaseNotesVersions.mockResolvedValue(["0.31.0"]);
+    mocks.getVersion.mockResolvedValue("0.31.0");
+
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const toastUi = renderToastById("update-available");
+    fireEvent.click(toastUi.getByTestId("update-release-notes-button"));
+    await act(async () => {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    });
+
+    expect(screen.getByRole("heading", { name: /v0\.31\.1/ })).toBeInTheDocument();
+    expect(screen.getByTestId("release-notes-dialog-body")).toHaveTextContent(
+      "Stabilizes active chat recovery",
+    );
+    expect(mocks.getReleaseNotesForVersion).not.toHaveBeenCalledWith("0.31.1");
+  });
+
   it("shows manually dismissable What's new toast for unseen current release notes", async () => {
     mocks.check.mockResolvedValue(null);
     mocks.getCurrentReleaseNotes.mockResolvedValue({

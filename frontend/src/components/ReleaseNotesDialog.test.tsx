@@ -189,6 +189,28 @@ describe("ReleaseNotesDialog", () => {
     expect(mocks.getReleaseNotesForVersion).toHaveBeenCalledWith("0.9.0");
   });
 
+  it("seeds update notes when initialVersion is missing from release index", async () => {
+    const onRequestUpdate = vi.fn();
+    render(
+      <ReleaseNotesDialog
+        open={true}
+        onClose={vi.fn()}
+        initialVersion="0.9.1"
+        initialBody="## RalphX.app 0.9.1\n\nUpdate-only notes"
+        initialContext="update"
+        onRequestUpdate={onRequestUpdate}
+      />,
+    );
+    await flushAll();
+
+    expect(screen.getByRole("heading", { name: /v0\.9\.1/ })).toBeInTheDocument();
+    expect(screen.getByText(/Update-only notes/)).toBeInTheDocument();
+    expect(screen.getByTestId("release-notes-update-button")).toHaveTextContent(
+      "Update to v0.9.1",
+    );
+    expect(mocks.getReleaseNotesForVersion).not.toHaveBeenCalledWith("0.9.1");
+  });
+
   it("shows context label for update context", async () => {
     render(
       <ReleaseNotesDialog
