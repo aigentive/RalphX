@@ -15,10 +15,15 @@ import { useQueryClient } from "@tanstack/react-query";
 import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
 import { taskKeys } from "@/hooks/useTasks";
 import type { ContextType } from "@/types/chat-conversation";
-import type { StreamingTask } from "@/types/streaming-task";
+import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
+import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
 import { MERGE_STATUSES } from "@/types/status";
 import { chatApi } from "@/api/chat";
-import { mergeActiveStreamingTasks } from "./chat-active-state";
+import {
+  mergeActiveStreamingContentBlocks,
+  mergeActiveStreamingTasks,
+  mergeActiveStreamingToolCalls,
+} from "./chat-active-state";
 
 // ============================================================================
 // Types
@@ -43,6 +48,12 @@ interface UseChatRecoveryProps {
   isVisible: boolean;
   setStreamingTasks?: (
     updater: (prev: Map<string, StreamingTask>) => Map<string, StreamingTask>,
+  ) => void;
+  setStreamingToolCalls?: (
+    updater: (prev: ToolCall[]) => ToolCall[],
+  ) => void;
+  setStreamingContentBlocks?: (
+    updater: (prev: StreamingContentBlock[]) => StreamingContentBlock[],
   ) => void;
   setAgentRunning: (contextKey: string, isRunning: boolean) => void;
   selectedTaskId: string | undefined;
@@ -69,6 +80,8 @@ export function useChatRecovery({
   agentRunStatus,
   isVisible,
   setStreamingTasks,
+  setStreamingToolCalls,
+  setStreamingContentBlocks,
   setAgentRunning,
   selectedTaskId,
   ideationSessionId,
@@ -83,7 +96,11 @@ export function useChatRecovery({
       hydratedConversationIdRef.current = null;
       return;
     }
-    if (isHistoryMode || !isAgentContext || !isConversationInCurrentContext || !setStreamingTasks) {
+    const canHydrateStreamingState =
+      Boolean(setStreamingTasks) ||
+      Boolean(setStreamingToolCalls) ||
+      Boolean(setStreamingContentBlocks);
+    if (isHistoryMode || !isConversationInCurrentContext || !canHydrateStreamingState) {
       return;
     }
     if (hydratedConversationIdRef.current === activeConversationId) {
@@ -96,8 +113,25 @@ export function useChatRecovery({
     void chatApi
       .getConversationActiveState(activeConversationId)
       .then((activeState) => {
-        if (cancelled || activeState.streaming_tasks.length === 0) return;
-        setStreamingTasks((prev) => mergeActiveStreamingTasks(prev, activeState.streaming_tasks));
+        if (cancelled) return;
+        const hasStreamingTasks = activeState.streaming_tasks.length > 0;
+        const hasToolCalls = activeState.tool_calls.length > 0;
+        const hasPartialText = activeState.partial_text.trim().length > 0;
+        if (!hasStreamingTasks && !hasToolCalls && !hasPartialText) return;
+
+        if (setStreamingTasks && hasStreamingTasks) {
+          setStreamingTasks((prev) => mergeActiveStreamingTasks(prev, activeState.streaming_tasks));
+        }
+        if (setStreamingToolCalls && hasToolCalls) {
+          setStreamingToolCalls((prev) =>
+            mergeActiveStreamingToolCalls(prev, activeState.tool_calls)
+          );
+        }
+        if (setStreamingContentBlocks) {
+          setStreamingContentBlocks((prev) =>
+            mergeActiveStreamingContentBlocks(prev, activeState)
+          );
+        }
       })
       .catch(() => {
         // Best-effort recovery only. Live events remain authoritative.
@@ -109,9 +143,10 @@ export function useChatRecovery({
   }, [
     activeConversationId,
     isHistoryMode,
-    isAgentContext,
     isConversationInCurrentContext,
     setStreamingTasks,
+    setStreamingToolCalls,
+    setStreamingContentBlocks,
   ]);
 
   // Recovery fallback: if agent is running but events were missed, reflect it in UI
