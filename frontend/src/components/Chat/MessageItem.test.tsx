@@ -169,6 +169,24 @@ describe("MessageItem - Attachment Integration", () => {
     expect(attachmentsIndex).toBeLessThan(textBubbleIndex);
   });
 
+  it("aligns user attachments and references with the right-aligned text bubble", () => {
+    renderMessageItem(
+      <MessageItem
+        {...baseProps}
+        role="user"
+        attachments={mockAttachments}
+        composerReferences={{
+          projectReferences: [{ path: "src/main.ts", kind: "file" }],
+          integrationReferences: [],
+        }}
+      />
+    );
+
+    expect(screen.getByTestId("text-bubble-user")).toHaveClass("self-end");
+    expect(screen.getByTestId("message-attachment-list")).toHaveClass("self-end");
+    expect(screen.getByTestId("message-reference-list")).toHaveClass("self-end", "justify-end");
+  });
+
   it("works with content blocks rendering", () => {
     const contentBlocks = [makeContentText("First block"), makeContentText("Second block")];
 

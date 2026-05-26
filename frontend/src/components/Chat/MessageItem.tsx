@@ -355,7 +355,7 @@ export const MessageItem = React.memo(function MessageItem({
 
         {/* Render attachments for user messages */}
         {isUser && attachments && attachments.length > 0 && (
-          <MessageAttachments attachments={attachments} />
+          <MessageAttachments attachments={attachments} align="end" />
         )}
 
         {isUser && composerReferences && (
