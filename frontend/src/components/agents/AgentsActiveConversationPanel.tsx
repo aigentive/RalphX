@@ -1,5 +1,15 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
-import { Clock, Lightbulb, MessageSquare, ShieldCheck } from "lucide-react";
+import {
+  CheckCircle2,
+  Clock,
+  GitPullRequestArrow,
+  Lightbulb,
+  Loader2,
+  MessageSquare,
+  Play,
+  ShieldCheck,
+  type LucideIcon,
+} from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -11,15 +21,19 @@ import type {
 } from "@/api/chat";
 import { chatApi } from "@/api/chat";
 import { artifactApi } from "@/api/artifact";
+import { verificationApi } from "@/api/verification";
 import {
   IntegratedChatPanel,
   type IntegratedChatComposerRenderProps,
 } from "@/components/Chat/IntegratedChatPanel";
+import { Button } from "@/components/ui/button";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { ideationKeys } from "@/hooks/useIdeation";
+import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
 import { selectQueuedMessages, useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import type {
@@ -69,6 +83,15 @@ import {
   type AgentsChatFocusSwitchOption,
   type AgentsChatFocusType,
 } from "./agentChatFocus";
+import {
+  buildPlanActionHint,
+  PLAN_IMPLEMENT_DIRECTLY_REQUEST,
+  PLAN_TO_PROPOSALS_REQUEST,
+} from "./agentPlanModeActions";
+import {
+  agentWorkspaceKeys,
+  invalidateWorkspaceQueries,
+} from "./agentWorkspaceQueries";
 
 const AGENTS_CHAT_CONTENT_WIDTH_CLASS = "max-w-[980px]";
 
@@ -89,6 +112,86 @@ interface AgentComposerOption {
   description?: string;
   disabled?: boolean;
   disabledReason?: string;
+}
+
+interface PlanComposerCtaAction {
+  id: string;
+  label: string;
+  icon: LucideIcon;
+  isPrimary: boolean;
+  isPending: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}
+
+function PlanComposerCtaRow({
+  hint,
+  actions,
+}: {
+  hint: string;
+  actions: PlanComposerCtaAction[];
+}) {
+  if (actions.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      className="mx-2 mb-2 flex flex-col gap-2 rounded-md border px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+      style={{
+        backgroundColor: "var(--bg-surface)",
+        borderColor: "var(--border-subtle)",
+        borderStyle: "solid",
+        borderWidth: "1px",
+      }}
+      data-testid="agents-plan-composer-cta-row"
+    >
+      <div className="flex min-w-0 items-start gap-2">
+        <Lightbulb
+          className="mt-0.5 h-4 w-4 shrink-0"
+          style={{ color: "var(--accent-primary)" }}
+          aria-hidden="true"
+        />
+        <p
+          className="min-w-0 text-[0.8125rem] leading-5"
+          style={{ color: "var(--text-secondary)" }}
+          data-testid="agents-plan-composer-cta-hint"
+        >
+          {hint}
+        </p>
+      </div>
+      <div
+        className="flex shrink-0 flex-wrap items-center gap-2"
+        role="group"
+        aria-label="Plan next actions"
+      >
+        {actions.map((action) => {
+          const Icon = action.isPending ? Loader2 : action.icon;
+          return (
+            <Button
+              key={action.id}
+              type="button"
+              size="sm"
+              variant={action.isPrimary ? "default" : "outline"}
+              onClick={action.onClick}
+              disabled={action.disabled || action.isPending}
+              data-testid={`agents-plan-composer-cta-${action.id}`}
+            >
+              <Icon
+                className={
+                  action.isPending
+                    ? "h-3.5 w-3.5 animate-spin"
+                    : "h-3.5 w-3.5"
+                }
+                aria-hidden="true"
+              />
+              <span>{action.label}</span>
+            </Button>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 interface AgentsActiveConversationPanelProps {
@@ -199,6 +302,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const [isComposerHydrationPaused, setIsComposerHydrationPaused] = useState(false);
   const [isForkingConversation, setIsForkingConversation] = useState(false);
   const [isApprovingPlan, setIsApprovingPlan] = useState(false);
+  const [isCreatingPlanProposals, setIsCreatingPlanProposals] = useState(false);
+  const [isImplementingPlanDirectly, setIsImplementingPlanDirectly] = useState(false);
+  const [isStartingPlanVerification, setIsStartingPlanVerification] = useState(false);
   const markComposerActivity = useCallback(() => {
     setIsComposerHydrationPaused(true);
     setComposerActivityTick((tick) => tick + 1);
@@ -373,8 +479,59 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     staleTime: 5_000,
   });
   const planApprovalArtifact = planApprovalQuery.data ?? null;
+  const planArtifactApprovalStatus = planApprovalArtifact
+    ? planApprovalArtifact.planApproval?.status ?? "draft"
+    : null;
+  const isPlanApproved = planArtifactApprovalStatus === "approved";
+  const canApproveComposerPlan =
+    !!planApprovalSessionId &&
+    !!planApprovalArtifact &&
+    planArtifactApprovalStatus === "draft";
+  const canCreatePlanProposals = !!planApprovalSessionId && isPlanApproved;
+  const canImplementPlanDirectly = Boolean(
+    planApprovalSessionId &&
+      isPlanApproved &&
+      activeWorkspace?.conversationId &&
+      activeProjectId,
+  );
+  const planComplexityQuery = useQuery({
+    queryKey: [
+      "agents",
+      "plan-complexity",
+      planApprovalSessionId,
+      planApprovalArtifact?.id,
+      planApprovalArtifact?.metadata.version,
+    ],
+    queryFn: () => artifactApi.getPlanComplexityAssessment(planApprovalSessionId!),
+    enabled: Boolean(
+      planApprovalSessionId &&
+        planApprovalArtifact?.id &&
+        isPlanApproved,
+    ),
+    staleTime: 5_000,
+    refetchInterval: (query) => (query.state.data ? false : 4_000),
+  });
+  const planVerificationQuery = useVerificationStatus(
+    planApprovalSessionId && isPlanApproved ? planApprovalSessionId : undefined,
+  );
+  const planVerificationState = planVerificationQuery.data?.status ?? null;
+  const planVerificationInProgress =
+    planVerificationQuery.data?.inProgress ?? false;
+  const isPlanVerificationLoading =
+    (planVerificationQuery.isLoading || planVerificationQuery.isFetching) &&
+    !planVerificationQuery.data;
+  const isPlanVerificationSatisfied =
+    planVerificationState === "verified" ||
+    planVerificationState === "imported_verified";
+  const canVerifyComposerPlan = Boolean(
+    planApprovalSessionId &&
+      isPlanApproved &&
+      !isPlanVerificationLoading &&
+      !isPlanVerificationSatisfied,
+  );
+
   const handleApprovePlanFromQuestion = useCallback(async () => {
-    if (!planApprovalSessionId || !planApprovalArtifact) {
+    if (!planApprovalSessionId || !planApprovalArtifact || !canApproveComposerPlan) {
       return;
     }
     setIsApprovingPlan(true);
@@ -391,6 +548,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         ["agents", "session-plan", planApprovalSessionId, approved.id],
         approved,
       );
+      await queryClient.invalidateQueries({
+        queryKey: ["agents", "plan-complexity", planApprovalSessionId],
+      });
       toast.success("Plan approved");
     } catch (err) {
       console.error("Failed to approve plan:", err);
@@ -398,9 +558,278 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     } finally {
       setIsApprovingPlan(false);
     }
-  }, [planApprovalArtifact, planApprovalSessionId, queryClient]);
+  }, [
+    canApproveComposerPlan,
+    planApprovalArtifact,
+    planApprovalSessionId,
+    queryClient,
+  ]);
+  const handleCreatePlanProposals = useCallback(async () => {
+    if (!planApprovalSessionId || !canCreatePlanProposals) {
+      return;
+    }
+    setIsCreatingPlanProposals(true);
+    try {
+      const shouldPromoteWorkspace =
+        activeWorkspace?.mode !== "ideation" &&
+        activeWorkspace?.linkedIdeationSessionId === planApprovalSessionId &&
+        Boolean(activeWorkspace?.conversationId);
+
+      if (shouldPromoteWorkspace && activeWorkspace?.conversationId) {
+        const result = await chatApi.switchAgentConversationMode({
+          conversationId: activeWorkspace.conversationId,
+          mode: "ideation",
+        });
+        if (result.workspace) {
+          queryClient.setQueryData(
+            agentWorkspaceKeys.workspace(activeWorkspace.conversationId),
+            result.workspace,
+          );
+        }
+        void invalidateWorkspaceQueries(
+          queryClient,
+          activeWorkspace.conversationId,
+        );
+      }
+
+      await chatApi.sendAgentMessage(
+        "ideation",
+        planApprovalSessionId,
+        PLAN_TO_PROPOSALS_REQUEST,
+      );
+      toast.success("Proposal creation requested");
+    } catch (err) {
+      console.error("Failed to create proposals:", err);
+      toast.error("Failed to request proposal creation");
+    } finally {
+      setIsCreatingPlanProposals(false);
+    }
+  }, [
+    activeWorkspace,
+    canCreatePlanProposals,
+    planApprovalSessionId,
+    queryClient,
+  ]);
+  const handleImplementPlanDirectly = useCallback(async () => {
+    if (
+      !planApprovalSessionId ||
+      !activeWorkspace?.conversationId ||
+      !canImplementPlanDirectly
+    ) {
+      return;
+    }
+    setIsImplementingPlanDirectly(true);
+    try {
+      if (activeWorkspace.mode !== "edit") {
+        const result = await chatApi.switchAgentConversationMode({
+          conversationId: activeWorkspace.conversationId,
+          mode: "edit",
+        });
+        if (result.workspace) {
+          queryClient.setQueryData(
+            agentWorkspaceKeys.workspace(activeWorkspace.conversationId),
+            result.workspace,
+          );
+        }
+        void invalidateWorkspaceQueries(
+          queryClient,
+          activeWorkspace.conversationId,
+        );
+      }
+
+      await chatApi.sendAgentMessage(
+        "project",
+        activeProjectId,
+        PLAN_IMPLEMENT_DIRECTLY_REQUEST,
+        undefined,
+        undefined,
+        {
+          conversationId: activeWorkspace.conversationId,
+          providerHarness: normalizedActiveRuntime.provider,
+          modelId: normalizedActiveRuntime.modelId,
+          logicalEffort: normalizedActiveRuntime.effort,
+        },
+      );
+      toast.success("Implementation started");
+    } catch (err) {
+      console.error("Failed to implement plan directly:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to start implementation");
+    } finally {
+      setIsImplementingPlanDirectly(false);
+    }
+  }, [
+    activeProjectId,
+    activeWorkspace,
+    canImplementPlanDirectly,
+    normalizedActiveRuntime.effort,
+    normalizedActiveRuntime.modelId,
+    normalizedActiveRuntime.provider,
+    planApprovalSessionId,
+    queryClient,
+  ]);
+  const handleVerifyPlanFromComposer = useCallback(async () => {
+    if (
+      !planApprovalSessionId ||
+      !canVerifyComposerPlan ||
+      planVerificationInProgress
+    ) {
+      return;
+    }
+    setIsStartingPlanVerification(true);
+    try {
+      let disabledSpecialists: string[] = [];
+      try {
+        const specialists = await verificationApi.getSpecialists();
+        disabledSpecialists = specialists.specialists
+          .filter((specialist) => !specialist.enabled_by_default)
+          .map((specialist) => specialist.name);
+      } catch (err) {
+        console.warn("Failed to load verification specialists:", err);
+      }
+
+      await verificationApi.confirm(planApprovalSessionId, disabledSpecialists);
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: verificationStatusKey(planApprovalSessionId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ideationKeys.sessionWithData(planApprovalSessionId),
+        }),
+        queryClient.invalidateQueries({ queryKey: ideationKeys.sessions() }),
+      ]);
+      onSelectArtifact("verification");
+      toast.success("Plan verification started");
+    } catch (err) {
+      console.error("Failed to start plan verification:", err);
+      toast.error(
+        err instanceof Error ? err.message : "Failed to start plan verification",
+      );
+    } finally {
+      setIsStartingPlanVerification(false);
+    }
+  }, [
+    canVerifyComposerPlan,
+    onSelectArtifact,
+    planApprovalSessionId,
+    planVerificationInProgress,
+    queryClient,
+  ]);
+  const planComposerHint = useMemo(() => {
+    if (canApproveComposerPlan) {
+      return "Approve the draft plan when it matches the intended scope. You can still keep chatting to refine it.";
+    }
+    return buildPlanActionHint({
+      assessment: planComplexityQuery.data,
+      isAssessing:
+        planComplexityQuery.isFetching && !planComplexityQuery.data,
+      canChoose: canCreatePlanProposals && canImplementPlanDirectly,
+    });
+  }, [
+    canApproveComposerPlan,
+    canCreatePlanProposals,
+    canImplementPlanDirectly,
+    planComplexityQuery.data,
+    planComplexityQuery.isFetching,
+  ]);
+  const planComposerCtaActions = useMemo<PlanComposerCtaAction[]>(() => {
+    if (!planApprovalSessionId || !planApprovalArtifact) {
+      return [];
+    }
+
+    if (canApproveComposerPlan) {
+      return [
+        {
+          id: "approve",
+          label: "Approve Plan",
+          icon: CheckCircle2,
+          isPrimary: true,
+          isPending: isApprovingPlan,
+          disabled: false,
+          onClick: () => {
+            void handleApprovePlanFromQuestion();
+          },
+        },
+      ];
+    }
+
+    if (!isPlanApproved) {
+      return [];
+    }
+
+    const implementationAction: PlanComposerCtaAction | null =
+      canImplementPlanDirectly
+        ? {
+            id: "implement-directly",
+            label: "Implement Directly",
+            icon: Play,
+            isPrimary:
+              planComplexityQuery.data?.recommendedAction !==
+              "create_proposals",
+            isPending: isImplementingPlanDirectly,
+            disabled: false,
+            onClick: () => {
+              void handleImplementPlanDirectly();
+            },
+          }
+        : null;
+    const proposalsAction: PlanComposerCtaAction | null = canCreatePlanProposals
+      ? {
+          id: "create-proposals",
+          label: "Create Proposals",
+          icon: GitPullRequestArrow,
+          isPrimary:
+            planComplexityQuery.data?.recommendedAction ===
+            "create_proposals",
+          isPending: isCreatingPlanProposals,
+          disabled: false,
+          onClick: () => {
+            void handleCreatePlanProposals();
+          },
+        }
+      : null;
+    const verifyAction: PlanComposerCtaAction | null = canVerifyComposerPlan
+      ? {
+          id: "verify",
+          label: "Verify Plan",
+          icon: ShieldCheck,
+          isPrimary: false,
+          isPending:
+            isStartingPlanVerification || planVerificationInProgress,
+          disabled: false,
+          onClick: () => {
+            void handleVerifyPlanFromComposer();
+          },
+        }
+      : null;
+
+    const mainActions =
+      planComplexityQuery.data?.recommendedAction === "create_proposals"
+        ? [proposalsAction, implementationAction]
+        : [implementationAction, proposalsAction];
+    return [...mainActions, verifyAction].filter(
+      (action): action is PlanComposerCtaAction => action !== null,
+    );
+  }, [
+    canApproveComposerPlan,
+    canCreatePlanProposals,
+    canImplementPlanDirectly,
+    canVerifyComposerPlan,
+    handleApprovePlanFromQuestion,
+    handleCreatePlanProposals,
+    handleImplementPlanDirectly,
+    handleVerifyPlanFromComposer,
+    isApprovingPlan,
+    isCreatingPlanProposals,
+    isImplementingPlanDirectly,
+    isPlanApproved,
+    isStartingPlanVerification,
+    planApprovalArtifact,
+    planApprovalSessionId,
+    planComplexityQuery.data?.recommendedAction,
+    planVerificationInProgress,
+  ]);
   const planApprovalAction = useMemo(() => {
-    if (planApprovalArtifact?.planApproval?.status !== "draft") {
+    if (!canApproveComposerPlan) {
       return undefined;
     }
     return {
@@ -412,9 +841,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       isPending: isApprovingPlan,
     };
   }, [
+    canApproveComposerPlan,
     handleApprovePlanFromQuestion,
     isApprovingPlan,
-    planApprovalArtifact?.planApproval?.status,
   ]);
 
   return (
@@ -544,6 +973,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onOpenFile={onOpenPublishFile}
                     onPreloadPublishPane={onPreloadArtifacts}
                   />
+                  {planComposerHint && (
+                    <PlanComposerCtaRow
+                      hint={planComposerHint}
+                      actions={planComposerCtaActions}
+                    />
+                  )}
                   <AgentComposerSurface
                     dataTestId="agents-conversation-composer"
                     actionTestId="agents-conversation-submit"

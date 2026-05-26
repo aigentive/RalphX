@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ComponentProps, ReactNode } from "react";
 import userEvent from "@testing-library/user-event";
@@ -15,10 +15,22 @@ import { AgentsActiveConversationPanel } from "./AgentsActiveConversationPanel";
 
 const {
   getSessionPlanMock,
+  getPlanComplexityAssessmentMock,
   approvePlanArtifactMock,
+  sendAgentMessageMock,
+  switchAgentConversationModeMock,
+  useVerificationStatusMock,
+  getVerificationSpecialistsMock,
+  confirmVerificationMock,
 } = vi.hoisted(() => ({
   getSessionPlanMock: vi.fn(),
+  getPlanComplexityAssessmentMock: vi.fn(),
   approvePlanArtifactMock: vi.fn(),
+  sendAgentMessageMock: vi.fn(),
+  switchAgentConversationModeMock: vi.fn(),
+  useVerificationStatusMock: vi.fn(),
+  getVerificationSpecialistsMock: vi.fn(),
+  confirmVerificationMock: vi.fn(),
 }));
 
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
@@ -73,8 +85,18 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
 vi.mock("@/api/artifact", () => ({
   artifactApi: {
     getSessionPlan: (...args: unknown[]) => getSessionPlanMock(...args),
+    getPlanComplexityAssessment: (...args: unknown[]) =>
+      getPlanComplexityAssessmentMock(...args),
     approvePlanArtifact: (...args: unknown[]) =>
       approvePlanArtifactMock(...args),
+  },
+}));
+
+vi.mock("@/api/verification", () => ({
+  verificationApi: {
+    getSpecialists: (...args: unknown[]) =>
+      getVerificationSpecialistsMock(...args),
+    confirm: (...args: unknown[]) => confirmVerificationMock(...args),
   },
 }));
 
@@ -86,17 +108,17 @@ vi.mock("@/api/chat", async (importOriginal) => {
       ...actual.chatApi,
       listWorkspaceOpenTargets: vi.fn().mockResolvedValue([]),
       openAgentConversationWorkspacePath: vi.fn().mockResolvedValue(undefined),
-      sendAgentMessage: vi.fn().mockResolvedValue({
-        conversationId: "conversation-fork",
-        agentRunId: "run-fork",
-        isNewConversation: false,
-        wasQueued: false,
-        queuedAsPending: false,
-        queuedMessageId: null,
-      }),
+      sendAgentMessage: sendAgentMessageMock,
+      switchAgentConversationMode: switchAgentConversationModeMock,
     },
   };
 });
+
+vi.mock("@/hooks/useVerificationStatus", () => ({
+  verificationStatusKey: (sessionId: string) => ["verification", sessionId],
+  useVerificationStatus: (...args: unknown[]) =>
+    useVerificationStatusMock(...args),
+}));
 
 vi.mock("@/hooks/useAgentModels", () => ({
   useAgentModels: () => ({
@@ -290,6 +312,31 @@ function forkResult(): ForkAgentConversationResult {
   };
 }
 
+function planArtifact(status: "draft" | "approved" = "draft") {
+  return {
+    id: "artifact-1",
+    type: "specification",
+    name: "Implementation Plan",
+    content: { type: "inline", text: "# Plan" },
+    metadata: {
+      createdAt: "2026-05-23T05:00:00Z",
+      createdBy: "ralphx-ideation",
+      version: 1,
+    },
+    derivedFrom: [],
+    bucketId: "prd-library",
+    planApproval:
+      status === "draft"
+        ? { status: "draft" }
+        : {
+            status: "approved",
+            approvedArtifactId: "artifact-1",
+            approvedVersion: 1,
+            approvedAt: "2026-05-23T05:01:00Z",
+          },
+  };
+}
+
 function renderPanel(
   overrides: Partial<ComponentProps<typeof AgentsActiveConversationPanel>> = {},
 ) {
@@ -349,7 +396,34 @@ describe("AgentsActiveConversationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getSessionPlanMock.mockResolvedValue(null);
+    getPlanComplexityAssessmentMock.mockResolvedValue(null);
     approvePlanArtifactMock.mockResolvedValue(null);
+    sendAgentMessageMock.mockResolvedValue({
+      conversationId: "conversation-fork",
+      agentRunId: "run-fork",
+      isNewConversation: false,
+      wasQueued: false,
+      queuedAsPending: false,
+      queuedMessageId: null,
+    });
+    switchAgentConversationModeMock.mockResolvedValue({
+      workspace: { ...workspace(), mode: "ideation" },
+    });
+    useVerificationStatusMock.mockReturnValue({
+      data: {
+        sessionId: "planning-session-1",
+        status: "unverified",
+        inProgress: false,
+        gaps: [],
+        rounds: [],
+        roundDetails: [],
+        runHistory: [],
+      },
+      isFetching: false,
+      isLoading: false,
+    });
+    getVerificationSpecialistsMock.mockResolvedValue({ specialists: [] });
+    confirmVerificationMock.mockResolvedValue({ status: "ok" });
   });
 
   it("normalizes workspace runtime and forwards provider-supported efforts", () => {
@@ -450,6 +524,186 @@ describe("AgentsActiveConversationPanel", () => {
         artifactId: "artifact-1",
       }),
     );
+  });
+
+  it("shows a composer-adjacent Approve Plan CTA for draft Plan-mode sessions", async () => {
+    const user = userEvent.setup();
+    getSessionPlanMock.mockResolvedValue(planArtifact("draft"));
+    approvePlanArtifactMock.mockResolvedValue(planArtifact("approved"));
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+    });
+
+    const row = await screen.findByTestId("agents-plan-composer-cta-row");
+    expect(row).toHaveTextContent(/Approve the draft plan/i);
+
+    await user.click(within(row).getByRole("button", { name: /Approve Plan/i }));
+
+    await waitFor(() =>
+      expect(approvePlanArtifactMock).toHaveBeenCalledWith({
+        sessionId: "planning-session-1",
+        artifactId: "artifact-1",
+      }),
+    );
+  });
+
+  it("emphasizes Create Proposals in the composer CTA row when complexity recommends it", async () => {
+    const user = userEvent.setup();
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    getPlanComplexityAssessmentMock.mockResolvedValue({
+      id: "assessment-1",
+      sessionId: "planning-session-1",
+      artifactId: "artifact-1",
+      artifactVersion: 1,
+      level: "complex",
+      score: 82,
+      recommendedAction: "create_proposals",
+      confidence: 0.9,
+      reasonSummary: "The plan spans several tracked phases.",
+      signals: {},
+      assessedBy: "ralphx-utility-plan-complexity",
+      createdAt: "2026-05-23T05:02:00Z",
+      updatedAt: "2026-05-23T05:02:00Z",
+    });
+    switchAgentConversationModeMock.mockResolvedValue({
+      workspace: {
+        ...workspace(),
+        mode: "ideation",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+    });
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+    });
+
+    const row = await screen.findByTestId("agents-plan-composer-cta-row");
+    await screen.findByText(/Recommended: Create Proposals/i);
+    expect(
+      within(row).getByTestId("agents-plan-composer-cta-create-proposals"),
+    ).toHaveClass("bg-primary");
+    expect(
+      within(row).getByRole("button", { name: /Implement Directly/i }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(row).getByRole("button", { name: /Create Proposals/i }),
+    );
+
+    await waitFor(() =>
+      expect(switchAgentConversationModeMock).toHaveBeenCalledWith({
+        conversationId: "conversation-1",
+        mode: "ideation",
+      }),
+    );
+    expect(sendAgentMessageMock).toHaveBeenCalledWith(
+      "ideation",
+      "planning-session-1",
+      expect.stringContaining("Proceed to proposals"),
+    );
+  });
+
+  it("starts direct implementation from the composer CTA row with the selected runtime", async () => {
+    const user = userEvent.setup();
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    switchAgentConversationModeMock.mockResolvedValue({
+      workspace: {
+        ...workspace(),
+        mode: "edit",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+    });
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+      normalizedActiveRuntime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "high",
+      },
+    });
+
+    const row = await screen.findByTestId("agents-plan-composer-cta-row");
+    await user.click(
+      within(row).getByRole("button", { name: /Implement Directly/i }),
+    );
+
+    await waitFor(() =>
+      expect(switchAgentConversationModeMock).toHaveBeenCalledWith({
+        conversationId: "conversation-1",
+        mode: "edit",
+      }),
+    );
+    expect(sendAgentMessageMock).toHaveBeenCalledWith(
+      "project",
+      "project-1",
+      expect.stringContaining("Implement the approved plan directly"),
+      undefined,
+      undefined,
+      {
+        conversationId: "conversation-1",
+        providerHarness: "codex",
+        modelId: "gpt-5.5",
+        logicalEffort: "high",
+      },
+    );
+  });
+
+  it("starts plan verification from the composer CTA row", async () => {
+    const user = userEvent.setup();
+    const onSelectArtifact = vi.fn();
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    getVerificationSpecialistsMock.mockResolvedValue({
+      specialists: [
+        { name: "risk", enabled_by_default: false },
+        { name: "scope", enabled_by_default: true },
+      ],
+    });
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+      onSelectArtifact,
+    });
+
+    const row = await screen.findByTestId("agents-plan-composer-cta-row");
+    await user.click(within(row).getByRole("button", { name: /Verify Plan/i }));
+
+    await waitFor(() =>
+      expect(confirmVerificationMock).toHaveBeenCalledWith(
+        "planning-session-1",
+        ["risk"],
+      ),
+    );
+    expect(onSelectArtifact).toHaveBeenCalledWith("verification");
   });
 
   it("requires confirmation before running the typed fork command", async () => {
