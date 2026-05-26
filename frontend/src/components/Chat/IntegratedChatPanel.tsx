@@ -683,6 +683,8 @@ export function IntegratedChatPanel({
     agentRunStatus: agentRunQuery.data?.status ?? undefined,
     isVisible,
     setStreamingTasks,
+    setStreamingToolCalls,
+    setStreamingContentBlocks,
     setAgentRunning,
     selectedTaskId: selectedTaskId ?? undefined,
     ideationSessionId,
