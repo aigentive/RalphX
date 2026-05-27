@@ -69,6 +69,7 @@ enum AutoPublishSkipReason {
     NotEditWorkspace,
     ExecutionOwnedWorkspace,
     NoExistingPr,
+    AutoPublishDisabled,
     TerminalPr,
     PublishAlreadyActive,
     NoPendingLocalWork,
@@ -84,6 +85,7 @@ impl AutoPublishSkipReason {
             Self::NotEditWorkspace => "not_edit_workspace",
             Self::ExecutionOwnedWorkspace => "execution_owned_workspace",
             Self::NoExistingPr => "no_existing_pr",
+            Self::AutoPublishDisabled => "auto_publish_disabled",
             Self::TerminalPr => "terminal_pr",
             Self::PublishAlreadyActive => "publish_already_active",
             Self::NoPendingLocalWork => "no_pending_local_work",
@@ -503,6 +505,9 @@ fn static_auto_publish_skip_reason(
     if workspace.publication_pr_number.is_none() {
         return Some(AutoPublishSkipReason::NoExistingPr);
     }
+    if !workspace.auto_publish_enabled {
+        return Some(AutoPublishSkipReason::AutoPublishDisabled);
+    }
     if is_terminal_agent_conversation_publication_status(workspace.publication_pr_status.as_deref())
     {
         return Some(AutoPublishSkipReason::TerminalPr);
@@ -680,6 +685,10 @@ mod tests {
                 "execution_owned_workspace",
             ),
             (AutoPublishSkipReason::NoExistingPr, "no_existing_pr"),
+            (
+                AutoPublishSkipReason::AutoPublishDisabled,
+                "auto_publish_disabled",
+            ),
             (AutoPublishSkipReason::TerminalPr, "terminal_pr"),
             (
                 AutoPublishSkipReason::PublishAlreadyActive,
@@ -740,6 +749,17 @@ mod tests {
         assert_eq!(
             static_auto_publish_skip_reason(&workspace),
             Some(AutoPublishSkipReason::TerminalPr)
+        );
+    }
+
+    #[test]
+    fn static_preflight_skips_paused_auto_publish() {
+        let mut workspace = workspace();
+        workspace.auto_publish_enabled = false;
+
+        assert_eq!(
+            static_auto_publish_skip_reason(&workspace),
+            Some(AutoPublishSkipReason::AutoPublishDisabled)
         );
     }
 
