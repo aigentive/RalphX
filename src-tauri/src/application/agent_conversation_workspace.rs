@@ -275,6 +275,9 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
         publication_pr_url: None,
         publication_pr_status: None,
         publication_push_status: None,
+        auto_publish_enabled: true,
+        auto_publish_paused_pr_autofix_enabled: None,
+        auto_publish_paused_pr_auto_merge_desired: None,
         pr_autofix_enabled: false,
         pr_auto_merge_desired: false,
         pr_auto_merge_method: crate::domain::entities::DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD

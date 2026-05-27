@@ -26,6 +26,7 @@ import {
   listAgentSidebarConversations,
   updateAgentConversationWorkspaceFromBase,
   precomputeAgentConversationWorkspacePrDescription,
+  setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
   startAgentConversation,
   forkAgentConversation,
@@ -1099,6 +1100,9 @@ describe("chat api", () => {
         publication_pr_url: null,
         publication_pr_status: null,
         publication_push_status: null,
+        auto_publish_enabled: true,
+        auto_publish_paused_pr_autofix_enabled: null,
+        auto_publish_paused_pr_auto_merge_desired: null,
         status: "active",
         created_at: "2026-01-24T10:00:00Z",
         updated_at: "2026-01-24T10:01:00Z",
@@ -1429,6 +1433,9 @@ describe("chat api", () => {
       publication_pr_url: "https://github.com/mock/project/pull/78",
       publication_pr_status: "open",
       publication_push_status: "pushed",
+      auto_publish_enabled: true,
+      auto_publish_paused_pr_autofix_enabled: null,
+      auto_publish_paused_pr_auto_merge_desired: null,
       pr_autofix_enabled: true,
       pr_auto_merge_desired: true,
       pr_auto_merge_method: "squash",
@@ -1465,6 +1472,61 @@ describe("chat api", () => {
       prAutoMergeDesired: true,
       prAutoMergeMethod: "squash",
       prSupervisionStatus: "monitoring",
+    });
+  });
+
+  it("sets agent conversation workspace auto publish", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conversation-1",
+      project_id: "project-1",
+      mode: "edit",
+      base_ref_kind: "project_default",
+      base_ref: "main",
+      base_display_name: "Project default (main)",
+      base_commit: null,
+      branch_name: "ralphx/demo/agent-conversation-1",
+      worktree_path: "/tmp/ralphx/conversation-1",
+      linked_ideation_session_id: null,
+      linked_plan_branch_id: null,
+      publication_pr_number: 42,
+      publication_pr_url: "https://github.com/mock/project/pull/42",
+      publication_pr_status: "open",
+      publication_push_status: "pushed",
+      auto_publish_enabled: false,
+      auto_publish_paused_pr_autofix_enabled: true,
+      auto_publish_paused_pr_auto_merge_desired: false,
+      pr_autofix_enabled: false,
+      pr_auto_merge_desired: false,
+      pr_auto_merge_method: "squash",
+      pr_auto_merge_current: null,
+      pr_supervision_status: "paused",
+      pr_supervision_summary: "Auto Publish is paused.",
+      pr_supervision_updated_at: "2026-05-17T10:00:00Z",
+      status: "active",
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:01:00Z",
+    });
+
+    const result = await setAgentConversationWorkspaceAutoPublish(
+      "conversation-1",
+      { autoPublishEnabled: false }
+    );
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "set_agent_conversation_workspace_auto_publish",
+      {
+        conversationId: "conversation-1",
+        input: {
+          autoPublishEnabled: false,
+        },
+      }
+    );
+    expect(result).toMatchObject({
+      conversationId: "conversation-1",
+      autoPublishEnabled: false,
+      autoPublishPausedPrAutofixEnabled: true,
+      prAutofixEnabled: false,
+      prSupervisionStatus: "paused",
     });
   });
 
@@ -2008,6 +2070,9 @@ describe("chat api", () => {
     );
     expect(chatApi.setAgentConversationWorkspacePrSupervision).toBe(
       setAgentConversationWorkspacePrSupervision
+    );
+    expect(chatApi.setAgentConversationWorkspaceAutoPublish).toBe(
+      setAgentConversationWorkspaceAutoPublish
     );
     expect(chatApi.switchAgentConversationMode).toBe(switchAgentConversationMode);
     expect(chatApi.forkAgentConversation).toBe(forkAgentConversation);
