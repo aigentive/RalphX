@@ -4,11 +4,20 @@ import {
   ExternalLink,
   GitPullRequestArrow,
   GitBranch,
+  Info,
   Loader2,
   MoreVertical,
   XCircle,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
@@ -32,6 +41,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
 import {
@@ -95,6 +109,35 @@ const PUBLISH_PIPELINE_EVENT_STEPS = new Set([
   "pushed",
   "published",
 ]);
+
+function PublishSwitchInfoTooltip({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          className="inline-flex h-5 w-5 shrink-0 cursor-help items-center justify-center rounded-full border-0 bg-transparent p-0 text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+        >
+          <Info className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        side="top"
+        align="center"
+        className="max-w-[300px] text-xs leading-relaxed"
+      >
+        {children}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 function latestPublicationEventForActivePublish(
   events: AgentConversationWorkspacePublicationEvent[],
@@ -347,6 +390,28 @@ export function AgentPublishPanel({
       );
     },
   });
+  const autoPublishMutation = useMutation<
+    AgentConversationWorkspace,
+    Error,
+    { autoPublishEnabled: boolean }
+  >({
+    mutationFn: (input) =>
+      chatApi.setAgentConversationWorkspaceAutoPublish(conversationId!, input),
+    onSuccess: (updatedWorkspace) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
+        updatedWorkspace,
+      );
+      void queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.publicationEvents(updatedWorkspace.conversationId),
+      });
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Unable to update Auto Publish",
+      );
+    },
+  });
   const prSupervisionMutation = useMutation<
     AgentConversationWorkspace,
     Error,
@@ -480,8 +545,17 @@ export function AgentPublishPanel({
     freshness?.baseRef ??
     workspace.baseRef ??
     base;
-  const pendingPrSupervision = prSupervisionMutation.variables;
-  const isPrSupervisionSaving = prSupervisionMutation.isPending;
+  const pendingAutoPublish = autoPublishMutation.isPending
+    ? autoPublishMutation.variables
+    : null;
+  const autoPublishEnabled =
+    pendingAutoPublish?.autoPublishEnabled ?? workspace.autoPublishEnabled ?? true;
+  const pendingPrSupervision = prSupervisionMutation.isPending
+    ? prSupervisionMutation.variables
+    : null;
+  const isAutoPublishSaving = autoPublishMutation.isPending;
+  const isPrSupervisionSaving =
+    prSupervisionMutation.isPending || autoPublishMutation.isPending;
   const prAutofixEnabled =
     pendingPrSupervision?.autoFixEnabled ?? workspace.prAutofixEnabled ?? false;
   const prAutoMergeDesired =
@@ -529,9 +603,12 @@ export function AgentPublishPanel({
   const isClosingPr = closePrMutation.isPending;
   const canConfigurePrSupervision =
     workspace.mode === "edit" && workspace.status !== "missing" && !terminalPublicationStatus;
+  const canConfigureAutoPublish = canConfigurePrSupervision && hasPublishedPr;
   const prSupervisionStatusLabel = (() => {
     if (terminalPublicationStatus) return null;
+    if (isAutoPublishSaving) return "Saving Auto Publish";
     if (isPrSupervisionSaving) return "Saving PR supervision";
+    if (!autoPublishEnabled && hasPublishedPr) return "Auto Publish paused";
     if (prSupervisionStatus === "fixing") return "Fixing PR";
     if (prSupervisionStatus === "waiting_for_checks") return "Waiting for checks";
     if (prSupervisionStatus === "blocked") return "PR supervision blocked";
@@ -542,7 +619,7 @@ export function AgentPublishPanel({
     autoFixEnabled: boolean;
     autoMergeDesired: boolean;
   }) => {
-    if (!canConfigurePrSupervision || prSupervisionMutation.isPending) {
+    if (!canConfigurePrSupervision || !autoPublishEnabled || isPrSupervisionSaving) {
       return;
     }
     prSupervisionMutation.mutate(next);
@@ -564,6 +641,8 @@ export function AgentPublishPanel({
             : "Publishing is managed by this ideation plan's task pipeline."
         : isDescriptionFailed
           ? "RalphX could not draft a PR description. No pull request was opened; retry Commit & Publish after reviewing the latest publish event."
+        : hasPublishedPr && !autoPublishEnabled
+          ? "Automatic publishing is paused. Manual Commit & Publish remains available."
         : isChangesLoading
           ? "Loading changed files..."
           : isPublishCurrent
@@ -613,6 +692,25 @@ export function AgentPublishPanel({
       pendingText: "Closing...",
       variant: "destructive",
       onConfirm: () => closePrMutation.mutateAsync(),
+    });
+  };
+  const confirmAutoPublishChange = (nextEnabled: boolean) => {
+    if (!canConfigureAutoPublish || autoPublishMutation.isPending) {
+      return;
+    }
+    const enablingDirtyWarning =
+      nextEnabled && freshness?.hasUncommittedChanges
+        ? " The next automatic trigger may commit current local workspace changes."
+        : "";
+    void confirm({
+      title: nextEnabled ? "Resume Auto Publish?" : "Pause Auto Publish?",
+      description: nextEnabled
+        ? `Background publish, PR autofix, and auto-merge automation will resume for ${terminalPrLabel}.${enablingDirtyWarning}`
+        : `Background publish, stale-base publish scans, PR autofix publishing, and auto-merge automation will pause for ${terminalPrLabel}. Manual Commit & Publish remains available.`,
+      confirmText: nextEnabled ? "Resume Auto Publish" : "Pause Auto Publish",
+      pendingText: nextEnabled ? "Resuming..." : "Pausing...",
+      onConfirm: () =>
+        autoPublishMutation.mutateAsync({ autoPublishEnabled: nextEnabled }),
     });
   };
   const confirmPublishWorkspace = () => {
@@ -777,36 +875,70 @@ export function AgentPublishPanel({
               className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs"
               data-testid="agents-pr-supervision-controls"
             >
-              <label className="flex min-h-8 items-center gap-2 text-[var(--text-secondary)]">
-                <Switch
-                  checked={prAutofixEnabled}
-                  disabled={!canConfigurePrSupervision || prSupervisionMutation.isPending}
-                  onCheckedChange={(checked) =>
-                    updatePrSupervisionPreferences({
-                      autoFixEnabled: checked,
-                      autoMergeDesired: prAutoMergeDesired,
-                    })
-                  }
-                  aria-label="Let RalphX autofix CI failures and reviews"
-                  data-testid="agents-pr-autofix-switch"
-                />
-                <span>Let RalphX autofix CI failures and reviews</span>
-              </label>
-              <label className="flex min-h-8 items-center gap-2 text-[var(--text-secondary)]">
-                <Switch
-                  checked={prAutoMergeDesired}
-                  disabled={!canConfigurePrSupervision || prSupervisionMutation.isPending}
-                  onCheckedChange={(checked) =>
-                    updatePrSupervisionPreferences({
-                      autoFixEnabled: prAutofixEnabled,
-                      autoMergeDesired: checked,
-                    })
-                  }
-                  aria-label="Enable GitHub auto-merge"
-                  data-testid="agents-pr-auto-merge-switch"
-                />
-                <span>Enable GitHub auto-merge</span>
-              </label>
+              {hasPublishedPr && (
+                <div className="flex min-h-8 items-center gap-1.5 text-[var(--text-secondary)]">
+                  <label className="flex min-h-8 items-center gap-2">
+                    <Switch
+                      checked={autoPublishEnabled}
+                      disabled={!canConfigureAutoPublish || isPrSupervisionSaving}
+                      onCheckedChange={confirmAutoPublishChange}
+                      aria-label="Auto Publish"
+                      data-testid="agents-auto-publish-switch"
+                    />
+                    <span>Auto Publish</span>
+                  </label>
+                  <PublishSwitchInfoTooltip label="About Auto Publish">
+                    Controls background publishing for this PR, including publish-after-turn,
+                    stale-base scans, PR autofix publishing, and auto-merge automation.
+                  </PublishSwitchInfoTooltip>
+                </div>
+              )}
+              <div className="flex min-h-8 items-center gap-1.5 text-[var(--text-secondary)]">
+                <label className="flex min-h-8 items-center gap-2">
+                  <Switch
+                    checked={prAutofixEnabled}
+                    disabled={
+                      !canConfigurePrSupervision || !autoPublishEnabled || isPrSupervisionSaving
+                    }
+                    onCheckedChange={(checked) =>
+                      updatePrSupervisionPreferences({
+                        autoFixEnabled: checked,
+                        autoMergeDesired: prAutoMergeDesired,
+                      })
+                    }
+                    aria-label="Autofix CI & Reviews"
+                    data-testid="agents-pr-autofix-switch"
+                  />
+                  <span>Autofix CI &amp; Reviews</span>
+                </label>
+                <PublishSwitchInfoTooltip label="About Autofix CI and Reviews">
+                  RalphX monitors this PR for failing checks and review feedback, then
+                  publishes follow-up fixes from the workspace automatically.
+                </PublishSwitchInfoTooltip>
+              </div>
+              <div className="flex min-h-8 items-center gap-1.5 text-[var(--text-secondary)]">
+                <label className="flex min-h-8 items-center gap-2">
+                  <Switch
+                    checked={prAutoMergeDesired}
+                    disabled={
+                      !canConfigurePrSupervision || !autoPublishEnabled || isPrSupervisionSaving
+                    }
+                    onCheckedChange={(checked) =>
+                      updatePrSupervisionPreferences({
+                        autoFixEnabled: prAutofixEnabled,
+                        autoMergeDesired: checked,
+                      })
+                    }
+                    aria-label="GitHub auto-merge"
+                    data-testid="agents-pr-auto-merge-switch"
+                  />
+                  <span>GitHub auto-merge</span>
+                </label>
+                <PublishSwitchInfoTooltip label="About GitHub auto-merge">
+                  RalphX asks GitHub to merge the PR after required checks and review
+                  requirements pass.
+                </PublishSwitchInfoTooltip>
+              </div>
               {prSupervisionStatusLabel && (
                 <span
                   className="rounded-full border px-2 py-1 text-[11px] font-medium"

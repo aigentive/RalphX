@@ -99,6 +99,20 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         auto_merge_method: &str,
     ) -> AppResult<()>;
 
+    async fn update_auto_publish_preferences(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _auto_publish_enabled: bool,
+        _paused_pr_autofix_enabled: Option<bool>,
+        _paused_pr_auto_merge_desired: Option<bool>,
+        _pr_autofix_enabled: bool,
+        _pr_auto_merge_desired: bool,
+        _pr_supervision_status: Option<&str>,
+        _pr_supervision_summary: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn update_pr_auto_merge_state(
         &self,
         _conversation_id: &ChatConversationId,

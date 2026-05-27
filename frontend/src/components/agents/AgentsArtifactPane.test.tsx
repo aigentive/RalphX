@@ -23,6 +23,7 @@ const {
   listPublicationEventsMock,
   getWorkspaceFreshnessMock,
   updateWorkspaceFromBaseMock,
+  setWorkspaceAutoPublishMock,
   setWorkspacePrSupervisionMock,
   precomputePrDescriptionMock,
   closeWorkspacePrMock,
@@ -54,6 +55,7 @@ const {
   listPublicationEventsMock: vi.fn(),
   getWorkspaceFreshnessMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
+  setWorkspaceAutoPublishMock: vi.fn(),
   setWorkspacePrSupervisionMock: vi.fn(),
   precomputePrDescriptionMock: vi.fn(),
   closeWorkspacePrMock: vi.fn(),
@@ -88,6 +90,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
         getWorkspaceFreshnessMock(...args),
       updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>
         updateWorkspaceFromBaseMock(...args),
+      setAgentConversationWorkspaceAutoPublish: (...args: unknown[]) =>
+        setWorkspaceAutoPublishMock(...args),
       setAgentConversationWorkspacePrSupervision: (...args: unknown[]) =>
         setWorkspacePrSupervisionMock(...args),
       precomputeAgentConversationWorkspacePrDescription: (...args: unknown[]) =>
@@ -256,6 +260,9 @@ const workspace = (
   publicationPrUrl: null,
   publicationPrStatus: null,
   publicationPushStatus: null,
+  autoPublishEnabled: true,
+  autoPublishPausedPrAutofixEnabled: null,
+  autoPublishPausedPrAutoMergeDesired: null,
   status: "active",
   createdAt: "2026-04-23T09:00:00Z",
   updatedAt: "2026-04-23T09:00:00Z",
@@ -430,6 +437,19 @@ describe("AgentsArtifactPane", () => {
             input.autoFixEnabled || input.autoMergeDesired
               ? "monitoring"
               : "disabled",
+        })
+    );
+    setWorkspaceAutoPublishMock.mockImplementation(
+      async (conversationId: string, input: { autoPublishEnabled: boolean }) =>
+        workspace({
+          mode: "edit",
+          conversationId,
+          publicationPrNumber: 90,
+          publicationPrUrl: "https://github.com/mock/project/pull/90",
+          publicationPrStatus: "open",
+          publicationPushStatus: "pushed",
+          autoPublishEnabled: input.autoPublishEnabled,
+          prSupervisionStatus: input.autoPublishEnabled ? "monitoring" : "paused",
         })
     );
     precomputePrDescriptionMock.mockClear();
@@ -649,6 +669,56 @@ describe("AgentsArtifactPane", () => {
         autoMergeMethod: "squash",
       })
     );
+  });
+
+  it("confirms pausing Auto Publish from the publish pane", async () => {
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 90,
+        publicationPrUrl: "https://github.com/mock/project/pull/90",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+        autoPublishEnabled: true,
+        prAutofixEnabled: true,
+      }),
+    );
+
+    fireEvent.click(await screen.findByTestId("agents-auto-publish-switch"));
+
+    expect(setWorkspaceAutoPublishMock).not.toHaveBeenCalled();
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Pause Auto Publish",
+      })
+    );
+
+    await waitFor(() =>
+      expect(setWorkspaceAutoPublishMock).toHaveBeenCalledWith("conversation-1", {
+        autoPublishEnabled: false,
+      })
+    );
+  });
+
+  it("disables PR automation switches while Auto Publish is paused", async () => {
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 90,
+        publicationPrUrl: "https://github.com/mock/project/pull/90",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+        autoPublishEnabled: false,
+        prSupervisionStatus: "paused",
+      }),
+    );
+
+    expect(await screen.findByText("Auto Publish paused")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-auto-publish-switch")).not.toBeChecked();
+    expect(screen.getByTestId("agents-pr-autofix-switch")).toBeDisabled();
+    expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeDisabled();
   });
 
   it("surfaces git auth repair actions in the publish pane", () => {
@@ -1197,7 +1267,7 @@ describe("AgentsArtifactPane", () => {
     renderPane("publish", workspace({ mode: "edit" }), publish);
 
     await user.click(
-      screen.getByRole("switch", { name: "Enable GitHub auto-merge" }),
+      screen.getByRole("switch", { name: "GitHub auto-merge" }),
     );
 
     await waitFor(() =>

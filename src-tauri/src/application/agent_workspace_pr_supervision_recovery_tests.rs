@@ -230,6 +230,13 @@ fn schedule_skip_reason_covers_recoverable_and_terminal_workspace_shapes() {
         Some("workspace_terminal")
     );
 
+    let mut auto_publish_paused = workspace.clone();
+    auto_publish_paused.auto_publish_enabled = false;
+    assert_eq!(
+        pr_supervision_recovery_schedule_skip_reason(&auto_publish_paused),
+        Some("auto_publish_disabled")
+    );
+
     let mut disabled = workspace;
     disabled.pr_autofix_enabled = false;
     disabled.pr_auto_merge_desired = false;
