@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   agentWorkspaceOperationToastId,
+  publishPipelineToastLabel,
   startAgentWorkspaceOperationToast,
 } from "./agentWorkspaceOperationToast";
 
@@ -30,6 +31,23 @@ describe("agentWorkspaceOperationToast", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it.each([
+    ["committing", "Commit changes"],
+    ["refreshing", "Refresh branch"],
+    ["refreshed", "Refresh branch"],
+    ["describing", "Draft PR description"],
+    ["pushing", "Push branch"],
+    ["pushed", "Open draft PR"],
+    ["published", "Open draft PR"],
+    ["description_failed", "PR description failed"],
+    ["needs_agent", "Repair needed"],
+    ["failed", "Publish failed"],
+    [null, "Check workspace"],
+    ["unknown", "Check workspace"],
+  ])("maps publish status %s to %s", (status, label) => {
+    expect(publishPipelineToastLabel(status)).toBe(label);
   });
 
   it("keeps one persistent loading toast updated with elapsed time", () => {
@@ -66,6 +84,40 @@ describe("agentWorkspaceOperationToast", () => {
 
     vi.advanceTimersByTime(1_000);
 
+    expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
+  });
+
+  it("updates the persistent toast before ignoring updates after settlement", () => {
+    const progress = startAgentWorkspaceOperationToast({
+      detail: "Check workspace",
+      id: agentWorkspaceOperationToastId("conversation-1", "publish"),
+      startedAtMs: 0,
+      title: "Publishing workspace",
+    });
+
+    vi.setSystemTime(3_000);
+    progress.update({
+      detail: "Push branch",
+      id: agentWorkspaceOperationToastId("conversation-2", "publish"),
+      startedAtMs: 1_000,
+    });
+
+    expect(toastLoadingMock).toHaveBeenLastCalledWith(
+      "Publishing workspace - Push branch - 2s",
+      {
+        duration: Infinity,
+        id: "agent-workspace-operation:conversation-2:publish",
+      },
+    );
+
+    const loadingCallCount = toastLoadingMock.mock.calls.length;
+
+    progress.success("Published branch");
+    progress.update({ detail: "Open draft PR" });
+
+    expect(toastSuccessMock).toHaveBeenCalledWith("Published branch", {
+      id: "agent-workspace-operation:conversation-2:publish",
+    });
     expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
   });
 

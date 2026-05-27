@@ -2058,6 +2058,47 @@ describe("AgentsArtifactPane", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it("cancels Update from base without starting the operation toast", async () => {
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/agent-screen",
+      baseDisplayName: "Current branch (feature/agent-screen)",
+      targetRef: "origin/feature/agent-screen",
+      capturedBaseCommit: "old-base",
+      targetBaseCommit: "new-base",
+      isBaseAhead: true,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        baseCommit: "old-base",
+      }),
+    );
+
+    expect(await screen.findByTestId("agents-base-stale")).toHaveTextContent(
+      "feature/agent-screen",
+    );
+
+    fireEvent.click(screen.getByTestId("agents-update-from-base"));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Cancel",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    });
+    expect(updateWorkspaceFromBaseMock).not.toHaveBeenCalled();
+    expect(toastLoadingMock).not.toHaveBeenCalled();
+  });
+
   it("closes the Update from base confirmation and shows a persistent elapsed toast while updating", async () => {
     const updateDeferred = deferred<Awaited<ReturnType<typeof updateWorkspaceFromBaseMock>>>();
     updateWorkspaceFromBaseMock.mockImplementation(() => updateDeferred.promise);
@@ -2173,6 +2214,11 @@ describe("AgentsArtifactPane", () => {
 
     await waitFor(() =>
       expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1")
+    );
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith("base update failed", {
+        id: "agent-workspace-operation:conversation-1:update-from-base",
+      }),
     );
     await waitFor(() =>
       expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1", {
