@@ -42,6 +42,7 @@ const {
   resumeDeferredGitStartupMock,
   openUrlMock,
   toastErrorMock,
+  toastLoadingMock,
   toastSuccessMock,
 } = vi.hoisted(() => ({
   getWorkspaceChangesMock: vi.fn(),
@@ -73,6 +74,7 @@ const {
   resumeDeferredGitStartupMock: vi.fn(),
   openUrlMock: vi.fn(),
   toastErrorMock: vi.fn(),
+  toastLoadingMock: vi.fn(),
   toastSuccessMock: vi.fn(),
 }));
 
@@ -235,6 +237,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 vi.mock("sonner", () => ({
   toast: {
     error: (...args: unknown[]) => toastErrorMock(...args),
+    loading: (...args: unknown[]) => toastLoadingMock(...args),
     success: (...args: unknown[]) => toastSuccessMock(...args),
   },
 }));
@@ -529,6 +532,7 @@ describe("AgentsArtifactPane", () => {
     });
     openUrlMock.mockResolvedValue(undefined);
     toastErrorMock.mockClear();
+    toastLoadingMock.mockClear();
     toastSuccessMock.mockClear();
   });
 
@@ -1321,6 +1325,15 @@ describe("AgentsArtifactPane", () => {
     expect(
       within(progressDialog).getByTestId("agents-publish-dialog-step-checking"),
     ).toHaveTextContent("Check workspace");
+    await waitFor(() =>
+      expect(toastLoadingMock).toHaveBeenCalledWith(
+        expect.stringContaining("Publishing workspace - Check workspace - 0s"),
+        expect.objectContaining({
+          duration: Infinity,
+          id: "agent-workspace-operation:conversation-1:publish",
+        }),
+      ),
+    );
     const closeButton = within(progressDialog).getByTestId(
       "agents-publish-dialog-close",
     );
@@ -1382,6 +1395,15 @@ describe("AgentsArtifactPane", () => {
         .getByTestId("agents-publish-dialog-step-checking")
         .querySelector(".animate-spin"),
     ).toBeNull();
+    await waitFor(() =>
+      expect(toastLoadingMock).toHaveBeenCalledWith(
+        expect.stringContaining("Publishing workspace - Draft PR description - 0s"),
+        expect.objectContaining({
+          duration: Infinity,
+          id: "agent-workspace-operation:conversation-1:publish",
+        }),
+      ),
+    );
 
     await act(async () => {
       publishDeferred.resolve();
@@ -1432,7 +1454,9 @@ describe("AgentsArtifactPane", () => {
     });
 
     await waitFor(() => {
-      expect(toastErrorMock).toHaveBeenCalledWith("Publish failed");
+      expect(toastErrorMock).toHaveBeenCalledWith("Publish failed", {
+        id: "agent-workspace-operation:conversation-1:publish",
+      });
       expect(
         screen.queryByRole("dialog", { name: "Publishing workspace" }),
       ).not.toBeInTheDocument();
@@ -1877,6 +1901,91 @@ describe("AgentsArtifactPane", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it("closes the Rebase branch dialog and shows a persistent elapsed toast while rebasing", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    const updateDeferred = deferred<Awaited<ReturnType<typeof updateWorkspaceFromBaseMock>>>();
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/deleted-base",
+      baseDisplayName: "Current branch (feature/deleted-base)",
+      targetRef: "",
+      capturedBaseCommit: "old-base",
+      targetBaseCommit: "",
+      isBaseAhead: false,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+      baseStatus: "blocked",
+      effectiveBaseRef: null,
+      effectiveBaseDisplayName: null,
+      baseBlockReason: "Saved base commit is not contained in the default branch",
+    });
+    updateWorkspaceFromBaseMock.mockImplementation(() => updateDeferred.promise);
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/deleted-base",
+        baseDisplayName: "Current branch (feature/deleted-base)",
+      }),
+      publish,
+    );
+
+    await screen.findByTestId(
+      "agents-base-blocked",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    await userEvent.click(screen.getByTestId("agents-rebase-from-base"));
+
+    const dialog = await screen.findByRole("dialog", { name: "Rebase branch" });
+    await userEvent.click(within(dialog).getByTestId("agents-rebase-base-select"));
+    await userEvent.click(await screen.findByText("release/0.8"));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Rebase branch" }));
+
+    await waitFor(() =>
+      expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1", {
+        kind: "local_branch",
+        ref: "release/0.8",
+        displayName: "release/0.8",
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "Rebase branch" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(toastLoadingMock).toHaveBeenCalledWith(
+      expect.stringContaining("Rebasing branch - From release/0.8 - 0s"),
+      expect.objectContaining({
+        duration: Infinity,
+        id: "agent-workspace-operation:conversation-1:rebase",
+      }),
+    );
+
+    updateDeferred.resolve({
+      workspace: workspace({
+        mode: "edit",
+        baseRefKind: "local_branch",
+        baseRef: "release/0.8",
+        baseDisplayName: "release/0.8",
+        baseCommit: "release-base",
+      }),
+      updated: true,
+      targetRef: "release/0.8",
+      baseCommit: "release-base",
+      baseStatus: "valid",
+      effectiveBaseDisplayName: "release/0.8",
+    });
+
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("Updated from release/0.8", {
+        id: "agent-workspace-operation:conversation-1:rebase",
+      }),
+    );
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it("uses Update from base as the primary action when the base branch moved", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     getWorkspaceFreshnessMock.mockResolvedValue({
@@ -1949,7 +2058,48 @@ describe("AgentsArtifactPane", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
-  it("shows a submitting state in the Update from base confirmation dialog", async () => {
+  it("cancels Update from base without starting the operation toast", async () => {
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/agent-screen",
+      baseDisplayName: "Current branch (feature/agent-screen)",
+      targetRef: "origin/feature/agent-screen",
+      capturedBaseCommit: "old-base",
+      targetBaseCommit: "new-base",
+      isBaseAhead: true,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        baseCommit: "old-base",
+      }),
+    );
+
+    expect(await screen.findByTestId("agents-base-stale")).toHaveTextContent(
+      "feature/agent-screen",
+    );
+
+    fireEvent.click(screen.getByTestId("agents-update-from-base"));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Cancel",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    });
+    expect(updateWorkspaceFromBaseMock).not.toHaveBeenCalled();
+    expect(toastLoadingMock).not.toHaveBeenCalled();
+  });
+
+  it("closes the Update from base confirmation and shows a persistent elapsed toast while updating", async () => {
     const updateDeferred = deferred<Awaited<ReturnType<typeof updateWorkspaceFromBaseMock>>>();
     updateWorkspaceFromBaseMock.mockImplementation(() => updateDeferred.promise);
     getWorkspaceFreshnessMock.mockResolvedValue({
@@ -1988,12 +2138,17 @@ describe("AgentsArtifactPane", () => {
 
     await waitFor(() => {
       expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1");
-      expect(
-        within(dialog).getByRole("button", { name: "Updating..." }),
-      ).toBeDisabled();
     });
-    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
-    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    });
+    expect(toastLoadingMock).toHaveBeenCalledWith(
+      expect.stringContaining("Updating branch - From feature/agent-screen - 0s"),
+      expect.objectContaining({
+        duration: Infinity,
+        id: "agent-workspace-operation:conversation-1:update-from-base",
+      }),
+    );
 
     updateDeferred.resolve({
       workspace: workspace({
@@ -2007,9 +2162,14 @@ describe("AgentsArtifactPane", () => {
       baseCommit: "new-base",
     });
 
-    await waitFor(() => {
-      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
-    });
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        "Updated from origin/feature/agent-screen",
+        {
+          id: "agent-workspace-operation:conversation-1:update-from-base",
+        },
+      ),
+    );
   });
 
   it("refreshes workspace facts when Update from base fails", async () => {
@@ -2054,6 +2214,11 @@ describe("AgentsArtifactPane", () => {
 
     await waitFor(() =>
       expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1")
+    );
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith("base update failed", {
+        id: "agent-workspace-operation:conversation-1:update-from-base",
+      }),
     );
     await waitFor(() =>
       expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1", {
