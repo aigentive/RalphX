@@ -104,7 +104,9 @@ describe("useAgentWorkspacePublisher", () => {
       ["agents", "conversation-workspace", "conversation-1"],
       publishedWorkspace,
     );
-    expect(toastSuccessMock).toHaveBeenCalledWith("Published #204");
+    expect(toastSuccessMock).toHaveBeenCalledWith("Published #204", {
+      id: "agent-workspace-operation:conversation-1:publish",
+    });
     expect(toastErrorMock).not.toHaveBeenCalled();
 
     await act(async () => {
