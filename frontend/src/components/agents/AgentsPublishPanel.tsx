@@ -49,6 +49,7 @@ import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { PublishEventLog } from "./AgentsPublishEventLog";
 import { PublishPipelineSteps } from "./AgentsPublishPipelineSteps";
+import { AgentsPublishProgressToast } from "./AgentsPublishProgressToast";
 import {
   PublishWorkspaceDialog,
   type PublishWorkspaceDialogPhase,
@@ -72,6 +73,11 @@ import {
 } from "./agentWorkspaceQueries";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import { mapReviewCommitsToDiffViewerCommits } from "./useAgentWorkspaceChangeSummary";
+import {
+  type AgentWorkspaceOperationToast,
+  agentWorkspaceOperationToastId,
+  startAgentWorkspaceOperationToast,
+} from "./agentWorkspaceOperationToast";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
@@ -142,9 +148,57 @@ export function AgentPublishPanel({
     null,
   );
   const prDescriptionPrecomputeKeysRef = useRef<Set<string>>(new Set());
+  const updateFromBaseProgressToastRef =
+    useRef<AgentWorkspaceOperationToast | null>(null);
   const [selectedRebaseBaseKey, setSelectedRebaseBaseKey] = useState("");
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
+  const startUpdateFromBaseProgressToast = ({
+    detail,
+    kind,
+    title,
+  }: {
+    detail: string;
+    kind: "rebase" | "update-from-base";
+    title: string;
+  }) => {
+    if (!conversationId) {
+      return;
+    }
+    updateFromBaseProgressToastRef.current?.dispose();
+    updateFromBaseProgressToastRef.current = startAgentWorkspaceOperationToast({
+      detail,
+      id: agentWorkspaceOperationToastId(conversationId, kind),
+      title,
+    });
+  };
+  const settleUpdateFromBaseProgressToast = (
+    outcome: "error" | "success",
+    message: string,
+  ) => {
+    const progressToast = updateFromBaseProgressToastRef.current;
+    updateFromBaseProgressToastRef.current = null;
+    if (!progressToast) {
+      if (outcome === "success") {
+        toast.success(message);
+      } else {
+        toast.error(message);
+      }
+      return;
+    }
+    if (outcome === "success") {
+      progressToast.success(message);
+    } else {
+      progressToast.error(message);
+    }
+  };
+  useEffect(
+    () => () => {
+      updateFromBaseProgressToastRef.current?.dispose();
+      updateFromBaseProgressToastRef.current = null;
+    },
+    [],
+  );
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
   // Workspace-only flag computed early so reviewQuery can decide whether the
   // inline diff view will be visible.
@@ -244,14 +298,16 @@ export function AgentPublishPanel({
         result.workspace,
       );
       await invalidateWorkspaceQueries(queryClient, result.workspace.conversationId);
-      toast.success(
+      settleUpdateFromBaseProgressToast(
+        "success",
         result.updated
           ? `Updated from ${result.targetRef}`
           : `Already current with ${result.targetRef}`,
       );
     },
     onError: (error) => {
-      toast.error(
+      settleUpdateFromBaseProgressToast(
+        "error",
         error instanceof Error ? error.message : "Failed to update from base",
       );
       if (conversationId) {
@@ -524,8 +580,16 @@ export function AgentPublishPanel({
       title: "Update from base branch?",
       description: `This will update ${branch} with the latest changes from ${baseActionLabel}. If conflicts are found, RalphX will route this workspace through repair before publishing can continue.`,
       confirmText: "Update branch",
-      pendingText: "Updating...",
-      onConfirm: () => updateFromBaseMutation.mutateAsync(undefined),
+    }).then((confirmed) => {
+      if (!confirmed) {
+        return;
+      }
+      startUpdateFromBaseProgressToast({
+        detail: `From ${baseActionLabel}`,
+        kind: "update-from-base",
+        title: "Updating branch",
+      });
+      updateFromBaseMutation.mutate(undefined);
     });
   };
   const rebaseFromSelectedBase = () => {
@@ -533,6 +597,12 @@ export function AgentPublishPanel({
       toast.error("Select a base branch before rebasing");
       return;
     }
+    setRebaseDialogOpen(false);
+    startUpdateFromBaseProgressToast({
+      detail: `From ${selectedRebaseBase.selection.displayName}`,
+      kind: "rebase",
+      title: "Rebasing branch",
+    });
     updateFromBaseMutation.mutate(selectedRebaseBase.selection);
   };
   const confirmClosePr = () => {
@@ -560,6 +630,9 @@ export function AgentPublishPanel({
       .catch((error) => {
         toast.error(
           error instanceof Error ? error.message : "Failed to publish branch",
+          {
+            id: agentWorkspaceOperationToastId(workspace.conversationId, "publish"),
+          },
         );
       })
       .finally(() => {
@@ -579,6 +652,12 @@ export function AgentPublishPanel({
 
   return (
     <div className="flex h-full flex-col p-4" data-testid="agents-publish-pane">
+      <AgentsPublishProgressToast
+        active={isPublishingThisWorkspace}
+        conversationId={conversationId}
+        startedAtMs={localPublishStartedAtMs}
+        status={pipelineStatus}
+      />
       <div className="@container flex w-full min-h-0 flex-1 flex-col gap-4">
         <section
           className="sticky top-0 z-20 -mx-4 border-b px-4 py-4"
