@@ -35,6 +35,7 @@ interface ReleaseNotesDialogProps {
   open: boolean;
   onClose: () => void;
   initialVersion?: string | undefined;
+  initialBody?: string | null | undefined;
   initialContext?: "current" | "update" | undefined;
   onRequestUpdate?: () => void;
 }
@@ -113,10 +114,27 @@ function buildSidebarItems(
   return items;
 }
 
+function includeSeededVersion(
+  versions: string[],
+  initialVersion: string | undefined,
+  initialBody: string | null | undefined,
+): string[] {
+  if (initialVersion === undefined || initialBody === undefined) {
+    return versions;
+  }
+
+  if (versions.includes(initialVersion)) {
+    return versions;
+  }
+
+  return [...versions, initialVersion].sort(compareSemverDesc);
+}
+
 export function ReleaseNotesDialog({
   open,
   onClose,
   initialVersion,
+  initialBody,
   initialContext,
   onRequestUpdate,
 }: ReleaseNotesDialogProps) {
@@ -154,7 +172,11 @@ export function ReleaseNotesDialog({
         setMetadata(meta);
         if (appVersion) setCurrentAppVersion(appVersion);
 
-        const merged = mergeVersionLists(bundled, meta);
+        const merged = includeSeededVersion(
+          mergeVersionLists(bundled, meta),
+          initialVersion,
+          initialBody,
+        );
         setVersions(merged);
         setListLoading(false);
 
@@ -165,6 +187,18 @@ export function ReleaseNotesDialog({
           ? (merged.find((v) => v === initialVersion) ?? first)
           : first;
         setActiveVersion(target);
+
+        const seededBody =
+          target === initialVersion && initialBody !== undefined
+            ? sanitize(initialBody)
+            : undefined;
+        if (seededBody !== undefined) {
+          setLoadedNotes((prev) => ({
+            ...prev,
+            [target]: seededBody,
+          }));
+          return;
+        }
 
         if (bundledSet.has(target)) {
           setActiveLoading(true);
