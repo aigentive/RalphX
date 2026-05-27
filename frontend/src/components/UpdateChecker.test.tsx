@@ -198,6 +198,27 @@ describe("UpdateChecker", () => {
     expect(mocks.toastDismiss).toHaveBeenCalledWith("update-available");
   });
 
+  it("native menu check reopens a dismissed update toast for the same version", async () => {
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const toastUi = renderToastById("update-available");
+    fireEvent.click(toastUi.getByTestId("update-later-button"));
+    mocks.toastLoading.mockClear();
+
+    eventListeners.get("ralphx://check-for-updates")?.({ payload: undefined });
+
+    expect(mocks.toastLoading).toHaveBeenCalledWith(
+      "Checking for updates...",
+      expect.objectContaining({ id: "update-check-result" }),
+    );
+
+    await flushAsyncWork();
+
+    expect(mocks.toastDismiss).toHaveBeenCalledWith("update-check-result");
+    expect(toastCallsById("update-available")).toHaveLength(2);
+  });
+
   it("Update Now triggers downloadAndInstall, progress events, success toast and relaunch", async () => {
     const downloadAndInstall = vi.fn().mockImplementation(async (cb) => {
       cb({ event: "Started", data: { contentLength: 100 } });
@@ -282,6 +303,12 @@ describe("UpdateChecker", () => {
     render(<UpdateChecker />);
 
     eventListeners.get("ralphx://check-for-updates")?.({ payload: undefined });
+
+    expect(mocks.toastLoading).toHaveBeenCalledWith(
+      "Checking for updates...",
+      expect.objectContaining({ id: "update-check-result" }),
+    );
+
     await flushAsyncWork();
 
     expect(mocks.check).toHaveBeenCalledTimes(1);
@@ -296,6 +323,12 @@ describe("UpdateChecker", () => {
     render(<UpdateChecker />);
 
     eventListeners.get("ralphx://check-for-updates")?.({ payload: undefined });
+
+    expect(mocks.toastLoading).toHaveBeenCalledWith(
+      "Checking for updates...",
+      expect.objectContaining({ id: "update-check-result" }),
+    );
+
     await flushAsyncWork();
 
     expect(mocks.toastError).toHaveBeenCalledWith(
