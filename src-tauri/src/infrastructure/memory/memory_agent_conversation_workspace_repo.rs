@@ -228,6 +228,32 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(())
     }
 
+    async fn update_auto_publish_preferences(
+        &self,
+        conversation_id: &ChatConversationId,
+        auto_publish_enabled: bool,
+        paused_pr_autofix_enabled: Option<bool>,
+        paused_pr_auto_merge_desired: Option<bool>,
+        pr_autofix_enabled: bool,
+        pr_auto_merge_desired: bool,
+        pr_supervision_status: Option<&str>,
+        pr_supervision_summary: Option<&str>,
+    ) -> AppResult<()> {
+        if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            workspace.auto_publish_enabled = auto_publish_enabled;
+            workspace.auto_publish_paused_pr_autofix_enabled = paused_pr_autofix_enabled;
+            workspace.auto_publish_paused_pr_auto_merge_desired = paused_pr_auto_merge_desired;
+            workspace.pr_autofix_enabled = pr_autofix_enabled;
+            workspace.pr_auto_merge_desired = pr_auto_merge_desired;
+            workspace.pr_supervision_status = pr_supervision_status.map(str::to_string);
+            workspace.pr_supervision_summary = pr_supervision_summary.map(str::to_string);
+            let now = Utc::now();
+            workspace.pr_supervision_updated_at = Some(now);
+            workspace.updated_at = now;
+        }
+        Ok(())
+    }
+
     async fn update_status(
         &self,
         conversation_id: &ChatConversationId,
@@ -458,6 +484,7 @@ fn is_active_direct_published_workspace(workspace: &AgentConversationWorkspace) 
         && workspace.mode == AgentConversationWorkspaceMode::Edit
         && workspace.linked_plan_branch_id.is_none()
         && workspace.publication_pr_number.is_some()
+        && workspace.auto_publish_enabled
         && workspace.has_pr_status_pollable_push_status()
         && !workspace.has_terminal_publication_pr_status()
 }
@@ -498,6 +525,7 @@ fn is_active_direct_pr_supervision_recovery_candidate(
         && workspace.publication_pr_number.is_some()
         && workspace.publication_push_status.as_deref() == Some("failed")
         && workspace.pr_supervision_status.as_deref() == Some("blocked")
+        && workspace.auto_publish_enabled
         && (workspace.pr_autofix_enabled || workspace.pr_auto_merge_desired)
         && !matches!(
             workspace.publication_pr_status.as_deref(),

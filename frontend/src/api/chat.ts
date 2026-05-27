@@ -1494,6 +1494,7 @@ export const chatApi = {
   updateAgentConversationWorkspaceFromBase,
   precomputeAgentConversationWorkspacePrDescription,
   publishAgentConversationWorkspace,
+  setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
   closeAgentWorkspacePr,
   getAgentRunStatus,
@@ -1599,6 +1600,9 @@ export interface AgentConversationWorkspace {
   publicationPrUrl: string | null;
   publicationPrStatus: string | null;
   publicationPushStatus: string | null;
+  autoPublishEnabled?: boolean;
+  autoPublishPausedPrAutofixEnabled?: boolean | null;
+  autoPublishPausedPrAutoMergeDesired?: boolean | null;
   prAutofixEnabled?: boolean;
   prAutoMergeDesired?: boolean;
   prAutoMergeMethod?: string;
@@ -1721,6 +1725,10 @@ export interface SetAgentConversationWorkspacePrSupervisionInput {
   autoMergeMethod?: string | null;
 }
 
+export interface SetAgentConversationWorkspaceAutoPublishInput {
+  autoPublishEnabled: boolean;
+}
+
 const SendAgentMessageResponseSchema = z.object({
   conversation_id: z.string(),
   agent_run_id: z.string(),
@@ -1763,6 +1771,9 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   publication_pr_url: z.string().nullable(),
   publication_pr_status: z.string().nullable(),
   publication_push_status: z.string().nullable(),
+  auto_publish_enabled: z.boolean().optional().default(true),
+  auto_publish_paused_pr_autofix_enabled: z.boolean().nullable().optional().default(null),
+  auto_publish_paused_pr_auto_merge_desired: z.boolean().nullable().optional().default(null),
   pr_autofix_enabled: z.boolean().optional().default(false),
   pr_auto_merge_desired: z.boolean().optional().default(false),
   pr_auto_merge_method: z.string().optional().default("squash"),
@@ -1956,6 +1967,9 @@ function transformAgentConversationWorkspace(
     publicationPrUrl: raw.publication_pr_url,
     publicationPrStatus: raw.publication_pr_status,
     publicationPushStatus: raw.publication_push_status,
+    autoPublishEnabled: raw.auto_publish_enabled,
+    autoPublishPausedPrAutofixEnabled: raw.auto_publish_paused_pr_autofix_enabled,
+    autoPublishPausedPrAutoMergeDesired: raw.auto_publish_paused_pr_auto_merge_desired,
     prAutofixEnabled: raw.pr_autofix_enabled,
     prAutoMergeDesired: raw.pr_auto_merge_desired,
     prAutoMergeMethod: raw.pr_auto_merge_method,
@@ -2258,6 +2272,23 @@ export async function setAgentConversationWorkspacePrSupervision(
         autoFixEnabled: input.autoFixEnabled,
         autoMergeDesired: input.autoMergeDesired,
         ...(input.autoMergeMethod ? { autoMergeMethod: input.autoMergeMethod } : {}),
+      },
+    },
+    AgentConversationWorkspaceResponseSchema
+  );
+  return transformAgentConversationWorkspace(raw);
+}
+
+export async function setAgentConversationWorkspaceAutoPublish(
+  conversationId: string,
+  input: SetAgentConversationWorkspaceAutoPublishInput
+): Promise<AgentConversationWorkspace> {
+  const raw = await typedInvoke(
+    "set_agent_conversation_workspace_auto_publish",
+    {
+      conversationId,
+      input: {
+        autoPublishEnabled: input.autoPublishEnabled,
       },
     },
     AgentConversationWorkspaceResponseSchema
