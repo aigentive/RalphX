@@ -34,6 +34,7 @@ interface ReleaseNotesView {
 interface ReleaseDialogState {
   open: boolean;
   version?: string | undefined;
+  body?: string | null | undefined;
   context?: "current" | "update" | undefined;
 }
 
@@ -69,7 +70,12 @@ export function UpdateChecker() {
         pendingWhatsNew.current = null;
         clearVisibleWhatsNew(notes.version);
       }
-      setDialogState({ open: true, version: notes.version, context: notes.context });
+      setDialogState({
+        open: true,
+        version: notes.version,
+        body: notes.body,
+        context: notes.context,
+      });
     },
     [clearVisibleWhatsNew],
   );
@@ -260,6 +266,7 @@ export function UpdateChecker() {
       open={dialogState.open}
       onClose={() => setDialogState({ open: false })}
       initialVersion={dialogState.version}
+      initialBody={dialogState.body}
       initialContext={dialogState.context}
       onRequestUpdate={handleUpdateFromDialog}
     />
