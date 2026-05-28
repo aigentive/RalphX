@@ -433,6 +433,9 @@ fn pr_supervision_recovery_base_skip_reason(
     if workspace.has_terminal_publication_pr_status() {
         return Some("workspace_terminal");
     }
+    if !workspace.auto_publish_enabled {
+        return Some("auto_publish_disabled");
+    }
     if !workspace.pr_autofix_enabled && !workspace.pr_auto_merge_desired {
         return Some("pr_supervision_disabled");
     }

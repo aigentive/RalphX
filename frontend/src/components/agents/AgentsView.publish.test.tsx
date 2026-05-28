@@ -832,7 +832,10 @@ describe("AgentsView publish", () => {
     await waitFor(() => expect(getAgentConversationWorkspaceMock).toHaveBeenCalledTimes(3));
     expect(sendAgentMessageMock).not.toHaveBeenCalled();
     expect(toastErrorMock).toHaveBeenCalledWith(
-      "Publish failed. Sent the error to the agent to fix."
+      "Publish failed. Sent the error to the agent to fix.",
+      {
+        id: "agent-workspace-operation:conversation-1:publish",
+      },
     );
   });
 
@@ -857,8 +860,11 @@ describe("AgentsView publish", () => {
 
     await waitFor(() =>
       expect(toastErrorMock).toHaveBeenCalledWith(
-        "GitHub integration is not available"
-      )
+        "GitHub integration is not available",
+        {
+          id: "agent-workspace-operation:conversation-1:publish",
+        },
+      ),
     );
     expect(sendAgentMessageMock).not.toHaveBeenCalled();
   });
