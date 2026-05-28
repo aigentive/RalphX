@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 
 import { chatApi } from "@/api/chat";
-import { useChatStore } from "@/stores/chatStore";
+import { type AgentStatus, useChatStore } from "@/stores/chatStore";
 
 import {
   getAgentConversationStoreKey,
@@ -9,6 +9,36 @@ import {
 } from "./agentConversations";
 
 const AGENT_SIDEBAR_LIVENESS_POLL_MS = 5_000;
+
+type SidebarRunningState =
+  | boolean
+  | {
+      isRunning?: boolean;
+      is_running?: boolean;
+      agentStatus?: AgentStatus;
+      agent_status?: AgentStatus;
+    };
+
+function normalizeRunningState(state: SidebarRunningState | undefined): {
+  isRunning: boolean;
+  agentStatus: AgentStatus;
+} {
+  if (typeof state === "boolean") {
+    return {
+      isRunning: state,
+      agentStatus: state ? "generating" : "idle",
+    };
+  }
+
+  const isRunning = state?.isRunning ?? state?.is_running ?? false;
+  const agentStatus = state?.agentStatus ?? state?.agent_status ?? "generating";
+  return {
+    isRunning,
+    agentStatus: isRunning
+      ? (agentStatus === "idle" ? "generating" : agentStatus)
+      : "idle",
+  };
+}
 
 export function useAgentSidebarRunningStates(
   conversations: AgentConversation[],
@@ -50,13 +80,15 @@ export function useAgentSidebarRunningStates(
           const chatState = useChatStore.getState();
           for (const conversation of projectConversations) {
             const storeKey = getAgentConversationStoreKey(conversation);
-            const isRunning = runningStates[conversation.id] === true;
+            const { isRunning, agentStatus } = normalizeRunningState(
+              runningStates[conversation.id] as SidebarRunningState | undefined
+            );
             const currentStatus = chatState.agentStatus[storeKey] ?? "idle";
 
             if (isRunning) {
               chatState.setActiveConversation(storeKey, conversation.id);
-              if (currentStatus === "idle") {
-                chatState.setAgentRunning(storeKey, true);
+              if (currentStatus !== agentStatus) {
+                chatState.setAgentStatus(storeKey, agentStatus);
               }
               continue;
             }

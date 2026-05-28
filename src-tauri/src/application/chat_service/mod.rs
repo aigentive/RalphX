@@ -176,6 +176,43 @@ impl RegistryCleanupCaller {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRuntimeStatus {
+    Idle,
+    Generating,
+    WaitingForInput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct AgentRunningState {
+    pub is_running: bool,
+    pub agent_status: AgentRuntimeStatus,
+}
+
+impl AgentRunningState {
+    fn idle() -> Self {
+        Self {
+            is_running: false,
+            agent_status: AgentRuntimeStatus::Idle,
+        }
+    }
+
+    fn generating() -> Self {
+        Self {
+            is_running: true,
+            agent_status: AgentRuntimeStatus::Generating,
+        }
+    }
+
+    fn waiting_for_input() -> Self {
+        Self {
+            is_running: true,
+            agent_status: AgentRuntimeStatus::WaitingForInput,
+        }
+    }
+}
+
 fn registry_entry_blocks_send_but_is_stale(
     info: &RunningAgentInfo,
     now: chrono::DateTime<chrono::Utc>,
@@ -667,7 +704,7 @@ pub trait ChatService: Send + Sync {
         &self,
         context_type: ChatContextType,
         context_ids: &[String],
-    ) -> HashMap<String, bool>;
+    ) -> HashMap<String, AgentRunningState>;
 
     /// Override team mode at runtime (interior mutability).
     /// Default is a no-op; AppChatService uses AtomicBool.
@@ -2549,6 +2586,22 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         ))
                         .await;
                     let interactive_run_id = interactive_continuation_run_id(active_agent.as_ref());
+                    if let Err(error) = self
+                        .agent_run_repo
+                        .update_status(
+                            &AgentRunId::from_string(&interactive_run_id),
+                            AgentRunStatus::Running,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            %context_type,
+                            context_id,
+                            agent_run_id = %interactive_run_id,
+                            error = %error,
+                            "Failed to mark interactive continuation run active"
+                        );
+                    }
                     let process_metadata = ipr_ref.get_metadata(&interactive_key).await;
                     let (provider_harness, provider_session_id) =
                         interactive_run_started_provider_session(
@@ -4140,14 +4193,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         &self,
         context_type: ChatContextType,
         context_ids: &[String],
-    ) -> HashMap<String, bool> {
+    ) -> HashMap<String, AgentRunningState> {
         let requested_ids: HashSet<String> = context_ids
             .iter()
             .filter(|id| !id.is_empty())
             .cloned()
             .collect();
-        let mut states: HashMap<String, bool> =
-            requested_ids.iter().map(|id| (id.clone(), false)).collect();
+        let mut states: HashMap<String, AgentRunningState> = requested_ids
+            .iter()
+            .map(|id| (id.clone(), AgentRunningState::idle()))
+            .collect();
 
         if requested_ids.is_empty() {
             return states;
@@ -4170,6 +4225,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             }
         };
 
+        let mut live_entries = Vec::new();
         for (key, info) in entries {
             if !requested_ids.contains(&key.context_id) {
                 continue;
@@ -4186,21 +4242,75 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     RegistryCleanupCaller::ReadOnly,
                 )
                 .await;
-            let cleaned_inactive = if cleaned_stale {
-                false
+
+            if cleaned_stale {
+                states.insert(context_id, AgentRunningState::idle());
+                continue;
+            }
+
+            live_entries.push((key, info, context_id));
+        }
+
+        let run_ids: HashSet<AgentRunId> = live_entries
+            .iter()
+            .filter_map(|(_, info, _)| {
+                if info.agent_run_id.is_empty() {
+                    None
+                } else {
+                    Some(AgentRunId::from_string(&info.agent_run_id))
+                }
+            })
+            .collect();
+        let run_id_list: Vec<AgentRunId> = run_ids.iter().copied().collect();
+        let run_statuses: HashMap<String, AgentRunStatus> = match self
+            .agent_run_repo
+            .get_by_ids(&run_id_list)
+            .await
+        {
+            Ok(runs) => runs
+                .into_iter()
+                .map(|run| (run.id.as_str(), run.status))
+                .collect(),
+            Err(error) => {
+                tracing::warn!(
+                    %context_type,
+                    error = %error,
+                    "Failed to bulk-load agent runs for running-state hydration"
+                );
+                HashMap::new()
+            }
+        };
+
+        for (key, info, context_id) in live_entries {
+            let run_status = run_statuses.get(&info.agent_run_id).copied();
+            let should_cleanup_inactive = registry_entry_blocks_send_because_run_inactive(
+                &info,
+                run_status,
+                chrono::Utc::now(),
+                RegistryCleanupCaller::ReadOnly,
+            );
+            let cleaned_inactive = should_cleanup_inactive
+                && self
+                    .cleanup_inactive_registry_block(
+                        &key,
+                        &info,
+                        context_type,
+                        &context_id,
+                        "get_agent_running_states",
+                        RegistryCleanupCaller::ReadOnly,
+                    )
+                    .await;
+
+            let state = if cleaned_inactive {
+                AgentRunningState::idle()
             } else {
-                self.cleanup_inactive_registry_block(
-                    &key,
-                    &info,
-                    context_type,
-                    &context_id,
-                    "get_agent_running_states",
-                    RegistryCleanupCaller::ReadOnly,
-                )
-                .await
+                match run_status {
+                    Some(AgentRunStatus::Running) | None => AgentRunningState::generating(),
+                    Some(_) => AgentRunningState::waiting_for_input(),
+                }
             };
 
-            states.insert(context_id, !(cleaned_stale || cleaned_inactive));
+            states.insert(context_id, state);
         }
 
         states
@@ -5000,10 +5110,13 @@ mod agent_workspace_send_tests {
 
 #[cfg(test)]
 mod bulk_running_state_tests {
-    use super::{ChatContextType, ChatService};
+    use super::{AgentRuntimeStatus, ChatContextType, ChatService};
     use crate::application::AppState;
     use crate::commands::ExecutionState;
-    use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey};
+    use crate::domain::entities::{AgentRun, ChatConversationId};
+    use crate::domain::services::{
+        MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry,
+    };
     use std::sync::Arc;
 
     #[tokio::test]
@@ -5032,11 +5145,56 @@ mod bulk_running_state_tests {
             .get_agent_running_states(ChatContextType::Project, &requested_ids)
             .await;
 
-        assert_eq!(states.get("conv-running"), Some(&true));
-        assert_eq!(states.get("conv-idle"), Some(&false));
+        assert_eq!(
+            states.get("conv-running").map(|state| state.is_running),
+            Some(true)
+        );
+        assert_eq!(
+            states.get("conv-running").map(|state| state.agent_status),
+            Some(AgentRuntimeStatus::Generating)
+        );
+        assert_eq!(
+            states.get("conv-idle").map(|state| state.is_running),
+            Some(false)
+        );
+        assert_eq!(
+            states.get("conv-idle").map(|state| state.agent_status),
+            Some(AgentRuntimeStatus::Idle)
+        );
         assert_eq!(states.get("conv-unrequested"), None);
         assert_eq!(states.get(""), None);
         assert_eq!(states.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn app_service_bulk_running_states_reports_retained_completed_process_as_waiting() {
+        let registry = Arc::new(MemoryRunningAgentRegistry::new());
+        let app_state = AppState::new_sqlite_test_with_registry(Arc::clone(&registry));
+        let conversation_id = ChatConversationId::from_string("conv-waiting");
+        let mut run = AgentRun::new(conversation_id);
+        let run_id = run.id;
+        run.complete();
+        app_state.agent_run_repo.create(run).await.unwrap();
+        registry
+            .register(
+                RunningAgentKey::new("project", "conv-waiting"),
+                std::process::id(),
+                "conv-waiting".to_string(),
+                run_id.as_str().to_string(),
+                None,
+                None,
+            )
+            .await;
+        let service =
+            app_state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+        let states = service
+            .get_agent_running_states(ChatContextType::Project, &["conv-waiting".to_string()])
+            .await;
+
+        let state = states.get("conv-waiting").expect("state for requested id");
+        assert!(state.is_running);
+        assert_eq!(state.agent_status, AgentRuntimeStatus::WaitingForInput);
     }
 
     #[tokio::test]

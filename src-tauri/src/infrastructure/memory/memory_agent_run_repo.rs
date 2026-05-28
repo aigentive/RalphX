@@ -1,7 +1,7 @@
 // In-memory implementation of AgentRunRepository for testing
 
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 
 use crate::domain::entities::{
@@ -42,6 +42,16 @@ impl AgentRunRepository for MemoryAgentRunRepository {
     async fn get_by_id(&self, id: &AgentRunId) -> AppResult<Option<AgentRun>> {
         let runs = self.runs.read().await;
         Ok(runs.get(id).cloned())
+    }
+
+    async fn get_by_ids(&self, ids: &[AgentRunId]) -> AppResult<Vec<AgentRun>> {
+        let requested: HashSet<AgentRunId> = ids.iter().copied().collect();
+        let runs = self.runs.read().await;
+        Ok(runs
+            .values()
+            .filter(|run| requested.contains(&run.id))
+            .cloned()
+            .collect())
     }
 
     async fn get_latest_for_conversation(
@@ -86,6 +96,10 @@ impl AgentRunRepository for MemoryAgentRunRepository {
         let mut runs = self.runs.write().await;
         if let Some(run) = runs.get_mut(id) {
             run.status = status;
+            if status == AgentRunStatus::Running {
+                run.completed_at = None;
+                run.error_message = None;
+            }
         }
         Ok(())
     }
