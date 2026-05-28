@@ -123,6 +123,50 @@ describe("AgentComposerSurface", () => {
     expect(screen.getByTestId("agent-composer-submit")).toHaveClass("ml-auto");
   });
 
+  it("bounds the runtime selector popover to the available viewport height", () => {
+    renderComposer({
+      provider: {
+        value: "codex",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "codex", label: "Codex" },
+          { id: "claude", label: "Claude" },
+        ],
+      },
+      model: {
+        value: "gpt-5.5",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "gpt-5.5", label: "gpt-5.5", description: "Frontier model." },
+          { id: "gpt-5.4", label: "gpt-5.4", description: "Everyday model." },
+          { id: "gpt-5.4-mini", label: "gpt-5.4-mini", description: "Small model." },
+          { id: "gpt-5.3-codex", label: "gpt-5.3-codex", description: "Coding model." },
+        ],
+      },
+      effort: {
+        value: "xhigh",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "low", label: "Low", description: "Fastest responses." },
+          { id: "medium", label: "Medium", description: "Balanced reasoning." },
+          { id: "high", label: "High", description: "Greater reasoning depth." },
+          { id: "xhigh", label: "Extra High", description: "Extended reasoning." },
+        ],
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+
+    const popover = screen.getByTestId("agent-composer-runtime-popover");
+    expect(popover.getAttribute("style")).toContain(
+      "--radix-popover-content-available-height"
+    );
+    expect(screen.getByTestId("agent-composer-runtime-popover-scroll")).toHaveClass(
+      "overflow-y-auto",
+      "overscroll-contain"
+    );
+  });
+
   it("keeps Send as the primary action while the agent is waiting for input", () => {
     const onStop = vi.fn();
     renderComposer({

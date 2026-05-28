@@ -1789,6 +1789,8 @@ const EFFORT_BAR_COLORS: Record<string, string> = {
 };
 
 const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"] as const;
+const RUNTIME_POPOVER_MAX_HEIGHT =
+  "min(var(--radix-popover-content-available-height, calc(100vh - 1rem)), calc(100vh - 1rem))";
 
 function EffortBars({
   effortId,
@@ -1905,20 +1907,23 @@ function ComposerRuntimePill({
         side="top"
         align="start"
         sideOffset={6}
+        collisionPadding={8}
         onOpenAutoFocus={(e) => e.preventDefault()}
+        data-testid="agent-composer-runtime-popover"
         className={cn(
           "overflow-hidden rounded-xl p-0",
           hasMultipleProviders ? "w-[21rem]" : "w-72"
         )}
         style={{
+          maxHeight: RUNTIME_POPOVER_MAX_HEIGHT,
           backgroundColor: "var(--bg-elevated)",
           borderColor: "var(--border-subtle)",
         }}
       >
-        <div className="flex">
+        <div className="flex min-h-0" style={{ maxHeight: "inherit" }}>
           {hasMultipleProviders && (
             <div
-              className="flex w-12 shrink-0 flex-col gap-1 border-r p-1"
+              className="flex max-h-[inherit] w-12 shrink-0 flex-col gap-1 overflow-y-auto border-r p-1"
               style={{
                 borderColor: "var(--border-subtle)",
                 backgroundColor: "color-mix(in srgb, var(--bg-base) 30%, var(--bg-elevated) 70%)",
@@ -1980,7 +1985,10 @@ function ComposerRuntimePill({
               )}
             </div>
           )}
-          <div className="min-w-0 flex-1 p-1.5">
+          <div
+            data-testid="agent-composer-runtime-popover-scroll"
+            className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain p-1.5"
+          >
             {!hasMultipleProviders && (
               <>
                 <ComposerOptionList
