@@ -222,8 +222,8 @@ describe("mockGetAgentRunningStates", () => {
     await expect(
       mockGetAgentRunningStates("project", ["conv-1", "conv-2"])
     ).resolves.toEqual({
-      "conv-1": false,
-      "conv-2": false,
+      "conv-1": { isRunning: false, agentStatus: "idle" },
+      "conv-2": { isRunning: false, agentStatus: "idle" },
     });
   });
 });

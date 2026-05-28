@@ -62,8 +62,8 @@ describe("useAgentSidebarRunningStates", () => {
     const runningConversation = conversation("conv-running");
     const idleConversation = conversation("conv-idle");
     mockGetAgentRunningStates.mockResolvedValueOnce({
-      "conv-running": true,
-      "conv-idle": false,
+      "conv-running": { isRunning: true, agentStatus: "generating" },
+      "conv-idle": { isRunning: false, agentStatus: "idle" },
     });
 
     renderHook(() =>
@@ -88,11 +88,31 @@ describe("useAgentSidebarRunningStates", () => {
     expect(state.agentStatus[idleStoreKey]).toBeUndefined();
   });
 
+  it("rehydrates retained idle sidebar rows as waiting for input", async () => {
+    const waitingConversation = conversation("conv-waiting");
+    mockGetAgentRunningStates.mockResolvedValueOnce({
+      "conv-waiting": { isRunning: true, agentStatus: "waiting_for_input" },
+    });
+
+    renderHook(() =>
+      useAgentSidebarRunningStates([waitingConversation], true)
+    );
+
+    await act(async () => {});
+
+    const waitingStoreKey = getAgentConversationStoreKey(waitingConversation);
+    const state = useChatStore.getState();
+    expect(state.agentStatus[waitingStoreKey]).toBe("waiting_for_input");
+    expect(state.activeConversationIds[waitingStoreKey]).toBe("conv-waiting");
+  });
+
   it("clears stale sidebar status when bulk state says not running", async () => {
     const staleConversation = conversation("conv-stale");
     const storeKey = getAgentConversationStoreKey(staleConversation);
     useChatStore.getState().setAgentRunning(storeKey, true);
-    mockGetAgentRunningStates.mockResolvedValueOnce({ "conv-stale": false });
+    mockGetAgentRunningStates.mockResolvedValueOnce({
+      "conv-stale": { isRunning: false, agentStatus: "idle" },
+    });
 
     renderHook(() =>
       useAgentSidebarRunningStates([staleConversation], true)
@@ -139,7 +159,9 @@ describe("useAgentSidebarRunningStates", () => {
   });
 
   it("does not start a second poll while a previous poll is in flight", async () => {
-    let resolvePoll!: (states: Record<string, boolean>) => void;
+    let resolvePoll!: (
+      states: Record<string, { isRunning: boolean; agentStatus: string }>
+    ) => void;
     mockGetAgentRunningStates.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -158,7 +180,9 @@ describe("useAgentSidebarRunningStates", () => {
     expect(mockGetAgentRunningStates).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      resolvePoll({ "conv-pending": false });
+      resolvePoll({
+        "conv-pending": { isRunning: false, agentStatus: "idle" },
+      });
     });
 
     await act(async () => {
