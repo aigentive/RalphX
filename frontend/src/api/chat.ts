@@ -2552,14 +2552,53 @@ export async function isAgentRunning(
 /**
  * Bulk-check whether agents are currently running for multiple context IDs.
  */
+const AgentRuntimeStatusSchema = z.enum([
+  "idle",
+  "generating",
+  "waiting_for_input",
+]);
+
+export type AgentRuntimeStatus = z.infer<typeof AgentRuntimeStatusSchema>;
+
+export interface AgentRunningState {
+  isRunning: boolean;
+  agentStatus: AgentRuntimeStatus;
+}
+
+const AgentRunningStateSchema = z.union([
+  z.boolean().transform((isRunning): AgentRunningState => ({
+    isRunning,
+    agentStatus: isRunning ? "generating" : "idle",
+  })),
+  z
+    .object({
+      is_running: z.boolean().optional(),
+      isRunning: z.boolean().optional(),
+      agent_status: AgentRuntimeStatusSchema.optional(),
+      agentStatus: AgentRuntimeStatusSchema.optional(),
+    })
+    .transform((state): AgentRunningState => {
+      const isRunning = state.is_running ?? state.isRunning ?? false;
+      const agentStatus = state.agent_status ?? state.agentStatus ?? (
+        isRunning ? "generating" : "idle"
+      );
+      return {
+        isRunning,
+        agentStatus: isRunning
+          ? (agentStatus === "idle" ? "generating" : agentStatus)
+          : "idle",
+      };
+    }),
+]);
+
 export async function getAgentRunningStates(
   contextType: ContextType,
   contextIds: string[]
-): Promise<Record<string, boolean>> {
+): Promise<Record<string, AgentRunningState>> {
   return typedInvoke(
     "get_agent_running_states",
     { contextType, contextIds },
-    z.record(z.string(), z.boolean())
+    z.record(z.string(), AgentRunningStateSchema)
   );
 }
 

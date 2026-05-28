@@ -304,7 +304,9 @@ describe("AgentsView publish", () => {
     const activeConversation = conversation({ agentMode: "edit" });
     mockAgentViewData(activeConversation);
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
-    getAgentRunningStatesMock.mockResolvedValue({ [activeConversation.id]: true });
+    getAgentRunningStatesMock.mockResolvedValue({
+      [activeConversation.id]: { isRunning: true, agentStatus: "generating" },
+    });
     listAgentTasksMock.mockResolvedValue([
       {
         taskId: "task-1",

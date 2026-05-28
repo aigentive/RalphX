@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
-use rusqlite::Connection;
+use rusqlite::{params_from_iter, Connection};
 
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 /// Parse datetime string handling both RFC3339 and SQLite's CURRENT_TIMESTAMP formats
@@ -158,6 +158,35 @@ impl AgentRunRepository for SqliteAgentRunRepository {
             .await
     }
 
+    async fn get_by_ids(&self, ids: &[AgentRunId]) -> AppResult<Vec<AgentRun>> {
+        let ids: Vec<String> = ids.iter().map(|id| id.as_str().to_string()).collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.db
+            .run(move |conn| {
+                let placeholders = std::iter::repeat("?")
+                    .take(ids.len())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "SELECT id, conversation_id, status, started_at, completed_at, error_message,
+                            harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
+                            logical_effort, effective_effort, input_tokens, output_tokens,
+                            cache_creation_tokens, cache_read_tokens, estimated_usd,
+                            approval_policy, sandbox_mode, run_chain_id, parent_run_id
+                     FROM agent_runs WHERE id IN ({placeholders})"
+                );
+                let mut stmt = conn.prepare(&sql)?;
+                let runs = stmt
+                    .query_map(params_from_iter(ids.iter()), |row| row_to_agent_run(row))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(runs)
+            })
+            .await
+    }
+
     async fn get_latest_for_conversation(
         &self,
         conversation_id: &ChatConversationId,
@@ -229,7 +258,11 @@ impl AgentRunRepository for SqliteAgentRunRepository {
         self.db
             .run(move |conn| {
                 conn.execute(
-                    "UPDATE agent_runs SET status = ?1 WHERE id = ?2",
+                    "UPDATE agent_runs
+                     SET status = ?1,
+                         completed_at = CASE WHEN ?1 = 'running' THEN NULL ELSE completed_at END,
+                         error_message = CASE WHEN ?1 = 'running' THEN NULL ELSE error_message END
+                     WHERE id = ?2",
                     rusqlite::params![status_str, id],
                 )?;
                 Ok(())

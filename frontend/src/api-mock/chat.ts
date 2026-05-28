@@ -1092,8 +1092,13 @@ export async function mockIsAgentRunning(
 export async function mockGetAgentRunningStates(
   _contextType: ContextType,
   contextIds: string[]
-): Promise<Record<string, boolean>> {
-  return Object.fromEntries(contextIds.map((contextId) => [contextId, false]));
+): Promise<Record<string, { isRunning: boolean; agentStatus: "idle" }>> {
+  return Object.fromEntries(
+    contextIds.map((contextId) => [
+      contextId,
+      { isRunning: false, agentStatus: "idle" },
+    ])
+  );
 }
 
 export async function mockGetBulkWorkspacePublicationStates(

@@ -2444,6 +2444,28 @@ describe("AgentsSidebar", () => {
     expect(screen.getByText("running")).toBeInTheDocument();
   });
 
+  it("renders an awaiting input runtime label for a retained idle conversation", () => {
+    const conv = conversation({ id: "conversation-waiting", title: "Waiting run" });
+    const storeKey = getAgentConversationStoreKey(conv);
+    conversationsByProject.set("project-1", {
+      data: [conv],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useChatStore.setState({
+      activeConversationIds: { [storeKey]: conv.id },
+      agentStatus: { [storeKey]: "waiting_for_input" },
+    });
+
+    renderSidebar();
+
+    expect(screen.getByText("awaiting input")).toBeInTheDocument();
+    expect(screen.queryByText("running")).not.toBeInTheDocument();
+  });
+
   it("orders backend-returned pinned conversations before unpinned rows", () => {
     const loaded = conversation({ id: "conversation-loaded", title: "Loaded" });
     const pinned = conversation({ id: "conversation-pinned", title: "Pinned run" });

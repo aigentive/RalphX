@@ -475,7 +475,9 @@ describe("AgentsView performance", () => {
       selectedProjectId: "project-1",
       selectedConversationId: "conversation-1",
     });
-    getAgentRunningStatesMock.mockResolvedValue({ "conversation-1": true });
+    getAgentRunningStatesMock.mockResolvedValue({
+      "conversation-1": { isRunning: true, agentStatus: "generating" },
+    });
     useChatStore
       .getState()
       .setAgentStatus("project:conversation-1", "generating");
