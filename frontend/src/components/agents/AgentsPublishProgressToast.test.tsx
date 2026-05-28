@@ -34,6 +34,7 @@ describe("AgentsPublishProgressToast", () => {
     const { rerender } = render(
       <AgentsPublishProgressToast
         active
+        conversationTitle="Checkout flow fix"
         conversationId="conversation-1"
         startedAtMs={10_000}
         status={null}
@@ -41,8 +42,9 @@ describe("AgentsPublishProgressToast", () => {
     );
 
     expect(toastLoadingMock).toHaveBeenLastCalledWith(
-      "Publishing workspace - Check workspace - 0s",
+      "Publishing workspace",
       {
+        description: "Checkout flow fix • Check workspace • 0s",
         duration: Infinity,
         id: "agent-workspace-operation:conversation-1:publish",
       },
@@ -52,6 +54,7 @@ describe("AgentsPublishProgressToast", () => {
     rerender(
       <AgentsPublishProgressToast
         active
+        conversationTitle="Checkout flow fix"
         conversationId="conversation-1"
         startedAtMs={10_000}
         status="pushing"
@@ -59,8 +62,9 @@ describe("AgentsPublishProgressToast", () => {
     );
 
     expect(toastLoadingMock).toHaveBeenLastCalledWith(
-      "Publishing workspace - Push branch - 2s",
+      "Publishing workspace",
       {
+        description: "Checkout flow fix • Push branch • 2s",
         duration: Infinity,
         id: "agent-workspace-operation:conversation-1:publish",
       },
@@ -71,6 +75,7 @@ describe("AgentsPublishProgressToast", () => {
     rerender(
       <AgentsPublishProgressToast
         active={false}
+        conversationTitle="Checkout flow fix"
         conversationId="conversation-1"
         startedAtMs={10_000}
         status="pushing"

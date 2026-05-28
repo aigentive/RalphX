@@ -20,6 +20,7 @@ const {
   getWorkspaceCommitChangesMock,
   getWorkspaceCommitDiffMock,
   getWorkspacePrAnnotationsMock,
+  getConversationWorkspaceMock,
   listPublicationEventsMock,
   getWorkspaceFreshnessMock,
   updateWorkspaceFromBaseMock,
@@ -42,6 +43,7 @@ const {
   resumeDeferredGitStartupMock,
   openUrlMock,
   toastErrorMock,
+  toastInfoMock,
   toastLoadingMock,
   toastSuccessMock,
 } = vi.hoisted(() => ({
@@ -52,6 +54,7 @@ const {
   getWorkspaceCommitChangesMock: vi.fn(),
   getWorkspaceCommitDiffMock: vi.fn(),
   getWorkspacePrAnnotationsMock: vi.fn(),
+  getConversationWorkspaceMock: vi.fn(),
   listPublicationEventsMock: vi.fn(),
   getWorkspaceFreshnessMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
@@ -74,6 +77,7 @@ const {
   resumeDeferredGitStartupMock: vi.fn(),
   openUrlMock: vi.fn(),
   toastErrorMock: vi.fn(),
+  toastInfoMock: vi.fn(),
   toastLoadingMock: vi.fn(),
   toastSuccessMock: vi.fn(),
 }));
@@ -84,6 +88,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
     ...actual,
     chatApi: {
       ...actual.chatApi,
+      getAgentConversationWorkspace: (...args: unknown[]) =>
+        getConversationWorkspaceMock(...args),
       listAgentConversationWorkspacePublicationEvents: (...args: unknown[]) =>
         listPublicationEventsMock(...args),
       getAgentConversationWorkspaceFreshness: (...args: unknown[]) =>
@@ -237,6 +243,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 vi.mock("sonner", () => ({
   toast: {
     error: (...args: unknown[]) => toastErrorMock(...args),
+    info: (...args: unknown[]) => toastInfoMock(...args),
     loading: (...args: unknown[]) => toastLoadingMock(...args),
     success: (...args: unknown[]) => toastSuccessMock(...args),
   },
@@ -397,6 +404,7 @@ describe("AgentsArtifactPane", () => {
       annotations: [],
       sourcesUnavailable: [],
     });
+    getConversationWorkspaceMock.mockResolvedValue(null);
     listPublicationEventsMock.mockResolvedValue([]);
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -532,6 +540,7 @@ describe("AgentsArtifactPane", () => {
     });
     openUrlMock.mockResolvedValue(undefined);
     toastErrorMock.mockClear();
+    toastInfoMock.mockClear();
     toastLoadingMock.mockClear();
     toastSuccessMock.mockClear();
   });
@@ -1244,7 +1253,13 @@ describe("AgentsArtifactPane", () => {
 
   it("confirms publish from the publish pane", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
-    renderPane("publish", workspace({ mode: "edit" }), publish);
+    renderPane(
+      "publish",
+      workspace({ mode: "edit" }),
+      publish,
+      false,
+      conversation(),
+    );
 
     fireEvent.click(screen.getByTestId("agents-publish-confirm"));
 
@@ -1264,7 +1279,13 @@ describe("AgentsArtifactPane", () => {
     setWorkspacePrSupervisionMock.mockReturnValueOnce(supervisionDeferred.promise);
     const publish = vi.fn().mockResolvedValue(undefined);
 
-    renderPane("publish", workspace({ mode: "edit" }), publish);
+    renderPane(
+      "publish",
+      workspace({ mode: "edit" }),
+      publish,
+      false,
+      conversation(),
+    );
 
     await user.click(
       screen.getByRole("switch", { name: "GitHub auto-merge" }),
@@ -1296,7 +1317,13 @@ describe("AgentsArtifactPane", () => {
     const publishDeferred = deferred<void>();
     const publish = vi.fn(() => publishDeferred.promise);
 
-    renderPane("publish", workspace({ mode: "edit" }), publish);
+    renderPane(
+      "publish",
+      workspace({ mode: "edit" }),
+      publish,
+      false,
+      conversation(),
+    );
 
     fireEvent.click(screen.getByTestId("agents-publish-confirm"));
     const dialog = await screen.findByRole("dialog");
@@ -1327,8 +1354,9 @@ describe("AgentsArtifactPane", () => {
     ).toHaveTextContent("Check workspace");
     await waitFor(() =>
       expect(toastLoadingMock).toHaveBeenCalledWith(
-        expect.stringContaining("Publishing workspace - Check workspace - 0s"),
+        "Publishing workspace",
         expect.objectContaining({
+          description: "Agent conversation • Check workspace • 0s",
           duration: Infinity,
           id: "agent-workspace-operation:conversation-1:publish",
         }),
@@ -1369,7 +1397,13 @@ describe("AgentsArtifactPane", () => {
       },
     ]);
 
-    renderPane("publish", workspace({ mode: "edit" }), publish);
+    renderPane(
+      "publish",
+      workspace({ mode: "edit" }),
+      publish,
+      false,
+      conversation(),
+    );
 
     await waitFor(() => expect(listPublicationEventsMock).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByTestId("agents-publish-confirm")).toBeEnabled());
@@ -1397,8 +1431,9 @@ describe("AgentsArtifactPane", () => {
     ).toBeNull();
     await waitFor(() =>
       expect(toastLoadingMock).toHaveBeenCalledWith(
-        expect.stringContaining("Publishing workspace - Draft PR description - 0s"),
+        "Publishing workspace",
         expect.objectContaining({
+          description: "Agent conversation • Draft PR description • 0s",
           duration: Infinity,
           id: "agent-workspace-operation:conversation-1:publish",
         }),
@@ -1414,7 +1449,13 @@ describe("AgentsArtifactPane", () => {
   it("cancels the publish confirmation without starting publish", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
 
-    renderPane("publish", workspace({ mode: "edit" }), publish);
+    renderPane(
+      "publish",
+      workspace({ mode: "edit" }),
+      publish,
+      false,
+      conversation(),
+    );
 
     fireEvent.click(screen.getByTestId("agents-publish-confirm"));
     const dialog = await screen.findByRole("dialog", {
@@ -1438,7 +1479,13 @@ describe("AgentsArtifactPane", () => {
     const publishDeferred = deferred<void>();
     const publish = vi.fn(() => publishDeferred.promise);
 
-    renderPane("publish", workspace({ mode: "edit" }), publish);
+    renderPane(
+      "publish",
+      workspace({ mode: "edit" }),
+      publish,
+      false,
+      conversation(),
+    );
 
     fireEvent.click(screen.getByTestId("agents-publish-confirm"));
     fireEvent.click(
@@ -1454,7 +1501,11 @@ describe("AgentsArtifactPane", () => {
     });
 
     await waitFor(() => {
-      expect(toastErrorMock).toHaveBeenCalledWith("Publish failed", {
+      expect(toastErrorMock).toHaveBeenCalledWith("Failed to publish branch", {
+        closeButton: true,
+        description: "Agent conversation • Publish failed",
+        dismissible: true,
+        duration: 12_000,
         id: "agent-workspace-operation:conversation-1:publish",
       });
       expect(
@@ -1804,6 +1855,8 @@ describe("AgentsArtifactPane", () => {
         baseDisplayName: "Current branch (feature/deleted-base)",
       }),
       publish,
+      false,
+      conversation(),
     );
 
     expect(
@@ -1863,6 +1916,8 @@ describe("AgentsArtifactPane", () => {
         baseDisplayName: "Current branch (feature/deleted-base)",
       }),
       publish,
+      false,
+      conversation(),
     );
 
     expect(
@@ -1929,6 +1984,8 @@ describe("AgentsArtifactPane", () => {
         baseDisplayName: "Current branch (feature/deleted-base)",
       }),
       publish,
+      false,
+      conversation(),
     );
 
     await screen.findByTestId(
@@ -1956,8 +2013,9 @@ describe("AgentsArtifactPane", () => {
       ).not.toBeInTheDocument(),
     );
     expect(toastLoadingMock).toHaveBeenCalledWith(
-      expect.stringContaining("Rebasing branch - From release/0.8 - 0s"),
+      "Rebasing branch",
       expect.objectContaining({
+        description: "Agent conversation • From release/0.8 • 0s",
         duration: Infinity,
         id: "agent-workspace-operation:conversation-1:rebase",
       }),
@@ -1979,9 +2037,14 @@ describe("AgentsArtifactPane", () => {
     });
 
     await waitFor(() =>
-      expect(toastSuccessMock).toHaveBeenCalledWith("Updated from release/0.8", {
-        id: "agent-workspace-operation:conversation-1:rebase",
-      }),
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        "Updated from release/0.8",
+        {
+          description: "Agent conversation • From release/0.8",
+          duration: 8_000,
+          id: "agent-workspace-operation:conversation-1:rebase",
+        },
+      ),
     );
     expect(publish).not.toHaveBeenCalled();
   });
@@ -2079,6 +2142,9 @@ describe("AgentsArtifactPane", () => {
         baseDisplayName: "Current branch (feature/agent-screen)",
         baseCommit: "old-base",
       }),
+      vi.fn(),
+      false,
+      conversation(),
     );
 
     expect(await screen.findByTestId("agents-base-stale")).toHaveTextContent(
@@ -2122,6 +2188,9 @@ describe("AgentsArtifactPane", () => {
         baseDisplayName: "Current branch (feature/agent-screen)",
         baseCommit: "old-base",
       }),
+      vi.fn(),
+      false,
+      conversation(),
     );
 
     expect(await screen.findByTestId("agents-base-stale")).toHaveTextContent(
@@ -2143,8 +2212,9 @@ describe("AgentsArtifactPane", () => {
       expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     });
     expect(toastLoadingMock).toHaveBeenCalledWith(
-      expect.stringContaining("Updating branch - From feature/agent-screen - 0s"),
+      "Updating branch",
       expect.objectContaining({
+        description: "Agent conversation • From feature/agent-screen • 0s",
         duration: Infinity,
         id: "agent-workspace-operation:conversation-1:update-from-base",
       }),
@@ -2166,6 +2236,8 @@ describe("AgentsArtifactPane", () => {
       expect(toastSuccessMock).toHaveBeenCalledWith(
         "Updated from origin/feature/agent-screen",
         {
+          description: "Agent conversation • From feature/agent-screen",
+          duration: 8_000,
           id: "agent-workspace-operation:conversation-1:update-from-base",
         },
       ),
@@ -2198,6 +2270,9 @@ describe("AgentsArtifactPane", () => {
         baseDisplayName: "Current branch (feature/agent-screen)",
         baseCommit: "old-base",
       }),
+      vi.fn(),
+      false,
+      conversation(),
     );
 
     expect(await screen.findByTestId("agents-base-stale")).toHaveTextContent(
@@ -2216,14 +2291,92 @@ describe("AgentsArtifactPane", () => {
       expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1")
     );
     await waitFor(() =>
-      expect(toastErrorMock).toHaveBeenCalledWith("base update failed", {
-        id: "agent-workspace-operation:conversation-1:update-from-base",
-      }),
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "Failed to update from base",
+        {
+          closeButton: true,
+          description: "Agent conversation • base update failed",
+          dismissible: true,
+          duration: 12_000,
+          id: "agent-workspace-operation:conversation-1:update-from-base",
+        },
+      ),
     );
     await waitFor(() =>
       expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1", {
         scope: "full",
       })
+    );
+  });
+
+  it("shows an auto-dismissing repair toast when Update from base starts agent repair", async () => {
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/agent-screen",
+      baseDisplayName: "Current branch (feature/agent-screen)",
+      targetRef: "origin/feature/agent-screen",
+      capturedBaseCommit: "old-base",
+      targetBaseCommit: "new-base",
+      isBaseAhead: true,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+      baseStatus: "valid",
+      effectiveBaseRef: "feature/agent-screen",
+      effectiveBaseDisplayName: "Current branch (feature/agent-screen)",
+      baseBlockReason: null,
+    });
+    updateWorkspaceFromBaseMock.mockRejectedValue(new Error("Merge conflicts detected"));
+    getConversationWorkspaceMock.mockResolvedValue(
+      workspace({
+        mode: "edit",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        baseCommit: "old-base",
+        publicationPushStatus: "needs_agent",
+      }),
+    );
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        baseCommit: "old-base",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(await screen.findByTestId("agents-base-stale")).toHaveTextContent(
+      "feature/agent-screen",
+    );
+
+    fireEvent.click(screen.getByTestId("agents-update-from-base"));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Update branch",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(getConversationWorkspaceMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    await waitFor(() =>
+      expect(toastInfoMock).toHaveBeenCalledWith(
+        "Repair started",
+        {
+          description: "Agent conversation • Merge conflicts detected",
+          dismissible: true,
+          duration: 8_000,
+          id: "agent-workspace-operation:conversation-1:update-from-base",
+        },
+      ),
+    );
+    expect(toastErrorMock).not.toHaveBeenCalledWith(
+      "Failed to update from base",
+      expect.anything(),
     );
   });
 

@@ -70,7 +70,11 @@ describe("useAgentWorkspacePublisher", () => {
     const { result } = renderHook(() =>
       useAgentWorkspacePublisher({
         activeWorkspace: workspace,
-        findConversationById: () => conversationFixture({ agentMode: "edit" }),
+        findConversationById: () =>
+          conversationFixture({
+            agentMode: "edit",
+            title: "Checkout flow fix",
+          }),
         invalidateProjectConversations: () => projectInvalidationDeferred.promise,
         optimisticWorkspacesByConversationId: {},
         queryClient,
@@ -105,6 +109,8 @@ describe("useAgentWorkspacePublisher", () => {
       publishedWorkspace,
     );
     expect(toastSuccessMock).toHaveBeenCalledWith("Published #204", {
+      description: "Checkout flow fix",
+      duration: 8_000,
       id: "agent-workspace-operation:conversation-1:publish",
     });
     expect(toastErrorMock).not.toHaveBeenCalled();
