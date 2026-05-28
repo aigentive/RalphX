@@ -882,7 +882,10 @@ function AppContent() {
     />
   ) : null;
 
-  const toastBottomOffset = showsExecutionFooter ? "92px" : "16px";
+  const toastOffset = {
+    bottom: showsExecutionFooter ? "92px" : "16px",
+    left: "16px",
+  };
   const quickSwitcherAnchorSelector =
     currentView === "kanban"
       ? '[data-testid="kanban-split-left"]'
@@ -1114,7 +1117,7 @@ function AppContent() {
       )}
 
       {/* Toast notifications */}
-      <Toaster position="bottom-left" offset={toastBottomOffset} />
+      <Toaster position="bottom-left" offset={toastOffset} />
       </main>
     </TooltipProvider>
   );
