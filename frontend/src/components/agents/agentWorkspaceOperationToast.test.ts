@@ -6,8 +6,9 @@ import {
   startAgentWorkspaceOperationToast,
 } from "./agentWorkspaceOperationToast";
 
-const { toastErrorMock, toastLoadingMock, toastSuccessMock } = vi.hoisted(() => ({
+const { toastErrorMock, toastInfoMock, toastLoadingMock, toastSuccessMock } = vi.hoisted(() => ({
   toastErrorMock: vi.fn(),
+  toastInfoMock: vi.fn(),
   toastLoadingMock: vi.fn(),
   toastSuccessMock: vi.fn(),
 }));
@@ -15,6 +16,7 @@ const { toastErrorMock, toastLoadingMock, toastSuccessMock } = vi.hoisted(() => 
 vi.mock("sonner", () => ({
   toast: {
     error: (...args: unknown[]) => toastErrorMock(...args),
+    info: (...args: unknown[]) => toastInfoMock(...args),
     loading: (...args: unknown[]) => toastLoadingMock(...args),
     success: (...args: unknown[]) => toastSuccessMock(...args),
   },
@@ -25,6 +27,7 @@ describe("agentWorkspaceOperationToast", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     toastErrorMock.mockClear();
+    toastInfoMock.mockClear();
     toastLoadingMock.mockClear();
     toastSuccessMock.mockClear();
   });
@@ -52,14 +55,16 @@ describe("agentWorkspaceOperationToast", () => {
 
   it("keeps one persistent loading toast updated with elapsed time", () => {
     const progress = startAgentWorkspaceOperationToast({
+      conversationTitle: "Agent conversation",
       detail: "From main",
       id: agentWorkspaceOperationToastId("conversation-1", "update-from-base"),
       title: "Updating branch",
     });
 
     expect(toastLoadingMock).toHaveBeenLastCalledWith(
-      "Updating branch - From main - 0s",
+      "Updating branch",
       {
+        description: "Agent conversation • From main • 0s",
         duration: Infinity,
         id: "agent-workspace-operation:conversation-1:update-from-base",
       },
@@ -68,8 +73,9 @@ describe("agentWorkspaceOperationToast", () => {
     vi.advanceTimersByTime(5_000);
 
     expect(toastLoadingMock).toHaveBeenLastCalledWith(
-      "Updating branch - From main - 5s",
+      "Updating branch",
       {
+        description: "Agent conversation • From main • 5s",
         duration: Infinity,
         id: "agent-workspace-operation:conversation-1:update-from-base",
       },
@@ -77,9 +83,14 @@ describe("agentWorkspaceOperationToast", () => {
 
     progress.success("Updated from main");
 
-    expect(toastSuccessMock).toHaveBeenCalledWith("Updated from main", {
-      id: "agent-workspace-operation:conversation-1:update-from-base",
-    });
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "Updated from main",
+      {
+        description: "Agent conversation • From main",
+        duration: 8_000,
+        id: "agent-workspace-operation:conversation-1:update-from-base",
+      },
+    );
     const loadingCallCount = toastLoadingMock.mock.calls.length;
 
     vi.advanceTimersByTime(1_000);
@@ -89,6 +100,7 @@ describe("agentWorkspaceOperationToast", () => {
 
   it("updates the persistent toast before ignoring updates after settlement", () => {
     const progress = startAgentWorkspaceOperationToast({
+      conversationTitle: "Agent conversation",
       detail: "Check workspace",
       id: agentWorkspaceOperationToastId("conversation-1", "publish"),
       startedAtMs: 0,
@@ -103,8 +115,9 @@ describe("agentWorkspaceOperationToast", () => {
     });
 
     expect(toastLoadingMock).toHaveBeenLastCalledWith(
-      "Publishing workspace - Push branch - 2s",
+      "Publishing workspace",
       {
+        description: "Agent conversation • Push branch • 2s",
         duration: Infinity,
         id: "agent-workspace-operation:conversation-2:publish",
       },
@@ -115,22 +128,55 @@ describe("agentWorkspaceOperationToast", () => {
     progress.success("Published branch");
     progress.update({ detail: "Open draft PR" });
 
-    expect(toastSuccessMock).toHaveBeenCalledWith("Published branch", {
-      id: "agent-workspace-operation:conversation-2:publish",
-    });
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "Published branch",
+      {
+        description: "Agent conversation • Push branch",
+        duration: 8_000,
+        id: "agent-workspace-operation:conversation-2:publish",
+      },
+    );
     expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
   });
 
   it("replaces the persistent loading toast with an error result", () => {
     const progress = startAgentWorkspaceOperationToast({
+      conversationTitle: "Agent conversation",
       id: agentWorkspaceOperationToastId("conversation-1", "rebase"),
       title: "Rebasing branch",
     });
 
-    progress.error("Rebase failed");
+    progress.error("Rebase failed", { detail: "Merge conflicts detected" });
 
-    expect(toastErrorMock).toHaveBeenCalledWith("Rebase failed", {
-      id: "agent-workspace-operation:conversation-1:rebase",
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      "Rebase failed",
+      {
+        closeButton: true,
+        description: "Agent conversation • Merge conflicts detected",
+        dismissible: true,
+        duration: 12_000,
+        id: "agent-workspace-operation:conversation-1:rebase",
+      },
+    );
+  });
+
+  it("replaces the persistent loading toast with an auto-dismissing info result", () => {
+    const progress = startAgentWorkspaceOperationToast({
+      conversationTitle: "Agent conversation",
+      id: agentWorkspaceOperationToastId("conversation-1", "update-from-base"),
+      title: "Updating branch",
     });
+
+    progress.info("Repair started", { detail: "Merge conflicts detected" });
+
+    expect(toastInfoMock).toHaveBeenCalledWith(
+      "Repair started",
+      {
+        description: "Agent conversation • Merge conflicts detected",
+        dismissible: true,
+        duration: 8_000,
+        id: "agent-workspace-operation:conversation-1:update-from-base",
+      },
+    );
   });
 });
