@@ -9,19 +9,28 @@ export type AgentWorkspaceOperationToastKind =
 
 export interface AgentWorkspaceOperationToast {
   dispose: () => void;
-  error: (message: string) => void;
-  success: (message: string) => void;
+  error: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => void;
+  info: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => void;
+  success: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => void;
   update: (options: Partial<AgentWorkspaceOperationToastOptions>) => void;
 }
 
 export interface AgentWorkspaceOperationToastOptions {
-  detail?: string | null;
+  conversationTitle?: string | null | undefined;
+  detail?: string | null | undefined;
   id: string;
   startedAtMs?: number;
   title: string;
 }
 
+export interface AgentWorkspaceOperationToastResultOptions {
+  detail?: string | null | undefined;
+  duration?: number;
+}
+
 const OPERATION_TOAST_INTERVAL_MS = 1_000;
+export const AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS = 8_000;
+export const AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS = 12_000;
 type ActiveAgentWorkspaceOperationToastOptions =
   AgentWorkspaceOperationToastOptions & {
     startedAtMs: number;
@@ -62,16 +71,50 @@ export function publishPipelineToastLabel(status: string | null): string {
   return "Check workspace";
 }
 
-function progressMessage(options: ActiveAgentWorkspaceOperationToastOptions): string {
+export function agentWorkspaceOperationToastDescription(
+  ...parts: Array<string | null | undefined>
+): string | undefined {
+  const description = parts
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part))
+    .join(" • ");
+  return description || undefined;
+}
+
+function progressDescription(options: ActiveAgentWorkspaceOperationToastOptions): string | undefined {
   const elapsedSeconds = Math.max(
     0,
     Math.floor((Date.now() - options.startedAtMs) / 1_000),
   );
   const elapsed = formatElapsedTime(elapsedSeconds);
-  const detail = options.detail?.trim();
-  return detail
-    ? `${options.title} - ${detail} - ${elapsed}`
-    : `${options.title} - ${elapsed}`;
+  return agentWorkspaceOperationToastDescription(
+    options.conversationTitle,
+    options.detail,
+    elapsed,
+  );
+}
+
+function resultDescription(
+  options: ActiveAgentWorkspaceOperationToastOptions,
+  resultOptions?: AgentWorkspaceOperationToastResultOptions,
+): string | undefined {
+  return agentWorkspaceOperationToastDescription(
+    options.conversationTitle,
+    resultOptions?.detail ?? options.detail,
+  );
+}
+
+function resultToastOptions(
+  options: ActiveAgentWorkspaceOperationToastOptions,
+  resultOptions: AgentWorkspaceOperationToastResultOptions | undefined,
+  fallbackDuration: number,
+) {
+  const description = resultDescription(options, resultOptions);
+  return {
+    ...(description ? { description } : {}),
+    duration: resultOptions?.duration ?? fallbackDuration,
+    id: options.id,
+  };
 }
 
 export function startAgentWorkspaceOperationToast(
@@ -95,7 +138,9 @@ export function startAgentWorkspaceOperationToast(
     if (settled) {
       return;
     }
-    toast.loading(progressMessage(currentOptions), {
+    const description = progressDescription(currentOptions);
+    toast.loading(currentOptions.title, {
+      ...(description ? { description } : {}),
       duration: Infinity,
       id: currentOptions.id,
     });
@@ -108,15 +153,42 @@ export function startAgentWorkspaceOperationToast(
     dispose: () => {
       clearTimer();
     },
-    error: (message: string) => {
+    error: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
       settled = true;
       clearTimer();
-      toast.error(message, { id: currentOptions.id });
+      toast.error(message, {
+        ...resultToastOptions(
+          currentOptions,
+          options,
+          AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
+        ),
+        closeButton: true,
+        dismissible: true,
+      });
     },
-    success: (message: string) => {
+    info: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
       settled = true;
       clearTimer();
-      toast.success(message, { id: currentOptions.id });
+      toast.info(message, {
+        ...resultToastOptions(
+          currentOptions,
+          options,
+          AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS,
+        ),
+        dismissible: true,
+      });
+    },
+    success: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
+      settled = true;
+      clearTimer();
+      toast.success(
+        message,
+        resultToastOptions(
+          currentOptions,
+          options,
+          AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS,
+        ),
+      );
     },
     update: (nextOptions: Partial<AgentWorkspaceOperationToastOptions>) => {
       if (settled) {

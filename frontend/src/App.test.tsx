@@ -22,8 +22,12 @@ import { useIdeationSession, useIdeationSessions } from "@/hooks/useIdeation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { toast } from "sonner";
 
+const { sonnerToasterMock } = vi.hoisted(() => ({
+  sonnerToasterMock: vi.fn(() => null),
+}));
+
 vi.mock("sonner", () => ({
-  Toaster: () => null,
+  Toaster: sonnerToasterMock,
   toast: {
     error: vi.fn(),
     info: vi.fn(),
@@ -411,6 +415,21 @@ describe("App", () => {
   it("should render without crashing", () => {
     render(<App />);
     expect(document.body).toBeDefined();
+  });
+
+  it("keeps bottom-left toasts pinned to the left gutter when lifted above the execution footer", () => {
+    render(<App />);
+
+    const toasterProps = sonnerToasterMock.mock.calls.at(-1)?.[0];
+    expect(toasterProps).toEqual(
+      expect.objectContaining({
+        offset: {
+          bottom: "92px",
+          left: "16px",
+        },
+        position: "bottom-left",
+      }),
+    );
   });
 
   it("should display the primary navigation shell", () => {
