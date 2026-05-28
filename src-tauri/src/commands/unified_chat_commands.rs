@@ -58,7 +58,9 @@ use crate::application::agent_workspace_publish_recovery::recover_stale_publish_
 use crate::application::chat_service::tool_result_preview::{
     preview_tool_result_object, tool_detail_ref,
 };
-use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
+use crate::application::chat_service::{
+    AgentConversationCreatedPayload, AgentRunningState, SendMessageOptions,
+};
 use crate::application::git_service::{
     git_cmd::{self, GitCommandLane},
     GitService,
@@ -6995,7 +6997,7 @@ pub async fn get_agent_running_states(
     context_ids: Vec<String>,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-) -> Result<HashMap<String, bool>, String> {
+) -> Result<HashMap<String, AgentRunningState>, String> {
     let service =
         state.build_chat_service_with_execution_state(Arc::clone(execution_state.inner()));
 
@@ -7007,7 +7009,7 @@ pub async fn get_agent_running_states_for_service(
     service: &dyn ChatService,
     context_type: String,
     context_ids: Vec<String>,
-) -> Result<HashMap<String, bool>, String> {
+) -> Result<HashMap<String, AgentRunningState>, String> {
     let context_type = parse_context_type(&context_type)?;
 
     Ok(service

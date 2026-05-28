@@ -541,6 +541,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         <ArtifactContent
           activeTab={effectiveActiveTab}
           workspace={workspace}
+          conversationTitle={conversation?.title ?? null}
           projectBaseBranch={projectBaseBranch}
           isLoading={conversationQuery.isLoading || sessionQuery.isLoading}
           attachedSessionId={attachedSessionId}
@@ -569,6 +570,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 type ArtifactContentProps = {
   activeTab: AgentArtifactTab;
   workspace: AgentConversationWorkspace | null;
+  conversationTitle: string | null;
   projectBaseBranch: string | null;
   isLoading: boolean;
   attachedSessionId: string | null;
@@ -596,6 +598,7 @@ type ArtifactContentProps = {
 function ArtifactContent({
   activeTab,
   workspace,
+  conversationTitle,
   projectBaseBranch,
   isLoading,
   attachedSessionId,
@@ -656,6 +659,7 @@ function ArtifactContent({
     return (
       <AgentPublishPanel
         workspace={workspace}
+        conversationTitle={conversationTitle}
         projectBaseBranch={projectBaseBranch}
         onPublishWorkspace={onPublishWorkspace}
         isPublishingWorkspace={isPublishingWorkspace}

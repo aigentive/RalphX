@@ -9,11 +9,13 @@ import {
 
 export function AgentsPublishProgressToast({
   active,
+  conversationTitle,
   conversationId,
   startedAtMs,
   status,
 }: {
   active: boolean;
+  conversationTitle?: string | null;
   conversationId: string | null;
   startedAtMs: number | null;
   status: string | null;
@@ -33,6 +35,7 @@ export function AgentsPublishProgressToast({
 
     if (!progressToastRef.current) {
       progressToastRef.current = startAgentWorkspaceOperationToast({
+        conversationTitle,
         detail,
         id: toastId,
         startedAtMs: startedAtMs ?? Date.now(),
@@ -42,11 +45,12 @@ export function AgentsPublishProgressToast({
     }
 
     progressToastRef.current.update({
+      conversationTitle,
       detail,
       id: toastId,
       title: "Publishing workspace",
     });
-  }, [active, detail, startedAtMs, toastId]);
+  }, [active, conversationTitle, detail, startedAtMs, toastId]);
 
   useEffect(
     () => () => {

@@ -139,6 +139,7 @@ export function ChatInput({
   // Derive agent state from tri-state when available, fall back to boolean
   const effectiveStatus: AgentStatus = agentStatusProp ?? (isAgentRunning ? "generating" : "idle");
   const isAgentAlive = effectiveStatus !== "idle";
+  const isAgentGenerating = effectiveStatus === "generating";
   // Support both controlled and uncontrolled modes
   const [internalValue, setInternalValue] = useState("");
   const isControlled = controlledValue !== undefined;
@@ -347,7 +348,7 @@ export function ChatInput({
           />
 
           {/* Stop icon — inside container, right side, subtle icon only */}
-          {isAgentAlive && onStop && !isReadOnly && (
+          {isAgentGenerating && onStop && !isReadOnly && (
             <div className="pr-1 pb-1 flex-shrink-0">
               <button
                 data-testid="chat-input-stop"

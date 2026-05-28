@@ -304,7 +304,9 @@ describe("AgentsView publish", () => {
     const activeConversation = conversation({ agentMode: "edit" });
     mockAgentViewData(activeConversation);
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
-    getAgentRunningStatesMock.mockResolvedValue({ [activeConversation.id]: true });
+    getAgentRunningStatesMock.mockResolvedValue({
+      [activeConversation.id]: { isRunning: true, agentStatus: "generating" },
+    });
     listAgentTasksMock.mockResolvedValue([
       {
         taskId: "task-1",
@@ -834,6 +836,10 @@ describe("AgentsView publish", () => {
     expect(toastErrorMock).toHaveBeenCalledWith(
       "Publish failed. Sent the error to the agent to fix.",
       {
+        closeButton: true,
+        description: "Untitled agent • Failed to commit: typecheck failed",
+        dismissible: true,
+        duration: 12_000,
         id: "agent-workspace-operation:conversation-1:publish",
       },
     );
@@ -860,8 +866,12 @@ describe("AgentsView publish", () => {
 
     await waitFor(() =>
       expect(toastErrorMock).toHaveBeenCalledWith(
-        "GitHub integration is not available",
+        "Failed to publish branch",
         {
+          closeButton: true,
+          description: "Untitled agent • GitHub integration is not available",
+          dismissible: true,
+          duration: 12_000,
           id: "agent-workspace-operation:conversation-1:publish",
         },
       ),

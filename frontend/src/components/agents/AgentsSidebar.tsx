@@ -1744,7 +1744,7 @@ function PublicationStateGroup({
         isActiveRuntime,
         agentStatus
       );
-      const showRuntimeState = runtimeState === "running";
+      const showRuntimeState = runtimeState === "running" || runtimeState === "waiting";
       const sessionActionsOpen = openSessionActionsId === conversation.id;
 
       return (
@@ -2349,7 +2349,7 @@ function ProjectSessionGroup({
         isActiveRuntime,
         agentStatus
       );
-      const showRuntimeState = runtimeState === "running";
+      const showRuntimeState = runtimeState === "running" || runtimeState === "waiting";
       const sessionActionsOpen = openSessionActionsId === conversation.id;
 
       return (
@@ -2756,7 +2756,7 @@ function StaticRecentRuns() {
   );
 }
 
-type SessionRuntimeState = "running" | "queued" | "done" | "blocked" | "archived";
+type SessionRuntimeState = "running" | "waiting" | "queued" | "done" | "blocked" | "archived";
 
 function getSessionRuntimeState(
   conversation: AgentConversation,
@@ -2771,6 +2771,10 @@ function getSessionRuntimeState(
     return "queued";
   }
 
+  if (status === "waiting_for_input") {
+    return "waiting";
+  }
+
   if (status === "completed") {
     return "done";
   }
@@ -2783,15 +2787,23 @@ function getSessionRuntimeState(
 }
 
 function SessionRuntimeLabel({ state }: { state: SessionRuntimeState }) {
-  if (state !== "running") {
-    return null;
+  if (state === "running") {
+    return (
+      <span className="agents-session-runtime-label font-medium">
+        running
+      </span>
+    );
   }
 
-  return (
-    <span className="agents-session-runtime-label font-medium">
-      running
-    </span>
-  );
+  if (state === "waiting") {
+    return (
+      <span className="font-medium" style={{ color: "var(--text-muted)" }}>
+        awaiting input
+      </span>
+    );
+  }
+
+  return null;
 }
 
 function SessionStatusIcon({
@@ -2848,6 +2860,21 @@ function SessionStatusDot({
         style={{
           backgroundColor: "var(--status-success)",
           border: "1.5px solid transparent",
+        }}
+      />
+    );
+  }
+
+  if (state === "waiting") {
+    return (
+      <span
+        aria-hidden="true"
+        className="block h-[7px] w-[7px] shrink-0 rounded-full"
+        style={{
+          backgroundColor: "transparent",
+          borderColor: "var(--text-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1.5px",
         }}
       />
     );
