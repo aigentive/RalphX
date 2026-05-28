@@ -106,6 +106,24 @@ describe("useAgentSidebarRunningStates", () => {
     expect(state.activeConversationIds[waitingStoreKey]).toBe("conv-waiting");
   });
 
+  it("keeps legacy boolean bulk states compatible", async () => {
+    const runningConversation = conversation("conv-legacy");
+    mockGetAgentRunningStates.mockResolvedValueOnce({
+      "conv-legacy": true,
+    });
+
+    renderHook(() =>
+      useAgentSidebarRunningStates([runningConversation], true)
+    );
+
+    await act(async () => {});
+
+    const runningStoreKey = getAgentConversationStoreKey(runningConversation);
+    const state = useChatStore.getState();
+    expect(state.agentStatus[runningStoreKey]).toBe("generating");
+    expect(state.activeConversationIds[runningStoreKey]).toBe("conv-legacy");
+  });
+
   it("clears stale sidebar status when bulk state says not running", async () => {
     const staleConversation = conversation("conv-stale");
     const storeKey = getAgentConversationStoreKey(staleConversation);

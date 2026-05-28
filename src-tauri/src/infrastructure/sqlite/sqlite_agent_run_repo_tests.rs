@@ -2,6 +2,7 @@ use super::*;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
 use crate::domain::entities::{AgentRunAttribution, AgentRunUsage, IdeationSessionId};
 use crate::testing::SqliteTestDb;
+use std::collections::HashSet;
 
 fn setup_repo() -> (SqliteTestDb, SqliteAgentRunRepository) {
     let db = SqliteTestDb::new("sqlite-agent-run-repo");
@@ -270,6 +271,43 @@ async fn test_get_by_id_not_found() {
 }
 
 #[tokio::test]
+async fn test_get_by_ids_returns_only_requested_runs() {
+    let (db, repo) = setup_repo();
+    let conv = db.seed_ideation_conversation();
+
+    let run1 = AgentRun::new(conv.id);
+    let run1_id = run1.id;
+    let run2 = AgentRun::new(conv.id);
+    let run2_id = run2.id;
+    let run3 = AgentRun::new(conv.id);
+    let run3_id = run3.id;
+
+    repo.create(run1).await.unwrap();
+    repo.create(run2).await.unwrap();
+    repo.create(run3).await.unwrap();
+
+    let runs = repo
+        .get_by_ids(&[run2_id, AgentRunId::new(), run1_id])
+        .await
+        .unwrap();
+    let ids: HashSet<_> = runs.iter().map(|run| run.id).collect();
+
+    assert_eq!(runs.len(), 2);
+    assert!(ids.contains(&run1_id));
+    assert!(ids.contains(&run2_id));
+    assert!(!ids.contains(&run3_id));
+}
+
+#[tokio::test]
+async fn test_get_by_ids_returns_empty_for_empty_request() {
+    let (_db, repo) = setup_repo();
+
+    let runs = repo.get_by_ids(&[]).await.unwrap();
+
+    assert!(runs.is_empty());
+}
+
+#[tokio::test]
 async fn test_update_usage_persists_fields() {
     let (db, repo) = setup_repo();
     let conv = db.seed_ideation_conversation();
@@ -394,6 +432,31 @@ async fn test_update_status() {
 
     let updated = repo.get_by_id(&run_id).await.unwrap().unwrap();
     assert_eq!(updated.status, AgentRunStatus::Cancelled);
+}
+
+#[tokio::test]
+async fn test_update_status_running_clears_terminal_fields() {
+    let (db, repo) = setup_repo();
+    let conv = db.seed_ideation_conversation();
+
+    let run = AgentRun::new(conv.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+    repo.fail(&run_id, "temporary failure").await.unwrap();
+
+    let failed = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(failed.status, AgentRunStatus::Failed);
+    assert!(failed.completed_at.is_some());
+    assert_eq!(failed.error_message.as_deref(), Some("temporary failure"));
+
+    repo.update_status(&run_id, AgentRunStatus::Running)
+        .await
+        .unwrap();
+
+    let updated = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(updated.status, AgentRunStatus::Running);
+    assert!(updated.completed_at.is_none());
+    assert!(updated.error_message.is_none());
 }
 
 #[tokio::test]

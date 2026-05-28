@@ -2050,6 +2050,18 @@ describe("chat api", () => {
     });
   });
 
+  it("normalizes legacy boolean bulk running states", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      c1: true,
+      c2: false,
+    });
+
+    await expect(getAgentRunningStates("project", ["c1", "c2"])).resolves.toEqual({
+      c1: { isRunning: true, agentStatus: "generating" },
+      c2: { isRunning: false, agentStatus: "idle" },
+    });
+  });
+
   it("exports chatApi namespace", () => {
     expect(chatApi.sendAgentMessage).toBe(sendAgentMessage);
     expect(chatApi.listConversations).toBe(listConversations);
