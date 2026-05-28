@@ -519,6 +519,20 @@ describe("ChatInput", () => {
 
       expect(onStop).toHaveBeenCalled();
     });
+
+    it("hides Stop when the retained process is waiting for input", () => {
+      render(
+        <ChatInput
+          {...defaultProps}
+          agentStatus="waiting_for_input"
+          isAgentRunning={true}
+          onStop={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByTestId("chat-input-stop")).not.toBeInTheDocument();
+      expect(screen.getByTestId("chat-input-send")).toBeInTheDocument();
+    });
   });
 
   // ============================================================================

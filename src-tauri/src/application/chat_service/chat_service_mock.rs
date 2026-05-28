@@ -16,7 +16,8 @@ use crate::domain::services::{MessageQueue, QueuedMessage};
 use crate::infrastructure::agents::claude::ToolCall;
 
 use super::{
-    ChatConversationWithMessages, ChatService, ChatServiceError, SendMessageOptions, SendResult,
+    AgentRunningState, ChatConversationWithMessages, ChatService, ChatServiceError,
+    SendMessageOptions, SendResult,
 };
 
 // ============================================================================
@@ -375,17 +376,19 @@ impl ChatService for MockChatService {
         &self,
         context_type: ChatContextType,
         context_ids: &[String],
-    ) -> HashMap<String, bool> {
+    ) -> HashMap<String, AgentRunningState> {
         let running_agents = self.running_agents.lock().await;
         context_ids
             .iter()
             .filter(|context_id| !context_id.is_empty())
             .map(|context_id| {
                 let key = format!("{}/{}", context_type, context_id);
-                (
-                    context_id.clone(),
-                    running_agents.get(&key).copied().unwrap_or(false),
-                )
+                let state = if running_agents.get(&key).copied().unwrap_or(false) {
+                    AgentRunningState::generating()
+                } else {
+                    AgentRunningState::idle()
+                };
+                (context_id.clone(), state)
             })
             .collect()
     }

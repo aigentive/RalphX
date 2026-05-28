@@ -24,6 +24,17 @@ pub trait AgentRunRepository: Send + Sync {
     /// Get run by ID
     async fn get_by_id(&self, id: &AgentRunId) -> AppResult<Option<AgentRun>>;
 
+    /// Get runs by ID. Implementations should batch this when backed by a database.
+    async fn get_by_ids(&self, ids: &[AgentRunId]) -> AppResult<Vec<AgentRun>> {
+        let mut runs = Vec::new();
+        for id in ids {
+            if let Some(run) = self.get_by_id(id).await? {
+                runs.push(run);
+            }
+        }
+        Ok(runs)
+    }
+
     /// Get the most recent run for a conversation (active or completed)
     async fn get_latest_for_conversation(
         &self,

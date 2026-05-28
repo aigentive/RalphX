@@ -2041,15 +2041,30 @@ describe("chat api", () => {
   });
 
   it("bulk-checks running states", async () => {
-    mockInvoke.mockResolvedValueOnce({ c1: true, c2: false });
+    mockInvoke.mockResolvedValueOnce({
+      c1: { is_running: true, agent_status: "generating" },
+      c2: { is_running: false, agent_status: "idle" },
+    });
 
     await expect(getAgentRunningStates("project", ["c1", "c2"])).resolves.toEqual({
-      c1: true,
-      c2: false,
+      c1: { isRunning: true, agentStatus: "generating" },
+      c2: { isRunning: false, agentStatus: "idle" },
     });
     expect(mockInvoke).toHaveBeenCalledWith("get_agent_running_states", {
       contextType: "project",
       contextIds: ["c1", "c2"],
+    });
+  });
+
+  it("normalizes legacy boolean bulk running states", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      c1: true,
+      c2: false,
+    });
+
+    await expect(getAgentRunningStates("project", ["c1", "c2"])).resolves.toEqual({
+      c1: { isRunning: true, agentStatus: "generating" },
+      c2: { isRunning: false, agentStatus: "idle" },
     });
   });
 

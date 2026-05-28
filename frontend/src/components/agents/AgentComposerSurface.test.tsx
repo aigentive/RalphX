@@ -126,6 +126,23 @@ describe("AgentComposerSurface", () => {
     expect(screen.getByTestId("agent-composer-submit")).toHaveClass("ml-auto");
   });
 
+  it("keeps Send as the primary action while the agent is waiting for input", () => {
+    const onStop = vi.fn();
+    renderComposer({
+      agentStatus: "waiting_for_input",
+      onStop,
+    });
+
+    const action = screen.getByTestId("agent-composer-submit");
+    expect(action).toHaveAccessibleName("Send");
+    expect(action).toHaveTextContent("Send");
+    expect(action).not.toHaveTextContent("Stop");
+    expect(action).toBeDisabled();
+
+    fireEvent.click(action);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
   it("refreshes mode state when the mode menu opens", () => {
     const onOpen = vi.fn();
     renderComposer({

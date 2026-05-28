@@ -291,8 +291,9 @@ export function AgentComposerSurface({
   const value = isControlled ? controlledValue : internalValue;
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const isAgentAlive = agentStatus !== "idle";
+  const isAgentGenerating = agentStatus === "generating";
   const canQueue = !isReadOnly && isAgentAlive;
-  const shouldShowStop = Boolean(onStop) && isAgentAlive && value.trim().length === 0;
+  const shouldShowStop = Boolean(onStop) && isAgentGenerating && value.trim().length === 0;
   const canSubmit =
     value.trim().length > 0 &&
     !isReadOnly &&
