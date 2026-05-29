@@ -528,6 +528,88 @@ describe("useConversationHistoryWindow", () => {
 
     expect(chatApi.getConversationMessagesPage).toHaveBeenCalledTimes(2);
   });
+
+  it("continues default history pagination past three pages until the first message is reachable", async () => {
+    const message3: ChatMessageResponse = {
+      ...mockMessage1,
+      id: "message-3",
+      content: "Middle page",
+      createdAt: "2026-01-24T10:00:03Z",
+    };
+    const message4: ChatMessageResponse = {
+      ...mockMessage2,
+      id: "message-4",
+      content: "Latest page",
+      createdAt: "2026-01-24T10:00:04Z",
+    };
+
+    vi.mocked(chatApi.getConversationMessagesPage)
+      .mockResolvedValueOnce({
+        conversation: mockConversation1,
+        messages: [message4],
+        limit: 1,
+        offset: 0,
+        totalMessageCount: 4,
+        hasOlder: true,
+      })
+      .mockResolvedValueOnce({
+        conversation: mockConversation1,
+        messages: [message3],
+        limit: 1,
+        offset: 1,
+        totalMessageCount: 4,
+        hasOlder: true,
+      })
+      .mockResolvedValueOnce({
+        conversation: mockConversation1,
+        messages: [mockMessage2],
+        limit: 1,
+        offset: 2,
+        totalMessageCount: 4,
+        hasOlder: true,
+      })
+      .mockResolvedValueOnce({
+        conversation: mockConversation1,
+        messages: [mockMessage1],
+        limit: 1,
+        offset: 3,
+        totalMessageCount: 4,
+        hasOlder: false,
+      });
+
+    const { result } = renderHook(
+      () => useConversationHistoryWindow("conv-1", { pageSize: 1 }),
+      {
+        wrapper: createWrapper(),
+      }
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    for (let index = 0; index < 3; index += 1) {
+      await act(async () => {
+        await result.current.fetchOlderMessages();
+      });
+    }
+
+    await waitFor(() =>
+      expect(result.current.data?.messages.map((message) => message.id)).toEqual([
+        "message-1",
+        "message-2",
+        "message-3",
+        "message-4",
+      ])
+    );
+    expect(result.current.loadedStartIndex).toBe(0);
+    expect(result.current.hasOlderMessages).toBe(false);
+    expect(chatApi.getConversationMessagesPage).toHaveBeenCalledTimes(4);
+    expect(chatApi.getConversationMessagesPage).toHaveBeenNthCalledWith(
+      4,
+      "conv-1",
+      1,
+      3
+    );
+  });
 });
 
 describe("useConversationTimelineWindow", () => {
@@ -611,6 +693,93 @@ describe("useConversationTimelineWindow", () => {
     expect(result.current.loadedStartIndex).toBe(0);
     expect(chatApi.getConversationTimelinePage).toHaveBeenNthCalledWith(
       2,
+      "conv-1",
+      1,
+      2
+    );
+  });
+
+  it("continues default timeline pagination past three pages until the first item is reachable", async () => {
+    const timelineBlocks = [1, 2, 3, 4].map((sequence) => ({
+      ...mockMessage1,
+      id: `block:message-${sequence}:0`,
+      parentMessageId: `message-${sequence}`,
+      content: `Timeline block ${sequence}`,
+      timelineSequence: sequence,
+      timelineKind: "text" as const,
+      timelineStatus: "finalized" as const,
+      createdAt: `2026-01-24T10:00:0${sequence}Z`,
+    }));
+
+    vi.mocked(chatApi.getConversationTimelinePage)
+      .mockResolvedValueOnce(
+        timelinePage([timelineBlocks[3]], {
+          limit: 1,
+          totalItemCount: 4,
+          hasOlder: true,
+          oldestLoadedSequence: 4,
+          newestLoadedSequence: 4,
+        })
+      )
+      .mockResolvedValueOnce(
+        timelinePage([timelineBlocks[2]], {
+          limit: 1,
+          beforeSequence: 4,
+          totalItemCount: 4,
+          hasOlder: true,
+          oldestLoadedSequence: 3,
+          newestLoadedSequence: 3,
+        })
+      )
+      .mockResolvedValueOnce(
+        timelinePage([timelineBlocks[1]], {
+          limit: 1,
+          beforeSequence: 3,
+          totalItemCount: 4,
+          hasOlder: true,
+          oldestLoadedSequence: 2,
+          newestLoadedSequence: 2,
+        })
+      )
+      .mockResolvedValueOnce(
+        timelinePage([timelineBlocks[0]], {
+          limit: 1,
+          beforeSequence: 2,
+          totalItemCount: 4,
+          hasOlder: false,
+          oldestLoadedSequence: 1,
+          newestLoadedSequence: 1,
+        })
+      );
+
+    const { result } = renderHook(
+      () => useConversationTimelineWindow("conv-1", { pageSize: 1 }),
+      {
+        wrapper: createWrapper(),
+      }
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    for (let index = 0; index < 3; index += 1) {
+      await act(async () => {
+        await result.current.fetchOlderMessages();
+      });
+    }
+
+    await waitFor(() =>
+      expect(result.current.data?.messages.map((message) => message.id)).toEqual([
+        "block:message-1:0",
+        "block:message-2:0",
+        "block:message-3:0",
+        "block:message-4:0",
+      ])
+    );
+    expect(result.current.loadedStartIndex).toBe(0);
+    expect(result.current.hasOlderMessages).toBe(false);
+    expect(chatApi.getConversationTimelinePage).toHaveBeenCalledTimes(4);
+    expect(chatApi.getConversationTimelinePage).toHaveBeenNthCalledWith(
+      4,
       "conv-1",
       1,
       2
