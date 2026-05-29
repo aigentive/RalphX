@@ -89,7 +89,6 @@ type SendMessageMutationContext = {
   optimisticMessageId?: string;
 };
 
-const DEFAULT_HISTORY_MAX_PAGES = 3;
 export const OPTIMISTIC_CONVERSATION_ID_PREFIX = "optimistic-conversation:";
 
 export function createOptimisticConversationId() {
@@ -101,6 +100,14 @@ export function createOptimisticConversationId() {
 
 export function isOptimisticConversationId(conversationId: string | null | undefined) {
   return Boolean(conversationId?.startsWith(OPTIMISTIC_CONVERSATION_ID_PREFIX));
+}
+
+function normalizeExplicitMaxPages(maxPages: number | undefined): number | null {
+  return maxPages === undefined ? null : Math.max(1, maxPages);
+}
+
+function reachedExplicitPageLimit(pageCount: number, maxPages: number | null) {
+  return maxPages !== null && pageCount >= maxPages;
 }
 
 export type ConversationHistoryWindowData = ConversationQueryData & {
@@ -882,7 +889,7 @@ export function useConversationHistoryWindow(
   options?: { enabled?: boolean; pageSize?: number; maxPages?: number }
 ) {
   const pageSize = options?.pageSize ?? 40;
-  const maxPages = Math.max(1, options?.maxPages ?? DEFAULT_HISTORY_MAX_PAGES);
+  const maxPages = normalizeExplicitMaxPages(options?.maxPages);
   const canFetchConversation = !!conversationId && !isOptimisticConversationId(conversationId);
   const query = useInfiniteQuery<
     ConversationMessagesPageResponse,
@@ -908,7 +915,7 @@ export function useConversationHistoryWindow(
       if (!lastPage.hasOlder) {
         return undefined;
       }
-      if (allPages.length >= maxPages) {
+      if (reachedExplicitPageLimit(allPages.length, maxPages)) {
         return undefined;
       }
       return lastPage.offset + lastPage.messages.length;
@@ -943,7 +950,7 @@ export function useConversationTimelineWindow(
   options?: { enabled?: boolean; pageSize?: number; maxPages?: number }
 ) {
   const pageSize = options?.pageSize ?? 40;
-  const maxPages = Math.max(1, options?.maxPages ?? DEFAULT_HISTORY_MAX_PAGES);
+  const maxPages = normalizeExplicitMaxPages(options?.maxPages);
   const canFetchConversation = !!conversationId && !isOptimisticConversationId(conversationId);
   const query = useInfiniteQuery<
     ConversationTimelinePageResponse,
@@ -969,7 +976,7 @@ export function useConversationTimelineWindow(
       if (!lastPage.hasOlder) {
         return undefined;
       }
-      if (allPages.length >= maxPages) {
+      if (reachedExplicitPageLimit(allPages.length, maxPages)) {
         return undefined;
       }
       return lastPage.oldestLoadedSequence;
