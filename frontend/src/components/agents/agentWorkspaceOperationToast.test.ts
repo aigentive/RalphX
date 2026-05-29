@@ -184,6 +184,7 @@ describe("agentWorkspaceOperationToast", () => {
     );
 
     loadingOptions?.onDismiss?.();
+    progress.update({ detail: "Still running" });
     const loadingCallCount = toastLoadingMock.mock.calls.length;
 
     vi.advanceTimersByTime(3_000);
@@ -202,6 +203,7 @@ describe("agentWorkspaceOperationToast", () => {
         id: "agent-workspace-operation:conversation-1:update-from-base",
       },
     );
+    loadingOptions?.onDismiss?.();
   });
 
   it("replaces the persistent loading toast with an auto-dismissing info result", () => {

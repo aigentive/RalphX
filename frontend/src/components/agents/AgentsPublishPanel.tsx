@@ -89,7 +89,6 @@ import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import { mapReviewCommitsToDiffViewerCommits } from "./useAgentWorkspaceChangeSummary";
 import {
   AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
-  AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS,
   type AgentWorkspaceOperationToast,
   type AgentWorkspaceOperationToastResultOptions,
   agentWorkspaceOperationToastId,
@@ -204,17 +203,16 @@ export function AgentPublishPanel({
   const conversationId = workspace?.conversationId ?? null;
   const toastConversationTitle = conversationTitle?.trim() || null;
   const startUpdateFromBaseProgressToast = ({
+    conversationId,
     detail,
     kind,
     title,
   }: {
+    conversationId: string;
     detail: string;
     kind: "rebase" | "update-from-base";
     title: string;
   }) => {
-    if (!conversationId) {
-      return null;
-    }
     updateFromBaseProgressToastRef.current?.dispose();
     const progressToast = startAgentWorkspaceOperationToast({
       conversationTitle: toastConversationTitle,
@@ -226,44 +224,13 @@ export function AgentPublishPanel({
     return progressToast;
   };
   const settleUpdateFromBaseProgressToast = (
-    progressToast: AgentWorkspaceOperationToast | null,
-    fallbackToastId: string,
+    progressToast: AgentWorkspaceOperationToast,
     outcome: "error" | "info" | "success",
     message: string,
     options?: AgentWorkspaceOperationToastResultOptions,
   ) => {
     if (updateFromBaseProgressToastRef.current === progressToast) {
       updateFromBaseProgressToastRef.current = null;
-    }
-    if (!progressToast) {
-      const description = agentWorkspaceOperationToastDescription(
-        toastConversationTitle,
-        options?.detail,
-      );
-      const baseOptions = {
-        ...(description ? { description } : {}),
-        duration:
-          options?.duration ??
-          (outcome === "error"
-            ? AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS
-            : AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS),
-        id: fallbackToastId,
-      };
-      if (outcome === "success") {
-        toast.success(message, baseOptions);
-      } else if (outcome === "info") {
-        toast.info(message, {
-          ...baseOptions,
-          dismissible: true,
-        });
-      } else {
-        toast.error(message, {
-          ...baseOptions,
-          closeButton: true,
-          dismissible: true,
-        });
-      }
-      return;
     }
     if (outcome === "success") {
       progressToast.success(message, options);
@@ -675,11 +642,10 @@ export function AgentPublishPanel({
     }
     const requestConversationId = conversationId;
     const requestWorkspace = workspace;
-    const fallbackToastId = agentWorkspaceOperationToastId(
-      requestConversationId,
-      toastOptions.kind,
-    );
-    const progressToast = startUpdateFromBaseProgressToast(toastOptions);
+    const progressToast = startUpdateFromBaseProgressToast({
+      ...toastOptions,
+      conversationId: requestConversationId,
+    });
 
     void updateFromBaseMutation
       .mutateAsync(baseSelection)
@@ -691,7 +657,6 @@ export function AgentPublishPanel({
         await invalidateWorkspaceQueries(queryClient, result.workspace.conversationId);
         settleUpdateFromBaseProgressToast(
           progressToast,
-          fallbackToastId,
           "success",
           result.updated
             ? `Updated from ${result.targetRef}`
@@ -719,7 +684,6 @@ export function AgentPublishPanel({
           "needs_agent";
         settleUpdateFromBaseProgressToast(
           progressToast,
-          fallbackToastId,
           repairStarted ? "info" : "error",
           repairStarted ? "Repair started" : "Failed to update from base",
           { detail: errorMessage },
