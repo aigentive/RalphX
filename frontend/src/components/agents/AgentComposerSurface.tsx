@@ -2128,7 +2128,7 @@ function ComposerRuntimePill({
         sideOffset={6}
         onOpenAutoFocus={(e) => e.preventDefault()}
         className={cn(
-          "overflow-hidden rounded-xl p-0",
+          "max-h-[var(--radix-popover-content-available-height)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl p-0",
           hasMultipleProviders ? "w-[21rem]" : "w-72"
         )}
         style={{
