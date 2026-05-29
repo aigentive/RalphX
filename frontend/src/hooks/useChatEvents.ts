@@ -33,6 +33,7 @@ import type { ContextType } from "@/types/chat-conversation";
 import type { AgentRunCompletedPayload } from "@/types/events";
 import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
 import type { ChatMessageResponse } from "@/api/chat";
+import { FileDiffSchema, transformFileDiff, type FileDiff } from "@/api/diff";
 import type { ContentBlockItem } from "@/components/Chat/MessageItem";
 import type { StreamingTask, StreamingContentBlock } from "@/types/streaming-task";
 import type { Unsubscribe } from "@/lib/event-bus";
@@ -151,6 +152,16 @@ type ToolResultPreviewMetadata = {
   resultPreviewOmittedLines?: unknown;
   result_preview_paths?: unknown;
   resultPreviewPaths?: unknown;
+  arguments_preview_truncated?: unknown;
+  argumentsPreviewTruncated?: unknown;
+  arguments_preview_original_bytes?: unknown;
+  argumentsPreviewOriginalBytes?: unknown;
+  arguments_preview_line_count?: unknown;
+  argumentsPreviewLineCount?: unknown;
+  arguments_preview_omitted_lines?: unknown;
+  argumentsPreviewOmittedLines?: unknown;
+  diff_preview?: unknown;
+  diffPreview?: unknown;
   detail_ref?: unknown;
   detailRef?: unknown;
 };
@@ -198,6 +209,11 @@ function normalizeStreamingToolDetailRef(raw: unknown): ToolCall["detailRef"] | 
   return detailRef;
 }
 
+function normalizeStreamingDiffPreview(raw: unknown): FileDiff | undefined {
+  const parsed = FileDiffSchema.safeParse(raw);
+  return parsed.success ? transformFileDiff(parsed.data) : undefined;
+}
+
 function applyBackendToolResultPreviewMetadata(
   toolCall: ToolCall,
   metadata: ToolResultPreviewMetadata,
@@ -236,8 +252,51 @@ function applyBackendToolResultPreviewMetadata(
   const detailRef = normalizeStreamingToolDetailRef(metadata.detail_ref ?? metadata.detailRef);
   if (detailRef) {
     toolCall.detailRef = detailRef;
-  } else {
+  } else if (!toolCall.argumentsPreviewTruncated) {
     delete toolCall.detailRef;
+  }
+}
+
+function applyBackendToolArgumentPreviewMetadata(
+  toolCall: ToolCall,
+  metadata: ToolResultPreviewMetadata,
+) {
+  if (
+    metadata.arguments_preview_truncated !== true
+    && metadata.argumentsPreviewTruncated !== true
+  ) {
+    return;
+  }
+
+  toolCall.argumentsPreviewTruncated = true;
+
+  const originalBytes = getNumberMetadata(
+    metadata,
+    "arguments_preview_original_bytes",
+    "argumentsPreviewOriginalBytes",
+  );
+  const lineCount = getNumberMetadata(
+    metadata,
+    "arguments_preview_line_count",
+    "argumentsPreviewLineCount",
+  );
+  const omittedLines = getNumberMetadata(
+    metadata,
+    "arguments_preview_omitted_lines",
+    "argumentsPreviewOmittedLines",
+  );
+  if (originalBytes != null) toolCall.argumentsPreviewOriginalBytes = originalBytes;
+  if (lineCount != null) toolCall.argumentsPreviewLineCount = lineCount;
+  if (omittedLines != null) toolCall.argumentsPreviewOmittedLines = omittedLines;
+
+  const diffPreview = normalizeStreamingDiffPreview(metadata.diff_preview ?? metadata.diffPreview);
+  if (diffPreview) {
+    toolCall.diffPreview = diffPreview;
+  }
+
+  const detailRef = normalizeStreamingToolDetailRef(metadata.detail_ref ?? metadata.detailRef);
+  if (detailRef) {
+    toolCall.detailRef = detailRef;
   }
 }
 
@@ -263,7 +322,9 @@ function applyToolCallResultPreview(
     toolCall.resultPreviewLineCount = preview.resultPreviewLineCount;
     toolCall.resultPreviewOmittedLines = preview.resultPreviewOmittedLines;
     delete toolCall.resultPreviewPaths;
-    delete toolCall.detailRef;
+    if (!toolCall.argumentsPreviewTruncated) {
+      delete toolCall.detailRef;
+    }
     return;
   }
 
@@ -273,7 +334,9 @@ function applyToolCallResultPreview(
   delete toolCall.resultPreviewLineCount;
   delete toolCall.resultPreviewOmittedLines;
   delete toolCall.resultPreviewPaths;
-  delete toolCall.detailRef;
+  if (!toolCall.argumentsPreviewTruncated) {
+    delete toolCall.detailRef;
+  }
 }
 
 type AgentMessageCreatedPayload = {
@@ -307,6 +370,19 @@ function contentBlockFromToolCall(toolCall: ToolCall): ContentBlockItem {
     ...(toolCall.resultPreviewOmittedLines !== undefined
       ? { resultPreviewOmittedLines: toolCall.resultPreviewOmittedLines }
       : {}),
+    ...(toolCall.argumentsPreviewTruncated !== undefined
+      ? { argumentsPreviewTruncated: toolCall.argumentsPreviewTruncated }
+      : {}),
+    ...(toolCall.argumentsPreviewOriginalBytes !== undefined
+      ? { argumentsPreviewOriginalBytes: toolCall.argumentsPreviewOriginalBytes }
+      : {}),
+    ...(toolCall.argumentsPreviewLineCount !== undefined
+      ? { argumentsPreviewLineCount: toolCall.argumentsPreviewLineCount }
+      : {}),
+    ...(toolCall.argumentsPreviewOmittedLines !== undefined
+      ? { argumentsPreviewOmittedLines: toolCall.argumentsPreviewOmittedLines }
+      : {}),
+    ...(toolCall.diffPreview ? { diffPreview: toolCall.diffPreview } : {}),
     ...(toolCall.detailRef ? { detailRef: toolCall.detailRef } : {}),
     ...(toolCall.parentToolUseId ? { parentToolUseId: toolCall.parentToolUseId } : {}),
     ...(toolCall.diffContext ? { diffContext: toolCall.diffContext } : {}),
@@ -371,6 +447,19 @@ function buildFinalizedMessageForCache(
       ...(block.resultPreviewOmittedLines !== undefined
         ? { resultPreviewOmittedLines: block.resultPreviewOmittedLines }
         : {}),
+      ...(block.argumentsPreviewTruncated !== undefined
+        ? { argumentsPreviewTruncated: block.argumentsPreviewTruncated }
+        : {}),
+      ...(block.argumentsPreviewOriginalBytes !== undefined
+        ? { argumentsPreviewOriginalBytes: block.argumentsPreviewOriginalBytes }
+        : {}),
+      ...(block.argumentsPreviewLineCount !== undefined
+        ? { argumentsPreviewLineCount: block.argumentsPreviewLineCount }
+        : {}),
+      ...(block.argumentsPreviewOmittedLines !== undefined
+        ? { argumentsPreviewOmittedLines: block.argumentsPreviewOmittedLines }
+        : {}),
+      ...(block.diffPreview ? { diffPreview: block.diffPreview } : {}),
       ...(block.detailRef ? { detailRef: block.detailRef } : {}),
       ...(block.parentToolUseId ? { parentToolUseId: block.parentToolUseId } : {}),
       ...(block.diffContext ? { diffContext: block.diffContext } : {}),
@@ -531,12 +620,26 @@ export function useChatEvents({
         resultPreviewLineCount?: number | null;
         result_preview_omitted_lines?: number | null;
         resultPreviewOmittedLines?: number | null;
+        arguments_preview_truncated?: boolean | null;
+        argumentsPreviewTruncated?: boolean | null;
+        arguments_preview_original_bytes?: number | null;
+        argumentsPreviewOriginalBytes?: number | null;
+        arguments_preview_line_count?: number | null;
+        argumentsPreviewLineCount?: number | null;
+        arguments_preview_omitted_lines?: number | null;
+        argumentsPreviewOmittedLines?: number | null;
+        diff_preview?: unknown;
+        diffPreview?: unknown;
         detail_ref?: unknown;
         detailRef?: unknown;
         conversation_id: string;
         context_id?: string;
         context_type?: string;
-        diff_context?: { old_content?: string; file_path: string } | null;
+        diff_context?: {
+          old_content?: string;
+          old_file_exists?: boolean;
+          file_path: string;
+        } | null;
         parent_tool_use_id?: string | null;
         seq?: number;
       }>("agent:tool_call", (payload) => {
@@ -661,6 +764,9 @@ export function useChatEvents({
           if (diff_context.old_content != null) {
             diffContext.oldContent = diff_context.old_content;
           }
+          if (typeof diff_context.old_file_exists === "boolean") {
+            diffContext.oldFileExists = diff_context.old_file_exists;
+          }
         }
 
         // Use backend tool_id for deduplication. Some provider streams can omit
@@ -672,6 +778,7 @@ export function useChatEvents({
         if (result != null) {
           applyToolCallResultPreview(entry, result, payload);
         }
+        applyBackendToolArgumentPreviewMetadata(entry, payload);
         if (diffContext) {
           entry.diffContext = diffContext;
         }
@@ -767,6 +874,7 @@ export function useChatEvents({
               } else if (existing.result != null) {
                 updated.result = existing.result;
               }
+              applyBackendToolArgumentPreviewMetadata(updated, payload);
               if (diffContext) {
                 updated.diffContext = diffContext;
               }
@@ -798,6 +906,7 @@ export function useChatEvents({
                 } else if (tc.result != null) {
                   updated.result = tc.result;
                 }
+                applyBackendToolArgumentPreviewMetadata(updated, payload);
                 if (diffContext) {
                   updated.diffContext = diffContext;
                 }
@@ -835,6 +944,7 @@ export function useChatEvents({
                   } else if (block.toolCall.result != null) {
                     updated.result = block.toolCall.result;
                   }
+                  applyBackendToolArgumentPreviewMetadata(updated, payload);
                   if (diffContext) {
                     updated.diffContext = diffContext;
                   }

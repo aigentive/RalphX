@@ -208,6 +208,62 @@ describe("MessageItem - Attachment Integration", () => {
     expect(screen.getByText("Second block")).toBeInTheDocument();
   });
 
+  it("passes argument preview metadata from content block tool uses into diff widgets", () => {
+    const contentBlocks = [
+      {
+        type: "tool_use" as const,
+        id: "tool-edit-preview",
+        name: "edit",
+        arguments: { file_path: "src/app.ts" },
+        argumentsPreviewTruncated: true,
+        argumentsPreviewOriginalBytes: 2400,
+        argumentsPreviewLineCount: 120,
+        argumentsPreviewOmittedLines: 114,
+        diffPreview: {
+          filePath: "src/app.ts",
+          language: "typescript",
+          oldTotalLines: 0,
+          newTotalLines: 1,
+          isBinary: false,
+          hunks: [
+            {
+              oldStart: 1,
+              oldLines: 0,
+              newStart: 1,
+              newLines: 1,
+              header: "@@ -1,0 +1,1 @@",
+              lines: [
+                {
+                  kind: "addition" as const,
+                  content: "export const value = 1;",
+                  oldLineNum: null,
+                  newLineNum: 1,
+                },
+              ],
+            },
+          ],
+        },
+        detailRef: {
+          conversationId: "conv-1",
+          messageId: "msg-1",
+          toolCallId: "tool-edit-preview",
+        },
+      },
+    ];
+
+    renderMessageItem(
+      <MessageItem
+        {...baseProps}
+        role="assistant"
+        contentBlocks={contentBlocks}
+      />
+    );
+
+    expect(screen.getByTestId("diff-tool-call-preview-diff")).toHaveTextContent(
+      "export const value = 1;"
+    );
+  });
+
   it("works with legacy rendering (toolCalls + text)", () => {
     const toolCalls = [
       makeToolCall("read_file", {

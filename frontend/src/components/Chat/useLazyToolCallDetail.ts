@@ -13,6 +13,7 @@ function getDetailKey(
     ref?.messageId ?? "",
     ref?.toolCallId ?? "",
     ref?.contentBlockIndex ?? "",
+    ref?.timelineItemId ?? "",
   ].join(":");
 }
 
@@ -27,6 +28,8 @@ export function useLazyToolCallDetail(toolCall: ToolCall) {
   const isMountedRef = useRef(true);
   const requestedDetailKeyRef = useRef<string | null>(null);
   const detailRef = toolCall.detailRef;
+  const needsDetail =
+    toolCall.resultPreviewTruncated === true || toolCall.argumentsPreviewTruncated === true;
   const detailKey = useMemo(
     () => getDetailKey(toolCall.id, detailRef),
     [detailRef, toolCall.id],
@@ -49,7 +52,7 @@ export function useLazyToolCallDetail(toolCall: ToolCall) {
 
   const loadDetail = useCallback(async () => {
     if (
-      !toolCall.resultPreviewTruncated
+      !needsDetail
       || !detailRef
       || fullToolCall
       || isLoadingDetail
@@ -83,7 +86,7 @@ export function useLazyToolCallDetail(toolCall: ToolCall) {
     detailRef,
     fullToolCall,
     isLoadingDetail,
-    toolCall.resultPreviewTruncated,
+    needsDetail,
   ]);
 
   return {

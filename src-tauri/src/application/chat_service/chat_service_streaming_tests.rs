@@ -1,9 +1,10 @@
 use super::{
-    agent_run_usage_from_codex_usage, codex_tool_call_content_block, flush_content_before_error,
-    format_agent_exit_stderr, normalize_codex_cumulative_usage_for_persistence,
-    normalize_codex_stream_usage_for_persistence, persist_assistant_message_snapshot,
-    persist_message_text_timeline_item, persist_timeline_snapshot, process_codex_stream_background,
-    process_exit_details, process_stream_background, provider_session_ref_for_harness,
+    agent_run_usage_from_codex_usage, capture_file_diff_baseline, codex_tool_call_content_block,
+    flush_content_before_error, format_agent_exit_stderr,
+    normalize_codex_cumulative_usage_for_persistence, normalize_codex_stream_usage_for_persistence,
+    persist_assistant_message_snapshot, persist_message_text_timeline_item,
+    persist_timeline_snapshot, process_codex_stream_background, process_exit_details,
+    process_stream_background, provider_session_ref_for_harness,
     resolve_codex_file_change_tool_call_snapshots, stream_mode_for_harness,
     upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome, StreamingStateCache,
 };
@@ -1009,6 +1010,7 @@ fn codex_tool_call_content_block_preserves_orderable_tool_payload() {
         parent_tool_use_id: Some("toolu-parent-1".to_string()),
         diff_context: Some(crate::infrastructure::agents::claude::DiffContext {
             old_content: Some("before".to_string()),
+            old_file_exists: None,
             file_path: "/tmp/example.txt".to_string(),
         }),
         stats: None,
@@ -1066,6 +1068,7 @@ fn upsert_codex_tool_call_snapshot_updates_existing_tool_call_in_place() {
             parent_tool_use_id: Some("toolu-parent-1".to_string()),
             diff_context: Some(crate::infrastructure::agents::claude::DiffContext {
                 old_content: Some("before".to_string()),
+                old_file_exists: None,
                 file_path: "/tmp/example.txt".to_string(),
             }),
             stats: None,
@@ -1208,6 +1211,13 @@ fn resolve_codex_file_change_tool_call_snapshots_turns_update_into_edit() {
             .and_then(|ctx| ctx.old_content.as_deref()),
         Some("alpha\n")
     );
+    assert_eq!(
+        tool_call
+            .diff_context
+            .as_ref()
+            .and_then(|ctx| ctx.old_file_exists),
+        Some(true)
+    );
 }
 
 #[test]
@@ -1279,6 +1289,92 @@ fn resolve_codex_file_change_tool_call_snapshots_turns_add_into_write() {
         .as_ref()
         .and_then(|ctx| ctx.old_content.as_deref())
         .is_none());
+    assert_eq!(
+        tool_call
+            .diff_context
+            .as_ref()
+            .and_then(|ctx| ctx.old_file_exists),
+        Some(false)
+    );
+}
+
+#[test]
+fn capture_file_diff_baseline_reports_existing_missing_and_unreadable_paths() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let existing_path = temp_dir.path().join("existing.txt");
+    std::fs::write(&existing_path, "alpha\n").expect("seed existing file");
+
+    assert_eq!(
+        capture_file_diff_baseline(&existing_path.to_string_lossy()),
+        (Some("alpha\n".to_string()), Some(true))
+    );
+
+    let missing_path = temp_dir.path().join("missing.txt");
+    assert_eq!(
+        capture_file_diff_baseline(&missing_path.to_string_lossy()),
+        (None, Some(false))
+    );
+
+    assert_eq!(
+        capture_file_diff_baseline(&temp_dir.path().to_string_lossy()),
+        (None, Some(true))
+    );
+}
+
+#[test]
+fn resolve_codex_file_change_tool_call_snapshots_turns_missing_update_into_write() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file_path = temp_dir.path().join("created-by-update.txt");
+
+    let mut pending = std::collections::HashMap::new();
+    let started = resolve_codex_file_change_tool_call_snapshots(
+        CodexFileChangeSnapshot {
+            id: Some("item_3".to_string()),
+            phase: CodexToolCallPhase::Started,
+            status: Some("in_progress".to_string()),
+            changes: vec![CodexFileChange {
+                path: file_path.display().to_string(),
+                kind: "update".to_string(),
+            }],
+        },
+        &mut pending,
+    );
+
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].tool_call.name, "file_change");
+
+    std::fs::write(&file_path, "created\n").expect("create file");
+
+    let completed = resolve_codex_file_change_tool_call_snapshots(
+        CodexFileChangeSnapshot {
+            id: Some("item_3".to_string()),
+            phase: CodexToolCallPhase::Completed,
+            status: Some("completed".to_string()),
+            changes: vec![CodexFileChange {
+                path: file_path.display().to_string(),
+                kind: "update".to_string(),
+            }],
+        },
+        &mut pending,
+    );
+
+    assert_eq!(completed.len(), 1);
+    let tool_call = &completed[0].tool_call;
+    assert_eq!(tool_call.name, "write");
+    assert_eq!(
+        tool_call.arguments,
+        serde_json::json!({
+            "file_path": file_path.display().to_string(),
+            "content": "created\n",
+        })
+    );
+    assert_eq!(
+        tool_call
+            .diff_context
+            .as_ref()
+            .and_then(|ctx| ctx.old_file_exists),
+        Some(false)
+    );
 }
 
 #[tokio::test]
