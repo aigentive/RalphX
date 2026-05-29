@@ -442,6 +442,205 @@ describe("ChatMessageList - Scroll Behavior", () => {
       }
     });
 
+    it("does not treat post-load Virtuoso measurement scroll as user scroll-away", () => {
+      vi.useFakeTimers();
+      vi.stubEnv("VITEST", "");
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      try {
+        mockIsAtBottom = true;
+        mockIsAtBottomRef.current = true;
+        render(<ChatMessageList {...defaultProps} />);
+        const scroller = screen.getByTestId("mock-virtuoso");
+        const totalListHeightChanged = expectMockVirtuosoCallback<(height: number) => void>(
+          "totalListHeightChanged",
+        );
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 500,
+        });
+        act(() => {
+          scroller.dispatchEvent(new Event("scroll"));
+          totalListHeightChanged(1000);
+          vi.advanceTimersByTime(300);
+        });
+        scrollToMock.mockClear();
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 300,
+        });
+        act(() => {
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1120,
+          scrollTop: 300,
+        });
+        act(() => {
+          totalListHeightChanged(1120);
+        });
+
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 620, behavior: "auto" });
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        vi.unstubAllEnvs();
+        vi.useRealTimers();
+      }
+    });
+
+    it("repins after a post-load Virtuoso measurement scroll without waiting for a resize", () => {
+      vi.useFakeTimers();
+      vi.stubEnv("VITEST", "");
+      const queuedRafs: FrameRequestCallback[] = [];
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        queuedRafs.push(cb);
+        return queuedRafs.length;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      try {
+        mockIsAtBottom = true;
+        mockIsAtBottomRef.current = true;
+        render(<ChatMessageList {...defaultProps} />);
+        const scroller = screen.getByTestId("mock-virtuoso");
+        queuedRafs.length = 0;
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 500,
+        });
+        act(() => {
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        act(() => {
+          while (queuedRafs.length > 0) {
+            queuedRafs.shift()?.(0);
+          }
+        });
+        act(() => {
+          vi.advanceTimersByTime(300);
+        });
+        scrollToMock.mockClear();
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 300,
+        });
+        act(() => {
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        act(() => {
+          while (queuedRafs.length > 0) {
+            queuedRafs.shift()?.(0);
+          }
+        });
+
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 500, behavior: "auto" });
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        vi.unstubAllEnvs();
+        vi.useRealTimers();
+      }
+    });
+
+    it("repins when Virtuoso reports not-at-bottom after a post-load measurement drift", () => {
+      vi.useFakeTimers();
+      vi.stubEnv("VITEST", "");
+
+      try {
+        mockIsAtBottom = true;
+        mockIsAtBottomRef.current = true;
+        render(<ChatMessageList {...defaultProps} />);
+        const scroller = screen.getByTestId("mock-virtuoso");
+        const atBottomStateChange = expectMockVirtuosoCallback<(atBottom: boolean) => void>(
+          "atBottomStateChange",
+        );
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 500,
+        });
+        act(() => {
+          atBottomStateChange(true);
+          vi.advanceTimersByTime(300);
+        });
+        scrollToMock.mockClear();
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 300,
+        });
+        act(() => {
+          atBottomStateChange(false);
+        });
+
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 500, behavior: "auto" });
+      } finally {
+        vi.unstubAllEnvs();
+        vi.useRealTimers();
+      }
+    });
+
+    it("repins no-input measurement drift even when the last item temporarily leaves range", () => {
+      vi.useFakeTimers();
+      vi.stubEnv("VITEST", "");
+
+      try {
+        mockIsAtBottom = true;
+        mockIsAtBottomRef.current = true;
+        render(<ChatMessageList {...defaultProps} />);
+        const scroller = screen.getByTestId("mock-virtuoso");
+        const rangeChanged = expectMockVirtuosoCallback<(range: { startIndex: number; endIndex: number }) => void>(
+          "rangeChanged",
+        );
+        const atBottomStateChange = expectMockVirtuosoCallback<(atBottom: boolean) => void>(
+          "atBottomStateChange",
+        );
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 500,
+        });
+        act(() => {
+          atBottomStateChange(true);
+          vi.advanceTimersByTime(300);
+        });
+        scrollToMock.mockClear();
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 300,
+        });
+        act(() => {
+          rangeChanged({ startIndex: 0, endIndex: 1 });
+          atBottomStateChange(false);
+        });
+
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 500, behavior: "auto" });
+      } finally {
+        vi.unstubAllEnvs();
+        vi.useRealTimers();
+      }
+    });
+
     it("keeps queued initial-load bottom verification alive while the last item is not yet visible", () => {
       vi.useFakeTimers();
       vi.stubEnv("VITEST", "");
@@ -2365,6 +2564,7 @@ describe("ChatMessageList - Scroll Behavior", () => {
         scrollToMock.mockClear();
 
         act(() => {
+          scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -14 }));
           scroller.dispatchEvent(new Event("scroll"));
         });
         expect(queuedRafs).toHaveLength(1);
@@ -3829,6 +4029,7 @@ describe("ChatMessageList - Scroll Behavior", () => {
         });
         scrollToMock.mockClear();
         act(() => {
+          scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
           scroller.dispatchEvent(new Event("scroll"));
         });
         expect(queuedRafs).toHaveLength(2);
@@ -3927,6 +4128,7 @@ describe("ChatMessageList - Scroll Behavior", () => {
         });
         scrollToMock.mockClear();
         act(() => {
+          scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
           scroller.dispatchEvent(new Event("scroll"));
         });
         expect(queuedRafs).toHaveLength(2);
@@ -4011,6 +4213,7 @@ describe("ChatMessageList - Scroll Behavior", () => {
           scrollTop: 460,
         });
         act(() => {
+          scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
           scroller.dispatchEvent(new Event("scroll"));
         });
 

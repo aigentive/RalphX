@@ -1080,6 +1080,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         if (!isLastItemActuallyVisible()) {
           return false;
         }
+        if (!hasUserScrollInputRef.current) {
+          return !activeScrollToTimestamp;
+        }
 
         return shouldStickToBottom({
           scrollToTimestamp: activeScrollToTimestamp,
@@ -1089,13 +1092,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       },
       [isAtBottomRef, isLastItemActuallyVisible],
     );
-
-    const hasPendingInitialBottomScroll = useCallback(() => {
-      if (!conversationId || lastItemIndex < 0) {
-        return false;
-      }
-      return hasScrolledRef.current !== `${conversationId}:${lastItemIndex}`;
-    }, [conversationId, lastItemIndex]);
 
     const handleGuardedFollowOutput = useCallback(
       (atBottom: boolean) => {
@@ -1354,6 +1350,30 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       userScrollAwayVersionRef.current += 1;
     }, []);
 
+    const shouldRecoverScrollDriftToBottom = useCallback(
+      (bottomDelta: number, visuallyAtBottom: boolean) => {
+        if (
+          scrollToTimestampRef.current ||
+          visuallyAtBottom ||
+          bottomDelta < AT_BOTTOM_THRESHOLD ||
+          isUserScrollingAwayFromBottomRef.current
+        ) {
+          return false;
+        }
+
+        if (!hasUserScrollInputRef.current) {
+          return true;
+        }
+
+        if (!isLastItemActuallyVisible()) {
+          return false;
+        }
+
+        return isAtBottomRef.current || isVisuallyAtBottomRef.current;
+      },
+      [isAtBottomRef, isLastItemActuallyVisible],
+    );
+
     // rAF-throttled DOM reconciliation — keeps isAtBottom accurate when Virtuoso doesn't detect footer growth.
     // Runs outside React render cycle (DOM event handler, not useEffect) — no render loop risk.
     // rAF fires post-paint, so scrollHeight reads don't force layout recalc during React commit phase.
@@ -1367,12 +1387,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       const previousScrollTop = lastObservedScrollTopRef.current;
       const isScrollingTowardBottom =
         previousScrollTop === null || el.scrollTop >= previousScrollTop;
-      const shouldTreatDirectionAsUserScroll =
-        hasUserScrollInputRef.current ||
-        !hasPendingInitialBottomScroll() ||
-        bottomDelta < AT_BOTTOM_THRESHOLD;
       if (
-        shouldTreatDirectionAsUserScroll &&
+        hasUserScrollInputRef.current &&
         previousScrollTop !== null &&
         el.scrollTop < previousScrollTop
       ) {
@@ -1384,6 +1400,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       setHasScrollableOverflow(
         el.scrollHeight > el.clientHeight + VISUAL_BOTTOM_EPSILON_PX
       );
+      if (shouldRecoverScrollDriftToBottom(bottomDelta, visuallyAtBottom)) {
+        scrollToTrueBottom("auto");
+        return;
+      }
       if (
         canAttemptTrueBottomSettle() &&
         atBottom &&
@@ -1403,11 +1423,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
     }, [
       canAttemptTrueBottomSettle,
-      hasPendingInitialBottomScroll,
       handleAtBottomStateChange,
       isAtBottomRef,
       markUserScrollingAwayFromBottom,
       recordTrueBottomSettleAttempt,
+      shouldRecoverScrollDriftToBottom,
       scrollToTrueBottom,
       setIsVisuallyAtBottom,
     ]);
@@ -1426,13 +1446,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
 
       const previousScrollTop = lastObservedScrollTopRef.current;
-      const bottomDelta = getScrollBottomDelta(el);
-      const shouldTreatDirectionAsUserScroll =
-        hasUserScrollInputRef.current ||
-        !hasPendingInitialBottomScroll() ||
-        bottomDelta < AT_BOTTOM_THRESHOLD;
       if (
-        shouldTreatDirectionAsUserScroll &&
+        hasUserScrollInputRef.current &&
         previousScrollTop !== null &&
         el.scrollTop < previousScrollTop
       ) {
@@ -1443,7 +1458,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       if (isScrollElementVisuallyAtBottom(el)) {
         isUserScrollingAwayFromBottomRef.current = false;
       }
-    }, [hasPendingInitialBottomScroll, markUserScrollingAwayFromBottom]);
+    }, [markUserScrollingAwayFromBottom]);
 
     const handleScrollerWheel = useCallback(
       (event: WheelEvent) => {
@@ -1508,6 +1523,14 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         const el = scrollerElRef.current;
         const visuallyAtBottom =
           atBottom && el ? isScrollElementVisuallyAtBottom(el) : atBottom;
+        if (
+          !atBottom &&
+          el &&
+          shouldRecoverScrollDriftToBottom(getScrollBottomDelta(el), false)
+        ) {
+          scrollToTrueBottom("auto");
+          return;
+        }
         setIsVisuallyAtBottom(visuallyAtBottom);
         handleAtBottomStateChange(atBottom);
         if (!atBottom) {
@@ -1521,6 +1544,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         canAttemptTrueBottomSettle,
         handleAtBottomStateChange,
         scheduleVirtuosoAtBottomSettle,
+        scrollToTrueBottom,
+        shouldRecoverScrollDriftToBottom,
         setIsVisuallyAtBottom,
       ],
     );
