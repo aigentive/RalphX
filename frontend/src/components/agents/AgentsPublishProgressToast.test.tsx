@@ -43,11 +43,11 @@ describe("AgentsPublishProgressToast", () => {
 
     expect(toastLoadingMock).toHaveBeenLastCalledWith(
       "Publishing workspace",
-      {
+      expect.objectContaining({
         description: "Checkout flow fix • Check workspace • 0s",
         duration: Infinity,
         id: "agent-workspace-operation:conversation-1:publish",
-      },
+      }),
     );
 
     vi.setSystemTime(12_000);
@@ -63,11 +63,11 @@ describe("AgentsPublishProgressToast", () => {
 
     expect(toastLoadingMock).toHaveBeenLastCalledWith(
       "Publishing workspace",
-      {
+      expect.objectContaining({
         description: "Checkout flow fix • Push branch • 2s",
         duration: Infinity,
         id: "agent-workspace-operation:conversation-1:publish",
-      },
+      }),
     );
 
     const loadingCallCount = toastLoadingMock.mock.calls.length;

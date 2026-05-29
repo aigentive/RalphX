@@ -125,6 +125,7 @@ export function startAgentWorkspaceOperationToast(
     startedAtMs: options.startedAtMs ?? Date.now(),
   };
   let intervalId: ReturnType<typeof setInterval> | null = null;
+  let dismissed = false;
   let settled = false;
 
   const clearTimer = () => {
@@ -135,14 +136,23 @@ export function startAgentWorkspaceOperationToast(
   };
 
   const render = () => {
-    if (settled) {
+    if (settled || dismissed) {
       return;
     }
     const description = progressDescription(currentOptions);
     toast.loading(currentOptions.title, {
       ...(description ? { description } : {}),
+      closeButton: true,
+      dismissible: true,
       duration: Infinity,
       id: currentOptions.id,
+      onDismiss: () => {
+        if (settled) {
+          return;
+        }
+        dismissed = true;
+        clearTimer();
+      },
     });
   };
 
