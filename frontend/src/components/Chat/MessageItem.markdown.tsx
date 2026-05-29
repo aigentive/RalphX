@@ -38,22 +38,38 @@ import { useMessageFileLinkContext } from "./MessageFileLinkContext";
 
 const PROSE_MAX_WIDTH = "min(85%, 620px)";
 
-const ASCII_ART_RE =
-  /[+\-|=]{3,}|[┌┐└┘├┤┬┴┼─│╔╗╚╝╠╣╦╩╬═║░▓█▒╮╰╯╭]{2,}/;
+const BOX_DRAWING_RE = /[┌┐└┘├┤┬┴┼─│╔╗╚╝╠╣╦╩╬═║░▓█▒╮╰╯╭]/g;
+const ASCII_DRAWING_SEQUENCE_RE = /[+\-|=]{3,}/;
+const ASCII_DRAWING_LINE_RE = /^[\s+\-|=]+$/;
 
 function looksLikeAsciiArt(children: React.ReactNode): boolean {
   const text = extractText(children);
   if (!text) return false;
-  return ASCII_ART_RE.test(text);
+  if ((text.match(BOX_DRAWING_RE)?.length ?? 0) >= 2) {
+    return true;
+  }
+
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .some(
+      (line) =>
+        line.length >= 3 &&
+        ASCII_DRAWING_SEQUENCE_RE.test(line) &&
+        ASCII_DRAWING_LINE_RE.test(line)
+    );
 }
 
 function extractText(node: React.ReactNode): string {
   if (typeof node === "string") return node;
   if (typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(extractText).join("");
-  if (node && typeof node === "object" && "props" in node) {
-    const el = node as React.ReactElement<{ children?: React.ReactNode }>;
-    return extractText(el.props.children);
+  if (React.isValidElement<{ children?: React.ReactNode }>(node)) {
+    if (node.type === "code") {
+      return "";
+    }
+    return extractText(node.props.children);
   }
   return "";
 }
