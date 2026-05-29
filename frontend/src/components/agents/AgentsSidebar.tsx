@@ -115,6 +115,8 @@ import { useArchivedConversationCounts } from "./useArchivedConversationCounts";
 
 const AGENTS_SEARCH_DEBOUNCE_MS = 180;
 const AGENTS_SIDEBAR_MAX_VISIBLE_SESSION_ROWS = 8;
+const AGENTS_SIDEBAR_ADAPTIVE_MAX_VISIBLE_SESSION_ROWS = 48;
+const AGENTS_SIDEBAR_ADAPTIVE_PAGE_OVERSCAN_ROWS = 2;
 const AGENTS_SIDEBAR_FALLBACK_SESSION_ROW_PX = 46;
 const AGENTS_SIDEBAR_SCROLL_MEMORY_LIMIT = 120;
 
@@ -239,10 +241,12 @@ const STATIC_RECENT_RUNS = [
 
 interface ScrollableAgentSessionListProps<T> {
   fetchNextPage: () => Promise<unknown>;
+  fillAvailableHeight?: boolean;
   getItemKey: (row: T) => string;
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
   isLoading: boolean;
+  onViewportRowCapacityChange?: (rowCapacity: number) => void;
   onVisibleRowsChange?: (rows: T[]) => void;
   renderRow: (row: T) => ReactNode;
   rows: T[];
@@ -252,10 +256,12 @@ interface ScrollableAgentSessionListProps<T> {
 
 function ScrollableAgentSessionList<T>({
   fetchNextPage,
+  fillAvailableHeight = false,
   getItemKey,
   hasNextPage,
   isFetchingNextPage,
   isLoading,
+  onViewportRowCapacityChange,
   onVisibleRowsChange,
   renderRow,
   rows,
@@ -270,6 +276,7 @@ function ScrollableAgentSessionList<T>({
   const lastScrollTopRef = useRef(0);
   const [scrollerVersion, setScrollerVersion] = useState(0);
   const rowResizeObserverRef = useRef<ResizeObserver | null>(null);
+  const viewportResizeObserverRef = useRef<ResizeObserver | null>(null);
   const latestVisibleRangeRef = useRef<ListRange | null>(null);
   const [measuredRowHeight, setMeasuredRowHeight] = useState<number | null>(null);
   const underflowFetchKeyRef = useRef<string | null>(null);
@@ -301,12 +308,20 @@ function ScrollableAgentSessionList<T>({
   );
   const viewportHeight = visibleRowSlots * rowHeight;
   const listStyle = useMemo<CSSProperties>(
-    () => ({
-      height: `${viewportHeight}px`,
-      maxHeight: `${AGENTS_SIDEBAR_MAX_VISIBLE_SESSION_ROWS * rowHeight}px`,
-      overflowX: "hidden",
-    }),
-    [rowHeight, viewportHeight]
+    () =>
+      fillAvailableHeight
+        ? {
+            flex: "1 1 auto",
+            height: "100%",
+            minHeight: 0,
+            overflowX: "hidden",
+          }
+        : {
+            height: `${viewportHeight}px`,
+            maxHeight: `${AGENTS_SIDEBAR_MAX_VISIBLE_SESSION_ROWS * rowHeight}px`,
+            overflowX: "hidden",
+          },
+    [fillAvailableHeight, rowHeight, viewportHeight]
   );
   const increaseViewportBy = useMemo(
     () => ({
@@ -382,6 +397,17 @@ function ScrollableAgentSessionList<T>({
       lastScrollTopRef.current = scrollTop;
     }
   }, []);
+
+  const reportViewportRowCapacity = useCallback(() => {
+    if (!fillAvailableHeight || !onViewportRowCapacityChange) {
+      return;
+    }
+    const viewportPx = scrollerRef.current?.clientHeight ?? 0;
+    if (viewportPx <= 0 || rowHeight <= 0) {
+      return;
+    }
+    onViewportRowCapacityChange(Math.ceil(viewportPx / rowHeight));
+  }, [fillAvailableHeight, onViewportRowCapacityChange, rowHeight]);
 
   const fetchNextPageIfNeeded = useCallback(() => {
     if (!hasNextPage || isFetchingNextPage) {
@@ -486,8 +512,34 @@ function ScrollableAgentSessionList<T>({
     return () => {
       rowResizeObserverRef.current?.disconnect();
       rowResizeObserverRef.current = null;
+      viewportResizeObserverRef.current?.disconnect();
+      viewportResizeObserverRef.current = null;
     };
   }, []);
+
+  useLayoutEffect(() => {
+    viewportResizeObserverRef.current?.disconnect();
+    viewportResizeObserverRef.current = null;
+    if (!fillAvailableHeight) {
+      return;
+    }
+
+    const scroller = scrollerRef.current;
+    reportViewportRowCapacity();
+    if (!scroller || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(reportViewportRowCapacity);
+    observer.observe(scroller);
+    viewportResizeObserverRef.current = observer;
+    return () => {
+      observer.disconnect();
+      if (viewportResizeObserverRef.current === observer) {
+        viewportResizeObserverRef.current = null;
+      }
+    };
+  }, [fillAvailableHeight, reportViewportRowCapacity, scrollerVersion]);
 
   useLayoutEffect(() => {
     return () => {
@@ -619,7 +671,14 @@ function ScrollableAgentSessionList<T>({
   }
 
   return (
-    <div className="mb-2 mt-1" role="group">
+    <div
+      className={
+        fillAvailableHeight
+          ? "mb-0 mt-1 flex min-h-0 flex-1 flex-col"
+          : "mb-2 mt-1"
+      }
+      role="group"
+    >
       <Virtuoso
         ref={virtuosoRef}
         className="agents-sidebar-session-list"
@@ -862,6 +921,8 @@ export function AgentsSidebar({
     return nextProjects.filter((project) => selectedProjectFilterSet.has(project.id));
   }, [projectSort, projects, selectedProjectFilterSet, latestProjectOrder]);
   const selectedPublicationStates = sidebarPublicationStateFilters;
+  const fillSingleProjectSidebar =
+    sidebarGroupBy === "project" && !showAllProjects && orderedProjects.length === 1;
 
   return (
     <aside
@@ -1007,7 +1068,13 @@ export function AgentsSidebar({
         />
       )}
 
-      <div className="flex-1 overflow-y-auto px-3 pb-3 pt-0.5">
+      <div
+        className={
+          fillSingleProjectSidebar
+            ? "flex min-h-0 flex-1 flex-col overflow-hidden px-3 pb-3 pt-0.5"
+            : "flex-1 overflow-y-auto px-3 pb-3 pt-0.5"
+        }
+      >
         {projects.length === 0 ? (
           <div className="h-full px-5 flex flex-col items-center justify-center text-center gap-3">
             <div className="space-y-1">
@@ -1068,6 +1135,7 @@ export function AgentsSidebar({
               showAllProjects={showAllProjects}
               showProjectHeader
               showProjectNameInMeta={false}
+              fillAvailableHeight={fillSingleProjectSidebar}
             />
           ))
         )}
@@ -2207,6 +2275,7 @@ interface ProjectSessionGroupProps {
   showAllProjects: boolean;
   showProjectHeader: boolean;
   showProjectNameInMeta: boolean;
+  fillAvailableHeight?: boolean;
 }
 
 function ProjectSessionGroup({
@@ -2231,6 +2300,7 @@ function ProjectSessionGroup({
   showAllProjects,
   showProjectHeader,
   showProjectNameInMeta,
+  fillAvailableHeight = false,
 }: ProjectSessionGroupProps) {
   const projectActionsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const sessionActionsTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -2245,6 +2315,9 @@ function ProjectSessionGroup({
   const [visibleEffectRows, setVisibleEffectRows] = useState<
     AgentSidebarConversationRow[]
   >([]);
+  const [adaptiveProjectPageSize, setAdaptiveProjectPageSize] = useState(
+    AGENTS_SIDEBAR_MAX_VISIBLE_SESSION_ROWS
+  );
   const expandedProjectIds = useAgentSessionStore((s) => s.expandedProjectIds);
   const setProjectExpanded = useAgentSessionStore((s) => s.setProjectExpanded);
   const expanded = searchQuery.length > 0 ? true : expandedProjectIds[project.id] ?? isFocused;
@@ -2276,6 +2349,7 @@ function ProjectSessionGroup({
     pinnedConversationIds: pinnedConversationIdList,
     priorityConversationIds,
     minimumRowCount: rememberedProjectRowCount,
+    ...(fillAvailableHeight ? { pageSize: adaptiveProjectPageSize } : {}),
   });
   const activeConversationIds = useChatStore((s) => s.activeConversationIds);
   const agentStatuses = useChatStore((s) => s.agentStatus);
@@ -2314,6 +2388,18 @@ function ProjectSessionGroup({
     },
     []
   );
+  const handleViewportRowCapacityChange = useCallback((rowCapacity: number) => {
+    const nextPageSize = Math.min(
+      AGENTS_SIDEBAR_ADAPTIVE_MAX_VISIBLE_SESSION_ROWS,
+      Math.max(
+        AGENTS_SIDEBAR_MAX_VISIBLE_SESSION_ROWS,
+        rowCapacity + AGENTS_SIDEBAR_ADAPTIVE_PAGE_OVERSCAN_ROWS
+      )
+    );
+    setAdaptiveProjectPageSize((currentPageSize) =>
+      currentPageSize === nextPageSize ? currentPageSize : nextPageSize
+    );
+  }, []);
   const totalConversationCount = groupQuery.group.total;
   const activeRuntimeCount = visibleConversations.filter((conversation) => {
     const rowKey = getAgentConversationStoreKey(conversation);
@@ -2428,14 +2514,24 @@ function ProjectSessionGroup({
 
   return (
     <div
-      className="my-1 flex flex-col gap-0.5"
+      className={
+        fillAvailableHeight
+          ? "my-1 flex min-h-0 flex-1 flex-col gap-0.5"
+          : "my-1 flex flex-col gap-0.5"
+      }
       data-testid={
         showProjectHeader
           ? `agents-project-${project.id}`
           : `agents-project-${project.id}-state`
       }
     >
-        <div className="relative">
+        <div
+          className={
+            fillAvailableHeight
+              ? "relative flex min-h-0 flex-1 flex-col"
+              : "relative"
+          }
+        >
           {showProjectHeader && (
           <div className="group/project-row relative">
           <button
@@ -2668,10 +2764,12 @@ function ProjectSessionGroup({
           {(showProjectHeader ? expanded : true) && (
             <ScrollableAgentSessionList
               fetchNextPage={groupQuery.fetchNextPage}
+              fillAvailableHeight={fillAvailableHeight}
               getItemKey={getProjectRowKey}
               hasNextPage={Boolean(groupQuery.hasNextPage)}
               isFetchingNextPage={Boolean(groupQuery.isFetchingNextPage)}
               isLoading={Boolean(groupQuery.isLoading)}
+              onViewportRowCapacityChange={handleViewportRowCapacityChange}
               onVisibleRowsChange={handleVisibleProjectRowsChange}
               renderRow={renderProjectRow}
               rows={visibleRows}

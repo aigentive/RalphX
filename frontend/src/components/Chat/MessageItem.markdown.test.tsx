@@ -235,6 +235,22 @@ describe("MessageItem.markdown", () => {
     expect(container.querySelector("pre")).not.toBeInTheDocument();
   });
 
+  it("keeps prose paragraphs with inline comparison code out of ASCII-art mode", () => {
+    const P = markdownComponents.p as React.ComponentType<{
+      children: React.ReactNode;
+    }>;
+    const { container } = render(
+      <P>
+        My recommendation: detect{" "}
+        <code>{'sidebarGroupBy === "project" && orderedProjects.length === 1'}</code>
+        , then fill the available sidebar body.
+      </P>,
+    );
+
+    expect(container.querySelector("p")).toBeInTheDocument();
+    expect(container.querySelector("pre")).not.toBeInTheDocument();
+  });
+
   it("extractText handles nested React elements for ASCII art detection", () => {
     const P = markdownComponents.p as React.ComponentType<{
       children: React.ReactNode;
