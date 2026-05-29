@@ -66,7 +66,7 @@ function renderWithPreviewHydration(
   toolCall: ToolCall,
   render: (toolCall: ToolCall) => React.ReactNode,
 ) {
-  if (!toolCall.resultPreviewTruncated) {
+  if (!toolCall.resultPreviewTruncated && !toolCall.argumentsPreviewTruncated) {
     return render(toolCall);
   }
 
@@ -89,7 +89,16 @@ export const ToolCallIndicator = React.memo(function ToolCallIndicator({ toolCal
   if (isDiffToolCall(toolCall.name)) {
     const args = toolCall.arguments;
     const hasFilePath = args != null && typeof args === "object" && typeof (args as Record<string, unknown>).file_path === "string" && (args as Record<string, unknown>).file_path !== "";
-    if (hasFilePath && !hasError) {
+    const hasDiffPayload =
+      args != null
+      && typeof args === "object"
+      && (
+        typeof (args as Record<string, unknown>).old_string === "string"
+        || typeof (args as Record<string, unknown>).new_string === "string"
+        || typeof (args as Record<string, unknown>).content === "string"
+        || toolCall.diffPreview != null
+      );
+    if (hasFilePath && hasDiffPayload && !hasError) {
       return renderWithPreviewHydration(toolCall, (displayToolCall) => (
         <DiffToolCallView toolCall={displayToolCall} className={className} compact={compact} />
       ));

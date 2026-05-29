@@ -15,6 +15,7 @@ import type { ContentBlockItem } from "../components/Chat/MessageItem";
 import type { MessageAttachment } from "../components/Chat/MessageAttachments";
 import { isWebMode } from "@/lib/tauri-detection";
 import { backendApiUrl } from "@/api/backend";
+import { FileDiffSchema, transformFileDiff, type FileDiff } from "./diff";
 
 // ============================================================================
 // Typed Invoke Helper
@@ -169,8 +170,18 @@ type ToolPreviewMetadataTarget = {
   resultPreviewLineCount?: number | undefined;
   resultPreviewOmittedLines?: number | undefined;
   resultPreviewPaths?: string[] | undefined;
+  argumentsPreviewTruncated?: boolean | undefined;
+  argumentsPreviewOriginalBytes?: number | undefined;
+  argumentsPreviewLineCount?: number | undefined;
+  argumentsPreviewOmittedLines?: number | undefined;
+  diffPreview?: FileDiff | undefined;
   detailRef?: ToolCallDetailRef | undefined;
 };
+
+function normalizeDiffPreview(raw: unknown): FileDiff | undefined {
+  const parsed = FileDiffSchema.safeParse(raw);
+  return parsed.success ? transformFileDiff(parsed.data) : undefined;
+}
 
 function applyToolPreviewMetadata(target: ToolPreviewMetadataTarget, raw: unknown) {
   const record = getRecord(raw);
@@ -210,6 +221,44 @@ function applyToolPreviewMetadata(target: ToolPreviewMetadataTarget, raw: unknow
   );
   if (previewPaths != null) target.resultPreviewPaths = previewPaths;
 
+  const argumentsPreviewTruncated =
+    record.arguments_preview_truncated ?? record.argumentsPreviewTruncated;
+  if (argumentsPreviewTruncated === true) {
+    target.argumentsPreviewTruncated = true;
+  }
+
+  const argumentsOriginalBytes = getNumberField(
+    record,
+    "arguments_preview_original_bytes",
+    "argumentsPreviewOriginalBytes"
+  );
+  if (argumentsOriginalBytes != null) {
+    target.argumentsPreviewOriginalBytes = argumentsOriginalBytes;
+  }
+
+  const argumentsLineCount = getNumberField(
+    record,
+    "arguments_preview_line_count",
+    "argumentsPreviewLineCount"
+  );
+  if (argumentsLineCount != null) {
+    target.argumentsPreviewLineCount = argumentsLineCount;
+  }
+
+  const argumentsOmittedLines = getNumberField(
+    record,
+    "arguments_preview_omitted_lines",
+    "argumentsPreviewOmittedLines"
+  );
+  if (argumentsOmittedLines != null) {
+    target.argumentsPreviewOmittedLines = argumentsOmittedLines;
+  }
+
+  const diffPreview = normalizeDiffPreview(record.diff_preview ?? record.diffPreview);
+  if (diffPreview) {
+    target.diffPreview = diffPreview;
+  }
+
   const detailRef = normalizeToolCallDetailRef(record.detail_ref ?? record.detailRef);
   if (detailRef) target.detailRef = detailRef;
 }
@@ -242,9 +291,13 @@ function normalizeToolCall(raw: unknown, idx = 0): ToolCall {
     const filePath = diffRecord.file_path ?? diffRecord.filePath;
     if (typeof filePath === "string") {
       const oldContent = diffRecord.old_content ?? diffRecord.oldContent;
+      const oldFileExists = diffRecord.old_file_exists ?? diffRecord.oldFileExists;
       toolCall.diffContext = { filePath };
       if (typeof oldContent === "string") {
         toolCall.diffContext.oldContent = oldContent;
+      }
+      if (typeof oldFileExists === "boolean") {
+        toolCall.diffContext.oldFileExists = oldFileExists;
       }
     }
   }
@@ -276,11 +329,17 @@ export function parseContentBlocks(raw: unknown): ContentBlockItem[] {
     };
     applyToolPreviewMetadata(item, block);
     // Transform diff_context (snake_case) to diffContext (camelCase) for tool_use blocks
-    if (block.type === "tool_use" && block.diff_context) {
+    const blockDiffContext = block.diff_context ?? block.diffContext;
+    if (block.type === "tool_use" && blockDiffContext) {
       item.diffContext = {
-        oldContent: block.diff_context.old_content ?? undefined,
-        filePath: block.diff_context.file_path,
+        oldContent: blockDiffContext.old_content ?? blockDiffContext.oldContent ?? undefined,
+        filePath: blockDiffContext.file_path ?? blockDiffContext.filePath,
       };
+      const oldFileExists =
+        blockDiffContext.old_file_exists ?? blockDiffContext.oldFileExists;
+      if (typeof oldFileExists === "boolean") {
+        item.diffContext.oldFileExists = oldFileExists;
+      }
     }
     return item;
   });

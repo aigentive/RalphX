@@ -10,7 +10,7 @@ use crate::domain::entities::chat_conversation::compatible_provider_session_fiel
 use crate::domain::entities::{ChatConversation, ChatMessage, ChatTimelineItem};
 use crate::infrastructure::agents::claude::ToolCall;
 
-use super::tool_result_preview::LiveToolResultPreview;
+use super::tool_result_preview::{LiveToolResultPreview, ToolArgumentPreviewPayload};
 
 // ============================================================================
 // Event Name Constants
@@ -193,7 +193,7 @@ pub struct AgentUsageUpdatedPayload {
     pub context_id: String,
 }
 
-/// Optional preview metadata for agent:tool_call result payloads.
+/// Optional preview metadata for agent:tool_call payloads.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct AgentToolCallPreviewFields {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -206,6 +206,16 @@ pub struct AgentToolCallPreviewFields {
     pub result_preview_omitted_lines: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_preview_paths: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments_preview_truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments_preview_original_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments_preview_line_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments_preview_omitted_lines: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff_preview: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail_ref: Option<serde_json::Value>,
 }
@@ -224,6 +234,18 @@ impl AgentToolCallPreviewFields {
             result_preview_omitted_lines: Some(preview.omitted_lines),
             result_preview_paths: (!preview.paths.is_empty()).then(|| preview.paths.clone()),
             detail_ref: preview.detail_ref.clone(),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn apply_tool_argument_preview(&mut self, preview: &ToolArgumentPreviewPayload) {
+        self.arguments_preview_truncated = Some(true);
+        self.arguments_preview_original_bytes = Some(preview.original_bytes);
+        self.arguments_preview_line_count = Some(preview.line_count);
+        self.arguments_preview_omitted_lines = Some(preview.omitted_lines);
+        self.diff_preview = preview.diff_preview.clone();
+        if let Some(detail_ref) = preview.detail_ref.clone() {
+            self.detail_ref = Some(detail_ref);
         }
     }
 }
@@ -277,6 +299,7 @@ impl AgentToolCallPayload {
     pub(crate) fn from_completed_tool_call(
         tool_call: &ToolCall,
         result_preview: Option<&LiveToolResultPreview>,
+        argument_preview: Option<&ToolArgumentPreviewPayload>,
         conversation_id: &str,
         context_type: &str,
         context_id: &str,
@@ -287,15 +310,25 @@ impl AgentToolCallPayload {
         let result = result_preview
             .map(|preview| Some(preview.result.clone()))
             .unwrap_or_else(|| tool_call.result.clone());
+        let mut preview = AgentToolCallPreviewFields::from_tool_result_preview(
+            result_preview.and_then(|preview| preview.preview.as_ref()),
+        );
+        if let Some(argument_preview) = argument_preview {
+            preview.apply_tool_argument_preview(argument_preview);
+        }
+        let arguments = argument_preview
+            .map(|preview| preview.arguments.clone())
+            .unwrap_or_else(|| tool_call.arguments.clone());
+        let diff_context = argument_preview
+            .and_then(|preview| preview.diff_context.clone())
+            .or(diff_context);
 
         Self {
             tool_name: tool_call.name.clone(),
             tool_id: tool_call.id.clone(),
-            arguments: tool_call.arguments.clone(),
+            arguments,
             result,
-            preview: AgentToolCallPreviewFields::from_tool_result_preview(
-                result_preview.and_then(|preview| preview.preview.as_ref()),
-            ),
+            preview,
             conversation_id: conversation_id.to_string(),
             context_type: context_type.to_string(),
             context_id: context_id.to_string(),

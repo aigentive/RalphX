@@ -55,11 +55,17 @@ export interface ContentBlockItem {
   resultPreviewLineCount?: number;
   resultPreviewOmittedLines?: number;
   resultPreviewPaths?: string[];
+  argumentsPreviewTruncated?: boolean;
+  argumentsPreviewOriginalBytes?: number;
+  argumentsPreviewLineCount?: number;
+  argumentsPreviewOmittedLines?: number;
+  diffPreview?: ToolCall["diffPreview"];
   detailRef?: ToolCall["detailRef"];
   parentToolUseId?: string;
   /** Diff context for Edit/Write tool calls (old file content for computing diffs) */
   diffContext?: {
     oldContent?: string;
+    oldFileExists?: boolean;
     filePath: string;
   };
 }
@@ -405,6 +411,21 @@ export const MessageItem = React.memo(function MessageItem({
               }
               if (block.resultPreviewPaths) {
                 toolCall.resultPreviewPaths = block.resultPreviewPaths;
+              }
+              if (block.argumentsPreviewTruncated) {
+                toolCall.argumentsPreviewTruncated = block.argumentsPreviewTruncated;
+              }
+              if (block.argumentsPreviewOriginalBytes != null) {
+                toolCall.argumentsPreviewOriginalBytes = block.argumentsPreviewOriginalBytes;
+              }
+              if (block.argumentsPreviewLineCount != null) {
+                toolCall.argumentsPreviewLineCount = block.argumentsPreviewLineCount;
+              }
+              if (block.argumentsPreviewOmittedLines != null) {
+                toolCall.argumentsPreviewOmittedLines = block.argumentsPreviewOmittedLines;
+              }
+              if (block.diffPreview) {
+                toolCall.diffPreview = block.diffPreview;
               }
               if (block.detailRef) {
                 toolCall.detailRef = block.detailRef;

@@ -60,7 +60,7 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
 };
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
 use crate::application::chat_service::tool_result_preview::{
-    preview_tool_result_object, tool_detail_ref,
+    preview_tool_arguments_object, preview_tool_result_object, tool_detail_ref,
 };
 use crate::application::chat_service::{
     AgentConversationCreatedPayload, AgentRunningState, SendMessageOptions,
@@ -1868,7 +1868,7 @@ impl From<ChatTimelineItem> for AgentTimelineItemResponse {
         let conversation_id = item.conversation_id.as_str();
         let content = item.text.clone().unwrap_or_default();
         let content_block =
-            timeline_item_content_block(&item, &conversation_id, message_id.as_deref());
+            timeline_item_content_block(&item, &conversation_id, message_id.as_deref(), true);
         let content_blocks = serde_json::Value::Array(vec![content_block.clone()]);
         let tool_call = if item.kind.to_string() == "tool_use" {
             Some(content_block)
@@ -1903,6 +1903,7 @@ fn timeline_item_content_block(
     item: &ChatTimelineItem,
     conversation_id: &str,
     message_id: Option<&str>,
+    preview_arguments: bool,
 ) -> serde_json::Value {
     if item.kind.to_string() == "text" {
         return serde_json::json!({
@@ -1948,6 +1949,13 @@ fn timeline_item_content_block(
     {
         if let Some(diff_context) = raw.get("diff_context").cloned() {
             block["diff_context"] = diff_context;
+        }
+    }
+
+    if preview_arguments {
+        let detail_ref = block.get("detail_ref").cloned();
+        if let Some(object) = block.as_object_mut() {
+            preview_tool_arguments_object(object, detail_ref);
         }
     }
 
@@ -2342,7 +2350,8 @@ fn maybe_preview_tool_result(
         tool_call_id.as_deref(),
         content_block_index,
     );
-    preview_tool_result_object(object, Some(detail_ref));
+    preview_tool_result_object(object, Some(detail_ref.clone()));
+    preview_tool_arguments_object(object, Some(detail_ref));
 }
 
 fn preview_tool_call_array(value: &mut JsonValue, conversation_id: &str, message_id: &str) {
@@ -6995,6 +7004,7 @@ pub async fn get_agent_timeline_item_tool_call_detail_for_app_state(
         &item,
         &conversation_id.as_str(),
         detail_message_id.as_deref(),
+        false,
     );
     Ok(Some(AgentToolCallDetailResponse { tool_call: block }))
 }
@@ -7271,6 +7281,7 @@ mod tests {
         normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
         normalize_explicit_publish_base_selection, normalized_effort_for_supported,
         parse_wrapped_mcp_result_object, persist_workspace_base_resolution_if_retargeted,
+        preview_tool_payloads_for_message,
         precompute_agent_conversation_workspace_pr_description_for_app_state,
         project_plan_branch_publication_into_workspace_response,
         publication_event_status_for_push_status, publication_event_summary_for_push_status,
@@ -11780,6 +11791,195 @@ mod tests {
             Some(message_id.as_str())
         );
         assert_eq!(tool["diff_context"]["file_path"], "src/lib.rs");
+    }
+
+    #[test]
+    fn preview_tool_payloads_replaces_edit_arguments_with_first_diff_hunk() {
+        let old_content = [
+            "line 1", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7", "line 8",
+            "line 9", "line 10", "line 11", "line 12",
+        ]
+        .join("\n");
+        let new_content = [
+            "line 1",
+            "line 2 changed",
+            "line 3",
+            "line 4",
+            "line 5",
+            "line 6",
+            "line 7",
+            "line 8",
+            "line 9",
+            "line 10 changed",
+            "line 11",
+            "line 12",
+        ]
+        .join("\n");
+        let tool_calls = json!([{
+            "id": "tool-edit-1",
+            "name": "edit",
+            "arguments": {
+                "file_path": "src/example.ts",
+                "old_string": old_content,
+                "new_string": new_content,
+                "replace_all": false
+            },
+            "result": { "status": "ok" }
+        }]);
+
+        let (tool_calls, _) = preview_tool_payloads_for_message(
+            "conversation-1",
+            "message-1",
+            Some(tool_calls),
+            None,
+        );
+        let tool_calls = tool_calls.expect("previewed tool calls");
+        let tool = &tool_calls.as_array().expect("tool call array")[0];
+        let diff_preview_text =
+            serde_json::to_string(&tool["diff_preview"]).expect("diff preview serializes");
+
+        assert_eq!(tool["arguments_preview_truncated"], true);
+        assert_eq!(tool["arguments"]["file_path"], "src/example.ts");
+        assert_eq!(tool["arguments"]["replace_all"], false);
+        assert!(tool["arguments"]["old_string"].is_null());
+        assert!(tool["arguments"]["new_string"].is_null());
+        assert_eq!(
+            tool["detail_ref"],
+            json!({
+                "conversation_id": "conversation-1",
+                "message_id": "message-1",
+                "tool_call_id": "tool-edit-1",
+                "content_block_index": null
+            })
+        );
+        assert_eq!(tool["diff_preview"]["file_path"], "src/example.ts");
+        assert_eq!(tool["diff_preview"]["language"], "typescript");
+        assert!(diff_preview_text.contains("line 2 changed"));
+        assert!(!diff_preview_text.contains("line 10 changed"));
+    }
+
+    #[test]
+    fn preview_tool_payloads_replaces_write_content_and_diff_context_with_diff_preview() {
+        let content_blocks = json!([{
+            "type": "tool_use",
+            "id": "tool-write-1",
+            "name": "write",
+            "arguments": {
+                "file_path": "src/lib.rs",
+                "content": "fn main() {\n    println!(\"new\");\n}"
+            },
+            "diff_context": {
+                "file_path": "src/lib.rs",
+                "old_content": "fn main() {\n    println!(\"old\");\n}"
+            },
+            "result": { "status": "ok" }
+        }]);
+
+        let (_, content_blocks) = preview_tool_payloads_for_message(
+            "conversation-1",
+            "message-1",
+            None,
+            Some(content_blocks),
+        );
+        let content_blocks = content_blocks.expect("previewed content blocks");
+        let tool = &content_blocks.as_array().expect("content block array")[0];
+
+        assert_eq!(tool["arguments_preview_truncated"], true);
+        assert_eq!(tool["arguments"]["file_path"], "src/lib.rs");
+        assert!(tool["arguments"]["content"].is_null());
+        assert_eq!(tool["diff_context"]["file_path"], "src/lib.rs");
+        assert!(tool["diff_context"]["old_content"].is_null());
+        assert_eq!(tool["diff_preview"]["file_path"], "src/lib.rs");
+        assert_eq!(
+            tool["detail_ref"]["content_block_index"],
+            serde_json::json!(0)
+        );
+    }
+
+    #[test]
+    fn preview_tool_payloads_renders_new_write_as_added_diff() {
+        let content_blocks = json!([{
+            "type": "tool_use",
+            "id": "tool-write-new",
+            "name": "write",
+            "arguments": {
+                "file_path": "src/new.rs",
+                "content": "pub fn new() {}\n"
+            },
+            "diff_context": {
+                "file_path": "src/new.rs",
+                "old_file_exists": false
+            },
+            "result": { "status": "ok" }
+        }]);
+
+        let (_, content_blocks) = preview_tool_payloads_for_message(
+            "conversation-1",
+            "message-1",
+            None,
+            Some(content_blocks),
+        );
+        let content_blocks = content_blocks.expect("previewed content blocks");
+        let tool = &content_blocks.as_array().expect("content block array")[0];
+
+        assert_eq!(tool["arguments_preview_truncated"], true);
+        assert_eq!(tool["arguments"]["file_path"], "src/new.rs");
+        assert!(tool["arguments"]["content"].is_null());
+        assert_eq!(tool["diff_context"]["old_file_exists"], false);
+        assert_eq!(tool["diff_preview"]["old_total_lines"], 0);
+        assert_eq!(tool["diff_preview"]["new_total_lines"], 2);
+        assert_eq!(tool["diff_preview"]["hunks"][0]["lines"][0]["kind"], "addition");
+    }
+
+    #[tokio::test]
+    async fn timeline_item_response_previews_edit_arguments_but_detail_returns_full_payload() {
+        let state = AppState::new_test();
+        let conversation_id = ChatConversationId::new();
+        let message_id = ChatMessageId::from_string("assistant-message-edit");
+        let mut item = ChatTimelineItem::for_message_block(
+            message_id.clone(),
+            conversation_id,
+            0,
+            MessageRole::Orchestrator,
+            ChatTimelineItemKind::ToolUse,
+        );
+        item.tool_call_id = Some("tool-edit-timeline".to_string());
+        item.tool_name = Some("edit".to_string());
+        item.input_json = Some(
+            json!({
+                "file_path": "src/example.ts",
+                "old_string": "old line",
+                "new_string": "new line"
+            })
+            .to_string(),
+        );
+
+        let response = AgentTimelineItemResponse::from(item.clone());
+        let preview_tool = response.tool_call.expect("timeline tool preview");
+        assert_eq!(preview_tool["arguments_preview_truncated"], true);
+        assert!(preview_tool["arguments"]["old_string"].is_null());
+        assert_eq!(
+            preview_tool["detail_ref"]["timeline_item_id"].as_str(),
+            Some(response.id.as_str())
+        );
+
+        let item = state
+            .chat_timeline_repo
+            .upsert_item(item)
+            .await
+            .expect("insert timeline edit item");
+        let detail = get_agent_timeline_item_tool_call_detail_for_app_state(
+            &state,
+            conversation_id,
+            item.id,
+        )
+        .await
+        .expect("timeline edit detail lookup")
+        .expect("timeline edit detail");
+
+        assert_eq!(detail.tool_call["arguments"]["old_string"], "old line");
+        assert_eq!(detail.tool_call["arguments"]["new_string"], "new line");
+        assert!(detail.tool_call["arguments_preview_truncated"].is_null());
     }
 
     #[test]
