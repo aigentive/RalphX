@@ -35,6 +35,7 @@ fn test_tool_call_with_diff_context_serialization() {
         parent_tool_use_id: None,
         diff_context: Some(DiffContext {
             old_content: Some("fn main() {\n    old\n}\n".to_string()),
+            old_file_exists: None,
             file_path: "/project/src/main.rs".to_string(),
         }),
         stats: None,
@@ -62,6 +63,7 @@ fn test_tool_call_diff_context_new_file() {
         parent_tool_use_id: None,
         diff_context: Some(DiffContext {
             old_content: None,
+            old_file_exists: Some(false),
             file_path: "/project/src/new.rs".to_string(),
         }),
         stats: None,
@@ -71,6 +73,7 @@ fn test_tool_call_diff_context_new_file() {
     let parsed: ToolCall = serde_json::from_str(&json).unwrap();
     let ctx = parsed.diff_context.unwrap();
     assert!(ctx.old_content.is_none());
+    assert_eq!(ctx.old_file_exists, Some(false));
     assert_eq!(ctx.file_path, "/project/src/new.rs");
 }
 

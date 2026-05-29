@@ -43,8 +43,9 @@ use super::chat_service_errors::StreamError;
 use super::chat_service_types::AgentUsageUpdatedPayload;
 use super::streaming_state_cache::{CachedStreamingTask, CachedToolCall, StreamingStateCache};
 use super::tool_result_preview::{
-    build_live_tool_result_preview_for_tool_call, build_live_tool_result_preview_for_tool_id,
-    live_tool_result_activity_content, live_tool_result_activity_metadata,
+    build_live_tool_argument_preview, build_live_tool_result_preview_for_tool_call,
+    build_live_tool_result_preview_for_tool_id, live_tool_result_activity_content,
+    live_tool_result_activity_metadata, tool_detail_ref,
 };
 use super::{
     event_context, events, has_meaningful_output, AgentChunkPayload, AgentHookPayload,
@@ -485,6 +486,15 @@ struct PendingCodexFileChange {
     path: String,
     kind: String,
     old_content: Option<String>,
+    old_file_exists: Option<bool>,
+}
+
+fn capture_file_diff_baseline(path: &str) -> (Option<String>, Option<bool>) {
+    match std::fs::read_to_string(path) {
+        Ok(content) => (Some(content), Some(true)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, Some(false)),
+        Err(_) => (None, Some(true)),
+    }
 }
 
 fn codex_file_change_tool_call_id(item_id: Option<&str>, path: &str, index: usize) -> String {
@@ -550,6 +560,7 @@ fn codex_file_change_completed_snapshot(
                         parent_tool_use_id: None,
                         diff_context: Some(DiffContext {
                             old_content: change.old_content,
+                            old_file_exists: Some(true),
                             file_path: change.path,
                         }),
                         stats: None,
@@ -566,6 +577,7 @@ fn codex_file_change_completed_snapshot(
                         parent_tool_use_id: None,
                         diff_context: Some(DiffContext {
                             old_content: None,
+                            old_file_exists: change.old_file_exists,
                             file_path: change.path,
                         }),
                         stats: None,
@@ -603,6 +615,7 @@ fn codex_file_change_completed_snapshot(
                     parent_tool_use_id: None,
                     diff_context: Some(DiffContext {
                         old_content: None,
+                        old_file_exists: Some(false),
                         file_path: change.path,
                     }),
                     stats: None,
@@ -663,12 +676,14 @@ fn resolve_codex_file_change_tool_call_snapshots(
                 codex_file_change_tool_call_id(snapshot.id.as_deref(), &change.path, index);
             match snapshot.phase {
                 CodexToolCallPhase::Started => {
+                    let (old_content, old_file_exists) = capture_file_diff_baseline(&change.path);
                     pending_changes.insert(
                         tool_id.clone(),
                         PendingCodexFileChange {
                             path: change.path.clone(),
                             kind: change.kind.clone(),
-                            old_content: std::fs::read_to_string(&change.path).ok(),
+                            old_content,
+                            old_file_exists,
                         },
                     );
                     codex_file_change_started_snapshot(snapshot.id.as_deref(), &change, index)
@@ -681,6 +696,7 @@ fn resolve_codex_file_change_tool_call_snapshots(
                                 path: change.path,
                                 kind: change.kind,
                                 old_content: None,
+                                old_file_exists: None,
                             });
                     codex_file_change_completed_snapshot(
                         tool_id,
@@ -1734,9 +1750,11 @@ pub async fn process_stream_background<R: Runtime>(
                                 .get("file_path")
                                 .and_then(|v| v.as_str())
                             {
-                                let old_content = std::fs::read_to_string(file_path).ok();
+                                let (old_content, old_file_exists) =
+                                    capture_file_diff_baseline(file_path);
                                 let diff_ctx = DiffContext {
                                     old_content,
+                                    old_file_exists,
                                     file_path: file_path.to_string(),
                                 };
                                 tool_call.diff_context = Some(diff_ctx.clone());
@@ -1758,6 +1776,38 @@ pub async fn process_stream_background<R: Runtime>(
                             .diff_context
                             .as_ref()
                             .and_then(|dc| serde_json::to_value(dc).ok());
+                        let argument_preview =
+                            assistant_message_id.as_deref().and_then(|message_id| {
+                                let detail_ref = tool_detail_ref(
+                                    &conversation_id_str,
+                                    message_id,
+                                    tool_call.id.as_deref(),
+                                    None,
+                                );
+                                build_live_tool_argument_preview(
+                                    &tool_call,
+                                    diff_context_value.as_ref(),
+                                    Some(detail_ref),
+                                )
+                            });
+                        if argument_preview.is_some() {
+                            persist_assistant_message_snapshot(
+                                &chat_message_repo,
+                                &assistant_message_id,
+                                &processor.response_text,
+                                &processor.tool_calls,
+                                &processor.content_blocks,
+                            )
+                            .await;
+                            persist_timeline_snapshot(
+                                &chat_timeline_repo,
+                                &conversation_id_str,
+                                &assistant_message_id,
+                                &processor.content_blocks,
+                                ChatTimelineItemStatus::Streaming,
+                            )
+                            .await;
+                        }
 
                         // Update streaming state cache with completed tool call
                         let cached_tool = CachedToolCall {
@@ -1775,19 +1825,17 @@ pub async fn process_stream_background<R: Runtime>(
                         if let Some(ref handle) = app_handle {
                             let _ = handle.emit(
                                 events::AGENT_TOOL_CALL,
-                                AgentToolCallPayload {
-                                    tool_name: tool_call.name.clone(),
-                                    tool_id: tool_call.id.clone(),
-                                    arguments: tool_call.arguments.clone(),
-                                    result: None,
-                                    preview: AgentToolCallPreviewFields::default(),
-                                    conversation_id: conversation_id_str.clone(),
-                                    context_type: context_type_str.clone(),
-                                    context_id: context_id_str.clone(),
-                                    diff_context: diff_context_value,
-                                    parent_tool_use_id: parent_tool_use_id.clone(),
-                                    seq: stream_seq,
-                                },
+                                AgentToolCallPayload::from_completed_tool_call(
+                                    &tool_call,
+                                    None,
+                                    argument_preview.as_ref(),
+                                    &conversation_id_str,
+                                    &context_type_str,
+                                    &context_id_str,
+                                    diff_context_value,
+                                    parent_tool_use_id.clone(),
+                                    stream_seq,
+                                ),
                             );
                             stream_seq += 1;
 
@@ -3361,6 +3409,19 @@ async fn process_codex_stream_background<R: Runtime>(
                     assistant_message_id.as_deref(),
                     &tool_call,
                 );
+                let argument_preview = assistant_message_id.as_deref().and_then(|message_id| {
+                    let detail_ref = tool_detail_ref(
+                        &conversation_id_str,
+                        message_id,
+                        tool_call.id.as_deref(),
+                        None,
+                    );
+                    build_live_tool_argument_preview(
+                        &tool_call,
+                        diff_context_value.as_ref(),
+                        Some(detail_ref),
+                    )
+                });
 
                 if let Some(ref handle) = app_handle {
                     let _ = handle.emit(
@@ -3368,6 +3429,7 @@ async fn process_codex_stream_background<R: Runtime>(
                         AgentToolCallPayload::from_completed_tool_call(
                             &tool_call,
                             result_preview.as_ref(),
+                            argument_preview.as_ref(),
                             &conversation_id_str,
                             &context_type_str,
                             &context_id_str,

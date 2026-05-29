@@ -3,10 +3,11 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use crate::application::chat_service::tool_result_preview::{
-    build_live_tool_result_preview, build_live_tool_result_preview_for_tool_call,
-    build_live_tool_result_preview_for_tool_id, build_tool_result_preview_payload,
-    live_tool_result_activity_content, live_tool_result_activity_metadata,
-    preview_tool_result_object, should_skip_tool_result_preview, tool_detail_ref,
+    build_live_tool_argument_preview, build_live_tool_result_preview,
+    build_live_tool_result_preview_for_tool_call, build_live_tool_result_preview_for_tool_id,
+    build_tool_result_preview_payload, live_tool_result_activity_content,
+    live_tool_result_activity_metadata, preview_tool_result_object, should_skip_tool_result_preview,
+    tool_detail_ref,
 };
 use crate::application::chat_service::{
     process_stream_background, AgentToolCallPayload, AgentToolCallPreviewFields,
@@ -15,7 +16,7 @@ use crate::application::chat_service::{
 use crate::commands::unified_chat_commands::preview_tool_payloads_for_message;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{ChatContextType, ChatConversationId};
-use crate::infrastructure::agents::claude::ToolCall;
+use crate::infrastructure::agents::claude::{DiffContext, ToolCall};
 use crate::infrastructure::memory::MemoryChatMessageRepository;
 use tauri::test::MockRuntime;
 use tokio_util::sync::CancellationToken;
@@ -470,6 +471,7 @@ fn live_preview_for_tool_call_builds_completed_event_payload() {
     let payload = AgentToolCallPayload::from_completed_tool_call(
         &tool_call,
         Some(&preview),
+        None,
         "conv-1",
         "project",
         "project-1",
@@ -486,6 +488,99 @@ fn live_preview_for_tool_call_builds_completed_event_payload() {
     assert_eq!(value["diff_context"]["file_path"], "big.log");
     assert_eq!(value["parent_tool_use_id"], "parent-tool");
     assert_eq!(value["seq"], 9);
+}
+
+#[test]
+fn live_completed_edit_payload_previews_arguments_with_detail_ref() {
+    let tool_call = ToolCall {
+        id: Some("tool-edit".to_string()),
+        name: "Edit".to_string(),
+        arguments: json!({
+            "file_path": "src/app.ts",
+            "old_string": "export const value = 1;\nexport const label = \"old\";\n",
+            "new_string": "export const value = 1;\nexport const label = \"new\";\n",
+        }),
+        result: None,
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    };
+    let argument_preview = build_live_tool_argument_preview(
+        &tool_call,
+        None,
+        Some(tool_detail_ref("conv-1", "msg-1", Some("tool-edit"), None)),
+    )
+    .expect("edit arguments should preview");
+
+    let payload = AgentToolCallPayload::from_completed_tool_call(
+        &tool_call,
+        None,
+        Some(&argument_preview),
+        "conv-1",
+        "project",
+        "project-1",
+        None,
+        None,
+        10,
+    );
+    let value = serde_json::to_value(payload).unwrap();
+
+    assert_eq!(value["tool_name"], "Edit");
+    assert_eq!(value["arguments"]["file_path"], "src/app.ts");
+    assert!(value["arguments"].get("old_string").is_none());
+    assert!(value["arguments"].get("new_string").is_none());
+    assert_eq!(value["arguments_preview_truncated"], true);
+    assert_eq!(value["diff_preview"]["file_path"], "src/app.ts");
+    assert_eq!(value["detail_ref"]["message_id"], "msg-1");
+    assert_eq!(value["detail_ref"]["tool_call_id"], "tool-edit");
+}
+
+#[test]
+fn live_completed_write_payload_previews_confirmed_new_file_as_added_diff() {
+    let tool_call = ToolCall {
+        id: Some("tool-write-new".to_string()),
+        name: "write".to_string(),
+        arguments: json!({
+            "file_path": "src/new.rs",
+            "content": "pub fn new() {}\n",
+        }),
+        result: None,
+        parent_tool_use_id: None,
+        diff_context: Some(DiffContext {
+            old_content: None,
+            old_file_exists: Some(false),
+            file_path: "src/new.rs".to_string(),
+        }),
+        stats: None,
+    };
+    let diff_context = serde_json::to_value(tool_call.diff_context.as_ref().unwrap()).unwrap();
+    let argument_preview = build_live_tool_argument_preview(
+        &tool_call,
+        Some(&diff_context),
+        Some(tool_detail_ref("conv-1", "msg-1", Some("tool-write-new"), None)),
+    )
+    .expect("new-file write arguments should preview");
+
+    let payload = AgentToolCallPayload::from_completed_tool_call(
+        &tool_call,
+        None,
+        Some(&argument_preview),
+        "conv-1",
+        "project",
+        "project-1",
+        Some(diff_context),
+        None,
+        10,
+    );
+    let value = serde_json::to_value(payload).unwrap();
+
+    assert_eq!(value["tool_name"], "write");
+    assert_eq!(value["arguments"]["file_path"], "src/new.rs");
+    assert!(value["arguments"].get("content").is_none());
+    assert_eq!(value["diff_context"]["old_file_exists"], false);
+    assert_eq!(value["diff_preview"]["old_total_lines"], 0);
+    assert_eq!(value["diff_preview"]["new_total_lines"], 2);
+    assert_eq!(value["diff_preview"]["hunks"][0]["lines"][0]["kind"], "addition");
 }
 
 #[test]

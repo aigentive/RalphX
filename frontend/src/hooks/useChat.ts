@@ -262,6 +262,19 @@ function toolCallFromContentBlock(block: FinalizedContentBlock) {
     ...(block.resultPreviewOmittedLines !== undefined
       ? { resultPreviewOmittedLines: block.resultPreviewOmittedLines }
       : {}),
+    ...(block.argumentsPreviewTruncated !== undefined
+      ? { argumentsPreviewTruncated: block.argumentsPreviewTruncated }
+      : {}),
+    ...(block.argumentsPreviewOriginalBytes !== undefined
+      ? { argumentsPreviewOriginalBytes: block.argumentsPreviewOriginalBytes }
+      : {}),
+    ...(block.argumentsPreviewLineCount !== undefined
+      ? { argumentsPreviewLineCount: block.argumentsPreviewLineCount }
+      : {}),
+    ...(block.argumentsPreviewOmittedLines !== undefined
+      ? { argumentsPreviewOmittedLines: block.argumentsPreviewOmittedLines }
+      : {}),
+    ...(block.diffPreview ? { diffPreview: block.diffPreview } : {}),
     ...(block.detailRef ? { detailRef: block.detailRef } : {}),
     ...(block.parentToolUseId ? { parentToolUseId: block.parentToolUseId } : {}),
     ...(block.diffContext ? { diffContext: block.diffContext } : {}),

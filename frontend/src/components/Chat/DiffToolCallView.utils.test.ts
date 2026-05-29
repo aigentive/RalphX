@@ -9,9 +9,11 @@ import { describe, it, expect } from "vitest";
 import {
   isTaskToolCall,
   isDiffToolCall,
+  extractWriteDiff,
   getWorkspaceRelativeDiffPath,
   getDiffFilePathDisplay,
 } from "./DiffToolCallView.utils";
+import type { ToolCall } from "./ToolCallIndicator";
 
 describe("isTaskToolCall", () => {
   describe("Task tool names", () => {
@@ -179,5 +181,56 @@ describe("diff file path display", () => {
         null
       )
     ).toBe("/tmp/ralphx/worktrees/conversation-1/frontend/src/App.tsx");
+  });
+});
+
+describe("extractWriteDiff", () => {
+  it("renders confirmed new-file writes as added-line diffs", () => {
+    const toolCall: ToolCall = {
+      id: "tool-write-new",
+      name: "write",
+      arguments: {
+        file_path: "src/new.ts",
+        content: "first line\nsecond line",
+      },
+      diffContext: {
+        filePath: "src/new.ts",
+        oldFileExists: false,
+      },
+    };
+
+    const diff = extractWriteDiff(toolCall);
+
+    expect(diff).toMatchObject({
+      displayKind: "diff",
+      baselineUnavailable: false,
+      newFile: true,
+      additions: 2,
+      deletions: 0,
+    });
+    expect(diff?.previewDiff?.hunks[0]?.lines.map((line) => line.kind)).toEqual([
+      "addition",
+      "addition",
+    ]);
+  });
+
+  it("keeps writes without baseline evidence on the final-content fallback", () => {
+    const toolCall: ToolCall = {
+      id: "tool-write-unknown",
+      name: "write",
+      arguments: {
+        file_path: "src/generated.txt",
+        content: "final only",
+      },
+    };
+
+    const diff = extractWriteDiff(toolCall);
+
+    expect(diff).toMatchObject({
+      displayKind: "final-content",
+      baselineUnavailable: true,
+      newFile: false,
+      finalContent: "final only",
+    });
   });
 });

@@ -105,6 +105,82 @@ describe("chat api", () => {
     });
   });
 
+  it("preserves argument preview metadata and diff previews on parsed tool calls", () => {
+    const parsed = parseToolCalls([
+      {
+        id: "tool-edit",
+        name: "edit",
+        arguments: { file_path: "src/example.ts" },
+        arguments_preview_truncated: true,
+        arguments_preview_original_bytes: 2400,
+        arguments_preview_line_count: 120,
+        arguments_preview_omitted_lines: 114,
+        diff_preview: {
+          file_path: "src/example.ts",
+          language: "typescript",
+          hunks: [
+            {
+              old_start: 1,
+              old_lines: 2,
+              new_start: 1,
+              new_lines: 2,
+              header: "@@ -1,2 +1,2 @@",
+              lines: [
+                {
+                  kind: "context",
+                  content: "line 1",
+                  old_line_num: 1,
+                  new_line_num: 1,
+                },
+                {
+                  kind: "addition",
+                  content: "line 2 changed",
+                  old_line_num: null,
+                  new_line_num: 2,
+                },
+              ],
+            },
+          ],
+          old_total_lines: 60,
+          new_total_lines: 60,
+          is_binary: false,
+        },
+      },
+    ]);
+
+    expect(parsed[0]).toMatchObject({
+      id: "tool-edit",
+      argumentsPreviewTruncated: true,
+      argumentsPreviewOriginalBytes: 2400,
+      argumentsPreviewLineCount: 120,
+      argumentsPreviewOmittedLines: 114,
+      diffPreview: {
+        filePath: "src/example.ts",
+        language: "typescript",
+        oldTotalLines: 60,
+        newTotalLines: 60,
+        hunks: [
+          {
+            oldStart: 1,
+            newStart: 1,
+            lines: [
+              {
+                content: "line 1",
+                oldLineNum: 1,
+                newLineNum: 1,
+              },
+              {
+                content: "line 2 changed",
+                oldLineNum: null,
+                newLineNum: 2,
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
   it("preserves camelCase preview metadata and ignores invalid detail refs on parsed tool calls", () => {
     const parsed = parseToolCalls([
       {
@@ -144,6 +220,7 @@ describe("chat api", () => {
         diff_context: {
           file_path: "src/main.rs",
           old_content: "old",
+          old_file_exists: true,
         },
       },
       {
@@ -153,16 +230,25 @@ describe("chat api", () => {
         diffContext: {
           filePath: "src/lib.rs",
           oldContent: "before",
+          oldFileExists: false,
         },
       },
     ]);
 
     expect(parsed[0]).toMatchObject({
       error: "edit failed",
-      diffContext: { filePath: "src/main.rs", oldContent: "old" },
+      diffContext: {
+        filePath: "src/main.rs",
+        oldContent: "old",
+        oldFileExists: true,
+      },
     });
     expect(parsed[1]).toMatchObject({
-      diffContext: { filePath: "src/lib.rs", oldContent: "before" },
+      diffContext: {
+        filePath: "src/lib.rs",
+        oldContent: "before",
+        oldFileExists: false,
+      },
     });
   });
 
@@ -215,6 +301,62 @@ describe("chat api", () => {
         messageId: "msg-1",
         toolCallId: "tool-1",
         contentBlockIndex: 2,
+      },
+    });
+  });
+
+  it("preserves argument preview metadata and diff previews on parsed content blocks", () => {
+    const parsed = parseContentBlocks([
+      {
+        type: "tool_use",
+        id: "tool-edit",
+        name: "edit",
+        arguments: { file_path: "src/example.ts" },
+        arguments_preview_truncated: true,
+        diff_preview: {
+          file_path: "src/example.ts",
+          language: "typescript",
+          hunks: [
+            {
+              old_start: 1,
+              old_lines: 1,
+              new_start: 1,
+              new_lines: 1,
+              header: "@@ -1,1 +1,1 @@",
+              lines: [
+                {
+                  kind: "addition",
+                  content: "new line",
+                  old_line_num: null,
+                  new_line_num: 1,
+                },
+              ],
+            },
+          ],
+          old_total_lines: 1,
+          new_total_lines: 1,
+          is_binary: false,
+        },
+      },
+    ]);
+
+    expect(parsed[0]).toMatchObject({
+      type: "tool_use",
+      argumentsPreviewTruncated: true,
+      diffPreview: {
+        filePath: "src/example.ts",
+        hunks: [
+          {
+            oldStart: 1,
+            lines: [
+              {
+                content: "new line",
+                oldLineNum: null,
+                newLineNum: 1,
+              },
+            ],
+          },
+        ],
       },
     });
   });

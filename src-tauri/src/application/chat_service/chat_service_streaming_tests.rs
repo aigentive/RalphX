@@ -1009,6 +1009,7 @@ fn codex_tool_call_content_block_preserves_orderable_tool_payload() {
         parent_tool_use_id: Some("toolu-parent-1".to_string()),
         diff_context: Some(crate::infrastructure::agents::claude::DiffContext {
             old_content: Some("before".to_string()),
+            old_file_exists: None,
             file_path: "/tmp/example.txt".to_string(),
         }),
         stats: None,
@@ -1066,6 +1067,7 @@ fn upsert_codex_tool_call_snapshot_updates_existing_tool_call_in_place() {
             parent_tool_use_id: Some("toolu-parent-1".to_string()),
             diff_context: Some(crate::infrastructure::agents::claude::DiffContext {
                 old_content: Some("before".to_string()),
+                old_file_exists: None,
                 file_path: "/tmp/example.txt".to_string(),
             }),
             stats: None,
@@ -1208,6 +1210,13 @@ fn resolve_codex_file_change_tool_call_snapshots_turns_update_into_edit() {
             .and_then(|ctx| ctx.old_content.as_deref()),
         Some("alpha\n")
     );
+    assert_eq!(
+        tool_call
+            .diff_context
+            .as_ref()
+            .and_then(|ctx| ctx.old_file_exists),
+        Some(true)
+    );
 }
 
 #[test]
@@ -1279,6 +1288,13 @@ fn resolve_codex_file_change_tool_call_snapshots_turns_add_into_write() {
         .as_ref()
         .and_then(|ctx| ctx.old_content.as_deref())
         .is_none());
+    assert_eq!(
+        tool_call
+            .diff_context
+            .as_ref()
+            .and_then(|ctx| ctx.old_file_exists),
+        Some(false)
+    );
 }
 
 #[tokio::test]

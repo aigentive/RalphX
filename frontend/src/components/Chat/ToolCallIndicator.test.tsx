@@ -259,6 +259,79 @@ describe("ToolCallIndicator", () => {
       expect(await screen.findByText(/full line 3/)).toBeInTheDocument();
     });
 
+    it("loads full edit arguments after expanding an arguments-previewed diff", async () => {
+      const user = userEvent.setup();
+      vi.mocked(chatApi.getAgentMessageToolCallDetail).mockResolvedValueOnce({
+        toolCall: makeToolCall("edit", {
+          id: "call-edit",
+          arguments: {
+            file_path: "src/example.ts",
+            old_string: "line 1\nline 2\nline 3",
+            new_string: "line 1\nline 2 full\nline 3",
+          },
+          result: { status: "ok" },
+        }),
+      });
+      const toolCall: ToolCall = makeToolCall("edit", {
+        id: "call-edit",
+        arguments: { file_path: "src/example.ts" },
+        argumentsPreviewTruncated: true,
+        diffPreview: {
+          filePath: "src/example.ts",
+          language: "typescript",
+          oldTotalLines: 3,
+          newTotalLines: 3,
+          isBinary: false,
+          hunks: [
+            {
+              oldStart: 1,
+              oldLines: 3,
+              newStart: 1,
+              newLines: 3,
+              header: "@@ -1,3 +1,3 @@",
+              lines: [
+                {
+                  kind: "context",
+                  content: "line 1",
+                  oldLineNum: 1,
+                  newLineNum: 1,
+                },
+                {
+                  kind: "addition",
+                  content: "line 2 preview",
+                  oldLineNum: null,
+                  newLineNum: 2,
+                },
+              ],
+            },
+          ],
+        },
+        detailRef: {
+          conversationId: "conv-1",
+          messageId: "msg-1",
+          toolCallId: "call-edit",
+        },
+      });
+
+      render(
+        <TooltipProvider delayDuration={0}>
+          <ToolCallIndicator toolCall={toolCall} />
+        </TooltipProvider>
+      );
+
+      expect(screen.getByText("line 2 preview")).toBeInTheDocument();
+      expect(chatApi.getAgentMessageToolCallDetail).not.toHaveBeenCalled();
+
+      await user.click(screen.getByRole("button", { name: /edit .* click to expand/i }));
+
+      expect(chatApi.getAgentMessageToolCallDetail).toHaveBeenCalledWith({
+        conversationId: "conv-1",
+        messageId: "msg-1",
+        toolCallId: "call-edit",
+      });
+      expect(await screen.findByText("line 2 full")).toBeInTheDocument();
+    });
+
     it("expands when clicked", async () => {
       const user = userEvent.setup();
       const toolCall: ToolCall = makeToolCall("update_task", {

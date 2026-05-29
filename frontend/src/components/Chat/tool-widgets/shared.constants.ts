@@ -6,6 +6,7 @@
  */
 
 import type { CSSProperties, ReactNode } from "react";
+import type { FileDiff } from "@/api/diff";
 
 // ============================================================================
 // Tool Call Type (canonical definition — re-exported from ToolCallIndicator)
@@ -49,6 +50,16 @@ export interface ToolCall {
   resultPreviewOmittedLines?: number;
   /** JSON paths that were structurally trimmed in the preview payload */
   resultPreviewPaths?: string[];
+  /** True when arguments contain only the lightweight data needed for a collapsed preview */
+  argumentsPreviewTruncated?: boolean;
+  /** Original argument byte size when previewed */
+  argumentsPreviewOriginalBytes?: number;
+  /** Original argument line count when previewed */
+  argumentsPreviewLineCount?: number;
+  /** Number of argument lines omitted from the preview */
+  argumentsPreviewOmittedLines?: number;
+  /** Backend-computed lightweight diff for previewed Edit/Write arguments */
+  diffPreview?: FileDiff;
   /** Backend locator for lazily loading a full previewed result */
   detailRef?: ToolCallDetailRef;
   /** Parent tool_use id when this call belongs to a delegated/child task transcript */
@@ -58,6 +69,7 @@ export interface ToolCall {
   /** Diff context for Edit/Write tool calls (old file content for computing diffs) */
   diffContext?: {
     oldContent?: string;
+    oldFileExists?: boolean;
     filePath: string;
   };
   /** Structured stats for Task/Agent tool calls — absent for old DB rows and non-Task calls */

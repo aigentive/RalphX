@@ -364,6 +364,83 @@ describe("useChatEvents", () => {
       });
     });
 
+    it("should preserve backend streaming argument previews for live edit tool calls", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "Edit",
+          tool_id: "toolu_edit_preview",
+          arguments: { file_path: "src/app.ts" },
+          arguments_preview_truncated: true,
+          arguments_preview_line_count: 24,
+          arguments_preview_omitted_lines: 18,
+          arguments_preview_original_bytes: 2_400,
+          diff_context: {
+            file_path: "src/app.ts",
+            old_file_exists: false,
+          },
+          diff_preview: {
+            file_path: "src/app.ts",
+            language: "typescript",
+            old_total_lines: 12,
+            new_total_lines: 12,
+            is_binary: false,
+            hunks: [
+              {
+                old_start: 4,
+                old_lines: 2,
+                new_start: 4,
+                new_lines: 2,
+                header: "@@ -4,2 +4,2 @@",
+                lines: [
+                  {
+                    kind: "deletion",
+                    content: "const label = 'old';",
+                    old_line_num: 4,
+                    new_line_num: null,
+                  },
+                  {
+                    kind: "addition",
+                    content: "const label = 'new';",
+                    old_line_num: null,
+                    new_line_num: 4,
+                  },
+                ],
+              },
+            ],
+          },
+          detail_ref: {
+            conversation_id: CONV_ID,
+            message_id: "msg-live-edit",
+            tool_call_id: "toolu_edit_preview",
+          },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      const result = executeUpdater<ToolCall[]>(props.setStreamingToolCalls, []);
+
+      expect(result[0]!.arguments).toEqual({ file_path: "src/app.ts" });
+      expect(result[0]!.argumentsPreviewTruncated).toBe(true);
+      expect(result[0]!.argumentsPreviewLineCount).toBe(24);
+      expect(result[0]!.argumentsPreviewOmittedLines).toBe(18);
+      expect(result[0]!.argumentsPreviewOriginalBytes).toBe(2_400);
+      expect(result[0]!.diffPreview?.filePath).toBe("src/app.ts");
+      expect(result[0]!.diffPreview?.hunks[0]?.lines).toHaveLength(2);
+      expect(result[0]!.diffContext).toEqual({
+        filePath: "src/app.ts",
+        oldFileExists: false,
+      });
+      expect(result[0]!.detailRef).toEqual({
+        conversationId: CONV_ID,
+        messageId: "msg-live-edit",
+        toolCallId: "toolu_edit_preview",
+      });
+    });
+
     it("should preview array text results from streaming tool calls", () => {
       const props = makeProps();
       renderAndClear(props);
