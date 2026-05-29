@@ -371,6 +371,7 @@ describe("chat api", () => {
         diff_context: {
           file_path: "src/main.rs",
           old_content: "old",
+          old_file_exists: false,
         },
       },
     ]);
@@ -378,7 +379,11 @@ describe("chat api", () => {
     expect(parsed[0]).toMatchObject({
       type: "tool_use",
       arguments: { file_path: "src/main.rs" },
-      diffContext: { filePath: "src/main.rs", oldContent: "old" },
+      diffContext: {
+        filePath: "src/main.rs",
+        oldContent: "old",
+        oldFileExists: false,
+      },
     });
   });
 

@@ -798,6 +798,75 @@ describe("useChatEvents", () => {
       });
     });
 
+    it("should preserve backend argument previews when updating child tool calls", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      const parentId = "toolu_parent";
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "Edit",
+          tool_id: "toolu_child_edit",
+          arguments: { file_path: "src/child.ts" },
+          parent_tool_use_id: parentId,
+          arguments_preview_truncated: true,
+          arguments_preview_line_count: 18,
+          arguments_preview_omitted_lines: 12,
+          arguments_preview_original_bytes: 1800,
+          diff_preview: {
+            file_path: "src/child.ts",
+            language: "typescript",
+            old_total_lines: 9,
+            new_total_lines: 9,
+            is_binary: false,
+            hunks: [
+              {
+                old_start: 2,
+                old_lines: 1,
+                new_start: 2,
+                new_lines: 1,
+                header: "@@ -2,1 +2,1 @@",
+                lines: [
+                  {
+                    kind: "addition",
+                    content: "const child = true;",
+                    old_line_num: null,
+                    new_line_num: 2,
+                  },
+                ],
+              },
+            ],
+          },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      const parentTask: StreamingTask = {
+        toolUseId: parentId,
+        toolName: "Task",
+        description: "Test task",
+        subagentType: "Bash",
+        model: "sonnet",
+        status: "running",
+        startedAt: Date.now(),
+        childToolCalls: [
+          { id: "toolu_child_edit", name: "Edit", arguments: { file_path: "src/child.ts" } },
+        ],
+      };
+      const prevMap = new Map<string, StreamingTask>([[parentId, parentTask]]);
+      const nextMap = executeUpdater<Map<string, StreamingTask>>(props.setStreamingTasks, prevMap);
+      const updated = nextMap.get(parentId)!.childToolCalls[0]!;
+
+      expect(updated.argumentsPreviewTruncated).toBe(true);
+      expect(updated.argumentsPreviewLineCount).toBe(18);
+      expect(updated.argumentsPreviewOmittedLines).toBe(12);
+      expect(updated.argumentsPreviewOriginalBytes).toBe(1800);
+      expect(updated.diffPreview?.filePath).toBe("src/child.ts");
+      expect(updated.diffPreview?.hunks[0]?.lines[0]?.content).toBe("const child = true;");
+    });
+
     it("should NOT route to tasks when supportsSubagentTasks is false", () => {
       mockContextConfig = {
         supportsStreamingText: false,

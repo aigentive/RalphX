@@ -584,6 +584,228 @@ fn live_completed_write_payload_previews_confirmed_new_file_as_added_diff() {
 }
 
 #[test]
+fn live_tool_argument_preview_canonicalizes_tool_names_and_diff_languages() {
+    let cases = [
+        ("mcp__ralphx__edit", "src/app.js", "javascript"),
+        ("mcp__ralphx_internal__edit", "src/lib.rs", "rust"),
+        ("ralphx::edit", "src/style.css", "css"),
+        ("ralphx_internal::edit", "src/index.html", "html"),
+        ("ralphx:edit", "package.json", "json"),
+        ("ralphx_internal:edit", "README.md", "markdown"),
+        ("edit", "LICENSE", "text"),
+    ];
+
+    for (tool_name, file_path, expected_language) in cases {
+        let tool_call = ToolCall {
+            id: Some(format!("{tool_name}-{file_path}")),
+            name: tool_name.to_string(),
+            arguments: json!({
+                "file_path": file_path,
+                "old_string": "old\n",
+                "new_string": "new\n",
+            }),
+            result: None,
+            parent_tool_use_id: None,
+            diff_context: None,
+            stats: None,
+        };
+        let preview = build_live_tool_argument_preview(&tool_call, None, None)
+            .expect("canonical edit argument preview");
+
+        assert_eq!(preview.arguments, json!({ "file_path": file_path }));
+        assert_eq!(
+            preview
+                .diff_preview
+                .as_ref()
+                .and_then(|diff| diff.get("language"))
+                .and_then(serde_json::Value::as_str),
+            Some(expected_language)
+        );
+    }
+}
+
+#[test]
+fn live_tool_argument_preview_handles_unchanged_and_invalid_arguments() {
+    let unchanged = ToolCall {
+        id: Some("tool-edit-unchanged".to_string()),
+        name: "edit".to_string(),
+        arguments: json!({
+            "file_path": "src/unchanged.ts",
+            "old_string": "same\n",
+            "new_string": "same\n",
+        }),
+        result: None,
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    };
+    let unchanged_preview = build_live_tool_argument_preview(&unchanged, None, None)
+        .expect("unchanged edit arguments should still preview metadata");
+    assert_eq!(
+        unchanged_preview.diff_preview.as_ref().unwrap()["hunks"],
+        json!([])
+    );
+
+    for arguments in [
+        json!({ "old_string": "old", "new_string": "new" }),
+        json!({ "file_path": "src/app.ts", "new_string": "new" }),
+        json!({ "file_path": "src/app.ts", "old_string": "old" }),
+    ] {
+        let tool_call = ToolCall {
+            id: Some("tool-edit-invalid".to_string()),
+            name: "edit".to_string(),
+            arguments,
+            result: None,
+            parent_tool_use_id: None,
+            diff_context: None,
+            stats: None,
+        };
+        assert!(build_live_tool_argument_preview(&tool_call, None, None).is_none());
+    }
+
+    for arguments in [
+        json!({ "content": "body" }),
+        json!({ "file_path": "src/app.ts" }),
+    ] {
+        let tool_call = ToolCall {
+            id: Some("tool-write-invalid".to_string()),
+            name: "write".to_string(),
+            arguments,
+            result: None,
+            parent_tool_use_id: None,
+            diff_context: None,
+            stats: None,
+        };
+        assert!(build_live_tool_argument_preview(&tool_call, None, None).is_none());
+    }
+}
+
+#[test]
+fn live_tool_argument_preview_truncates_write_content_when_baseline_is_unknown() {
+    let content = (1..=12)
+        .map(|index| format!("line {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let tool_call = ToolCall {
+        id: Some("tool-write-large".to_string()),
+        name: "write".to_string(),
+        arguments: json!({
+            "file_path": "src/generated.txt",
+            "content": content,
+        }),
+        result: None,
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    };
+    let preview = build_live_tool_argument_preview(&tool_call, None, None)
+        .expect("large final content should be previewed");
+
+    let preview_content = preview.arguments["content"].as_str().unwrap();
+    assert_eq!(preview_content.lines().count(), 10);
+    assert!(preview_content.contains("line 10"));
+    assert!(!preview_content.contains("line 11"));
+    assert_eq!(preview.line_count, 12);
+    assert_eq!(preview.omitted_lines, 2);
+    assert!(preview.diff_preview.is_none());
+
+    let long_single_line = ToolCall {
+        id: Some("tool-write-long-line".to_string()),
+        name: "write".to_string(),
+        arguments: json!({
+            "file_path": "src/generated.txt",
+            "content": "x".repeat(4_100),
+        }),
+        result: None,
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    };
+    let long_line_preview = build_live_tool_argument_preview(&long_single_line, None, None)
+        .expect("long final content should be character capped");
+    assert_eq!(
+        long_line_preview.arguments["content"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count(),
+        4_000
+    );
+}
+
+#[test]
+fn live_tool_argument_preview_accepts_camel_case_new_file_context() {
+    let tool_call = ToolCall {
+        id: Some("tool-write-camel-context".to_string()),
+        name: "write".to_string(),
+        arguments: json!({
+            "file_path": "src/new.ts",
+            "content": "export const value = 1;\n",
+        }),
+        result: None,
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    };
+    let diff_context = json!({
+        "filePath": "src/new.ts",
+        "oldFileExists": false,
+    });
+    let preview = build_live_tool_argument_preview(&tool_call, Some(&diff_context), None)
+        .expect("camel-case new-file context should produce an added diff");
+
+    assert_eq!(preview.arguments, json!({ "file_path": "src/new.ts" }));
+    assert_eq!(
+        preview.diff_context.as_ref().unwrap()["oldFileExists"],
+        false
+    );
+    assert_eq!(preview.diff_preview.as_ref().unwrap()["old_total_lines"], 0);
+    assert_eq!(
+        preview.diff_preview.as_ref().unwrap()["hunks"][0]["lines"][0]["kind"],
+        "addition"
+    );
+}
+
+#[test]
+fn preview_tool_payloads_skips_already_previewed_or_unnamed_arguments() {
+    let tool_calls = json!([
+        {
+            "id": "tool-write-previewed",
+            "name": "write",
+            "arguments": {
+                "file_path": "src/generated.txt",
+                "content": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11"
+            },
+            "arguments_preview_truncated": true
+        },
+        {
+            "id": "tool-write-unnamed",
+            "arguments": {
+                "file_path": "src/generated.txt",
+                "content": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11"
+            }
+        }
+    ]);
+
+    let (previewed_tool_calls, _) =
+        preview_tool_payloads_for_message("conv-1", "msg-1", Some(tool_calls), None);
+    let previewed_tool_calls = previewed_tool_calls.unwrap();
+
+    assert!(previewed_tool_calls[0]["arguments"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("line 11"));
+    assert!(previewed_tool_calls[0].get("detail_ref").is_none());
+    assert!(previewed_tool_calls[1]["arguments"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("line 11"));
+    assert!(previewed_tool_calls[1]
+        .get("arguments_preview_truncated")
+        .is_none());
+}
+
+#[test]
 fn live_tool_result_payload_helpers_use_preview_result() {
     let result = json!((1..=12)
         .map(|index| format!("line {index}"))

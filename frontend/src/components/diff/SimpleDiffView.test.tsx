@@ -165,6 +165,25 @@ describe("SimpleDiffView", () => {
       expect(screen.getByText("@@ -1,3 +1,3 @@")).toBeInTheDocument();
     });
 
+    it("toggles line wrapping when the wrap control is visible", async () => {
+      const user = userEvent.setup();
+      const { container } = render(
+        <SimpleDiffView
+          hunks={defaultHunks}
+          oldTotalLines={3}
+          newTotalLines={3}
+          defaultWrapLines={true}
+        />
+      );
+
+      expect(container.querySelector("[data-wrap-lines='true']")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: /disable wrap/i }));
+
+      expect(container.querySelector("[data-wrap-lines='false']")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /wrap lines/i })).toBeInTheDocument();
+    });
+
     it("renders context line content", () => {
       render(
         <SimpleDiffView

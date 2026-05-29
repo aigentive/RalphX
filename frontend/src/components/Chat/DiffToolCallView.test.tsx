@@ -62,6 +62,38 @@ function makeMultiHunkEditCall(): ToolCall {
   };
 }
 
+function makeLargeEditCall(): ToolCall {
+  const oldLines = Array.from({ length: 340 }, (_, index) => `line ${index + 1}`);
+  const newLines = [...oldLines];
+  newLines[120] = "line 121 changed";
+
+  return {
+    id: "tool-edit-large",
+    name: "edit",
+    arguments: {
+      file_path: "src/large.ts",
+      old_string: oldLines.join("\n"),
+      new_string: newLines.join("\n"),
+    },
+    result: { status: "completed" },
+  };
+}
+
+function makeUnchangedEditCall(): ToolCall {
+  const content = Array.from({ length: 340 }, (_, index) => `line ${index + 1}`).join("\n");
+
+  return {
+    id: "tool-edit-unchanged",
+    name: "edit",
+    arguments: {
+      file_path: "src/unchanged.ts",
+      old_string: content,
+      new_string: content,
+    },
+    result: { status: "completed" },
+  };
+}
+
 function makeWhitespaceEditCall(): ToolCall {
   return {
     id: "tool-edit-whitespace",
@@ -227,6 +259,49 @@ describe("DiffToolCallView hunk rendering", () => {
     expect(screen.queryByRole("button", { name: /wrap/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/unchanged lines/i)).not.toBeInTheDocument();
     expect(await screen.findByText("line 10 changed")).toBeInTheDocument();
+  });
+
+  it("hydrates oversized full diffs after the expansion paint", async () => {
+    const user = userEvent.setup();
+    render(
+      <TooltipProvider delayDuration={0}>
+        <DiffToolCallView toolCall={makeLargeEditCall()} />
+      </TooltipProvider>
+    );
+
+    expect(screen.getByTestId("diff-tool-call-preview-diff")).toBeInTheDocument();
+    expect(screen.queryByTestId("diff-tool-call-full-diff")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /edit .* click to expand/i }));
+
+    expect(await screen.findByText("Loading full diff...")).toBeInTheDocument();
+    expect(await screen.findByTestId("diff-tool-call-full-diff")).toBeInTheDocument();
+  });
+
+  it("cancels oversized full diff hydration when the card unmounts", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(
+      <TooltipProvider delayDuration={0}>
+        <DiffToolCallView toolCall={makeLargeEditCall()} />
+      </TooltipProvider>
+    );
+
+    await user.click(screen.getByRole("button", { name: /edit .* click to expand/i }));
+    expect(await screen.findByText("Loading full diff...")).toBeInTheDocument();
+
+    unmount();
+  });
+
+  it("shows an empty preview state when a diff has no changed hunks", () => {
+    render(
+      <TooltipProvider delayDuration={0}>
+        <DiffToolCallView toolCall={makeUnchangedEditCall()} />
+      </TooltipProvider>
+    );
+
+    expect(screen.getByTestId("diff-tool-call-preview-diff")).toHaveTextContent(
+      "No changes"
+    );
   });
 
   it("preserves leading whitespace consistently in preview and full diff rows", async () => {
