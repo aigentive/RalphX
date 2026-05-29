@@ -2810,7 +2810,71 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
-  it("falls back to a direct success toast if Update from base settles after the pane unmounts", async () => {
+  it("keeps the Update from base progress toast connected after the pane unmounts while pending", async () => {
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+    try {
+      const updateDeferred = deferred<Awaited<ReturnType<typeof updateWorkspaceFromBaseMock>>>();
+      getWorkspaceFreshnessMock.mockResolvedValue({
+        conversationId: "conversation-1",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        targetRef: "origin/feature/agent-screen",
+        capturedBaseCommit: "old-base",
+        targetBaseCommit: "new-base",
+        isBaseAhead: true,
+        hasUncommittedChanges: false,
+        unpublishedCommitCount: null,
+      });
+      updateWorkspaceFromBaseMock.mockImplementation(() => updateDeferred.promise);
+
+      const { unmount } = renderPane(
+        "publish",
+        workspace({
+          mode: "edit",
+          baseRef: "feature/agent-screen",
+          baseDisplayName: "Current branch (feature/agent-screen)",
+          baseCommit: "old-base",
+        }),
+        vi.fn(),
+        false,
+        conversation(),
+      );
+
+      fireEvent.click(await screen.findByTestId("agents-update-from-base"));
+      fireEvent.click(
+        within(await screen.findByRole("alertdialog")).getByRole("button", {
+          name: "Update branch",
+        }),
+      );
+      await waitFor(() =>
+        expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1"),
+      );
+
+      clearIntervalSpy.mockClear();
+      unmount();
+
+      expect(clearIntervalSpy).not.toHaveBeenCalled();
+
+      await act(async () => {
+        updateDeferred.resolve({
+          workspace: workspace({
+            mode: "edit",
+            baseRef: "feature/agent-screen",
+            baseDisplayName: "Current branch (feature/agent-screen)",
+            baseCommit: "new-base",
+          }),
+          updated: true,
+          targetRef: "origin/feature/agent-screen",
+          baseCommit: "new-base",
+        });
+        await updateDeferred.promise;
+      });
+    } finally {
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
+  it("replaces the persistent success toast if Update from base settles after the pane unmounts", async () => {
     const updateDeferred = deferred<Awaited<ReturnType<typeof updateWorkspaceFromBaseMock>>>();
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -2868,14 +2932,15 @@ describe("AgentsArtifactPane", () => {
       expect(toastSuccessMock).toHaveBeenCalledWith(
         "Updated from origin/feature/agent-screen",
         {
-          description: "Agent conversation",
+          description: "Agent conversation • From feature/agent-screen",
           duration: 8_000,
+          id: "agent-workspace-operation:conversation-1:update-from-base",
         },
       ),
     );
   });
 
-  it("falls back to a direct error toast if Update from base fails after the pane unmounts", async () => {
+  it("replaces the persistent error toast if Update from base fails after the pane unmounts", async () => {
     const updateDeferred = deferred<Awaited<ReturnType<typeof updateWorkspaceFromBaseMock>>>();
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -2927,12 +2992,13 @@ describe("AgentsArtifactPane", () => {
           description: "Agent conversation • base update failed",
           dismissible: true,
           duration: 12_000,
+          id: "agent-workspace-operation:conversation-1:update-from-base",
         },
       ),
     );
   });
 
-  it("falls back to a direct repair toast if Update from base starts repair after the pane unmounts", async () => {
+  it("replaces the persistent repair toast if Update from base starts repair after the pane unmounts", async () => {
     const updateDeferred = deferred<Awaited<ReturnType<typeof updateWorkspaceFromBaseMock>>>();
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -2989,6 +3055,7 @@ describe("AgentsArtifactPane", () => {
           description: "Agent conversation • Merge conflicts detected",
           dismissible: true,
           duration: 8_000,
+          id: "agent-workspace-operation:conversation-1:update-from-base",
         },
       ),
     );

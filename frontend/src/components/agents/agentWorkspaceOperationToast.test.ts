@@ -63,22 +63,22 @@ describe("agentWorkspaceOperationToast", () => {
 
     expect(toastLoadingMock).toHaveBeenLastCalledWith(
       "Updating branch",
-      {
+      expect.objectContaining({
         description: "Agent conversation • From main • 0s",
         duration: Infinity,
         id: "agent-workspace-operation:conversation-1:update-from-base",
-      },
+      }),
     );
 
     vi.advanceTimersByTime(5_000);
 
     expect(toastLoadingMock).toHaveBeenLastCalledWith(
       "Updating branch",
-      {
+      expect.objectContaining({
         description: "Agent conversation • From main • 5s",
         duration: Infinity,
         id: "agent-workspace-operation:conversation-1:update-from-base",
-      },
+      }),
     );
 
     progress.success("Updated from main");
@@ -116,11 +116,11 @@ describe("agentWorkspaceOperationToast", () => {
 
     expect(toastLoadingMock).toHaveBeenLastCalledWith(
       "Publishing workspace",
-      {
+      expect.objectContaining({
         description: "Agent conversation • Push branch • 2s",
         duration: Infinity,
         id: "agent-workspace-operation:conversation-2:publish",
-      },
+      }),
     );
 
     const loadingCallCount = toastLoadingMock.mock.calls.length;
@@ -158,6 +158,52 @@ describe("agentWorkspaceOperationToast", () => {
         id: "agent-workspace-operation:conversation-1:rebase",
       },
     );
+  });
+
+  it("allows manual dismissal without the elapsed timer resurrecting the loading toast", () => {
+    const progress = startAgentWorkspaceOperationToast({
+      conversationTitle: "Agent conversation",
+      detail: "From main",
+      id: agentWorkspaceOperationToastId("conversation-1", "update-from-base"),
+      title: "Updating branch",
+    });
+
+    const loadingOptions = toastLoadingMock.mock.calls.at(-1)?.[1] as
+      | {
+          closeButton?: boolean;
+          dismissible?: boolean;
+          onDismiss?: () => void;
+        }
+      | undefined;
+
+    expect(loadingOptions).toEqual(
+      expect.objectContaining({
+        closeButton: true,
+        dismissible: true,
+      }),
+    );
+
+    loadingOptions?.onDismiss?.();
+    progress.update({ detail: "Still running" });
+    const loadingCallCount = toastLoadingMock.mock.calls.length;
+
+    vi.advanceTimersByTime(3_000);
+
+    expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
+
+    progress.error("Update failed", { detail: "Merge conflicts detected" });
+
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      "Update failed",
+      {
+        closeButton: true,
+        description: "Agent conversation • Merge conflicts detected",
+        dismissible: true,
+        duration: 12_000,
+        id: "agent-workspace-operation:conversation-1:update-from-base",
+      },
+    );
+    loadingOptions?.onDismiss?.();
   });
 
   it("replaces the persistent loading toast with an auto-dismissing info result", () => {
