@@ -577,6 +577,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const scrollerResizeRafRef = useRef<number | null>(null);
     const bottomScrollIntentUntilRef = useRef(0);
     const isUserScrollingAwayFromBottomRef = useRef(false);
+    const hasUserScrollInputRef = useRef(false);
     const userScrollAwayVersionRef = useRef(0);
     const virtuosoAtBottomSettleRafRef = useRef<number | null>(null);
     const bottomSettleAttemptCountRef = useRef(0);
@@ -1089,6 +1090,13 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       [isAtBottomRef, isLastItemActuallyVisible],
     );
 
+    const hasPendingInitialBottomScroll = useCallback(() => {
+      if (!conversationId || lastItemIndex < 0) {
+        return false;
+      }
+      return hasScrolledRef.current !== `${conversationId}:${lastItemIndex}`;
+    }, [conversationId, lastItemIndex]);
+
     const handleGuardedFollowOutput = useCallback(
       (atBottom: boolean) => {
         if (!atBottom) {
@@ -1172,7 +1180,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     // passes — first on next frame (catches most cases), second after a short
     // delay (catches late-arriving streaming footer height growth).
     const scheduleBottomPin = useCallback(
-      (reason: string, behavior: ScrollBehavior = preferredScrollBehavior) => {
+      (
+        reason: string,
+        behavior: ScrollBehavior = preferredScrollBehavior,
+        { requireLastItemVisible = true }: { requireLastItemVisible?: boolean } = {},
+      ) => {
         logger.debug(`[ChatScroll] scheduleBottomPin: ${reason}`);
         const scheduledAwayVersion = userScrollAwayVersionRef.current;
         for (const rafId of bottomPinRafIdsRef.current) {
@@ -1189,14 +1201,14 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
           const innerRafId = requestAnimationFrame(() => {
             bottomPinRafIdsRef.current = bottomPinRafIdsRef.current.filter((id) => id !== innerRafId);
-            if (!canRunScheduledBottomPin(scheduledAwayVersion)) {
+            if (!canRunScheduledBottomPin(scheduledAwayVersion, { requireLastItemVisible })) {
               return;
             }
             scrollToTrueBottom(behavior);
             // Second pass catches footer that grows in the same tick.
             bottomPinTimeoutRef.current = setTimeout(() => {
               bottomPinTimeoutRef.current = null;
-              if (!canRunScheduledBottomPin(scheduledAwayVersion)) {
+              if (!canRunScheduledBottomPin(scheduledAwayVersion, { requireLastItemVisible })) {
                 return;
               }
               scrollToTrueBottom(behavior);
@@ -1289,6 +1301,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       lastObservedScrollTopRef.current = null;
       bottomScrollIntentUntilRef.current = 0;
       isUserScrollingAwayFromBottomRef.current = false;
+      hasUserScrollInputRef.current = false;
       userScrollAwayVersionRef.current = 0;
       bottomSettleAttemptCountRef.current = 0;
       previousTotalListHeightRef.current = -1;
@@ -1354,7 +1367,15 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       const previousScrollTop = lastObservedScrollTopRef.current;
       const isScrollingTowardBottom =
         previousScrollTop === null || el.scrollTop >= previousScrollTop;
-      if (previousScrollTop !== null && el.scrollTop < previousScrollTop) {
+      const shouldTreatDirectionAsUserScroll =
+        hasUserScrollInputRef.current ||
+        !hasPendingInitialBottomScroll() ||
+        bottomDelta < AT_BOTTOM_THRESHOLD;
+      if (
+        shouldTreatDirectionAsUserScroll &&
+        previousScrollTop !== null &&
+        el.scrollTop < previousScrollTop
+      ) {
         markUserScrollingAwayFromBottom();
       } else if (visuallyAtBottom) {
         isUserScrollingAwayFromBottomRef.current = false;
@@ -1382,6 +1403,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
     }, [
       canAttemptTrueBottomSettle,
+      hasPendingInitialBottomScroll,
       handleAtBottomStateChange,
       isAtBottomRef,
       markUserScrollingAwayFromBottom,
@@ -1404,7 +1426,16 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
 
       const previousScrollTop = lastObservedScrollTopRef.current;
-      if (previousScrollTop !== null && el.scrollTop < previousScrollTop) {
+      const bottomDelta = getScrollBottomDelta(el);
+      const shouldTreatDirectionAsUserScroll =
+        hasUserScrollInputRef.current ||
+        !hasPendingInitialBottomScroll() ||
+        bottomDelta < AT_BOTTOM_THRESHOLD;
+      if (
+        shouldTreatDirectionAsUserScroll &&
+        previousScrollTop !== null &&
+        el.scrollTop < previousScrollTop
+      ) {
         markUserScrollingAwayFromBottom();
         return;
       }
@@ -1412,10 +1443,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       if (isScrollElementVisuallyAtBottom(el)) {
         isUserScrollingAwayFromBottomRef.current = false;
       }
-    }, [markUserScrollingAwayFromBottom]);
+    }, [hasPendingInitialBottomScroll, markUserScrollingAwayFromBottom]);
 
     const handleScrollerWheel = useCallback(
       (event: WheelEvent) => {
+        hasUserScrollInputRef.current = true;
         if (event.deltaY < 0) {
           markUserScrollingAwayFromBottom();
           return;
@@ -1429,6 +1461,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
     const handleScrollerPointerDown = useCallback(
       (event: PointerEvent) => {
+        hasUserScrollInputRef.current = true;
         const target = event.currentTarget;
         if (!(target instanceof HTMLElement)) {
           return;
@@ -1880,13 +1913,19 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           align: "end",
           behavior: "auto",
         });
-        scheduleBottomPin("initial conversation load", "auto");
+        scheduleBottomPin("initial conversation load", "auto", {
+          requireLastItemVisible: false,
+        });
         hasScrolledRef.current = targetScrollKey;
 
         // Content (markdown, code blocks, tool results) can keep rendering after
         // the initial scroll. Verify we're actually at bottom and retry if not.
         const verifyAtBottom = () => {
-          if (!canRunScheduledBottomPin(scheduledAwayVersion)) {
+          if (
+            !canRunScheduledBottomPin(scheduledAwayVersion, {
+              requireLastItemVisible: false,
+            })
+          ) {
             return;
           }
           const el = scrollerElRef.current;

@@ -399,7 +399,50 @@ describe("ChatMessageList - Scroll Behavior", () => {
       }
     });
 
-    it("does not run queued initial-load bottom verification after the last item leaves range", () => {
+    it("does not treat Virtuoso pre-settle measurement scroll as user scroll-away", () => {
+      vi.useFakeTimers();
+      vi.stubEnv("VITEST", "");
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      try {
+        render(<ChatMessageList {...defaultProps} />);
+        const scroller = screen.getByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 80,
+        });
+        act(() => {
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 60,
+        });
+        act(() => {
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        scrollToMock.mockClear();
+
+        act(() => {
+          vi.advanceTimersByTime(300);
+        });
+
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 500, behavior: "auto" });
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        vi.unstubAllEnvs();
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps queued initial-load bottom verification alive while the last item is not yet visible", () => {
       vi.useFakeTimers();
       vi.stubEnv("VITEST", "");
       const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
@@ -449,7 +492,7 @@ describe("ChatMessageList - Scroll Behavior", () => {
           vi.advanceTimersByTime(500);
         });
 
-        expect(scrollToMock).not.toHaveBeenCalled();
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 120, behavior: "auto" });
       } finally {
         rafSpy.mockRestore();
         cancelSpy.mockRestore();
