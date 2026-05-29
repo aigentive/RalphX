@@ -63,6 +63,7 @@ const { projectConversationCalls } = vi.hoisted(() => ({
     pinnedConversationIds?: string[];
     priorityConversationIds?: string[];
     minimumRowCount?: number;
+    pageSize?: number;
   }>,
 }));
 const { archivedConversationCounts, archivedCountCalls } = vi.hoisted(() => ({
@@ -512,6 +513,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
       pinnedConversationIds,
       priorityConversationIds,
       minimumRowCount,
+      pageSize,
     }: {
       projectId: string | null | undefined;
       archivedOnly: boolean;
@@ -520,6 +522,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
       pinnedConversationIds: string[];
       priorityConversationIds?: string[];
       minimumRowCount?: number;
+      pageSize?: number;
     }) => {
       const projectResult = conversationsByProject.get(projectId ?? "");
       projectConversationCalls.push({
@@ -529,6 +532,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
         pinnedConversationIds,
         priorityConversationIds,
         minimumRowCount,
+        pageSize,
       });
       return buildGroupResult({
         projectIds: projectId ? [projectId] : [],
@@ -1080,6 +1084,58 @@ describe("AgentsSidebar", () => {
           height: "352px",
           maxHeight: "352px",
         })
+      );
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
+  it("fills available height and adapts page size for a single selected project", async () => {
+    const rectSpy = mockMeasuredSidebarRowHeight(46);
+    const focused = project({ id: "project-1", name: "alpha" });
+    const idle = project({ id: "project-2", name: "beta" });
+    useAgentSessionStore.setState({
+      expandedProjectIds: { "project-1": true, "project-2": false },
+      showAllProjects: false,
+      sidebarProjectFilterIds: ["project-1"],
+      projectSort: "latest",
+    });
+    virtuosoMockState.dimensionsByTestId.set("agents-sidebar-session-list-project-1", {
+      clientHeight: 736,
+      scrollHeight: 368,
+    });
+    conversationsByProject.set("project-1", {
+      data: Array.from({ length: 8 }, (_, index) =>
+        conversation({
+          id: `conversation-${index + 1}`,
+          title: `Agent ${index + 1}`,
+        })
+      ),
+      total: 32,
+      isLoading: false,
+      hasNextPage: true,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    try {
+      renderSidebar([focused, idle]);
+
+      await waitFor(() =>
+        expect(screen.getByTestId("agents-sidebar-session-list-project-1")).toHaveStyle({
+          height: "100%",
+        })
+      );
+      expect(screen.getByTestId("agents-sidebar-session-list-project-1")).not.toHaveStyle({
+        maxHeight: "368px",
+      });
+      await waitFor(() =>
+        expect(projectConversationCalls).toContainEqual(
+          expect.objectContaining({
+            projectId: "project-1",
+            pageSize: 18,
+          })
+        )
       );
     } finally {
       rectSpy.mockRestore();

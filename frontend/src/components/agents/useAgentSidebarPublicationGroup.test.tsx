@@ -178,6 +178,46 @@ describe("useAgentSidebarPublicationGroup", () => {
     );
   });
 
+  it("uses adaptive page size for initial and subsequent project group pages", async () => {
+    listAgentSidebarConversations
+      .mockResolvedValueOnce(responseForPagedGroup("project-1", 0, 18, true))
+      .mockResolvedValueOnce(responseForPagedGroup("project-1", 18, 18, false));
+
+    const { result } = renderHook(
+      () =>
+        useAgentSidebarProjectGroup({
+          projectId: "project-1",
+          archivedOnly: false,
+          search: "",
+          publicationStates: ["active"],
+          pinnedConversationIds: [],
+          pageSize: 18,
+        }),
+      { wrapper }
+    );
+
+    await waitFor(() => expect(result.current.group.rows).toHaveLength(18));
+
+    expect(listAgentSidebarConversations).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        limitPerGroup: 18,
+        offsets: { "project-1": 0 },
+      })
+    );
+
+    await result.current.fetchNextPage();
+
+    await waitFor(() => expect(result.current.group.rows).toHaveLength(36));
+    expect(listAgentSidebarConversations).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        limitPerGroup: 18,
+        offsets: { "project-1": 18 },
+      })
+    );
+  });
+
   it("refetches offset zero when remembered depth increases beyond fresh page-one cache", async () => {
     listAgentSidebarConversations
       .mockResolvedValueOnce(responseForPagedGroup("project-1", 0, 8, true))
