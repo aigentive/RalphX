@@ -61,6 +61,7 @@ const { projectConversationCalls } = vi.hoisted(() => ({
     includeArchived: boolean;
     options?: { search?: string; enabled?: boolean };
     pinnedConversationIds?: string[];
+    priorityConversationIds?: string[];
     minimumRowCount?: number;
   }>,
 }));
@@ -82,6 +83,7 @@ const { publicationGroupCalls } = vi.hoisted(() => ({
     archivedOnly: boolean;
     search: string;
     pinnedConversationIds: string[];
+    priorityConversationIds?: string[];
     sort: string;
     minimumRowCount?: number;
   }>,
@@ -336,6 +338,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
     search,
     publicationStates,
     pinnedConversationIds,
+    priorityConversationIds = [],
     sort = "latest",
     total,
     hasNextPage,
@@ -350,6 +353,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
     search: string;
     publicationStates: string[];
     pinnedConversationIds: string[];
+    priorityConversationIds?: string[];
     sort?: string;
     total?: number;
     hasNextPage?: boolean;
@@ -377,6 +381,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
     };
     const normalizedSearch = search.trim().toLowerCase();
     const pinnedIds = new Set(pinnedConversationIds);
+    const priorityIds = new Set(priorityConversationIds);
     const workspaceByConversationId = new Map(
       projectIds.flatMap((projectId) =>
         (workspacesByProject.get(projectId) ?? []).map((workspace) => [
@@ -417,6 +422,10 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
           Number(pinnedIds.has(right.conversation.id)) -
           Number(pinnedIds.has(left.conversation.id));
         if (pinnedDelta !== 0) return pinnedDelta;
+        const priorityDelta =
+          Number(priorityIds.has(right.conversation.id)) -
+          Number(priorityIds.has(left.conversation.id));
+        if (priorityDelta !== 0) return priorityDelta;
         if (sort === "az" || sort === "za") {
           const leftTitle = (left.conversation.title ?? "Untitled agent").toLowerCase();
           const rightTitle = (right.conversation.title ?? "Untitled agent").toLowerCase();
@@ -453,6 +462,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
       archivedOnly,
       search,
       pinnedConversationIds,
+      priorityConversationIds,
       sort,
       minimumRowCount,
     }: {
@@ -461,6 +471,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
       archivedOnly: boolean;
       search: string;
       pinnedConversationIds: string[];
+      priorityConversationIds?: string[];
       sort: string;
       minimumRowCount?: number;
     }) => {
@@ -473,6 +484,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
         archivedOnly,
         search,
         pinnedConversationIds,
+        priorityConversationIds,
         sort,
         minimumRowCount,
       });
@@ -484,6 +496,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
         search,
         publicationStates: [publicationState],
         pinnedConversationIds,
+        priorityConversationIds,
         sort,
         hasNextPage: firstProjectResult?.hasNextPage,
         isFetchingNextPage: firstProjectResult?.isFetchingNextPage,
@@ -497,6 +510,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
       search,
       publicationStates,
       pinnedConversationIds,
+      priorityConversationIds,
       minimumRowCount,
     }: {
       projectId: string | null | undefined;
@@ -504,6 +518,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
       search: string;
       publicationStates: string[];
       pinnedConversationIds: string[];
+      priorityConversationIds?: string[];
       minimumRowCount?: number;
     }) => {
       const projectResult = conversationsByProject.get(projectId ?? "");
@@ -512,6 +527,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
         includeArchived: archivedOnly,
         options: { search, enabled: true },
         pinnedConversationIds,
+        priorityConversationIds,
         minimumRowCount,
       });
       return buildGroupResult({
@@ -522,6 +538,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
         search,
         publicationStates,
         pinnedConversationIds,
+        priorityConversationIds,
         total: projectResult?.total,
         hasNextPage: projectResult?.hasNextPage,
         isFetchingNextPage: projectResult?.isFetchingNextPage,
@@ -1277,6 +1294,97 @@ describe("AgentsSidebar", () => {
     expect(
       screen.getByTestId("agents-sidebar-session-list-project-depth-1").scrollTop
     ).toBe(322);
+  });
+
+  it("keeps remembered project page depth when selected fallback priority changes", async () => {
+    const user = userEvent.setup();
+    const depthProject = project({ id: "project-priority-depth", name: "depth" });
+    const projectRows = Array.from({ length: 16 }, (_, index) =>
+      conversation({
+        id: `conversation-priority-page-${index + 1}`,
+        title: `Priority page row ${index + 1}`,
+        projectId: depthProject.id,
+        contextId: depthProject.id,
+      })
+    );
+    const selectedFallback = conversation({
+      id: "conversation-priority-selected",
+      title: "Selected fallback",
+      projectId: depthProject.id,
+      contextId: depthProject.id,
+      createdAt: "2026-04-22T13:00:00Z",
+    });
+    conversationsByProject.set(depthProject.id, {
+      data: projectRows,
+      total: 24,
+      isLoading: false,
+      hasNextPage: true,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    function StatefulSidebar() {
+      const [selectedConversation, setSelectedConversation] =
+        useState<AgentConversation | null>(null);
+
+      return (
+        <TooltipProvider delayDuration={0}>
+          <button
+            type="button"
+            onClick={() => setSelectedConversation(selectedFallback)}
+          >
+            Select fallback
+          </button>
+          <AgentsSidebar
+            projects={[depthProject]}
+            focusedProjectId={depthProject.id}
+            selectedConversationId={selectedConversation?.id ?? null}
+            pinnedConversation={selectedConversation}
+            onFocusProject={vi.fn()}
+            onSelectConversation={vi.fn()}
+            onCreateAgent={vi.fn()}
+            onCreateProject={vi.fn()}
+            onArchiveProject={vi.fn()}
+            onRenameConversation={vi.fn()}
+            onArchiveConversation={vi.fn()}
+            onRestoreConversation={vi.fn()}
+            onForkConversation={vi.fn()}
+            showArchived={false}
+            onShowArchivedChange={vi.fn()}
+          />
+        </TooltipProvider>
+      );
+    }
+
+    render(<StatefulSidebar />);
+
+    const projectList = screen.getByTestId(
+      "agents-sidebar-session-list-project-priority-depth"
+    );
+    projectList.scrollTop = 322;
+    fireEvent.scroll(projectList);
+    await waitFor(() =>
+      expect(projectConversationCalls).toContainEqual(
+        expect.objectContaining({
+          projectId: depthProject.id,
+          minimumRowCount: 16,
+        })
+      )
+    );
+
+    projectConversationCalls.length = 0;
+    await user.click(screen.getByRole("button", { name: "Select fallback" }));
+
+    await waitFor(() =>
+      expect(projectConversationCalls.at(-1)).toEqual(
+        expect.objectContaining({
+          projectId: depthProject.id,
+          minimumRowCount: 16,
+          pinnedConversationIds: [],
+          priorityConversationIds: [selectedFallback.id],
+        })
+      )
+    );
   });
 
   it("keeps a loaded paginated row in place after selecting it", async () => {
@@ -2492,6 +2600,52 @@ describe("AgentsSidebar", () => {
     ]);
   });
 
+  it("keeps real pinned conversations ahead of selected fallback priority rows", () => {
+    const selected = conversation({
+      id: "conversation-selected-new",
+      title: "Selected new run",
+      createdAt: "2026-04-22T13:00:00Z",
+    });
+    const pinned = conversation({
+      id: "conversation-pinned-old",
+      title: "Pinned old run",
+      createdAt: "2026-04-22T10:00:00Z",
+    });
+    const unpinned = conversation({
+      id: "conversation-unpinned-middle",
+      title: "Unpinned middle run",
+      createdAt: "2026-04-22T12:00:00Z",
+    });
+    conversationsByProject.set("project-1", {
+      data: [selected, unpinned, pinned],
+      total: 3,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useAgentSessionStore.setState({
+      pinnedConversationIds: { [pinned.id]: true },
+    });
+
+    renderSidebar([project()], {
+      selectedConversationId: selected.id,
+      pinnedConversation: selected,
+    });
+
+    expect(getSessionRowOrder()).toEqual([
+      "agents-session-conversation-pinned-old",
+      "agents-session-conversation-selected-new",
+      "agents-session-conversation-unpinned-middle",
+    ]);
+    expect(projectConversationCalls.at(-1)).toEqual(
+      expect.objectContaining({
+        pinnedConversationIds: [pinned.id],
+        priorityConversationIds: [selected.id],
+      })
+    );
+  });
+
   it("does not duplicate a pinnedConversation already present in the loaded list", () => {
     const shared = conversation({ id: "conversation-shared", title: "Shared run" });
     conversationsByProject.set("project-1", {
@@ -2515,7 +2669,8 @@ describe("AgentsSidebar", () => {
       expect.arrayContaining([
         expect.objectContaining({
           projectId: "project-1",
-          pinnedConversationIds: [shared.id],
+          pinnedConversationIds: [],
+          priorityConversationIds: [shared.id],
         }),
       ])
     );
@@ -2891,7 +3046,8 @@ describe("AgentsSidebar", () => {
       expect.arrayContaining([
         expect.objectContaining({
           publicationState: "draft",
-          pinnedConversationIds: [selected.id],
+          pinnedConversationIds: [],
+          priorityConversationIds: [selected.id],
         }),
       ])
     );

@@ -1218,6 +1218,8 @@ describe("chat api", () => {
       publicationStates: ["merged", "closed"],
       limitPerGroup: 20,
       offsets: { merged: 0 },
+      pinnedConversationIds: ["conversation-pinned"],
+      priorityConversationIds: ["conversation-selected"],
       search: " merged ",
     });
 
@@ -1231,6 +1233,8 @@ describe("chat api", () => {
         groupBy: "publication",
         limitPerGroup: 20,
         offsets: { merged: 0 },
+        pinnedConversationIds: ["conversation-pinned"],
+        priorityConversationIds: ["conversation-selected"],
       },
     });
     expect(result.groups[0]).toMatchObject({
