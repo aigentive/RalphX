@@ -221,4 +221,21 @@ describe("ChatMessageList scroll math", () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 820, behavior: "smooth" });
     expect(element.scrollTop).toBe(820);
   });
+
+  it("does not issue a native scroll call when already at the true bottom", () => {
+    const element = scrollElement({
+      scrollHeight: 1320,
+      clientHeight: 500,
+      scrollTop: 820,
+    });
+    const scrollTo = vi.fn();
+    Object.defineProperty(element, "scrollTo", {
+      configurable: true,
+      value: scrollTo,
+    });
+
+    expect(scrollElementToTrueBottom(element, "smooth")).toBe(820);
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(element.scrollTop).toBe(820);
+  });
 });
