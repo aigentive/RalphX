@@ -353,6 +353,7 @@ export interface AgentSidebarConversationsInput {
   limitPerGroup?: number;
   offsets?: Record<string, number>;
   pinnedConversationIds?: string[];
+  priorityConversationIds?: string[];
 }
 
 export interface AgentSidebarConversationRow {
@@ -2184,6 +2185,9 @@ export async function listAgentSidebarConversations(
         ...(input.offsets ? { offsets: input.offsets } : {}),
         ...(input.pinnedConversationIds
           ? { pinnedConversationIds: input.pinnedConversationIds }
+          : {}),
+        ...(input.priorityConversationIds
+          ? { priorityConversationIds: input.priorityConversationIds }
           : {}),
       },
     },

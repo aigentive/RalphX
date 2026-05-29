@@ -18,6 +18,7 @@ export const agentSidebarConversationKeys = {
     archivedOnly: boolean,
     search = "",
     pinnedConversationIds: string[] = [],
+    priorityConversationIds: string[] = [],
     sort: AgentSidebarSort = "latest"
   ) =>
     [
@@ -32,6 +33,8 @@ export const agentSidebarConversationKeys = {
       search.trim().toLowerCase(),
       "pinned",
       pinnedConversationIds,
+      "priority",
+      priorityConversationIds,
       "sort",
       sort,
     ] as const,
@@ -40,7 +43,8 @@ export const agentSidebarConversationKeys = {
     archivedOnly: boolean,
     search = "",
     publicationStates: AgentSidebarPublicationState[] = [],
-    pinnedConversationIds: string[] = []
+    pinnedConversationIds: string[] = [],
+    priorityConversationIds: string[] = []
   ) =>
     [
       ...agentSidebarConversationKeys.all,
@@ -54,6 +58,8 @@ export const agentSidebarConversationKeys = {
       publicationStates,
       "pinned",
       pinnedConversationIds,
+      "priority",
+      priorityConversationIds,
     ] as const,
 };
 
@@ -63,6 +69,7 @@ export function useAgentSidebarPublicationGroup({
   archivedOnly,
   search,
   pinnedConversationIds,
+  priorityConversationIds = [],
   sort,
   enabled = true,
   minimumRowCount = 0,
@@ -72,6 +79,7 @@ export function useAgentSidebarPublicationGroup({
   archivedOnly: boolean;
   search: string;
   pinnedConversationIds: string[];
+  priorityConversationIds?: string[];
   sort: AgentSidebarSort;
   enabled?: boolean;
   minimumRowCount?: number;
@@ -84,6 +92,7 @@ export function useAgentSidebarPublicationGroup({
     search,
     publicationStates: [publicationState],
     pinnedConversationIds,
+    priorityConversationIds,
     sort,
     enabled,
     minimumRowCount,
@@ -93,6 +102,7 @@ export function useAgentSidebarPublicationGroup({
       archivedOnly,
       search,
       pinnedConversationIds,
+      priorityConversationIds,
       sort
     ),
   });
@@ -104,6 +114,7 @@ export function useAgentSidebarProjectGroup({
   search,
   publicationStates,
   pinnedConversationIds,
+  priorityConversationIds = [],
   enabled = true,
   minimumRowCount = 0,
 }: {
@@ -112,6 +123,7 @@ export function useAgentSidebarProjectGroup({
   search: string;
   publicationStates: AgentSidebarPublicationState[];
   pinnedConversationIds: string[];
+  priorityConversationIds?: string[];
   enabled?: boolean;
   minimumRowCount?: number;
 }) {
@@ -123,6 +135,7 @@ export function useAgentSidebarProjectGroup({
     search,
     publicationStates,
     pinnedConversationIds,
+    priorityConversationIds,
     enabled: enabled && Boolean(projectId),
     minimumRowCount,
     queryKey: agentSidebarConversationKeys.projectGroup(
@@ -130,7 +143,8 @@ export function useAgentSidebarProjectGroup({
       archivedOnly,
       search,
       publicationStates,
-      pinnedConversationIds
+      pinnedConversationIds,
+      priorityConversationIds
     ),
   });
 }
@@ -143,6 +157,7 @@ function useAgentSidebarGroup({
   search,
   publicationStates,
   pinnedConversationIds,
+  priorityConversationIds = [],
   sort,
   enabled,
   minimumRowCount,
@@ -155,6 +170,7 @@ function useAgentSidebarGroup({
   search: string;
   publicationStates: AgentSidebarPublicationState[];
   pinnedConversationIds: string[];
+  priorityConversationIds?: string[];
   sort?: AgentSidebarSort;
   enabled: boolean;
   minimumRowCount: number;
@@ -181,6 +197,7 @@ function useAgentSidebarGroup({
           offset === 0 ? initialLimitPerGroup : AGENT_SIDEBAR_GROUP_PAGE_SIZE,
         offsets: { [groupKey]: offset },
         pinnedConversationIds,
+        priorityConversationIds,
       });
 
       return response.groups.find((group) => group.key === groupKey) ?? emptyGroup(groupKey);

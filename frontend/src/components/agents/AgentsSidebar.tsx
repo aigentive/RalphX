@@ -771,18 +771,22 @@ export function AgentsSidebar({
     },
     [confirm, onForkConversation],
   );
-  const priorityConversationIds = useMemo(() => {
-    const ids = new Set(pinnedConversationIdList);
+  const selectedPriorityConversationIds = useMemo(() => {
+    const ids = new Set<string>();
     if (sidebarGroupBy === "publication" && selectedConversationId) {
       ids.add(selectedConversationId);
     }
-    if (pinnedConversation && !sidebarSelectedConversationIds[pinnedConversation.id]) {
+    if (
+      pinnedConversation &&
+      !pinnedConversationIds[pinnedConversation.id] &&
+      !sidebarSelectedConversationIds[pinnedConversation.id]
+    ) {
       ids.add(pinnedConversation.id);
     }
     return Array.from(ids);
   }, [
     pinnedConversation,
-    pinnedConversationIdList,
+    pinnedConversationIds,
     selectedConversationId,
     sidebarGroupBy,
     sidebarSelectedConversationIds,
@@ -1024,7 +1028,8 @@ export function AgentsSidebar({
           <PublicationStateGroups
             projects={orderedProjects}
             isSidebarVisible={isVisible}
-            priorityConversationIds={priorityConversationIds}
+            pinnedConversationIdList={pinnedConversationIdList}
+            priorityConversationIds={selectedPriorityConversationIds}
             pinnedConversationIds={pinnedConversationIds}
             rowSort={projectSort}
             selectedConversationId={selectedConversationId}
@@ -1055,7 +1060,8 @@ export function AgentsSidebar({
               onRestoreConversation={onRestoreConversation}
               onForkConversation={handleForkConversation}
               onTogglePinnedConversation={togglePinnedConversation}
-              priorityConversationIds={priorityConversationIds}
+              pinnedConversationIdList={pinnedConversationIdList}
+              priorityConversationIds={selectedPriorityConversationIds}
               pinnedConversationIds={pinnedConversationIds}
               selectedPublicationStates={selectedPublicationStates}
               showArchived={showArchived}
@@ -1480,6 +1486,7 @@ function FilterCollapsibleSection({
 interface PublicationStateGroupsProps {
   projects: Project[];
   isSidebarVisible: boolean;
+  pinnedConversationIdList: string[];
   priorityConversationIds: string[];
   pinnedConversationIds: Record<string, true>;
   rowSort: AgentProjectSort;
@@ -1498,6 +1505,7 @@ interface PublicationStateGroupsProps {
 function PublicationStateGroups({
   projects,
   isSidebarVisible,
+  pinnedConversationIdList,
   priorityConversationIds,
   pinnedConversationIds,
   rowSort,
@@ -1544,6 +1552,7 @@ function PublicationStateGroups({
           expandedPublicationState={expandedPublicationState}
           isSidebarVisible={isSidebarVisible}
           projects={projects}
+          pinnedConversationIdList={pinnedConversationIdList}
           priorityConversationIds={priorityConversationIds}
           pinnedConversationIds={pinnedConversationIds}
           publicationState={publicationState}
@@ -1573,6 +1582,7 @@ interface PublicationStateGroupProps {
   expandedPublicationState: AgentSidebarPublicationState | null;
   isSidebarVisible: boolean;
   projects: Project[];
+  pinnedConversationIdList: string[];
   priorityConversationIds: string[];
   pinnedConversationIds: Record<string, true>;
   publicationState: AgentSidebarPublicationState;
@@ -1599,6 +1609,7 @@ function PublicationStateGroup({
   expandedPublicationState,
   isSidebarVisible,
   projects,
+  pinnedConversationIdList,
   priorityConversationIds,
   pinnedConversationIds,
   publicationState,
@@ -1629,10 +1640,10 @@ function PublicationStateGroup({
         searchQuery,
         rowSort,
         projectIds.join(","),
-        priorityConversationIds.join(","),
+        pinnedConversationIdList.join(","),
       ].join("::"),
     [
-      priorityConversationIds,
+      pinnedConversationIdList,
       projectIds,
       publicationState,
       rowSort,
@@ -1647,7 +1658,8 @@ function PublicationStateGroup({
     publicationState,
     archivedOnly: showArchived,
     search: searchQuery,
-    pinnedConversationIds: priorityConversationIds,
+    pinnedConversationIds: pinnedConversationIdList,
+    priorityConversationIds,
     sort: rowSort,
     minimumRowCount: rememberedPublicationRowCount,
   });
@@ -2187,6 +2199,7 @@ interface ProjectSessionGroupProps {
   onRestoreConversation: (conversation: AgentConversation) => void;
   onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
   onTogglePinnedConversation: (conversationId: string) => void;
+  pinnedConversationIdList: string[];
   priorityConversationIds: string[];
   pinnedConversationIds: Record<string, true>;
   selectedPublicationStates: AgentSidebarPublicationState[];
@@ -2210,6 +2223,7 @@ function ProjectSessionGroup({
   onRestoreConversation,
   onForkConversation,
   onTogglePinnedConversation,
+  pinnedConversationIdList,
   priorityConversationIds,
   pinnedConversationIds,
   selectedPublicationStates,
@@ -2242,10 +2256,10 @@ function ProjectSessionGroup({
         showArchived ? "archived" : "active",
         searchQuery,
         selectedPublicationStates.join(","),
-        priorityConversationIds.join(","),
+        pinnedConversationIdList.join(","),
       ].join("::"),
     [
-      priorityConversationIds,
+      pinnedConversationIdList,
       project.id,
       searchQuery,
       selectedPublicationStates,
@@ -2259,7 +2273,8 @@ function ProjectSessionGroup({
     archivedOnly: showArchived,
     search: searchQuery,
     publicationStates: selectedPublicationStates,
-    pinnedConversationIds: priorityConversationIds,
+    pinnedConversationIds: pinnedConversationIdList,
+    priorityConversationIds,
     minimumRowCount: rememberedProjectRowCount,
   });
   const activeConversationIds = useChatStore((s) => s.activeConversationIds);

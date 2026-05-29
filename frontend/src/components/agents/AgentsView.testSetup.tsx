@@ -931,12 +931,14 @@ export function mockAgentSidebarData(conversations: AgentConversation[]) {
       search = "",
       publicationStates = DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS,
       pinnedConversationIds = [],
+      priorityConversationIds = [],
     }: {
       projectId?: string | null;
       archivedOnly?: boolean;
       search?: string;
       publicationStates?: string[];
       pinnedConversationIds?: string[];
+      priorityConversationIds?: string[];
     }) =>
       buildAgentSidebarGroupResult({
         key: projectId ?? "",
@@ -947,6 +949,7 @@ export function mockAgentSidebarData(conversations: AgentConversation[]) {
           search,
           publicationStates,
           pinnedConversationIds,
+          priorityConversationIds,
         }),
       })
   );
@@ -957,12 +960,14 @@ export function mockAgentSidebarData(conversations: AgentConversation[]) {
       archivedOnly = false,
       search = "",
       pinnedConversationIds = [],
+      priorityConversationIds = [],
     }: {
       projectIds?: string[];
       publicationState?: string;
       archivedOnly?: boolean;
       search?: string;
       pinnedConversationIds?: string[];
+      priorityConversationIds?: string[];
     }) =>
       buildAgentSidebarGroupResult({
         key: publicationState,
@@ -973,6 +978,7 @@ export function mockAgentSidebarData(conversations: AgentConversation[]) {
           search,
           publicationStates: [publicationState],
           pinnedConversationIds,
+          priorityConversationIds,
         }),
       })
   );
@@ -986,16 +992,19 @@ function filterSidebarConversations(
     search,
     publicationStates,
     pinnedConversationIds,
+    priorityConversationIds,
   }: {
     projectIds: string[];
     archivedOnly: boolean;
     search: string;
     publicationStates: string[];
     pinnedConversationIds: string[];
+    priorityConversationIds: string[];
   }
 ) {
   const projectIdSet = new Set(projectIds);
   const pinnedIdSet = new Set(pinnedConversationIds);
+  const priorityIdSet = new Set(priorityConversationIds);
   const normalizedSearch = search.trim().toLowerCase();
   return conversations
     .filter((item) => projectIdSet.has(item.projectId ?? item.contextId))
@@ -1012,6 +1021,11 @@ function filterSidebarConversations(
         Number(pinnedIdSet.has(right.id)) - Number(pinnedIdSet.has(left.id));
       if (pinnedDelta !== 0) {
         return pinnedDelta;
+      }
+      const priorityDelta =
+        Number(priorityIdSet.has(right.id)) - Number(priorityIdSet.has(left.id));
+      if (priorityDelta !== 0) {
+        return priorityDelta;
       }
       return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
     });
