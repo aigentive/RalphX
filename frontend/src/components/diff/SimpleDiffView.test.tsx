@@ -26,6 +26,38 @@ vi.mock("@/api/diff", () => ({
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: (...args: unknown[]) => mockOpenUrl(...args),
 }));
+vi.mock("react-virtuoso", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+
+  type VirtuosoMockProps = {
+    data?: unknown[];
+    itemContent?: (index: number, item: unknown) => React.ReactNode;
+    computeItemKey?: (index: number, item: unknown) => React.Key;
+    className?: string;
+    style?: React.CSSProperties;
+    "data-testid"?: string;
+  };
+
+  function Virtuoso(props: VirtuosoMockProps) {
+    const data = props.data ?? [];
+    return (
+      <div
+        data-testid={props["data-testid"] ?? "mock-virtuoso"}
+        data-count={data.length}
+        className={props.className}
+        style={props.style}
+      >
+        {data.slice(0, 24).map((item, index) => (
+          <div key={props.computeItemKey?.(index, item) ?? index}>
+            {props.itemContent?.(index, item)}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return { Virtuoso };
+});
 
 import { SimpleDiffView } from "./SimpleDiffView";
 
@@ -235,6 +267,38 @@ describe("SimpleDiffView", () => {
       expect(screen.getByText("@@ -1,3 +1,3 @@")).toBeInTheDocument();
       expect(screen.getByText("@@ -20,3 +20,3 @@")).toBeInTheDocument();
       expect(screen.getByText("far away line")).toBeInTheDocument();
+    });
+
+    it("virtualizes large diffs instead of mounting every line", () => {
+      const lines = Array.from({ length: 1_200 }, (_value, index) =>
+        makeDiffLine({
+          content: `large diff line ${index}`,
+          oldLineNum: index + 1,
+          newLineNum: index + 1,
+        })
+      );
+      render(
+        <SimpleDiffView
+          hunks={[
+            makeHunk({
+              oldLines: lines.length,
+              newLines: lines.length,
+              header: "@@ -1,1200 +1,1200 @@",
+              lines,
+            }),
+          ]}
+          oldTotalLines={1_200}
+          newTotalLines={1_200}
+        />
+      );
+
+      expect(screen.getByTestId("simple-diff-virtualized")).toBeInTheDocument();
+      expect(screen.getByTestId("simple-diff-virtual-list")).toHaveAttribute(
+        "data-count",
+        "1201",
+      );
+      expect(screen.getByText("large diff line 0")).toBeInTheDocument();
+      expect(screen.queryByText("large diff line 1199")).not.toBeInTheDocument();
     });
 
     it("renders GitHub annotations on matching diff lines", () => {

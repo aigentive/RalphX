@@ -340,6 +340,7 @@ macro_rules! register_tauri_commands {
             commands::diff_commands::get_agent_conversation_workspace_unstaged_file_diff,
             commands::diff_commands::get_agent_conversation_workspace_cumulative_file_changes,
             commands::diff_commands::get_agent_conversation_workspace_cumulative_file_diff,
+            commands::diff_commands::get_agent_conversation_workspace_file_diff_page,
             commands::diff_commands::get_agent_conversation_workspace_file_content_range,
             commands::diff_commands::get_commit_file_changes,
             commands::diff_commands::get_commit_file_diff,
