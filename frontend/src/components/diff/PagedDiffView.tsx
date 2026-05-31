@@ -12,7 +12,6 @@ import {
 
 export const DIFF_PAGE_SIZE = 200;
 const PAGE_WINDOW_RADIUS = 1;
-const INLINE_PAGE_WINDOW_RADIUS = 2;
 const DIFF_ROW_ESTIMATED_HEIGHT = 20;
 const PLACEHOLDER_ROWS = 12;
 
@@ -53,16 +52,11 @@ function rowAtIndex(
   return pages.get(offset)?.rows[index - offset];
 }
 
-function prunePagesAroundOffset(
+function prunePagesToOffsetRange(
   pages: Map<number, FileDiffPage>,
-  centerOffset: number,
-  pageSize: number
+  firstKeptOffset: number,
+  lastKeptOffset: number
 ): boolean {
-  const firstKeptOffset = Math.max(
-    0,
-    centerOffset - INLINE_PAGE_WINDOW_RADIUS * pageSize
-  );
-  const lastKeptOffset = centerOffset + INLINE_PAGE_WINDOW_RADIUS * pageSize;
   let changed = false;
   for (const offset of pages.keys()) {
     if (offset < firstKeptOffset || offset > lastKeptOffset) {
@@ -75,7 +69,10 @@ function prunePagesAroundOffset(
 
 type LoadPageOptions = {
   generation?: number;
-  pruneAfterLoad?: boolean;
+  keepOffsetRange?: {
+    first: number;
+    last: number;
+  };
 };
 
 export function PagedDiffView({
@@ -104,10 +101,20 @@ export function PagedDiffView({
     async (requestedOffset: number, options: LoadPageOptions = {}) => {
       const generation = options.generation ?? generationRef.current;
       const offset = pageOffsetForIndex(requestedOffset, pageSize);
-      if (
-        pagesRef.current.has(offset) ||
-        loadingOffsetsRef.current.has(offset)
-      ) {
+      if (pagesRef.current.has(offset)) {
+        if (
+          options.keepOffsetRange &&
+          prunePagesToOffsetRange(
+            pagesRef.current,
+            options.keepOffsetRange.first,
+            options.keepOffsetRange.last
+          )
+        ) {
+          setPages(new Map(pagesRef.current));
+        }
+        return;
+      }
+      if (loadingOffsetsRef.current.has(offset)) {
         return;
       }
 
@@ -128,8 +135,12 @@ export function PagedDiffView({
           return;
         }
         pagesRef.current.set(page.offset, page);
-        if (options.pruneAfterLoad) {
-          prunePagesAroundOffset(pagesRef.current, page.offset, pageSize);
+        if (options.keepOffsetRange) {
+          prunePagesToOffsetRange(
+            pagesRef.current,
+            options.keepOffsetRange.first,
+            options.keepOffsetRange.last
+          );
         }
         setPages(new Map(pagesRef.current));
         setTotalRows(page.totalRows);
@@ -220,10 +231,20 @@ export function PagedDiffView({
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
           if (entry.target === previousSentinelRef.current && previousOffset !== null) {
-            void loadPage(previousOffset, { pruneAfterLoad: true });
+            void loadPage(previousOffset, {
+              keepOffsetRange: {
+                first: previousOffset,
+                last: previousOffset + pageSize,
+              },
+            });
           }
           if (entry.target === nextSentinelRef.current && nextOffset !== null) {
-            void loadPage(nextOffset, { pruneAfterLoad: true });
+            void loadPage(nextOffset, {
+              keepOffsetRange: {
+                first: Math.max(0, nextOffset - pageSize),
+                last: nextOffset,
+              },
+            });
           }
         }
       },
@@ -317,6 +338,12 @@ export function PagedDiffView({
   };
 
   const topSpacerHeight = firstLoadedOffset * DIFF_ROW_ESTIMATED_HEIGHT;
+  const lastLoadedRowEnd =
+    lastLoadedPage !== undefined
+      ? lastLoadedOffset + lastLoadedPage.rows.length
+      : 0;
+  const bottomSpacerHeight =
+    Math.max(0, rowCount - lastLoadedRowEnd) * DIFF_ROW_ESTIMATED_HEIGHT;
 
   return (
     <div className={scrollContainer ? "h-full overflow-hidden" : "w-full overflow-hidden"}>
@@ -406,6 +433,13 @@ export function PagedDiffView({
                 aria-hidden="true"
                 className="h-5"
                 style={{ backgroundColor: "var(--bg-base)" }}
+              />
+            )}
+            {bottomSpacerHeight > 0 && (
+              <div
+                data-testid="paged-diff-bottom-spacer"
+                aria-hidden="true"
+                style={{ height: `${bottomSpacerHeight}px` }}
               />
             )}
           </div>

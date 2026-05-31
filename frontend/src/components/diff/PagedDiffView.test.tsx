@@ -197,6 +197,57 @@ describe("PagedDiffView", () => {
     expect(await screen.findByText("line 120")).toBeInTheDocument();
   });
 
+  it("unmounts old inline pages as deeper pages load", async () => {
+    mockGetDiffPage.mockImplementation(({ offset, limit }) =>
+      Promise.resolve(makePage(offset as number, limit as number, 500))
+    );
+
+    render(
+      <PagedDiffView
+        conversationId="conv-1"
+        filePath="src/Huge.tsx"
+        refKind={{ kind: "head" }}
+        pageSize={100}
+      />
+    );
+
+    await screen.findByText("line 1");
+
+    await act(async () => {
+      for (const observer of intersectionObservers) {
+        observer.trigger("paged-diff-next-sentinel");
+      }
+    });
+    expect(await screen.findByText("line 120")).toBeInTheDocument();
+
+    await act(async () => {
+      for (const observer of intersectionObservers) {
+        observer.trigger("paged-diff-next-sentinel");
+      }
+    });
+    expect(await screen.findByText("line 220")).toBeInTheDocument();
+
+    await act(async () => {
+      for (const observer of intersectionObservers) {
+        observer.trigger("paged-diff-next-sentinel");
+      }
+    });
+    expect(await screen.findByText("line 320")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-loaded-page-count",
+        "2"
+      );
+    });
+    expect(screen.queryByText("line 1")).toBeNull();
+    expect(screen.queryByText("line 120")).toBeNull();
+    expect(screen.getByText("line 220")).toBeInTheDocument();
+    expect(screen.getByText("line 320")).toBeInTheDocument();
+    expect(screen.getByTestId("paged-diff-top-spacer")).toBeInTheDocument();
+    expect(screen.getByTestId("paged-diff-bottom-spacer")).toBeInTheDocument();
+  });
+
   it("loads visible pages and prunes distant loaded pages in contained scroll mode", async () => {
     render(
       <PagedDiffView
