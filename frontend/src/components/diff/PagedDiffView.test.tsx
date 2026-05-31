@@ -1,11 +1,47 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileDiffPage } from "@/api/diff";
 
 const mockGetDiffPage = vi.fn();
 let latestRangeChanged:
   | ((range: { startIndex: number; endIndex: number }) => void)
   | undefined;
+const intersectionObservers: MockIntersectionObserver[] = [];
+
+class MockIntersectionObserver {
+  readonly callback: IntersectionObserverCallback;
+  readonly elements = new Set<Element>();
+
+  constructor(callback: IntersectionObserverCallback) {
+    this.callback = callback;
+    intersectionObservers.push(this);
+  }
+
+  observe = (element: Element) => {
+    this.elements.add(element);
+  };
+
+  unobserve = (element: Element) => {
+    this.elements.delete(element);
+  };
+
+  disconnect = () => {
+    this.elements.clear();
+  };
+
+  takeRecords = () => [];
+
+  trigger(testId: string) {
+    for (const element of this.elements) {
+      if (element.getAttribute("data-testid") === testId) {
+        this.callback(
+          [{ isIntersecting: true, target: element } as IntersectionObserverEntry],
+          this as unknown as IntersectionObserver,
+        );
+      }
+    }
+  }
+}
 
 vi.mock("@/api/diff", () => ({
   diffApi: {
@@ -85,13 +121,19 @@ function makePage(offset: number, limit: number, totalRows = 260): FileDiffPage 
 describe("PagedDiffView", () => {
   beforeEach(() => {
     latestRangeChanged = undefined;
+    intersectionObservers.length = 0;
+    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
     mockGetDiffPage.mockReset();
     mockGetDiffPage.mockImplementation(({ offset, limit }) =>
       Promise.resolve(makePage(offset as number, limit as number))
     );
   });
 
-  it("fetches and renders only the first page initially", async () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("fetches and renders only the first page initially without owning a vertical scroller", async () => {
     render(
       <PagedDiffView
         conversationId="conv-1"
@@ -114,22 +156,64 @@ describe("PagedDiffView", () => {
       "data-total-rows",
       "260"
     );
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-scroll-container",
+      "false"
+    );
+    expect(screen.queryByTestId("paged-diff-virtual-list")).not.toBeInTheDocument();
+    expect(screen.getByTestId("paged-diff-inline-list")).toBeInTheDocument();
     expect(screen.getByText("@@ -1,260 +1,260 @@")).toBeInTheDocument();
     expect(screen.getByText("line 1")).toBeInTheDocument();
     expect(screen.queryByText("line 120")).toBeNull();
   });
 
-  it("loads visible pages and prunes distant loaded pages", async () => {
+  it("loads the next inline page when the bottom sentinel reaches the outer scroll", async () => {
+    render(
+      <PagedDiffView
+        conversationId="conv-1"
+        filePath="src/Huge.tsx"
+        refKind={{ kind: "head" }}
+        pageSize={100}
+      />
+    );
+
+    await screen.findByTestId("paged-diff-view");
+
+    await act(async () => {
+      for (const observer of intersectionObservers) {
+        observer.trigger("paged-diff-next-sentinel");
+      }
+    });
+
+    await waitFor(() =>
+      expect(mockGetDiffPage).toHaveBeenCalledWith({
+        conversationId: "conv-1",
+        path: "src/Huge.tsx",
+        refKind: { kind: "head" },
+        offset: 100,
+        limit: 100,
+      })
+    );
+    expect(await screen.findByText("line 120")).toBeInTheDocument();
+  });
+
+  it("loads visible pages and prunes distant loaded pages in contained scroll mode", async () => {
     render(
       <PagedDiffView
         conversationId="conv-1"
         filePath="src/Huge.tsx"
         refKind={{ kind: "cumulative_head" }}
         pageSize={100}
+        scrollContainer={true}
       />
     );
 
     await screen.findByTestId("paged-diff-view");
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-scroll-container",
+      "true"
+    );
+    expect(screen.getByTestId("paged-diff-virtual-list")).toBeInTheDocument();
 
     await act(async () => {
       latestRangeChanged?.({ startIndex: 220, endIndex: 240 });

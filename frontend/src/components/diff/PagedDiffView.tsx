@@ -12,8 +12,9 @@ import {
 
 export const DIFF_PAGE_SIZE = 200;
 const PAGE_WINDOW_RADIUS = 1;
+const INLINE_PAGE_WINDOW_RADIUS = 2;
+const DIFF_ROW_ESTIMATED_HEIGHT = 20;
 const PLACEHOLDER_ROWS = 12;
-const INLINE_VIRTUAL_DIFF_HEIGHT = "min(70vh, 720px)";
 
 export interface PagedDiffViewProps {
   conversationId: string;
@@ -52,6 +53,31 @@ function rowAtIndex(
   return pages.get(offset)?.rows[index - offset];
 }
 
+function prunePagesAroundOffset(
+  pages: Map<number, FileDiffPage>,
+  centerOffset: number,
+  pageSize: number
+): boolean {
+  const firstKeptOffset = Math.max(
+    0,
+    centerOffset - INLINE_PAGE_WINDOW_RADIUS * pageSize
+  );
+  const lastKeptOffset = centerOffset + INLINE_PAGE_WINDOW_RADIUS * pageSize;
+  let changed = false;
+  for (const offset of pages.keys()) {
+    if (offset < firstKeptOffset || offset > lastKeptOffset) {
+      pages.delete(offset);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+type LoadPageOptions = {
+  generation?: number;
+  pruneAfterLoad?: boolean;
+};
+
 export function PagedDiffView({
   conversationId,
   filePath,
@@ -64,6 +90,8 @@ export function PagedDiffView({
   const pagesRef = useRef<Map<number, FileDiffPage>>(new Map());
   const loadingOffsetsRef = useRef<Set<number>>(new Set());
   const generationRef = useRef(0);
+  const previousSentinelRef = useRef<HTMLDivElement | null>(null);
+  const nextSentinelRef = useRef<HTMLDivElement | null>(null);
   const [pages, setPages] = useState<Map<number, FileDiffPage>>(() => new Map());
   const [totalRows, setTotalRows] = useState<number | null>(null);
   const [initialError, setInitialError] = useState<Error | null>(null);
@@ -73,7 +101,8 @@ export function PagedDiffView({
   const cacheKey = refKindCacheKey(refKind);
 
   const loadPage = useCallback(
-    async (requestedOffset: number, generation = generationRef.current) => {
+    async (requestedOffset: number, options: LoadPageOptions = {}) => {
+      const generation = options.generation ?? generationRef.current;
       const offset = pageOffsetForIndex(requestedOffset, pageSize);
       if (
         pagesRef.current.has(offset) ||
@@ -99,6 +128,9 @@ export function PagedDiffView({
           return;
         }
         pagesRef.current.set(page.offset, page);
+        if (options.pruneAfterLoad) {
+          prunePagesAroundOffset(pagesRef.current, page.offset, pageSize);
+        }
         setPages(new Map(pagesRef.current));
         setTotalRows(page.totalRows);
         setInitialError(null);
@@ -127,7 +159,7 @@ export function PagedDiffView({
     setTotalRows(null);
     setInitialError(null);
     setIsInitialLoading(true);
-    void loadPage(0, generation);
+    void loadPage(0, { generation });
   }, [cacheKey, conversationId, filePath, loadPage]);
 
   const prunePagesAroundRange = useCallback(
@@ -166,6 +198,49 @@ export function PagedDiffView({
   const firstPage = pages.get(0);
   const rowCount = totalRows ?? firstPage?.totalRows ?? 0;
   const hasAnyPage = pages.size > 0;
+  const sortedPageOffsets = useMemo(
+    () => [...pages.keys()].sort((a, b) => a - b),
+    [pages]
+  );
+  const firstLoadedOffset = sortedPageOffsets[0] ?? 0;
+  const lastLoadedOffset = sortedPageOffsets[sortedPageOffsets.length - 1] ?? 0;
+  const lastLoadedPage = pages.get(lastLoadedOffset);
+  const previousOffset = firstLoadedOffset > 0
+    ? Math.max(0, firstLoadedOffset - pageSize)
+    : null;
+  const nextOffset = lastLoadedPage?.nextOffset ?? null;
+
+  useEffect(() => {
+    if (scrollContainer || typeof IntersectionObserver === "undefined") {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          if (entry.target === previousSentinelRef.current && previousOffset !== null) {
+            void loadPage(previousOffset, { pruneAfterLoad: true });
+          }
+          if (entry.target === nextSentinelRef.current && nextOffset !== null) {
+            void loadPage(nextOffset, { pruneAfterLoad: true });
+          }
+        }
+      },
+      { root: null, rootMargin: "640px 0px 640px 0px" }
+    );
+
+    const previousSentinel = previousSentinelRef.current;
+    const nextSentinel = nextSentinelRef.current;
+    if (previousOffset !== null && previousSentinel) {
+      observer.observe(previousSentinel);
+    }
+    if (nextOffset !== null && nextSentinel) {
+      observer.observe(nextSentinel);
+    }
+
+    return () => observer.disconnect();
+  }, [loadPage, nextOffset, pageSize, previousOffset, scrollContainer]);
 
   if (initialError && !hasAnyPage) {
     return (
@@ -228,12 +303,28 @@ export function PagedDiffView({
     );
   }
 
+  const renderRow = (row: DiffPageRow, index: number) => {
+    if (row.kind === "hunk_header") {
+      return renderHunkHeader(row.header);
+    }
+    return renderDiffLine(
+      row.line,
+      index,
+      wrapLines,
+      "standard",
+      annotationsForLine(annotationIndex, row.line)
+    );
+  };
+
+  const topSpacerHeight = firstLoadedOffset * DIFF_ROW_ESTIMATED_HEIGHT;
+
   return (
     <div className={scrollContainer ? "h-full overflow-hidden" : "w-full overflow-hidden"}>
       <div
         className="font-mono text-[0.8125rem] leading-[20px]"
         data-testid="paged-diff-view"
         data-loaded-page-count={pages.size}
+        data-scroll-container={String(scrollContainer)}
         data-total-rows={rowCount}
         data-wrap-lines={wrapLines}
         style={{ backgroundColor: "var(--bg-base)" }}
@@ -250,45 +341,75 @@ export function PagedDiffView({
             {wrapLines ? "Disable wrap" : "Wrap lines"}
           </Button>
         </div>
-        <Virtuoso
-          totalCount={rowCount}
-          data-testid="paged-diff-virtual-list"
-          style={{
-            height: scrollContainer ? "100%" : INLINE_VIRTUAL_DIFF_HEIGHT,
-            overflowX: "auto",
-          }}
-          rangeChanged={handleRangeChanged}
-          increaseViewportBy={{ top: 320, bottom: 640 }}
-          computeItemKey={(index) => {
-            const row = rowAtIndex(pages, index, pageSize);
-            if (!row) return `placeholder-${index}`;
-            return row.kind === "hunk_header"
-              ? `hunk-${index}-${row.header}`
-              : `line-${index}-${row.line.oldLineNum ?? "x"}-${row.line.newLineNum ?? "x"}`;
-          }}
-          itemContent={(index) => {
-            const row = rowAtIndex(pages, index, pageSize);
-            if (!row) {
-              return (
-                <div
-                  data-testid="paged-diff-placeholder-row"
-                  className="h-5"
-                  style={{ backgroundColor: "var(--bg-base)" }}
-                />
-              );
-            }
-            if (row.kind === "hunk_header") {
-              return renderHunkHeader(row.header);
-            }
-            return renderDiffLine(
-              row.line,
-              index,
-              wrapLines,
-              "standard",
-              annotationsForLine(annotationIndex, row.line)
-            );
-          }}
-        />
+        {scrollContainer ? (
+          <Virtuoso
+            totalCount={rowCount}
+            data-testid="paged-diff-virtual-list"
+            style={{
+              height: "100%",
+              overflowX: "auto",
+            }}
+            rangeChanged={handleRangeChanged}
+            increaseViewportBy={{ top: 320, bottom: 640 }}
+            computeItemKey={(index) => {
+              const row = rowAtIndex(pages, index, pageSize);
+              if (!row) return `placeholder-${index}`;
+              return row.kind === "hunk_header"
+                ? `hunk-${index}-${row.header}`
+                : `line-${index}-${row.line.oldLineNum ?? "x"}-${row.line.newLineNum ?? "x"}`;
+            }}
+            itemContent={(index) => {
+              const row = rowAtIndex(pages, index, pageSize);
+              if (!row) {
+                return (
+                  <div
+                    data-testid="paged-diff-placeholder-row"
+                    className="h-5"
+                    style={{ backgroundColor: "var(--bg-base)" }}
+                  />
+                );
+              }
+              return renderRow(row, index);
+            }}
+          />
+        ) : (
+          <div data-testid="paged-diff-inline-list" className="overflow-x-auto">
+            {topSpacerHeight > 0 && (
+              <div
+                data-testid="paged-diff-top-spacer"
+                aria-hidden="true"
+                style={{ height: `${topSpacerHeight}px` }}
+              />
+            )}
+            {previousOffset !== null && (
+              <div
+                ref={previousSentinelRef}
+                data-testid="paged-diff-previous-sentinel"
+                aria-hidden="true"
+                className="h-px"
+              />
+            )}
+            {sortedPageOffsets.flatMap((offset) =>
+              (pages.get(offset)?.rows ?? []).map((row, index) => {
+                const absoluteIndex = offset + index;
+                return (
+                  <div key={`${offset}-${index}`}>
+                    {renderRow(row, absoluteIndex)}
+                  </div>
+                );
+              })
+            )}
+            {nextOffset !== null && (
+              <div
+                ref={nextSentinelRef}
+                data-testid="paged-diff-next-sentinel"
+                aria-hidden="true"
+                className="h-5"
+                style={{ backgroundColor: "var(--bg-base)" }}
+              />
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

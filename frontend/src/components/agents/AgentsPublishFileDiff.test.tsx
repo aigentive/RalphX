@@ -38,16 +38,19 @@ vi.mock("@/components/diff/PagedDiffView", () => ({
     conversationId,
     filePath,
     refKind,
+    scrollContainer,
   }: {
     conversationId: string;
     filePath: string;
     refKind: { kind: string };
+    scrollContainer?: boolean;
   }) => (
     <div
       data-testid="paged-diff-view"
       data-conversation-id={conversationId}
       data-file-path={filePath}
       data-ref-kind={refKind.kind}
+      data-scroll-container={String(scrollContainer ?? false)}
     >
       PagedDiffView
     </div>
@@ -713,6 +716,10 @@ describe("AgentsPublishFileDiff", () => {
         ),
       );
       expect(screen.getByTestId("paged-diff-view")).toHaveAttribute("data-ref-kind", "head");
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-scroll-container",
+        "false",
+      );
       expect(screen.queryByTestId("simple-diff-view")).toBeNull();
       expect(screen.queryByTestId("file-diff-large-placeholder")).toBeNull();
     });
