@@ -27,8 +27,10 @@ export function scrollElementToTrueBottom(
   behavior: ScrollBehavior = "auto"
 ): number {
   const target = getTrueBottomScrollTop(element);
-  if (typeof element.scrollTo === "function") {
-    element.scrollTo({ top: target, behavior });
+  if (element.scrollTop !== target) {
+    if (typeof element.scrollTo === "function") {
+      element.scrollTo({ top: target, behavior });
+    }
   }
   if (element.scrollTop !== target) {
     element.scrollTop = target;

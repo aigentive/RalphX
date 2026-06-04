@@ -15,6 +15,7 @@ import type { ContentBlockItem } from "../components/Chat/MessageItem";
 import type { MessageAttachment } from "../components/Chat/MessageAttachments";
 import { isWebMode } from "@/lib/tauri-detection";
 import { backendApiUrl } from "@/api/backend";
+import { FileDiffSchema, transformFileDiff, type FileDiff } from "./diff";
 
 // ============================================================================
 // Typed Invoke Helper
@@ -169,8 +170,18 @@ type ToolPreviewMetadataTarget = {
   resultPreviewLineCount?: number | undefined;
   resultPreviewOmittedLines?: number | undefined;
   resultPreviewPaths?: string[] | undefined;
+  argumentsPreviewTruncated?: boolean | undefined;
+  argumentsPreviewOriginalBytes?: number | undefined;
+  argumentsPreviewLineCount?: number | undefined;
+  argumentsPreviewOmittedLines?: number | undefined;
+  diffPreview?: FileDiff | undefined;
   detailRef?: ToolCallDetailRef | undefined;
 };
+
+function normalizeDiffPreview(raw: unknown): FileDiff | undefined {
+  const parsed = FileDiffSchema.safeParse(raw);
+  return parsed.success ? transformFileDiff(parsed.data) : undefined;
+}
 
 function applyToolPreviewMetadata(target: ToolPreviewMetadataTarget, raw: unknown) {
   const record = getRecord(raw);
@@ -210,6 +221,44 @@ function applyToolPreviewMetadata(target: ToolPreviewMetadataTarget, raw: unknow
   );
   if (previewPaths != null) target.resultPreviewPaths = previewPaths;
 
+  const argumentsPreviewTruncated =
+    record.arguments_preview_truncated ?? record.argumentsPreviewTruncated;
+  if (argumentsPreviewTruncated === true) {
+    target.argumentsPreviewTruncated = true;
+  }
+
+  const argumentsOriginalBytes = getNumberField(
+    record,
+    "arguments_preview_original_bytes",
+    "argumentsPreviewOriginalBytes"
+  );
+  if (argumentsOriginalBytes != null) {
+    target.argumentsPreviewOriginalBytes = argumentsOriginalBytes;
+  }
+
+  const argumentsLineCount = getNumberField(
+    record,
+    "arguments_preview_line_count",
+    "argumentsPreviewLineCount"
+  );
+  if (argumentsLineCount != null) {
+    target.argumentsPreviewLineCount = argumentsLineCount;
+  }
+
+  const argumentsOmittedLines = getNumberField(
+    record,
+    "arguments_preview_omitted_lines",
+    "argumentsPreviewOmittedLines"
+  );
+  if (argumentsOmittedLines != null) {
+    target.argumentsPreviewOmittedLines = argumentsOmittedLines;
+  }
+
+  const diffPreview = normalizeDiffPreview(record.diff_preview ?? record.diffPreview);
+  if (diffPreview) {
+    target.diffPreview = diffPreview;
+  }
+
   const detailRef = normalizeToolCallDetailRef(record.detail_ref ?? record.detailRef);
   if (detailRef) target.detailRef = detailRef;
 }
@@ -242,9 +291,13 @@ function normalizeToolCall(raw: unknown, idx = 0): ToolCall {
     const filePath = diffRecord.file_path ?? diffRecord.filePath;
     if (typeof filePath === "string") {
       const oldContent = diffRecord.old_content ?? diffRecord.oldContent;
+      const oldFileExists = diffRecord.old_file_exists ?? diffRecord.oldFileExists;
       toolCall.diffContext = { filePath };
       if (typeof oldContent === "string") {
         toolCall.diffContext.oldContent = oldContent;
+      }
+      if (typeof oldFileExists === "boolean") {
+        toolCall.diffContext.oldFileExists = oldFileExists;
       }
     }
   }
@@ -276,11 +329,17 @@ export function parseContentBlocks(raw: unknown): ContentBlockItem[] {
     };
     applyToolPreviewMetadata(item, block);
     // Transform diff_context (snake_case) to diffContext (camelCase) for tool_use blocks
-    if (block.type === "tool_use" && block.diff_context) {
+    const blockDiffContext = block.diff_context ?? block.diffContext;
+    if (block.type === "tool_use" && blockDiffContext) {
       item.diffContext = {
-        oldContent: block.diff_context.old_content ?? undefined,
-        filePath: block.diff_context.file_path,
+        oldContent: blockDiffContext.old_content ?? blockDiffContext.oldContent ?? undefined,
+        filePath: blockDiffContext.file_path ?? blockDiffContext.filePath,
       };
+      const oldFileExists =
+        blockDiffContext.old_file_exists ?? blockDiffContext.oldFileExists;
+      if (typeof oldFileExists === "boolean") {
+        item.diffContext.oldFileExists = oldFileExists;
+      }
     }
     return item;
   });
@@ -353,6 +412,7 @@ export interface AgentSidebarConversationsInput {
   limitPerGroup?: number;
   offsets?: Record<string, number>;
   pinnedConversationIds?: string[];
+  priorityConversationIds?: string[];
 }
 
 export interface AgentSidebarConversationRow {
@@ -1494,6 +1554,7 @@ export const chatApi = {
   updateAgentConversationWorkspaceFromBase,
   precomputeAgentConversationWorkspacePrDescription,
   publishAgentConversationWorkspace,
+  setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
   closeAgentWorkspacePr,
   getAgentRunStatus,
@@ -1599,6 +1660,9 @@ export interface AgentConversationWorkspace {
   publicationPrUrl: string | null;
   publicationPrStatus: string | null;
   publicationPushStatus: string | null;
+  autoPublishEnabled?: boolean;
+  autoPublishPausedPrAutofixEnabled?: boolean | null;
+  autoPublishPausedPrAutoMergeDesired?: boolean | null;
   prAutofixEnabled?: boolean;
   prAutoMergeDesired?: boolean;
   prAutoMergeMethod?: string;
@@ -1721,6 +1785,10 @@ export interface SetAgentConversationWorkspacePrSupervisionInput {
   autoMergeMethod?: string | null;
 }
 
+export interface SetAgentConversationWorkspaceAutoPublishInput {
+  autoPublishEnabled: boolean;
+}
+
 const SendAgentMessageResponseSchema = z.object({
   conversation_id: z.string(),
   agent_run_id: z.string(),
@@ -1763,6 +1831,9 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   publication_pr_url: z.string().nullable(),
   publication_pr_status: z.string().nullable(),
   publication_push_status: z.string().nullable(),
+  auto_publish_enabled: z.boolean().optional().default(true),
+  auto_publish_paused_pr_autofix_enabled: z.boolean().nullable().optional().default(null),
+  auto_publish_paused_pr_auto_merge_desired: z.boolean().nullable().optional().default(null),
   pr_autofix_enabled: z.boolean().optional().default(false),
   pr_auto_merge_desired: z.boolean().optional().default(false),
   pr_auto_merge_method: z.string().optional().default("squash"),
@@ -1956,6 +2027,9 @@ function transformAgentConversationWorkspace(
     publicationPrUrl: raw.publication_pr_url,
     publicationPrStatus: raw.publication_pr_status,
     publicationPushStatus: raw.publication_push_status,
+    autoPublishEnabled: raw.auto_publish_enabled,
+    autoPublishPausedPrAutofixEnabled: raw.auto_publish_paused_pr_autofix_enabled,
+    autoPublishPausedPrAutoMergeDesired: raw.auto_publish_paused_pr_auto_merge_desired,
     prAutofixEnabled: raw.pr_autofix_enabled,
     prAutoMergeDesired: raw.pr_auto_merge_desired,
     prAutoMergeMethod: raw.pr_auto_merge_method,
@@ -2171,6 +2245,9 @@ export async function listAgentSidebarConversations(
         ...(input.pinnedConversationIds
           ? { pinnedConversationIds: input.pinnedConversationIds }
           : {}),
+        ...(input.priorityConversationIds
+          ? { priorityConversationIds: input.priorityConversationIds }
+          : {}),
       },
     },
     AgentSidebarConversationGroupsResponseSchema
@@ -2258,6 +2335,23 @@ export async function setAgentConversationWorkspacePrSupervision(
         autoFixEnabled: input.autoFixEnabled,
         autoMergeDesired: input.autoMergeDesired,
         ...(input.autoMergeMethod ? { autoMergeMethod: input.autoMergeMethod } : {}),
+      },
+    },
+    AgentConversationWorkspaceResponseSchema
+  );
+  return transformAgentConversationWorkspace(raw);
+}
+
+export async function setAgentConversationWorkspaceAutoPublish(
+  conversationId: string,
+  input: SetAgentConversationWorkspaceAutoPublishInput
+): Promise<AgentConversationWorkspace> {
+  const raw = await typedInvoke(
+    "set_agent_conversation_workspace_auto_publish",
+    {
+      conversationId,
+      input: {
+        autoPublishEnabled: input.autoPublishEnabled,
       },
     },
     AgentConversationWorkspaceResponseSchema
@@ -2521,14 +2615,53 @@ export async function isAgentRunning(
 /**
  * Bulk-check whether agents are currently running for multiple context IDs.
  */
+const AgentRuntimeStatusSchema = z.enum([
+  "idle",
+  "generating",
+  "waiting_for_input",
+]);
+
+export type AgentRuntimeStatus = z.infer<typeof AgentRuntimeStatusSchema>;
+
+export interface AgentRunningState {
+  isRunning: boolean;
+  agentStatus: AgentRuntimeStatus;
+}
+
+const AgentRunningStateSchema = z.union([
+  z.boolean().transform((isRunning): AgentRunningState => ({
+    isRunning,
+    agentStatus: isRunning ? "generating" : "idle",
+  })),
+  z
+    .object({
+      is_running: z.boolean().optional(),
+      isRunning: z.boolean().optional(),
+      agent_status: AgentRuntimeStatusSchema.optional(),
+      agentStatus: AgentRuntimeStatusSchema.optional(),
+    })
+    .transform((state): AgentRunningState => {
+      const isRunning = state.is_running ?? state.isRunning ?? false;
+      const agentStatus = state.agent_status ?? state.agentStatus ?? (
+        isRunning ? "generating" : "idle"
+      );
+      return {
+        isRunning,
+        agentStatus: isRunning
+          ? (agentStatus === "idle" ? "generating" : agentStatus)
+          : "idle",
+      };
+    }),
+]);
+
 export async function getAgentRunningStates(
   contextType: ContextType,
   contextIds: string[]
-): Promise<Record<string, boolean>> {
+): Promise<Record<string, AgentRunningState>> {
   return typedInvoke(
     "get_agent_running_states",
     { contextType, contextIds },
-    z.record(z.string(), z.boolean())
+    z.record(z.string(), AgentRunningStateSchema)
   );
 }
 

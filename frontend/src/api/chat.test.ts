@@ -26,6 +26,7 @@ import {
   listAgentSidebarConversations,
   updateAgentConversationWorkspaceFromBase,
   precomputeAgentConversationWorkspacePrDescription,
+  setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
   startAgentConversation,
   forkAgentConversation,
@@ -104,6 +105,82 @@ describe("chat api", () => {
     });
   });
 
+  it("preserves argument preview metadata and diff previews on parsed tool calls", () => {
+    const parsed = parseToolCalls([
+      {
+        id: "tool-edit",
+        name: "edit",
+        arguments: { file_path: "src/example.ts" },
+        arguments_preview_truncated: true,
+        arguments_preview_original_bytes: 2400,
+        arguments_preview_line_count: 120,
+        arguments_preview_omitted_lines: 114,
+        diff_preview: {
+          file_path: "src/example.ts",
+          language: "typescript",
+          hunks: [
+            {
+              old_start: 1,
+              old_lines: 2,
+              new_start: 1,
+              new_lines: 2,
+              header: "@@ -1,2 +1,2 @@",
+              lines: [
+                {
+                  kind: "context",
+                  content: "line 1",
+                  old_line_num: 1,
+                  new_line_num: 1,
+                },
+                {
+                  kind: "addition",
+                  content: "line 2 changed",
+                  old_line_num: null,
+                  new_line_num: 2,
+                },
+              ],
+            },
+          ],
+          old_total_lines: 60,
+          new_total_lines: 60,
+          is_binary: false,
+        },
+      },
+    ]);
+
+    expect(parsed[0]).toMatchObject({
+      id: "tool-edit",
+      argumentsPreviewTruncated: true,
+      argumentsPreviewOriginalBytes: 2400,
+      argumentsPreviewLineCount: 120,
+      argumentsPreviewOmittedLines: 114,
+      diffPreview: {
+        filePath: "src/example.ts",
+        language: "typescript",
+        oldTotalLines: 60,
+        newTotalLines: 60,
+        hunks: [
+          {
+            oldStart: 1,
+            newStart: 1,
+            lines: [
+              {
+                content: "line 1",
+                oldLineNum: 1,
+                newLineNum: 1,
+              },
+              {
+                content: "line 2 changed",
+                oldLineNum: null,
+                newLineNum: 2,
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
   it("preserves camelCase preview metadata and ignores invalid detail refs on parsed tool calls", () => {
     const parsed = parseToolCalls([
       {
@@ -143,6 +220,7 @@ describe("chat api", () => {
         diff_context: {
           file_path: "src/main.rs",
           old_content: "old",
+          old_file_exists: true,
         },
       },
       {
@@ -152,16 +230,25 @@ describe("chat api", () => {
         diffContext: {
           filePath: "src/lib.rs",
           oldContent: "before",
+          oldFileExists: false,
         },
       },
     ]);
 
     expect(parsed[0]).toMatchObject({
       error: "edit failed",
-      diffContext: { filePath: "src/main.rs", oldContent: "old" },
+      diffContext: {
+        filePath: "src/main.rs",
+        oldContent: "old",
+        oldFileExists: true,
+      },
     });
     expect(parsed[1]).toMatchObject({
-      diffContext: { filePath: "src/lib.rs", oldContent: "before" },
+      diffContext: {
+        filePath: "src/lib.rs",
+        oldContent: "before",
+        oldFileExists: false,
+      },
     });
   });
 
@@ -218,6 +305,62 @@ describe("chat api", () => {
     });
   });
 
+  it("preserves argument preview metadata and diff previews on parsed content blocks", () => {
+    const parsed = parseContentBlocks([
+      {
+        type: "tool_use",
+        id: "tool-edit",
+        name: "edit",
+        arguments: { file_path: "src/example.ts" },
+        arguments_preview_truncated: true,
+        diff_preview: {
+          file_path: "src/example.ts",
+          language: "typescript",
+          hunks: [
+            {
+              old_start: 1,
+              old_lines: 1,
+              new_start: 1,
+              new_lines: 1,
+              header: "@@ -1,1 +1,1 @@",
+              lines: [
+                {
+                  kind: "addition",
+                  content: "new line",
+                  old_line_num: null,
+                  new_line_num: 1,
+                },
+              ],
+            },
+          ],
+          old_total_lines: 1,
+          new_total_lines: 1,
+          is_binary: false,
+        },
+      },
+    ]);
+
+    expect(parsed[0]).toMatchObject({
+      type: "tool_use",
+      argumentsPreviewTruncated: true,
+      diffPreview: {
+        filePath: "src/example.ts",
+        hunks: [
+          {
+            oldStart: 1,
+            lines: [
+              {
+                content: "new line",
+                oldLineNum: null,
+                newLineNum: 1,
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
   it("preserves diff context on parsed content block tool uses", () => {
     const parsed = parseContentBlocks([
       {
@@ -228,6 +371,7 @@ describe("chat api", () => {
         diff_context: {
           file_path: "src/main.rs",
           old_content: "old",
+          old_file_exists: false,
         },
       },
     ]);
@@ -235,7 +379,11 @@ describe("chat api", () => {
     expect(parsed[0]).toMatchObject({
       type: "tool_use",
       arguments: { file_path: "src/main.rs" },
-      diffContext: { filePath: "src/main.rs", oldContent: "old" },
+      diffContext: {
+        filePath: "src/main.rs",
+        oldContent: "old",
+        oldFileExists: false,
+      },
     });
   });
 
@@ -1099,6 +1247,9 @@ describe("chat api", () => {
         publication_pr_url: null,
         publication_pr_status: null,
         publication_push_status: null,
+        auto_publish_enabled: true,
+        auto_publish_paused_pr_autofix_enabled: null,
+        auto_publish_paused_pr_auto_merge_desired: null,
         status: "active",
         created_at: "2026-01-24T10:00:00Z",
         updated_at: "2026-01-24T10:01:00Z",
@@ -1214,6 +1365,8 @@ describe("chat api", () => {
       publicationStates: ["merged", "closed"],
       limitPerGroup: 20,
       offsets: { merged: 0 },
+      pinnedConversationIds: ["conversation-pinned"],
+      priorityConversationIds: ["conversation-selected"],
       search: " merged ",
     });
 
@@ -1227,6 +1380,8 @@ describe("chat api", () => {
         groupBy: "publication",
         limitPerGroup: 20,
         offsets: { merged: 0 },
+        pinnedConversationIds: ["conversation-pinned"],
+        priorityConversationIds: ["conversation-selected"],
       },
     });
     expect(result.groups[0]).toMatchObject({
@@ -1429,6 +1584,9 @@ describe("chat api", () => {
       publication_pr_url: "https://github.com/mock/project/pull/78",
       publication_pr_status: "open",
       publication_push_status: "pushed",
+      auto_publish_enabled: true,
+      auto_publish_paused_pr_autofix_enabled: null,
+      auto_publish_paused_pr_auto_merge_desired: null,
       pr_autofix_enabled: true,
       pr_auto_merge_desired: true,
       pr_auto_merge_method: "squash",
@@ -1465,6 +1623,61 @@ describe("chat api", () => {
       prAutoMergeDesired: true,
       prAutoMergeMethod: "squash",
       prSupervisionStatus: "monitoring",
+    });
+  });
+
+  it("sets agent conversation workspace auto publish", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conversation-1",
+      project_id: "project-1",
+      mode: "edit",
+      base_ref_kind: "project_default",
+      base_ref: "main",
+      base_display_name: "Project default (main)",
+      base_commit: null,
+      branch_name: "ralphx/demo/agent-conversation-1",
+      worktree_path: "/tmp/ralphx/conversation-1",
+      linked_ideation_session_id: null,
+      linked_plan_branch_id: null,
+      publication_pr_number: 42,
+      publication_pr_url: "https://github.com/mock/project/pull/42",
+      publication_pr_status: "open",
+      publication_push_status: "pushed",
+      auto_publish_enabled: false,
+      auto_publish_paused_pr_autofix_enabled: true,
+      auto_publish_paused_pr_auto_merge_desired: false,
+      pr_autofix_enabled: false,
+      pr_auto_merge_desired: false,
+      pr_auto_merge_method: "squash",
+      pr_auto_merge_current: null,
+      pr_supervision_status: "paused",
+      pr_supervision_summary: "Auto Publish is paused.",
+      pr_supervision_updated_at: "2026-05-17T10:00:00Z",
+      status: "active",
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:01:00Z",
+    });
+
+    const result = await setAgentConversationWorkspaceAutoPublish(
+      "conversation-1",
+      { autoPublishEnabled: false }
+    );
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "set_agent_conversation_workspace_auto_publish",
+      {
+        conversationId: "conversation-1",
+        input: {
+          autoPublishEnabled: false,
+        },
+      }
+    );
+    expect(result).toMatchObject({
+      conversationId: "conversation-1",
+      autoPublishEnabled: false,
+      autoPublishPausedPrAutofixEnabled: true,
+      prAutofixEnabled: false,
+      prSupervisionStatus: "paused",
     });
   });
 
@@ -1973,15 +2186,30 @@ describe("chat api", () => {
   });
 
   it("bulk-checks running states", async () => {
-    mockInvoke.mockResolvedValueOnce({ c1: true, c2: false });
+    mockInvoke.mockResolvedValueOnce({
+      c1: { is_running: true, agent_status: "generating" },
+      c2: { is_running: false, agent_status: "idle" },
+    });
 
     await expect(getAgentRunningStates("project", ["c1", "c2"])).resolves.toEqual({
-      c1: true,
-      c2: false,
+      c1: { isRunning: true, agentStatus: "generating" },
+      c2: { isRunning: false, agentStatus: "idle" },
     });
     expect(mockInvoke).toHaveBeenCalledWith("get_agent_running_states", {
       contextType: "project",
       contextIds: ["c1", "c2"],
+    });
+  });
+
+  it("normalizes legacy boolean bulk running states", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      c1: true,
+      c2: false,
+    });
+
+    await expect(getAgentRunningStates("project", ["c1", "c2"])).resolves.toEqual({
+      c1: { isRunning: true, agentStatus: "generating" },
+      c2: { isRunning: false, agentStatus: "idle" },
     });
   });
 
@@ -2002,6 +2230,9 @@ describe("chat api", () => {
     );
     expect(chatApi.setAgentConversationWorkspacePrSupervision).toBe(
       setAgentConversationWorkspacePrSupervision
+    );
+    expect(chatApi.setAgentConversationWorkspaceAutoPublish).toBe(
+      setAgentConversationWorkspaceAutoPublish
     );
     expect(chatApi.switchAgentConversationMode).toBe(switchAgentConversationMode);
     expect(chatApi.forkAgentConversation).toBe(forkAgentConversation);

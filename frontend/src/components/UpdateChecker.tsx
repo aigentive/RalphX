@@ -22,6 +22,7 @@ const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1_000;
 const LIFECYCLE_UPDATE_CHECK_COOLDOWN_MS = 5 * 60 * 1_000;
 const UPDATE_CHECK_EVENT = "ralphx://check-for-updates";
 const RELEASE_NOTES_EVENT = "ralphx://show-release-notes";
+const UPDATE_CHECK_RESULT_TOAST_ID = "update-check-result";
 const GITHUB_RELEASE_METADATA_MARKERS =
   /^[ \t]*<!--\s*github-release-metadata:(?:start|end)\s*-->[ \t]*\n?/gm;
 
@@ -34,6 +35,7 @@ interface ReleaseNotesView {
 interface ReleaseDialogState {
   open: boolean;
   version?: string | undefined;
+  body?: string | null | undefined;
   context?: "current" | "update" | undefined;
 }
 
@@ -45,6 +47,7 @@ interface CheckForUpdatesOptions {
 export function UpdateChecker() {
   const activeModal = useUiStore((s) => s.activeModal);
   const checkInFlight = useRef(false);
+  const manualCheckRequested = useRef(false);
   const notifiedVersion = useRef<string | null>(null);
   const lastCheckAt = useRef<number | null>(null);
   const whatsNewVersion = useRef<string | null>(null);
@@ -69,7 +72,12 @@ export function UpdateChecker() {
         pendingWhatsNew.current = null;
         clearVisibleWhatsNew(notes.version);
       }
-      setDialogState({ open: true, version: notes.version, context: notes.context });
+      setDialogState({
+        open: true,
+        version: notes.version,
+        body: notes.body,
+        context: notes.context,
+      });
     },
     [clearVisibleWhatsNew],
   );
@@ -96,24 +104,32 @@ export function UpdateChecker() {
 
   const handleUpdateFromDialog = useCallback(async () => {
     setDialogState({ open: false });
+    showCheckingForUpdatesToast();
     try {
       const update = await check();
       if (update) {
+        toast.dismiss(UPDATE_CHECK_RESULT_TOAST_ID);
         void installUpdate(update);
       } else {
-        toast.success("RalphX is up to date.", { id: "update-check-result" });
+        toast.success("RalphX is up to date.", { id: UPDATE_CHECK_RESULT_TOAST_ID });
       }
     } catch {
-      toast.error("Failed to check for updates.", { id: "update-check-result" });
+      toast.error("Failed to check for updates.", { id: UPDATE_CHECK_RESULT_TOAST_ID });
     }
   }, []);
 
   const checkForUpdates = useCallback(
     async ({ manual = false, force = false }: CheckForUpdatesOptions = {}) => {
+      if (manual) {
+        manualCheckRequested.current = true;
+        showCheckingForUpdatesToast();
+      }
+
       if (checkInFlight.current) return;
 
       const now = Date.now();
       if (
+        !manual &&
         !force &&
         lastCheckAt.current !== null &&
         now - lastCheckAt.current < LIFECYCLE_UPDATE_CHECK_COOLDOWN_MS
@@ -126,21 +142,29 @@ export function UpdateChecker() {
 
       try {
         const update = await check();
-        if (update && notifiedVersion.current !== update.version) {
+        const shouldShowManualResult = manualCheckRequested.current;
+        if (
+          update &&
+          (shouldShowManualResult || notifiedVersion.current !== update.version)
+        ) {
           notifiedVersion.current = update.version;
+          if (shouldShowManualResult) {
+            toast.dismiss(UPDATE_CHECK_RESULT_TOAST_ID);
+          }
           showUpdateNotification(update, openReleaseNotes);
-        } else if (manual && !update) {
-          toast.success("RalphX is up to date.", { id: "update-check-result" });
+        } else if (shouldShowManualResult && !update) {
+          toast.success("RalphX is up to date.", { id: UPDATE_CHECK_RESULT_TOAST_ID });
         }
       } catch (error) {
         console.debug("Update check failed:", error);
-        if (manual) {
+        if (manualCheckRequested.current) {
           toast.error("Failed to check for updates. Please try again later.", {
-            id: "update-check-result",
+            id: UPDATE_CHECK_RESULT_TOAST_ID,
           });
         }
       } finally {
         checkInFlight.current = false;
+        manualCheckRequested.current = false;
       }
     },
     [openReleaseNotes],
@@ -260,10 +284,15 @@ export function UpdateChecker() {
       open={dialogState.open}
       onClose={() => setDialogState({ open: false })}
       initialVersion={dialogState.version}
+      initialBody={dialogState.body}
       initialContext={dialogState.context}
       onRequestUpdate={handleUpdateFromDialog}
     />
   );
+}
+
+function showCheckingForUpdatesToast() {
+  toast.loading("Checking for updates...", { id: UPDATE_CHECK_RESULT_TOAST_ID });
 }
 
 function showUpdateNotification(

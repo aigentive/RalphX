@@ -158,8 +158,11 @@ pub struct ContentDelta {
 /// Stores old file content so frontend can compute proper diffs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffContext {
-    /// Previous file content (None if new file)
+    /// Previous file content when it could be captured.
     pub old_content: Option<String>,
+    /// Whether the file existed when the baseline was captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_file_exists: Option<bool>,
     /// Resolved file path for reference
     pub file_path: String,
 }

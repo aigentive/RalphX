@@ -278,8 +278,9 @@ export function AgentComposerSurface({
   const value = isControlled ? controlledValue : internalValue;
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const isAgentAlive = agentStatus !== "idle";
+  const isAgentGenerating = agentStatus === "generating";
   const canQueue = !isReadOnly && isAgentAlive;
-  const shouldShowStop = Boolean(onStop) && isAgentAlive && value.trim().length === 0;
+  const shouldShowStop = Boolean(onStop) && isAgentGenerating && value.trim().length === 0;
   const canSubmit =
     value.trim().length > 0 &&
     !isReadOnly &&
@@ -1893,7 +1894,7 @@ function ComposerRuntimePill({
         sideOffset={6}
         onOpenAutoFocus={(e) => e.preventDefault()}
         className={cn(
-          "overflow-hidden rounded-xl p-0",
+          "max-h-[var(--radix-popover-content-available-height)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl p-0",
           hasMultipleProviders ? "w-[21rem]" : "w-72"
         )}
         style={{

@@ -139,6 +139,21 @@ describe("SimpleDiffView", () => {
   // ── Hunk rendering ───────────────────────────────────────────────────
 
   describe("hunk rendering", () => {
+    it("uses compact typography when embedded in dense surfaces", () => {
+      const { container } = render(
+        <SimpleDiffView
+          hunks={defaultHunks}
+          oldTotalLines={3}
+          newTotalLines={3}
+          density="compact"
+        />
+      );
+
+      const body = container.querySelector('[data-density="compact"]');
+      expect(body).toHaveClass("text-[0.6875rem]", "leading-[18px]");
+      expect(body).not.toHaveClass("text-[0.8125rem]", "leading-[20px]");
+    });
+
     it("renders hunk header", () => {
       render(
         <SimpleDiffView
@@ -148,6 +163,25 @@ describe("SimpleDiffView", () => {
         />
       );
       expect(screen.getByText("@@ -1,3 +1,3 @@")).toBeInTheDocument();
+    });
+
+    it("toggles line wrapping when the wrap control is visible", async () => {
+      const user = userEvent.setup();
+      const { container } = render(
+        <SimpleDiffView
+          hunks={defaultHunks}
+          oldTotalLines={3}
+          newTotalLines={3}
+          defaultWrapLines={true}
+        />
+      );
+
+      expect(container.querySelector("[data-wrap-lines='true']")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: /disable wrap/i }));
+
+      expect(container.querySelector("[data-wrap-lines='false']")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /wrap lines/i })).toBeInTheDocument();
     });
 
     it("renders context line content", () => {
@@ -330,6 +364,36 @@ describe("SimpleDiffView", () => {
       render(<SimpleDiffView hunks={hunks} oldTotalLines={15} newTotalLines={15} />);
       // Gap between hunk 1 end (line 3) and hunk 2 start (line 10): 6 lines
       expect(screen.getByText(/6 unchanged lines/i)).toBeInTheDocument();
+    });
+
+    it("can hide wrapping controls and gap rows for embedded surfaces", () => {
+      const hunks: DiffHunk[] = [
+        makeHunk({ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3 }),
+        makeHunk({
+          oldStart: 10,
+          oldLines: 3,
+          newStart: 10,
+          newLines: 3,
+          header: "@@ -10,3 +10,3 @@",
+          lines: [
+            makeDiffLine({ kind: "addition", content: "later", oldLineNum: null, newLineNum: 10 }),
+          ],
+        }),
+      ];
+      const { container } = render(
+        <SimpleDiffView
+          hunks={hunks}
+          oldTotalLines={15}
+          newTotalLines={15}
+          defaultWrapLines={false}
+          showWrapToggle={false}
+          showContextGaps={false}
+        />
+      );
+
+      expect(screen.queryByRole("button", { name: /wrap/i })).not.toBeInTheDocument();
+      expect(screen.queryByText(/unchanged lines/i)).not.toBeInTheDocument();
+      expect(container.querySelector("[data-wrap-lines='false']")).toBeInTheDocument();
     });
 
     it("shows leading gap label when first hunk doesn't start at line 1", () => {

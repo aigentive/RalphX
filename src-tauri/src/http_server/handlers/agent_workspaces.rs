@@ -666,6 +666,16 @@ pub async fn complete_agent_workspace_pr_fix(
         }));
     }
 
+    if !workspace.auto_publish_enabled {
+        return complete_pr_fix_for_paused_auto_publish(
+            state.app_state.as_ref(),
+            &conversation_id,
+            &workspace,
+            summary,
+        )
+        .await;
+    }
+
     state
         .app_state
         .agent_conversation_workspace_repo
@@ -821,6 +831,52 @@ async fn complete_pr_fix_for_terminal_pr(
         status: "skipped_terminal".to_string(),
         message: message.to_string(),
         workspace: Some(workspace),
+        publish_status: Some("skipped".to_string()),
+        publish_error: None,
+        commit_sha: None,
+        pushed: None,
+        created_pr: None,
+        pr_number,
+        pr_url,
+    }))
+}
+
+async fn complete_pr_fix_for_paused_auto_publish(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    summary: &str,
+) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
+    let message = "PR fix completed, but Auto Publish is paused. Manual Commit & Publish is required to update the pull request.";
+    state
+        .agent_conversation_workspace_repo
+        .update_pr_auto_merge_state(
+            conversation_id,
+            workspace.pr_auto_merge_current,
+            Some("paused"),
+            Some(message),
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix_publish_skipped",
+            "skipped",
+            format!("{message} Fix summary: {summary}"),
+            Some("auto_publish_paused".to_string()),
+        ))
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let workspace_response = load_agent_workspace_response(state, conversation_id).await?;
+    let pr_number = workspace_response.publication_pr_number;
+    let pr_url = workspace_response.publication_pr_url.clone();
+    Ok(Json(CompleteAgentWorkspacePrFixResponse {
+        success: true,
+        status: "publish_paused".to_string(),
+        message: message.to_string(),
+        workspace: Some(workspace_response),
         publish_status: Some("skipped".to_string()),
         publish_error: None,
         commit_sha: None,
@@ -1310,6 +1366,44 @@ pub async fn complete_agent_workspace_repair(
     } else if post_repair_action == AgentWorkspacePostRepairAction::UpdateOnly {
         (
             "Agent workspace repair verified".to_string(),
+            "refreshed".to_string(),
+            freshness.target_base_commit.clone(),
+            Some("skipped".to_string()),
+            None,
+            workspace.publication_pr_number,
+            workspace.publication_pr_url.clone(),
+        )
+    } else if !workspace.auto_publish_enabled {
+        let message = "Agent workspace repair verified; Auto Publish is paused. Manual Commit & Publish is required to update the pull request.";
+        state
+            .app_state
+            .agent_conversation_workspace_repo
+            .update_pr_auto_merge_state(
+                &conversation_id,
+                workspace.pr_auto_merge_current,
+                Some("paused"),
+                Some(message),
+            )
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+        state
+            .app_state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id,
+                "repair_publish_skipped",
+                "skipped",
+                message,
+                Some("auto_publish_paused".to_string()),
+            ))
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+        (
+            message.to_string(),
             "refreshed".to_string(),
             freshness.target_base_commit.clone(),
             Some("skipped".to_string()),
@@ -1985,6 +2079,56 @@ mod tests {
         assert_eq!(updated.publication_pr_status.as_deref(), Some("merged"));
         assert!(updated.pr_supervision_status.is_none());
         assert_eq!(github.state().check_pr_status_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_skips_publish_when_auto_publish_is_paused() {
+        let app_state = Arc::new(AppState::new_test());
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.publication_pr_number = Some(267);
+        workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/267".to_string());
+        workspace.publication_pr_status = Some("open".to_string());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        workspace.auto_publish_enabled = false;
+        workspace.pr_supervision_status = Some("fixing".to_string());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        let state = test_http_state(Arc::clone(&app_state));
+
+        let Json(response) = complete_agent_workspace_pr_fix(
+            State(state),
+            Path(conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Fixed requested review change".to_string(),
+                blocker: None,
+            }),
+        )
+        .await
+        .expect("paused Auto Publish should skip publish");
+
+        assert_eq!(response.status, "publish_paused");
+        assert_eq!(response.publish_status.as_deref(), Some("skipped"));
+        assert!(response.commit_sha.is_none());
+        let updated = app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.pr_supervision_status.as_deref(), Some("paused"));
+        let events = app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .unwrap();
+        assert!(events.iter().any(|event| {
+            event.step == "pr_autofix_publish_skipped"
+                && event.classification.as_deref() == Some("auto_publish_paused")
+        }));
     }
 
     #[tokio::test]

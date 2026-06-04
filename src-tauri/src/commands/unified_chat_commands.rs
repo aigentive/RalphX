@@ -56,9 +56,11 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
 };
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
 use crate::application::chat_service::tool_result_preview::{
-    preview_tool_result_object, tool_detail_ref,
+    preview_tool_arguments_object, preview_tool_result_object, tool_detail_ref,
 };
-use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
+use crate::application::chat_service::{
+    AgentConversationCreatedPayload, AgentRunningState, SendMessageOptions,
+};
 use crate::application::git_service::{
     git_cmd::{self, GitCommandLane},
     GitService,
@@ -294,6 +296,9 @@ pub struct AgentConversationWorkspaceResponse {
     pub publication_pr_url: Option<String>,
     pub publication_pr_status: Option<String>,
     pub publication_push_status: Option<String>,
+    pub auto_publish_enabled: bool,
+    pub auto_publish_paused_pr_autofix_enabled: Option<bool>,
+    pub auto_publish_paused_pr_auto_merge_desired: Option<bool>,
     pub pr_autofix_enabled: bool,
     pub pr_auto_merge_desired: bool,
     pub pr_auto_merge_method: String,
@@ -314,6 +319,12 @@ pub struct AgentConversationWorkspacePrSupervisionInput {
     pub auto_fix_enabled: bool,
     pub auto_merge_desired: bool,
     pub auto_merge_method: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationWorkspaceAutoPublishInput {
+    pub auto_publish_enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -365,6 +376,11 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             publication_pr_url: workspace.publication_pr_url,
             publication_pr_status: workspace.publication_pr_status,
             publication_push_status: workspace.publication_push_status,
+            auto_publish_enabled: workspace.auto_publish_enabled,
+            auto_publish_paused_pr_autofix_enabled: workspace
+                .auto_publish_paused_pr_autofix_enabled,
+            auto_publish_paused_pr_auto_merge_desired: workspace
+                .auto_publish_paused_pr_auto_merge_desired,
             pr_autofix_enabled: workspace.pr_autofix_enabled,
             pr_auto_merge_desired: workspace.pr_auto_merge_desired,
             pr_auto_merge_method: workspace.pr_auto_merge_method,
@@ -1741,7 +1757,7 @@ impl From<ChatTimelineItem> for AgentTimelineItemResponse {
         let conversation_id = item.conversation_id.as_str();
         let content = item.text.clone().unwrap_or_default();
         let content_block =
-            timeline_item_content_block(&item, &conversation_id, message_id.as_deref());
+            timeline_item_content_block(&item, &conversation_id, message_id.as_deref(), true);
         let content_blocks = serde_json::Value::Array(vec![content_block.clone()]);
         let tool_call = if item.kind.to_string() == "tool_use" {
             Some(content_block)
@@ -1776,6 +1792,7 @@ fn timeline_item_content_block(
     item: &ChatTimelineItem,
     conversation_id: &str,
     message_id: Option<&str>,
+    preview_arguments: bool,
 ) -> serde_json::Value {
     if item.kind.to_string() == "text" {
         return serde_json::json!({
@@ -1821,6 +1838,13 @@ fn timeline_item_content_block(
     {
         if let Some(diff_context) = raw.get("diff_context").cloned() {
             block["diff_context"] = diff_context;
+        }
+    }
+
+    if preview_arguments {
+        let detail_ref = block.get("detail_ref").cloned();
+        if let Some(object) = block.as_object_mut() {
+            preview_tool_arguments_object(object, detail_ref);
         }
     }
 
@@ -2215,7 +2239,8 @@ fn maybe_preview_tool_result(
         tool_call_id.as_deref(),
         content_block_index,
     );
-    preview_tool_result_object(object, Some(detail_ref));
+    preview_tool_result_object(object, Some(detail_ref.clone()));
+    preview_tool_arguments_object(object, Some(detail_ref));
 }
 
 fn preview_tool_call_array(value: &mut JsonValue, conversation_id: &str, message_id: &str) {
@@ -3899,6 +3924,12 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
     if workspace.has_terminal_publication_pr_status() {
         return Err("PR supervision cannot be changed for a closed or merged PR".to_string());
     }
+    if !workspace.auto_publish_enabled && (input.auto_fix_enabled || input.auto_merge_desired) {
+        return Err(
+            "Auto Publish is paused for this workspace. Turn Auto Publish back on before enabling PR supervision."
+                .to_string(),
+        );
+    }
 
     let _workspace_changed_guard = state
         .app_handle
@@ -3945,6 +3976,179 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
                 "RalphX PR supervision is disabled."
             },
             Some("pr_supervision_preferences".to_string()),
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let updated = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+    agent_workspace_response_for_state(state, updated).await
+}
+
+/// Enable or pause automatic publish behavior for a project-backed agent workspace.
+#[tauri::command]
+pub async fn set_agent_conversation_workspace_auto_publish(
+    conversation_id: String,
+    input: AgentConversationWorkspaceAutoPublishInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    set_agent_conversation_workspace_auto_publish_for_state(conversation_id, input, state.inner())
+        .await
+}
+
+pub async fn set_agent_conversation_workspace_auto_publish_for_state(
+    conversation_id: String,
+    input: AgentConversationWorkspaceAutoPublishInput,
+    state: &AppState,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Err("Agent conversation workspace not found".to_string());
+    };
+
+    if workspace.has_terminal_publication_pr_status() {
+        return Err("Auto Publish cannot be changed for a closed or merged PR".to_string());
+    }
+
+    let _workspace_changed_guard = state
+        .app_handle
+        .as_ref()
+        .map(|app| emit_workspace_changed_when_done(app, &conversation_id));
+
+    if input.auto_publish_enabled == workspace.auto_publish_enabled {
+        return agent_workspace_response_for_state(state, workspace).await;
+    }
+
+    let auto_merge_method = workspace.pr_auto_merge_method.clone();
+    let (
+        paused_pr_autofix_enabled,
+        paused_pr_auto_merge_desired,
+        pr_autofix_enabled,
+        pr_auto_merge_desired,
+        supervision_status,
+        supervision_summary,
+        event_status,
+        event_summary,
+    ) = if input.auto_publish_enabled {
+        let restored_autofix = workspace
+            .auto_publish_paused_pr_autofix_enabled
+            .unwrap_or(workspace.pr_autofix_enabled);
+        let restored_auto_merge = workspace
+            .auto_publish_paused_pr_auto_merge_desired
+            .unwrap_or(workspace.pr_auto_merge_desired);
+        let summary = if restored_autofix || restored_auto_merge {
+            Some("RalphX PR supervision is enabled.")
+        } else {
+            None
+        };
+        (
+            None,
+            None,
+            restored_autofix,
+            restored_auto_merge,
+            Some(if restored_autofix || restored_auto_merge {
+                "monitoring"
+            } else {
+                "disabled"
+            }),
+            summary,
+            "enabled",
+            if restored_autofix || restored_auto_merge {
+                "Auto Publish is enabled; previous PR supervision preferences were restored."
+            } else {
+                "Auto Publish is enabled."
+            },
+        )
+    } else {
+        (
+            Some(workspace.pr_autofix_enabled),
+            Some(workspace.pr_auto_merge_desired),
+            false,
+            false,
+            Some("paused"),
+            Some("Auto Publish is paused. Manual Commit & Publish is still available."),
+            "disabled",
+            "Auto Publish is paused. Background publish, PR autofix, and auto-merge automation are disabled.",
+        )
+    };
+
+    state
+        .agent_conversation_workspace_repo
+        .update_auto_publish_preferences(
+            &conversation_id,
+            input.auto_publish_enabled,
+            paused_pr_autofix_enabled,
+            paused_pr_auto_merge_desired,
+            pr_autofix_enabled,
+            pr_auto_merge_desired,
+            supervision_status,
+            supervision_summary,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if input.auto_publish_enabled && pr_auto_merge_desired {
+        reconcile_agent_workspace_auto_merge_for_supervision_toggle(
+            state,
+            &conversation_id,
+            &workspace,
+            true,
+            &auto_merge_method,
+        )
+        .await?;
+    } else if !input.auto_publish_enabled {
+        let refreshed_for_sync = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+        if let (Some(github), Some(pr_number)) = (
+            state.github_service.as_ref(),
+            refreshed_for_sync.publication_pr_number,
+        ) {
+            if let Err(error) = sync_agent_workspace_auto_merge_preference_for_workspace(
+                Arc::clone(github),
+                Path::new(&refreshed_for_sync.worktree_path),
+                pr_number,
+                &refreshed_for_sync,
+                Arc::clone(&state.agent_conversation_workspace_repo),
+            )
+            .await
+            {
+                state
+                    .agent_conversation_workspace_repo
+                    .update_pr_auto_merge_state(
+                        &conversation_id,
+                        refreshed_for_sync.pr_auto_merge_current,
+                        Some("waiting"),
+                        Some(&format!(
+                            "GitHub auto-merge state could not be refreshed while pausing Auto Publish: {error}"
+                        )),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "auto_publish",
+            event_status,
+            event_summary,
+            Some("auto_publish_preferences".to_string()),
         ))
         .await
         .map_err(|e| e.to_string())?;
@@ -5589,7 +5793,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .map_err(|e| e.to_string())?
         .unwrap_or(workspace);
 
-    if refreshed.pr_auto_merge_desired {
+    if refreshed.auto_publish_enabled && refreshed.pr_auto_merge_desired {
         match sync_agent_workspace_auto_merge_preference_for_workspace(
             Arc::clone(github),
             &worktree_path,
@@ -6685,6 +6889,7 @@ pub async fn get_agent_timeline_item_tool_call_detail_for_app_state(
         &item,
         &conversation_id.as_str(),
         detail_message_id.as_deref(),
+        false,
     );
     Ok(Some(AgentToolCallDetailResponse { tool_call: block }))
 }
@@ -6802,7 +7007,7 @@ pub async fn get_agent_running_states(
     context_ids: Vec<String>,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-) -> Result<HashMap<String, bool>, String> {
+) -> Result<HashMap<String, AgentRunningState>, String> {
     let service =
         state.build_chat_service_with_execution_state(Arc::clone(execution_state.inner()));
 
@@ -6814,7 +7019,7 @@ pub async fn get_agent_running_states_for_service(
     service: &dyn ChatService,
     context_type: String,
     context_ids: Vec<String>,
-) -> Result<HashMap<String, bool>, String> {
+) -> Result<HashMap<String, AgentRunningState>, String> {
     let context_type = parse_context_type(&context_type)?;
 
     Ok(service
@@ -6956,6 +7161,7 @@ mod tests {
         normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
         normalize_explicit_publish_base_selection, normalized_effort_for_supported,
         parse_wrapped_mcp_result_object, persist_workspace_base_resolution_if_retargeted,
+        preview_tool_payloads_for_message,
         precompute_agent_conversation_workspace_pr_description_for_app_state,
         project_plan_branch_publication_into_workspace_response,
         publication_event_status_for_push_status, publication_event_summary_for_push_status,
@@ -6967,15 +7173,17 @@ mod tests {
         schedule_pr_supervision_recovery_for_conversation_id,
         send_agent_workspace_publish_repair_message_for_target,
         send_queued_agent_message_now_for_state,
+        set_agent_conversation_workspace_auto_publish_for_state,
         set_agent_conversation_workspace_pr_supervision_for_state,
         should_defer_agent_workspace_repair_message_for_registry,
         spawn_deferred_agent_workspace_repair_message, store_agent_workspace_freshness,
         switch_agent_conversation_mode_for_state, try_acquire_agent_workspace_publish_guard,
         update_agent_conversation_workspace_from_base_for_app_state,
         validate_explicit_publish_base_ref, AgentConversationResponse,
-        AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePrSupervisionInput,
-        AgentConversationWorkspacePublishTarget, AgentConversationWorkspaceRepairTarget,
-        AgentConversationWorkspaceResponse, AgentTimelineItemResponse,
+        AgentConversationWorkspaceAutoPublishInput, AgentConversationWorkspaceFreshnessResponse,
+        AgentConversationWorkspacePrSupervisionInput, AgentConversationWorkspacePublishTarget,
+        AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
+        AgentTimelineItemResponse,
         CreateAgentConversationInput, ForkAgentConversationInput, ForkAgentConversationResponse,
         AgentWorkspaceExternalPrReconciliationTrigger, AgentWorkspaceFreshnessCacheEntry,
         AgentWorkspaceFreshnessCacheStatus, AgentWorkspaceFreshnessInvalidationGuard,
@@ -7330,6 +7538,9 @@ mod tests {
             publication_pr_url: None,
             publication_pr_status: None,
             publication_push_status: None,
+            auto_publish_enabled: true,
+            auto_publish_paused_pr_autofix_enabled: None,
+            auto_publish_paused_pr_auto_merge_desired: None,
             pr_autofix_enabled: false,
             pr_auto_merge_desired: false,
             pr_auto_merge_method: DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
@@ -7392,6 +7603,9 @@ mod tests {
             publication_pr_url: Some("https://github.com/mock/project/pull/12".to_string()),
             publication_pr_status: Some("open".to_string()),
             publication_push_status: Some("needs_agent".to_string()),
+            auto_publish_enabled: true,
+            auto_publish_paused_pr_autofix_enabled: None,
+            auto_publish_paused_pr_auto_merge_desired: None,
             pr_autofix_enabled: false,
             pr_auto_merge_desired: false,
             pr_auto_merge_method: DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
@@ -8003,6 +8217,103 @@ mod tests {
                 && event.status == "disabled"
                 && event.summary == "RalphX PR supervision is disabled."
         }));
+    }
+
+    #[tokio::test]
+    async fn auto_publish_pause_disables_and_restores_pr_supervision_preferences() {
+        let state = AppState::new_test();
+        let mut workspace = command_test_workspace();
+        workspace.publication_pr_number = Some(256);
+        workspace.publication_pr_status = Some("open".to_string());
+        workspace.pr_autofix_enabled = true;
+        workspace.pr_auto_merge_desired = true;
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let paused = set_agent_conversation_workspace_auto_publish_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspaceAutoPublishInput {
+                auto_publish_enabled: false,
+            },
+            &state,
+        )
+        .await
+        .expect("Auto Publish should pause");
+
+        assert!(!paused.auto_publish_enabled);
+        assert_eq!(paused.auto_publish_paused_pr_autofix_enabled, Some(true));
+        assert_eq!(
+            paused.auto_publish_paused_pr_auto_merge_desired,
+            Some(true)
+        );
+        assert!(!paused.pr_autofix_enabled);
+        assert!(!paused.pr_auto_merge_desired);
+        assert_eq!(paused.pr_supervision_status.as_deref(), Some("paused"));
+
+        let resumed = set_agent_conversation_workspace_auto_publish_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspaceAutoPublishInput {
+                auto_publish_enabled: true,
+            },
+            &state,
+        )
+        .await
+        .expect("Auto Publish should resume");
+
+        assert!(resumed.auto_publish_enabled);
+        assert_eq!(resumed.auto_publish_paused_pr_autofix_enabled, None);
+        assert_eq!(resumed.auto_publish_paused_pr_auto_merge_desired, None);
+        assert!(resumed.pr_autofix_enabled);
+        assert!(resumed.pr_auto_merge_desired);
+        assert_eq!(
+            resumed.pr_supervision_status.as_deref(),
+            Some("monitoring")
+        );
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should list");
+        assert!(events.iter().any(|event| {
+            event.step == "auto_publish"
+                && event.status == "disabled"
+                && event.classification.as_deref() == Some("auto_publish_preferences")
+        }));
+        assert!(events
+            .iter()
+            .any(|event| event.step == "auto_publish" && event.status == "enabled"));
+    }
+
+    #[tokio::test]
+    async fn pr_supervision_rejects_enable_when_auto_publish_is_paused() {
+        let state = AppState::new_test();
+        let mut workspace = command_test_workspace();
+        workspace.publication_pr_number = Some(257);
+        workspace.publication_pr_status = Some("open".to_string());
+        workspace.auto_publish_enabled = false;
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let error = set_agent_conversation_workspace_pr_supervision_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspacePrSupervisionInput {
+                auto_fix_enabled: true,
+                auto_merge_desired: false,
+                auto_merge_method: Some("squash".to_string()),
+            },
+            &state,
+        )
+        .await
+        .expect_err("PR supervision enable should be rejected while paused");
+
+        assert!(error.contains("Auto Publish is paused"));
     }
 
     #[tokio::test]
@@ -11193,6 +11504,195 @@ mod tests {
             Some(message_id.as_str())
         );
         assert_eq!(tool["diff_context"]["file_path"], "src/lib.rs");
+    }
+
+    #[test]
+    fn preview_tool_payloads_replaces_edit_arguments_with_first_diff_hunk() {
+        let old_content = [
+            "line 1", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7", "line 8",
+            "line 9", "line 10", "line 11", "line 12",
+        ]
+        .join("\n");
+        let new_content = [
+            "line 1",
+            "line 2 changed",
+            "line 3",
+            "line 4",
+            "line 5",
+            "line 6",
+            "line 7",
+            "line 8",
+            "line 9",
+            "line 10 changed",
+            "line 11",
+            "line 12",
+        ]
+        .join("\n");
+        let tool_calls = json!([{
+            "id": "tool-edit-1",
+            "name": "edit",
+            "arguments": {
+                "file_path": "src/example.ts",
+                "old_string": old_content,
+                "new_string": new_content,
+                "replace_all": false
+            },
+            "result": { "status": "ok" }
+        }]);
+
+        let (tool_calls, _) = preview_tool_payloads_for_message(
+            "conversation-1",
+            "message-1",
+            Some(tool_calls),
+            None,
+        );
+        let tool_calls = tool_calls.expect("previewed tool calls");
+        let tool = &tool_calls.as_array().expect("tool call array")[0];
+        let diff_preview_text =
+            serde_json::to_string(&tool["diff_preview"]).expect("diff preview serializes");
+
+        assert_eq!(tool["arguments_preview_truncated"], true);
+        assert_eq!(tool["arguments"]["file_path"], "src/example.ts");
+        assert_eq!(tool["arguments"]["replace_all"], false);
+        assert!(tool["arguments"]["old_string"].is_null());
+        assert!(tool["arguments"]["new_string"].is_null());
+        assert_eq!(
+            tool["detail_ref"],
+            json!({
+                "conversation_id": "conversation-1",
+                "message_id": "message-1",
+                "tool_call_id": "tool-edit-1",
+                "content_block_index": null
+            })
+        );
+        assert_eq!(tool["diff_preview"]["file_path"], "src/example.ts");
+        assert_eq!(tool["diff_preview"]["language"], "typescript");
+        assert!(diff_preview_text.contains("line 2 changed"));
+        assert!(!diff_preview_text.contains("line 10 changed"));
+    }
+
+    #[test]
+    fn preview_tool_payloads_replaces_write_content_and_diff_context_with_diff_preview() {
+        let content_blocks = json!([{
+            "type": "tool_use",
+            "id": "tool-write-1",
+            "name": "write",
+            "arguments": {
+                "file_path": "src/lib.rs",
+                "content": "fn main() {\n    println!(\"new\");\n}"
+            },
+            "diff_context": {
+                "file_path": "src/lib.rs",
+                "old_content": "fn main() {\n    println!(\"old\");\n}"
+            },
+            "result": { "status": "ok" }
+        }]);
+
+        let (_, content_blocks) = preview_tool_payloads_for_message(
+            "conversation-1",
+            "message-1",
+            None,
+            Some(content_blocks),
+        );
+        let content_blocks = content_blocks.expect("previewed content blocks");
+        let tool = &content_blocks.as_array().expect("content block array")[0];
+
+        assert_eq!(tool["arguments_preview_truncated"], true);
+        assert_eq!(tool["arguments"]["file_path"], "src/lib.rs");
+        assert!(tool["arguments"]["content"].is_null());
+        assert_eq!(tool["diff_context"]["file_path"], "src/lib.rs");
+        assert!(tool["diff_context"]["old_content"].is_null());
+        assert_eq!(tool["diff_preview"]["file_path"], "src/lib.rs");
+        assert_eq!(
+            tool["detail_ref"]["content_block_index"],
+            serde_json::json!(0)
+        );
+    }
+
+    #[test]
+    fn preview_tool_payloads_renders_new_write_as_added_diff() {
+        let content_blocks = json!([{
+            "type": "tool_use",
+            "id": "tool-write-new",
+            "name": "write",
+            "arguments": {
+                "file_path": "src/new.rs",
+                "content": "pub fn new() {}\n"
+            },
+            "diff_context": {
+                "file_path": "src/new.rs",
+                "old_file_exists": false
+            },
+            "result": { "status": "ok" }
+        }]);
+
+        let (_, content_blocks) = preview_tool_payloads_for_message(
+            "conversation-1",
+            "message-1",
+            None,
+            Some(content_blocks),
+        );
+        let content_blocks = content_blocks.expect("previewed content blocks");
+        let tool = &content_blocks.as_array().expect("content block array")[0];
+
+        assert_eq!(tool["arguments_preview_truncated"], true);
+        assert_eq!(tool["arguments"]["file_path"], "src/new.rs");
+        assert!(tool["arguments"]["content"].is_null());
+        assert_eq!(tool["diff_context"]["old_file_exists"], false);
+        assert_eq!(tool["diff_preview"]["old_total_lines"], 0);
+        assert_eq!(tool["diff_preview"]["new_total_lines"], 2);
+        assert_eq!(tool["diff_preview"]["hunks"][0]["lines"][0]["kind"], "addition");
+    }
+
+    #[tokio::test]
+    async fn timeline_item_response_previews_edit_arguments_but_detail_returns_full_payload() {
+        let state = AppState::new_test();
+        let conversation_id = ChatConversationId::new();
+        let message_id = ChatMessageId::from_string("assistant-message-edit");
+        let mut item = ChatTimelineItem::for_message_block(
+            message_id.clone(),
+            conversation_id,
+            0,
+            MessageRole::Orchestrator,
+            ChatTimelineItemKind::ToolUse,
+        );
+        item.tool_call_id = Some("tool-edit-timeline".to_string());
+        item.tool_name = Some("edit".to_string());
+        item.input_json = Some(
+            json!({
+                "file_path": "src/example.ts",
+                "old_string": "old line",
+                "new_string": "new line"
+            })
+            .to_string(),
+        );
+
+        let response = AgentTimelineItemResponse::from(item.clone());
+        let preview_tool = response.tool_call.expect("timeline tool preview");
+        assert_eq!(preview_tool["arguments_preview_truncated"], true);
+        assert!(preview_tool["arguments"]["old_string"].is_null());
+        assert_eq!(
+            preview_tool["detail_ref"]["timeline_item_id"].as_str(),
+            Some(response.id.as_str())
+        );
+
+        let item = state
+            .chat_timeline_repo
+            .upsert_item(item)
+            .await
+            .expect("insert timeline edit item");
+        let detail = get_agent_timeline_item_tool_call_detail_for_app_state(
+            &state,
+            conversation_id,
+            item.id,
+        )
+        .await
+        .expect("timeline edit detail lookup")
+        .expect("timeline edit detail");
+
+        assert_eq!(detail.tool_call["arguments"]["old_string"], "old line");
+        assert_eq!(detail.tool_call["arguments"]["new_string"], "new line");
+        assert!(detail.tool_call["arguments_preview_truncated"].is_null());
     }
 
     #[test]

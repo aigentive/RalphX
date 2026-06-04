@@ -4,11 +4,20 @@ import {
   ExternalLink,
   GitPullRequestArrow,
   GitBranch,
+  Info,
   Loader2,
   MoreVertical,
   XCircle,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
@@ -32,6 +41,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
 import {
@@ -49,6 +63,7 @@ import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { PublishEventLog } from "./AgentsPublishEventLog";
 import { PublishPipelineSteps } from "./AgentsPublishPipelineSteps";
+import { AgentsPublishProgressToast } from "./AgentsPublishProgressToast";
 import {
   PublishWorkspaceDialog,
   type PublishWorkspaceDialogPhase,
@@ -72,6 +87,14 @@ import {
 } from "./agentWorkspaceQueries";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import { mapReviewCommitsToDiffViewerCommits } from "./useAgentWorkspaceChangeSummary";
+import {
+  AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
+  type AgentWorkspaceOperationToast,
+  type AgentWorkspaceOperationToastResultOptions,
+  agentWorkspaceOperationToastId,
+  agentWorkspaceOperationToastDescription,
+  startAgentWorkspaceOperationToast,
+} from "./agentWorkspaceOperationToast";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
@@ -89,6 +112,35 @@ const PUBLISH_PIPELINE_EVENT_STEPS = new Set([
   "pushed",
   "published",
 ]);
+
+function PublishSwitchInfoTooltip({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          className="inline-flex h-5 w-5 shrink-0 cursor-help items-center justify-center rounded-full border-0 bg-transparent p-0 text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+        >
+          <Info className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        side="top"
+        align="center"
+        className="max-w-[300px] text-xs leading-relaxed"
+      >
+        {children}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 function latestPublicationEventForActivePublish(
   events: AgentConversationWorkspacePublicationEvent[],
@@ -118,12 +170,14 @@ function pipelineStatusFromPublicationEvent(
 
 export function AgentPublishPanel({
   workspace,
+  conversationTitle,
   projectBaseBranch,
   onPublishWorkspace,
   isPublishingWorkspace,
   publishFocusRequest,
 }: {
   workspace: AgentConversationWorkspace | null;
+  conversationTitle?: string | null;
   projectBaseBranch?: string | null;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
@@ -142,9 +196,50 @@ export function AgentPublishPanel({
     null,
   );
   const prDescriptionPrecomputeKeysRef = useRef<Set<string>>(new Set());
+  const updateFromBaseProgressToastRef =
+    useRef<AgentWorkspaceOperationToast | null>(null);
   const [selectedRebaseBaseKey, setSelectedRebaseBaseKey] = useState("");
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
+  const toastConversationTitle = conversationTitle?.trim() || null;
+  const startUpdateFromBaseProgressToast = ({
+    conversationId,
+    detail,
+    kind,
+    title,
+  }: {
+    conversationId: string;
+    detail: string;
+    kind: "rebase" | "update-from-base";
+    title: string;
+  }) => {
+    updateFromBaseProgressToastRef.current?.dispose();
+    const progressToast = startAgentWorkspaceOperationToast({
+      conversationTitle: toastConversationTitle,
+      detail,
+      id: agentWorkspaceOperationToastId(conversationId, kind),
+      title,
+    });
+    updateFromBaseProgressToastRef.current = progressToast;
+    return progressToast;
+  };
+  const settleUpdateFromBaseProgressToast = (
+    progressToast: AgentWorkspaceOperationToast,
+    outcome: "error" | "info" | "success",
+    message: string,
+    options?: AgentWorkspaceOperationToastResultOptions,
+  ) => {
+    if (updateFromBaseProgressToastRef.current === progressToast) {
+      updateFromBaseProgressToastRef.current = null;
+    }
+    if (outcome === "success") {
+      progressToast.success(message, options);
+    } else if (outcome === "info") {
+      progressToast.info(message, options);
+    } else {
+      progressToast.error(message, options);
+    }
+  };
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
   // Workspace-only flag computed early so reviewQuery can decide whether the
   // inline diff view will be visible.
@@ -237,27 +332,6 @@ export function AgentPublishPanel({
       base
         ? chatApi.updateAgentConversationWorkspaceFromBase(conversationId!, base)
         : chatApi.updateAgentConversationWorkspaceFromBase(conversationId!),
-    onSuccess: async (result) => {
-      setRebaseDialogOpen(false);
-      queryClient.setQueryData(
-        ["agents", "conversation-workspace", result.workspace.conversationId],
-        result.workspace,
-      );
-      await invalidateWorkspaceQueries(queryClient, result.workspace.conversationId);
-      toast.success(
-        result.updated
-          ? `Updated from ${result.targetRef}`
-          : `Already current with ${result.targetRef}`,
-      );
-    },
-    onError: (error) => {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to update from base",
-      );
-      if (conversationId) {
-        void invalidateWorkspaceQueries(queryClient, conversationId);
-      }
-    },
   });
   const rebaseBaseOptionsResult =
     rebaseBaseOptionsQuery.data ?? fallbackRebaseOptions;
@@ -288,6 +362,28 @@ export function AgentPublishPanel({
     onError: (error) => {
       toast.error(
         error instanceof Error ? error.message : "Failed to close pull request",
+      );
+    },
+  });
+  const autoPublishMutation = useMutation<
+    AgentConversationWorkspace,
+    Error,
+    { autoPublishEnabled: boolean }
+  >({
+    mutationFn: (input) =>
+      chatApi.setAgentConversationWorkspaceAutoPublish(conversationId!, input),
+    onSuccess: (updatedWorkspace) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
+        updatedWorkspace,
+      );
+      void queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.publicationEvents(updatedWorkspace.conversationId),
+      });
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Unable to update Auto Publish",
       );
     },
   });
@@ -424,8 +520,17 @@ export function AgentPublishPanel({
     freshness?.baseRef ??
     workspace.baseRef ??
     base;
-  const pendingPrSupervision = prSupervisionMutation.variables;
-  const isPrSupervisionSaving = prSupervisionMutation.isPending;
+  const pendingAutoPublish = autoPublishMutation.isPending
+    ? autoPublishMutation.variables
+    : null;
+  const autoPublishEnabled =
+    pendingAutoPublish?.autoPublishEnabled ?? workspace.autoPublishEnabled ?? true;
+  const pendingPrSupervision = prSupervisionMutation.isPending
+    ? prSupervisionMutation.variables
+    : null;
+  const isAutoPublishSaving = autoPublishMutation.isPending;
+  const isPrSupervisionSaving =
+    prSupervisionMutation.isPending || autoPublishMutation.isPending;
   const prAutofixEnabled =
     pendingPrSupervision?.autoFixEnabled ?? workspace.prAutofixEnabled ?? false;
   const prAutoMergeDesired =
@@ -473,9 +578,12 @@ export function AgentPublishPanel({
   const isClosingPr = closePrMutation.isPending;
   const canConfigurePrSupervision =
     workspace.mode === "edit" && workspace.status !== "missing" && !terminalPublicationStatus;
+  const canConfigureAutoPublish = canConfigurePrSupervision && hasPublishedPr;
   const prSupervisionStatusLabel = (() => {
     if (terminalPublicationStatus) return null;
+    if (isAutoPublishSaving) return "Saving Auto Publish";
     if (isPrSupervisionSaving) return "Saving PR supervision";
+    if (!autoPublishEnabled && hasPublishedPr) return "Auto Publish paused";
     if (prSupervisionStatus === "fixing") return "Fixing PR";
     if (prSupervisionStatus === "waiting_for_checks") return "Waiting for checks";
     if (prSupervisionStatus === "blocked") return "PR supervision blocked";
@@ -486,7 +594,7 @@ export function AgentPublishPanel({
     autoFixEnabled: boolean;
     autoMergeDesired: boolean;
   }) => {
-    if (!canConfigurePrSupervision || prSupervisionMutation.isPending) {
+    if (!canConfigurePrSupervision || !autoPublishEnabled || isPrSupervisionSaving) {
       return;
     }
     prSupervisionMutation.mutate(next);
@@ -508,6 +616,8 @@ export function AgentPublishPanel({
             : "Publishing is managed by this ideation plan's task pipeline."
         : isDescriptionFailed
           ? "RalphX could not draft a PR description. No pull request was opened; retry Commit & Publish after reviewing the latest publish event."
+        : hasPublishedPr && !autoPublishEnabled
+          ? "Automatic publishing is paused. Manual Commit & Publish remains available."
         : isChangesLoading
           ? "Loading changed files..."
           : isPublishCurrent
@@ -519,13 +629,82 @@ export function AgentPublishPanel({
               : reviewQuery.isSuccess
                 ? "No changed files detected yet."
                 : "Review changes before publishing.";
+  const runUpdateFromBase = (
+    baseSelection: AgentConversationBaseSelection | null | undefined,
+    toastOptions: {
+      detail: string;
+      kind: "rebase" | "update-from-base";
+      title: string;
+    },
+  ) => {
+    if (!conversationId) {
+      return;
+    }
+    const requestConversationId = conversationId;
+    const requestWorkspace = workspace;
+    const progressToast = startUpdateFromBaseProgressToast({
+      ...toastOptions,
+      conversationId: requestConversationId,
+    });
+
+    void updateFromBaseMutation
+      .mutateAsync(baseSelection)
+      .then(async (result) => {
+        queryClient.setQueryData(
+          ["agents", "conversation-workspace", result.workspace.conversationId],
+          result.workspace,
+        );
+        await invalidateWorkspaceQueries(queryClient, result.workspace.conversationId);
+        settleUpdateFromBaseProgressToast(
+          progressToast,
+          "success",
+          result.updated
+            ? `Updated from ${result.targetRef}`
+            : `Already current with ${result.targetRef}`,
+        );
+      })
+      .catch(async (error) => {
+        const errorMessage =
+          error instanceof Error ? error.message : "Failed to update from base";
+        let refreshedWorkspace: AgentConversationWorkspace | null = null;
+        try {
+          refreshedWorkspace =
+            await chatApi.getAgentConversationWorkspace(requestConversationId);
+          if (refreshedWorkspace) {
+            queryClient.setQueryData(
+              ["agents", "conversation-workspace", requestConversationId],
+              refreshedWorkspace,
+            );
+          }
+        } catch {
+          refreshedWorkspace = null;
+        }
+        const repairStarted =
+          (refreshedWorkspace ?? requestWorkspace)?.publicationPushStatus ===
+          "needs_agent";
+        settleUpdateFromBaseProgressToast(
+          progressToast,
+          repairStarted ? "info" : "error",
+          repairStarted ? "Repair started" : "Failed to update from base",
+          { detail: errorMessage },
+        );
+        void invalidateWorkspaceQueries(queryClient, requestConversationId);
+      });
+  };
   const confirmUpdateFromBase = () => {
     void confirm({
       title: "Update from base branch?",
       description: `This will update ${branch} with the latest changes from ${baseActionLabel}. If conflicts are found, RalphX will route this workspace through repair before publishing can continue.`,
       confirmText: "Update branch",
-      pendingText: "Updating...",
-      onConfirm: () => updateFromBaseMutation.mutateAsync(undefined),
+    }).then((confirmed) => {
+      if (!confirmed) {
+        return;
+      }
+      runUpdateFromBase(undefined, {
+        detail: `From ${baseActionLabel}`,
+        kind: "update-from-base",
+        title: "Updating branch",
+      });
     });
   };
   const rebaseFromSelectedBase = () => {
@@ -533,7 +712,12 @@ export function AgentPublishPanel({
       toast.error("Select a base branch before rebasing");
       return;
     }
-    updateFromBaseMutation.mutate(selectedRebaseBase.selection);
+    setRebaseDialogOpen(false);
+    runUpdateFromBase(selectedRebaseBase.selection, {
+      detail: `From ${selectedRebaseBase.selection.displayName}`,
+      kind: "rebase",
+      title: "Rebasing branch",
+    });
   };
   const confirmClosePr = () => {
     void confirm({
@@ -543,6 +727,25 @@ export function AgentPublishPanel({
       pendingText: "Closing...",
       variant: "destructive",
       onConfirm: () => closePrMutation.mutateAsync(),
+    });
+  };
+  const confirmAutoPublishChange = (nextEnabled: boolean) => {
+    if (!canConfigureAutoPublish || autoPublishMutation.isPending) {
+      return;
+    }
+    const enablingDirtyWarning =
+      nextEnabled && freshness?.hasUncommittedChanges
+        ? " The next automatic trigger may commit current local workspace changes."
+        : "";
+    void confirm({
+      title: nextEnabled ? "Resume Auto Publish?" : "Pause Auto Publish?",
+      description: nextEnabled
+        ? `Background publish, PR autofix, and auto-merge automation will resume for ${terminalPrLabel}.${enablingDirtyWarning}`
+        : `Background publish, stale-base publish scans, PR autofix publishing, and auto-merge automation will pause for ${terminalPrLabel}. Manual Commit & Publish remains available.`,
+      confirmText: nextEnabled ? "Resume Auto Publish" : "Pause Auto Publish",
+      pendingText: nextEnabled ? "Resuming..." : "Pausing...",
+      onConfirm: () =>
+        autoPublishMutation.mutateAsync({ autoPublishEnabled: nextEnabled }),
     });
   };
   const confirmPublishWorkspace = () => {
@@ -558,8 +761,19 @@ export function AgentPublishPanel({
     setLocalPublishInFlight(true);
     void Promise.resolve(onPublishWorkspace!(workspace.conversationId))
       .catch((error) => {
-        toast.error(
+        const description = agentWorkspaceOperationToastDescription(
+          toastConversationTitle,
           error instanceof Error ? error.message : "Failed to publish branch",
+        );
+        toast.error(
+          "Failed to publish branch",
+          {
+            closeButton: true,
+            ...(description ? { description } : {}),
+            dismissible: true,
+            duration: AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
+            id: agentWorkspaceOperationToastId(workspace.conversationId, "publish"),
+          },
         );
       })
       .finally(() => {
@@ -579,6 +793,13 @@ export function AgentPublishPanel({
 
   return (
     <div className="flex h-full flex-col p-4" data-testid="agents-publish-pane">
+      <AgentsPublishProgressToast
+        active={isPublishingThisWorkspace}
+        conversationTitle={toastConversationTitle}
+        conversationId={conversationId}
+        startedAtMs={localPublishStartedAtMs}
+        status={pipelineStatus}
+      />
       <div className="@container flex w-full min-h-0 flex-1 flex-col gap-4">
         <section
           className="sticky top-0 z-20 -mx-4 border-b px-4 py-4"
@@ -698,36 +919,70 @@ export function AgentPublishPanel({
               className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs"
               data-testid="agents-pr-supervision-controls"
             >
-              <label className="flex min-h-8 items-center gap-2 text-[var(--text-secondary)]">
-                <Switch
-                  checked={prAutofixEnabled}
-                  disabled={!canConfigurePrSupervision || prSupervisionMutation.isPending}
-                  onCheckedChange={(checked) =>
-                    updatePrSupervisionPreferences({
-                      autoFixEnabled: checked,
-                      autoMergeDesired: prAutoMergeDesired,
-                    })
-                  }
-                  aria-label="Let RalphX autofix CI failures and reviews"
-                  data-testid="agents-pr-autofix-switch"
-                />
-                <span>Let RalphX autofix CI failures and reviews</span>
-              </label>
-              <label className="flex min-h-8 items-center gap-2 text-[var(--text-secondary)]">
-                <Switch
-                  checked={prAutoMergeDesired}
-                  disabled={!canConfigurePrSupervision || prSupervisionMutation.isPending}
-                  onCheckedChange={(checked) =>
-                    updatePrSupervisionPreferences({
-                      autoFixEnabled: prAutofixEnabled,
-                      autoMergeDesired: checked,
-                    })
-                  }
-                  aria-label="Enable GitHub auto-merge"
-                  data-testid="agents-pr-auto-merge-switch"
-                />
-                <span>Enable GitHub auto-merge</span>
-              </label>
+              {hasPublishedPr && (
+                <div className="flex min-h-8 items-center gap-1.5 text-[var(--text-secondary)]">
+                  <label className="flex min-h-8 items-center gap-2">
+                    <Switch
+                      checked={autoPublishEnabled}
+                      disabled={!canConfigureAutoPublish || isPrSupervisionSaving}
+                      onCheckedChange={confirmAutoPublishChange}
+                      aria-label="Auto Publish"
+                      data-testid="agents-auto-publish-switch"
+                    />
+                    <span>Auto Publish</span>
+                  </label>
+                  <PublishSwitchInfoTooltip label="About Auto Publish">
+                    Controls background publishing for this PR, including publish-after-turn,
+                    stale-base scans, PR autofix publishing, and auto-merge automation.
+                  </PublishSwitchInfoTooltip>
+                </div>
+              )}
+              <div className="flex min-h-8 items-center gap-1.5 text-[var(--text-secondary)]">
+                <label className="flex min-h-8 items-center gap-2">
+                  <Switch
+                    checked={prAutofixEnabled}
+                    disabled={
+                      !canConfigurePrSupervision || !autoPublishEnabled || isPrSupervisionSaving
+                    }
+                    onCheckedChange={(checked) =>
+                      updatePrSupervisionPreferences({
+                        autoFixEnabled: checked,
+                        autoMergeDesired: prAutoMergeDesired,
+                      })
+                    }
+                    aria-label="Autofix CI & Reviews"
+                    data-testid="agents-pr-autofix-switch"
+                  />
+                  <span>Autofix CI &amp; Reviews</span>
+                </label>
+                <PublishSwitchInfoTooltip label="About Autofix CI and Reviews">
+                  RalphX monitors this PR for failing checks and review feedback, then
+                  publishes follow-up fixes from the workspace automatically.
+                </PublishSwitchInfoTooltip>
+              </div>
+              <div className="flex min-h-8 items-center gap-1.5 text-[var(--text-secondary)]">
+                <label className="flex min-h-8 items-center gap-2">
+                  <Switch
+                    checked={prAutoMergeDesired}
+                    disabled={
+                      !canConfigurePrSupervision || !autoPublishEnabled || isPrSupervisionSaving
+                    }
+                    onCheckedChange={(checked) =>
+                      updatePrSupervisionPreferences({
+                        autoFixEnabled: prAutofixEnabled,
+                        autoMergeDesired: checked,
+                      })
+                    }
+                    aria-label="GitHub auto-merge"
+                    data-testid="agents-pr-auto-merge-switch"
+                  />
+                  <span>GitHub auto-merge</span>
+                </label>
+                <PublishSwitchInfoTooltip label="About GitHub auto-merge">
+                  RalphX asks GitHub to merge the PR after required checks and review
+                  requirements pass.
+                </PublishSwitchInfoTooltip>
+              </div>
               {prSupervisionStatusLabel && (
                 <span
                   className="rounded-full border px-2 py-1 text-[11px] font-medium"

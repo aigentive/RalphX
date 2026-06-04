@@ -123,6 +123,62 @@ describe("AgentComposerSurface", () => {
     expect(screen.getByTestId("agent-composer-submit")).toHaveClass("ml-auto");
   });
 
+  it("keeps Send as the primary action while the agent is waiting for input", () => {
+    const onStop = vi.fn();
+    renderComposer({
+      agentStatus: "waiting_for_input",
+      onStop,
+    });
+
+    const action = screen.getByTestId("agent-composer-submit");
+    expect(action).toHaveAccessibleName("Send");
+    expect(action).toHaveTextContent("Send");
+    expect(action).not.toHaveTextContent("Stop");
+    expect(action).toBeDisabled();
+
+    fireEvent.click(action);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("bounds the runtime selector popover to available height with internal scrolling", () => {
+    renderComposer({
+      model: {
+        value: "gpt-5.5",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "gpt-5.5", label: "gpt-5.5", description: "Frontier model." },
+          { id: "gpt-5.4", label: "gpt-5.4", description: "Strong model for coding." },
+          { id: "gpt-5.4-mini", label: "gpt-5.4-mini", description: "Small and fast." },
+          { id: "gpt-5.3-codex", label: "gpt-5.3-codex", description: "Coding optimized." },
+          { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark", description: "Ultra fast." },
+        ],
+        onOpenModelSettings: vi.fn(),
+      },
+      effort: {
+        value: "xhigh",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "low", label: "Low", description: "Fastest responses." },
+          { id: "medium", label: "Medium", description: "Balanced depth." },
+          { id: "high", label: "High", description: "Greater depth." },
+          { id: "xhigh", label: "Extra High", description: "Long-horizon work." },
+        ],
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+
+    const selectedModel = screen.getByTestId("agent-composer-runtime-model-gpt-5.5");
+    const runtimePopover = selectedModel.closest("[data-side='top']");
+
+    expect(runtimePopover).toHaveClass(
+      "max-h-[var(--radix-popover-content-available-height)]"
+    );
+    expect(runtimePopover).toHaveClass("overflow-y-auto");
+    expect(runtimePopover).toHaveClass("overscroll-contain");
+    expect(runtimePopover).not.toHaveClass("overflow-hidden");
+  });
+
   it("refreshes mode state when the mode menu opens", () => {
     const onOpen = vi.fn();
     renderComposer({

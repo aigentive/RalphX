@@ -7,6 +7,12 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 import { invalidateConversationDataQueries } from "@/hooks/useChat";
 
 import type { AgentConversation } from "./agentConversations";
+import {
+  AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
+  AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS,
+  agentWorkspaceOperationToastDescription,
+  agentWorkspaceOperationToastId,
+} from "./agentWorkspaceOperationToast";
 import { invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -44,7 +50,9 @@ export function useAgentWorkspacePublisher({
         selectedConversationId === conversationId
           ? activeWorkspace
           : optimisticWorkspacesByConversationId[conversationId] ?? null;
+      const conversationTitle = conversation?.title?.trim() || null;
       setPublishingConversationId(conversationId);
+      const publishToastId = agentWorkspaceOperationToastId(conversationId, "publish");
       try {
         const result = await chatApi.publishAgentConversationWorkspace(conversationId);
         const prLabel = result.prNumber ? `#${result.prNumber}` : result.prUrl;
@@ -52,7 +60,11 @@ export function useAgentWorkspacePublisher({
           ["agents", "conversation-workspace", conversationId],
           result.workspace
         );
-        toast.success(prLabel ? `Published ${prLabel}` : "Published branch");
+        toast.success(prLabel ? `Published ${prLabel}` : "Published branch", {
+          ...(conversationTitle ? { description: conversationTitle } : {}),
+          duration: AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS,
+          id: publishToastId,
+        });
         void Promise.all([
           invalidateWorkspaceQueries(queryClient, conversationId),
           conversation?.projectId
@@ -78,13 +90,33 @@ export function useAgentWorkspacePublisher({
           (refreshedWorkspace ?? workspace)?.publicationPushStatus === "needs_agent";
 
         if (publishFailureNeedsAgent) {
-          toast.error("Publish failed. Sent the error to the agent to fix.");
+          const description = agentWorkspaceOperationToastDescription(
+            conversationTitle,
+            errorMessage,
+          );
+          toast.error("Publish failed. Sent the error to the agent to fix.", {
+            closeButton: true,
+            ...(description ? { description } : {}),
+            dismissible: true,
+            duration: AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
+            id: publishToastId,
+          });
           if (conversation?.projectId) {
             await invalidateProjectConversations(conversation.projectId);
           }
           invalidateConversationDataQueries(queryClient, conversationId);
         } else {
-          toast.error(errorMessage);
+          const description = agentWorkspaceOperationToastDescription(
+            conversationTitle,
+            errorMessage,
+          );
+          toast.error("Failed to publish branch", {
+            closeButton: true,
+            ...(description ? { description } : {}),
+            dismissible: true,
+            duration: AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
+            id: publishToastId,
+          });
         }
       } finally {
         setPublishingConversationId(null);

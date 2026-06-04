@@ -525,6 +525,7 @@ async function seedAgentsScenario(page: Page) {
       limitPerGroup: sidebarGroupPageSize,
       offsets: { "project-mock-1": 0 },
       pinnedConversationIds: [],
+      priorityConversationIds: [],
     });
     const archivedSidebarResponse = await mockListAgentSidebarConversations({
       projectIds: ["project-mock-1"],
@@ -535,6 +536,7 @@ async function seedAgentsScenario(page: Page) {
       limitPerGroup: sidebarGroupPageSize,
       offsets: { "project-mock-1": 0 },
       pinnedConversationIds: [],
+      priorityConversationIds: [],
     });
     const activeSidebarGroup = activeSidebarResponse.groups.find(
       (group) => group.key === "project-mock-1",
@@ -559,6 +561,10 @@ async function seedAgentsScenario(page: Page) {
         publicationStates,
         "pinned",
         [],
+        "priority",
+        [],
+        "page-size",
+        sidebarGroupPageSize,
         "initial-limit",
         sidebarGroupPageSize,
       ],
@@ -581,6 +587,10 @@ async function seedAgentsScenario(page: Page) {
         publicationStates,
         "pinned",
         [],
+        "priority",
+        [],
+        "page-size",
+        sidebarGroupPageSize,
         "initial-limit",
         sidebarGroupPageSize,
       ],

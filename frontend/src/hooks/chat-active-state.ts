@@ -1,5 +1,6 @@
-import type { ActiveStreamingTaskResponse } from "@/api/chat";
-import type { StreamingTask } from "@/types/streaming-task";
+import { parseToolCalls, type ActiveStreamingTaskResponse } from "@/api/chat";
+import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
+import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
 
 function mapActiveTaskToStreamingTask(
   task: ActiveStreamingTaskResponse,
@@ -158,5 +159,104 @@ export function mergeActiveStreamingTasks(
   for (const task of tasks) {
     next.set(task.tool_use_id, mapActiveTaskToStreamingTask(task, previous.get(task.tool_use_id)));
   }
+  return next;
+}
+
+export function mergeActiveStreamingToolCalls(
+  previous: ToolCall[],
+  rawToolCalls: unknown[],
+): ToolCall[] {
+  const toolCalls = parseToolCalls(rawToolCalls);
+  if (toolCalls.length === 0) {
+    return previous;
+  }
+
+  const next = [...previous];
+  for (const toolCall of toolCalls) {
+    const existingIndex = next.findIndex((existing) => existing.id === toolCall.id);
+    const existing = existingIndex >= 0 ? next[existingIndex] : undefined;
+    if (existing) {
+      next[existingIndex] = { ...existing, ...toolCall };
+    } else {
+      next.push(toolCall);
+    }
+  }
+  return next;
+}
+
+function mergePartialTextBlock(
+  previous: StreamingContentBlock[],
+  partialText: string,
+): StreamingContentBlock[] {
+  if (partialText.trim().length === 0) {
+    return previous;
+  }
+
+  const next = [...previous];
+  const textIndex = next.findIndex((block) => block.type === "text");
+  if (textIndex < 0) {
+    return [...next, { type: "text", text: partialText }];
+  }
+
+  const existing = next[textIndex];
+  if (
+    existing?.type === "text" &&
+    partialText.length > existing.text.length &&
+    partialText.startsWith(existing.text)
+  ) {
+    next[textIndex] = { ...existing, text: partialText };
+  }
+  return next;
+}
+
+function mergeTaskMarker(
+  previous: StreamingContentBlock[],
+  toolUseId: string,
+): StreamingContentBlock[] {
+  if (previous.some((block) => block.type === "task" && block.toolUseId === toolUseId)) {
+    return previous;
+  }
+  return [...previous, { type: "task", toolUseId }];
+}
+
+function mergeToolCallBlock(
+  previous: StreamingContentBlock[],
+  toolCall: ToolCall,
+): StreamingContentBlock[] {
+  const next = [...previous];
+  const existingIndex = next.findIndex(
+    (block) => block.type === "tool_use" && block.toolCall.id === toolCall.id,
+  );
+  if (existingIndex >= 0) {
+    next[existingIndex] = { type: "tool_use", toolCall };
+    return next;
+  }
+  return [...next, { type: "tool_use", toolCall }];
+}
+
+export function mergeActiveStreamingContentBlocks(
+  previous: StreamingContentBlock[],
+  activeState: {
+    partial_text: string;
+    tool_calls: unknown[];
+    streaming_tasks: ActiveStreamingTaskResponse[];
+  },
+): StreamingContentBlock[] {
+  let next = mergePartialTextBlock(previous, activeState.partial_text);
+  const taskToolUseIds = new Set(
+    activeState.streaming_tasks.map((task) => task.tool_use_id),
+  );
+
+  for (const task of activeState.streaming_tasks) {
+    next = mergeTaskMarker(next, task.tool_use_id);
+  }
+
+  for (const toolCall of parseToolCalls(activeState.tool_calls)) {
+    if (taskToolUseIds.has(toolCall.id)) {
+      continue;
+    }
+    next = mergeToolCallBlock(next, toolCall);
+  }
+
   return next;
 }

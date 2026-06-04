@@ -198,6 +198,27 @@ describe("UpdateChecker", () => {
     expect(mocks.toastDismiss).toHaveBeenCalledWith("update-available");
   });
 
+  it("native menu check reopens a dismissed update toast for the same version", async () => {
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const toastUi = renderToastById("update-available");
+    fireEvent.click(toastUi.getByTestId("update-later-button"));
+    mocks.toastLoading.mockClear();
+
+    eventListeners.get("ralphx://check-for-updates")?.({ payload: undefined });
+
+    expect(mocks.toastLoading).toHaveBeenCalledWith(
+      "Checking for updates...",
+      expect.objectContaining({ id: "update-check-result" }),
+    );
+
+    await flushAsyncWork();
+
+    expect(mocks.toastDismiss).toHaveBeenCalledWith("update-check-result");
+    expect(toastCallsById("update-available")).toHaveLength(2);
+  });
+
   it("Update Now triggers downloadAndInstall, progress events, success toast and relaunch", async () => {
     const downloadAndInstall = vi.fn().mockImplementation(async (cb) => {
       cb({ event: "Started", data: { contentLength: 100 } });
@@ -282,6 +303,12 @@ describe("UpdateChecker", () => {
     render(<UpdateChecker />);
 
     eventListeners.get("ralphx://check-for-updates")?.({ payload: undefined });
+
+    expect(mocks.toastLoading).toHaveBeenCalledWith(
+      "Checking for updates...",
+      expect.objectContaining({ id: "update-check-result" }),
+    );
+
     await flushAsyncWork();
 
     expect(mocks.check).toHaveBeenCalledTimes(1);
@@ -296,6 +323,12 @@ describe("UpdateChecker", () => {
     render(<UpdateChecker />);
 
     eventListeners.get("ralphx://check-for-updates")?.({ payload: undefined });
+
+    expect(mocks.toastLoading).toHaveBeenCalledWith(
+      "Checking for updates...",
+      expect.objectContaining({ id: "update-check-result" }),
+    );
+
     await flushAsyncWork();
 
     expect(mocks.toastError).toHaveBeenCalledWith(
@@ -336,6 +369,32 @@ describe("UpdateChecker", () => {
     await flushAsyncWork();
 
     expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
+  });
+
+  it("opens update toast release notes for the update version when metadata is stale", async () => {
+    mocks.check.mockResolvedValue({
+      ...update,
+      version: "0.31.1",
+      currentVersion: "0.31.0",
+      body: "## RalphX.app 0.31.1\n\nStabilizes active chat recovery",
+    });
+    mocks.listReleaseNotesVersions.mockResolvedValue(["0.31.0"]);
+    mocks.getVersion.mockResolvedValue("0.31.0");
+
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const toastUi = renderToastById("update-available");
+    fireEvent.click(toastUi.getByTestId("update-release-notes-button"));
+    await act(async () => {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    });
+
+    expect(screen.getByRole("heading", { name: /v0\.31\.1/ })).toBeInTheDocument();
+    expect(screen.getByTestId("release-notes-dialog-body")).toHaveTextContent(
+      "Stabilizes active chat recovery",
+    );
+    expect(mocks.getReleaseNotesForVersion).not.toHaveBeenCalledWith("0.31.1");
   });
 
   it("shows manually dismissable What's new toast for unseen current release notes", async () => {

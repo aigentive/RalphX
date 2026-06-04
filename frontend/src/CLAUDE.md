@@ -122,6 +122,7 @@ Example: "View Registry Pattern" — see @../../.claude/rules/task-detail-views.
 - **Unified Chat Hooks** — `useChatActions` (send/queue/stop), `useChatEvents` (streaming/tool calls), `useChatRecovery` (polling/sync). Both panels use these.
 - **First-Paint Shells** — heavy panes/drawers/widgets render a lightweight shell immediately, then lazy-load/hydrate content after paint. See @../../.claude/rules/frontend-interaction-performance.md
 - **Async Confirmations** — pass backend work through `useConfirmation({ onConfirm, pendingText })` so dialogs stay open with disabled actions until settlement.
+- **Persistent Operation Toasts** — long-running confirmed publish/update operations may close the dialog after intent is captured and keep one stable-id Sonner loading toast with title separate from conversation/detail/elapsed metadata until terminal success/error.
 
 ### Composition Over Props
 ```tsx

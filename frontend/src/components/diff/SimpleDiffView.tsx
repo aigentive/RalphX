@@ -35,6 +35,14 @@ export interface SimpleDiffViewProps {
   scrollContainer?: boolean | undefined;
   /** GitHub review/check annotations already filtered to this file. */
   annotations?: PrDiffAnnotation[] | undefined;
+  /** Compact density for embedded chat widgets; default keeps repository diff views unchanged. */
+  density?: "standard" | "compact" | undefined;
+  /** Initial line wrapping state. */
+  defaultWrapLines?: boolean | undefined;
+  /** Show the line wrapping toggle. */
+  showWrapToggle?: boolean | undefined;
+  /** Show expandable unchanged-line gap rows between hunks. */
+  showContextGaps?: boolean | undefined;
 }
 
 type GapState = "loading" | "error" | RangeLine[];
@@ -393,8 +401,12 @@ export function SimpleDiffView({
   refKind,
   scrollContainer = true,
   annotations = [],
+  density = "standard",
+  defaultWrapLines = true,
+  showWrapToggle = true,
+  showContextGaps = true,
 }: SimpleDiffViewProps) {
-  const [wrapLines, setWrapLines] = useState(true);
+  const [wrapLines, setWrapLines] = useState(defaultWrapLines);
   // gapCache state drives rendering; gapCacheRef mirrors it so callbacks
   // always read the latest value without a stale closure.
   const [gapCache, setGapCache] = useState<Map<string, GapState>>(() => new Map());
@@ -408,6 +420,10 @@ export function SimpleDiffView({
     filePath !== undefined &&
     refKind !== undefined;
   const annotationIndex = useMemo(() => buildAnnotationIndex(annotations), [annotations]);
+  const bodyTextClass =
+    density === "compact"
+      ? "font-mono text-[0.6875rem] leading-[18px]"
+      : "font-mono text-[0.8125rem] leading-[20px]";
 
   function setGapData(key: string, value: GapState) {
     // Update ref immediately so callbacks see fresh data; update state to re-render.
@@ -659,19 +675,25 @@ export function SimpleDiffView({
   return (
     <div className={scrollContainer ? "h-full overflow-y-auto" : "w-full overflow-visible"}>
       <div
-        className="font-mono text-[0.8125rem] leading-[20px]"
+        className={bodyTextClass}
+        data-density={density}
+        data-wrap-lines={wrapLines}
         style={{ backgroundColor: "var(--bg-base)" }}
       >
-        {/* Wrap toggle */}
-        <div className="px-3 py-2 border-b" style={{ borderColor: "var(--overlay-weak)" }}>
-          <Button
-            variant="ghost"
-            className="h-7 px-2 text-[0.6875rem]"
-            onClick={() => setWrapLines((prev) => !prev)}
+        {showWrapToggle && (
+          <div
+            className="px-3 py-2 border-b"
+            style={{ borderColor: "var(--overlay-weak)" }}
           >
-            {wrapLines ? "Disable wrap" : "Wrap lines"}
-          </Button>
-        </div>
+            <Button
+              variant="ghost"
+              className="h-7 px-2 text-[0.6875rem]"
+              onClick={() => setWrapLines((prev) => !prev)}
+            >
+              {wrapLines ? "Disable wrap" : "Wrap lines"}
+            </Button>
+          </div>
+        )}
 
         {hunks.map((hunk, hunkIdx) => {
           const prevHunk = hunks[hunkIdx - 1];
@@ -701,7 +723,9 @@ export function SimpleDiffView({
 
           return (
             <div key={`hunk-${hunkIdx}`}>
-              {renderGap(gapKey, gapCount, gapFromNew, gapToNew, gapFromOld)}
+              {showContextGaps
+                ? renderGap(gapKey, gapCount, gapFromNew, gapToNew, gapFromOld)
+                : null}
 
               <div
                 className="border-b"
@@ -735,14 +759,22 @@ export function SimpleDiffView({
         })}
 
         {/* Trailing gap (after last hunk) */}
-        {(() => {
-          const lastHunk = hunks[hunks.length - 1]!;
-          const trailingFromNew = lastHunk.newStart + lastHunk.newLines;
-          const trailingToNew = newTotalLines;
-          const trailingFromOld = lastHunk.oldStart + lastHunk.oldLines;
-          const trailingCount = newTotalLines - lastHunk.newStart - lastHunk.newLines + 1;
-          return renderGap("post", trailingCount, trailingFromNew, trailingToNew, trailingFromOld);
-        })()}
+        {showContextGaps
+          ? (() => {
+              const lastHunk = hunks[hunks.length - 1]!;
+              const trailingFromNew = lastHunk.newStart + lastHunk.newLines;
+              const trailingToNew = newTotalLines;
+              const trailingFromOld = lastHunk.oldStart + lastHunk.oldLines;
+              const trailingCount = newTotalLines - lastHunk.newStart - lastHunk.newLines + 1;
+              return renderGap(
+                "post",
+                trailingCount,
+                trailingFromNew,
+                trailingToNew,
+                trailingFromOld
+              );
+            })()
+          : null}
       </div>
     </div>
   );

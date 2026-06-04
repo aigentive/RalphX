@@ -9,6 +9,7 @@ use std::time::Duration;
 use ralphx_lib::application::agent_conversation_workspace::{
     prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
 };
+use ralphx_lib::application::chat_service::AgentRuntimeStatus;
 use ralphx_lib::application::pr_startup_recovery::{
     cleanup_terminal_agent_workspace_local_artifacts_on_startup,
     cleanup_terminal_plan_branch_local_artifacts_on_startup,
@@ -1015,8 +1016,22 @@ async fn ipc_contract_bulk_agent_running_states_returns_requested_context_map() 
             .await
             .expect("bulk running states should resolve");
 
-    assert_eq!(states.get("conv-running"), Some(&true));
-    assert_eq!(states.get("conv-idle"), Some(&false));
+    assert_eq!(
+        states.get("conv-running").map(|state| state.is_running),
+        Some(true)
+    );
+    assert_eq!(
+        states.get("conv-running").map(|state| state.agent_status),
+        Some(AgentRuntimeStatus::Generating)
+    );
+    assert_eq!(
+        states.get("conv-idle").map(|state| state.is_running),
+        Some(false)
+    );
+    assert_eq!(
+        states.get("conv-idle").map(|state| state.agent_status),
+        Some(AgentRuntimeStatus::Idle)
+    );
     assert_eq!(states.get("conv-unrequested"), None);
     assert_eq!(states.len(), 2);
 }
@@ -1046,8 +1061,22 @@ async fn ipc_contract_get_agent_running_states_command_uses_registry_truth() {
     .await
     .expect("bulk running states command should resolve");
 
-    assert_eq!(states.get("conv-running"), Some(&true));
-    assert_eq!(states.get("conv-idle"), Some(&false));
+    assert_eq!(
+        states.get("conv-running").map(|state| state.is_running),
+        Some(true)
+    );
+    assert_eq!(
+        states.get("conv-running").map(|state| state.agent_status),
+        Some(AgentRuntimeStatus::Generating)
+    );
+    assert_eq!(
+        states.get("conv-idle").map(|state| state.is_running),
+        Some(false)
+    );
+    assert_eq!(
+        states.get("conv-idle").map(|state| state.agent_status),
+        Some(AgentRuntimeStatus::Idle)
+    );
     assert_eq!(states.get("conv-unrequested"), None);
     assert_eq!(states.len(), 2);
 }

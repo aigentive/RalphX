@@ -3,10 +3,11 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use crate::application::chat_service::tool_result_preview::{
-    build_live_tool_result_preview, build_live_tool_result_preview_for_tool_call,
-    build_live_tool_result_preview_for_tool_id, build_tool_result_preview_payload,
-    live_tool_result_activity_content, live_tool_result_activity_metadata,
-    preview_tool_result_object, should_skip_tool_result_preview, tool_detail_ref,
+    build_live_tool_argument_preview, build_live_tool_result_preview,
+    build_live_tool_result_preview_for_tool_call, build_live_tool_result_preview_for_tool_id,
+    build_tool_result_preview_payload, live_tool_result_activity_content,
+    live_tool_result_activity_metadata, preview_tool_result_object, should_skip_tool_result_preview,
+    tool_detail_ref,
 };
 use crate::application::chat_service::{
     process_stream_background, AgentToolCallPayload, AgentToolCallPreviewFields,
@@ -15,7 +16,7 @@ use crate::application::chat_service::{
 use crate::commands::unified_chat_commands::preview_tool_payloads_for_message;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{ChatContextType, ChatConversationId};
-use crate::infrastructure::agents::claude::ToolCall;
+use crate::infrastructure::agents::claude::{DiffContext, ToolCall};
 use crate::infrastructure::memory::MemoryChatMessageRepository;
 use tauri::test::MockRuntime;
 use tokio_util::sync::CancellationToken;
@@ -470,6 +471,7 @@ fn live_preview_for_tool_call_builds_completed_event_payload() {
     let payload = AgentToolCallPayload::from_completed_tool_call(
         &tool_call,
         Some(&preview),
+        None,
         "conv-1",
         "project",
         "project-1",
@@ -486,6 +488,321 @@ fn live_preview_for_tool_call_builds_completed_event_payload() {
     assert_eq!(value["diff_context"]["file_path"], "big.log");
     assert_eq!(value["parent_tool_use_id"], "parent-tool");
     assert_eq!(value["seq"], 9);
+}
+
+#[test]
+fn live_completed_edit_payload_previews_arguments_with_detail_ref() {
+    let tool_call = ToolCall {
+        id: Some("tool-edit".to_string()),
+        name: "Edit".to_string(),
+        arguments: json!({
+            "file_path": "src/app.ts",
+            "old_string": "export const value = 1;\nexport const label = \"old\";\n",
+            "new_string": "export const value = 1;\nexport const label = \"new\";\n",
+        }),
+        result: None,
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    };
+    let argument_preview = build_live_tool_argument_preview(
+        &tool_call,
+        None,
+        Some(tool_detail_ref("conv-1", "msg-1", Some("tool-edit"), None)),
+    )
+    .expect("edit arguments should preview");
+
+    let payload = AgentToolCallPayload::from_completed_tool_call(
+        &tool_call,
+        None,
+        Some(&argument_preview),
+        "conv-1",
+        "project",
+        "project-1",
+        None,
+        None,
+        10,
+    );
+    let value = serde_json::to_value(payload).unwrap();
+
+    assert_eq!(value["tool_name"], "Edit");
+    assert_eq!(value["arguments"]["file_path"], "src/app.ts");
+    assert!(value["arguments"].get("old_string").is_none());
+    assert!(value["arguments"].get("new_string").is_none());
+    assert_eq!(value["arguments_preview_truncated"], true);
+    assert_eq!(value["diff_preview"]["file_path"], "src/app.ts");
+    assert_eq!(value["detail_ref"]["message_id"], "msg-1");
+    assert_eq!(value["detail_ref"]["tool_call_id"], "tool-edit");
+}
+
+#[test]
+fn live_completed_write_payload_previews_confirmed_new_file_as_added_diff() {
+    let tool_call = ToolCall {
+        id: Some("tool-write-new".to_string()),
+        name: "write".to_string(),
+        arguments: json!({
+            "file_path": "src/new.rs",
+            "content": "pub fn new() {}\n",
+        }),
+        result: None,
+        parent_tool_use_id: None,
+        diff_context: Some(DiffContext {
+            old_content: None,
+            old_file_exists: Some(false),
+            file_path: "src/new.rs".to_string(),
+        }),
+        stats: None,
+    };
+    let diff_context = serde_json::to_value(tool_call.diff_context.as_ref().unwrap()).unwrap();
+    let argument_preview = build_live_tool_argument_preview(
+        &tool_call,
+        Some(&diff_context),
+        Some(tool_detail_ref("conv-1", "msg-1", Some("tool-write-new"), None)),
+    )
+    .expect("new-file write arguments should preview");
+
+    let payload = AgentToolCallPayload::from_completed_tool_call(
+        &tool_call,
+        None,
+        Some(&argument_preview),
+        "conv-1",
+        "project",
+        "project-1",
+        Some(diff_context),
+        None,
+        10,
+    );
+    let value = serde_json::to_value(payload).unwrap();
+
+    assert_eq!(value["tool_name"], "write");
+    assert_eq!(value["arguments"]["file_path"], "src/new.rs");
+    assert!(value["arguments"].get("content").is_none());
+    assert_eq!(value["diff_context"]["old_file_exists"], false);
+    assert_eq!(value["diff_preview"]["old_total_lines"], 0);
+    assert_eq!(value["diff_preview"]["new_total_lines"], 2);
+    assert_eq!(value["diff_preview"]["hunks"][0]["lines"][0]["kind"], "addition");
+}
+
+#[test]
+fn live_tool_argument_preview_canonicalizes_tool_names_and_diff_languages() {
+    let cases = [
+        ("mcp__ralphx__edit", "src/app.js", "javascript"),
+        ("mcp__ralphx_internal__edit", "src/lib.rs", "rust"),
+        ("ralphx::edit", "src/style.css", "css"),
+        ("ralphx_internal::edit", "src/index.html", "html"),
+        ("ralphx:edit", "package.json", "json"),
+        ("ralphx_internal:edit", "README.md", "markdown"),
+        ("edit", "LICENSE", "text"),
+    ];
+
+    for (tool_name, file_path, expected_language) in cases {
+        let tool_call = ToolCall {
+            id: Some(format!("{tool_name}-{file_path}")),
+            name: tool_name.to_string(),
+            arguments: json!({
+                "file_path": file_path,
+                "old_string": "old\n",
+                "new_string": "new\n",
+            }),
+            result: None,
+            parent_tool_use_id: None,
+            diff_context: None,
+            stats: None,
+        };
+        let preview = build_live_tool_argument_preview(&tool_call, None, None)
+            .expect("canonical edit argument preview");
+
+        assert_eq!(preview.arguments, json!({ "file_path": file_path }));
+        assert_eq!(
+            preview
+                .diff_preview
+                .as_ref()
+                .and_then(|diff| diff.get("language"))
+                .and_then(serde_json::Value::as_str),
+            Some(expected_language)
+        );
+    }
+}
+
+#[test]
+fn live_tool_argument_preview_handles_unchanged_and_invalid_arguments() {
+    let unchanged = ToolCall {
+        id: Some("tool-edit-unchanged".to_string()),
+        name: "edit".to_string(),
+        arguments: json!({
+            "file_path": "src/unchanged.ts",
+            "old_string": "same\n",
+            "new_string": "same\n",
+        }),
+        result: None,
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    };
+    let unchanged_preview = build_live_tool_argument_preview(&unchanged, None, None)
+        .expect("unchanged edit arguments should still preview metadata");
+    assert_eq!(
+        unchanged_preview.diff_preview.as_ref().unwrap()["hunks"],
+        json!([])
+    );
+
+    for arguments in [
+        json!({ "old_string": "old", "new_string": "new" }),
+        json!({ "file_path": "src/app.ts", "new_string": "new" }),
+        json!({ "file_path": "src/app.ts", "old_string": "old" }),
+    ] {
+        let tool_call = ToolCall {
+            id: Some("tool-edit-invalid".to_string()),
+            name: "edit".to_string(),
+            arguments,
+            result: None,
+            parent_tool_use_id: None,
+            diff_context: None,
+            stats: None,
+        };
+        assert!(build_live_tool_argument_preview(&tool_call, None, None).is_none());
+    }
+
+    for arguments in [
+        json!({ "content": "body" }),
+        json!({ "file_path": "src/app.ts" }),
+    ] {
+        let tool_call = ToolCall {
+            id: Some("tool-write-invalid".to_string()),
+            name: "write".to_string(),
+            arguments,
+            result: None,
+            parent_tool_use_id: None,
+            diff_context: None,
+            stats: None,
+        };
+        assert!(build_live_tool_argument_preview(&tool_call, None, None).is_none());
+    }
+}
+
+#[test]
+fn live_tool_argument_preview_truncates_write_content_when_baseline_is_unknown() {
+    let content = (1..=12)
+        .map(|index| format!("line {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let tool_call = ToolCall {
+        id: Some("tool-write-large".to_string()),
+        name: "write".to_string(),
+        arguments: json!({
+            "file_path": "src/generated.txt",
+            "content": content,
+        }),
+        result: None,
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    };
+    let preview = build_live_tool_argument_preview(&tool_call, None, None)
+        .expect("large final content should be previewed");
+
+    let preview_content = preview.arguments["content"].as_str().unwrap();
+    assert_eq!(preview_content.lines().count(), 10);
+    assert!(preview_content.contains("line 10"));
+    assert!(!preview_content.contains("line 11"));
+    assert_eq!(preview.line_count, 12);
+    assert_eq!(preview.omitted_lines, 2);
+    assert!(preview.diff_preview.is_none());
+
+    let long_single_line = ToolCall {
+        id: Some("tool-write-long-line".to_string()),
+        name: "write".to_string(),
+        arguments: json!({
+            "file_path": "src/generated.txt",
+            "content": "x".repeat(4_100),
+        }),
+        result: None,
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    };
+    let long_line_preview = build_live_tool_argument_preview(&long_single_line, None, None)
+        .expect("long final content should be character capped");
+    assert_eq!(
+        long_line_preview.arguments["content"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count(),
+        4_000
+    );
+}
+
+#[test]
+fn live_tool_argument_preview_accepts_camel_case_new_file_context() {
+    let tool_call = ToolCall {
+        id: Some("tool-write-camel-context".to_string()),
+        name: "write".to_string(),
+        arguments: json!({
+            "file_path": "src/new.ts",
+            "content": "export const value = 1;\n",
+        }),
+        result: None,
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    };
+    let diff_context = json!({
+        "filePath": "src/new.ts",
+        "oldFileExists": false,
+    });
+    let preview = build_live_tool_argument_preview(&tool_call, Some(&diff_context), None)
+        .expect("camel-case new-file context should produce an added diff");
+
+    assert_eq!(preview.arguments, json!({ "file_path": "src/new.ts" }));
+    assert_eq!(
+        preview.diff_context.as_ref().unwrap()["oldFileExists"],
+        false
+    );
+    assert_eq!(preview.diff_preview.as_ref().unwrap()["old_total_lines"], 0);
+    assert_eq!(
+        preview.diff_preview.as_ref().unwrap()["hunks"][0]["lines"][0]["kind"],
+        "addition"
+    );
+}
+
+#[test]
+fn preview_tool_payloads_skips_already_previewed_or_unnamed_arguments() {
+    let tool_calls = json!([
+        {
+            "id": "tool-write-previewed",
+            "name": "write",
+            "arguments": {
+                "file_path": "src/generated.txt",
+                "content": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11"
+            },
+            "arguments_preview_truncated": true
+        },
+        {
+            "id": "tool-write-unnamed",
+            "arguments": {
+                "file_path": "src/generated.txt",
+                "content": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11"
+            }
+        }
+    ]);
+
+    let (previewed_tool_calls, _) =
+        preview_tool_payloads_for_message("conv-1", "msg-1", Some(tool_calls), None);
+    let previewed_tool_calls = previewed_tool_calls.unwrap();
+
+    assert!(previewed_tool_calls[0]["arguments"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("line 11"));
+    assert!(previewed_tool_calls[0].get("detail_ref").is_none());
+    assert!(previewed_tool_calls[1]["arguments"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("line 11"));
+    assert!(previewed_tool_calls[1]
+        .get("arguments_preview_truncated")
+        .is_none());
 }
 
 #[test]

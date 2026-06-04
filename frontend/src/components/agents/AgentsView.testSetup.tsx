@@ -38,6 +38,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   openAgentConversationWorkspacePathMock: vi.fn(),
   listConversationsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
+  setAgentConversationWorkspaceAutoPublishMock: vi.fn(),
   setAgentConversationWorkspacePrSupervisionMock: vi.fn(),
   precomputePrDescriptionMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
@@ -143,6 +144,7 @@ const {
   openAgentConversationWorkspacePathMock,
   listConversationsMock,
   publishAgentConversationWorkspaceMock,
+  setAgentConversationWorkspaceAutoPublishMock,
   setAgentConversationWorkspacePrSupervisionMock,
   precomputePrDescriptionMock,
   switchAgentConversationModeMock,
@@ -630,6 +632,8 @@ vi.mock("@/api/chat", () => ({
     listConversations: (...args: unknown[]) => listConversationsMock(...args),
     publishAgentConversationWorkspace: (...args: unknown[]) =>
       publishAgentConversationWorkspaceMock(...args),
+    setAgentConversationWorkspaceAutoPublish: (...args: unknown[]) =>
+      setAgentConversationWorkspaceAutoPublishMock(...args),
     setAgentConversationWorkspacePrSupervision: (...args: unknown[]) =>
       setAgentConversationWorkspacePrSupervisionMock(...args),
     precomputeAgentConversationWorkspacePrDescription: (...args: unknown[]) =>
@@ -927,12 +931,14 @@ export function mockAgentSidebarData(conversations: AgentConversation[]) {
       search = "",
       publicationStates = DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS,
       pinnedConversationIds = [],
+      priorityConversationIds = [],
     }: {
       projectId?: string | null;
       archivedOnly?: boolean;
       search?: string;
       publicationStates?: string[];
       pinnedConversationIds?: string[];
+      priorityConversationIds?: string[];
     }) =>
       buildAgentSidebarGroupResult({
         key: projectId ?? "",
@@ -943,6 +949,7 @@ export function mockAgentSidebarData(conversations: AgentConversation[]) {
           search,
           publicationStates,
           pinnedConversationIds,
+          priorityConversationIds,
         }),
       })
   );
@@ -953,12 +960,14 @@ export function mockAgentSidebarData(conversations: AgentConversation[]) {
       archivedOnly = false,
       search = "",
       pinnedConversationIds = [],
+      priorityConversationIds = [],
     }: {
       projectIds?: string[];
       publicationState?: string;
       archivedOnly?: boolean;
       search?: string;
       pinnedConversationIds?: string[];
+      priorityConversationIds?: string[];
     }) =>
       buildAgentSidebarGroupResult({
         key: publicationState,
@@ -969,6 +978,7 @@ export function mockAgentSidebarData(conversations: AgentConversation[]) {
           search,
           publicationStates: [publicationState],
           pinnedConversationIds,
+          priorityConversationIds,
         }),
       })
   );
@@ -982,16 +992,19 @@ function filterSidebarConversations(
     search,
     publicationStates,
     pinnedConversationIds,
+    priorityConversationIds,
   }: {
     projectIds: string[];
     archivedOnly: boolean;
     search: string;
     publicationStates: string[];
     pinnedConversationIds: string[];
+    priorityConversationIds: string[];
   }
 ) {
   const projectIdSet = new Set(projectIds);
   const pinnedIdSet = new Set(pinnedConversationIds);
+  const priorityIdSet = new Set(priorityConversationIds);
   const normalizedSearch = search.trim().toLowerCase();
   return conversations
     .filter((item) => projectIdSet.has(item.projectId ?? item.contextId))
@@ -1008,6 +1021,11 @@ function filterSidebarConversations(
         Number(pinnedIdSet.has(right.id)) - Number(pinnedIdSet.has(left.id));
       if (pinnedDelta !== 0) {
         return pinnedDelta;
+      }
+      const priorityDelta =
+        Number(priorityIdSet.has(right.id)) - Number(priorityIdSet.has(left.id));
+      if (priorityDelta !== 0) {
+        return priorityDelta;
       }
       return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
     });
@@ -1152,6 +1170,7 @@ export function setupAgentsViewTest() {
   openAgentConversationWorkspacePathMock.mockReset();
   listConversationsMock.mockReset();
   publishAgentConversationWorkspaceMock.mockReset();
+  setAgentConversationWorkspaceAutoPublishMock.mockReset();
   setAgentConversationWorkspacePrSupervisionMock.mockReset();
   switchAgentConversationModeMock.mockReset();
   sendAgentMessageMock.mockReset();
@@ -1271,6 +1290,9 @@ export function setupAgentsViewTest() {
       publicationPrUrl: "https://github.com/mock/project/pull/42",
       publicationPrStatus: "draft",
       publicationPushStatus: "pushed",
+      autoPublishEnabled: true,
+      autoPublishPausedPrAutofixEnabled: null,
+      autoPublishPausedPrAutoMergeDesired: null,
       status: "active",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1298,11 +1320,43 @@ export function setupAgentsViewTest() {
       publicationPrUrl: "https://github.com/mock/project/pull/42",
       publicationPrStatus: "open",
       publicationPushStatus: "pushed",
+      autoPublishEnabled: true,
+      autoPublishPausedPrAutofixEnabled: null,
+      autoPublishPausedPrAutoMergeDesired: null,
       prAutofixEnabled: input.autoFixEnabled,
       prAutoMergeDesired: input.autoMergeDesired,
       prAutoMergeMethod: "squash",
       prSupervisionStatus:
         input.autoFixEnabled || input.autoMergeDesired ? "monitoring" : "disabled",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }),
+  );
+  setAgentConversationWorkspaceAutoPublishMock.mockImplementation(
+    async (conversationId: string, input: { autoPublishEnabled: boolean }) => ({
+      conversationId,
+      projectId: "project-1",
+      mode: "edit",
+      baseRefKind: "project_default",
+      baseRef: "main",
+      baseDisplayName: "Project default (main)",
+      baseCommit: null,
+      branchName: `ralphx/demo/agent-${conversationId}`,
+      worktreePath: `/tmp/ralphx/${conversationId}`,
+      linkedIdeationSessionId: null,
+      linkedPlanBranchId: null,
+      publicationPrNumber: 42,
+      publicationPrUrl: "https://github.com/mock/project/pull/42",
+      publicationPrStatus: "open",
+      publicationPushStatus: "pushed",
+      autoPublishEnabled: input.autoPublishEnabled,
+      autoPublishPausedPrAutofixEnabled: input.autoPublishEnabled ? null : true,
+      autoPublishPausedPrAutoMergeDesired: input.autoPublishEnabled ? null : false,
+      prAutofixEnabled: input.autoPublishEnabled,
+      prAutoMergeDesired: false,
+      prAutoMergeMethod: "squash",
+      prSupervisionStatus: input.autoPublishEnabled ? "monitoring" : "paused",
       status: "active",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

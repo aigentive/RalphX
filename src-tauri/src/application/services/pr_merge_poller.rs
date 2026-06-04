@@ -1198,6 +1198,10 @@ async fn route_agent_workspace_pr_autofix_if_needed(
             ))
         })?;
 
+    if !workspace.auto_publish_enabled {
+        return Ok(false);
+    }
+
     if !workspace.pr_autofix_enabled
         && !workspace.pr_auto_merge_desired
         && workspace.pr_auto_merge_current.is_none()

@@ -416,6 +416,15 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
     refreshed.publication_push_status = Some("refreshed".to_string());
     repo.create_or_update(refreshed.clone()).await.unwrap();
 
+    let paused_id = ChatConversationId::from_string("12121212-1212-1212-1212-121212121212");
+    seed_conversation(&db, &paused_id);
+    let mut paused = make_workspace(paused_id);
+    paused.publication_pr_number = Some(79);
+    paused.publication_pr_status = Some("open".to_string());
+    paused.publication_push_status = Some("pushed".to_string());
+    paused.auto_publish_enabled = false;
+    repo.create_or_update(paused).await.unwrap();
+
     let archived_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
     seed_conversation(&db, &archived_id);
     let mut archived = make_workspace(archived_id);
@@ -550,6 +559,17 @@ async fn list_active_direct_pr_supervision_recovery_candidates_filters_blocked_f
     disabled.pr_supervision_status = Some("blocked".to_string());
     repo.create_or_update(disabled).await.unwrap();
 
+    let paused_id = ChatConversationId::from_string("12121212-1212-1212-1212-121212121212");
+    seed_conversation(&db, &paused_id);
+    let mut paused = make_workspace(paused_id);
+    paused.publication_pr_number = Some(86);
+    paused.publication_pr_status = Some("open".to_string());
+    paused.publication_push_status = Some("failed".to_string());
+    paused.pr_supervision_status = Some("blocked".to_string());
+    paused.pr_autofix_enabled = true;
+    paused.auto_publish_enabled = false;
+    repo.create_or_update(paused).await.unwrap();
+
     let needs_agent_id = ChatConversationId::from_string("77777777-7777-7777-7777-777777777777");
     seed_conversation(&db, &needs_agent_id);
     let mut needs_agent = make_workspace(needs_agent_id);
@@ -652,6 +672,43 @@ async fn pr_supervision_preferences_round_trip() {
     );
     assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
     assert!(updated.pr_supervision_updated_at.is_some());
+}
+
+#[tokio::test]
+async fn auto_publish_preferences_round_trip() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.pr_autofix_enabled = true;
+    workspace.pr_auto_merge_desired = true;
+    repo.create_or_update(workspace).await.unwrap();
+
+    repo.update_auto_publish_preferences(
+        &conversation_id,
+        false,
+        Some(true),
+        Some(true),
+        false,
+        false,
+        Some("paused"),
+        Some("Auto Publish is paused."),
+    )
+    .await
+    .unwrap();
+
+    let updated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert!(!updated.auto_publish_enabled);
+    assert_eq!(updated.auto_publish_paused_pr_autofix_enabled, Some(true));
+    assert_eq!(
+        updated.auto_publish_paused_pr_auto_merge_desired,
+        Some(true)
+    );
+    assert!(!updated.pr_autofix_enabled);
+    assert!(!updated.pr_auto_merge_desired);
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("paused"));
 }
 
 #[tokio::test]
