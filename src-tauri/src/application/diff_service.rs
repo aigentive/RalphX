@@ -57,6 +57,31 @@ pub struct FileDiff {
     pub is_binary: bool,
 }
 
+pub const MAX_DIFF_PAGE_LIMIT: usize = 400;
+
+/// Windowed diff data for one file. Rows are flattened so large files can be
+/// rendered progressively without sending the full hunk payload to the UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileDiffPage {
+    pub file_path: String,
+    pub language: String,
+    pub rows: Vec<DiffPageRow>,
+    pub offset: usize,
+    pub limit: usize,
+    pub next_offset: Option<usize>,
+    pub total_rows: usize,
+    pub old_total_lines: u32,
+    pub new_total_lines: u32,
+    pub is_binary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DiffPageRow {
+    HunkHeader { header: String },
+    Line { line: DiffLine },
+}
+
 // =========================================================================
 // Hunk-based diff types
 // =========================================================================
@@ -148,6 +173,49 @@ pub struct DiffService;
 impl DiffService {
     pub fn new() -> Self {
         Self
+    }
+
+    pub fn page_file_diff(diff: FileDiff, offset: usize, limit: usize) -> AppResult<FileDiffPage> {
+        if limit == 0 {
+            return Err(AppError::Validation(
+                "Diff page limit must be greater than zero".to_string(),
+            ));
+        }
+        if limit > MAX_DIFF_PAGE_LIMIT {
+            return Err(AppError::Validation(format!(
+                "Diff page limit too large: {limit} rows requested (max {MAX_DIFF_PAGE_LIMIT})"
+            )));
+        }
+
+        let mut rows = Vec::new();
+        for hunk in diff.hunks {
+            rows.push(DiffPageRow::HunkHeader {
+                header: hunk.header,
+            });
+            rows.extend(
+                hunk.lines
+                    .into_iter()
+                    .map(|line| DiffPageRow::Line { line }),
+            );
+        }
+
+        let total_rows = rows.len();
+        let page_rows: Vec<DiffPageRow> = rows.into_iter().skip(offset).take(limit).collect();
+        let consumed_until = offset.saturating_add(page_rows.len());
+        let next_offset = (consumed_until < total_rows).then_some(consumed_until);
+
+        Ok(FileDiffPage {
+            file_path: diff.file_path,
+            language: diff.language,
+            rows: page_rows,
+            offset,
+            limit,
+            next_offset,
+            total_rows,
+            old_total_lines: diff.old_total_lines,
+            new_total_lines: diff.new_total_lines,
+            is_binary: diff.is_binary,
+        })
     }
 
     /// Get all files changed by the agent for a task

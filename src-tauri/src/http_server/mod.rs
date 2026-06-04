@@ -374,6 +374,10 @@ pub async fn start_http_server(
             "/api/agent-workspaces/:conversation_id/file-content-range",
             get(get_agent_workspace_file_content_range),
         )
+        .route(
+            "/api/agent-workspaces/:conversation_id/file-diff-page",
+            get(get_agent_workspace_file_diff_page),
+        )
         .route("/api/git/tasks/:id/report-conflict", post(report_conflict))
         .route(
             "/api/git/tasks/:id/report-incomplete",

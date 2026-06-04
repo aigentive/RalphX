@@ -738,6 +738,104 @@ index abc..def 100644
         .any(|line| line.content.contains("42")));
 }
 
+#[test]
+fn file_diff_page_limits_rows_and_reports_next_offset() {
+    let diff = FileDiff {
+        file_path: "src/lib.rs".to_string(),
+        language: "rust".to_string(),
+        hunks: vec![
+            DiffHunk {
+                old_start: 1,
+                old_lines: 2,
+                new_start: 1,
+                new_lines: 2,
+                header: "@@ -1,2 +1,2 @@".to_string(),
+                lines: vec![
+                    DiffLine {
+                        kind: DiffLineKind::Context,
+                        content: "pub fn before() {}".to_string(),
+                        old_line_num: Some(1),
+                        new_line_num: Some(1),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Addition,
+                        content: "pub fn after() {}".to_string(),
+                        old_line_num: None,
+                        new_line_num: Some(2),
+                    },
+                ],
+            },
+            DiffHunk {
+                old_start: 20,
+                old_lines: 2,
+                new_start: 21,
+                new_lines: 3,
+                header: "@@ -20,2 +21,3 @@".to_string(),
+                lines: vec![
+                    DiffLine {
+                        kind: DiffLineKind::Deletion,
+                        content: "old();".to_string(),
+                        old_line_num: Some(20),
+                        new_line_num: None,
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Addition,
+                        content: "new();".to_string(),
+                        old_line_num: None,
+                        new_line_num: Some(21),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Context,
+                        content: "done();".to_string(),
+                        old_line_num: Some(21),
+                        new_line_num: Some(22),
+                    },
+                ],
+            },
+        ],
+        old_total_lines: 21,
+        new_total_lines: 22,
+        is_binary: false,
+    };
+
+    let page = DiffService::page_file_diff(diff.clone(), 0, 3)
+        .expect("page should slice the flattened diff");
+
+    assert_eq!(page.file_path, "src/lib.rs");
+    assert_eq!(page.offset, 0);
+    assert_eq!(page.limit, 3);
+    assert_eq!(page.total_rows, 7);
+    assert_eq!(page.next_offset, Some(3));
+    assert_eq!(page.rows.len(), 3);
+    assert!(matches!(page.rows[0], DiffPageRow::HunkHeader { .. }));
+    assert!(matches!(page.rows[1], DiffPageRow::Line { .. }));
+    assert!(matches!(page.rows[2], DiffPageRow::Line { .. }));
+
+    let tail =
+        DiffService::page_file_diff(diff, 5, 3).expect("tail page should slice remaining rows");
+    assert_eq!(tail.offset, 5);
+    assert_eq!(tail.rows.len(), 2);
+    assert_eq!(tail.next_offset, None);
+}
+
+#[test]
+fn file_diff_page_rejects_zero_and_oversized_limits() {
+    let diff = FileDiff {
+        file_path: "src/lib.rs".to_string(),
+        language: "rust".to_string(),
+        hunks: Vec::new(),
+        old_total_lines: 0,
+        new_total_lines: 0,
+        is_binary: false,
+    };
+
+    let zero = DiffService::page_file_diff(diff.clone(), 0, 0).unwrap_err();
+    assert!(zero.to_string().contains("limit"));
+
+    let oversized = DiffService::page_file_diff(diff, 0, MAX_DIFF_PAGE_LIMIT + 1).unwrap_err();
+    assert!(oversized.to_string().contains("too large"));
+}
+
 // =============================================================================
 // validate_diff_file_path unit tests
 // =============================================================================

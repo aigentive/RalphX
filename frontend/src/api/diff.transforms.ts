@@ -6,6 +6,8 @@ import type {
   AgentWorkspaceReviewResponseSchema,
   FileChangeSchema,
   FileDiffSchema,
+  FileDiffPageSchema,
+  DiffPageRowSchema,
   DiffLineSchema,
   DiffHunkSchema,
   CommitInfoSchema,
@@ -20,6 +22,8 @@ import type {
   AgentWorkspaceReview,
   FileChange,
   FileDiff,
+  FileDiffPage,
+  DiffPageRow,
   DiffLine,
   DiffHunk,
   CommitInfo,
@@ -31,6 +35,8 @@ import type {
 
 type RawFileChange = z.infer<typeof FileChangeSchema>;
 type RawFileDiff = z.infer<typeof FileDiffSchema>;
+type RawFileDiffPage = z.infer<typeof FileDiffPageSchema>;
+type RawDiffPageRow = z.infer<typeof DiffPageRowSchema>;
 type RawDiffLine = z.infer<typeof DiffLineSchema>;
 type RawDiffHunk = z.infer<typeof DiffHunkSchema>;
 type RawCommitInfo = z.infer<typeof CommitInfoSchema>;
@@ -78,6 +84,34 @@ export function transformFileDiff(raw: RawFileDiff): FileDiff {
     filePath: raw.file_path,
     language: raw.language,
     hunks: raw.hunks.map(transformDiffHunk),
+    oldTotalLines: raw.old_total_lines,
+    newTotalLines: raw.new_total_lines,
+    isBinary: raw.is_binary,
+  };
+}
+
+export function transformDiffPageRow(raw: RawDiffPageRow): DiffPageRow {
+  if (raw.kind === "hunk_header") {
+    return {
+      kind: raw.kind,
+      header: raw.header,
+    };
+  }
+  return {
+    kind: raw.kind,
+    line: transformDiffLine(raw.line),
+  };
+}
+
+export function transformFileDiffPage(raw: RawFileDiffPage): FileDiffPage {
+  return {
+    filePath: raw.file_path,
+    language: raw.language,
+    rows: raw.rows.map(transformDiffPageRow),
+    offset: raw.offset,
+    limit: raw.limit,
+    nextOffset: raw.next_offset,
+    totalRows: raw.total_rows,
     oldTotalLines: raw.old_total_lines,
     newTotalLines: raw.new_total_lines,
     isBinary: raw.is_binary,

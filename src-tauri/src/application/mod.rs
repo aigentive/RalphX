@@ -125,8 +125,8 @@ pub use execution_settings_bootstrap::{
     load_or_seed_execution_settings_defaults, ExecutionSettingsBootstrapResult,
 };
 pub use diff_service::{
-    ConflictDiff, DiffHunk, DiffLine, DiffLineKind, DiffRefKind, DiffService, DiffSide,
-    FileChange, FileChangeStatus, FileDiff, RangeLine,
+    ConflictDiff, DiffHunk, DiffLine, DiffLineKind, DiffPageRow, DiffRefKind, DiffService,
+    DiffSide, FileChange, FileChangeStatus, FileDiff, FileDiffPage, RangeLine,
 };
 pub use git_service::{
     checkout_free::CheckoutFreeMergeResult, CommitInfo, DiffStats, GitService, MergeAttemptResult,

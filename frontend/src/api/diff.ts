@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   FileChangesResponseSchema,
   FileDiffSchema,
+  FileDiffPageSchema,
   TaskCommitsResponseSchema,
   AgentWorkspaceChangeSummaryResponseSchema,
   AgentWorkspaceReviewResponseSchema,
@@ -14,6 +15,7 @@ import {
 import {
   transformFileChange,
   transformFileDiff,
+  transformFileDiffPage,
   transformCommitInfo,
   transformAgentWorkspaceChangeSummary,
   transformAgentWorkspaceReview,
@@ -25,6 +27,7 @@ import type {
   AgentWorkspaceReview,
   FileChange,
   FileDiff,
+  FileDiffPage,
   CommitInfo,
   DiffRefKind,
   PrDiffAnnotationsResponse,
@@ -39,6 +42,8 @@ export type {
   AgentWorkspaceReview,
   FileChange,
   FileDiff,
+  FileDiffPage,
+  DiffPageRow,
   FileChangeStatus,
   CommitInfo,
   DiffLineKind,
@@ -56,6 +61,8 @@ export {
   FileChangeSchema,
   FileChangeStatusSchema,
   FileDiffSchema,
+  FileDiffPageSchema,
+  DiffPageRowSchema,
   FileChangesResponseSchema,
   CommitInfoSchema,
   TaskCommitsResponseSchema,
@@ -79,6 +86,8 @@ export {
   transformAgentWorkspaceReview,
   transformFileChange,
   transformFileDiff,
+  transformFileDiffPage,
+  transformDiffPageRow,
   transformDiffLine,
   transformDiffHunk,
   transformCommitInfo,
@@ -330,6 +339,40 @@ export const diffApi = {
       FileDiffSchema,
       transformFileDiff
     ),
+
+  /**
+   * Fetch a bounded page of flattened diff rows for one agent workspace file.
+   * Used by large inline diffs so explicit "Show anyway" does not request the
+   * full hunk payload up front.
+   */
+  getAgentConversationWorkspaceFileDiffPage: async (args: {
+    conversationId: string;
+    path: string;
+    refKind: DiffRefKind;
+    offset: number;
+    limit: number;
+  }): Promise<FileDiffPage> => {
+    const { conversationId, path, refKind, offset, limit } = args;
+    const url = backendApiUrl(
+      `agent-workspaces/${encodeURIComponent(conversationId)}/file-diff-page`
+    );
+    const params = new URLSearchParams({
+      path,
+      ref_kind: refKind.kind,
+      offset: String(offset),
+      limit: String(limit),
+    });
+    if (refKind.kind === "commit") {
+      params.set("sha", refKind.sha);
+    }
+    const response = await fetch(`${url}?${params.toString()}`);
+    if (!response.ok) {
+      throw new Error(`File diff page fetch failed: ${response.status} ${response.statusText}`);
+    }
+    const data: unknown = await response.json();
+    const validated = FileDiffPageSchema.parse(data);
+    return transformFileDiffPage(validated);
+  },
 
   /**
    * Fetch a range of lines from a file in the agent workspace.

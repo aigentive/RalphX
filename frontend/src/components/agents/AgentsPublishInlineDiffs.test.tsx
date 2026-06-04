@@ -123,6 +123,13 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
 }));
 
 vi.mock("./AgentsPublishFileDiff", () => ({
+  isLargeInlineDiff: (file: { additions: number; deletions: number }) =>
+    file.additions + file.deletions >= 1_000,
+  requiresExplicitDiffHydration: (file: {
+    additions: number;
+    deletions: number;
+    isGenerated: boolean;
+  }) => file.isGenerated,
   AgentsPublishFileDiff: ({
     file,
     diff,
@@ -131,6 +138,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     onCopyPath,
     onOpenFullscreen,
     refKind,
+    diffPageRefKind,
     conversationId,
     shouldHydrate,
     annotations,
@@ -145,6 +153,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     onOpenFullscreen: (p: string) => void;
     onRetry?: () => void;
     refKind?: { kind: string };
+    diffPageRefKind?: { kind: string };
     conversationId?: string;
     shouldHydrate: boolean;
     annotations?: unknown[];
@@ -156,6 +165,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
       data-expanded={String(isExpanded)}
       data-diff-status={typeof diff === "string" ? diff : diff ? "loaded" : "undefined"}
       data-ref-kind={refKind?.kind}
+      data-diff-page-ref-kind={diffPageRefKind?.kind}
       data-conversation-id={conversationId}
       data-should-hydrate={String(shouldHydrate)}
       data-annotation-count={String(annotations?.length ?? 0)}
@@ -1918,6 +1928,69 @@ describe("AgentsPublishInlineDiffs", () => {
 
       await waitFor(() =>
         expect(mockGetUncommittedDiff).toHaveBeenCalledWith("conv-1", "src/Foo.tsx"),
+      );
+    });
+
+    it("keeps large file diffs off the full-diff fetch path without Show anyway", async () => {
+      const changes = [
+        makeFileChange("src/Huge.tsx", { additions: 1_250, deletions: 25 }),
+      ];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      fireVirtualRange(0, 0);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockGetUncommittedDiff).not.toHaveBeenCalled();
+      expect(screen.getByTestId("mock-file-diff-src-Huge.tsx")).toHaveAttribute(
+        "data-show-anyway-overridden",
+        "false",
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Huge.tsx")).toHaveAttribute(
+        "data-diff-page-ref-kind",
+        "head",
+      );
+    });
+
+    it("still fetches generated non-large file diffs after Show anyway", async () => {
+      const user = userEvent.setup();
+      const changes = [
+        makeFileChange("src/generated.ts", {
+          isGenerated: true,
+          additions: 25,
+          deletions: 5,
+        }),
+      ];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      fireVirtualRange(0, 0);
+      await user.click(screen.getByTestId("show-anyway-src-generated.ts"));
+
+      await waitFor(() =>
+        expect(mockGetUncommittedDiff).toHaveBeenCalledWith(
+          "conv-1",
+          "src/generated.ts",
+        ),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-generated.ts")).toHaveAttribute(
+        "data-show-anyway-overridden",
+        "true",
       );
     });
 
