@@ -92,6 +92,23 @@ function makeHunk(overrides: Partial<DiffHunk> = {}): DiffHunk {
 
 const defaultHunks: DiffHunk[] = [makeHunk()];
 
+function makeLargeHunkWithLeadingGap(): DiffHunk {
+  return makeHunk({
+    oldStart: 4,
+    oldLines: 1_000,
+    newStart: 4,
+    newLines: 1_000,
+    header: "@@ -4,1000 +4,1000 @@",
+    lines: Array.from({ length: 1_000 }, (_value, index) =>
+      makeDiffLine({
+        content: `virtual diff line ${index}`,
+        oldLineNum: index + 4,
+        newLineNum: index + 4,
+      })
+    ),
+  });
+}
+
 function makeAnnotation(overrides: Partial<PrDiffAnnotation> = {}): PrDiffAnnotation {
   return {
     id: "annotation-1",
@@ -299,6 +316,99 @@ describe("SimpleDiffView", () => {
       );
       expect(screen.getByText("large diff line 0")).toBeInTheDocument();
       expect(screen.queryByText("large diff line 1199")).not.toBeInTheDocument();
+    });
+
+    it("renders and expands virtualized leading context gaps", async () => {
+      let resolveRange: (v: { lineNum: number; content: string }[]) => void = () => undefined;
+      mockGetRange.mockReturnValue(new Promise((resolve) => { resolveRange = resolve; }));
+      const user = userEvent.setup();
+
+      render(
+        <SimpleDiffView
+          hunks={[makeLargeHunkWithLeadingGap()]}
+          oldTotalLines={1_003}
+          newTotalLines={1_003}
+          annotations={[makeAnnotation({ startLine: 2, endLine: 2 })]}
+          conversationId="conv-1"
+          filePath="src/foo.ts"
+          refKind={{ kind: "head" }}
+        />
+      );
+
+      expect(screen.getByTestId("simple-diff-virtualized")).toBeInTheDocument();
+      expect(screen.getByTestId("diff-hidden-annotations")).toHaveTextContent(
+        "1 GitHub annotation in hidden context"
+      );
+
+      await user.click(
+        screen.getByRole("button", {
+          name: /show 1 hidden annotations in 3 unchanged lines/i,
+        })
+      );
+
+      expect(screen.getByTestId("gap-loading")).toBeInTheDocument();
+      resolveRange([{ lineNum: 2, content: "virtual fetched context" }]);
+
+      await waitFor(() =>
+        expect(screen.getByText("virtual fetched context")).toBeInTheDocument()
+      );
+      await user.click(screen.getByRole("button", { name: /hide unchanged lines/i }));
+      await user.click(
+        screen.getByRole("button", {
+          name: /show 1 hidden annotations in 3 unchanged lines/i,
+        })
+      );
+
+      expect(mockGetRange).toHaveBeenCalledOnce();
+      expect(screen.getByText("virtual fetched context")).toBeInTheDocument();
+    });
+
+    it("retries virtualized context gaps after a range fetch error", async () => {
+      mockGetRange
+        .mockRejectedValueOnce(new Error("network error"))
+        .mockResolvedValueOnce([{ lineNum: 2, content: "virtual retried context" }]);
+      const user = userEvent.setup();
+
+      render(
+        <SimpleDiffView
+          hunks={[makeLargeHunkWithLeadingGap()]}
+          oldTotalLines={1_003}
+          newTotalLines={1_003}
+          conversationId="conv-1"
+          filePath="src/foo.ts"
+          refKind={{ kind: "head" }}
+        />
+      );
+
+      await user.click(screen.getByRole("button", { name: /show 3 unchanged lines/i }));
+      await waitFor(() => expect(screen.getByTestId("gap-error")).toBeInTheDocument());
+
+      await user.click(screen.getByRole("button", { name: /retry/i }));
+
+      await waitFor(() =>
+        expect(screen.getByText("virtual retried context")).toBeInTheDocument()
+      );
+      expect(mockGetRange).toHaveBeenCalledTimes(2);
+    });
+
+    it("renders virtualized context gap labels without fetch controls in embedded mode", () => {
+      render(
+        <SimpleDiffView
+          hunks={[makeLargeHunkWithLeadingGap()]}
+          oldTotalLines={1_003}
+          newTotalLines={1_003}
+          scrollContainer={false}
+          showWrapToggle={false}
+        />
+      );
+
+      expect(screen.getByText(/3 unchanged lines/i)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /show 3 unchanged lines/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /wrap/i })).toBeNull();
+      expect(screen.getByTestId("simple-diff-virtual-list")).not.toHaveClass(
+        "min-h-0",
+        "flex-1"
+      );
     });
 
     it("renders GitHub annotations on matching diff lines", () => {

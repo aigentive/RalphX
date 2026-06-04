@@ -2176,7 +2176,7 @@ mod tests {
     use crate::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
     };
-    use crate::application::FileChangeStatus;
+    use crate::application::{DiffPageRow, FileChangeStatus};
     use crate::domain::entities::{
         AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind, Project,
     };
@@ -2204,6 +2204,15 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn diff_page_contains_line(page: &FileDiffPage, needle: &str) -> bool {
+        page.rows.iter().any(|row| {
+            matches!(
+                row,
+                DiffPageRow::Line { line } if line.content.contains(needle)
+            )
+        })
     }
 
     fn create_review_repo() -> (TempDir, PathBuf, String) {
@@ -2689,6 +2698,157 @@ mod tests {
                 .flat_map(|h| h.lines.iter())
                 .any(|l| l.content.contains("answer")),
             "commit diff hunks should contain the 'answer' function"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn file_diff_page_command_loads_staged_and_unstaged_refs() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        std::fs::write(worktree_path.join("base.txt"), "base\nstaged\n").unwrap();
+        run_git(&worktree_path, &["add", "base.txt"]);
+
+        let staged_page = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "base.txt".to_string(),
+            DiffRefKind::Staged,
+            0,
+            20,
+        )
+        .await
+        .expect("staged diff page should load");
+        assert!(
+            diff_page_contains_line(&staged_page, "staged"),
+            "staged diff page should include staged content"
+        );
+
+        std::fs::write(
+            worktree_path.join("base.txt"),
+            "base\nstaged\nunstaged\n",
+        )
+        .unwrap();
+
+        let unstaged_page = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "base.txt".to_string(),
+            DiffRefKind::Unstaged,
+            0,
+            20,
+        )
+        .await
+        .expect("unstaged diff page should load");
+        assert!(
+            diff_page_contains_line(&unstaged_page, "unstaged"),
+            "unstaged diff page should include unstaged content"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn file_diff_page_command_resolves_commit_and_cumulative_refs() {
+        let (_temp_dir, state, conversation_id, _worktree_path, commit_sha) =
+            create_agent_workspace_command_state().await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        let commit_page = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "src/lib.rs".to_string(),
+            DiffRefKind::Commit {
+                sha: commit_sha.clone(),
+            },
+            0,
+            20,
+        )
+        .await
+        .expect("commit diff page should load");
+        assert!(
+            diff_page_contains_line(&commit_page, "answer"),
+            "commit diff page should include selected commit content"
+        );
+
+        let cumulative_page = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "src/lib.rs".to_string(),
+            DiffRefKind::CumulativeHead,
+            0,
+            20,
+        )
+        .await
+        .expect("cumulative head diff page should load");
+        assert!(
+            diff_page_contains_line(&cumulative_page, "answer"),
+            "cumulative head diff page should include workspace content"
+        );
+
+        let cumulative_base = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "src/lib.rs".to_string(),
+            DiffRefKind::CumulativeBase,
+            0,
+            20,
+        )
+        .await;
+        assert!(
+            cumulative_base
+                .expect_err("cumulative base is not a diff page target")
+                .to_string()
+                .contains("CumulativeBase"),
+            "cumulative base error should explain the unsupported ref"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn file_diff_page_command_rejects_staged_refs_for_read_only_context() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        store_agent_workspace_context(
+            &conversation_id,
+            &AgentWorkspaceContext {
+                working_path: worktree_path,
+                base_ref: "HEAD".to_string(),
+                diff_target: Some("agent-branch".to_string()),
+                patch_diff: None,
+                supports_worktree_modes: false,
+            },
+        );
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        let result = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "base.txt".to_string(),
+            DiffRefKind::Staged,
+            0,
+            20,
+        )
+        .await;
+        assert!(
+            result
+                .expect_err("staged pages should be unavailable for read-only workspaces")
+                .to_string()
+                .contains("read-only workspaces"),
+            "read-only staged error should explain why staged pages are unavailable"
         );
 
         invalidate_agent_workspace_diff_caches(&conversation_id);

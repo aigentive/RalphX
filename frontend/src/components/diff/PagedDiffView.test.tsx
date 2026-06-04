@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileDiffPage } from "@/api/diff";
 
@@ -246,6 +247,127 @@ describe("PagedDiffView", () => {
     expect(screen.getByText("line 320")).toBeInTheDocument();
     expect(screen.getByTestId("paged-diff-top-spacer")).toBeInTheDocument();
     expect(screen.getByTestId("paged-diff-bottom-spacer")).toBeInTheDocument();
+  });
+
+  it("can page backward after pruning older inline pages", async () => {
+    mockGetDiffPage.mockImplementation(({ offset, limit }) =>
+      Promise.resolve(makePage(offset as number, limit as number, 500))
+    );
+
+    render(
+      <PagedDiffView
+        conversationId="conv-1"
+        filePath="src/Huge.tsx"
+        refKind={{ kind: "head" }}
+        pageSize={100}
+      />
+    );
+
+    await screen.findByText("line 1");
+
+    await act(async () => {
+      for (const observer of intersectionObservers) {
+        observer.trigger("paged-diff-next-sentinel");
+      }
+    });
+    expect(await screen.findByText("line 120")).toBeInTheDocument();
+
+    await act(async () => {
+      for (const observer of intersectionObservers) {
+        observer.trigger("paged-diff-next-sentinel");
+      }
+    });
+    expect(await screen.findByText("line 220")).toBeInTheDocument();
+
+    await act(async () => {
+      for (const observer of intersectionObservers) {
+        observer.trigger("paged-diff-next-sentinel");
+      }
+    });
+    expect(await screen.findByText("line 320")).toBeInTheDocument();
+    expect(screen.queryByText("line 120")).toBeNull();
+
+    await act(async () => {
+      for (const observer of intersectionObservers) {
+        observer.trigger("paged-diff-previous-sentinel");
+      }
+    });
+
+    await waitFor(() =>
+      expect(mockGetDiffPage).toHaveBeenCalledWith({
+        conversationId: "conv-1",
+        path: "src/Huge.tsx",
+        refKind: { kind: "head" },
+        offset: 100,
+        limit: 100,
+      })
+    );
+    expect(await screen.findByText("line 120")).toBeInTheDocument();
+    expect(screen.getByText("line 220")).toBeInTheDocument();
+    expect(screen.queryByText("line 320")).toBeNull();
+  });
+
+  it("renders terminal binary and empty page states without mounting rows", async () => {
+    mockGetDiffPage.mockResolvedValueOnce({
+      ...makePage(0, 100, 0),
+      rows: [],
+      isBinary: true,
+    });
+
+    const { unmount } = render(
+      <PagedDiffView
+        conversationId="conv-1"
+        filePath="src/Huge.tsx"
+        refKind={{ kind: "head" }}
+        pageSize={100}
+      />
+    );
+
+    expect(await screen.findByText(/binary file/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("paged-diff-view")).not.toBeInTheDocument();
+
+    unmount();
+    mockGetDiffPage.mockResolvedValueOnce({
+      ...makePage(0, 100, 0),
+      rows: [],
+      totalRows: 0,
+      nextOffset: null,
+    });
+
+    render(
+      <PagedDiffView
+        conversationId="conv-1"
+        filePath="src/Huge.tsx"
+        refKind={{ kind: "head" }}
+        pageSize={100}
+      />
+    );
+
+    expect(await screen.findByText(/no changes/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("paged-diff-view")).not.toBeInTheDocument();
+  });
+
+  it("retries the initial page after an error", async () => {
+    const user = userEvent.setup();
+    mockGetDiffPage
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce(makePage(0, 100, 260));
+
+    render(
+      <PagedDiffView
+        conversationId="conv-1"
+        filePath="src/Huge.tsx"
+        refKind={{ kind: "head" }}
+        pageSize={100}
+      />
+    );
+
+    expect(await screen.findByTestId("paged-diff-error")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /retry loading diff rows/i }));
+
+    expect(await screen.findByText("line 1")).toBeInTheDocument();
+    expect(mockGetDiffPage).toHaveBeenCalledTimes(2);
   });
 
   it("loads visible pages and prunes distant loaded pages in contained scroll mode", async () => {
