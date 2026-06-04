@@ -66,8 +66,6 @@ import { cn } from "@/lib/utils";
 import {
   appendInternalSkillDirectives,
   detectAgentComposerTrigger,
-  extractComposerIntegrationTokens,
-  extractComposerPathTokens,
   extractComposerSkillTokens,
   normalizeComposerIntegrationReferences,
   normalizeComposerProjectReferences,
@@ -778,23 +776,12 @@ export function AgentComposerSurface({
       for (const reference of selectedProjectReferenceList) {
         references.set(reference.path, reference);
       }
-      for (const reference of extractComposerPathTokens(message)) {
-        if (!references.has(reference.path)) {
-          references.set(reference.path, reference);
-        }
-      }
       const projectReferences = normalizeComposerProjectReferences([
         ...references.values(),
       ]);
       const integrationReferences = new Map<string, AgentComposerIntegrationReference>();
       for (const reference of selectedIntegrationReferenceList) {
         integrationReferences.set(`${reference.kind}:${reference.id}`, reference);
-      }
-      for (const reference of extractComposerIntegrationTokens(message)) {
-        const key = `${reference.kind}:${reference.id}`;
-        if (!integrationReferences.has(key)) {
-          integrationReferences.set(key, reference);
-        }
       }
       const normalizedIntegrationReferences = normalizeComposerIntegrationReferences([
         ...integrationReferences.values(),

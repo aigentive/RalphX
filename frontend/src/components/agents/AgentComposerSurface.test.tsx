@@ -359,6 +359,22 @@ describe("AgentComposerSurface", () => {
     expect(onSend).toHaveBeenCalledWith("Read");
   });
 
+  it("does not store free-form @ tokens as references without menu selection", () => {
+    const onSend = vi.fn();
+    renderComposer({ onSend });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, {
+      target: { value: "Check @invalid-reference and @jira:RX-404" },
+    });
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    fireEvent.keyUp(textarea);
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Check @invalid-reference and @jira:RX-404");
+  });
+
   it("sends selected Jira items as structured integration references", async () => {
     const onSend = vi.fn();
     vi.mocked(invoke).mockImplementation((cmd) => {

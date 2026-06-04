@@ -271,6 +271,82 @@ async fn search_jira(
     query: &str,
     limit: usize,
 ) -> Result<Vec<AtlassianResourceSummary>, String> {
+    let mut results = Vec::new();
+    if let Some(key) = jira_issue_key_query(query) {
+        if let Ok(summary) = fetch_jira_summary_by_key(client, auth, &key).await {
+            push_unique_resource(&mut results, summary, limit);
+        }
+    }
+
+    if results.len() < limit {
+        match search_jira_with_jql(client, auth, query, limit).await {
+            Ok(resources) => {
+                for resource in resources {
+                    push_unique_resource(&mut results, resource, limit);
+                }
+            }
+            Err(error) if results.is_empty() => {
+                return search_jira_picker(client, auth, query, limit)
+                    .await
+                    .map_err(|_| error);
+            }
+            Err(_) => {}
+        }
+    }
+
+    if results.len() < limit {
+        if let Ok(resources) = search_jira_picker(client, auth, query, limit).await {
+            for resource in resources {
+                push_unique_resource(&mut results, resource, limit);
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+async fn search_jira_with_jql(
+    client: &HyperAtlassianApiClient,
+    auth: &AtlassianAuthContext,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<AtlassianResourceSummary>, String> {
+    let Some(jql) = build_jira_search_jql(query) else {
+        return Ok(Vec::new());
+    };
+    let value = client
+        .request_json(
+            Method::POST,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                "/rest/api/3/search/jql",
+            ),
+            request_auth(auth),
+            Some(serde_json::json!({
+                "jql": jql,
+                "fields": ["summary", "status"],
+                "maxResults": limit,
+            })),
+        )
+        .await?;
+    let site_url = &auth.site_url;
+    Ok(value
+        .get("issues")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|issue| jira_summary_from_issue_value(issue, site_url))
+        .take(limit)
+        .collect())
+}
+
+async fn search_jira_picker(
+    client: &HyperAtlassianApiClient,
+    auth: &AtlassianAuthContext,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<AtlassianResourceSummary>, String> {
     let value = client
         .request_json(
             Method::GET,
@@ -284,37 +360,109 @@ async fn search_jira(
         )
         .await?;
     let site_url = &auth.site_url;
-    let mut results = Vec::new();
-    for issue in value
+    Ok(value
         .get("sections")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|section| section.get("issues").and_then(Value::as_array))
         .flatten()
-    {
-        let Some(key) = issue.get("key").and_then(Value::as_str) else {
-            continue;
-        };
-        let title = issue
-            .get("summaryText")
-            .or_else(|| issue.get("summary"))
-            .and_then(Value::as_str)
-            .unwrap_or(key)
-            .to_string();
-        results.push(AtlassianResourceSummary {
-            kind: AtlassianResourceKind::Jira,
-            id: key.to_string(),
-            key: Some(key.to_string()),
-            title,
-            url: Some(format!("{site_url}/browse/{key}")),
-            excerpt: None,
-        });
-        if results.len() >= limit {
-            break;
-        }
+        .filter_map(|issue| jira_summary_from_picker_issue(issue, site_url))
+        .take(limit)
+        .collect())
+}
+
+async fn fetch_jira_summary_by_key(
+    client: &HyperAtlassianApiClient,
+    auth: &AtlassianAuthContext,
+    key: &str,
+) -> Result<AtlassianResourceSummary, String> {
+    let value = client
+        .request_json(
+            Method::GET,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                &format!(
+                    "/rest/api/3/issue/{}?fields=summary,status",
+                    percent_encode_path_segment(key)
+                ),
+            ),
+            request_auth(auth),
+            None,
+        )
+        .await?;
+    jira_summary_from_issue_value(&value, &auth.site_url)
+        .ok_or_else(|| "Atlassian Jira issue response was missing issue details".to_string())
+}
+
+pub(crate) fn build_jira_search_jql(query: &str) -> Option<String> {
+    let phrase = normalize_search_phrase(query);
+    if phrase.is_empty() {
+        return None;
     }
-    Ok(results)
+    if let Some(key) = jira_issue_key_query(&phrase) {
+        return Some(format!("issuekey = {key} ORDER BY updated DESC"));
+    }
+    Some(format!(
+        "text ~ \"{}*\" ORDER BY updated DESC",
+        escape_search_string(&phrase)
+    ))
+}
+
+fn jira_issue_key_query(query: &str) -> Option<String> {
+    let value = query.trim();
+    let (project, number) = value.split_once('-')?;
+    let mut project_chars = project.chars();
+    let first_project_char = project_chars.next()?;
+    if project.is_empty()
+        || number.is_empty()
+        || !first_project_char.is_ascii_alphabetic()
+        || !project_chars.all(|ch| ch.is_ascii_alphanumeric())
+        || !number.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(format!("{}-{number}", project.to_ascii_uppercase()))
+}
+
+fn jira_summary_from_picker_issue(
+    issue: &Value,
+    site_url: &str,
+) -> Option<AtlassianResourceSummary> {
+    let key = issue.get("key").and_then(Value::as_str)?;
+    let title = issue
+        .get("summaryText")
+        .or_else(|| issue.get("summary"))
+        .and_then(Value::as_str)
+        .unwrap_or(key)
+        .to_string();
+    Some(jira_summary(key, title, site_url))
+}
+
+fn jira_summary_from_issue_value(
+    issue: &Value,
+    site_url: &str,
+) -> Option<AtlassianResourceSummary> {
+    let key = issue.get("key").and_then(Value::as_str)?;
+    let title = issue
+        .get("fields")
+        .and_then(|fields| fields.get("summary"))
+        .and_then(Value::as_str)
+        .unwrap_or(key)
+        .to_string();
+    Some(jira_summary(key, title, site_url))
+}
+
+fn jira_summary(key: &str, title: String, site_url: &str) -> AtlassianResourceSummary {
+    AtlassianResourceSummary {
+        kind: AtlassianResourceKind::Jira,
+        id: key.to_string(),
+        key: Some(key.to_string()),
+        title,
+        url: Some(format!("{site_url}/browse/{key}")),
+        excerpt: None,
+    }
 }
 
 async fn oauth_token_request(
@@ -354,11 +502,17 @@ async fn search_confluence(
     query: &str,
     limit: usize,
 ) -> Result<Vec<AtlassianResourceSummary>, String> {
-    let cql = format!(
-        "type=page AND text ~ \"{}*\"",
-        query.replace('\\', "\\\\").replace('"', "\\\"")
-    );
-    let value = client
+    let mut results = Vec::new();
+    if let Some(page_id) = confluence_page_id_query(query) {
+        if let Ok(summary) = fetch_confluence_summary_by_id(client, auth, page_id).await {
+            push_unique_resource(&mut results, summary, limit);
+        }
+    }
+    if results.len() >= limit {
+        return Ok(results);
+    }
+    let cql = build_confluence_search_cql(query);
+    let value = match client
         .request_json(
             Method::GET,
             HyperAtlassianApiClient::resource_url(
@@ -372,35 +526,104 @@ async fn search_confluence(
             request_auth(auth),
             None,
         )
-        .await?;
+        .await
+    {
+        Ok(value) => value,
+        Err(_) if !results.is_empty() => return Ok(results),
+        Err(error) => return Err(error),
+    };
     let site_url = &auth.site_url;
-    Ok(value
+    for resource in value
         .get("results")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|result| {
-            let content = result.get("content")?;
-            let id = content.get("id").and_then(Value::as_str)?;
-            let title = content.get("title").and_then(Value::as_str).unwrap_or(id);
-            let webui = content
-                .get("_links")
-                .and_then(|links| links.get("webui"))
-                .and_then(Value::as_str);
-            Some(AtlassianResourceSummary {
-                kind: AtlassianResourceKind::Confluence,
-                id: id.to_string(),
-                key: None,
-                title: title.to_string(),
-                url: webui.map(|path| format!("{site_url}/wiki{path}")),
-                excerpt: result
-                    .get("excerpt")
-                    .and_then(Value::as_str)
-                    .map(strip_html),
-            })
-        })
-        .take(limit)
-        .collect())
+        .filter_map(|result| confluence_summary_from_search_result(result, site_url))
+    {
+        push_unique_resource(&mut results, resource, limit);
+    }
+    Ok(results)
+}
+
+async fn fetch_confluence_summary_by_id(
+    client: &HyperAtlassianApiClient,
+    auth: &AtlassianAuthContext,
+    page_id: &str,
+) -> Result<AtlassianResourceSummary, String> {
+    let value = client
+        .request_json(
+            Method::GET,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Confluence,
+                &format!(
+                    "/wiki/api/v2/pages/{}",
+                    percent_encode_path_segment(page_id)
+                ),
+            ),
+            request_auth(auth),
+            None,
+        )
+        .await?;
+    confluence_summary_from_v2_page(&value, &auth.site_url)
+        .ok_or_else(|| "Atlassian Confluence page response was missing page details".to_string())
+}
+
+pub(crate) fn build_confluence_search_cql(query: &str) -> String {
+    let phrase = normalize_search_phrase(query);
+    let escaped = escape_search_string(&phrase);
+    let id_clause = confluence_page_id_query(&phrase)
+        .map(|page_id| format!("id = {page_id} OR "))
+        .unwrap_or_default();
+    format!("type=page AND ({id_clause}title ~ \"{escaped}*\" OR text ~ \"{escaped}*\")")
+}
+
+pub(crate) fn confluence_page_id_query(query: &str) -> Option<&str> {
+    let value = query.trim();
+    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    Some(value)
+}
+
+fn confluence_summary_from_search_result(
+    result: &Value,
+    site_url: &str,
+) -> Option<AtlassianResourceSummary> {
+    let content = result.get("content")?;
+    let mut summary = confluence_summary_from_content(content, site_url)?;
+    summary.excerpt = result
+        .get("excerpt")
+        .and_then(Value::as_str)
+        .map(strip_html);
+    Some(summary)
+}
+
+fn confluence_summary_from_v2_page(
+    page: &Value,
+    site_url: &str,
+) -> Option<AtlassianResourceSummary> {
+    confluence_summary_from_content(page, site_url)
+}
+
+fn confluence_summary_from_content(
+    content: &Value,
+    site_url: &str,
+) -> Option<AtlassianResourceSummary> {
+    let id = content.get("id").and_then(Value::as_str)?;
+    let title = content.get("title").and_then(Value::as_str).unwrap_or(id);
+    let webui = content
+        .get("_links")
+        .and_then(|links| links.get("webui"))
+        .and_then(Value::as_str);
+    Some(AtlassianResourceSummary {
+        kind: AtlassianResourceKind::Confluence,
+        id: id.to_string(),
+        key: None,
+        title: title.to_string(),
+        url: webui.map(|path| format!("{site_url}/wiki{path}")),
+        excerpt: None,
+    })
 }
 
 async fn fetch_jira(
@@ -556,6 +779,31 @@ fn strip_html(value: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn normalize_search_phrase(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn escape_search_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn push_unique_resource(
+    resources: &mut Vec<AtlassianResourceSummary>,
+    resource: AtlassianResourceSummary,
+    limit: usize,
+) {
+    if resources.len() >= limit {
+        return;
+    }
+    if resources
+        .iter()
+        .any(|existing| existing.kind == resource.kind && existing.id == resource.id)
+    {
+        return;
+    }
+    resources.push(resource);
 }
 
 fn percent_encode(value: &str) -> String {
