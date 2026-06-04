@@ -1641,6 +1641,28 @@ pub struct FileContentRangeQuery {
     pub to: u32,
 }
 
+fn parse_diff_ref_kind(
+    ref_kind: &str,
+    sha: Option<String>,
+) -> Result<crate::application::DiffRefKind, String> {
+    match ref_kind {
+        "head" => Ok(crate::application::DiffRefKind::Head),
+        "staged" => Ok(crate::application::DiffRefKind::Staged),
+        "unstaged" => Ok(crate::application::DiffRefKind::Unstaged),
+        "commit" => {
+            let sha = sha.ok_or_else(|| {
+                "ref_kind 'commit' requires 'sha' query parameter".to_string()
+            })?;
+            Ok(crate::application::DiffRefKind::Commit { sha })
+        }
+        "cumulative_base" => Ok(crate::application::DiffRefKind::CumulativeBase),
+        "cumulative_head" => Ok(crate::application::DiffRefKind::CumulativeHead),
+        other => Err(format!(
+            "Invalid ref_kind '{other}': expected head|staged|unstaged|commit|cumulative_base|cumulative_head"
+        )),
+    }
+}
+
 impl FileContentRangeQuery {
     fn into_service_params(
         self,
@@ -1659,25 +1681,32 @@ impl FileContentRangeQuery {
             "new" => crate::application::DiffSide::New,
             other => return Err(format!("Invalid side '{other}': expected 'old' or 'new'")),
         };
-        let ref_kind = match self.ref_kind.as_str() {
-            "head" => crate::application::DiffRefKind::Head,
-            "staged" => crate::application::DiffRefKind::Staged,
-            "unstaged" => crate::application::DiffRefKind::Unstaged,
-            "commit" => {
-                let sha = self.sha.ok_or_else(|| {
-                    "ref_kind 'commit' requires 'sha' query parameter".to_string()
-                })?;
-                crate::application::DiffRefKind::Commit { sha }
-            }
-            "cumulative_base" => crate::application::DiffRefKind::CumulativeBase,
-            "cumulative_head" => crate::application::DiffRefKind::CumulativeHead,
-            other => {
-                return Err(format!(
-                    "Invalid ref_kind '{other}': expected head|staged|unstaged|commit|cumulative_base|cumulative_head"
-                ))
-            }
-        };
+        let ref_kind = parse_diff_ref_kind(&self.ref_kind, self.sha)?;
         Ok((side, self.path, ref_kind, self.from, self.to))
+    }
+}
+
+/// Query parameters for the file diff page endpoint.
+#[derive(Debug, serde::Deserialize)]
+pub struct FileDiffPageQuery {
+    /// Relative file path within the workspace
+    pub path: String,
+    /// "head" | "staged" | "unstaged" | "commit" | "cumulative_head"
+    pub ref_kind: String,
+    /// Commit SHA — required when ref_kind == "commit"
+    pub sha: Option<String>,
+    /// Flattened diff-row offset
+    pub offset: usize,
+    /// Maximum number of rows to fetch
+    pub limit: usize,
+}
+
+impl FileDiffPageQuery {
+    fn into_service_params(
+        self,
+    ) -> Result<(String, crate::application::DiffRefKind, usize, usize), String> {
+        let ref_kind = parse_diff_ref_kind(&self.ref_kind, self.sha)?;
+        Ok((self.path, ref_kind, self.offset, self.limit))
     }
 }
 
@@ -1703,6 +1732,44 @@ pub async fn get_agent_workspace_file_content_range(
         ref_kind,
         from,
         to,
+    )
+    .await
+    .map(Json)
+    .map_err(|e| {
+        let status = if e.to_string().to_lowercase().contains("validation")
+            || e.to_string().to_lowercase().contains("unsafe")
+            || e.to_string().to_lowercase().contains("relative")
+            || e.to_string().to_lowercase().contains("too large")
+        {
+            axum::http::StatusCode::BAD_REQUEST
+        } else {
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        };
+        json_error(status, e.to_string(), None)
+    })
+}
+
+/// GET /api/agent-workspaces/{conversation_id}/file-diff-page
+///
+/// Fetch a bounded page of flattened diff rows for one workspace file.
+///
+/// Query params: `path`, `ref_kind`, `sha` (required for commit), `offset`, `limit`.
+pub async fn get_agent_workspace_file_diff_page(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<FileDiffPageQuery>,
+) -> Result<Json<crate::application::FileDiffPage>, JsonError> {
+    let (file_path, ref_kind, offset, limit) = params
+        .into_service_params()
+        .map_err(|msg| json_error(axum::http::StatusCode::BAD_REQUEST, msg, None))?;
+    let conversation_id = crate::domain::entities::ChatConversationId::from_string(conversation_id);
+    crate::commands::diff_commands::get_agent_conversation_workspace_file_diff_page_for_state(
+        state.app_state.as_ref(),
+        &conversation_id,
+        file_path,
+        ref_kind,
+        offset,
+        limit,
     )
     .await
     .map(Json)

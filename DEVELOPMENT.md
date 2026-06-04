@@ -419,6 +419,7 @@ The MCP HTTP server starts automatically on the local backend port when the Taur
 |---|---|---|---|---|
 | Native | `cd frontend && npm run tauri dev` | 1420 | Real Rust/Tauri on backend `3857` | Full-stack development beside installed app |
 | Native (fresh clean) | `./dev-fresh` | 1420 | Real Rust/Tauri on backend `3857` after `cargo clean`, with frontend install self-repair and Tauri version drift checks | Large-artifact fresh starts |
+| Native (prod DB snapshot) | `./dev-fresh --from-prod-db` | 1420 | Same as `./dev-fresh`, but first copies and sanitizes the installed app DB into `src-tauri/ralphx.db` after backing up the current dev DB | Reproducing prod-only conversation/data issues locally |
 | Web | `cd frontend && npm run dev:web` | 5173 | Mocked via `frontend/src/api-mock/` | UI-only work |
 
 Core commands:
@@ -426,6 +427,7 @@ Core commands:
 ```bash
 cd frontend && npm run tauri dev
 ./dev-fresh
+./dev-fresh --from-prod-db
 cd frontend && npm run dev:web
 ```
 

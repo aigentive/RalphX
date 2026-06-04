@@ -10,7 +10,9 @@ PLUGIN_DIR="$PROJECT_ROOT/plugins/app"
 INTERNAL_MCP_DIR="$PLUGIN_DIR/ralphx-mcp-server"
 EXTERNAL_MCP_DIR="$PLUGIN_DIR/ralphx-external-mcp"
 SEEDED_DB_MARKER="$SRC_TAURI_DIR/.ralphx-dev-fresh-db-snapshot"
+DEV_FRESH_DB_BACKUP_DIR="$PROJECT_ROOT/.artifacts/dev-fresh-db-backups"
 SEEDED_DB_CLEANUP_ENABLED=0
+FROM_PROD_DB=0
 VITE_PORT=1420
 # Playwright (npm run test:visual) auto-spawns Vite on 5173. Agents commonly
 # run visual tests in worktrees; surfacing leaks there too prevents cross-
@@ -21,7 +23,7 @@ EXTERNAL_MCP_PORT="${RALPHX_EXTERNAL_MCP_PORT:-3858}"
 
 print_help() {
   cat <<'EOF'
-Usage: ./dev-fresh
+Usage: ./dev-fresh [--from-prod-db]
 
 From repo root:
 1. verifies Tauri JS/Rust packages are on the same major/minor release
@@ -33,6 +35,12 @@ From repo root:
 7. clears Vite optimized dependency cache under frontend/
 8. verifies no stale Tauri/Vite dev server is already occupying the dev ports
 9. starts the native Tauri dev app from frontend/
+
+Options:
+  --from-prod-db
+      Replace src-tauri/ralphx.db with a sanitized snapshot copied from
+      ~/Library/Application Support/com.ralphx.app/ralphx.db before launch.
+      The existing dev DB is backed up under .artifacts/dev-fresh-db-backups/.
 
 Equivalent to:
   verify frontend/package-lock.json vs src-tauri/Cargo.lock Tauri major/minor versions
@@ -382,6 +390,110 @@ sanitize_seeded_worktree_db() {
   fi
 }
 
+prod_app_identifier() {
+  if [[ -n "${RALPHX_APP_IDENTIFIER:-}" ]]; then
+    printf '%s\n' "$RALPHX_APP_IDENTIFIER"
+    return
+  fi
+
+  node -e 'const fs=require("fs");const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(c.identifier || "com.ralphx.app");' \
+    "$SRC_TAURI_DIR/tauri.conf.json"
+}
+
+copy_sqlite_snapshot() {
+  local source_db="$1"
+  local target_db="$2"
+  local label="$3"
+  local tmp_db="$target_db.tmp.$$"
+
+  rm -f "$tmp_db" "$tmp_db-wal" "$tmp_db-shm"
+
+  if ! sqlite3 "$source_db" ".timeout 30000" ".backup '$(sqlite_single_quote_path "$tmp_db")'"; then
+    rm -f "$tmp_db" "$tmp_db-wal" "$tmp_db-shm"
+    echo "dev-fresh: failed to copy $label SQLite snapshot." >&2
+    exit 1
+  fi
+
+  if ! sqlite3 "$tmp_db" "PRAGMA quick_check;" | grep -qx "ok"; then
+    rm -f "$tmp_db" "$tmp_db-wal" "$tmp_db-shm"
+    echo "dev-fresh: copied $label SQLite snapshot failed PRAGMA quick_check." >&2
+    exit 1
+  fi
+
+  rm -f "$target_db" "$target_db-wal" "$target_db-shm"
+  mv "$tmp_db" "$target_db"
+  rm -f "$tmp_db-wal" "$tmp_db-shm"
+}
+
+backup_existing_dev_db() {
+  local target_db="$1"
+
+  if [[ ! -f "$target_db" ]]; then
+    return
+  fi
+
+  mkdir -p "$DEV_FRESH_DB_BACKUP_DIR"
+
+  local timestamp
+  timestamp="$(date +%Y%m%d%H%M%S)"
+  local backup_db="$DEV_FRESH_DB_BACKUP_DIR/ralphx.db.$timestamp"
+
+  echo "dev-fresh: backing up existing dev DB:"
+  echo "  source: $target_db"
+  echo "  backup: $backup_db"
+
+  copy_sqlite_snapshot "$target_db" "$backup_db" "existing dev DB backup"
+}
+
+seed_dev_db_from_prod() {
+  local identifier
+  identifier="$(prod_app_identifier)"
+  local source_db="$HOME/Library/Application Support/$identifier/ralphx.db"
+  local target_db="$SRC_TAURI_DIR/ralphx.db"
+
+  if [[ ! -f "$source_db" ]]; then
+    cat >&2 <<EOF
+dev-fresh: production DB not found for --from-prod-db.
+Expected: $source_db
+EOF
+    exit 1
+  fi
+
+  if [[ -e "$target_db" && "$source_db" -ef "$target_db" ]]; then
+    cat >&2 <<EOF
+dev-fresh: refusing --from-prod-db because source and target DB are the same file.
+DB: $target_db
+EOF
+    exit 1
+  fi
+
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    cat >&2 <<EOF
+dev-fresh: sqlite3 is required to copy a consistent production DB snapshot.
+Production DB: $source_db
+Dev DB: $target_db
+EOF
+    exit 1
+  fi
+
+  backup_existing_dev_db "$target_db"
+
+  echo "dev-fresh: refreshing dev DB from production app-data snapshot:"
+  echo "  source: $source_db"
+  echo "  target: $target_db"
+
+  copy_sqlite_snapshot "$source_db" "$target_db" "production DB"
+
+  if ! sanitize_seeded_worktree_db "$target_db"; then
+    rm -f "$target_db" "$target_db-wal" "$target_db-shm"
+    echo "dev-fresh: failed to sanitize copied production DB snapshot." >&2
+    exit 1
+  fi
+
+  export RALPHX_DISABLE_STARTUP_RECOVERY=1
+  echo "dev-fresh: sanitized copied runtime process state and disabled startup recovery for the production DB snapshot."
+}
+
 seed_worktree_db_from_primary() {
   local primary_root
   primary_root="$(primary_worktree_root)" || return 0
@@ -465,10 +577,23 @@ start_tauri_dev() {
   return "$dev_status"
 }
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  print_help
-  exit 0
-fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h | --help)
+      print_help
+      exit 0
+      ;;
+    --from-prod-db)
+      FROM_PROD_DB=1
+      shift
+      ;;
+    *)
+      echo "dev-fresh: unknown option: $1" >&2
+      print_help >&2
+      exit 1
+      ;;
+  esac
+done
 
 trap cleanup_seeded_worktree_db EXIT
 
@@ -508,7 +633,11 @@ export RALPHX_EXTERNAL_MCP_PORT="$EXTERNAL_MCP_PORT"
 verify_tauri_package_alignment
 ensure_frontend_install
 ensure_mcp_runtime_packages
-seed_worktree_db_from_primary
+if [[ "$FROM_PROD_DB" == "1" ]]; then
+  seed_dev_db_from_prod
+else
+  seed_worktree_db_from_primary
+fi
 
 (
   cd "$SRC_TAURI_DIR"

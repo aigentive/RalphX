@@ -41,6 +41,30 @@ export const FileDiffSchema = z.object({
   is_binary: z.boolean(),
 });
 
+export const DiffPageRowSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("hunk_header"),
+    header: z.string(),
+  }),
+  z.object({
+    kind: z.literal("line"),
+    line: DiffLineSchema,
+  }),
+]);
+
+export const FileDiffPageSchema = z.object({
+  file_path: z.string(),
+  language: z.string(),
+  rows: z.array(DiffPageRowSchema),
+  offset: z.number(),
+  limit: z.number(),
+  next_offset: z.number().nullable(),
+  total_rows: z.number(),
+  old_total_lines: z.number(),
+  new_total_lines: z.number(),
+  is_binary: z.boolean(),
+});
+
 // ── GitHub PR annotation schemas ───────────────────────────────────────────
 
 export const PrDiffAnnotationSchema = z.object({
