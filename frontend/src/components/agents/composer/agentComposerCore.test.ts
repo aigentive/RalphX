@@ -77,6 +77,18 @@ describe("agentComposerCore", () => {
     });
   });
 
+  it("keeps scoped Atlassian trigger queries active across spaces", () => {
+    const text = "Find @jira:closed issue summary";
+
+    expect(detectAgentComposerTrigger(text, text.length)).toEqual({
+      kind: "integration",
+      integrationKind: "jira",
+      query: "closed issue summary",
+      rangeStart: "Find ".length,
+      rangeEnd: text.length,
+    });
+  });
+
   it("replaces trigger ranges and consumes one trailing space", () => {
     const text = "Open @src then continue";
     const trigger = detectAgentComposerTrigger(text, "Open @src".length);

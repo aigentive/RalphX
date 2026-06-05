@@ -31,6 +31,8 @@ pub use webhook_http_client::{
 pub use webhook_publisher::WebhookPublisher as ConcreteWebhookPublisher;
 
 #[cfg(test)]
+mod atlassian_client_tests;
+#[cfg(test)]
 mod external_mcp_supervisor_tests;
 #[cfg(test)]
 mod login_shell_env_tests;

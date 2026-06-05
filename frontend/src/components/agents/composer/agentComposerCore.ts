@@ -56,6 +56,15 @@ export function detectAgentComposerTrigger(
     };
   }
 
+  const integrationTrigger = detectIntegrationTriggerInLine(
+    linePrefix,
+    lineStart,
+    safeCursor,
+  );
+  if (integrationTrigger) {
+    return integrationTrigger;
+  }
+
   const tokenStart = findCurrentTokenStart(text, safeCursor);
   const token = text.slice(tokenStart, safeCursor);
   const pathIndex = token.lastIndexOf("@");
@@ -314,6 +323,52 @@ function isIntegrationReferenceToken(token: string): boolean {
 
 function isPlanReferenceToken(token: string): boolean {
   return /^plan:/i.test(token);
+}
+
+function detectIntegrationTriggerInLine(
+  linePrefix: string,
+  lineStart: number,
+  safeCursor: number,
+): AgentComposerTrigger | null {
+  const triggerPattern = /(^|[\s([{`'"])@(jira|confluence|conf):/gi;
+  let lastMatch:
+    | {
+        markerIndex: number;
+        rawKind: string;
+      }
+    | null = null;
+
+  for (const match of linePrefix.matchAll(triggerPattern)) {
+    const boundary = match[1] ?? "";
+    const rawKind = match[2];
+    if (!rawKind || match.index === undefined) {
+      continue;
+    }
+    lastMatch = {
+      markerIndex: match.index + boundary.length,
+      rawKind,
+    };
+  }
+
+  if (!lastMatch) {
+    return null;
+  }
+
+  const rangeStart = lineStart + lastMatch.markerIndex;
+  const queryStart = lastMatch.markerIndex + `@${lastMatch.rawKind}:`.length;
+  const query = linePrefix.slice(queryStart);
+  if (query.includes("@") || query.includes("$")) {
+    return null;
+  }
+
+  return {
+    kind: "integration",
+    integrationKind:
+      lastMatch.rawKind.toLowerCase() === "jira" ? "jira" : "confluence",
+    query,
+    rangeStart,
+    rangeEnd: safeCursor,
+  };
 }
 
 function findCurrentTokenStart(text: string, cursor: number): number {
