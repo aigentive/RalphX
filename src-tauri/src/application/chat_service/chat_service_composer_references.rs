@@ -73,7 +73,7 @@ pub(crate) fn expand_project_references_for_prompt(
 }
 
 fn collect_project_references(
-    message: &str,
+    _message: &str,
     structured_references: &[ComposerProjectReference],
 ) -> Vec<String> {
     let mut seen = BTreeSet::new();
@@ -81,11 +81,7 @@ fn collect_project_references(
 
     for reference in structured_references {
         let path = reference.path.trim();
-        if path.is_empty()
-            || path.contains('\0')
-            || path.contains('\n')
-            || path.contains('\r')
-        {
+        if path.is_empty() || path.contains('\0') || path.contains('\n') || path.contains('\r') {
             continue;
         }
         if seen.insert(path.to_string()) {
@@ -96,42 +92,6 @@ fn collect_project_references(
         }
     }
 
-    for path in extract_visible_project_reference_tokens(message) {
-        if seen.insert(path.clone()) {
-            references.push(path);
-            if references.len() >= MAX_REFERENCES {
-                return references;
-            }
-        }
-    }
-
-    references
-}
-
-fn extract_visible_project_reference_tokens(message: &str) -> Vec<String> {
-    let mut seen = BTreeSet::new();
-    let mut references = Vec::new();
-    for token in message.split_whitespace() {
-        let Some(marker_index) = token.find('@') else {
-            continue;
-        };
-        if marker_index > 0 {
-            let previous = token[..marker_index].chars().next_back();
-            if !previous.is_some_and(|value| matches!(value, '(' | '[' | '{' | '"' | '\'' | '`'))
-            {
-                continue;
-            }
-        }
-        let raw_path = token[marker_index + 1..].trim_matches(|value: char| {
-            matches!(value, ')' | ']' | '}' | ',' | '.' | ';' | ':' | '"' | '\'' | '`')
-        });
-        if raw_path.is_empty() || raw_path.contains('\0') {
-            continue;
-        }
-        if seen.insert(raw_path.to_string()) {
-            references.push(raw_path.to_string());
-        }
-    }
     references
 }
 
@@ -396,23 +356,13 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_visible_at_path_tokens() {
+    fn ignores_visible_at_path_tokens_without_structured_reference() {
         let temp = tempdir().expect("tempdir");
         fs::write(temp.path().join("README.md"), "hello\n").expect("file");
 
         let expanded = expand_project_references_for_prompt("Read @README.md.", &[], temp.path());
 
-        assert!(expanded.contains("<file path=\"README.md\""));
-        assert!(expanded.contains("hello"));
-    }
-
-    #[test]
-    fn visible_token_extraction_requires_reasonable_boundaries() {
-        let tokens = extract_visible_project_reference_tokens(
-            "email test@example.com and read (@src/main.ts), `@README.md`, plus nope@bad.rs",
-        );
-
-        assert_eq!(tokens, vec!["src/main.ts", "README.md"]);
+        assert_eq!(expanded, "Read @README.md.");
     }
 
     #[test]
@@ -463,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn structured_references_are_deduped_and_capped_before_visible_tokens() {
+    fn structured_references_are_deduped_and_capped() {
         let references = (0..10)
             .map(|index| ComposerProjectReference {
                 path: format!("file-{index}.txt"),

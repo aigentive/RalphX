@@ -415,6 +415,51 @@ describe("AgentComposerSurface", () => {
     expect(onSend).toHaveBeenCalledWith("Read");
   });
 
+  it("does not store free-form @ tokens as references without menu selection", () => {
+    const onSend = vi.fn();
+    renderComposer({ onSend });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, {
+      target: { value: "Check @invalid-reference and @jira:RX-404" },
+    });
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    fireEvent.keyUp(textarea);
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Check @invalid-reference and @jira:RX-404");
+  });
+
+  it("surfaces Atlassian search failures instead of showing an empty result state", async () => {
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "search_atlassian_resources") {
+        return Promise.reject(new Error("Atlassian integration is not enabled"));
+      }
+      if (cmd === "list_agent_composer_skills") {
+        return Promise.resolve({ skills: [] });
+      }
+      if (cmd === "search_agent_composer_entries") {
+        return Promise.resolve({ entries: [], truncated: false });
+      }
+      return Promise.resolve(undefined);
+    });
+    renderComposer();
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "Work on @jira:PDM-81" } });
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    fireEvent.keyUp(textarea);
+
+    expect(
+      await screen.findByText(
+        "Jira search failed: Atlassian integration is not enabled",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No matching integration items")).not.toBeInTheDocument();
+  });
+
   it("sends selected Jira items as structured integration references", async () => {
     const onSend = vi.fn();
     vi.mocked(invoke).mockImplementation((cmd) => {
