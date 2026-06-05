@@ -6,8 +6,8 @@ use crate::application::{
     agent_conversation_workspace::{
         resolve_agent_conversation_workspace_path, resolve_valid_agent_conversation_workspace_path,
     },
-    AppState, ConflictDiff, DiffRefKind, DiffService, DiffSide, FileChange, FileDiff, GitService,
-    RangeLine,
+    AppState, ConflictDiff, DiffRefKind, DiffService, DiffSide, FileChange, FileDiff, FileDiffPage,
+    GitService, RangeLine,
 };
 use crate::commands::git_commands::{CommitInfoResponse, TaskCommitsResponse};
 use crate::domain::entities::{
@@ -1589,6 +1589,101 @@ pub async fn get_agent_conversation_workspace_cumulative_file_diff_for_state(
     .map_err(|e| AppError::Infrastructure(format!("cumulative file diff task failed: {e}")))?
 }
 
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_file_diff_page_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+    file_path: String,
+    ref_kind: DiffRefKind,
+    offset: usize,
+    limit: usize,
+) -> AppResult<FileDiffPage> {
+    let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
+
+    if matches!(ref_kind, DiffRefKind::CumulativeBase) {
+        return Err(AppError::Validation(
+            "CumulativeBase is a file-content ref, not a diff page target".to_string(),
+        ));
+    }
+
+    if matches!(ref_kind, DiffRefKind::Staged | DiffRefKind::Unstaged)
+        && !ctx.supports_worktree_modes
+    {
+        return Err(AppError::Validation(
+            "Staged and unstaged diff pages are unavailable for read-only workspaces".to_string(),
+        ));
+    }
+
+    if let DiffRefKind::Commit { sha } = &ref_kind {
+        let head_ref = ctx.diff_target.as_deref().unwrap_or("HEAD");
+        ensure_agent_workspace_commit_in_range(
+            conversation_id,
+            &ctx.working_path,
+            &ctx.base_ref,
+            head_ref,
+            sha,
+        )
+        .await?;
+    }
+
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    let base_ref = ctx.base_ref.clone();
+    let diff_target = ctx.diff_target.clone();
+    let patch_diff = ctx.patch_diff.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let diff_service = DiffService::new();
+        let diff = match ref_kind {
+            DiffRefKind::Head => {
+                if let Some(patch) = patch_diff.as_deref() {
+                    diff_service.get_file_diff_from_unified_diff(patch, &file_path)
+                } else if let Some(target) = diff_target.as_deref() {
+                    diff_service.get_file_diff_between_refs(
+                        &file_path,
+                        &working_path,
+                        &base_ref,
+                        target,
+                    )
+                } else {
+                    diff_service.get_file_diff(&file_path, &working_path, &base_ref)
+                }
+            }
+            DiffRefKind::Staged => diff_service.get_staged_file_diff(&file_path, &working_path),
+            DiffRefKind::Unstaged => diff_service.get_unstaged_file_diff(&file_path, &working_path),
+            DiffRefKind::Commit { sha } => {
+                if diff_service.is_merge_commit(&working_path, &sha) {
+                    diff_service.get_file_diff_between_refs(
+                        &file_path,
+                        &working_path,
+                        &base_ref,
+                        &sha,
+                    )
+                } else {
+                    diff_service.get_commit_file_diff(&sha, &file_path, &working_path)
+                }
+            }
+            DiffRefKind::CumulativeHead => {
+                if let Some(patch) = patch_diff.as_deref() {
+                    diff_service.get_file_diff_from_unified_diff(patch, &file_path)
+                } else {
+                    let head_ref = diff_target.unwrap_or_else(|| "HEAD".to_string());
+                    diff_service.get_file_diff_between_refs(
+                        &file_path,
+                        &working_path,
+                        &base_ref,
+                        &head_ref,
+                    )
+                }
+            }
+            DiffRefKind::CumulativeBase => unreachable!("validated before blocking task"),
+        }?;
+
+        DiffService::page_file_diff(diff, offset, limit)
+    })
+    .await
+    .map_err(|e| AppError::Infrastructure(format!("file diff page task failed: {e}")))?
+}
+
 // =========================================================================
 // Extension B — Cumulative (base..HEAD) workspace diffs
 // =========================================================================
@@ -1798,6 +1893,51 @@ pub async fn get_agent_conversation_workspace_cumulative_file_diff(
             elapsed_ms = started.elapsed().as_millis(),
             error = %error,
             "Failed to load agent workspace cumulative file diff"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_file_diff_page(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+    file_path: String,
+    ref_kind: DiffRefKind,
+    offset: usize,
+    limit: usize,
+) -> AppResult<FileDiffPage> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_file_diff_page_for_state(
+        app_state.inner(),
+        &conversation_id,
+        file_path,
+        ref_kind,
+        offset,
+        limit,
+    )
+    .await;
+    match &result {
+        Ok(page) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "file_diff_page",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            file_path = %page.file_path,
+            offset = page.offset,
+            limit = page.limit,
+            rows = page.rows.len(),
+            total_rows = page.total_rows,
+            "Loaded agent workspace file diff page"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "file_diff_page",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load agent workspace file diff page"
         ),
     }
     result
@@ -2036,7 +2176,7 @@ mod tests {
     use crate::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
     };
-    use crate::application::FileChangeStatus;
+    use crate::application::{DiffPageRow, FileChangeStatus};
     use crate::domain::entities::{
         AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind, Project,
     };
@@ -2064,6 +2204,15 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn diff_page_contains_line(page: &FileDiffPage, needle: &str) -> bool {
+        page.rows.iter().any(|row| {
+            matches!(
+                row,
+                DiffPageRow::Line { line } if line.content.contains(needle)
+            )
+        })
     }
 
     fn create_review_repo() -> (TempDir, PathBuf, String) {
@@ -2503,6 +2652,26 @@ mod tests {
             "file diff hunks should contain the 'answer' function"
         );
 
+        let file_diff_page = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "src/lib.rs".to_string(),
+            DiffRefKind::Head,
+            0,
+            1,
+        )
+        .await
+        .expect("workspace file diff page should load");
+        assert_eq!(file_diff_page.file_path, "src/lib.rs");
+        assert_eq!(file_diff_page.offset, 0);
+        assert_eq!(file_diff_page.limit, 1);
+        assert!(file_diff_page.rows.len() <= 1);
+        assert!(
+            file_diff_page.total_rows > file_diff_page.rows.len(),
+            "page response should report more rows than it sends"
+        );
+        assert_eq!(file_diff_page.next_offset, Some(file_diff_page.rows.len()));
+
         let commit_changes = get_agent_conversation_workspace_commit_file_changes(
             app.state(),
             conversation_id.as_str(),
@@ -2529,6 +2698,157 @@ mod tests {
                 .flat_map(|h| h.lines.iter())
                 .any(|l| l.content.contains("answer")),
             "commit diff hunks should contain the 'answer' function"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn file_diff_page_command_loads_staged_and_unstaged_refs() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        std::fs::write(worktree_path.join("base.txt"), "base\nstaged\n").unwrap();
+        run_git(&worktree_path, &["add", "base.txt"]);
+
+        let staged_page = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "base.txt".to_string(),
+            DiffRefKind::Staged,
+            0,
+            20,
+        )
+        .await
+        .expect("staged diff page should load");
+        assert!(
+            diff_page_contains_line(&staged_page, "staged"),
+            "staged diff page should include staged content"
+        );
+
+        std::fs::write(
+            worktree_path.join("base.txt"),
+            "base\nstaged\nunstaged\n",
+        )
+        .unwrap();
+
+        let unstaged_page = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "base.txt".to_string(),
+            DiffRefKind::Unstaged,
+            0,
+            20,
+        )
+        .await
+        .expect("unstaged diff page should load");
+        assert!(
+            diff_page_contains_line(&unstaged_page, "unstaged"),
+            "unstaged diff page should include unstaged content"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn file_diff_page_command_resolves_commit_and_cumulative_refs() {
+        let (_temp_dir, state, conversation_id, _worktree_path, commit_sha) =
+            create_agent_workspace_command_state().await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        let commit_page = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "src/lib.rs".to_string(),
+            DiffRefKind::Commit {
+                sha: commit_sha.clone(),
+            },
+            0,
+            20,
+        )
+        .await
+        .expect("commit diff page should load");
+        assert!(
+            diff_page_contains_line(&commit_page, "answer"),
+            "commit diff page should include selected commit content"
+        );
+
+        let cumulative_page = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "src/lib.rs".to_string(),
+            DiffRefKind::CumulativeHead,
+            0,
+            20,
+        )
+        .await
+        .expect("cumulative head diff page should load");
+        assert!(
+            diff_page_contains_line(&cumulative_page, "answer"),
+            "cumulative head diff page should include workspace content"
+        );
+
+        let cumulative_base = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "src/lib.rs".to_string(),
+            DiffRefKind::CumulativeBase,
+            0,
+            20,
+        )
+        .await;
+        assert!(
+            cumulative_base
+                .expect_err("cumulative base is not a diff page target")
+                .to_string()
+                .contains("CumulativeBase"),
+            "cumulative base error should explain the unsupported ref"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn file_diff_page_command_rejects_staged_refs_for_read_only_context() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        store_agent_workspace_context(
+            &conversation_id,
+            &AgentWorkspaceContext {
+                working_path: worktree_path,
+                base_ref: "HEAD".to_string(),
+                diff_target: Some("agent-branch".to_string()),
+                patch_diff: None,
+                supports_worktree_modes: false,
+            },
+        );
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        let result = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "base.txt".to_string(),
+            DiffRefKind::Staged,
+            0,
+            20,
+        )
+        .await;
+        assert!(
+            result
+                .expect_err("staged pages should be unavailable for read-only workspaces")
+                .to_string()
+                .contains("read-only workspaces"),
+            "read-only staged error should explain why staged pages are unavailable"
         );
 
         invalidate_agent_workspace_diff_caches(&conversation_id);

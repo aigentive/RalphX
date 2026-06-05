@@ -10,11 +10,11 @@
  *                             default view selection; file diffs still hydrate lazily
  *   - Commit mode: file list via getAgentConversationWorkspaceCommitFileChanges,
  *                  then per-file diff via getAgentConversationWorkspaceCommitFileDiff
- *   - Diffs fetched for hydrated expanded files only; off-range/collapsed cards pay zero query cost.
+ *   - Normal diffs fetched for hydrated expanded files only; large diffs fetch row pages.
  *
  * Performance contract (frontend-interaction-performance.md):
  *   - Sticky bar always renders synchronously.
- *   - File cards receive diff as prop — parent manages timing, cards never fetch.
+ *   - File cards receive normal diff state as prop; large explicit diffs page their own rows.
  *
  * WKWebView CSS: explicit background-color / border-color with shallow-chain tokens.
  */
@@ -35,6 +35,7 @@ import { AgentsPublishDiffFilter } from "./AgentsPublishDiffFilter";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import { AgentsPublishFileDiff } from "./AgentsPublishFileDiff";
 import type { DiffState } from "./AgentsPublishFileDiff";
+import { isLargeInlineDiff } from "./inlineDiffGuards";
 import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
@@ -122,6 +123,7 @@ interface AgentsPublishVirtualFileRowProps {
   onOpenFullscreenPath: (path: string) => void;
   conversationId: string;
   refKind?: DiffRefKind | undefined;
+  diffPageRefKind?: DiffRefKind | undefined;
   shouldHydrate: boolean;
   annotations: PrDiffAnnotation[];
   isShowAnywayOverridden: boolean;
@@ -138,6 +140,7 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
   onOpenFullscreenPath,
   conversationId,
   refKind,
+  diffPageRefKind,
   shouldHydrate,
   annotations,
   isShowAnywayOverridden,
@@ -162,6 +165,7 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
       onOpenFullscreen={onOpenFullscreenPath}
       conversationId={conversationId}
       refKind={refKind}
+      diffPageRefKind={diffPageRefKind}
       shouldHydrate={shouldHydrate}
       annotations={annotations}
       isShowAnywayOverridden={isShowAnywayOverridden}
@@ -194,7 +198,7 @@ export function AgentsPublishInlineDiffs({
   // Lazy hydration tracks which file paths have entered the virtual range.
   // Paths are added on first range entry and never removed, so body teardown does not thrash.
   const [hydratedPaths, setHydratedPaths] = useState<Set<string>>(new Set());
-  // Show-anyway overrides — paths where the user has dismissed the generated-file placeholder.
+  // Show-anyway overrides — paths where the user has dismissed a generated-file placeholder.
   const [userShowAnywayPaths, setUserShowAnywayPaths] = useState<Set<string>>(new Set());
   const [pendingFocusRequest, setPendingFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
@@ -328,6 +332,7 @@ export function AgentsPublishInlineDiffs({
       expandedFiles.filter(
         (file) =>
           bufferedVisiblePathSet.has(file.path) &&
+          !isLargeInlineDiff(file) &&
           (!file.isGenerated || userShowAnywayPaths.has(file.path)),
       ),
     [bufferedVisiblePathSet, expandedFiles, userShowAnywayPaths],
@@ -586,6 +591,7 @@ export function AgentsPublishInlineDiffs({
           onOpenFullscreenPath={handleOpenFullscreen}
           conversationId={conversationId}
           refKind={rangeRefKind}
+          diffPageRefKind={refKind}
           shouldHydrate={hydratedPaths.has(fileChange.path)}
           annotations={annotationsByPath.get(fileChange.path) ?? EMPTY_PR_DIFF_ANNOTATIONS}
           isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
@@ -606,6 +612,7 @@ export function AgentsPublishInlineDiffs({
       handleToggle,
       hydratedPaths,
       focusTargetPath,
+      refKind,
       rangeRefKind,
       userShowAnywayPaths,
     ],

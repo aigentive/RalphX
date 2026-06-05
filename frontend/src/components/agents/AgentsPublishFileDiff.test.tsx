@@ -33,6 +33,30 @@ vi.mock("@/components/diff/SimpleDiffView", () => ({
   ),
 }));
 
+vi.mock("@/components/diff/PagedDiffView", () => ({
+  PagedDiffView: ({
+    conversationId,
+    filePath,
+    refKind,
+    scrollContainer,
+  }: {
+    conversationId: string;
+    filePath: string;
+    refKind: { kind: string };
+    scrollContainer?: boolean;
+  }) => (
+    <div
+      data-testid="paged-diff-view"
+      data-conversation-id={conversationId}
+      data-file-path={filePath}
+      data-ref-kind={refKind.kind}
+      data-scroll-container={String(scrollContainer ?? false)}
+    >
+      PagedDiffView
+    </div>
+  ),
+}));
+
 import { AgentsPublishFileDiff } from "./AgentsPublishFileDiff";
 import type { FileChange, FileDiff, PrDiffAnnotation } from "@/api/diff";
 
@@ -671,6 +695,57 @@ describe("AgentsPublishFileDiff", () => {
       );
       expect(screen.getByTestId("simple-diff-view")).toBeInTheDocument();
       expect(screen.queryByTestId("file-diff-generated-placeholder")).toBeNull();
+    });
+
+    it("auto-mounts PagedDiffView for a large hydrated diff", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ additions: 1_250, deletions: 25 })}
+            diff={undefined}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            conversationId="conv-1"
+            diffPageRefKind={{ kind: "head" }}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute("data-ref-kind", "head");
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-scroll-container",
+        "false",
+      );
+      expect(screen.queryByTestId("simple-diff-view")).toBeNull();
+      expect(screen.queryByTestId("file-diff-large-placeholder")).toBeNull();
+    });
+
+    it("defers a large paged diff until the file row is hydrated", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ additions: 1_250, deletions: 25 })}
+            diff={undefined}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            conversationId="conv-1"
+            diffPageRefKind={{ kind: "head" }}
+            shouldHydrate={false}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("file-diff-pre-hydration")).toBeInTheDocument();
+      expect(screen.queryByTestId("paged-diff-view")).toBeNull();
+      expect(screen.queryByTestId("simple-diff-view")).toBeNull();
+      expect(screen.queryByTestId("file-diff-large-placeholder")).toBeNull();
     });
 
     it("does NOT show generated placeholder when collapsed (even if isGenerated=true)", () => {
