@@ -62,6 +62,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { withAlpha } from "@/lib/theme-colors";
+import { extractErrorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import {
   appendInternalSkillDirectives,
@@ -602,6 +603,9 @@ export function AgentComposerSurface({
         });
     }
     if (activeTrigger.kind === "integration") {
+      if (integrationResourcesQuery.isError) {
+        return [];
+      }
       return (integrationResourcesQuery.data ?? []).map((resource) => ({
         id: `integration:${resource.kind}:${resource.id}`,
         kind: "integration" as const,
@@ -622,23 +626,42 @@ export function AgentComposerSurface({
   }, [
     activeTrigger,
     integrationResourcesQuery.data,
+    integrationResourcesQuery.isError,
     pathEntriesQuery.data?.entries,
     skills,
     slashCommandItems,
+  ]);
+  const integrationSearchErrorLabel = useMemo(() => {
+    if (!integrationResourcesQuery.isError) {
+      return null;
+    }
+    const target = integrationKind === "confluence" ? "Confluence" : "Jira";
+    const message = extractErrorMessage(
+      integrationResourcesQuery.error,
+      `Unable to search ${target}`,
+    );
+    return `${target} search failed: ${message}`;
+  }, [
+    integrationKind,
+    integrationResourcesQuery.error,
+    integrationResourcesQuery.isError,
   ]);
   const shouldShowCommandMenu =
     composerAssistEnabled &&
     isFocused &&
     Boolean(activeTrigger);
+  const integrationEmptyLabel =
+    integrationSearchErrorLabel ??
+    (integrationQuery.trim()
+      ? "No matching integration items"
+      : "Type to search Jira or Confluence");
   const menuEmptyLabel =
     activeTrigger?.kind === "path"
       ? "No matching files or folders"
       : activeTrigger?.kind === "skill"
         ? "No matching skills"
         : activeTrigger?.kind === "integration"
-          ? integrationQuery.trim()
-            ? "No matching integration items"
-            : "Type to search Jira or Confluence"
+          ? integrationEmptyLabel
           : "No matching commands";
   const menuLoading =
     activeTrigger?.kind === "path"
