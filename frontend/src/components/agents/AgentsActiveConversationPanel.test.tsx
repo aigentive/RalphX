@@ -596,8 +596,13 @@ describe("AgentsActiveConversationPanel", () => {
     });
 
     const row = await screen.findByTestId("agents-plan-composer-cta-row");
-    await screen.findByText(/Recommended: Create Proposals/i);
-    expect(row).toHaveClass("grid", "lg:items-center");
+    const recommendedAction = await screen.findByRole("button", {
+      name: /Recommended: Create Proposals/i,
+    });
+    expect(row).toHaveClass("flex", "items-center");
+    expect(
+      within(row).queryByTestId("agents-plan-composer-cta-copy"),
+    ).not.toBeInTheDocument();
     expect(row).not.toHaveTextContent(/The plan spans several tracked phases/i);
     expect(
       within(row).getByRole("button", { name: /Plan recommendation details/i }),
@@ -611,7 +616,7 @@ describe("AgentsActiveConversationPanel", () => {
     );
     expect(
       within(row).getByTestId("agents-plan-composer-cta-actions"),
-    ).toHaveClass("flex-wrap", "pl-6", "lg:pl-0");
+    ).toHaveClass("flex-1", "flex-wrap");
     expect(
       within(row).getByTestId("agents-plan-composer-cta-create-proposals"),
     ).toHaveClass("bg-primary");
@@ -619,9 +624,7 @@ describe("AgentsActiveConversationPanel", () => {
       within(row).getByRole("button", { name: /Implement Directly/i }),
     ).toBeInTheDocument();
 
-    await user.click(
-      within(row).getByRole("button", { name: /Create Proposals/i }),
-    );
+    await user.click(recommendedAction);
 
     await waitFor(() =>
       expect(switchAgentConversationModeMock).toHaveBeenCalledWith({

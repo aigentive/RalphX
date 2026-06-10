@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2,
   Clock,
@@ -176,10 +176,43 @@ function PlanComposerCtaRow({
   }
   const compactHint = getPlanComposerCompactHint(hint, actions);
   const hintDetails = getPlanComposerHintDetails(hint, compactHint);
+  const recommendedPrimaryLabel = compactHint.startsWith("Recommended:")
+    ? compactHint
+    : null;
+  const primaryActionId = (actions.find((action) => action.isPrimary) ?? actions[0])
+    ?.id;
+  const showInlineHint = recommendedPrimaryLabel == null;
+  const detailsButton = hintDetails ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label="Plan recommendation details"
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border outline-none transition-colors hover:bg-[var(--bg-surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]"
+          style={{
+            borderColor: "var(--border-subtle)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+            color: "var(--text-muted)",
+          }}
+          data-testid="agents-plan-composer-cta-details"
+        >
+          <Info className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        side="top"
+        align="start"
+        className="max-w-[19rem] text-xs font-normal leading-5"
+      >
+        {hintDetails}
+      </TooltipContent>
+    </Tooltip>
+  ) : null;
 
   return (
     <div
-      className="mx-2 mb-2 grid gap-2 rounded-md border px-3 py-2.5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
+      className="mx-2 mb-2 flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-2"
       style={{
         backgroundColor: "var(--bg-surface)",
         borderColor: "var(--border-subtle)",
@@ -188,73 +221,55 @@ function PlanComposerCtaRow({
       }}
       data-testid="agents-plan-composer-cta-row"
     >
-      <div
-        className="flex min-w-0 items-center gap-2"
-        data-testid="agents-plan-composer-cta-copy"
-      >
-        <Lightbulb
-          className="h-4 w-4 shrink-0"
-          style={{ color: "var(--accent-primary)" }}
-          aria-hidden="true"
-        />
-        <p
-          className="min-w-0 text-[0.8125rem] font-medium leading-5"
-          style={{ color: "var(--text-primary)" }}
-          data-testid="agents-plan-composer-cta-hint"
+      {showInlineHint && (
+        <div
+          className="flex min-w-0 items-center gap-2 pr-1"
+          data-testid="agents-plan-composer-cta-copy"
         >
-          {compactHint}
-        </p>
-        {hintDetails && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                aria-label="Plan recommendation details"
-                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]"
-                style={{ color: "var(--text-muted)" }}
-                data-testid="agents-plan-composer-cta-details"
-              >
-                <Info className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent
-              side="top"
-              align="start"
-              className="max-w-[19rem] text-xs font-normal leading-5"
-            >
-              {hintDetails}
-            </TooltipContent>
-          </Tooltip>
-        )}
-      </div>
+          <p
+            className="min-w-0 truncate text-[0.8125rem] font-medium leading-5"
+            style={{ color: "var(--text-primary)" }}
+            data-testid="agents-plan-composer-cta-hint"
+          >
+            {compactHint}
+          </p>
+          {detailsButton}
+        </div>
+      )}
       <div
-        className="flex flex-wrap items-center gap-2 pl-6 sm:justify-end lg:pl-0"
+        className="flex min-w-0 flex-1 flex-wrap items-center gap-2"
         role="group"
         aria-label="Plan next actions"
         data-testid="agents-plan-composer-cta-actions"
       >
         {actions.map((action) => {
           const Icon = action.isPending ? Loader2 : action.icon;
+          const actionLabel =
+            action.id === primaryActionId && recommendedPrimaryLabel
+              ? recommendedPrimaryLabel
+              : action.label;
           return (
-            <Button
-              key={action.id}
-              type="button"
-              size="sm"
-              variant={action.isPrimary ? "default" : "outline"}
-              onClick={action.onClick}
-              disabled={action.disabled || action.isPending}
-              data-testid={`agents-plan-composer-cta-${action.id}`}
-            >
-              <Icon
-                className={
-                  action.isPending
-                    ? "h-3.5 w-3.5 animate-spin"
-                    : "h-3.5 w-3.5"
-                }
-                aria-hidden="true"
-              />
-              <span>{action.label}</span>
-            </Button>
+            <Fragment key={action.id}>
+              <Button
+                type="button"
+                size="sm"
+                variant={action.isPrimary ? "default" : "outline"}
+                onClick={action.onClick}
+                disabled={action.disabled || action.isPending}
+                data-testid={`agents-plan-composer-cta-${action.id}`}
+              >
+                <Icon
+                  className={
+                    action.isPending
+                      ? "h-3.5 w-3.5 animate-spin"
+                      : "h-3.5 w-3.5"
+                  }
+                  aria-hidden="true"
+                />
+                <span>{actionLabel}</span>
+              </Button>
+              {!showInlineHint && action.id === primaryActionId ? detailsButton : null}
+            </Fragment>
           );
         })}
       </div>
