@@ -5,13 +5,13 @@ use async_trait::async_trait;
 use hyper::Method;
 use serde_json::{json, Value};
 
-use crate::application::{AtlassianAuthContext, AtlassianCredential};
+use crate::application::{AtlassianApiClient, AtlassianAuthContext, AtlassianCredential};
 use crate::domain::services::ComposerIntegrationReference;
 
 use super::atlassian_client::{
     build_confluence_search_cql, build_jira_search_jql, confluence_page_id_query,
     fetch_confluence, fetch_jira, search_confluence, search_jira, AtlassianJsonRequester,
-    RequestAuth,
+    HyperAtlassianApiClient, RequestAuth,
 };
 
 #[derive(Clone, Debug)]
@@ -131,6 +131,20 @@ fn confluence_search_cql_keeps_multi_word_title_queries() {
         "type=page AND (title ~ \"release checklist*\" OR text ~ \"release checklist*\")"
     );
     assert_eq!(confluence_page_id_query("release checklist"), None);
+}
+
+#[tokio::test]
+async fn hyper_requester_surfaces_invalid_urls_without_network() {
+    let client = HyperAtlassianApiClient::new().expect("client");
+    let mut auth = auth_context();
+    auth.site_url = "not a valid url".to_string();
+
+    let result = client.validate(&auth).await;
+
+    assert_eq!(
+        result,
+        Err("Atlassian credentials did not validate for Jira or Confluence".to_string())
+    );
 }
 
 #[tokio::test]
