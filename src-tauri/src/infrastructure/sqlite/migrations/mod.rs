@@ -18,8 +18,11 @@
 //
 // ## For existing databases
 //
-// Existing databases have schema_migrations tracking what version they're at.
-// Only migrations newer than their current version will run.
+// Existing databases have schema_migrations tracking applied versions.
+// Any registered migration that is not recorded will run, even if a later
+// version was already applied by another branch.
+
+use std::collections::HashSet;
 
 use rusqlite::Connection;
 
@@ -1085,12 +1088,13 @@ pub fn run_migrations(conn: &Connection) -> AppResult<()> {
     // Create migrations table if it doesn't exist
     create_migrations_table(conn)?;
 
-    // Get current version
-    let current_version = get_schema_version(conn)?;
+    let mut applied_versions = get_applied_migration_versions(conn)?;
 
-    // Run migrations sequentially
+    // Run registered migrations sequentially. Membership checks repair dev and
+    // branch databases that have a later version recorded while missing an
+    // earlier migration added on this branch.
     for migration in MIGRATIONS {
-        if current_version < migration.version {
+        if !applied_versions.contains(&migration.version) {
             tracing::info!(
                 "Running migration v{}: {}",
                 migration.version,
@@ -1099,6 +1103,7 @@ pub fn run_migrations(conn: &Connection) -> AppResult<()> {
 
             (migration.migrate)(conn)?;
             set_schema_version(conn, migration.version)?;
+            applied_versions.insert(migration.version);
 
             tracing::info!("Migration v{} complete", migration.version);
         }
@@ -1111,13 +1116,13 @@ pub fn run_migrations(conn: &Connection) -> AppResult<()> {
 pub(super) fn run_migrations_through(conn: &Connection, target_version: i64) -> AppResult<()> {
     create_migrations_table(conn)?;
 
-    let mut current_version = get_schema_version(conn)?;
+    let mut applied_versions = get_applied_migration_versions(conn)?;
 
     for migration in MIGRATIONS {
-        if current_version < migration.version && migration.version <= target_version {
+        if migration.version <= target_version && !applied_versions.contains(&migration.version) {
             (migration.migrate)(conn)?;
             set_schema_version(conn, migration.version)?;
-            current_version = migration.version;
+            applied_versions.insert(migration.version);
         }
     }
 
@@ -1154,6 +1159,18 @@ pub fn get_schema_version(conn: &Connection) -> AppResult<i64> {
     );
 
     result.map_err(|e| AppError::Database(e.to_string()))
+}
+
+fn get_applied_migration_versions(conn: &Connection) -> AppResult<HashSet<i64>> {
+    let mut statement = conn
+        .prepare("SELECT version FROM schema_migrations")
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    let versions = statement
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(|e| AppError::Database(e.to_string()))?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    Ok(versions)
 }
 
 /// Set the schema version after a migration

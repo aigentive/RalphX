@@ -713,6 +713,38 @@ export function IntegratedChatPanel({
   );
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const inputContainerRef = useRef<HTMLDivElement | null>(null);
+  const inputContainerHeightRef = useRef<number | null>(null);
+  const [inputLayoutVersion, setInputLayoutVersion] = useState(0);
+
+  useLayoutEffect(() => {
+    const container = inputContainerRef.current;
+    if (!container || typeof ResizeObserver === "undefined") {
+      return undefined;
+    }
+
+    const updateInputHeight = (height: number) => {
+      const nextHeight = Math.round(height);
+      if (inputContainerHeightRef.current === nextHeight) {
+        return;
+      }
+      inputContainerHeightRef.current = nextHeight;
+      setInputLayoutVersion((version) => version + 1);
+    };
+
+    updateInputHeight(container.getBoundingClientRect().height);
+
+    const observer = new ResizeObserver((entries) => {
+      updateInputHeight(
+        entries[0]?.contentRect.height ?? container.getBoundingClientRect().height,
+      );
+    });
+    observer.observe(container);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
 
   // File attachments - use activeConversationId for attachment association
   // Only enable attachments when there's an active conversation (not in history mode)
@@ -1267,6 +1299,7 @@ export function IntegratedChatPanel({
                   ? teammateConversationHistory.fetchOlderMessages
                   : primaryConversationHistory.fetchOlderMessages
               }
+              externalLayoutVersion={inputLayoutVersion}
             />
           )}
 
@@ -1356,6 +1389,7 @@ export function IntegratedChatPanel({
              chrome rhythm. Previous bg-base@50 collapsed on HC and shaded
              darker than body on Dark, producing a three-tier sandwich. */}
           <div
+            ref={inputContainerRef}
             data-testid="chat-input-container"
             className={inputContainerClassName ?? "shrink-0"}
             style={inputContainerClassName ? undefined : {

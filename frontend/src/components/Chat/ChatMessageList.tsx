@@ -510,6 +510,8 @@ interface ChatMessageListProps {
   hasOlderMessages?: boolean;
   isFetchingOlderMessages?: boolean;
   onLoadOlderMessages?: (() => void | Promise<void>) | undefined;
+  /** Incremented by the host when sibling chrome below the transcript changes size. */
+  externalLayoutVersion?: number | undefined;
   initialPaintCoverKey?: string | null | undefined;
   onInitialPaintReady?: ((key: string) => void) | undefined;
 }
@@ -545,6 +547,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       hasOlderMessages = false,
       isFetchingOlderMessages = false,
       onLoadOlderMessages,
+      externalLayoutVersion = 0,
       initialPaintCoverKey = null,
       onInitialPaintReady,
     },
@@ -1591,6 +1594,13 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         reconcileScrollerBottomState();
       });
     }, [reconcileScrollerBottomState, scrollToTrueBottom, shouldKeepBottomPinned]);
+
+    useEffect(() => {
+      if (externalLayoutVersion <= 0) {
+        return;
+      }
+      handleScrollerResize();
+    }, [externalLayoutVersion, handleScrollerResize]);
 
     const handleTotalListHeightChanged = useCallback(
       (height: number) => {
