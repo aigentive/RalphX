@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   Clock,
   GitPullRequestArrow,
+  Info,
   Lightbulb,
   Loader2,
   MessageSquare,
@@ -27,6 +28,7 @@ import {
   type IntegratedChatComposerRenderProps,
 } from "@/components/Chat/IntegratedChatPanel";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
@@ -124,6 +126,44 @@ interface PlanComposerCtaAction {
   onClick: () => void;
 }
 
+function getPlanComposerCompactHint(
+  hint: string,
+  actions: PlanComposerCtaAction[],
+): string {
+  const trimmedHint = hint.trim();
+  const recommendedMatch = /^Recommended:\s*([^.]*)\./.exec(trimmedHint);
+  if (recommendedMatch?.[1]) {
+    return `Recommended: ${recommendedMatch[1]}`;
+  }
+  if (trimmedHint.startsWith("Assessing plan complexity")) {
+    return "Assessing plan complexity";
+  }
+
+  const primaryAction = actions.find((action) => action.isPrimary) ?? actions[0];
+  if (primaryAction?.id === "approve") {
+    return "Approve draft plan";
+  }
+  if (primaryAction) {
+    return `Recommended: ${primaryAction.label}`;
+  }
+  return trimmedHint;
+}
+
+function getPlanComposerHintDetails(hint: string, compactHint: string): string | null {
+  const trimmedHint = hint.trim();
+  if (!trimmedHint || trimmedHint === compactHint) {
+    return null;
+  }
+
+  const compactPrefix = `${compactHint}.`;
+  if (trimmedHint.startsWith(compactPrefix)) {
+    const details = trimmedHint.slice(compactPrefix.length).trim();
+    return details.length > 0 ? details : null;
+  }
+
+  return trimmedHint;
+}
+
 function PlanComposerCtaRow({
   hint,
   actions,
@@ -134,10 +174,12 @@ function PlanComposerCtaRow({
   if (actions.length === 0) {
     return null;
   }
+  const compactHint = getPlanComposerCompactHint(hint, actions);
+  const hintDetails = getPlanComposerHintDetails(hint, compactHint);
 
   return (
     <div
-      className="mx-2 mb-2 rounded-md border px-3 py-2.5"
+      className="mx-2 mb-2 grid gap-2 rounded-md border px-3 py-2.5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
       style={{
         backgroundColor: "var(--bg-surface)",
         borderColor: "var(--border-subtle)",
@@ -147,24 +189,46 @@ function PlanComposerCtaRow({
       data-testid="agents-plan-composer-cta-row"
     >
       <div
-        className="flex min-w-0 items-start gap-2"
+        className="flex min-w-0 items-center gap-2"
         data-testid="agents-plan-composer-cta-copy"
       >
         <Lightbulb
-          className="mt-0.5 h-4 w-4 shrink-0"
+          className="h-4 w-4 shrink-0"
           style={{ color: "var(--accent-primary)" }}
           aria-hidden="true"
         />
         <p
-          className="min-w-0 flex-1 text-[0.8125rem] leading-5"
-          style={{ color: "var(--text-secondary)" }}
+          className="min-w-0 text-[0.8125rem] font-medium leading-5"
+          style={{ color: "var(--text-primary)" }}
           data-testid="agents-plan-composer-cta-hint"
         >
-          {hint}
+          {compactHint}
         </p>
+        {hintDetails && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="Plan recommendation details"
+                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]"
+                style={{ color: "var(--text-muted)" }}
+                data-testid="agents-plan-composer-cta-details"
+              >
+                <Info className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent
+              side="top"
+              align="start"
+              className="max-w-[19rem] text-xs font-normal leading-5"
+            >
+              {hintDetails}
+            </TooltipContent>
+          </Tooltip>
+        )}
       </div>
       <div
-        className="mt-2 flex flex-wrap items-center gap-2 pl-6 sm:justify-end"
+        className="flex flex-wrap items-center gap-2 pl-6 sm:justify-end lg:pl-0"
         role="group"
         aria-label="Plan next actions"
         data-testid="agents-plan-composer-cta-actions"

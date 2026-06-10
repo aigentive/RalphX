@@ -9,6 +9,7 @@ import {
   type AgentConversationWorkspace,
   type ForkAgentConversationResult,
 } from "@/api/chat";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 import type { AgentConversation } from "./agentConversations";
 import { AgentsActiveConversationPanel } from "./AgentsActiveConversationPanel";
@@ -386,7 +387,9 @@ function renderPanel(
   };
   render(
     <QueryClientProvider client={queryClient}>
-      <AgentsActiveConversationPanel {...props} />
+      <TooltipProvider delayDuration={0}>
+        <AgentsActiveConversationPanel {...props} />
+      </TooltipProvider>
     </QueryClientProvider>,
   );
   return props;
@@ -543,7 +546,7 @@ describe("AgentsActiveConversationPanel", () => {
     });
 
     const row = await screen.findByTestId("agents-plan-composer-cta-row");
-    expect(row).toHaveTextContent(/Approve the draft plan/i);
+    expect(row).toHaveTextContent(/Approve draft plan/i);
 
     await user.click(within(row).getByRole("button", { name: /Approve Plan/i }));
 
@@ -594,12 +597,21 @@ describe("AgentsActiveConversationPanel", () => {
 
     const row = await screen.findByTestId("agents-plan-composer-cta-row");
     await screen.findByText(/Recommended: Create Proposals/i);
+    expect(row).toHaveClass("grid", "lg:items-center");
+    expect(row).not.toHaveTextContent(/The plan spans several tracked phases/i);
     expect(
-      within(row).getByTestId("agents-plan-composer-cta-hint"),
-    ).toHaveClass("flex-1");
+      within(row).getByRole("button", { name: /Plan recommendation details/i }),
+    ).toBeInTheDocument();
+    await user.hover(
+      within(row).getByRole("button", { name: /Plan recommendation details/i }),
+    );
+    await waitFor(() =>
+      expect(screen.getAllByText(/The plan spans several tracked phases/i).length)
+        .toBeGreaterThan(0),
+    );
     expect(
       within(row).getByTestId("agents-plan-composer-cta-actions"),
-    ).toHaveClass("mt-2", "flex-wrap", "pl-6");
+    ).toHaveClass("flex-wrap", "pl-6", "lg:pl-0");
     expect(
       within(row).getByTestId("agents-plan-composer-cta-create-proposals"),
     ).toHaveClass("bg-primary");
