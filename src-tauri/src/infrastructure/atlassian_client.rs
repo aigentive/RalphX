@@ -54,7 +54,7 @@ impl HyperAtlassianApiClient {
         }
     }
 
-    async fn request_json(
+    async fn send_json_request(
         &self,
         method: Method,
         url: String,
@@ -119,10 +119,34 @@ fn install_rustls_crypto_provider() {
     });
 }
 
-enum RequestAuth<'a> {
+pub(crate) enum RequestAuth<'a> {
     Basic { email: &'a str, token: &'a str },
     Bearer(&'a str),
     None,
+}
+
+#[async_trait]
+pub(crate) trait AtlassianJsonRequester: Send + Sync {
+    async fn request_json(
+        &self,
+        method: Method,
+        url: String,
+        auth: RequestAuth<'_>,
+        body: Option<Value>,
+    ) -> Result<Value, String>;
+}
+
+#[async_trait]
+impl AtlassianJsonRequester for HyperAtlassianApiClient {
+    async fn request_json(
+        &self,
+        method: Method,
+        url: String,
+        auth: RequestAuth<'_>,
+        body: Option<Value>,
+    ) -> Result<Value, String> {
+        self.send_json_request(method, url, auth, body).await
+    }
 }
 
 fn request_auth(auth: &AtlassianAuthContext) -> RequestAuth<'_> {
@@ -265,8 +289,8 @@ impl AtlassianApiClient for HyperAtlassianApiClient {
     }
 }
 
-async fn search_jira(
-    client: &HyperAtlassianApiClient,
+pub(crate) async fn search_jira<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
     auth: &AtlassianAuthContext,
     query: &str,
     limit: usize,
@@ -305,8 +329,8 @@ async fn search_jira(
     Ok(results)
 }
 
-async fn search_jira_with_jql(
-    client: &HyperAtlassianApiClient,
+async fn search_jira_with_jql<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
     auth: &AtlassianAuthContext,
     query: &str,
     limit: usize,
@@ -341,8 +365,8 @@ async fn search_jira_with_jql(
         .collect())
 }
 
-async fn search_jira_picker(
-    client: &HyperAtlassianApiClient,
+async fn search_jira_picker<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
     auth: &AtlassianAuthContext,
     query: &str,
     limit: usize,
@@ -372,8 +396,8 @@ async fn search_jira_picker(
         .collect())
 }
 
-async fn fetch_jira_summary_by_key(
-    client: &HyperAtlassianApiClient,
+async fn fetch_jira_summary_by_key<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
     auth: &AtlassianAuthContext,
     key: &str,
 ) -> Result<AtlassianResourceSummary, String> {
@@ -465,8 +489,8 @@ fn jira_summary(key: &str, title: String, site_url: &str) -> AtlassianResourceSu
     }
 }
 
-async fn oauth_token_request(
-    client: &HyperAtlassianApiClient,
+async fn oauth_token_request<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
     body: Value,
 ) -> Result<AtlassianOAuthTokenResponse, String> {
     let value = client
@@ -496,8 +520,8 @@ async fn oauth_token_request(
     })
 }
 
-async fn search_confluence(
-    client: &HyperAtlassianApiClient,
+pub(crate) async fn search_confluence<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
     auth: &AtlassianAuthContext,
     query: &str,
     limit: usize,
@@ -545,8 +569,8 @@ async fn search_confluence(
     Ok(results)
 }
 
-async fn fetch_confluence_summary_by_id(
-    client: &HyperAtlassianApiClient,
+async fn fetch_confluence_summary_by_id<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
     auth: &AtlassianAuthContext,
     page_id: &str,
 ) -> Result<AtlassianResourceSummary, String> {
@@ -626,8 +650,8 @@ fn confluence_summary_from_content(
     })
 }
 
-async fn fetch_jira(
-    client: &HyperAtlassianApiClient,
+pub(crate) async fn fetch_jira<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
     auth: &AtlassianAuthContext,
     reference: &ComposerIntegrationReference,
 ) -> Result<AtlassianResourceContent, String> {
@@ -694,8 +718,8 @@ async fn fetch_jira(
     })
 }
 
-async fn fetch_confluence(
-    client: &HyperAtlassianApiClient,
+pub(crate) async fn fetch_confluence<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
     auth: &AtlassianAuthContext,
     reference: &ComposerIntegrationReference,
 ) -> Result<AtlassianResourceContent, String> {

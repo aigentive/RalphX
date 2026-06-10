@@ -76,7 +76,6 @@ coverage:
           # and cannot be unit tested without the Tauri runtime. All testable pure
           # functions (parse, sort, collect, sanitize, read-with-reader) have full coverage.
           - "!src-tauri/src/commands/release_notes_commands.rs"
-          - "!src-tauri/src/infrastructure/atlassian_client.rs"
           - "!src-tauri/src/infrastructure/sqlite/sqlite_atlassian_integration_settings_repo.rs"
 
 ignore:

@@ -89,6 +89,43 @@ describe("agentComposerCore", () => {
     });
   });
 
+  it("detects Confluence alias triggers after quoted boundaries", () => {
+    const text = 'Attach "@conf:release checklist';
+
+    expect(detectAgentComposerTrigger(text, text.length)).toEqual({
+      kind: "integration",
+      integrationKind: "confluence",
+      query: "release checklist",
+      rangeStart: 'Attach "'.length,
+      rangeEnd: text.length,
+    });
+  });
+
+  it("falls back to nested markers after malformed Atlassian trigger queries", () => {
+    expect(
+      detectAgentComposerTrigger(
+        "Find @jira:RX-1@bad",
+        "Find @jira:RX-1@bad".length,
+      ),
+    ).toEqual({
+      kind: "path",
+      query: "bad",
+      rangeStart: "Find @jira:RX-1".length,
+      rangeEnd: "Find @jira:RX-1@bad".length,
+    });
+    expect(
+      detectAgentComposerTrigger(
+        "Find @jira:RX-1$bad",
+        "Find @jira:RX-1$bad".length,
+      ),
+    ).toEqual({
+      kind: "skill",
+      query: "bad",
+      rangeStart: "Find @jira:RX-1".length,
+      rangeEnd: "Find @jira:RX-1$bad".length,
+    });
+  });
+
   it("replaces trigger ranges and consumes one trailing space", () => {
     const text = "Open @src then continue";
     const trigger = detectAgentComposerTrigger(text, "Open @src".length);
@@ -184,6 +221,41 @@ describe("agentComposerCore", () => {
         sessionId: "session-1",
         version: 2,
         status: "approved",
+      },
+    ]);
+  });
+
+  it("normalizes integration references by trimming metadata and dropping invalid entries", () => {
+    expect(
+      normalizeComposerIntegrationReferences([
+        {
+          provider: "atlassian",
+          kind: "jira",
+          id: " RX-42 ",
+          key: " RX-42 ",
+          title: " Fix composer ",
+          url: " https://example.atlassian.net/browse/RX-42 ",
+        },
+        {
+          provider: "external",
+          kind: "jira",
+          id: "RX-43",
+        } as Parameters<typeof normalizeComposerIntegrationReferences>[0][number],
+        {
+          provider: "atlassian",
+          kind: "github",
+          id: "RX-44",
+        } as Parameters<typeof normalizeComposerIntegrationReferences>[0][number],
+        { provider: "atlassian", kind: "confluence", id: "bad\0id" },
+      ]),
+    ).toEqual([
+      {
+        provider: "atlassian",
+        kind: "jira",
+        id: "RX-42",
+        key: "RX-42",
+        title: "Fix composer",
+        url: "https://example.atlassian.net/browse/RX-42",
       },
     ]);
   });
