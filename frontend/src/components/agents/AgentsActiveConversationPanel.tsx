@@ -137,7 +137,7 @@ function PlanComposerCtaRow({
 
   return (
     <div
-      className="mx-2 mb-2 flex flex-col gap-2 rounded-md border px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+      className="mx-2 mb-2 rounded-md border px-3 py-2.5"
       style={{
         backgroundColor: "var(--bg-surface)",
         borderColor: "var(--border-subtle)",
@@ -146,14 +146,17 @@ function PlanComposerCtaRow({
       }}
       data-testid="agents-plan-composer-cta-row"
     >
-      <div className="flex min-w-0 items-start gap-2">
+      <div
+        className="flex min-w-0 items-start gap-2"
+        data-testid="agents-plan-composer-cta-copy"
+      >
         <Lightbulb
           className="mt-0.5 h-4 w-4 shrink-0"
           style={{ color: "var(--accent-primary)" }}
           aria-hidden="true"
         />
         <p
-          className="min-w-0 text-[0.8125rem] leading-5"
+          className="min-w-0 flex-1 text-[0.8125rem] leading-5"
           style={{ color: "var(--text-secondary)" }}
           data-testid="agents-plan-composer-cta-hint"
         >
@@ -161,9 +164,10 @@ function PlanComposerCtaRow({
         </p>
       </div>
       <div
-        className="flex shrink-0 flex-wrap items-center gap-2"
+        className="mt-2 flex flex-wrap items-center gap-2 pl-6 sm:justify-end"
         role="group"
         aria-label="Plan next actions"
+        data-testid="agents-plan-composer-cta-actions"
       >
         {actions.map((action) => {
           const Icon = action.isPending ? Loader2 : action.icon;

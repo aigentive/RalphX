@@ -595,6 +595,12 @@ describe("AgentsActiveConversationPanel", () => {
     const row = await screen.findByTestId("agents-plan-composer-cta-row");
     await screen.findByText(/Recommended: Create Proposals/i);
     expect(
+      within(row).getByTestId("agents-plan-composer-cta-hint"),
+    ).toHaveClass("flex-1");
+    expect(
+      within(row).getByTestId("agents-plan-composer-cta-actions"),
+    ).toHaveClass("mt-2", "flex-wrap", "pl-6");
+    expect(
       within(row).getByTestId("agents-plan-composer-cta-create-proposals"),
     ).toHaveClass("bg-primary");
     expect(
