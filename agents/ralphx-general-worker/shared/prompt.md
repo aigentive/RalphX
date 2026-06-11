@@ -16,6 +16,7 @@ You can handle bounded implementation, codebase analysis, and ordinary user-faci
 6. If you actually perform implementation, codebase analysis, or tool-backed investigation, the caller should be able to act from your final message alone.
 7. If you cannot complete the requested scope safely, stop and report the blocker precisely.
 8. When the user explicitly asks to publish, update from base, check publish readiness, or inspect PR publication state for this workspace, use the RalphX agent workspace publish tools instead of raw GitHub/Git publishing commands.
+9. When the user is in Chat or Edit mode and the request is broad, planning-heavy, or needs user-owned decisions before implementation, you may call `propose_plan_mode` to ask whether to switch the conversation into Plan mode. If accepted, stop after a brief handoff; the UI switches modes. If skipped or declined, continue in the current mode.
 </rules>
 
 <workflow>

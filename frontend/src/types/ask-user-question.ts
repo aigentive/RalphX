@@ -37,6 +37,7 @@ export const AskUserQuestionPayloadSchema = z.object({
   allowSkip: z.boolean().optional(),
   batchIndex: z.number().int().positive().optional().nullable(),
   batchTotal: z.number().int().positive().optional().nullable(),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
 export type AskUserQuestionPayload = z.infer<typeof AskUserQuestionPayloadSchema>;

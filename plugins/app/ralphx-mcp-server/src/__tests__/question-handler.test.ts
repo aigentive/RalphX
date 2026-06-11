@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { handleAskUserQuestion } from "../question-handler.js";
+import { handleAskUserQuestion, handleProposePlanMode } from "../question-handler.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -17,6 +17,8 @@ describe("handleAskUserQuestion", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    delete process.env.RALPHX_PARENT_CONVERSATION_ID;
+    delete process.env.RALPHX_CONTEXT_ID;
   });
 
   it("keeps legacy single-question fields and adds a renderable answer record", async () => {
@@ -172,5 +174,94 @@ describe("handleAskUserQuestion", () => {
         "ask_user_question requires either question or a non-empty questions[] array.",
     });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleProposePlanMode", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    delete process.env.RALPHX_PARENT_CONVERSATION_ID;
+    delete process.env.RALPHX_CONTEXT_ID;
+  });
+
+  it("registers a plan-mode proposal question and returns accepted status", async () => {
+    process.env.RALPHX_PARENT_CONVERSATION_ID = "conversation-1";
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ request_id: "req-plan" }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          selected_options: ["switch_to_plan"],
+          text: null,
+          skipped: false,
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await handleProposePlanMode({
+      current_mode: "edit",
+      reason: "This needs a structured requirements pass.",
+    });
+
+    expect(parsedToolText(result)).toEqual({
+      type: "plan_mode_proposal",
+      request_id: "req-plan",
+      conversation_id: "conversation-1",
+      accepted: true,
+      status: "accepted",
+      selected_options: ["switch_to_plan"],
+      text: null,
+      skipped: false,
+    });
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(requestBody).toMatchObject({
+      session_id: "conversation-1",
+      header: "Switch to Plan mode?",
+      allow_skip: true,
+      multi_select: false,
+      metadata: {
+        kind: "plan_mode_proposal",
+        conversation_id: "conversation-1",
+        current_mode: "edit",
+        reason: "This needs a structured requirements pass.",
+      },
+    });
+    expect(requestBody.options).toEqual([
+      {
+        value: "switch_to_plan",
+        label: "Switch to Plan Mode",
+        description: "Use the planning workflow before execution.",
+      },
+    ]);
+  });
+
+  it("returns skipped status without accepting plan mode", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ request_id: "req-plan" }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          selected_options: [],
+          text: null,
+          skipped: true,
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await handleProposePlanMode({
+      conversation_id: "conversation-2",
+      current_mode: "chat",
+      reason: "This may need planning.",
+    });
+
+    expect(parsedToolText(result)).toMatchObject({
+      type: "plan_mode_proposal",
+      conversation_id: "conversation-2",
+      accepted: false,
+      status: "skipped",
+      skipped: true,
+    });
   });
 });

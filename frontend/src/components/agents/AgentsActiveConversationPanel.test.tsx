@@ -40,6 +40,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   IntegratedChatPanel: ({
     additionalQuestionSessionIds,
     planApprovalAction,
+    onQuestionAnswered,
     renderComposer,
   }: {
     additionalQuestionSessionIds?: string[];
@@ -49,6 +50,11 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
       disabled?: boolean;
       isPending?: boolean;
     };
+    onQuestionAnswered?: (
+      question: Record<string, unknown>,
+      response: Record<string, unknown>,
+      result: Record<string, unknown>,
+    ) => void | Promise<void>;
     renderComposer: (props: Record<string, unknown>) => ReactNode;
   }) => (
     <div
@@ -65,6 +71,65 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
         >
           {planApprovalAction.label}
         </button>
+      )}
+      {onQuestionAnswered && (
+        <>
+          <button
+            type="button"
+            data-testid="accept-plan-mode-proposal"
+            onClick={() => {
+              void onQuestionAnswered(
+                {
+                  requestId: "req-plan-mode",
+                  sessionId: "conversation-1",
+                  question: "Switch this conversation to Plan mode?",
+                  options: [],
+                  multiSelect: false,
+                  allowSkip: true,
+                  metadata: {
+                    kind: "plan_mode_proposal",
+                    conversation_id: "conversation-1",
+                  },
+                },
+                {
+                  requestId: "req-plan-mode",
+                  selectedOptions: ["switch_to_plan"],
+                },
+                { success: true, deliveredToWaitingAgent: true },
+              );
+            }}
+          >
+            Accept plan proposal
+          </button>
+          <button
+            type="button"
+            data-testid="skip-plan-mode-proposal"
+            onClick={() => {
+              void onQuestionAnswered(
+                {
+                  requestId: "req-plan-mode",
+                  sessionId: "conversation-1",
+                  question: "Switch this conversation to Plan mode?",
+                  options: [],
+                  multiSelect: false,
+                  allowSkip: true,
+                  metadata: {
+                    kind: "plan_mode_proposal",
+                    conversation_id: "conversation-1",
+                  },
+                },
+                {
+                  requestId: "req-plan-mode",
+                  selectedOptions: [],
+                  skipped: true,
+                },
+                { success: true, deliveredToWaitingAgent: true },
+              );
+            }}
+          >
+            Skip plan proposal
+          </button>
+        </>
       )}
       {renderComposer({
         onSend: vi.fn(),
@@ -681,6 +746,50 @@ describe("AgentsActiveConversationPanel", () => {
     expect(
       screen.queryByTestId("agents-plan-composer-cta-row"),
     ).not.toBeInTheDocument();
+  });
+
+  it("switches to Plan mode when the user accepts a plan-mode proposal question", async () => {
+    const user = userEvent.setup();
+    const planWorkspace = { ...workspace(), mode: "plan" as const };
+    switchAgentConversationModeMock.mockResolvedValue({
+      workspace: planWorkspace,
+    });
+    const onConversationModeSwitched = vi.fn();
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "edit" },
+      activeConversationMode: "edit",
+      activeWorkspace: { ...workspace(), mode: "edit" },
+      onConversationModeSwitched,
+    });
+
+    await user.click(screen.getByTestId("accept-plan-mode-proposal"));
+
+    await waitFor(() =>
+      expect(switchAgentConversationModeMock).toHaveBeenCalledWith({
+        conversationId: "conversation-1",
+        mode: "plan",
+      }),
+    );
+    expect(onConversationModeSwitched).toHaveBeenCalledWith(
+      "conversation-1",
+      "plan",
+      planWorkspace,
+    );
+  });
+
+  it("keeps the current mode when the user skips a plan-mode proposal question", async () => {
+    const user = userEvent.setup();
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "chat" },
+      activeConversationMode: "chat",
+      activeWorkspace: { ...workspace(), mode: "chat" },
+    });
+
+    await user.click(screen.getByTestId("skip-plan-mode-proposal"));
+
+    expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
   });
 
   it("starts direct implementation from the composer CTA row with the selected runtime", async () => {

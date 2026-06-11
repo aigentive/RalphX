@@ -1136,6 +1136,7 @@ pub struct QuestionRequestInput {
     pub allow_skip: bool,
     pub batch_index: Option<u32>,
     pub batch_total: Option<u32>,
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]

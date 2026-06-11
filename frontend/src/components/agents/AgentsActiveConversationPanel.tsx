@@ -26,6 +26,10 @@ import {
   IntegratedChatPanel,
   type IntegratedChatComposerRenderProps,
 } from "@/components/Chat/IntegratedChatPanel";
+import type {
+  AskUserQuestionPayload,
+  AskUserQuestionResponse,
+} from "@/types/ask-user-question";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { buildStoreKey } from "@/lib/chat-context-registry";
@@ -95,6 +99,28 @@ import {
 } from "./agentWorkspaceQueries";
 
 const AGENTS_CHAT_CONTENT_WIDTH_CLASS = "max-w-[980px]";
+const PLAN_MODE_PROPOSAL_KIND = "plan_mode_proposal";
+const PLAN_MODE_PROPOSAL_ACCEPT_VALUE = "switch_to_plan";
+
+function getPlanModeProposalConversationId(
+  question: AskUserQuestionPayload,
+): string | null {
+  const metadata = question.metadata;
+  if (!metadata || metadata.kind !== PLAN_MODE_PROPOSAL_KIND) {
+    return null;
+  }
+  const conversationId = metadata.conversation_id;
+  return typeof conversationId === "string" && conversationId.trim()
+    ? conversationId.trim()
+    : question.sessionId ?? null;
+}
+
+function acceptsPlanModeProposal(response: AskUserQuestionResponse): boolean {
+  return (
+    response.skipped !== true &&
+    response.selectedOptions.includes(PLAN_MODE_PROPOSAL_ACCEPT_VALUE)
+  );
+}
 
 function parseForkCommand(message: string): string | null {
   const trimmed = message.trim();
@@ -965,6 +991,75 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     handleApprovePlanFromQuestion,
     isApprovingPlan,
   ]);
+  const handleQuestionAnswered = useCallback(
+    async (
+      question: AskUserQuestionPayload,
+      response: AskUserQuestionResponse,
+    ) => {
+      const proposalConversationId = getPlanModeProposalConversationId(question);
+      if (!proposalConversationId || !acceptsPlanModeProposal(response)) {
+        return;
+      }
+
+      if (
+        isFocusedChildChat ||
+        activeConversation.contextType !== "project" ||
+        proposalConversationId !== selectedConversationId
+      ) {
+        return;
+      }
+
+      if (activeConversationMode === "plan") {
+        onConversationModeSwitched(
+          selectedConversationId,
+          "plan",
+          activeWorkspace,
+        );
+        return;
+      }
+
+      if (activeConversationModeLocked) {
+        toast.error(
+          activeWorkspace?.modeSwitchLockReason ??
+            "This conversation cannot switch modes while the workspace is busy.",
+        );
+        return;
+      }
+
+      try {
+        const result = await chatApi.switchAgentConversationMode({
+          conversationId: selectedConversationId,
+          mode: "plan",
+        });
+        if (result.workspace) {
+          queryClient.setQueryData(
+            agentWorkspaceKeys.workspace(selectedConversationId),
+            result.workspace,
+          );
+        }
+        onConversationModeSwitched(
+          selectedConversationId,
+          "plan",
+          result.workspace ?? null,
+        );
+        void invalidateWorkspaceQueries(queryClient, selectedConversationId);
+        toast.success("Switched to Plan mode");
+      } catch (err) {
+        console.error("Failed to switch to Plan mode:", err);
+        toast.error(err instanceof Error ? err.message : "Failed to switch to Plan mode");
+      }
+    },
+    [
+      activeConversation.contextType,
+      activeConversationMode,
+      activeConversationModeLocked,
+      activeWorkspace,
+      isFocusedChildChat,
+      onConversationModeSwitched,
+      queryClient,
+      selectedConversationId,
+    ],
+  );
 
   return (
     <div
@@ -1002,6 +1097,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                 }
               : {})}
             onUserMessageSent={onAgentUserMessageSent}
+            onQuestionAnswered={handleQuestionAnswered}
             onChildSessionNavigate={onFocusIdeationSession}
             hideHeaderSessionControls
             hideSessionToolbar

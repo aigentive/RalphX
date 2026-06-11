@@ -61,12 +61,14 @@ async fn test_pending_question_info_serialization() {
         allow_skip: true,
         batch_index: None,
         batch_total: None,
+        metadata: Some(serde_json::json!({ "kind": "plan_mode_proposal" })),
     };
     let json = serde_json::to_string(&info).unwrap();
     assert!(json.contains("\"request_id\":\"req-123\""));
     assert!(json.contains("\"session_id\":\"session-456\""));
     assert!(json.contains("\"question\":\"Which approach?\""));
     assert!(json.contains("\"allow_skip\":true"));
+    assert!(json.contains("\"kind\":\"plan_mode_proposal\""));
 }
 
 #[tokio::test]
@@ -84,6 +86,7 @@ async fn test_register_with_metadata_tracks_skip_and_batch_progress() {
             false,
             Some(2),
             Some(3),
+            None,
         )
         .await;
 
@@ -598,6 +601,7 @@ mod with_repo {
                 allow_skip: true,
                 batch_index: None,
                 batch_total: None,
+                metadata: None,
             };
             repo.create_pending(&info).await.unwrap();
         }

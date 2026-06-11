@@ -3,6 +3,7 @@ use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 use rusqlite::Connection;
+use serde_json::Value;
 
 use super::DbConnection;
 use crate::application::question_state::{PendingQuestionInfo, QuestionAnswer, QuestionOption};
@@ -27,6 +28,12 @@ impl SqliteQuestionRepository {
     }
 }
 
+fn parse_metadata_json(metadata_json: Option<String>) -> AppResult<Option<Value>> {
+    metadata_json
+        .map(|json| serde_json::from_str(&json).map_err(|e| AppError::Database(e.to_string())))
+        .transpose()
+}
+
 #[async_trait]
 impl QuestionRepository for SqliteQuestionRepository {
     async fn create_pending(&self, info: &PendingQuestionInfo) -> AppResult<()> {
@@ -40,6 +47,7 @@ impl QuestionRepository for SqliteQuestionRepository {
         let allow_skip = info.allow_skip;
         let batch_index = info.batch_index.map(i64::from);
         let batch_total = info.batch_total.map(i64::from);
+        let metadata_json = info.metadata.as_ref().map(ToString::to_string);
 
         self.db
             .run(move |conn| {
@@ -54,9 +62,10 @@ impl QuestionRepository for SqliteQuestionRepository {
                         allow_skip,
                         batch_index,
                         batch_total,
+                        metadata,
                         status
                      )
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending')",
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending')",
                     rusqlite::params![
                         request_id,
                         session_id,
@@ -67,6 +76,7 @@ impl QuestionRepository for SqliteQuestionRepository {
                         allow_skip as i64,
                         batch_index,
                         batch_total,
+                        metadata_json,
                     ],
                 )?;
                 Ok(())
@@ -110,7 +120,8 @@ impl QuestionRepository for SqliteQuestionRepository {
                             multi_select,
                             allow_skip,
                             batch_index,
-                            batch_total
+                            batch_total,
+                            metadata
                      FROM pending_questions
                      WHERE status IN ('pending', 'wait_expired')",
                 )?;
@@ -129,6 +140,7 @@ impl QuestionRepository for SqliteQuestionRepository {
                         allow_skip_int,
                         row.get::<_, Option<i64>>(7)?,
                         row.get::<_, Option<i64>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
                     ))
                 })?;
 
@@ -144,9 +156,11 @@ impl QuestionRepository for SqliteQuestionRepository {
                         allow_skip_int,
                         batch_index,
                         batch_total,
+                        metadata_json,
                     ) = row_result?;
                     let options: Vec<QuestionOption> = serde_json::from_str(&options_json)
                         .map_err(|e| AppError::Database(e.to_string()))?;
+                    let metadata = parse_metadata_json(metadata_json)?;
                     results.push(PendingQuestionInfo {
                         request_id,
                         session_id,
@@ -157,6 +171,7 @@ impl QuestionRepository for SqliteQuestionRepository {
                         allow_skip: allow_skip_int != 0,
                         batch_index: batch_index.and_then(|value| u32::try_from(value).ok()),
                         batch_total: batch_total.and_then(|value| u32::try_from(value).ok()),
+                        metadata,
                     });
                 }
 
@@ -178,7 +193,8 @@ impl QuestionRepository for SqliteQuestionRepository {
                             multi_select,
                             allow_skip,
                             batch_index,
-                            batch_total
+                            batch_total,
+                            metadata
                      FROM pending_questions WHERE request_id = ?1",
                     rusqlite::params![request_id],
                     |row| {
@@ -195,6 +211,7 @@ impl QuestionRepository for SqliteQuestionRepository {
                             allow_skip_int,
                             row.get::<_, Option<i64>>(7)?,
                             row.get::<_, Option<i64>>(8)?,
+                            row.get::<_, Option<String>>(9)?,
                         ))
                     },
                 );
@@ -210,9 +227,11 @@ impl QuestionRepository for SqliteQuestionRepository {
                         allow_skip_int,
                         batch_index,
                         batch_total,
+                        metadata_json,
                     )) => {
                         let options: Vec<QuestionOption> = serde_json::from_str(&options_json)
                             .map_err(|e| AppError::Database(e.to_string()))?;
+                        let metadata = parse_metadata_json(metadata_json)?;
                         Ok(Some(PendingQuestionInfo {
                             request_id,
                             session_id,
@@ -223,6 +242,7 @@ impl QuestionRepository for SqliteQuestionRepository {
                             allow_skip: allow_skip_int != 0,
                             batch_index: batch_index.and_then(|value| u32::try_from(value).ok()),
                             batch_total: batch_total.and_then(|value| u32::try_from(value).ok()),
+                            metadata,
                         }))
                     }
                     Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),

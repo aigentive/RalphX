@@ -16,6 +16,7 @@ fn sample_question(request_id: &str) -> PendingQuestionInfo {
         allow_skip: true,
         batch_index: None,
         batch_total: None,
+        metadata: None,
     }
 }
 

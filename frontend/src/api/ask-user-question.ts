@@ -39,6 +39,7 @@ interface PendingQuestionInfoRaw {
   allow_skip?: boolean | null;
   batch_index?: number | null;
   batch_total?: number | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 export const askUserQuestionApi = {
@@ -88,6 +89,7 @@ export const askUserQuestionApi = {
       allowSkip: item.allow_skip ?? true,
       batchIndex: item.batch_index ?? null,
       batchTotal: item.batch_total ?? null,
+      metadata: item.metadata ?? null,
     }));
   },
 } as const;

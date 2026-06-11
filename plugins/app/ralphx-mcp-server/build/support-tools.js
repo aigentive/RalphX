@@ -156,6 +156,34 @@ export const SUPPORT_TOOLS = [
             required: ["conversation_id"],
         },
     },
+    {
+        name: "propose_plan_mode",
+        description: "Ask the user whether the current project Chat/Edit conversation should switch to Plan mode before continuing. " +
+            "Use when the request is broad, planning-heavy, or needs user-owned decisions before implementation. " +
+            "This blocks until the user accepts, declines, or skips. If accepted, the UI switches the active conversation to Plan mode; do not start ideation yourself in the same turn.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "Optional active agent conversation ID. Omit when RalphX provides the current conversation id in the MCP runtime context.",
+                },
+                current_mode: {
+                    type: "string",
+                    enum: ["chat", "edit"],
+                    description: "The current conversation mode when known.",
+                },
+                reason: {
+                    type: "string",
+                    description: "Concise user-facing reason Plan mode would help, such as needing requirements or a structured plan.",
+                },
+                question: {
+                    type: "string",
+                    description: "Optional exact question text. If omitted, RalphX generates one from reason.",
+                },
+            },
+        },
+    },
     // ========================================================================
     // PROJECT ANALYSIS TOOLS (worker/reviewer/merger + ralphx-project-analyzer agents)
     // ========================================================================

@@ -65,7 +65,7 @@ function normalizeQuestionPrompts(args) {
         isBatch: false,
     };
 }
-async function registerQuestion(sessionId, prompt, batchIndex, batchTotal) {
+async function registerQuestion(sessionId, prompt, batchIndex, batchTotal, metadata) {
     const registerResponse = await fetch(buildTauriApiUrl("question/request"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -82,6 +82,7 @@ async function registerQuestion(sessionId, prompt, batchIndex, batchTotal) {
             allow_skip: prompt.allow_skip,
             batch_index: batchIndex,
             batch_total: batchTotal,
+            ...(metadata !== undefined ? { metadata } : {}),
         }),
     });
     if (!registerResponse.ok) {
@@ -109,8 +110,8 @@ function buildQuestionAnswerRecord(prompt, answer, requestId, index) {
         skipped: answer.skipped ?? false,
     };
 }
-async function askSingleQuestion(sessionId, prompt, batchIndex, batchTotal) {
-    const requestId = await registerQuestion(sessionId, prompt, batchIndex, batchTotal);
+async function askSingleQuestion(sessionId, prompt, batchIndex, batchTotal, metadata) {
+    const requestId = await registerQuestion(sessionId, prompt, batchIndex, batchTotal, metadata);
     safeError(`[RalphX MCP] Question registered: ${requestId}`);
     // Keep our timeout just below the effective MCP tool ceiling so this path
     // returns structured timeout JSON instead of surfacing a raw transport error.
@@ -214,5 +215,92 @@ export async function handleAskUserQuestion(args) {
             },
         ],
     };
+}
+function currentWorkspaceConversationId(args) {
+    const explicit = args.conversation_id?.trim();
+    if (explicit) {
+        return explicit;
+    }
+    const parentConversationId = process.env.RALPHX_PARENT_CONVERSATION_ID?.trim();
+    if (parentConversationId) {
+        return parentConversationId;
+    }
+    const contextId = process.env.RALPHX_CONTEXT_ID?.trim();
+    if (contextId) {
+        return contextId;
+    }
+    throw new Error("propose_plan_mode requires conversation_id because RalphX did not provide the current conversation id to the MCP runtime context.");
+}
+/**
+ * Handle a plan-mode proposal tool call.
+ *
+ * This uses the same pending-question transport as ask_user_question so the
+ * UI can show a confirmation card and the agent receives a blocking result.
+ */
+export async function handleProposePlanMode(args) {
+    try {
+        const conversationId = currentWorkspaceConversationId(args);
+        const reason = args.reason?.trim() || "The request would benefit from planning first.";
+        const question = args.question?.trim() ||
+            `${reason} Switch this conversation to Plan mode before continuing?`;
+        const prompt = {
+            question,
+            header: "Switch to Plan mode?",
+            options: [
+                {
+                    label: "Switch to Plan Mode",
+                    value: "switch_to_plan",
+                    description: "Use the planning workflow before execution.",
+                },
+            ],
+            multi_select: false,
+            allow_skip: true,
+        };
+        const metadata = {
+            kind: "plan_mode_proposal",
+            conversation_id: conversationId,
+            current_mode: args.current_mode ?? null,
+            reason,
+        };
+        const result = await askSingleQuestion(conversationId, prompt, undefined, undefined, metadata);
+        if (!result.ok) {
+            return result.response;
+        }
+        const selectedOptions = result.answer.selected_options ?? [];
+        const skipped = result.answer.skipped ?? false;
+        const accepted = !skipped && selectedOptions.includes("switch_to_plan");
+        const status = accepted ? "accepted" : skipped ? "skipped" : "declined";
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        type: "plan_mode_proposal",
+                        request_id: result.requestId,
+                        conversation_id: conversationId,
+                        accepted,
+                        status,
+                        selected_options: selectedOptions,
+                        text: result.answer.text ?? null,
+                        skipped,
+                    }),
+                },
+            ],
+        };
+    }
+    catch (error) {
+        safeError(`[RalphX MCP] Failed to propose plan mode:`, error);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        error: true,
+                        message: `Failed to propose plan mode: ${error instanceof Error ? error.message : String(error)}`,
+                    }),
+                },
+            ],
+        };
+    }
 }
 //# sourceMappingURL=question-handler.js.map

@@ -41,6 +41,7 @@ pub async fn request_question(
             input.allow_skip,
             input.batch_index,
             input.batch_total,
+            input.metadata.clone(),
         )
         .await;
 
@@ -58,6 +59,7 @@ pub async fn request_question(
                 "allowSkip": input.allow_skip,
                 "batchIndex": input.batch_index,
                 "batchTotal": input.batch_total,
+                "metadata": &input.metadata,
             }),
         );
     }

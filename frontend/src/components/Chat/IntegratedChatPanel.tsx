@@ -65,9 +65,16 @@ import { useChatActions } from "@/hooks/useChatActions";
 import { useChatEvents } from "@/hooks/useChatEvents";
 import { useChatRecovery } from "@/hooks/useChatRecovery";
 // useAgentEvents is already called inside useChat — no direct import needed
-import { useAskUserQuestion } from "@/hooks/useAskUserQuestion";
+import {
+  useAskUserQuestion,
+  type SubmitQuestionAnswerResult,
+} from "@/hooks/useAskUserQuestion";
 import { useQuestionInput } from "@/hooks/useQuestionInput";
 import { QuestionInputBanner } from "./QuestionInputBanner";
+import type {
+  AskUserQuestionPayload,
+  AskUserQuestionResponse,
+} from "@/types/ask-user-question";
 import { RecoveryPromptDialog } from "@/components/recovery/RecoveryPromptDialog";
 import { useEventBus } from "@/providers/EventProvider";
 import { logger } from "@/lib/logger";
@@ -164,6 +171,11 @@ interface IntegratedChatPanelProps {
     content: string;
     result: SendAgentMessageResult;
   }) => void | Promise<void>;
+  onQuestionAnswered?: (
+    question: AskUserQuestionPayload,
+    response: AskUserQuestionResponse,
+    result: SubmitQuestionAnswerResult,
+  ) => void | Promise<void>;
 }
 
 export interface IntegratedChatComposerRenderProps {
@@ -222,6 +234,7 @@ export function IntegratedChatPanel({
   onChildSessionNavigate,
   renderComposer,
   onUserMessageSent,
+  onQuestionAnswered,
 }: IntegratedChatPanelProps) {
   const bus = useEventBus();
   const queryClient = useQueryClient();
@@ -926,6 +939,17 @@ export function IntegratedChatPanel({
     clearAnswered,
     isLoading: isSubmittingAnswer,
   } = questionState;
+  const handleSubmitQuestionAnswer = useCallback(
+    async (response: AskUserQuestionResponse): Promise<SubmitQuestionAnswerResult> => {
+      const question = activeQuestion ?? null;
+      const result = await submitAnswer(response);
+      if (question && result.success) {
+        await onQuestionAnswered?.(question, response, result);
+      }
+      return result;
+    },
+    [activeQuestion, onQuestionAnswered, submitAnswer],
+  );
 
   // Question UI state — chip selection, input sync, question-aware send
   const {
@@ -938,7 +962,7 @@ export function IntegratedChatPanel({
     handleQuestionSkip,
   } = useQuestionInput({
     activeQuestion: activeQuestion ?? null,
-    submitAnswer,
+    submitAnswer: handleSubmitQuestionAnswer,
     handleSend,
   });
 

@@ -130,6 +130,7 @@ async fn test_create_and_get_pending() {
         allow_skip: true,
         batch_index: None,
         batch_total: None,
+        metadata: None,
     };
 
     repo.create_pending(&info).await.unwrap();
@@ -152,6 +153,7 @@ async fn test_get_by_request_id() {
         allow_skip: true,
         batch_index: None,
         batch_total: None,
+        metadata: None,
     };
 
     repo.create_pending(&info).await.unwrap();
@@ -177,6 +179,7 @@ async fn test_resolve() {
         allow_skip: true,
         batch_index: None,
         batch_total: None,
+        metadata: None,
     };
 
     repo.create_pending(&info).await.unwrap();
@@ -225,6 +228,7 @@ async fn test_expire_all_pending() {
             allow_skip: true,
             batch_index: None,
             batch_total: None,
+            metadata: None,
         };
         repo.create_pending(&info).await.unwrap();
     }
@@ -258,6 +262,7 @@ async fn test_remove() {
         allow_skip: true,
         batch_index: None,
         batch_total: None,
+        metadata: None,
     };
 
     repo.create_pending(&info).await.unwrap();

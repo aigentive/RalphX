@@ -429,14 +429,27 @@ describe('getFilteredTools', () => {
     expect(toolNames).not.toContain('complete_plan_verification');
   });
 
-  it('should keep project chat on the scoped ideation append tool only', () => {
+  it('should keep project chat on scoped parent-chat planning tools only', () => {
     setAgentType(CHAT_PROJECT);
     const tools = getFilteredTools();
     const toolNames = tools.map((t) => t.name);
 
     expect(toolNames).toContain('suggest_task');
     expect(toolNames).toContain('list_tasks');
+    expect(toolNames).toContain('propose_plan_mode');
     expect(toolNames).toContain('append_task_to_ideation_plan');
+    expect(toolNames).not.toContain('start_ideation_session');
+    expect(toolNames).not.toContain('create_child_session');
+    expect(toolNames).not.toContain('create_task_proposal');
+    expect(toolNames).not.toContain('update_plan_artifact');
+  });
+
+  it('should let the general edit worker propose a Plan-mode handoff without exposing ideation tools', () => {
+    setAgentType(GENERAL_WORKER);
+    const tools = getFilteredTools();
+    const toolNames = tools.map((t) => t.name);
+
+    expect(toolNames).toContain('propose_plan_mode');
     expect(toolNames).not.toContain('start_ideation_session');
     expect(toolNames).not.toContain('create_child_session');
     expect(toolNames).not.toContain('create_task_proposal');

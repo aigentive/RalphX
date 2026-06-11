@@ -3,6 +3,7 @@
 // Mirrors the permission_state.rs pattern exactly
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,6 +34,8 @@ pub struct PendingQuestionInfo {
     pub allow_skip: bool,
     pub batch_index: Option<u32>,
     pub batch_total: Option<u32>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
 }
 
 fn default_allow_skip() -> bool {
@@ -139,6 +142,7 @@ impl QuestionState {
             true,
             None,
             None,
+            None,
         )
         .await
     }
@@ -155,6 +159,7 @@ impl QuestionState {
         allow_skip: bool,
         batch_index: Option<u32>,
         batch_total: Option<u32>,
+        metadata: Option<Value>,
     ) -> watch::Receiver<Option<QuestionAnswer>> {
         let (tx, rx) = watch::channel(None);
         let info = PendingQuestionInfo {
@@ -167,6 +172,7 @@ impl QuestionState {
             allow_skip,
             batch_index,
             batch_total,
+            metadata,
         };
 
         // Fire-and-forget persist to repo

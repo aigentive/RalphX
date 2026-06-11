@@ -8,6 +8,7 @@ capabilities:
     - fs_grep
     - fs_glob
     - get_artifact
+    - propose_plan_mode
     - get_agent_workspace_publish_status
     - check_agent_workspace_publish_readiness
     - update_agent_workspace_from_base

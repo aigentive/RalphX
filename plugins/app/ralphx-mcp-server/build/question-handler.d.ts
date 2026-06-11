@@ -28,6 +28,12 @@ export interface AskUserQuestionArgs {
     allow_skip?: boolean;
     questions?: QuestionPrompt[];
 }
+export interface ProposePlanModeArgs {
+    conversation_id?: string;
+    current_mode?: string;
+    reason?: string;
+    question?: string;
+}
 type ToolTextResult = {
     content: Array<{
         type: "text";
@@ -43,5 +49,12 @@ type ToolTextResult = {
  * 3. Return the answer JSON to the agent
  */
 export declare function handleAskUserQuestion(args: AskUserQuestionArgs): Promise<ToolTextResult>;
+/**
+ * Handle a plan-mode proposal tool call.
+ *
+ * This uses the same pending-question transport as ask_user_question so the
+ * UI can show a confirmation card and the agent receives a blocking result.
+ */
+export declare function handleProposePlanMode(args: ProposePlanModeArgs): Promise<ToolTextResult>;
 export {};
 //# sourceMappingURL=question-handler.d.ts.map

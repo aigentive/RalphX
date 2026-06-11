@@ -29,6 +29,7 @@ fn sample_info() -> PendingQuestionInfo {
         allow_skip: true,
         batch_index: None,
         batch_total: None,
+        metadata: None,
     }
 }
 
@@ -67,6 +68,10 @@ async fn test_skip_and_batch_metadata_round_trip() {
         allow_skip: false,
         batch_index: Some(2),
         batch_total: Some(3),
+        metadata: Some(serde_json::json!({
+            "kind": "plan_mode_proposal",
+            "conversation_id": "conversation-1",
+        })),
     };
     repo.create_pending(&info).await.unwrap();
 
@@ -74,6 +79,14 @@ async fn test_skip_and_batch_metadata_round_trip() {
     assert!(!found.allow_skip);
     assert_eq!(found.batch_index, Some(2));
     assert_eq!(found.batch_total, Some(3));
+    assert_eq!(
+        found
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("kind"))
+            .and_then(|value| value.as_str()),
+        Some("plan_mode_proposal"),
+    );
 
     let answer = QuestionAnswer {
         selected_options: vec![],
@@ -156,6 +169,7 @@ async fn test_expire_all_pending() {
             allow_skip: true,
             batch_index: None,
             batch_total: None,
+            metadata: None,
         };
         repo.create_pending(&info).await.unwrap();
     }
@@ -211,6 +225,7 @@ async fn test_expire_all_pending_via_question_state() {
             allow_skip: true,
             batch_index: None,
             batch_total: None,
+            metadata: None,
         };
         repo.create_pending(&info).await.unwrap();
     }
@@ -281,6 +296,7 @@ async fn test_multi_select_round_trip() {
         allow_skip: true,
         batch_index: None,
         batch_total: None,
+        metadata: None,
     };
     repo.create_pending(&info).await.unwrap();
 
