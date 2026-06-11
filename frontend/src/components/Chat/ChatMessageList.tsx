@@ -51,6 +51,7 @@ import {
   scrollElementToTrueBottom,
   shouldShowScrollToBottomControl,
   shouldStickToBottom,
+  shouldTreatScrollTopDecreaseAsUserAway,
   VISUAL_BOTTOM_EPSILON_PX,
 } from "./ChatMessageList.scroll";
 import {
@@ -1390,14 +1391,17 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       const previousScrollTop = lastObservedScrollTopRef.current;
       const isScrollingTowardBottom =
         previousScrollTop === null || el.scrollTop >= previousScrollTop;
-      if (
-        hasUserScrollInputRef.current &&
-        previousScrollTop !== null &&
-        el.scrollTop < previousScrollTop
+      if (visuallyAtBottom) {
+        isUserScrollingAwayFromBottomRef.current = false;
+      } else if (
+        shouldTreatScrollTopDecreaseAsUserAway({
+          hasUserScrollInput: hasUserScrollInputRef.current,
+          previousScrollTop,
+          currentScrollTop: el.scrollTop,
+          isVisuallyAtBottom: visuallyAtBottom,
+        })
       ) {
         markUserScrollingAwayFromBottom();
-      } else if (visuallyAtBottom) {
-        isUserScrollingAwayFromBottomRef.current = false;
       }
       lastObservedScrollTopRef.current = el.scrollTop;
       setHasScrollableOverflow(
@@ -1449,17 +1453,21 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
 
       const previousScrollTop = lastObservedScrollTopRef.current;
+      const visuallyAtBottom = isScrollElementVisuallyAtBottom(el);
+      if (visuallyAtBottom) {
+        isUserScrollingAwayFromBottomRef.current = false;
+        return;
+      }
       if (
-        hasUserScrollInputRef.current &&
-        previousScrollTop !== null &&
-        el.scrollTop < previousScrollTop
+        shouldTreatScrollTopDecreaseAsUserAway({
+          hasUserScrollInput: hasUserScrollInputRef.current,
+          previousScrollTop,
+          currentScrollTop: el.scrollTop,
+          isVisuallyAtBottom: visuallyAtBottom,
+        })
       ) {
         markUserScrollingAwayFromBottom();
         return;
-      }
-
-      if (isScrollElementVisuallyAtBottom(el)) {
-        isUserScrollingAwayFromBottomRef.current = false;
       }
     }, [markUserScrollingAwayFromBottom]);
 

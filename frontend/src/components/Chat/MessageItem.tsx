@@ -254,6 +254,13 @@ export const MessageItem = React.memo(function MessageItem({
     () => parsedToolCalls.filter((tc) => !shouldHideCompletedProjectOrchestrationToolCall(tc)),
     [parsedToolCalls],
   );
+  const parsedToolCallsById = useMemo(() => {
+    const byId = new Map<string, ToolCall>();
+    for (const toolCall of parsedToolCalls) {
+      byId.set(toolCall.id, toolCall);
+    }
+    return byId;
+  }, [parsedToolCalls]);
   const hasContentBlocks = parsedContentBlocks.length > 0;
   const copyableText = useMemo(() => {
     if (hasCustomBody) {
@@ -278,9 +285,10 @@ export const MessageItem = React.memo(function MessageItem({
     if (blocks.length === 0) return new Set<string>();
     const ids = new Set<string>();
     for (const block of blocks) {
-      if (block.type === "tool_use" && block.name && isTaskToolCall(block.name) && block.result) {
+      const matchingToolCall = block.id ? parsedToolCallsById.get(block.id) : undefined;
+      const result = block.result ?? matchingToolCall?.result;
+      if (block.type === "tool_use" && block.name && isTaskToolCall(block.name) && result) {
         // Task result may be an array of content blocks containing child tool_use/tool_result
-        const result = block.result;
         if (Array.isArray(result)) {
           for (const child of result) {
             if (child && typeof child === "object") {
@@ -296,7 +304,7 @@ export const MessageItem = React.memo(function MessageItem({
       }
     }
     return ids;
-  }, [parsedContentBlocks]);
+  }, [parsedContentBlocks, parsedToolCallsById]);
 
   return (
     <div
@@ -391,47 +399,60 @@ export const MessageItem = React.memo(function MessageItem({
               if (block.id && childToolCallIds.has(block.id)) {
                 return null;
               }
+              const matchingToolCall = block.id ? parsedToolCallsById.get(block.id) : undefined;
               const toolCall: ToolCall = {
-                id: block.id || `tool-${index}`,
-                name: block.name,
-                arguments: block.arguments,
-                result: block.result,
+                id: block.id || matchingToolCall?.id || `tool-${index}`,
+                name: block.name || matchingToolCall?.name || "unknown",
+                arguments: block.arguments ?? matchingToolCall?.arguments ?? {},
+                result: block.result ?? matchingToolCall?.result,
               };
-              if (block.resultPreviewTruncated) {
-                toolCall.resultPreviewTruncated = block.resultPreviewTruncated;
+              const resultPreviewTruncated = block.resultPreviewTruncated ?? matchingToolCall?.resultPreviewTruncated;
+              if (resultPreviewTruncated) {
+                toolCall.resultPreviewTruncated = resultPreviewTruncated;
               }
-              if (block.resultPreviewOriginalBytes != null) {
-                toolCall.resultPreviewOriginalBytes = block.resultPreviewOriginalBytes;
+              const resultPreviewOriginalBytes = block.resultPreviewOriginalBytes ?? matchingToolCall?.resultPreviewOriginalBytes;
+              if (resultPreviewOriginalBytes != null) {
+                toolCall.resultPreviewOriginalBytes = resultPreviewOriginalBytes;
               }
-              if (block.resultPreviewLineCount != null) {
-                toolCall.resultPreviewLineCount = block.resultPreviewLineCount;
+              const resultPreviewLineCount = block.resultPreviewLineCount ?? matchingToolCall?.resultPreviewLineCount;
+              if (resultPreviewLineCount != null) {
+                toolCall.resultPreviewLineCount = resultPreviewLineCount;
               }
-              if (block.resultPreviewOmittedLines != null) {
-                toolCall.resultPreviewOmittedLines = block.resultPreviewOmittedLines;
+              const resultPreviewOmittedLines = block.resultPreviewOmittedLines ?? matchingToolCall?.resultPreviewOmittedLines;
+              if (resultPreviewOmittedLines != null) {
+                toolCall.resultPreviewOmittedLines = resultPreviewOmittedLines;
               }
-              if (block.resultPreviewPaths) {
-                toolCall.resultPreviewPaths = block.resultPreviewPaths;
+              const resultPreviewPaths = block.resultPreviewPaths ?? matchingToolCall?.resultPreviewPaths;
+              if (resultPreviewPaths) {
+                toolCall.resultPreviewPaths = resultPreviewPaths;
               }
-              if (block.argumentsPreviewTruncated) {
-                toolCall.argumentsPreviewTruncated = block.argumentsPreviewTruncated;
+              const argumentsPreviewTruncated = block.argumentsPreviewTruncated ?? matchingToolCall?.argumentsPreviewTruncated;
+              if (argumentsPreviewTruncated) {
+                toolCall.argumentsPreviewTruncated = argumentsPreviewTruncated;
               }
-              if (block.argumentsPreviewOriginalBytes != null) {
-                toolCall.argumentsPreviewOriginalBytes = block.argumentsPreviewOriginalBytes;
+              const argumentsPreviewOriginalBytes = block.argumentsPreviewOriginalBytes ?? matchingToolCall?.argumentsPreviewOriginalBytes;
+              if (argumentsPreviewOriginalBytes != null) {
+                toolCall.argumentsPreviewOriginalBytes = argumentsPreviewOriginalBytes;
               }
-              if (block.argumentsPreviewLineCount != null) {
-                toolCall.argumentsPreviewLineCount = block.argumentsPreviewLineCount;
+              const argumentsPreviewLineCount = block.argumentsPreviewLineCount ?? matchingToolCall?.argumentsPreviewLineCount;
+              if (argumentsPreviewLineCount != null) {
+                toolCall.argumentsPreviewLineCount = argumentsPreviewLineCount;
               }
-              if (block.argumentsPreviewOmittedLines != null) {
-                toolCall.argumentsPreviewOmittedLines = block.argumentsPreviewOmittedLines;
+              const argumentsPreviewOmittedLines = block.argumentsPreviewOmittedLines ?? matchingToolCall?.argumentsPreviewOmittedLines;
+              if (argumentsPreviewOmittedLines != null) {
+                toolCall.argumentsPreviewOmittedLines = argumentsPreviewOmittedLines;
               }
-              if (block.diffPreview) {
-                toolCall.diffPreview = block.diffPreview;
+              const diffPreview = block.diffPreview ?? matchingToolCall?.diffPreview;
+              if (diffPreview) {
+                toolCall.diffPreview = diffPreview;
               }
-              if (block.detailRef) {
-                toolCall.detailRef = block.detailRef;
+              const detailRef = block.detailRef ?? matchingToolCall?.detailRef;
+              if (detailRef) {
+                toolCall.detailRef = detailRef;
               }
-              if (block.diffContext) {
-                toolCall.diffContext = block.diffContext;
+              const diffContext = block.diffContext ?? matchingToolCall?.diffContext;
+              if (diffContext) {
+                toolCall.diffContext = diffContext;
               }
               if (shouldHideCompletedProjectOrchestrationToolCall(toolCall)) {
                 return null;

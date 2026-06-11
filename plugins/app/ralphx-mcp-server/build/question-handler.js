@@ -93,6 +93,22 @@ async function registerQuestion(sessionId, prompt, batchIndex, batchTotal) {
     const result = (await registerResponse.json());
     return result.request_id;
 }
+function buildQuestionAnswerRecord(prompt, answer, requestId, index) {
+    return {
+        id: prompt.id ?? String(index + 1),
+        request_id: requestId,
+        header: prompt.header ?? null,
+        question: prompt.question,
+        options: prompt.options.map((option) => ({
+            label: option.label,
+            value: option.value ?? option.label,
+            ...(option.description !== undefined ? { description: option.description } : {}),
+        })),
+        selected_options: answer.selected_options ?? [],
+        text: answer.text ?? null,
+        skipped: answer.skipped ?? false,
+    };
+}
 async function askSingleQuestion(sessionId, prompt, batchIndex, batchTotal) {
     const requestId = await registerQuestion(sessionId, prompt, batchIndex, batchTotal);
     safeError(`[RalphX MCP] Question registered: ${requestId}`);
@@ -158,23 +174,22 @@ export async function handleAskUserQuestion(args) {
                 return result.response;
             }
             if (!isBatch) {
+                const answerRecord = buildQuestionAnswerRecord(prompt, result.answer, result.requestId, index);
                 return {
                     content: [
                         {
                             type: "text",
-                            text: JSON.stringify(result.answer),
+                            text: JSON.stringify({
+                                selected_options: result.answer.selected_options ?? [],
+                                text: result.answer.text ?? null,
+                                skipped: result.answer.skipped ?? false,
+                                answers: [answerRecord],
+                            }),
                         },
                     ],
                 };
             }
-            answers.push({
-                id: prompt.id ?? String(index + 1),
-                request_id: result.requestId,
-                question: prompt.question,
-                selected_options: result.answer.selected_options ?? [],
-                text: result.answer.text ?? null,
-                skipped: result.answer.skipped ?? false,
-            });
+            answers.push(buildQuestionAnswerRecord(prompt, result.answer, result.requestId, index));
         }
         catch (error) {
             safeError(`[RalphX MCP] Failed to ask question:`, error);

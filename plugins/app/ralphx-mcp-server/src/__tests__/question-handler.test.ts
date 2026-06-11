@@ -19,7 +19,7 @@ describe("handleAskUserQuestion", () => {
     vi.restoreAllMocks();
   });
 
-  it("preserves the legacy single-question answer shape", async () => {
+  it("keeps legacy single-question fields and adds a renderable answer record", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(jsonResponse({ request_id: "req-1" }))
@@ -34,6 +34,7 @@ describe("handleAskUserQuestion", () => {
 
     const result = await handleAskUserQuestion({
       session_id: "session-1",
+      header: "Launch gate",
       question: "Proceed?",
       options: [{ label: "Yes", value: "yes" }],
     });
@@ -42,6 +43,18 @@ describe("handleAskUserQuestion", () => {
       selected_options: ["yes"],
       text: null,
       skipped: false,
+      answers: [
+        {
+          id: "1",
+          request_id: "req-1",
+          header: "Launch gate",
+          question: "Proceed?",
+          options: [{ label: "Yes", value: "yes" }],
+          selected_options: ["yes"],
+          text: null,
+          skipped: false,
+        },
+      ],
     });
 
     const requestBody = JSON.parse(
@@ -99,7 +112,9 @@ describe("handleAskUserQuestion", () => {
         {
           id: "scope",
           request_id: "req-1",
+          header: null,
           question: "Which area should we focus on?",
+          options: [{ label: "Backend", value: "backend" }],
           selected_options: ["backend"],
           text: null,
           skipped: false,
@@ -107,7 +122,9 @@ describe("handleAskUserQuestion", () => {
         {
           id: "deadline",
           request_id: "req-2",
+          header: null,
           question: "Any deadline?",
+          options: [],
           selected_options: [],
           text: null,
           skipped: true,

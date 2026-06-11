@@ -55,6 +55,21 @@ interface NormalizedQuestionPrompt {
   allow_skip: boolean;
 }
 
+interface QuestionAnswerRecord {
+  id: string;
+  request_id: string;
+  header: string | null;
+  question: string;
+  options: Array<{
+    label: string;
+    value: string;
+    description?: string;
+  }>;
+  selected_options: string[];
+  text: string | null;
+  skipped: boolean;
+}
+
 type ToolTextResult = { content: Array<{ type: "text"; text: string }> };
 
 type AskQuestionResult =
@@ -165,6 +180,28 @@ async function registerQuestion(
   return result.request_id;
 }
 
+function buildQuestionAnswerRecord(
+  prompt: NormalizedQuestionPrompt,
+  answer: QuestionAnswer,
+  requestId: string,
+  index: number
+): QuestionAnswerRecord {
+  return {
+    id: prompt.id ?? String(index + 1),
+    request_id: requestId,
+    header: prompt.header ?? null,
+    question: prompt.question,
+    options: prompt.options.map((option) => ({
+      label: option.label,
+      value: option.value ?? option.label,
+      ...(option.description !== undefined ? { description: option.description } : {}),
+    })),
+    selected_options: answer.selected_options ?? [],
+    text: answer.text ?? null,
+    skipped: answer.skipped ?? false,
+  };
+}
+
 async function askSingleQuestion(
   sessionId: string,
   prompt: NormalizedQuestionPrompt,
@@ -244,14 +281,7 @@ export async function handleAskUserQuestion(
   }
 
   const { prompts, isBatch } = normalized;
-  const answers: Array<{
-    id: string;
-    request_id: string;
-    question: string;
-    selected_options: string[];
-    text: string | null;
-    skipped: boolean;
-  }> = [];
+  const answers: QuestionAnswerRecord[] = [];
 
   for (const [index, prompt] of prompts.entries()) {
     try {
@@ -267,24 +297,28 @@ export async function handleAskUserQuestion(
       }
 
       if (!isBatch) {
+        const answerRecord = buildQuestionAnswerRecord(
+          prompt,
+          result.answer,
+          result.requestId,
+          index
+        );
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify(result.answer),
+              text: JSON.stringify({
+                selected_options: result.answer.selected_options ?? [],
+                text: result.answer.text ?? null,
+                skipped: result.answer.skipped ?? false,
+                answers: [answerRecord],
+              }),
             },
           ],
         };
       }
 
-      answers.push({
-        id: prompt.id ?? String(index + 1),
-        request_id: result.requestId,
-        question: prompt.question,
-        selected_options: result.answer.selected_options ?? [],
-        text: result.answer.text ?? null,
-        skipped: result.answer.skipped ?? false,
-      });
+      answers.push(buildQuestionAnswerRecord(prompt, result.answer, result.requestId, index));
     } catch (error) {
       safeError(`[RalphX MCP] Failed to ask question:`, error);
       return {
