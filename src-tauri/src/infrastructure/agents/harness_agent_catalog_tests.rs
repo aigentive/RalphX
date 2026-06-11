@@ -1523,33 +1523,18 @@ fn pilot_agent_prompt_paths_exist_for_both_harnesses() {
             codex_path.is_some(),
             "expected codex prompt path for {agent_name}"
         );
-        if *agent_name == "ralphx-chat-project" {
-            assert!(
-                claude_path.as_ref().is_some_and(
-                    |path| path.ends_with("agents/ralphx-chat-project/claude/prompt.md")
-                ),
-                "expected ralphx-chat-project claude prompt to resolve through claude/prompt.md"
-            );
-            assert!(
-                codex_path.as_ref().is_some_and(
-                    |path| path.ends_with("agents/ralphx-chat-project/codex/prompt.md")
-                ),
-                "expected ralphx-chat-project codex prompt to resolve through codex/prompt.md"
-            );
-        } else {
-            assert!(
-                claude_path.as_ref().is_some_and(
-                    |path| path.ends_with(format!("agents/{agent_name}/shared/prompt.md"))
-                ),
-                "expected {agent_name} claude prompt to resolve through shared/prompt.md"
-            );
-            assert!(
-                codex_path.as_ref().is_some_and(
-                    |path| path.ends_with(format!("agents/{agent_name}/shared/prompt.md"))
-                ),
-                "expected {agent_name} codex prompt to resolve through shared/prompt.md"
-            );
-        }
+        assert!(
+            claude_path.as_ref().is_some_and(
+                |path| path.ends_with(format!("agents/{agent_name}/shared/prompt.md"))
+            ),
+            "expected {agent_name} claude prompt to resolve through shared/prompt.md"
+        );
+        assert!(
+            codex_path.as_ref().is_some_and(
+                |path| path.ends_with(format!("agents/{agent_name}/shared/prompt.md"))
+            ),
+            "expected {agent_name} codex prompt to resolve through shared/prompt.md"
+        );
     }
 
     for (agent_name, _, _) in CROSS_HARNESS_SUPPORT_AGENTS {
