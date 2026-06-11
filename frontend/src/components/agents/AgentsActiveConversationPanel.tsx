@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2,
   Clock,
@@ -176,12 +176,9 @@ function PlanComposerCtaRow({
   }
   const compactHint = getPlanComposerCompactHint(hint, actions);
   const hintDetails = getPlanComposerHintDetails(hint, compactHint);
-  const recommendedPrimaryLabel = compactHint.startsWith("Recommended:")
-    ? compactHint
-    : null;
-  const primaryActionId = (actions.find((action) => action.isPrimary) ?? actions[0])
-    ?.id;
-  const showInlineHint = recommendedPrimaryLabel == null;
+  const isRecommendation = compactHint.startsWith("Recommended:");
+  const primaryAction = actions.find((action) => action.isPrimary) ?? actions[0]!;
+  const secondaryActions = actions.filter((action) => action.id !== primaryAction.id);
   const detailsButton = hintDetails ? (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -209,10 +206,32 @@ function PlanComposerCtaRow({
       </TooltipContent>
     </Tooltip>
   ) : null;
+  const renderActionButton = (action: PlanComposerCtaAction) => {
+    const Icon = action.isPending ? Loader2 : action.icon;
+    return (
+      <Button
+        key={action.id}
+        type="button"
+        size="sm"
+        variant={action.isPrimary ? "default" : "outline"}
+        onClick={action.onClick}
+        disabled={action.disabled || action.isPending}
+        data-testid={`agents-plan-composer-cta-${action.id}`}
+      >
+        <Icon
+          className={
+            action.isPending ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"
+          }
+          aria-hidden="true"
+        />
+        <span>{action.label}</span>
+      </Button>
+    );
+  };
 
   return (
     <div
-      className="mx-2 mb-2 flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-2"
+      className="mx-2 mb-2 rounded-md border px-3 py-2.5"
       style={{
         backgroundColor: "var(--bg-surface)",
         borderColor: "var(--border-subtle)",
@@ -221,58 +240,55 @@ function PlanComposerCtaRow({
       }}
       data-testid="agents-plan-composer-cta-row"
     >
-      {showInlineHint && (
+      <div className="flex flex-wrap items-center gap-2">
         <div
           className="flex min-w-0 items-center gap-2 pr-1"
           data-testid="agents-plan-composer-cta-copy"
         >
+          {isRecommendation && (
+            <Lightbulb
+              className="h-4 w-4 shrink-0"
+              style={{ color: "var(--accent-primary)" }}
+              aria-hidden="true"
+            />
+          )}
           <p
-            className="min-w-0 truncate text-[0.8125rem] font-medium leading-5"
+            className={
+              isRecommendation
+                ? "min-w-0 text-[0.6875rem] font-semibold uppercase leading-5 tracking-[0.12em]"
+                : "min-w-0 truncate text-[0.8125rem] font-medium leading-5"
+            }
             style={{ color: "var(--text-primary)" }}
             data-testid="agents-plan-composer-cta-hint"
           >
-            {compactHint}
+            {isRecommendation ? "Recommended" : compactHint}
           </p>
           {detailsButton}
         </div>
-      )}
-      <div
-        className="flex min-w-0 flex-1 flex-wrap items-center gap-2"
-        role="group"
-        aria-label="Plan next actions"
-        data-testid="agents-plan-composer-cta-actions"
-      >
-        {actions.map((action) => {
-          const Icon = action.isPending ? Loader2 : action.icon;
-          const actionLabel =
-            action.id === primaryActionId && recommendedPrimaryLabel
-              ? recommendedPrimaryLabel
-              : action.label;
-          return (
-            <Fragment key={action.id}>
-              <Button
-                type="button"
-                size="sm"
-                variant={action.isPrimary ? "default" : "outline"}
-                onClick={action.onClick}
-                disabled={action.disabled || action.isPending}
-                data-testid={`agents-plan-composer-cta-${action.id}`}
-              >
-                <Icon
-                  className={
-                    action.isPending
-                      ? "h-3.5 w-3.5 animate-spin"
-                      : "h-3.5 w-3.5"
-                  }
-                  aria-hidden="true"
-                />
-                <span>{actionLabel}</span>
-              </Button>
-              {!showInlineHint && action.id === primaryActionId ? detailsButton : null}
-            </Fragment>
-          );
-        })}
+        <div
+          className="flex flex-wrap items-center gap-2"
+          role="group"
+          aria-label="Recommended plan action"
+          data-testid="agents-plan-composer-cta-actions"
+        >
+          {renderActionButton(primaryAction)}
+        </div>
       </div>
+      {secondaryActions.length > 0 && (
+        <div
+          className="mt-2 flex flex-wrap items-center gap-2 border-t pt-2"
+          style={{
+            borderColor: "var(--border-subtle)",
+            borderStyle: "solid",
+            borderWidth: "1px 0 0",
+          }}
+          role="group"
+          aria-label="Other plan actions"
+          data-testid="agents-plan-composer-cta-secondary-actions"
+        >
+          {secondaryActions.map(renderActionButton)}
+        </div>
+      )}
     </div>
   );
 }

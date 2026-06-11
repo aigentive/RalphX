@@ -596,13 +596,18 @@ describe("AgentsActiveConversationPanel", () => {
     });
 
     const row = await screen.findByTestId("agents-plan-composer-cta-row");
-    const recommendedAction = await screen.findByRole("button", {
-      name: /Recommended: Create Proposals/i,
+    await waitFor(() =>
+      expect(
+        within(row).getByTestId("agents-plan-composer-cta-create-proposals"),
+      ).toHaveClass("bg-primary"),
+    );
+    const recommendedAction = within(row).getByRole("button", {
+      name: /Create Proposals/i,
     });
-    expect(row).toHaveClass("flex", "items-center");
+    expect(row).toHaveClass("rounded-md", "border");
     expect(
-      within(row).queryByTestId("agents-plan-composer-cta-copy"),
-    ).not.toBeInTheDocument();
+      within(row).getByTestId("agents-plan-composer-cta-hint"),
+    ).toHaveTextContent("Recommended");
     expect(row).not.toHaveTextContent(/The plan spans several tracked phases/i);
     expect(
       within(row).getByRole("button", { name: /Plan recommendation details/i }),
@@ -616,12 +621,19 @@ describe("AgentsActiveConversationPanel", () => {
     );
     expect(
       within(row).getByTestId("agents-plan-composer-cta-actions"),
-    ).toHaveClass("flex-1", "flex-wrap");
+    ).toHaveClass("flex-wrap", "items-center");
     expect(
       within(row).getByTestId("agents-plan-composer-cta-create-proposals"),
     ).toHaveClass("bg-primary");
     expect(
-      within(row).getByRole("button", { name: /Implement Directly/i }),
+      within(
+        within(row).getByTestId("agents-plan-composer-cta-secondary-actions"),
+      ).getByRole("button", { name: /Implement Directly/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(
+        within(row).getByTestId("agents-plan-composer-cta-secondary-actions"),
+      ).getByRole("button", { name: /Verify Plan/i }),
     ).toBeInTheDocument();
 
     await user.click(recommendedAction);
