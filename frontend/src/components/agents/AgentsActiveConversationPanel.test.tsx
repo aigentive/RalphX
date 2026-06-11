@@ -24,6 +24,7 @@ const {
   getVerificationSpecialistsMock,
   confirmVerificationMock,
   composerQuestionModeRef,
+  eventSubscribers,
 } = vi.hoisted(() => ({
   getSessionPlanMock: vi.fn(),
   getPlanComplexityAssessmentMock: vi.fn(),
@@ -34,6 +35,7 @@ const {
   getVerificationSpecialistsMock: vi.fn(),
   confirmVerificationMock: vi.fn(),
   composerQuestionModeRef: { current: undefined as unknown },
+  eventSubscribers: new Map<string, Set<(payload: unknown) => void>>(),
 }));
 
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
@@ -191,6 +193,19 @@ vi.mock("@/hooks/useVerificationStatus", () => ({
     useVerificationStatusMock(...args),
 }));
 
+vi.mock("@/providers/EventProvider", () => ({
+  useEventBus: () => ({
+    subscribe: (eventName: string, handler: (payload: unknown) => void) => {
+      const subscribers = eventSubscribers.get(eventName) ?? new Set();
+      subscribers.add(handler);
+      eventSubscribers.set(eventName, subscribers);
+      return () => {
+        subscribers.delete(handler);
+      };
+    },
+  }),
+}));
+
 vi.mock("@/hooks/useAgentModels", () => ({
   useAgentModels: () => ({
     isReady: true,
@@ -326,6 +341,10 @@ vi.mock("./AgentProviderSettingsButton", () => ({
 vi.mock("./AgentsTerminalRegion", () => ({
   AgentsTerminalDockHost: () => null,
 }));
+
+function emitEvent(eventName: string, payload: unknown) {
+  eventSubscribers.get(eventName)?.forEach((handler) => handler(payload));
+}
 
 function projectConversation(): AgentConversation {
   return {
@@ -469,6 +488,7 @@ function renderPanel(
 describe("AgentsActiveConversationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    eventSubscribers.clear();
     composerQuestionModeRef.current = undefined;
     getSessionPlanMock.mockResolvedValue(null);
     getPlanComplexityAssessmentMock.mockResolvedValue(null);
@@ -784,6 +804,48 @@ describe("AgentsActiveConversationPanel", () => {
         conversationId: "conversation-1",
         mode: "plan",
       }),
+    );
+    expect(onConversationModeSwitched).toHaveBeenCalledWith(
+      "conversation-1",
+      "plan",
+      planWorkspace,
+    );
+  });
+
+  it("retries the Plan-mode proposal switch after the active agent run completes", async () => {
+    const user = userEvent.setup();
+    const planWorkspace = { ...workspace(), mode: "plan" as const };
+    switchAgentConversationModeMock
+      .mockRejectedValueOnce(
+        new Error("Cannot change mode while the agent is running"),
+      )
+      .mockResolvedValueOnce({
+        workspace: planWorkspace,
+      });
+    const onConversationModeSwitched = vi.fn();
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "edit" },
+      activeConversationMode: "edit",
+      activeWorkspace: { ...workspace(), mode: "edit" },
+      onConversationModeSwitched,
+    });
+
+    await user.click(screen.getByTestId("accept-plan-mode-proposal"));
+
+    await waitFor(() =>
+      expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(1),
+    );
+    expect(onConversationModeSwitched).not.toHaveBeenCalled();
+
+    emitEvent("agent:run_completed", {
+      conversation_id: "conversation-1",
+      context_type: "project",
+      context_id: "conversation-1",
+    });
+
+    await waitFor(() =>
+      expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(2),
     );
     expect(onConversationModeSwitched).toHaveBeenCalledWith(
       "conversation-1",

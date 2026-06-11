@@ -30,6 +30,7 @@ import type {
   AskUserQuestionPayload,
   AskUserQuestionResponse,
 } from "@/types/ask-user-question";
+import type { AgentRunCompletedPayload } from "@/types/events";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { buildStoreKey } from "@/lib/chat-context-registry";
@@ -39,6 +40,7 @@ import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
+import { useEventBus } from "@/providers/EventProvider";
 import { selectQueuedMessages, useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import type {
@@ -120,6 +122,11 @@ function acceptsPlanModeProposal(response: AskUserQuestionResponse): boolean {
     response.skipped !== true &&
     response.selectedOptions.includes(PLAN_MODE_PROPOSAL_ACCEPT_VALUE)
   );
+}
+
+function isRunningModeSwitchError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes("Cannot change mode while the agent is running");
 }
 
 function parseForkCommand(message: string): string | null {
@@ -398,6 +405,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   terminalUnavailableReason,
 }: AgentsActiveConversationPanelProps) {
   const queryClient = useQueryClient();
+  const bus = useEventBus();
   const focusedChatSessionId = getFocusedChatSessionId(chatFocus);
   const { registry: modelRegistry } = useAgentModels();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
@@ -424,6 +432,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const [isCreatingPlanProposals, setIsCreatingPlanProposals] = useState(false);
   const [isImplementingPlanDirectly, setIsImplementingPlanDirectly] = useState(false);
   const [isStartingPlanVerification, setIsStartingPlanVerification] = useState(false);
+  const [
+    pendingPlanModeSwitchConversationId,
+    setPendingPlanModeSwitchConversationId,
+  ] = useState<string | null>(null);
   const markComposerActivity = useCallback(() => {
     setIsComposerHydrationPaused(true);
     setComposerActivityTick((tick) => tick + 1);
@@ -1006,6 +1018,113 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     handleApprovePlanFromQuestion,
     isApprovingPlan,
   ]);
+
+  const switchConversationToPlanMode = useCallback(
+    async (
+      conversationId: string,
+      options?: {
+        deferIfRunning?: boolean;
+        showDeferredToast?: boolean;
+      },
+    ): Promise<boolean> => {
+      try {
+        const result = await chatApi.switchAgentConversationMode({
+          conversationId,
+          mode: "plan",
+        });
+        if (result.workspace) {
+          queryClient.setQueryData(
+            agentWorkspaceKeys.workspace(conversationId),
+            result.workspace,
+          );
+        }
+        onConversationModeSwitched(
+          conversationId,
+          "plan",
+          result.workspace ?? null,
+        );
+        setPendingPlanModeSwitchConversationId((pendingConversationId) =>
+          pendingConversationId === conversationId
+            ? null
+            : pendingConversationId,
+        );
+        void invalidateWorkspaceQueries(queryClient, conversationId);
+        toast.success("Switched to Plan mode");
+        return true;
+      } catch (err) {
+        if (options?.deferIfRunning && isRunningModeSwitchError(err)) {
+          setPendingPlanModeSwitchConversationId(conversationId);
+          if (options.showDeferredToast !== false) {
+            toast.info("Will switch to Plan mode when this agent turn finishes.");
+          }
+          return false;
+        }
+
+        console.error("Failed to switch to Plan mode:", err);
+        toast.error(
+          err instanceof Error ? err.message : "Failed to switch to Plan mode",
+        );
+        return false;
+      }
+    },
+    [onConversationModeSwitched, queryClient],
+  );
+
+  useEffect(() => {
+    if (!pendingPlanModeSwitchConversationId) {
+      return;
+    }
+
+    let eventRetryTimer: number | undefined;
+    let fallbackRetryTimer: number | undefined;
+    const retryAfterCompletedRun = (payload: AgentRunCompletedPayload) => {
+      if (
+        payload.conversation_id !== pendingPlanModeSwitchConversationId ||
+        payload.teammate_name
+      ) {
+        return;
+      }
+      if (eventRetryTimer !== undefined) {
+        return;
+      }
+
+      eventRetryTimer = window.setTimeout(() => {
+        eventRetryTimer = undefined;
+        void switchConversationToPlanMode(pendingPlanModeSwitchConversationId, {
+          deferIfRunning: true,
+          showDeferredToast: false,
+        });
+      }, 150);
+    };
+    fallbackRetryTimer = window.setTimeout(() => {
+      fallbackRetryTimer = undefined;
+      void switchConversationToPlanMode(pendingPlanModeSwitchConversationId, {
+        deferIfRunning: true,
+        showDeferredToast: false,
+      });
+    }, 750);
+
+    const unsubscribeRunCompleted = bus.subscribe<AgentRunCompletedPayload>(
+      "agent:run_completed",
+      retryAfterCompletedRun,
+    );
+    const unsubscribeTurnCompleted = bus.subscribe<AgentRunCompletedPayload>(
+      "agent:turn_completed",
+      retryAfterCompletedRun,
+    );
+
+    return () => {
+      unsubscribeRunCompleted();
+      unsubscribeTurnCompleted();
+      if (eventRetryTimer !== undefined) {
+        window.clearTimeout(eventRetryTimer);
+      }
+      if (fallbackRetryTimer !== undefined) {
+        window.clearTimeout(fallbackRetryTimer);
+      }
+    };
+  }, [bus, pendingPlanModeSwitchConversationId, switchConversationToPlanMode]);
+
   const handleQuestionAnswered = useCallback(
     async (
       question: AskUserQuestionPayload,
@@ -1041,28 +1160,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         return;
       }
 
-      try {
-        const result = await chatApi.switchAgentConversationMode({
-          conversationId: selectedConversationId,
-          mode: "plan",
-        });
-        if (result.workspace) {
-          queryClient.setQueryData(
-            agentWorkspaceKeys.workspace(selectedConversationId),
-            result.workspace,
-          );
-        }
-        onConversationModeSwitched(
-          selectedConversationId,
-          "plan",
-          result.workspace ?? null,
-        );
-        void invalidateWorkspaceQueries(queryClient, selectedConversationId);
-        toast.success("Switched to Plan mode");
-      } catch (err) {
-        console.error("Failed to switch to Plan mode:", err);
-        toast.error(err instanceof Error ? err.message : "Failed to switch to Plan mode");
-      }
+      await switchConversationToPlanMode(selectedConversationId, {
+        deferIfRunning: true,
+      });
     },
     [
       activeConversation.contextType,
@@ -1071,8 +1171,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       activeWorkspace,
       isFocusedChildChat,
       onConversationModeSwitched,
-      queryClient,
       selectedConversationId,
+      switchConversationToPlanMode,
     ],
   );
 
