@@ -91,6 +91,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
                   metadata: {
                     kind: "plan_mode_proposal",
                     conversation_id: "conversation-1",
+                    reason: "The CLI surface needs planning before implementation.",
                   },
                 },
                 {
@@ -118,6 +119,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
                   metadata: {
                     kind: "plan_mode_proposal",
                     conversation_id: "conversation-1",
+                    reason: "The CLI surface needs planning before implementation.",
                   },
                 },
                 {
@@ -789,12 +791,14 @@ describe("AgentsActiveConversationPanel", () => {
       workspace: planWorkspace,
     });
     const onConversationModeSwitched = vi.fn();
+    const onAgentUserMessageSent = vi.fn();
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "edit" },
       activeConversationMode: "edit",
       activeWorkspace: { ...workspace(), mode: "edit" },
       onConversationModeSwitched,
+      onAgentUserMessageSent,
     });
 
     await user.click(screen.getByTestId("accept-plan-mode-proposal"));
@@ -809,6 +813,28 @@ describe("AgentsActiveConversationPanel", () => {
       "conversation-1",
       "plan",
       planWorkspace,
+    );
+    await waitFor(() =>
+      expect(sendAgentMessageMock).toHaveBeenCalledWith(
+        "project",
+        "project-1",
+        expect.stringContaining(
+          "Planning focus: The CLI surface needs planning before implementation.",
+        ),
+        undefined,
+        undefined,
+        expect.objectContaining({
+          conversationId: "conversation-1",
+          providerHarness: "claude",
+          modelId: "opus",
+          logicalEffort: "xhigh",
+        }),
+      ),
+    );
+    expect(onAgentUserMessageSent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Continue in Plan mode"),
+      }),
     );
   });
 

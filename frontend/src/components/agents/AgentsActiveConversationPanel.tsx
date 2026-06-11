@@ -110,6 +110,7 @@ const PLAN_MODE_SWITCH_MAX_RETRY_ATTEMPTS = 40;
 interface PendingPlanModeSwitch {
   conversationId: string;
   attempt: number;
+  autoContinueMessage: string | null;
 }
 
 function getPlanModeProposalConversationId(
@@ -130,6 +131,20 @@ function acceptsPlanModeProposal(response: AskUserQuestionResponse): boolean {
     response.skipped !== true &&
     response.selectedOptions.includes(PLAN_MODE_PROPOSAL_ACCEPT_VALUE)
   );
+}
+
+function getPlanModeProposalReason(question: AskUserQuestionPayload): string | null {
+  const reason = question.metadata?.reason;
+  return typeof reason === "string" && reason.trim() ? reason.trim() : null;
+}
+
+function buildPlanModeProposalContinuationMessage(
+  question: AskUserQuestionPayload,
+): string {
+  const reason = getPlanModeProposalReason(question);
+  const base =
+    "Continue in Plan mode from the accepted proposal. Work with me on a concrete plan before implementation.";
+  return reason ? `${base}\n\nPlanning focus: ${reason}` : base;
 }
 
 function isRunningModeSwitchError(err: unknown): boolean {
@@ -445,6 +460,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     setPendingPlanModeSwitch,
   ] = useState<PendingPlanModeSwitch | null>(null);
   const pendingPlanModeSwitchConversationIdRef = useRef<string | null>(null);
+  const pendingPlanModeSwitchAutoContinueMessageRef = useRef<string | null>(null);
   const pendingPlanModeSwitchRetryCountRef = useRef(0);
   const markComposerActivity = useCallback(() => {
     setIsComposerHydrationPaused(true);
@@ -1029,12 +1045,55 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     isApprovingPlan,
   ]);
 
+  const continuePlanModeConversation = useCallback(
+    async (
+      conversationId: string,
+      message: string | null | undefined,
+    ): Promise<boolean> => {
+      const trimmedMessage = message?.trim();
+      if (!trimmedMessage) {
+        return true;
+      }
+
+      try {
+        const sendResult = await chatApi.sendAgentMessage(
+          "project",
+          activeProjectId,
+          trimmedMessage,
+          undefined,
+          undefined,
+          {
+            conversationId,
+            providerHarness: normalizedActiveRuntime.provider,
+            modelId: normalizedActiveRuntime.modelId,
+            logicalEffort: normalizedActiveRuntime.effort,
+          },
+        );
+        onAgentUserMessageSent({
+          content: trimmedMessage,
+          result: sendResult,
+        });
+        return true;
+      } catch (err) {
+        console.error("Failed to continue in Plan mode:", err);
+        toast.error(
+          err instanceof Error
+            ? err.message
+            : "Switched to Plan mode, but failed to continue automatically",
+        );
+        return false;
+      }
+    },
+    [activeProjectId, normalizedActiveRuntime, onAgentUserMessageSent],
+  );
+
   const switchConversationToPlanMode = useCallback(
     async (
       conversationId: string,
       options?: {
         deferIfRunning?: boolean;
         showDeferredToast?: boolean;
+        autoContinueMessage?: string | null;
       },
     ): Promise<boolean> => {
       try {
@@ -1053,13 +1112,29 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           "plan",
           result.workspace ?? null,
         );
+        const autoContinueMessage =
+          options?.autoContinueMessage ??
+          (pendingPlanModeSwitchConversationIdRef.current === conversationId
+            ? pendingPlanModeSwitchAutoContinueMessageRef.current
+            : null);
         if (pendingPlanModeSwitchConversationIdRef.current === conversationId) {
           pendingPlanModeSwitchConversationIdRef.current = null;
+          pendingPlanModeSwitchAutoContinueMessageRef.current = null;
           pendingPlanModeSwitchRetryCountRef.current = 0;
           setPendingPlanModeSwitch(null);
         }
         void invalidateWorkspaceQueries(queryClient, conversationId);
-        toast.success("Switched to Plan mode");
+        const continued = await continuePlanModeConversation(
+          conversationId,
+          autoContinueMessage,
+        );
+        if (continued) {
+          toast.success(
+            autoContinueMessage
+              ? "Continuing in Plan mode"
+              : "Switched to Plan mode",
+          );
+        }
         return true;
       } catch (err) {
         if (options?.deferIfRunning && isRunningModeSwitchError(err)) {
@@ -1071,6 +1146,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
 
           if (nextAttempt > PLAN_MODE_SWITCH_MAX_RETRY_ATTEMPTS) {
             pendingPlanModeSwitchConversationIdRef.current = null;
+            pendingPlanModeSwitchAutoContinueMessageRef.current = null;
             pendingPlanModeSwitchRetryCountRef.current = 0;
             setPendingPlanModeSwitch(null);
             toast.error(
@@ -1080,10 +1156,15 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           }
 
           pendingPlanModeSwitchConversationIdRef.current = conversationId;
+          pendingPlanModeSwitchAutoContinueMessageRef.current =
+            options.autoContinueMessage ??
+            pendingPlanModeSwitchAutoContinueMessageRef.current;
           pendingPlanModeSwitchRetryCountRef.current = nextAttempt;
           setPendingPlanModeSwitch({
             conversationId,
             attempt: nextAttempt,
+            autoContinueMessage:
+              pendingPlanModeSwitchAutoContinueMessageRef.current,
           });
           if (options.showDeferredToast !== false) {
             toast.info("Will switch to Plan mode when this agent turn finishes.");
@@ -1098,7 +1179,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         return false;
       }
     },
-    [onConversationModeSwitched, queryClient],
+    [continuePlanModeConversation, onConversationModeSwitched, queryClient],
   );
 
   useEffect(() => {
@@ -1175,11 +1256,18 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         return;
       }
 
+      const autoContinueMessage =
+        buildPlanModeProposalContinuationMessage(question);
+
       if (activeConversationMode === "plan") {
         onConversationModeSwitched(
           selectedConversationId,
           "plan",
           activeWorkspace,
+        );
+        await continuePlanModeConversation(
+          selectedConversationId,
+          autoContinueMessage,
         );
         return;
       }
@@ -1194,6 +1282,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
 
       await switchConversationToPlanMode(selectedConversationId, {
         deferIfRunning: true,
+        autoContinueMessage,
       });
     },
     [
@@ -1201,6 +1290,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       activeConversationMode,
       activeConversationModeLocked,
       activeWorkspace,
+      continuePlanModeConversation,
       isFocusedChildChat,
       onConversationModeSwitched,
       selectedConversationId,
