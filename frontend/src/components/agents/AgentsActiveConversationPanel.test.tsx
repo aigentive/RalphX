@@ -544,6 +544,20 @@ describe("AgentsActiveConversationPanel", () => {
     );
   });
 
+  it("bridges active Chat-mode conversation questions into the workspace chat", () => {
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "chat" },
+      activeConversationMode: "chat",
+      activeWorkspace: { ...workspace(), mode: "chat" },
+      attachedIdeationSessionId: null,
+    });
+
+    expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+      "data-question-session-ids",
+      "conversation-1",
+    );
+  });
+
   it("provides an Approve Plan action for draft Plan-mode sessions", async () => {
     const user = userEvent.setup();
     getSessionPlanMock.mockResolvedValue({

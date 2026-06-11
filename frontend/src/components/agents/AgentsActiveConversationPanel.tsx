@@ -591,6 +591,21 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     !isFocusedChildChat && activeConversationMode === "plan"
       ? attachedIdeationSessionId
       : null;
+  const additionalQuestionSessionIds = useMemo(() => {
+    if (isFocusedChildChat || activeConversation.contextType !== "project") {
+      return undefined;
+    }
+    if (activeConversationMode === "plan") {
+      return attachedIdeationSessionId ? [attachedIdeationSessionId] : undefined;
+    }
+    return [selectedConversationId];
+  }, [
+    activeConversation.contextType,
+    activeConversationMode,
+    attachedIdeationSessionId,
+    isFocusedChildChat,
+    selectedConversationId,
+  ]);
   const planApprovalQuery = useQuery({
     queryKey: ["agents", "plan-approval", planApprovalSessionId],
     queryFn: () => artifactApi.getSessionPlan(planApprovalSessionId!),
@@ -1417,8 +1432,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
               );
               },
             }}
-            {...(!isFocusedChildChat && activeConversation.contextType === "project" && attachedIdeationSessionId
-              ? { additionalQuestionSessionIds: [attachedIdeationSessionId] }
+            {...(additionalQuestionSessionIds
+              ? { additionalQuestionSessionIds }
               : {})}
             {...(planApprovalAction !== undefined ? { planApprovalAction } : {})}
             headerContent={
