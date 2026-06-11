@@ -29,6 +29,8 @@ export interface QuestionInputBannerProps {
   selectedIndices: Set<number>;
   /** Called when user clicks a chip */
   onChipClick: (index: number) => void;
+  /** Called when user explicitly skips an optional question */
+  onSkip?: () => void;
   /** Called when user clicks the dismiss (X) button */
   onDismiss: () => void;
   /** When set, shows the collapsed answered state */
@@ -158,6 +160,7 @@ export function QuestionInputBanner({
   question,
   selectedIndices,
   onChipClick,
+  onSkip,
   onDismiss,
   answeredValue,
   onDismissAnswered,
@@ -197,6 +200,10 @@ export function QuestionInputBanner({
 
   const isAnswered = answeredValue !== undefined;
   const showExpandButton = computedHeight >= 280;
+  const canSkip = Boolean(question && question.allowSkip !== false && onSkip);
+  const progressLabel = question?.batchIndex && question?.batchTotal && question.batchTotal > 1
+    ? `${question.batchIndex} of ${question.batchTotal}`
+    : null;
 
   // Nothing to show: no active question and no answered state
   if (!question && !isAnswered) return null;
@@ -309,15 +316,44 @@ export function QuestionInputBanner({
                 ?
               </span>
 
-              <span
-                className="text-[0.6875rem] font-semibold flex-1"
-                style={{ color: "var(--text-muted)" }}
-              >
-                {question.header ?? "Question from agent"}
+              <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                <span
+                  className="truncate text-[0.6875rem] font-semibold"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {question.header ?? "Question from agent"}
+                </span>
+                {progressLabel && (
+                  <span
+                    className="flex-shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] font-semibold"
+                    style={{
+                      background: "var(--overlay-weak)",
+                      color: "var(--text-muted)",
+                    }}
+                  >
+                    {progressLabel}
+                  </span>
+                )}
               </span>
 
               {planApprovalAction && (
                 <PlanApprovalActionButton action={planApprovalAction} />
+              )}
+
+              {canSkip && (
+                <button
+                  type="button"
+                  onClick={onSkip}
+                  className="flex-shrink-0 rounded-md px-2 py-1 text-[0.6875rem] font-semibold transition-colors"
+                  style={{
+                    border: "1px solid var(--overlay-moderate)",
+                    background: "var(--bg-surface)",
+                    color: "var(--text-muted)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Skip
+                </button>
               )}
 
               {/* Expand/collapse button - only shown when content is near clipping threshold */}

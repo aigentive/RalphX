@@ -32,9 +32,11 @@ function formatLateQuestionAnswer(
   const selectedLabels = response.selectedOptions.map((selected) => (
     question.options.find((option) => option.value === selected)?.label ?? selected
   ));
-  const answer = selectedLabels.length > 0
-    ? selectedLabels.join(", ")
-    : response.customResponse?.trim() ?? "";
+  const answer = response.skipped === true
+    ? "Skipped"
+    : selectedLabels.length > 0
+      ? selectedLabels.join(", ")
+      : response.customResponse?.trim() ?? "";
 
   return [
     "Answer to previous clarification question:",
@@ -123,6 +125,29 @@ export function useQuestionInput({
     [activeQuestion, selectedOptions, submitAnswer, handleSend]
   );
 
+  const handleQuestionSkip = useCallback(
+    async () => {
+      if (!activeQuestion) return;
+
+      const response: AskUserQuestionResponse = {
+        requestId: activeQuestion.requestId,
+        taskId: activeQuestion.taskId,
+        selectedOptions: [],
+        skipped: true,
+      };
+
+      const submitResult = normalizeSubmitResult(await submitAnswer(response));
+      if (submitResult.success) {
+        setSelectedOptions(new Set());
+        setQuestionInputValue("");
+        if (!submitResult.deliveredToWaitingAgent) {
+          await handleSend(formatLateQuestionAnswer(activeQuestion, response));
+        }
+      }
+    },
+    [activeQuestion, submitAnswer, handleSend]
+  );
+
   return {
     selectedOptions,
     questionInputValue,
@@ -130,5 +155,6 @@ export function useQuestionInput({
     handleChipClick,
     handleMatchedOptions,
     handleQuestionSend,
+    handleQuestionSkip,
   };
 }

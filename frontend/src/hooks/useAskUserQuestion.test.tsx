@@ -293,6 +293,28 @@ describe("useAskUserQuestion", () => {
       expect(state.answeredQuestions[TEST_SESSION]).toBe("JWT tokens");
     });
 
+    it("should submit skipped answers and summarize them", async () => {
+      useUiStore.getState().setActiveQuestion(TEST_SESSION, validPayload);
+      const { result } = renderHook(() => useAskUserQuestion(TEST_SESSION));
+
+      const response: AskUserQuestionResponse = {
+        requestId: "req-test-123",
+        selectedOptions: [],
+        skipped: true,
+      };
+
+      await act(async () => {
+        await result.current.submitAnswer(response);
+      });
+
+      expect(mockResolve).toHaveBeenCalledWith({
+        requestId: "req-test-123",
+        selectedOptions: [],
+        skipped: true,
+      });
+      expect(useUiStore.getState().answeredQuestions[TEST_SESSION]).toBe("Skipped");
+    });
+
     it("should not call api if no active question", async () => {
       const { result } = renderHook(() => useAskUserQuestion(TEST_SESSION));
 

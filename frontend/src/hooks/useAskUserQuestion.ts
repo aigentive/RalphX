@@ -221,6 +221,7 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
             requestId: response.requestId,
             selectedOptions: response.selectedOptions,
             ...(response.customResponse !== undefined && { customResponse: response.customResponse }),
+            ...(response.skipped !== undefined && { skipped: response.skipped }),
           });
           deliveredToWaitingAgent = result?.deliveredToWaitingAgent ?? true;
         } else {
@@ -232,9 +233,11 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
         if (!currentQuestion || currentQuestion.requestId === submittedRequestId) {
           answeredRequestIds.set(submittedRequestId, Date.now());
           pruneAnsweredRequestIds();
-          const summary = response.selectedOptions.length > 0
-            ? response.selectedOptions.join(", ")
-            : response.customResponse ?? "";
+          const summary = response.skipped === true
+            ? "Skipped"
+            : response.selectedOptions.length > 0
+              ? response.selectedOptions.join(", ")
+              : response.customResponse ?? "";
           setAnsweredQuestion(currentSessionId, summary);
           clearActiveQuestion(currentSessionId);
 

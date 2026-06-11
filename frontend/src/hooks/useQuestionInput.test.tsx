@@ -83,4 +83,60 @@ describe("useQuestionInput", () => {
     );
     expect(handleSend).not.toHaveBeenCalled();
   });
+
+  it("submits a skipped response", async () => {
+    const submitAnswer = vi.fn().mockResolvedValue({
+      success: true,
+      deliveredToWaitingAgent: true,
+    });
+    const handleSend = vi.fn().mockResolvedValue(undefined);
+
+    const { result } = renderHook(() =>
+      useQuestionInput({
+        activeQuestion: question,
+        submitAnswer,
+        handleSend,
+      })
+    );
+
+    await act(async () => {
+      await result.current.handleQuestionSkip();
+    });
+
+    expect(submitAnswer).toHaveBeenCalledWith({
+      requestId: "req-1",
+      taskId: undefined,
+      selectedOptions: [],
+      skipped: true,
+    });
+    expect(handleSend).not.toHaveBeenCalled();
+  });
+
+  it("sends a late skipped answer as normal chat when the waiting agent is gone", async () => {
+    const submitAnswer = vi.fn().mockResolvedValue({
+      success: true,
+      deliveredToWaitingAgent: false,
+    });
+    const handleSend = vi.fn().mockResolvedValue(undefined);
+
+    const { result } = renderHook(() =>
+      useQuestionInput({
+        activeQuestion: question,
+        submitAnswer,
+        handleSend,
+      })
+    );
+
+    await act(async () => {
+      await result.current.handleQuestionSkip();
+    });
+
+    expect(handleSend).toHaveBeenCalledWith(
+      [
+        "Answer to previous clarification question:",
+        "Question: Which database should we use?",
+        "Answer: Skipped",
+      ].join("\n")
+    );
+  });
 });

@@ -34,6 +34,9 @@ export const AskUserQuestionPayloadSchema = z.object({
   header: z.string().optional().nullable(),
   options: z.array(AskUserQuestionOptionSchema).default([]),
   multiSelect: z.boolean().default(false),
+  allowSkip: z.boolean().optional(),
+  batchIndex: z.number().int().positive().optional().nullable(),
+  batchTotal: z.number().int().positive().optional().nullable(),
 });
 
 export type AskUserQuestionPayload = z.infer<typeof AskUserQuestionPayloadSchema>;
@@ -50,6 +53,7 @@ export const AskUserQuestionResponseSchema = z.object({
   taskId: z.string().min(1).optional(),
   selectedOptions: z.array(z.string()),
   customResponse: z.string().optional(),
+  skipped: z.boolean().optional(),
 });
 
 export type AskUserQuestionResponse = z.infer<typeof AskUserQuestionResponseSchema>;
@@ -86,7 +90,7 @@ export function hasCustomResponse(response: AskUserQuestionResponse): boolean {
  * Check if the response is valid (has selection or custom response)
  */
 export function isValidResponse(response: AskUserQuestionResponse): boolean {
-  return hasSelection(response) || hasCustomResponse(response);
+  return response.skipped === true || hasSelection(response) || hasCustomResponse(response);
 }
 
 /**
@@ -126,5 +130,18 @@ export function createCustomResponse(
     ...ids,
     selectedOptions: [],
     customResponse,
+  };
+}
+
+/**
+ * Create a response that explicitly skips a question
+ */
+export function createSkippedResponse(
+  ids: { requestId?: string; taskId?: string }
+): AskUserQuestionResponse {
+  return {
+    ...ids,
+    selectedOptions: [],
+    skipped: true,
   };
 }

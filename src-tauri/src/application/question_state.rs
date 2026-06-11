@@ -16,6 +16,8 @@ use crate::domain::repositories::QuestionRepository;
 pub struct QuestionAnswer {
     pub selected_options: Vec<String>,
     pub text: Option<String>,
+    #[serde(default)]
+    pub skipped: bool,
 }
 
 /// Metadata for a pending question
@@ -27,6 +29,14 @@ pub struct PendingQuestionInfo {
     pub header: Option<String>,
     pub options: Vec<QuestionOption>,
     pub multi_select: bool,
+    #[serde(default = "default_allow_skip")]
+    pub allow_skip: bool,
+    pub batch_index: Option<u32>,
+    pub batch_total: Option<u32>,
+}
+
+fn default_allow_skip() -> bool {
+    true
 }
 
 /// A single option in a question
@@ -119,6 +129,33 @@ impl QuestionState {
         options: Vec<QuestionOption>,
         multi_select: bool,
     ) -> watch::Receiver<Option<QuestionAnswer>> {
+        self.register_with_metadata(
+            request_id,
+            session_id,
+            question,
+            header,
+            options,
+            multi_select,
+            true,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Register a new pending question with UI metadata.
+    pub async fn register_with_metadata(
+        &self,
+        request_id: String,
+        session_id: String,
+        question: String,
+        header: Option<String>,
+        options: Vec<QuestionOption>,
+        multi_select: bool,
+        allow_skip: bool,
+        batch_index: Option<u32>,
+        batch_total: Option<u32>,
+    ) -> watch::Receiver<Option<QuestionAnswer>> {
         let (tx, rx) = watch::channel(None);
         let info = PendingQuestionInfo {
             request_id: request_id.clone(),
@@ -127,6 +164,9 @@ impl QuestionState {
             header,
             options,
             multi_select,
+            allow_skip,
+            batch_index,
+            batch_total,
         };
 
         // Fire-and-forget persist to repo

@@ -21,95 +21,168 @@ interface QuestionOption {
   description?: string;
 }
 
-export interface AskUserQuestionArgs {
-  session_id: string;
-  question: string;
+interface QuestionPrompt {
+  id?: string;
+  question?: string;
   header?: string;
   options?: QuestionOption[];
   multi_select?: boolean;
+  allow_skip?: boolean;
+}
+
+export interface AskUserQuestionArgs {
+  session_id: string;
+  question?: string;
+  header?: string;
+  options?: QuestionOption[];
+  multi_select?: boolean;
+  allow_skip?: boolean;
+  questions?: QuestionPrompt[];
 }
 
 interface QuestionAnswer {
-  answer: string;
   selected_options?: string[];
+  text?: string | null;
+  skipped?: boolean;
 }
 
-/**
- * Handle an ask_user_question tool call.
- *
- * Flow:
- * 1. POST to /api/question/request — registers the question, backend emits Tauri event
- * 2. GET /api/question/await/:request_id — blocks until user answers (about 5 min timeout)
- * 3. Return the answer JSON to the agent
- */
-export async function handleAskUserQuestion(
-  args: AskUserQuestionArgs
-): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-  safeError(
-    `[RalphX MCP] ask_user_question for session: ${args.session_id}`
-  );
+interface NormalizedQuestionPrompt {
+  id?: string;
+  question: string;
+  header?: string;
+  options: QuestionOption[];
+  multi_select: boolean;
+  allow_skip: boolean;
+}
 
-  // 1. Register question with Tauri backend
-  let request_id: string;
-  try {
-    const registerResponse = await fetch(
-      buildTauriApiUrl("question/request"),
+type ToolTextResult = { content: Array<{ type: "text"; text: string }> };
+
+type AskQuestionResult =
+  | { ok: true; answer: QuestionAnswer; requestId: string }
+  | { ok: false; response: ToolTextResult };
+
+function errorResponse(message: string): ToolTextResult {
+  return {
+    content: [
       {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: args.session_id,
-          question: args.question,
-          header: args.header,
-          options: (args.options ?? []).map((o) => ({
-            value: o.value ?? o.label,
-            label: o.label,
-            description: o.description,
-          })),
-          multi_select: args.multi_select ?? false,
+        type: "text",
+        text: JSON.stringify({
+          error: true,
+          message,
         }),
+      },
+    ],
+  };
+}
+
+function questionTimeoutResponse(): ToolTextResult {
+  return errorResponse(
+    "Question timed out waiting for user response. The user may be away. You can continue without the answer or try asking again later."
+  );
+}
+
+function normalizeQuestionPrompts(
+  args: AskUserQuestionArgs
+): { prompts: NormalizedQuestionPrompt[]; isBatch: boolean } | { error: string } {
+  if (Array.isArray(args.questions) && args.questions.length > 0) {
+    const prompts: NormalizedQuestionPrompt[] = [];
+    for (const [index, question] of args.questions.entries()) {
+      const text = question.question?.trim();
+      if (!text) {
+        return {
+          error: `Question ${index + 1} in questions[] is missing a question.`,
+        };
       }
-    );
-
-    if (!registerResponse.ok) {
-      const errorText = await registerResponse.text().catch(() => registerResponse.statusText);
-      throw new Error(
-        `Failed to register question: ${errorText}`
-      );
+      prompts.push({
+        id: question.id,
+        question: text,
+        header: question.header,
+        options: question.options ?? [],
+        multi_select: question.multi_select ?? false,
+        allow_skip: question.allow_skip ?? args.allow_skip ?? true,
+      });
     }
+    return { prompts, isBatch: true };
+  }
 
-    const result = (await registerResponse.json()) as { request_id: string };
-    request_id = result.request_id;
-
-    safeError(
-      `[RalphX MCP] Question registered: ${request_id}`
-    );
-  } catch (error) {
-    safeError(`[RalphX MCP] Failed to register question:`, error);
+  const text = args.question?.trim();
+  if (!text) {
     return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            error: true,
-            message: `Failed to register question: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          }),
-        },
-      ],
+      error: "ask_user_question requires either question or a non-empty questions[] array.",
     };
   }
 
-  // 2. Long-poll for user answer. Keep our timeout just below the effective
-  // MCP tool ceiling so this path returns structured timeout JSON instead of
-  // surfacing a raw transport error back to the agent.
+  return {
+    prompts: [
+      {
+        question: text,
+        header: args.header,
+        options: args.options ?? [],
+        multi_select: args.multi_select ?? false,
+        allow_skip: args.allow_skip ?? true,
+      },
+    ],
+    isBatch: false,
+  };
+}
+
+async function registerQuestion(
+  sessionId: string,
+  prompt: NormalizedQuestionPrompt,
+  batchIndex?: number,
+  batchTotal?: number
+): Promise<string> {
+  const registerResponse = await fetch(
+    buildTauriApiUrl("question/request"),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
+        question: prompt.question,
+        header: prompt.header,
+        options: prompt.options.map((o) => ({
+          value: o.value ?? o.label,
+          label: o.label,
+          description: o.description,
+        })),
+        multi_select: prompt.multi_select,
+        allow_skip: prompt.allow_skip,
+        batch_index: batchIndex,
+        batch_total: batchTotal,
+      }),
+    }
+  );
+
+  if (!registerResponse.ok) {
+    const errorText = await registerResponse
+      .text()
+      .catch(() => registerResponse.statusText);
+    throw new Error(`Failed to register question: ${errorText}`);
+  }
+
+  const result = (await registerResponse.json()) as { request_id: string };
+  return result.request_id;
+}
+
+async function askSingleQuestion(
+  sessionId: string,
+  prompt: NormalizedQuestionPrompt,
+  batchIndex?: number,
+  batchTotal?: number
+): Promise<AskQuestionResult> {
+  const requestId = await registerQuestion(sessionId, prompt, batchIndex, batchTotal);
+
+  safeError(`[RalphX MCP] Question registered: ${requestId}`);
+
+  // Keep our timeout just below the effective MCP tool ceiling so this path
+  // returns structured timeout JSON instead of surfacing a raw transport error.
   const { controller, timeoutId } = createHumanWaitAbortController();
   const waitStartedAt = Date.now();
 
   try {
     const answerResponse = await fetch(
-      buildTauriApiUrl(`question/await/${encodeURIComponent(request_id)}`),
+      buildTauriApiUrl(`question/await/${encodeURIComponent(requestId)}`),
       {
         method: "GET",
         signal: controller.signal,
@@ -120,62 +193,122 @@ export async function handleAskUserQuestion(
 
     if (!answerResponse.ok) {
       if (answerResponse.status === 408) {
-        // Timeout from backend
-        safeError(
-          `[RalphX MCP] Question ${request_id} timed out (backend)`
-        );
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                error: true,
-                message: "Question timed out waiting for user response. The user may be away. You can continue without the answer or try asking again later.",
-              }),
-            },
-          ],
-        };
+        safeError(`[RalphX MCP] Question ${requestId} timed out (backend)`);
+        return { ok: false, response: questionTimeoutResponse() };
       }
-      const errorText = await answerResponse.text().catch(() => answerResponse.statusText);
+      const errorText = await answerResponse
+        .text()
+        .catch(() => answerResponse.statusText);
       throw new Error(`Question await error: ${errorText}`);
     }
 
     const answer = (await answerResponse.json()) as QuestionAnswer;
 
-    safeError(
-      `[RalphX MCP] Question ${request_id} answered`
-    );
+    safeError(`[RalphX MCP] Question ${requestId} answered`);
 
     return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(answer),
-        },
-      ],
+      ok: true,
+      answer,
+      requestId,
     };
   } catch (error) {
     clearTimeout(timeoutId);
 
     const elapsedMs = Date.now() - waitStartedAt;
     if (isHumanWaitTimeoutError(error, elapsedMs, HUMAN_WAIT_CLIENT_TIMEOUT_MS)) {
-      safeError(
-        `[RalphX MCP] Question ${request_id} timed out (client/transport)`
+      safeError(`[RalphX MCP] Question ${requestId} timed out (client/transport)`);
+      return { ok: false, response: questionTimeoutResponse() };
+    }
+
+    safeError(`[RalphX MCP] Question await error:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Handle an ask_user_question tool call.
+ *
+ * Flow:
+ * 1. POST to /api/question/request — registers the question, backend emits Tauri event
+ * 2. GET /api/question/await/:request_id — blocks until user answers
+ * 3. Return the answer JSON to the agent
+ */
+export async function handleAskUserQuestion(
+  args: AskUserQuestionArgs
+): Promise<ToolTextResult> {
+  safeError(`[RalphX MCP] ask_user_question for session: ${args.session_id}`);
+
+  const normalized = normalizeQuestionPrompts(args);
+  if ("error" in normalized) {
+    return errorResponse(normalized.error);
+  }
+
+  const { prompts, isBatch } = normalized;
+  const answers: Array<{
+    id: string;
+    request_id: string;
+    question: string;
+    selected_options: string[];
+    text: string | null;
+    skipped: boolean;
+  }> = [];
+
+  for (const [index, prompt] of prompts.entries()) {
+    try {
+      const result = await askSingleQuestion(
+        args.session_id,
+        prompt,
+        isBatch ? index + 1 : undefined,
+        isBatch ? prompts.length : undefined
       );
+
+      if (!result.ok) {
+        return result.response;
+      }
+
+      if (!isBatch) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result.answer),
+            },
+          ],
+        };
+      }
+
+      answers.push({
+        id: prompt.id ?? String(index + 1),
+        request_id: result.requestId,
+        question: prompt.question,
+        selected_options: result.answer.selected_options ?? [],
+        text: result.answer.text ?? null,
+        skipped: result.answer.skipped ?? false,
+      });
+    } catch (error) {
+      safeError(`[RalphX MCP] Failed to ask question:`, error);
       return {
         content: [
           {
             type: "text",
             text: JSON.stringify({
               error: true,
-              message: "Question timed out waiting for user response. The user may be away. You can continue without the answer or try asking again later.",
+              message: `Failed to ask question ${index + 1}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
             }),
           },
         ],
       };
     }
-
-    safeError(`[RalphX MCP] Question await error:`, error);
-    throw error;
   }
+
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({ answers }),
+      },
+    ],
+  };
 }

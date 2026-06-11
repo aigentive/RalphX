@@ -127,6 +127,9 @@ async fn test_create_and_get_pending() {
             description: None,
         }],
         multi_select: false,
+        allow_skip: true,
+        batch_index: None,
+        batch_total: None,
     };
 
     repo.create_pending(&info).await.unwrap();
@@ -146,6 +149,9 @@ async fn test_get_by_request_id() {
         header: Some("Header".to_string()),
         options: vec![],
         multi_select: false,
+        allow_skip: true,
+        batch_index: None,
+        batch_total: None,
     };
 
     repo.create_pending(&info).await.unwrap();
@@ -168,6 +174,9 @@ async fn test_resolve() {
         header: None,
         options: vec![],
         multi_select: false,
+        allow_skip: true,
+        batch_index: None,
+        batch_total: None,
     };
 
     repo.create_pending(&info).await.unwrap();
@@ -175,6 +184,7 @@ async fn test_resolve() {
     let answer = QuestionAnswer {
         selected_options: vec!["a".to_string()],
         text: None,
+        skipped: false,
     };
     let resolved = repo.resolve("req-1", &answer).await.unwrap();
     assert!(resolved);
@@ -194,6 +204,7 @@ async fn test_resolve_nonexistent() {
     let answer = QuestionAnswer {
         selected_options: vec![],
         text: None,
+        skipped: false,
     };
     let resolved = repo.resolve("nope", &answer).await.unwrap();
     assert!(!resolved);
@@ -211,6 +222,9 @@ async fn test_expire_all_pending() {
             header: None,
             options: vec![],
             multi_select: false,
+            allow_skip: true,
+            batch_index: None,
+            batch_total: None,
         };
         repo.create_pending(&info).await.unwrap();
     }
@@ -219,6 +233,7 @@ async fn test_expire_all_pending() {
     let answer = QuestionAnswer {
         selected_options: vec![],
         text: Some("done".to_string()),
+        skipped: false,
     };
     repo.resolve("req-0", &answer).await.unwrap();
 
@@ -240,6 +255,9 @@ async fn test_remove() {
         header: None,
         options: vec![],
         multi_select: false,
+        allow_skip: true,
+        batch_index: None,
+        batch_total: None,
     };
 
     repo.create_pending(&info).await.unwrap();

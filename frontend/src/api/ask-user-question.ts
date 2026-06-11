@@ -19,6 +19,7 @@ export interface ResolveQuestionInput {
   requestId: string;
   selectedOptions: string[];
   customResponse?: string;
+  skipped?: boolean;
 }
 
 export interface ResolveQuestionResult {
@@ -35,6 +36,9 @@ interface PendingQuestionInfoRaw {
   header?: string | null;
   options: Array<{ value: string; label: string; description?: string }>;
   multi_select: boolean;
+  allow_skip?: boolean | null;
+  batch_index?: number | null;
+  batch_total?: number | null;
 }
 
 export const askUserQuestionApi = {
@@ -63,6 +67,7 @@ export const askUserQuestionApi = {
         requestId: input.requestId,
         selectedOptions: input.selectedOptions,
         customResponse: input.customResponse,
+        skipped: input.skipped ?? false,
       },
     });
   },
@@ -80,6 +85,9 @@ export const askUserQuestionApi = {
       header: item.header ?? null,
       options: item.options,
       multiSelect: item.multi_select,
+      allowSkip: item.allow_skip ?? true,
+      batchIndex: item.batch_index ?? null,
+      batchTotal: item.batch_total ?? null,
     }));
   },
 } as const;

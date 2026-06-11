@@ -31,13 +31,16 @@ pub async fn request_question(
     state
         .app_state
         .question_state
-        .register(
+        .register_with_metadata(
             request_id.clone(),
             input.session_id.clone(),
             input.question.clone(),
             input.header.clone(),
             options,
             input.multi_select,
+            input.allow_skip,
+            input.batch_index,
+            input.batch_total,
         )
         .await;
 
@@ -52,6 +55,9 @@ pub async fn request_question(
                 "header": &input.header,
                 "options": &input.options,
                 "multiSelect": input.multi_select,
+                "allowSkip": input.allow_skip,
+                "batchIndex": input.batch_index,
+                "batchTotal": input.batch_total,
             }),
         );
     }
@@ -177,6 +183,7 @@ pub async fn resolve_question(
             QuestionAnswer {
                 selected_options: input.selected_options,
                 text: input.text,
+                skipped: input.skipped,
             },
         )
         .await;

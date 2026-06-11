@@ -14,6 +14,8 @@ pub struct ResolveQuestionArgs {
     pub request_id: String,
     pub selected_options: Vec<String>,
     pub custom_response: Option<String>,
+    #[serde(default)]
+    pub skipped: bool,
 }
 
 /// Response for resolve_user_question command
@@ -37,6 +39,7 @@ pub async fn resolve_user_question(
     let answer = QuestionAnswer {
         selected_options: args.selected_options,
         text: args.custom_response,
+        skipped: args.skipped,
     };
 
     let result = state.question_state.resolve(&args.request_id, answer).await;

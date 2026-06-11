@@ -1132,6 +1132,10 @@ pub struct QuestionRequestInput {
     pub options: Vec<QuestionOptionInput>,
     #[serde(default)]
     pub multi_select: bool,
+    #[serde(default = "default_question_allow_skip")]
+    pub allow_skip: bool,
+    pub batch_index: Option<u32>,
+    pub batch_total: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1144,6 +1148,12 @@ pub struct ResolveQuestionInput {
     pub request_id: String,
     pub selected_options: Vec<String>,
     pub text: Option<String>,
+    #[serde(default)]
+    pub skipped: bool,
+}
+
+fn default_question_allow_skip() -> bool {
+    true
 }
 
 // ============================================================================

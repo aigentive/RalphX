@@ -607,34 +607,26 @@ describe("AgentsActiveConversationPanel", () => {
     expect(row).toHaveClass("rounded-md", "border");
     expect(
       within(row).getByTestId("agents-plan-composer-cta-hint"),
-    ).toHaveTextContent("Recommended");
+    ).toHaveTextContent("Recommended: Create Proposals");
     expect(row).not.toHaveTextContent(/The plan spans several tracked phases/i);
     expect(
-      within(row).getByRole("button", { name: /Plan recommendation details/i }),
+      within(row).getByRole("button", { name: /why\?/i }),
     ).toBeInTheDocument();
     await user.hover(
-      within(row).getByRole("button", { name: /Plan recommendation details/i }),
+      within(row).getByRole("button", { name: /why\?/i }),
     );
     await waitFor(() =>
       expect(screen.getAllByText(/The plan spans several tracked phases/i).length)
         .toBeGreaterThan(0),
     );
-    expect(
-      within(row).getByTestId("agents-plan-composer-cta-actions"),
-    ).toHaveClass("flex-wrap", "items-center");
-    expect(
-      within(row).getByTestId("agents-plan-composer-cta-create-proposals"),
-    ).toHaveClass("bg-primary");
-    expect(
-      within(
-        within(row).getByTestId("agents-plan-composer-cta-secondary-actions"),
-      ).getByRole("button", { name: /Implement Directly/i }),
-    ).toBeInTheDocument();
-    expect(
-      within(
-        within(row).getByTestId("agents-plan-composer-cta-secondary-actions"),
-      ).getByRole("button", { name: /Verify Plan/i }),
-    ).toBeInTheDocument();
+    const actions = within(row).getByTestId("agents-plan-composer-cta-actions");
+    expect(actions).toHaveClass("flex-wrap", "items-center");
+    const actionButtons = within(actions).getAllByRole("button");
+    expect(actionButtons).toHaveLength(3);
+    expect(actionButtons[0]).toHaveTextContent("Create Proposals");
+    expect(actionButtons[1]).toHaveTextContent("Implement Directly");
+    expect(actionButtons[2]).toHaveTextContent("Verify Plan");
+    expect(actionButtons[0]).toHaveClass("bg-primary");
 
     await user.click(recommendedAction);
 

@@ -138,6 +138,44 @@ describe("QuestionInputBanner", () => {
       expect(onApprovePlan).toHaveBeenCalledTimes(1);
       expect(onChipClick).toHaveBeenCalledWith(0);
     });
+
+    it("renders batch progress and skip action when skipping is allowed", async () => {
+      const user = userEvent.setup();
+      const onSkip = vi.fn();
+
+      render(
+        <QuestionInputBanner
+          {...defaultProps}
+          question={{
+            ...singleSelectQuestion,
+            batchIndex: 2,
+            batchTotal: 3,
+            allowSkip: true,
+          }}
+          onSkip={onSkip}
+        />
+      );
+
+      expect(screen.getByText("2 of 3")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Skip" }));
+      expect(onSkip).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not render skip action when skipping is disabled", () => {
+      render(
+        <QuestionInputBanner
+          {...defaultProps}
+          question={{
+            ...singleSelectQuestion,
+            allowSkip: false,
+          }}
+          onSkip={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByRole("button", { name: "Skip" })).not.toBeInTheDocument();
+    });
   });
 
   describe("Answered/Collapsed State", () => {

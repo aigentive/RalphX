@@ -935,6 +935,7 @@ export function IntegratedChatPanel({
     handleChipClick,
     handleMatchedOptions,
     handleQuestionSend,
+    handleQuestionSkip,
   } = useQuestionInput({
     activeQuestion: activeQuestion ?? null,
     submitAnswer,
@@ -1420,6 +1421,7 @@ export function IntegratedChatPanel({
                   question={activeQuestion ?? null}
                   selectedIndices={selectedOptions}
                   onChipClick={handleChipClick}
+                  onSkip={handleQuestionSkip}
                   onDismiss={dismissQuestion}
                   answeredValue={answeredQuestion}
                   onDismissAnswered={clearAnswered}

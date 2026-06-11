@@ -13,6 +13,9 @@ fn sample_question(request_id: &str) -> PendingQuestionInfo {
             description: None,
         }],
         multi_select: false,
+        allow_skip: true,
+        batch_index: None,
+        batch_total: None,
     }
 }
 
@@ -53,6 +56,7 @@ async fn test_resolve() {
     let answer = QuestionAnswer {
         selected_options: vec!["a".to_string()],
         text: None,
+        skipped: false,
     };
     assert!(repo.resolve("req-1", &answer).await.unwrap());
 
@@ -69,6 +73,7 @@ async fn test_resolve_nonexistent() {
     let answer = QuestionAnswer {
         selected_options: vec![],
         text: None,
+        skipped: false,
     };
     assert!(!repo.resolve("nope", &answer).await.unwrap());
 }
@@ -86,6 +91,7 @@ async fn test_expire_all_pending() {
     let answer = QuestionAnswer {
         selected_options: vec![],
         text: Some("done".to_string()),
+        skipped: false,
     };
     repo.resolve("req-0", &answer).await.unwrap();
 
@@ -107,6 +113,7 @@ async fn test_expired_wait_remains_resolvable() {
     let answer = QuestionAnswer {
         selected_options: vec![],
         text: Some("late".to_string()),
+        skipped: false,
     };
     assert!(repo.resolve("req-1", &answer).await.unwrap());
     assert!(repo.get_pending().await.unwrap().is_empty());

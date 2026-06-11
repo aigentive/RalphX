@@ -3,7 +3,6 @@ import {
   CheckCircle2,
   Clock,
   GitPullRequestArrow,
-  Info,
   Lightbulb,
   Loader2,
   MessageSquare,
@@ -177,15 +176,12 @@ function PlanComposerCtaRow({
   const compactHint = getPlanComposerCompactHint(hint, actions);
   const hintDetails = getPlanComposerHintDetails(hint, compactHint);
   const isRecommendation = compactHint.startsWith("Recommended:");
-  const primaryAction = actions.find((action) => action.isPrimary) ?? actions[0]!;
-  const secondaryActions = actions.filter((action) => action.id !== primaryAction.id);
   const detailsButton = hintDetails ? (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
-          aria-label="Plan recommendation details"
-          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border outline-none transition-colors hover:bg-[var(--bg-surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]"
+          className="inline-flex h-7 shrink-0 items-center justify-center rounded-md border px-2 text-[0.6875rem] font-medium outline-none transition-colors hover:bg-[var(--bg-surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]"
           style={{
             borderColor: "var(--border-subtle)",
             borderStyle: "solid",
@@ -194,7 +190,7 @@ function PlanComposerCtaRow({
           }}
           data-testid="agents-plan-composer-cta-details"
         >
-          <Info className="h-3.5 w-3.5" aria-hidden="true" />
+          why?
         </button>
       </TooltipTrigger>
       <TooltipContent
@@ -240,7 +236,14 @@ function PlanComposerCtaRow({
       }}
       data-testid="agents-plan-composer-cta-row"
     >
-      <div className="flex flex-wrap items-center gap-2">
+      <div
+        className="flex flex-wrap items-center gap-2 border-b pb-2"
+        style={{
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "0 0 1px",
+        }}
+      >
         <div
           className="flex min-w-0 items-center gap-2 pr-1"
           data-testid="agents-plan-composer-cta-copy"
@@ -261,34 +264,19 @@ function PlanComposerCtaRow({
             style={{ color: "var(--text-primary)" }}
             data-testid="agents-plan-composer-cta-hint"
           >
-            {isRecommendation ? "Recommended" : compactHint}
+            {compactHint}
           </p>
           {detailsButton}
         </div>
-        <div
-          className="flex flex-wrap items-center gap-2"
-          role="group"
-          aria-label="Recommended plan action"
-          data-testid="agents-plan-composer-cta-actions"
-        >
-          {renderActionButton(primaryAction)}
-        </div>
       </div>
-      {secondaryActions.length > 0 && (
-        <div
-          className="mt-2 flex flex-wrap items-center gap-2 border-t pt-2"
-          style={{
-            borderColor: "var(--border-subtle)",
-            borderStyle: "solid",
-            borderWidth: "1px 0 0",
-          }}
-          role="group"
-          aria-label="Other plan actions"
-          data-testid="agents-plan-composer-cta-secondary-actions"
-        >
-          {secondaryActions.map(renderActionButton)}
-        </div>
-      )}
+      <div
+        className="mt-2 flex flex-wrap items-center gap-2"
+        role="group"
+        aria-label="Plan actions"
+        data-testid="agents-plan-composer-cta-actions"
+      >
+        {actions.map(renderActionButton)}
+      </div>
     </div>
   );
 }

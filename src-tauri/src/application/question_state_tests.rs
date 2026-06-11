@@ -20,10 +20,12 @@ async fn test_question_answer_clone() {
     let answer = QuestionAnswer {
         selected_options: vec!["opt1".to_string()],
         text: Some("Custom text".to_string()),
+        skipped: false,
     };
     let cloned = answer.clone();
     assert_eq!(cloned.selected_options, vec!["opt1"]);
     assert_eq!(cloned.text, Some("Custom text".to_string()));
+    assert!(!cloned.skipped);
 }
 
 #[tokio::test]
@@ -31,13 +33,16 @@ async fn test_question_answer_serialization() {
     let answer = QuestionAnswer {
         selected_options: vec!["a".to_string(), "b".to_string()],
         text: None,
+        skipped: false,
     };
     let json = serde_json::to_string(&answer).unwrap();
     assert!(json.contains("\"selected_options\""));
+    assert!(json.contains("\"skipped\""));
 
     let deserialized: QuestionAnswer = serde_json::from_str(&json).unwrap();
     assert_eq!(deserialized.selected_options.len(), 2);
     assert!(deserialized.text.is_none());
+    assert!(!deserialized.skipped);
 }
 
 #[tokio::test]
@@ -53,11 +58,41 @@ async fn test_pending_question_info_serialization() {
             description: Some("First approach".to_string()),
         }],
         multi_select: false,
+        allow_skip: true,
+        batch_index: None,
+        batch_total: None,
     };
     let json = serde_json::to_string(&info).unwrap();
     assert!(json.contains("\"request_id\":\"req-123\""));
     assert!(json.contains("\"session_id\":\"session-456\""));
     assert!(json.contains("\"question\":\"Which approach?\""));
+    assert!(json.contains("\"allow_skip\":true"));
+}
+
+#[tokio::test]
+async fn test_register_with_metadata_tracks_skip_and_batch_progress() {
+    let state = QuestionState::new();
+
+    state
+        .register_with_metadata(
+            "req-batch-2".to_string(),
+            "session-1".to_string(),
+            "Any deadline constraints?".to_string(),
+            Some("Planning interview".to_string()),
+            vec![],
+            false,
+            false,
+            Some(2),
+            Some(3),
+        )
+        .await;
+
+    let pending = state.get_pending_info().await;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].request_id, "req-batch-2");
+    assert!(!pending[0].allow_skip);
+    assert_eq!(pending[0].batch_index, Some(2));
+    assert_eq!(pending[0].batch_total, Some(3));
 }
 
 #[tokio::test]
@@ -102,6 +137,7 @@ async fn test_register_and_resolve_question() {
             QuestionAnswer {
                 selected_options: vec!["react".to_string()],
                 text: None,
+                skipped: false,
             },
         )
         .await;
@@ -208,6 +244,7 @@ async fn test_resolve_nonexistent_question() {
             QuestionAnswer {
                 selected_options: vec![],
                 text: None,
+                skipped: false,
             },
         )
         .await;
@@ -399,6 +436,7 @@ mod with_repo {
         let answer = QuestionAnswer {
             selected_options: vec!["a".to_string()],
             text: None,
+            skipped: false,
         };
         let result = state.resolve("req-1", answer).await;
         assert!(result.resolved);
@@ -530,6 +568,7 @@ mod with_repo {
                 QuestionAnswer {
                     selected_options: vec![],
                     text: Some("Late answer".to_string()),
+                    skipped: false,
                 },
             )
             .await;
@@ -556,6 +595,9 @@ mod with_repo {
                 header: None,
                 options: vec![],
                 multi_select: false,
+                allow_skip: true,
+                batch_index: None,
+                batch_total: None,
             };
             repo.create_pending(&info).await.unwrap();
         }
@@ -602,6 +644,7 @@ mod with_repo {
                 QuestionAnswer {
                     selected_options: vec!["yes".to_string()],
                     text: None,
+                    skipped: false,
                 },
             )
             .await;
@@ -634,6 +677,7 @@ mod with_repo {
                 QuestionAnswer {
                     selected_options: vec!["opt-a".to_string()],
                     text: Some("hello".to_string()),
+                    skipped: false,
                 },
             )
             .await;
@@ -721,6 +765,7 @@ mod with_repo {
                 QuestionAnswer {
                     selected_options: vec![],
                     text: None,
+                    skipped: false,
                 },
             )
             .await;
@@ -753,6 +798,7 @@ mod with_repo {
                 QuestionAnswer {
                     selected_options: vec!["choice-a".to_string()],
                     text: None,
+                    skipped: false,
                 },
             )
             .await;
