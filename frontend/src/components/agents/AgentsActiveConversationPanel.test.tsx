@@ -372,6 +372,7 @@ function renderPanel(
     onActiveEffortChange: vi.fn(),
     onActiveModelChange: vi.fn(),
     onAgentUserMessageSent: vi.fn(),
+    onConversationModeSwitched: vi.fn(),
     onFocusIdeationSession: vi.fn(),
     onForkConversation: vi.fn().mockResolvedValue(forkResult()),
     onOpenPublishPane: vi.fn(),
@@ -582,13 +583,15 @@ describe("AgentsActiveConversationPanel", () => {
       createdAt: "2026-05-23T05:02:00Z",
       updatedAt: "2026-05-23T05:02:00Z",
     });
+    const promotedWorkspace = {
+      ...workspace(),
+      mode: "ideation" as const,
+      linkedIdeationSessionId: "planning-session-1",
+    };
     switchAgentConversationModeMock.mockResolvedValue({
-      workspace: {
-        ...workspace(),
-        mode: "ideation",
-        linkedIdeationSessionId: "planning-session-1",
-      },
+      workspace: promotedWorkspace,
     });
+    const onConversationModeSwitched = vi.fn();
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "plan" },
@@ -599,6 +602,7 @@ describe("AgentsActiveConversationPanel", () => {
         linkedIdeationSessionId: "planning-session-1",
       },
       attachedIdeationSessionId: "planning-session-1",
+      onConversationModeSwitched,
     });
 
     const row = await screen.findByTestId("agents-plan-composer-cta-row");
@@ -647,6 +651,11 @@ describe("AgentsActiveConversationPanel", () => {
       "planning-session-1",
       expect.stringContaining("Proceed to proposals"),
     );
+    expect(onConversationModeSwitched).toHaveBeenCalledWith(
+      "conversation-1",
+      "ideation",
+      promotedWorkspace,
+    );
   });
 
   it("hides the composer CTA row while question UI is active", async () => {
@@ -677,13 +686,15 @@ describe("AgentsActiveConversationPanel", () => {
   it("starts direct implementation from the composer CTA row with the selected runtime", async () => {
     const user = userEvent.setup();
     getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    const editWorkspace = {
+      ...workspace(),
+      mode: "edit" as const,
+      linkedIdeationSessionId: "planning-session-1",
+    };
     switchAgentConversationModeMock.mockResolvedValue({
-      workspace: {
-        ...workspace(),
-        mode: "edit",
-        linkedIdeationSessionId: "planning-session-1",
-      },
+      workspace: editWorkspace,
     });
+    const onConversationModeSwitched = vi.fn();
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "plan" },
@@ -699,6 +710,7 @@ describe("AgentsActiveConversationPanel", () => {
         modelId: "gpt-5.5",
         effort: "high",
       },
+      onConversationModeSwitched,
     });
 
     const row = await screen.findByTestId("agents-plan-composer-cta-row");
@@ -724,6 +736,11 @@ describe("AgentsActiveConversationPanel", () => {
         modelId: "gpt-5.5",
         logicalEffort: "high",
       },
+    );
+    expect(onConversationModeSwitched).toHaveBeenCalledWith(
+      "conversation-1",
+      "edit",
+      editWorkspace,
     );
   });
 

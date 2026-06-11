@@ -309,6 +309,11 @@ interface AgentsActiveConversationPanelProps {
     content: string;
     result: { conversationId: string };
   }) => void;
+  onConversationModeSwitched: (
+    conversationId: string,
+    mode: AgentConversationWorkspaceMode,
+    workspace: AgentConversationWorkspace | null
+  ) => void;
   onFocusIdeationSession: (sessionId: string) => void;
   onForkConversation: (
     conversationId: string
@@ -348,6 +353,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onActiveEffortChange,
   onActiveModelChange,
   onAgentUserMessageSent,
+  onConversationModeSwitched,
   onFocusIdeationSession,
   onForkConversation,
   onOpenPublishPane,
@@ -673,9 +679,23 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             result.workspace,
           );
         }
+        onConversationModeSwitched(
+          activeWorkspace.conversationId,
+          "ideation",
+          result.workspace ?? null,
+        );
         void invalidateWorkspaceQueries(
           queryClient,
           activeWorkspace.conversationId,
+        );
+      } else if (
+        activeWorkspace?.conversationId &&
+        activeWorkspace.linkedIdeationSessionId === planApprovalSessionId
+      ) {
+        onConversationModeSwitched(
+          activeWorkspace.conversationId,
+          "ideation",
+          activeWorkspace,
         );
       }
 
@@ -694,6 +714,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   }, [
     activeWorkspace,
     canCreatePlanProposals,
+    onConversationModeSwitched,
     planApprovalSessionId,
     queryClient,
   ]);
@@ -718,9 +739,20 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             result.workspace,
           );
         }
+        onConversationModeSwitched(
+          activeWorkspace.conversationId,
+          "edit",
+          result.workspace ?? null,
+        );
         void invalidateWorkspaceQueries(
           queryClient,
           activeWorkspace.conversationId,
+        );
+      } else {
+        onConversationModeSwitched(
+          activeWorkspace.conversationId,
+          "edit",
+          activeWorkspace,
         );
       }
 
@@ -751,6 +783,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     normalizedActiveRuntime.effort,
     normalizedActiveRuntime.modelId,
     normalizedActiveRuntime.provider,
+    onConversationModeSwitched,
     planApprovalSessionId,
     queryClient,
   ]);

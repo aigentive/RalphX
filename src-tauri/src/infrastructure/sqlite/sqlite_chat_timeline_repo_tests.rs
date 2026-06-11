@@ -181,6 +181,70 @@ async fn page_returns_visible_tail_and_older_cursor_without_eager_payloads() {
 }
 
 #[tokio::test]
+async fn page_hydrates_ask_user_question_result_payloads() {
+    let (db, conversation_repo, timeline_repo) = setup_repos();
+    let conversation_id = create_conversation(&conversation_repo).await;
+    let message_id = ChatMessageId::from_string("assistant-message-question");
+    insert_parent_message(&db, conversation_id, &message_id);
+
+    let answer_payload = json!({
+        "content": [{
+            "type": "text",
+            "text": json!({
+                "answers": [{
+                    "id": "scope",
+                    "request_id": "req-1",
+                    "question": "Which area should we focus on?",
+                    "options": [{ "label": "Backend", "value": "backend" }],
+                    "selected_options": ["backend"],
+                    "text": null,
+                    "skipped": false
+                }]
+            }).to_string()
+        }],
+        "structured_content": null
+    });
+
+    let expected_result_json = answer_payload.to_string();
+    let expected_raw_block_json =
+        r#"{"type":"tool_use","id":"tool-ask-question","name":"mcp__ralphx__ask_user_question"}"#;
+
+    let mut item = ChatTimelineItem::for_message_block(
+        message_id.clone(),
+        conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::ToolUse,
+    );
+    item.status = ChatTimelineItemStatus::Finalized;
+    item.tool_call_id = Some("tool-ask-question".to_string());
+    item.tool_name = Some("mcp__ralphx__ask_user_question".to_string());
+    item.tool_status = Some("completed".to_string());
+    item.tool_input_preview = Some(r#"{"question":"Which area should we focus on?"}"#.to_string());
+    item.input_json = item.tool_input_preview.clone();
+    item.tool_result_preview = Some("preview-only answer payload".to_string());
+    item.result_json = Some(expected_result_json.clone());
+    item.raw_block_json = Some(expected_raw_block_json.to_string());
+
+    timeline_repo
+        .upsert_item(item)
+        .await
+        .expect("insert ask-user-question timeline item");
+
+    let page = timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("timeline page");
+    let hydrated = page.items.first().expect("timeline item");
+
+    assert_eq!(
+        hydrated.result_json.as_deref(),
+        Some(expected_result_json.as_str())
+    );
+    assert_eq!(hydrated.raw_block_json.as_deref(), Some(expected_raw_block_json));
+}
+
+#[tokio::test]
 async fn page_hydrates_diff_tool_payloads_without_eager_loading_other_tools() {
     let (db, conversation_repo, timeline_repo) = setup_repos();
     let conversation_id = create_conversation(&conversation_repo).await;

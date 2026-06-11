@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 
-import { chatApi } from "@/api/chat";
+import {
+  chatApi,
+  type AgentConversationWorkspace,
+  type AgentConversationWorkspaceMode,
+  type ConversationListPageResponse,
+} from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
 import { chatKeys } from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
@@ -30,12 +35,16 @@ import { useAgentsSidebarState } from "./useAgentsSidebarState";
 import { useAgentsSidebarProps } from "./useAgentsSidebarProps";
 import { normalizeRuntimeSelection } from "./agentOptions";
 import { runtimeFromConversation } from "./agentConversationRuntime";
-import { preflightAgentWorkspaceFreshness } from "./agentWorkspaceQueries";
+import {
+  agentWorkspaceKeys,
+  preflightAgentWorkspaceFreshness,
+} from "./agentWorkspaceQueries";
 import {
   getAgentConversationStoreKey,
   toProjectAgentConversation,
   type AgentConversation,
 } from "./agentConversations";
+import { agentConversationKeys } from "./useProjectAgentConversations";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
@@ -46,11 +55,19 @@ import {
   type AgentsChatFocusType,
 } from "./agentChatFocus";
 import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
+import type { ChatConversation } from "@/types/chat-conversation";
 
 interface UseAgentsViewControllerParams {
   projectId: string;
   onCreateProject: () => void;
 }
+
+type AgentConversationListPage = Omit<
+  ConversationListPageResponse,
+  "conversations"
+> & {
+  conversations: AgentConversation[];
+};
 
 export function useAgentsViewController({
   projectId,
@@ -201,6 +218,104 @@ export function useAgentsViewController({
   });
 
   const invalidateProjectConversations = useAgentConversationInvalidation(queryClient);
+  const handleConversationModeSwitched = useCallback(
+    (
+      conversationId: string,
+      mode: AgentConversationWorkspaceMode,
+      workspace: AgentConversationWorkspace | null,
+    ) => {
+      const projectIdForConversation =
+        activeConversation?.id === conversationId
+          ? activeConversation.projectId
+          : activeProjectId;
+      const patchConversation = <T extends ChatConversation | AgentConversation>(
+        conversation: T,
+      ): T =>
+        conversation.agentMode === mode
+          ? conversation
+          : { ...conversation, agentMode: mode };
+
+      queryClient.setQueryData<ChatConversation | null | undefined>(
+        chatKeys.conversationSummary(conversationId),
+        (current) => (current ? patchConversation(current) : current),
+      );
+      setOptimisticConversationsById((current) => {
+        const existing =
+          current[conversationId] ??
+          (activeConversation?.id === conversationId ? activeConversation : null);
+        if (!existing) {
+          return current;
+        }
+        const patched = patchConversation(existing);
+        return patched === existing
+          ? current
+          : { ...current, [conversationId]: patched };
+      });
+
+      if (projectIdForConversation) {
+        queryClient.setQueriesData<InfiniteData<AgentConversationListPage>>(
+          {
+            predicate: (query) => {
+              const queryKey = query.queryKey;
+              return (
+                queryKey[0] === agentConversationKeys.all[0] &&
+                queryKey[1] === agentConversationKeys.all[1] &&
+                queryKey[2] === projectIdForConversation &&
+                queryKey[3] === "archived"
+              );
+            },
+          },
+          (current) => {
+            if (!current || !Array.isArray(current.pages)) {
+              return current;
+            }
+            let changed = false;
+            const pages = current.pages.map((page) => {
+              let pageChanged = false;
+              const conversations = page.conversations.map((conversation) => {
+                if (conversation.id !== conversationId) {
+                  return conversation;
+                }
+                const patched = patchConversation(conversation);
+                pageChanged ||= patched !== conversation;
+                return patched;
+              });
+              changed ||= pageChanged;
+              return pageChanged ? { ...page, conversations } : page;
+            });
+            return changed ? { ...current, pages } : current;
+          },
+        );
+      }
+
+      if (workspace) {
+        queryClient.setQueryData(
+          agentWorkspaceKeys.workspace(conversationId),
+          workspace,
+        );
+        setOptimisticWorkspacesByConversationId((current) =>
+          current[conversationId] === workspace
+            ? current
+            : { ...current, [conversationId]: workspace },
+        );
+      }
+
+      void queryClient.invalidateQueries({
+        queryKey: chatKeys.conversationSummary(conversationId),
+      });
+      if (projectIdForConversation) {
+        void invalidateProjectConversations(projectIdForConversation);
+      }
+    },
+    [
+      activeConversation,
+      activeProjectId,
+      invalidateProjectConversations,
+      queryClient,
+      setOptimisticConversationsById,
+      setOptimisticWorkspacesByConversationId,
+    ],
+  );
   const {
     attachedIdeationSessionId,
     availableArtifactTabs,
@@ -568,6 +683,7 @@ export function useAgentsViewController({
       onActiveEffortChange: handleActiveEffortChange,
       onActiveModelChange: handleActiveModelChange,
       onAgentUserMessageSent: handleAgentUserMessageSent,
+      onConversationModeSwitched: handleConversationModeSwitched,
       onCreateProject,
       onFocusIdeationSession: handleFocusIdeationSession,
       onForkConversation: handleForkConversation,
