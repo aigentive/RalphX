@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   Clock,
@@ -103,6 +103,14 @@ import {
 const AGENTS_CHAT_CONTENT_WIDTH_CLASS = "max-w-[980px]";
 const PLAN_MODE_PROPOSAL_KIND = "plan_mode_proposal";
 const PLAN_MODE_PROPOSAL_ACCEPT_VALUE = "switch_to_plan";
+const PLAN_MODE_SWITCH_EVENT_RETRY_DELAY_MS = 150;
+const PLAN_MODE_SWITCH_FALLBACK_RETRY_DELAY_MS = 750;
+const PLAN_MODE_SWITCH_MAX_RETRY_ATTEMPTS = 40;
+
+interface PendingPlanModeSwitch {
+  conversationId: string;
+  attempt: number;
+}
 
 function getPlanModeProposalConversationId(
   question: AskUserQuestionPayload,
@@ -433,9 +441,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const [isImplementingPlanDirectly, setIsImplementingPlanDirectly] = useState(false);
   const [isStartingPlanVerification, setIsStartingPlanVerification] = useState(false);
   const [
-    pendingPlanModeSwitchConversationId,
-    setPendingPlanModeSwitchConversationId,
-  ] = useState<string | null>(null);
+    pendingPlanModeSwitch,
+    setPendingPlanModeSwitch,
+  ] = useState<PendingPlanModeSwitch | null>(null);
+  const pendingPlanModeSwitchConversationIdRef = useRef<string | null>(null);
+  const pendingPlanModeSwitchRetryCountRef = useRef(0);
   const markComposerActivity = useCallback(() => {
     setIsComposerHydrationPaused(true);
     setComposerActivityTick((tick) => tick + 1);
@@ -1043,17 +1053,38 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           "plan",
           result.workspace ?? null,
         );
-        setPendingPlanModeSwitchConversationId((pendingConversationId) =>
-          pendingConversationId === conversationId
-            ? null
-            : pendingConversationId,
-        );
+        if (pendingPlanModeSwitchConversationIdRef.current === conversationId) {
+          pendingPlanModeSwitchConversationIdRef.current = null;
+          pendingPlanModeSwitchRetryCountRef.current = 0;
+          setPendingPlanModeSwitch(null);
+        }
         void invalidateWorkspaceQueries(queryClient, conversationId);
         toast.success("Switched to Plan mode");
         return true;
       } catch (err) {
         if (options?.deferIfRunning && isRunningModeSwitchError(err)) {
-          setPendingPlanModeSwitchConversationId(conversationId);
+          const isSamePendingConversation =
+            pendingPlanModeSwitchConversationIdRef.current === conversationId;
+          const nextAttempt = isSamePendingConversation
+            ? pendingPlanModeSwitchRetryCountRef.current + 1
+            : 1;
+
+          if (nextAttempt > PLAN_MODE_SWITCH_MAX_RETRY_ATTEMPTS) {
+            pendingPlanModeSwitchConversationIdRef.current = null;
+            pendingPlanModeSwitchRetryCountRef.current = 0;
+            setPendingPlanModeSwitch(null);
+            toast.error(
+              "Could not switch to Plan mode after the agent turn finished. Try switching modes manually.",
+            );
+            return false;
+          }
+
+          pendingPlanModeSwitchConversationIdRef.current = conversationId;
+          pendingPlanModeSwitchRetryCountRef.current = nextAttempt;
+          setPendingPlanModeSwitch({
+            conversationId,
+            attempt: nextAttempt,
+          });
           if (options.showDeferredToast !== false) {
             toast.info("Will switch to Plan mode when this agent turn finishes.");
           }
@@ -1071,15 +1102,16 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   );
 
   useEffect(() => {
-    if (!pendingPlanModeSwitchConversationId) {
+    if (!pendingPlanModeSwitch) {
       return;
     }
 
+    const conversationId = pendingPlanModeSwitch.conversationId;
     let eventRetryTimer: number | undefined;
     let fallbackRetryTimer: number | undefined;
     const retryAfterCompletedRun = (payload: AgentRunCompletedPayload) => {
       if (
-        payload.conversation_id !== pendingPlanModeSwitchConversationId ||
+        payload.conversation_id !== conversationId ||
         payload.teammate_name
       ) {
         return;
@@ -1090,19 +1122,19 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
 
       eventRetryTimer = window.setTimeout(() => {
         eventRetryTimer = undefined;
-        void switchConversationToPlanMode(pendingPlanModeSwitchConversationId, {
+        void switchConversationToPlanMode(conversationId, {
           deferIfRunning: true,
           showDeferredToast: false,
         });
-      }, 150);
+      }, PLAN_MODE_SWITCH_EVENT_RETRY_DELAY_MS);
     };
     fallbackRetryTimer = window.setTimeout(() => {
       fallbackRetryTimer = undefined;
-      void switchConversationToPlanMode(pendingPlanModeSwitchConversationId, {
+      void switchConversationToPlanMode(conversationId, {
         deferIfRunning: true,
         showDeferredToast: false,
       });
-    }, 750);
+    }, PLAN_MODE_SWITCH_FALLBACK_RETRY_DELAY_MS);
 
     const unsubscribeRunCompleted = bus.subscribe<AgentRunCompletedPayload>(
       "agent:run_completed",
@@ -1123,7 +1155,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         window.clearTimeout(fallbackRetryTimer);
       }
     };
-  }, [bus, pendingPlanModeSwitchConversationId, switchConversationToPlanMode]);
+  }, [bus, pendingPlanModeSwitch, switchConversationToPlanMode]);
 
   const handleQuestionAnswered = useCallback(
     async (

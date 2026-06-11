@@ -854,6 +854,55 @@ describe("AgentsActiveConversationPanel", () => {
     );
   });
 
+  it("keeps retrying while the Plan-mode switch still hits the running-agent guard", async () => {
+    const user = userEvent.setup();
+    const planWorkspace = { ...workspace(), mode: "plan" as const };
+    const runningError = new Error(
+      "Cannot change mode while the agent is running",
+    );
+    switchAgentConversationModeMock
+      .mockRejectedValueOnce(runningError)
+      .mockRejectedValueOnce(runningError)
+      .mockResolvedValueOnce({
+        workspace: planWorkspace,
+      });
+    const onConversationModeSwitched = vi.fn();
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "edit" },
+      activeConversationMode: "edit",
+      activeWorkspace: { ...workspace(), mode: "edit" },
+      onConversationModeSwitched,
+    });
+
+    await user.click(screen.getByTestId("accept-plan-mode-proposal"));
+
+    await waitFor(() =>
+      expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(1),
+    );
+
+    emitEvent("agent:run_completed", {
+      conversation_id: "conversation-1",
+      context_type: "project",
+      context_id: "conversation-1",
+    });
+
+    await waitFor(() =>
+      expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(2),
+    );
+    expect(onConversationModeSwitched).not.toHaveBeenCalled();
+
+    await waitFor(
+      () => expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(3),
+      { timeout: 2500 },
+    );
+    expect(onConversationModeSwitched).toHaveBeenCalledWith(
+      "conversation-1",
+      "plan",
+      planWorkspace,
+    );
+  });
+
   it("keeps the current mode when the user skips a plan-mode proposal question", async () => {
     const user = userEvent.setup();
 
