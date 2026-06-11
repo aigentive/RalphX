@@ -1047,6 +1047,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
 
                 await runForkCommand(forkFollowup, options);
               };
+              const shouldShowPlanComposerCta =
+                !!planComposerHint && composerProps.questionMode === undefined;
 
               return (
                 <>
@@ -1060,7 +1062,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onOpenFile={onOpenPublishFile}
                     onPreloadPublishPane={onPreloadArtifacts}
                   />
-                  {planComposerHint && (
+                  {shouldShowPlanComposerCta && (
                     <PlanComposerCtaRow
                       hint={planComposerHint}
                       actions={planComposerCtaActions}

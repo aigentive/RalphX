@@ -23,6 +23,7 @@ const {
   useVerificationStatusMock,
   getVerificationSpecialistsMock,
   confirmVerificationMock,
+  composerQuestionModeRef,
 } = vi.hoisted(() => ({
   getSessionPlanMock: vi.fn(),
   getPlanComplexityAssessmentMock: vi.fn(),
@@ -32,6 +33,7 @@ const {
   useVerificationStatusMock: vi.fn(),
   getVerificationSpecialistsMock: vi.fn(),
   confirmVerificationMock: vi.fn(),
+  composerQuestionModeRef: { current: undefined as unknown },
 }));
 
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
@@ -78,6 +80,9 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
         onFilesSelected: vi.fn(),
         onRemoveAttachment: vi.fn(),
         attachmentsUploading: false,
+        ...(composerQuestionModeRef.current !== undefined
+          ? { questionMode: composerQuestionModeRef.current }
+          : {}),
       })}
     </div>
   ),
@@ -398,6 +403,7 @@ function renderPanel(
 describe("AgentsActiveConversationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    composerQuestionModeRef.current = undefined;
     getSessionPlanMock.mockResolvedValue(null);
     getPlanComplexityAssessmentMock.mockResolvedValue(null);
     approvePlanArtifactMock.mockResolvedValue(null);
@@ -641,6 +647,31 @@ describe("AgentsActiveConversationPanel", () => {
       "planning-session-1",
       expect.stringContaining("Proceed to proposals"),
     );
+  });
+
+  it("hides the composer CTA row while question UI is active", async () => {
+    composerQuestionModeRef.current = {
+      optionCount: 3,
+      multiSelect: false,
+    };
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+    });
+
+    await waitFor(() => expect(getSessionPlanMock).toHaveBeenCalled());
+
+    expect(
+      screen.queryByTestId("agents-plan-composer-cta-row"),
+    ).not.toBeInTheDocument();
   });
 
   it("starts direct implementation from the composer CTA row with the selected runtime", async () => {
