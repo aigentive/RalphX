@@ -53,6 +53,7 @@ import {
   PLAN_CRITIC_COMPLETENESS,
   PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
   REVIEWER,
+  GENERAL_EXPLORER,
   GENERAL_WORKER,
   AGENT_WORKSPACE_PR_FIXER,
   PLAN_COMPLEXITY_ASSESSOR,
@@ -438,6 +439,20 @@ describe('getFilteredTools', () => {
     expect(toolNames).toContain('list_tasks');
     expect(toolNames).toContain('propose_plan_mode');
     expect(toolNames).toContain('append_task_to_ideation_plan');
+    expect(toolNames).not.toContain('start_ideation_session');
+    expect(toolNames).not.toContain('create_child_session');
+    expect(toolNames).not.toContain('create_task_proposal');
+    expect(toolNames).not.toContain('update_plan_artifact');
+  });
+
+  it('should let the general chat explorer propose a Plan-mode handoff without edit or ideation tools', () => {
+    setAgentType(GENERAL_EXPLORER);
+    const tools = getFilteredTools();
+    const toolNames = tools.map((t) => t.name);
+
+    expect(toolNames).toContain('propose_plan_mode');
+    expect(toolNames).not.toContain('publish_agent_workspace');
+    expect(toolNames).not.toContain('update_agent_workspace_from_base');
     expect(toolNames).not.toContain('start_ideation_session');
     expect(toolNames).not.toContain('create_child_session');
     expect(toolNames).not.toContain('create_task_proposal');

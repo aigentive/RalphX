@@ -9,7 +9,7 @@ import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
 import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
 import { callAgentWorkspaceTool, callCheckAgentWorkspacePublishReadinessTool, callCompleteAgentWorkspacePrFixTool, callCompleteAgentWorkspaceRepairTool, callGetAgentWorkspacePrFixContextTool, callGetAgentWorkspacePublishStatusTool, callPublishAgentWorkspaceTool, callSubmitAgentWorkspacePrDescriptionTool, callUpdateAgentWorkspaceFromBaseTool, isAgentWorkspaceToolName, } from '../agent-workspace-tools.js';
-import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, GENERAL_WORKER, AGENT_WORKSPACE_PR_FIXER, PLAN_COMPLEXITY_ASSESSOR, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
+import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, GENERAL_EXPLORER, GENERAL_WORKER, AGENT_WORKSPACE_PR_FIXER, PLAN_COMPLEXITY_ASSESSOR, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
 function toolsByAgent() {
     return getToolsByAgent();
 }
@@ -324,6 +324,18 @@ describe('getFilteredTools', () => {
         expect(toolNames).toContain('list_tasks');
         expect(toolNames).toContain('propose_plan_mode');
         expect(toolNames).toContain('append_task_to_ideation_plan');
+        expect(toolNames).not.toContain('start_ideation_session');
+        expect(toolNames).not.toContain('create_child_session');
+        expect(toolNames).not.toContain('create_task_proposal');
+        expect(toolNames).not.toContain('update_plan_artifact');
+    });
+    it('should let the general chat explorer propose a Plan-mode handoff without edit or ideation tools', () => {
+        setAgentType(GENERAL_EXPLORER);
+        const tools = getFilteredTools();
+        const toolNames = tools.map((t) => t.name);
+        expect(toolNames).toContain('propose_plan_mode');
+        expect(toolNames).not.toContain('publish_agent_workspace');
+        expect(toolNames).not.toContain('update_agent_workspace_from_base');
         expect(toolNames).not.toContain('start_ideation_session');
         expect(toolNames).not.toContain('create_child_session');
         expect(toolNames).not.toContain('create_task_proposal');

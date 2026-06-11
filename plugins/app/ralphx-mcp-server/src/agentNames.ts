@@ -12,6 +12,7 @@ export const REVIEWER = "ralphx-execution-reviewer";
 export const REVIEW_CHAT = "ralphx-review-chat";
 export const REVIEW_HISTORY = "ralphx-review-history";
 export const WORKER = "ralphx-execution-worker";
+export const GENERAL_EXPLORER = "ralphx-general-explorer";
 export const GENERAL_WORKER = "ralphx-general-worker";
 export const AGENT_WORKSPACE_PR_FIXER = "ralphx-agent-workspace-pr-fixer";
 export const CODER = "ralphx-execution-coder";

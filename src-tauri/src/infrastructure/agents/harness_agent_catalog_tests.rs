@@ -1204,6 +1204,52 @@ fn canonical_mcp_tools_match_runtime_yaml_for_current_owned_agents() {
 }
 
 #[test]
+fn chat_and_edit_agents_expose_plan_mode_proposal_contract() {
+    let root = project_root();
+
+    for (agent_name, mode_name) in [
+        ("ralphx-general-explorer", "Chat mode"),
+        ("ralphx-general-worker", "Edit mode"),
+    ] {
+        let definition = load_canonical_agent_definition(&root, agent_name)
+            .unwrap_or_else(|| panic!("expected canonical definition for {agent_name}"));
+        assert!(
+            definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == "propose_plan_mode"),
+            "{agent_name} should receive propose_plan_mode"
+        );
+
+        for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+            let prompt = load_harness_agent_prompt(&root, agent_name, harness)
+                .unwrap_or_else(|| panic!("missing {harness:?} prompt for {agent_name}"));
+            assert!(
+                prompt.contains("Plan-mode proposal gate"),
+                "{agent_name} {harness:?} prompt should declare the plan proposal gate"
+            );
+            assert!(
+                prompt.contains(mode_name),
+                "{agent_name} {harness:?} prompt should scope the gate to {mode_name}"
+            );
+            assert!(
+                prompt.contains("call `propose_plan_mode` first"),
+                "{agent_name} {harness:?} prompt should make propose_plan_mode the first step"
+            );
+            assert!(
+                prompt.contains("broad planning, product-surface, architecture, workflow design"),
+                "{agent_name} {harness:?} prompt should define the trigger shape"
+            );
+            assert!(
+                prompt.contains("quick answer"),
+                "{agent_name} {harness:?} prompt should preserve a quick-answer escape hatch"
+            );
+        }
+    }
+}
+
+#[test]
 fn pr_describer_codex_surface_uses_shared_prompt_and_submit_tool() {
     let root = project_root();
     let definition = load_canonical_agent_definition(&root, "ralphx-utility-pr-describer")

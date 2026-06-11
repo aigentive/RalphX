@@ -8,6 +8,7 @@ capabilities:
     - fs_grep
     - fs_glob
     - get_artifact
+    - propose_plan_mode
     - get_agent_task
     - list_agent_tasks
     - search_memories

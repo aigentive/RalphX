@@ -11,6 +11,7 @@ export declare const REVIEWER = "ralphx-execution-reviewer";
 export declare const REVIEW_CHAT = "ralphx-review-chat";
 export declare const REVIEW_HISTORY = "ralphx-review-history";
 export declare const WORKER = "ralphx-execution-worker";
+export declare const GENERAL_EXPLORER = "ralphx-general-explorer";
 export declare const GENERAL_WORKER = "ralphx-general-worker";
 export declare const AGENT_WORKSPACE_PR_FIXER = "ralphx-agent-workspace-pr-fixer";
 export declare const CODER = "ralphx-execution-coder";
