@@ -10,6 +10,8 @@ async fn test_load_or_seed_execution_settings_defaults_seeds_pristine_rows() {
         project_ideation_max: 3,
         auto_commit: false,
         pause_on_failure: false,
+        agent_workspace_pr_autofix_default: true,
+        agent_workspace_pr_auto_merge_default: true,
     };
     let desired_global_defaults = GlobalExecutionSettings {
         global_max_concurrent: 24,
@@ -40,6 +42,8 @@ async fn test_load_or_seed_execution_settings_defaults_preserves_customized_rows
         project_ideation_max: 1,
         auto_commit: true,
         pause_on_failure: false,
+        agent_workspace_pr_autofix_default: false,
+        agent_workspace_pr_auto_merge_default: true,
     };
     let stored_global_defaults = GlobalExecutionSettings {
         global_max_concurrent: 18,
@@ -51,6 +55,8 @@ async fn test_load_or_seed_execution_settings_defaults_preserves_customized_rows
         project_ideation_max: 3,
         auto_commit: false,
         pause_on_failure: false,
+        agent_workspace_pr_autofix_default: true,
+        agent_workspace_pr_auto_merge_default: true,
     };
     let desired_global_defaults = GlobalExecutionSettings {
         global_max_concurrent: 24,
@@ -92,12 +98,16 @@ async fn test_load_or_seed_execution_settings_defaults_can_seed_only_global_row(
         project_ideation_max: 1,
         auto_commit: true,
         pause_on_failure: false,
+        agent_workspace_pr_autofix_default: false,
+        agent_workspace_pr_auto_merge_default: true,
     };
     let desired_project_defaults = ExecutionSettings {
         max_concurrent_tasks: 12,
         project_ideation_max: 3,
         auto_commit: false,
         pause_on_failure: false,
+        agent_workspace_pr_autofix_default: true,
+        agent_workspace_pr_auto_merge_default: true,
     };
     let desired_global_defaults = GlobalExecutionSettings {
         global_max_concurrent: 24,

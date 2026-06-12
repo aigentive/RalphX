@@ -369,9 +369,12 @@ mod v20260523152748_agent_task_list_slices_tests;
 mod v20260527033000_agent_workspace_auto_publish;
 #[cfg(test)]
 mod v20260527033000_agent_workspace_auto_publish_tests;
+mod v20260611191722_agent_workspace_pr_automation_defaults;
+#[cfg(test)]
+mod v20260611191722_agent_workspace_pr_automation_defaults_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260527033000;
+pub const SCHEMA_VERSION: i64 = 20260611191722;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1045,6 +1048,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260527033000,
         name: "agent_workspace_auto_publish",
         migrate: v20260527033000_agent_workspace_auto_publish::migrate,
+    },
+    Migration {
+        version: 20260611191722,
+        name: "agent_workspace_pr_automation_defaults",
+        migrate: v20260611191722_agent_workspace_pr_automation_defaults::migrate,
     },
 ];
 

@@ -18,6 +18,10 @@ export const ExecutionSettingsSchema = z.object({
   commit_message_prefix: z.string().default("feat: "),
   /** Pause queue when a task fails — persisted but no runtime enforcement */
   pause_on_failure: z.boolean().default(true),
+  /** Default Autofix CI & Reviews setting for new agent conversations */
+  agent_workspace_pr_autofix_default: z.boolean().default(false),
+  /** Default GitHub auto-merge setting for new agent conversations */
+  agent_workspace_pr_auto_merge_default: z.boolean().default(false),
 });
 
 export type ExecutionSettings = z.infer<typeof ExecutionSettingsSchema>;
@@ -28,6 +32,8 @@ export const DEFAULT_EXECUTION_SETTINGS: ExecutionSettings = {
   auto_commit: true,
   commit_message_prefix: "feat: ",
   pause_on_failure: true,
+  agent_workspace_pr_autofix_default: false,
+  agent_workspace_pr_auto_merge_default: false,
 };
 
 // ============================================================================

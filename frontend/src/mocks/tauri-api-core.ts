@@ -1458,6 +1458,8 @@ const commandHandlers: Record<
       project_ideation_max: settings.projectIdeationMax,
       auto_commit: settings.autoCommit,
       pause_on_failure: settings.pauseOnFailure,
+      agent_workspace_pr_autofix_default: settings.agentWorkspacePrAutofixDefault,
+      agent_workspace_pr_auto_merge_default: settings.agentWorkspacePrAutoMergeDefault,
     };
   },
   update_execution_settings: async (args) => {
@@ -1466,18 +1468,24 @@ const commandHandlers: Record<
       project_ideation_max: number;
       auto_commit: boolean;
       pause_on_failure: boolean;
+      agent_workspace_pr_autofix_default: boolean;
+      agent_workspace_pr_auto_merge_default: boolean;
     };
     const settings = await mockExecutionApi.updateSettings({
       maxConcurrentTasks: input.max_concurrent_tasks,
       projectIdeationMax: input.project_ideation_max,
       autoCommit: input.auto_commit,
       pauseOnFailure: input.pause_on_failure,
+      agentWorkspacePrAutofixDefault: input.agent_workspace_pr_autofix_default,
+      agentWorkspacePrAutoMergeDefault: input.agent_workspace_pr_auto_merge_default,
     }, args.projectId as string | undefined);
     return {
       max_concurrent_tasks: settings.maxConcurrentTasks,
       project_ideation_max: settings.projectIdeationMax,
       auto_commit: settings.autoCommit,
       pause_on_failure: settings.pauseOnFailure,
+      agent_workspace_pr_autofix_default: settings.agentWorkspacePrAutofixDefault,
+      agent_workspace_pr_auto_merge_default: settings.agentWorkspacePrAutoMergeDefault,
     };
   },
   set_active_project: async (args) => {

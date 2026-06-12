@@ -30,10 +30,10 @@ use crate::application::agent_conversation_fork::{
 };
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, is_terminal_agent_conversation_publication_status,
-    prepare_agent_conversation_workspace, prepare_agent_conversation_workspace_with_setup_mode,
+    prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
     resolve_agent_conversation_workspace_path_for_send,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
-    AgentConversationWorkspaceSetupMode,
+    AgentConversationWorkspacePrAutomationDefaults, AgentConversationWorkspaceSetupMode,
 };
 use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base, BaseResolutionResult, BaseStatus,
@@ -2427,6 +2427,18 @@ fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {
     )
 }
 
+async fn agent_workspace_pr_automation_defaults_for_project(
+    state: &AppState,
+    project_id: &ProjectId,
+) -> Result<AgentConversationWorkspacePrAutomationDefaults, String> {
+    let settings = state
+        .execution_settings_repo
+        .get_settings(Some(project_id))
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(AgentConversationWorkspacePrAutomationDefaults::from(&settings))
+}
+
 fn validate_agent_conversation_mode_transition(
     _current_mode: AgentConversationWorkspaceMode,
     target_mode: AgentConversationWorkspaceMode,
@@ -2799,8 +2811,10 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
         );
     }
     let workspace = if agent_mode_requires_workspace(mode) {
+        let pr_automation_defaults =
+            agent_workspace_pr_automation_defaults_for_project(&state, &project.id).await?;
         Some(
-            prepare_agent_conversation_workspace_with_setup_mode(
+            prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
                 &project,
                 &conversation.id,
                 mode,
@@ -2811,6 +2825,7 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
                     source_pull_request,
                 },
                 AgentConversationWorkspaceSetupMode::Deferred,
+                pr_automation_defaults,
             )
             .await
             .map_err(|error| error.to_string())?,
@@ -3119,7 +3134,10 @@ pub async fn switch_agent_conversation_mode_for_state(
                     .await
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| format!("Project not found: {}", conversation.context_id))?;
-                let workspace = prepare_agent_conversation_workspace(
+                let pr_automation_defaults =
+                    agent_workspace_pr_automation_defaults_for_project(&state, &project.id)
+                        .await?;
+                let workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
                     &project,
                     &conversation.id,
                     target_mode,
@@ -3135,6 +3153,8 @@ pub async fn switch_agent_conversation_mode_for_state(
                             .filter(|value| !value.is_empty()),
                         source_pull_request: None,
                     },
+                    AgentConversationWorkspaceSetupMode::Blocking,
+                    pr_automation_defaults,
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -7209,6 +7229,7 @@ mod tests {
         AgentResponse, AgentResult, AgenticClient, ClientCapabilities, LogicalEffort,
         ProviderSessionRef, ResponseChunk,
     };
+    use crate::domain::execution::ExecutionSettings;
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
@@ -11182,6 +11203,18 @@ mod tests {
             .create(project)
             .await
             .expect("project persisted");
+        state
+            .execution_settings_repo
+            .update_settings(
+                Some(&project_id),
+                &ExecutionSettings {
+                    agent_workspace_pr_autofix_default: true,
+                    agent_workspace_pr_auto_merge_default: true,
+                    ..ExecutionSettings::default()
+                },
+            )
+            .await
+            .expect("settings persisted");
         let mut conversation = ChatConversation::new_project(project_id);
         conversation.id = conversation_id;
         conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
@@ -11205,13 +11238,10 @@ mod tests {
         .expect("edit mode switch creates workspace");
 
         assert_eq!(response.conversation.agent_mode.as_deref(), Some("edit"));
-        assert_eq!(
-            response
-                .workspace
-                .as_ref()
-                .map(|workspace| workspace.mode.as_str()),
-            Some("edit")
-        );
+        let workspace = response.workspace.expect("workspace should be returned");
+        assert_eq!(workspace.mode.as_str(), "edit");
+        assert!(workspace.pr_autofix_enabled);
+        assert!(workspace.pr_auto_merge_desired);
     }
 
     #[tokio::test]

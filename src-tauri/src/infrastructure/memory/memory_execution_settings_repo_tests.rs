@@ -10,6 +10,8 @@ async fn test_get_default_global_settings() {
     assert_eq!(settings.project_ideation_max, 5);
     assert!(settings.auto_commit);
     assert!(settings.pause_on_failure);
+    assert!(!settings.agent_workspace_pr_autofix_default);
+    assert!(!settings.agent_workspace_pr_auto_merge_default);
 }
 
 #[tokio::test]
@@ -21,6 +23,8 @@ async fn test_update_global_settings() {
         project_ideation_max: 3,
         auto_commit: false,
         pause_on_failure: false,
+        agent_workspace_pr_autofix_default: true,
+        agent_workspace_pr_auto_merge_default: true,
     };
 
     let updated = repo.update_settings(None, &new_settings).await.unwrap();
@@ -32,6 +36,8 @@ async fn test_update_global_settings() {
     assert_eq!(retrieved.project_ideation_max, 3);
     assert!(!retrieved.auto_commit);
     assert!(!retrieved.pause_on_failure);
+    assert!(retrieved.agent_workspace_pr_autofix_default);
+    assert!(retrieved.agent_workspace_pr_auto_merge_default);
 }
 
 #[tokio::test]
@@ -50,6 +56,8 @@ async fn test_per_project_settings() {
         project_ideation_max: 1,
         auto_commit: false,
         pause_on_failure: true,
+        agent_workspace_pr_autofix_default: true,
+        agent_workspace_pr_auto_merge_default: false,
     };
 
     repo.update_settings(Some(&project_id), &project_settings)
@@ -62,6 +70,8 @@ async fn test_per_project_settings() {
     assert_eq!(retrieved.project_ideation_max, 1);
     assert!(!retrieved.auto_commit);
     assert!(retrieved.pause_on_failure);
+    assert!(retrieved.agent_workspace_pr_autofix_default);
+    assert!(!retrieved.agent_workspace_pr_auto_merge_default);
 
     // Global settings should remain unchanged
     let global = repo.get_settings(None).await.unwrap();
@@ -75,6 +85,8 @@ async fn test_with_settings() {
         project_ideation_max: 4,
         auto_commit: true,
         pause_on_failure: false,
+        agent_workspace_pr_autofix_default: false,
+        agent_workspace_pr_auto_merge_default: true,
     };
 
     let repo = MemoryExecutionSettingsRepository::with_settings(initial_settings);
@@ -84,6 +96,8 @@ async fn test_with_settings() {
     assert_eq!(settings.project_ideation_max, 4);
     assert!(settings.auto_commit);
     assert!(!settings.pause_on_failure);
+    assert!(!settings.agent_workspace_pr_autofix_default);
+    assert!(settings.agent_workspace_pr_auto_merge_default);
 }
 
 #[tokio::test]

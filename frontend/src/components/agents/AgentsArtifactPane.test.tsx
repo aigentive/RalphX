@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { AgentConversationWorkspace } from "@/api/chat";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
+import { useUiStore } from "@/stores/uiStore";
 import { createTestQueryClient } from "@/test/store-utils";
 import { AgentsArtifactPane } from "./AgentsArtifactPane";
 
@@ -543,6 +544,7 @@ describe("AgentsArtifactPane", () => {
     toastInfoMock.mockClear();
     toastLoadingMock.mockClear();
     toastSuccessMock.mockClear();
+    useUiStore.setState({ activeModal: null, modalContext: undefined });
   });
 
   it("anchors the active tab border to the bottom edge of the tab bar", async () => {
@@ -678,6 +680,31 @@ describe("AgentsArtifactPane", () => {
         autoMergeMethod: "squash",
       })
     );
+  });
+
+  it("opens Execution settings from PR automation tooltip actions", async () => {
+    const user = userEvent.setup();
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 90,
+        publicationPrUrl: "https://github.com/mock/project/pull/90",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+      }),
+    );
+
+    await user.hover(
+      await screen.findByRole("button", { name: "About Autofix CI and Reviews" }),
+    );
+    const settingsActions = await screen.findAllByTestId(
+      "agents-tooltip-settings-execution",
+    );
+    await user.click(settingsActions[0]);
+
+    expect(useUiStore.getState().activeModal).toBe("settings");
+    expect(useUiStore.getState().modalContext).toEqual({ section: "execution" });
   });
 
   it("confirms pausing Auto Publish from the publish pane", async () => {

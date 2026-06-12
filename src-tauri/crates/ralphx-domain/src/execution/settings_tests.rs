@@ -7,6 +7,8 @@ fn test_execution_settings_default() {
     assert_eq!(settings.project_ideation_max, 5);
     assert!(settings.auto_commit);
     assert!(settings.pause_on_failure);
+    assert!(!settings.agent_workspace_pr_autofix_default);
+    assert!(!settings.agent_workspace_pr_auto_merge_default);
 }
 
 #[test]
@@ -16,6 +18,8 @@ fn test_execution_settings_serialization() {
         project_ideation_max: 3,
         auto_commit: false,
         pause_on_failure: false,
+        agent_workspace_pr_autofix_default: true,
+        agent_workspace_pr_auto_merge_default: true,
     };
 
     let json = serde_json::to_string(&settings).unwrap();
@@ -25,6 +29,8 @@ fn test_execution_settings_serialization() {
     assert_eq!(deserialized.project_ideation_max, 3);
     assert!(!deserialized.auto_commit);
     assert!(!deserialized.pause_on_failure);
+    assert!(deserialized.agent_workspace_pr_autofix_default);
+    assert!(deserialized.agent_workspace_pr_auto_merge_default);
 }
 
 #[test]
@@ -34,6 +40,8 @@ fn test_execution_settings_clone() {
         project_ideation_max: 1,
         auto_commit: true,
         pause_on_failure: false,
+        agent_workspace_pr_autofix_default: false,
+        agent_workspace_pr_auto_merge_default: true,
     };
 
     let cloned = settings.clone();
@@ -75,7 +83,10 @@ fn test_global_execution_settings_validate_clamped_to_max() {
         validated.global_max_concurrent,
         GlobalExecutionSettings::MAX_ALLOWED
     );
-    assert_eq!(validated.global_ideation_max, GlobalExecutionSettings::MAX_ALLOWED);
+    assert_eq!(
+        validated.global_ideation_max,
+        GlobalExecutionSettings::MAX_ALLOWED
+    );
 }
 
 #[test]

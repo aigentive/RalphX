@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::application::agent_conversation_workspace::{
-    prepare_agent_conversation_workspace_with_setup_mode, AgentConversationWorkspaceBaseSelection,
+    prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
+    AgentConversationWorkspaceBaseSelection, AgentConversationWorkspacePrAutomationDefaults,
     AgentConversationWorkspaceSetupMode,
 };
 use crate::application::interactive_process_registry::InteractiveProcessKey;
@@ -77,13 +78,19 @@ pub async fn fork_agent_conversation(
 
     let workspace = if agent_mode_requires_workspace(mode) {
         let selection = workspace_base_selection(parent_workspace.as_ref());
+        let settings = state
+            .execution_settings_repo
+            .get_settings(Some(&project.id))
+            .await
+            .map_err(|error| AppError::Infrastructure(error.to_string()))?;
         Some(
-            prepare_agent_conversation_workspace_with_setup_mode(
+            prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
                 &project,
                 &child_conversation.id,
                 mode,
                 selection,
                 AgentConversationWorkspaceSetupMode::Deferred,
+                AgentConversationWorkspacePrAutomationDefaults::from(&settings),
             )
             .await?,
         )

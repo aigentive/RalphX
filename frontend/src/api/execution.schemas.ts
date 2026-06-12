@@ -40,6 +40,8 @@ export const ExecutionSettingsResponseSchema = z.object({
   project_ideation_max: z.number().int().nonnegative(),
   auto_commit: z.boolean(),
   pause_on_failure: z.boolean(),
+  agent_workspace_pr_autofix_default: z.boolean(),
+  agent_workspace_pr_auto_merge_default: z.boolean(),
 });
 
 /**
@@ -50,6 +52,8 @@ export const UpdateExecutionSettingsInputSchema = z.object({
   project_ideation_max: z.number().int().nonnegative(),
   auto_commit: z.boolean(),
   pause_on_failure: z.boolean(),
+  agent_workspace_pr_autofix_default: z.boolean(),
+  agent_workspace_pr_auto_merge_default: z.boolean(),
 });
 
 /**
