@@ -38,6 +38,7 @@ import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import type { SubmitQuestionAnswerResult } from "@/hooks/useAskUserQuestion";
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
 import { useEventBus } from "@/providers/EventProvider";
@@ -1242,9 +1243,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     async (
       question: AskUserQuestionPayload,
       response: AskUserQuestionResponse,
+      result?: SubmitQuestionAnswerResult,
     ) => {
       const proposalConversationId = getPlanModeProposalConversationId(question);
       if (!proposalConversationId || !acceptsPlanModeProposal(response)) {
+        return;
+      }
+
+      if (result?.planModeProposalHandled) {
         return;
       }
 

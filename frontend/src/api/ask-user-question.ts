@@ -26,6 +26,7 @@ export interface ResolveQuestionResult {
   success: boolean;
   message?: string | null;
   deliveredToWaitingAgent: boolean;
+  planModeProposalHandled?: boolean;
 }
 
 /** Raw shape returned by the backend get_pending_questions command (snake_case) */

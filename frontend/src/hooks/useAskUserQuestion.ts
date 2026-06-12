@@ -25,6 +25,7 @@ const QuestionResolvedPayloadSchema = z.object({
 export interface SubmitQuestionAnswerResult {
   success: boolean;
   deliveredToWaitingAgent: boolean;
+  planModeProposalHandled?: boolean;
 }
 
 /**
@@ -213,6 +214,7 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
       // Capture the requestId we're answering — a new question may arrive while we await.
       const submittedRequestId = activeQuestion.requestId;
       let deliveredToWaitingAgent = true;
+      let planModeProposalHandled = false;
 
       setIsLoading(true);
       try {
@@ -224,6 +226,7 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
             ...(response.skipped !== undefined && { skipped: response.skipped }),
           });
           deliveredToWaitingAgent = result?.deliveredToWaitingAgent ?? true;
+          planModeProposalHandled = result?.planModeProposalHandled ?? false;
         } else {
           await api.askUserQuestion.answerQuestion(response);
         }
@@ -248,7 +251,7 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
             autoDismissTimerRef.current = null;
           }, 3500);
         }
-        return { success: true, deliveredToWaitingAgent };
+        return { success: true, deliveredToWaitingAgent, planModeProposalHandled };
       } catch {
         // Check if the question was already cleaned up (e.g., by useAgentEvents on agent death).
         const currentQuestion = useUiStore.getState().activeQuestions[currentSessionId];

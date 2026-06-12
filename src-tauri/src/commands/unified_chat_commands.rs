@@ -3146,6 +3146,22 @@ pub async fn switch_agent_conversation_mode_for_state(
     input: SwitchAgentConversationModeInput,
     state: &AppState,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
+    switch_agent_conversation_mode_for_state_with_running_policy(input, state, false).await
+}
+
+#[doc(hidden)]
+pub(crate) async fn switch_agent_conversation_mode_for_state_allowing_running(
+    input: SwitchAgentConversationModeInput,
+    state: &AppState,
+) -> Result<SwitchAgentConversationModeResponse, String> {
+    switch_agent_conversation_mode_for_state_with_running_policy(input, state, true).await
+}
+
+async fn switch_agent_conversation_mode_for_state_with_running_policy(
+    input: SwitchAgentConversationModeInput,
+    state: &AppState,
+    allow_running_agent: bool,
+) -> Result<SwitchAgentConversationModeResponse, String> {
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let target_mode = parse_agent_workspace_mode(Some(input.mode.as_str()))?;
     let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
@@ -3164,8 +3180,16 @@ pub async fn switch_agent_conversation_mode_for_state(
         ChatContextType::Project.to_string(),
         conversation.id.as_str(),
     );
-    if state.running_agent_registry.is_running(&running_key).await {
+    let agent_is_running = state.running_agent_registry.is_running(&running_key).await;
+    if agent_is_running && !allow_running_agent {
         return Err("Cannot change mode while the agent is running".to_string());
+    }
+    if agent_is_running {
+        tracing::info!(
+            conversation_id = %conversation.id,
+            target_mode = %target_mode,
+            "Switching project agent conversation mode while its current run is still registered"
+        );
     }
 
     let existing_workspace = state
@@ -7269,10 +7293,9 @@ mod tests {
         build_agent_workspace_publish_repair_message_for_target,
         build_agent_workspace_repair_message_for_target, cached_agent_workspace_freshness,
         create_agent_conversation, emit_agent_conversation_fork_events,
-        ensure_plan_workspace_planning_session_link_for_send,
-        existing_pr_retarget_block_reason, fork_agent_conversation,
-        fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
-        get_agent_conversation_summary_for_app_state,
+        ensure_plan_workspace_planning_session_link_for_send, existing_pr_retarget_block_reason,
+        fork_agent_conversation, fork_agent_conversation_response_for_state,
+        fork_terminal_agent_conversation_for_send, get_agent_conversation_summary_for_app_state,
         get_agent_conversation_timeline_page_for_app_state,
         get_agent_conversation_workspace_freshness,
         get_agent_timeline_item_tool_call_detail_for_app_state,
@@ -7281,9 +7304,8 @@ mod tests {
         normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
         normalize_explicit_publish_base_selection, normalized_effort_for_supported,
         parse_wrapped_mcp_result_object, persist_workspace_base_resolution_if_retargeted,
-        preview_tool_payloads_for_message,
         precompute_agent_conversation_workspace_pr_description_for_app_state,
-        project_plan_branch_publication_into_workspace_response,
+        preview_tool_payloads_for_message, project_plan_branch_publication_into_workspace_response,
         publication_event_status_for_push_status, publication_event_summary_for_push_status,
         publish_agent_conversation_workspace_for_app_state, restore_agent_conversation,
         retarget_existing_workspace_pr_base_if_needed,
@@ -7296,20 +7318,22 @@ mod tests {
         set_agent_conversation_workspace_pr_supervision_for_state,
         should_defer_agent_workspace_repair_message_for_registry,
         spawn_deferred_agent_workspace_repair_message, store_agent_workspace_freshness,
-        switch_agent_conversation_mode_for_state, try_acquire_agent_workspace_publish_guard,
+        switch_agent_conversation_mode_for_state,
+        switch_agent_conversation_mode_for_state_allowing_running,
+        try_acquire_agent_workspace_publish_guard,
         update_agent_conversation_workspace_from_base_for_app_state,
         validate_explicit_publish_base_ref, AgentConversationResponse,
         AgentConversationWorkspaceAutoPublishInput, AgentConversationWorkspaceFreshnessResponse,
         AgentConversationWorkspacePrSupervisionInput, AgentConversationWorkspacePublishTarget,
         AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
-        AgentTimelineItemResponse,
-        AgentWorkspaceExternalPrReconciliationTrigger, AgentWorkspaceFreshnessCacheEntry,
-        AgentWorkspaceFreshnessCacheStatus, AgentWorkspaceFreshnessInvalidationGuard,
-        AgentWorkspaceFreshnessScope, AgentWorkspacePostRepairAction,
-        AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
-        AgentWorkspaceSourcePullRequestInput, CreateAgentConversationInput,
-        DelegatedToolRuntimeSnapshot, ForkAgentConversationInput, ForkAgentConversationResponse,
-        SwitchAgentConversationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
+        AgentTimelineItemResponse, AgentWorkspaceExternalPrReconciliationTrigger,
+        AgentWorkspaceFreshnessCacheEntry, AgentWorkspaceFreshnessCacheStatus,
+        AgentWorkspaceFreshnessInvalidationGuard, AgentWorkspaceFreshnessScope,
+        AgentWorkspacePostRepairAction, AgentWorkspacePrDescriptionInvalidationGuard,
+        AgentWorkspaceRepairRuntimeOverrides, AgentWorkspaceSourcePullRequestInput,
+        CreateAgentConversationInput, DelegatedToolRuntimeSnapshot, ForkAgentConversationInput,
+        ForkAgentConversationResponse, SwitchAgentConversationModeInput,
+        AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     };
     use crate::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
@@ -11372,6 +11396,93 @@ mod tests {
                 .map(|workspace| workspace.mode.as_str()),
             Some("edit")
         );
+    }
+
+    #[tokio::test]
+    async fn accepted_plan_proposal_switch_can_bypass_running_agent_guard() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-running-plan-switch".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("12121212-1212-4121-8121-121212121212");
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.id = conversation_id.clone();
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation persisted");
+
+        let workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project_id,
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::CurrentBranch,
+            "feature/agent-screen".to_string(),
+            Some("Current branch (feature/agent-screen)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/project/agent-12121212".to_string(),
+            "/tmp/ralphx-agent-12121212".to_string(),
+        );
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace persisted");
+
+        let running_key = RunningAgentKey::new(
+            ChatContextType::Project.to_string(),
+            conversation_id.as_str(),
+        );
+        state
+            .running_agent_registry
+            .register(
+                running_key,
+                123,
+                conversation_id.as_str(),
+                "run-plan-proposal".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let public_result = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "plan".to_string(),
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+            },
+            &state,
+        )
+        .await;
+        assert_eq!(
+            public_result.expect_err("public switch should reject running agents"),
+            "Cannot change mode while the agent is running"
+        );
+
+        let response = switch_agent_conversation_mode_for_state_allowing_running(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "plan".to_string(),
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+            },
+            &state,
+        )
+        .await
+        .expect("accepted proposal switch should bypass running guard");
+
+        assert_eq!(response.conversation.agent_mode.as_deref(), Some("plan"));
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup succeeds")
+            .expect("workspace exists");
+        assert_eq!(stored.mode, AgentConversationWorkspaceMode::Plan);
     }
 
     #[tokio::test]

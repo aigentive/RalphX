@@ -133,6 +133,38 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
           >
             Skip plan proposal
           </button>
+          <button
+            type="button"
+            data-testid="accept-backend-handled-plan-mode-proposal"
+            onClick={() => {
+              void onQuestionAnswered(
+                {
+                  requestId: "req-plan-mode",
+                  sessionId: "conversation-1",
+                  question: "Switch this conversation to Plan mode?",
+                  options: [],
+                  multiSelect: false,
+                  allowSkip: true,
+                  metadata: {
+                    kind: "plan_mode_proposal",
+                    conversation_id: "conversation-1",
+                    reason: "The CLI surface needs planning before implementation.",
+                  },
+                },
+                {
+                  requestId: "req-plan-mode",
+                  selectedOptions: ["switch_to_plan"],
+                },
+                {
+                  success: true,
+                  deliveredToWaitingAgent: true,
+                  planModeProposalHandled: true,
+                },
+              );
+            }}
+          >
+            Accept backend-handled plan proposal
+          </button>
         </>
       )}
       {renderComposer({
@@ -836,6 +868,21 @@ describe("AgentsActiveConversationPanel", () => {
         content: expect.stringContaining("Continue in Plan mode"),
       }),
     );
+  });
+
+  it("does not duplicate the Plan-mode switch when the backend handled the accepted proposal", async () => {
+    const user = userEvent.setup();
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "edit" },
+      activeConversationMode: "edit",
+      activeWorkspace: { ...workspace(), mode: "edit" },
+    });
+
+    await user.click(screen.getByTestId("accept-backend-handled-plan-mode-proposal"));
+
+    expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
+    expect(sendAgentMessageMock).not.toHaveBeenCalled();
   });
 
   it("retries the Plan-mode proposal switch after the active agent run completes", async () => {

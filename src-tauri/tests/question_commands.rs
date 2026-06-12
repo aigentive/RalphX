@@ -37,11 +37,13 @@ fn test_resolve_question_response_serialize() {
         success: true,
         message: Some("Resolved".to_string()),
         delivered_to_waiting_agent: true,
+        plan_mode_proposal_handled: false,
     };
     let json = serde_json::to_string(&response).unwrap();
     assert!(json.contains("\"success\":true"));
     assert!(json.contains("\"message\":\"Resolved\""));
     assert!(json.contains("\"deliveredToWaitingAgent\":true"));
+    assert!(json.contains("\"planModeProposalHandled\":false"));
 }
 
 /// Verify that resolve() returns (true, Some(session_id)) for a known question,
