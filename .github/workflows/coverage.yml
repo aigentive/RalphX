@@ -757,6 +757,7 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
+          disable_search: true
           files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info
           flags: rust-lib
           name: rust-lib
@@ -768,6 +769,7 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
+          disable_search: true
           files: coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-ipc
           name: rust-ipc
@@ -779,6 +781,7 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
+          disable_search: true
           files: coverage-artifacts/coverage-frontend/lcov.info
           flags: frontend
           name: frontend
@@ -790,6 +793,7 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
+          disable_search: true
           files: coverage-artifacts/coverage-plugin-internal-mcp/lcov.info
           flags: plugin-internal-mcp
           name: plugin-internal-mcp
@@ -801,6 +805,7 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
+          disable_search: true
           files: coverage-artifacts/coverage-plugin-external-mcp/lcov.info
           flags: plugin-external-mcp
           name: plugin-external-mcp
