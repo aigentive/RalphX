@@ -207,6 +207,21 @@ pub fn built_in_agent_models() -> Vec<AgentModelDefinition> {
             LogicalEffort::Medium,
         ),
         AgentModelDefinition::built_in(
+            AgentHarnessKind::Claude,
+            "fable",
+            "fable",
+            "fable",
+            Some("Claude Fable 5 model alias."),
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max,
+            ],
+            LogicalEffort::High,
+        ),
+        AgentModelDefinition::built_in(
             AgentHarnessKind::Codex,
             "gpt-5.5",
             "gpt-5.5 - Frontier model for complex coding, research, and real-world work.",

@@ -77,7 +77,11 @@ export function useAgentsActiveComposerControls({
   );
 
   const handleActiveModelChange = useCallback(
-    (modelId: string, providerSupportedEfforts?: readonly string[] | null) => {
+    (
+      modelId: string,
+      providerSupportedEfforts?: readonly string[] | null,
+      providerSupportedModelAliases?: readonly string[] | null,
+    ) => {
       if (!selectedConversationId || !activeProjectId) {
         return;
       }
@@ -95,7 +99,8 @@ export function useAgentsActiveComposerControls({
             ),
           },
           modelRegistry,
-          providerSupportedEfforts
+          providerSupportedEfforts,
+          providerSupportedModelAliases
         )
       );
     },
@@ -109,7 +114,11 @@ export function useAgentsActiveComposerControls({
   );
 
   const handleActiveEffortChange = useCallback(
-    (effort: string, providerSupportedEfforts?: readonly string[] | null) => {
+    (
+      effort: string,
+      providerSupportedEfforts?: readonly string[] | null,
+      providerSupportedModelAliases?: readonly string[] | null,
+    ) => {
       if (!selectedConversationId || !activeProjectId) {
         return;
       }
@@ -123,7 +132,8 @@ export function useAgentsActiveComposerControls({
             effort: effort as AgentEffort,
           },
           modelRegistry,
-          providerSupportedEfforts
+          providerSupportedEfforts,
+          providerSupportedModelAliases
         ),
       );
     },

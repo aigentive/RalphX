@@ -567,7 +567,7 @@ If ANY inconsistency is found → immediately call `update_plan_artifact` with a
 
 **Parallel spawning:** Emit ALL `Task` calls in one response. Multiple calls in one message = simultaneous launch.
 
-**Model guide:** `haiku` — simple lookups | `sonnet` — most tasks (default) | `opus` — architecture/synthesis
+**Model guide:** `haiku` — simple lookups | `sonnet` — most tasks (default) | `opus` — architecture/synthesis | `fable` — hardest long-horizon work
 
 ---
 

@@ -17,6 +17,7 @@ pub enum ModelLevel {
     Sonnet,
     Opus,
     Haiku,
+    Fable,
 }
 
 impl Default for ModelLevel {
@@ -32,6 +33,7 @@ impl fmt::Display for ModelLevel {
             Self::Sonnet => write!(f, "sonnet"),
             Self::Opus => write!(f, "opus"),
             Self::Haiku => write!(f, "haiku"),
+            Self::Fable => write!(f, "fable"),
         }
     }
 }
@@ -45,8 +47,9 @@ impl FromStr for ModelLevel {
             "sonnet" => Ok(Self::Sonnet),
             "opus" => Ok(Self::Opus),
             "haiku" => Ok(Self::Haiku),
+            "fable" => Ok(Self::Fable),
             other => Err(format!(
-                "Invalid model level '{}'. Valid values: inherit, sonnet, opus, haiku",
+                "Invalid model level '{}'. Valid values: inherit, sonnet, opus, haiku, fable",
                 other
             )),
         }

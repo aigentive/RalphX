@@ -38,6 +38,8 @@ fn ready_probe(path: &str) -> HarnessRuntimeProbe {
         probe_succeeded: true,
         available: true,
         missing_core_exec_features: Vec::new(),
+        cli_version: None,
+        supported_model_aliases: None,
         supported_efforts: None,
         error: None,
     }
@@ -292,6 +294,8 @@ fn response_maps_settings_and_probe_fields() {
             probe_succeeded: true,
             available: true,
             missing_core_exec_features: vec!["exec".to_string()],
+            cli_version: Some("2.1.170".to_string()),
+            supported_model_aliases: Some(vec!["sonnet".to_string(), "fable".to_string()]),
             supported_efforts: Some(vec!["low".to_string(), "medium".to_string()]),
             error: None,
         },
@@ -317,6 +321,11 @@ fn response_maps_settings_and_probe_fields() {
     assert_eq!(
         response.missing_core_exec_features,
         vec!["exec".to_string()]
+    );
+    assert_eq!(response.cli_version.as_deref(), Some("2.1.170"));
+    assert_eq!(
+        response.supported_model_aliases,
+        Some(vec!["sonnet".to_string(), "fable".to_string()])
     );
     assert_eq!(
         response.supported_efforts,

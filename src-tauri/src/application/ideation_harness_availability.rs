@@ -332,6 +332,8 @@ fn missing_harness_probe(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
         probe_succeeded: false,
         available: false,
         missing_core_exec_features: Vec::new(),
+        cli_version: None,
+        supported_model_aliases: None,
         supported_efforts: None,
         error: Some(format!("No harness probe registered for {}", harness)),
     }

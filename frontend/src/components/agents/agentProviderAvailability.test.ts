@@ -6,6 +6,7 @@ import {
   buildAgentProviderAvailabilityOptions,
   getProviderAvailabilityMessage,
   supportedEffortsForProvider,
+  supportedModelAliasesForProvider,
 } from "./agentProviderAvailability";
 
 function provider(
@@ -95,6 +96,25 @@ describe("agent provider availability", () => {
       "medium",
       "high",
       "max",
+    ]);
+  });
+
+  it("preserves provider-supported model aliases", () => {
+    const providerOptions = buildAgentProviderAvailabilityOptions({
+      providers: [
+        provider({
+          provider: "claude",
+          supportedModelAliases: ["sonnet", "opus", "haiku", "fable"],
+        }),
+      ],
+      isReady: true,
+    });
+
+    expect(supportedModelAliasesForProvider(providerOptions, "claude")).toEqual([
+      "sonnet",
+      "opus",
+      "haiku",
+      "fable",
     ]);
   });
 });

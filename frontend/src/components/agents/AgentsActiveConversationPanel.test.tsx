@@ -307,7 +307,7 @@ describe("AgentsActiveConversationPanel", () => {
     vi.clearAllMocks();
   });
 
-  it("normalizes workspace runtime and forwards provider-supported efforts", () => {
+  it("normalizes workspace runtime and forwards provider-supported capabilities", () => {
     const onActiveModelChange = vi.fn();
     const onActiveEffortChange = vi.fn();
     renderPanel({ onActiveEffortChange, onActiveModelChange });
@@ -323,13 +323,13 @@ describe("AgentsActiveConversationPanel", () => {
       "medium",
       "high",
       "max",
-    ]);
+    ], null);
     expect(onActiveEffortChange).toHaveBeenCalledWith("max", [
       "low",
       "medium",
       "high",
       "max",
-    ]);
+    ], null);
   });
 
   it("requires confirmation before running the typed fork command", async () => {

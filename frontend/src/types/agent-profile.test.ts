@@ -43,6 +43,7 @@ describe('ModelSchema', () => {
     expect(ModelSchema.parse('opus')).toBe('opus');
     expect(ModelSchema.parse('sonnet')).toBe('sonnet');
     expect(ModelSchema.parse('haiku')).toBe('haiku');
+    expect(ModelSchema.parse('fable')).toBe('fable');
   });
 
   it('should reject invalid model', () => {
@@ -55,6 +56,7 @@ describe('getModelId', () => {
     expect(getModelId('opus')).toBe('claude-opus-4-5-20251101');
     expect(getModelId('sonnet')).toBe('claude-sonnet-4-5-20250929');
     expect(getModelId('haiku')).toBe('claude-haiku-4-5-20251001');
+    expect(getModelId('fable')).toBe('claude-fable-5');
   });
 });
 

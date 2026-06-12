@@ -64,6 +64,7 @@ const CLAUDE_MODEL_PRESETS = [
   { value: "sonnet", display: "sonnet" },
   { value: "opus", display: "opus" },
   { value: "haiku", display: "haiku" },
+  { value: "fable", display: "fable" },
 ] as const satisfies readonly ModelPreset[];
 
 const SELECT_TRIGGER_CLASS = "h-9 items-center";
@@ -155,11 +156,16 @@ function isAgentProvider(value: string): value is AgentProvider {
 function getModelPresets(
   harness: string,
   modelRegistry: AgentModelRegistry,
+  providerSupportedModelAliases?: readonly string[] | null,
 ): readonly ModelPreset[] {
   if (!isAgentProvider(harness)) {
     return CLAUDE_MODEL_PRESETS;
   }
-  return agentModelOptionsForProvider(harness, modelRegistry).map(
+  return agentModelOptionsForProvider(
+    harness,
+    modelRegistry,
+    providerSupportedModelAliases,
+  ).map(
     ({ id, menuLabel, description }) => ({
       value: id,
       display: menuLabel,
@@ -173,6 +179,7 @@ function getEffortOptions(
   harness: string,
   model: string | null,
   modelRegistry: AgentModelRegistry,
+  providerSupportedEfforts?: readonly string[] | null,
 ) {
   const provider = isAgentProvider(harness) ? harness : "claude";
   const modelId = model ?? defaultModelForProvider(provider, modelRegistry);
@@ -184,13 +191,16 @@ function getEffortOptions(
         ? "Uses the app default from config"
         : "Uses the global default for this lane",
     },
-    ...agentEffortOptionsForModel(provider, modelId, modelRegistry).map(
-      ({ id, label, description }) => ({
-        value: id,
-        label,
-        description,
-      })
-    ),
+    ...agentEffortOptionsForModel(
+      provider,
+      modelId,
+      modelRegistry,
+      providerSupportedEfforts,
+    ).map(({ id, label, description }) => ({
+      value: id,
+      label,
+      description,
+    })),
   ];
 }
 
@@ -222,6 +232,7 @@ interface ModelSelectProps {
   isGlobal: boolean;
   testId: string;
   modelRegistry: AgentModelRegistry;
+  providerSupportedModelAliases?: readonly string[] | null;
 }
 
 function modelSelectValue(
@@ -246,8 +257,13 @@ function ModelSelect({
   isGlobal,
   testId,
   modelRegistry,
+  providerSupportedModelAliases,
 }: ModelSelectProps) {
-  const presets = getModelPresets(harness, modelRegistry);
+  const presets = getModelPresets(
+    harness,
+    modelRegistry,
+    providerSupportedModelAliases,
+  );
   const currentValue = modelSelectValue(value, presets);
   const defaultLabel = isGlobal ? "Harness default" : "Use global default";
   const defaultDescription = isGlobal
@@ -571,6 +587,7 @@ interface HarnessRowProps {
   ) => void;
   modelRegistry: AgentModelRegistry;
   harnessOptions: typeof HARNESS_OPTIONS;
+  providers: readonly AgentProviderSettingsResponse[];
   canResetToDefault: boolean;
 }
 
@@ -594,6 +611,7 @@ function HarnessRow({
   onLaneChange,
   modelRegistry,
   harnessOptions,
+  providers,
   canResetToDefault,
 }: HarnessRowProps) {
   const meta = LANE_META[lane.lane];
@@ -602,11 +620,14 @@ function HarnessRow({
   const showWarning = !!lane.error || lane.missingCoreExecFeatures.length > 0;
   const showCodexControls = configuredHarness === "codex";
   const codexPolicyLocked = showCodexControls;
+  const configuredProviderSettings =
+    providers.find((provider) => provider.provider === configuredHarness) ?? null;
   const effortOptions = getEffortOptions(
     isGlobal,
     configuredHarness,
     lane.row?.model ?? null,
     modelRegistry,
+    configuredProviderSettings?.supportedEfforts ?? null,
   );
 
   useEffect(() => {
@@ -687,7 +708,7 @@ function HarnessRow({
             >
               <SelectValue placeholder="Select provider">
                 <span className="truncate">
-              {HARNESS_OPTIONS.find((o) => o.value === configuredHarness)?.label ??
+                  {HARNESS_OPTIONS.find((o) => o.value === configuredHarness)?.label ??
                     configuredHarness}
                 </span>
               </SelectValue>
@@ -751,6 +772,9 @@ function HarnessRow({
               isGlobal={isGlobal}
               testId={`model-${lane.lane}`}
               modelRegistry={modelRegistry}
+              providerSupportedModelAliases={
+                configuredProviderSettings?.supportedModelAliases ?? null
+              }
             />
             {showEffectiveModel && (
               <p className="text-[0.6875rem] text-[var(--text-muted)]">
@@ -946,6 +970,7 @@ function HarnessSubsection({
   modelRegistry,
   harnessOptions,
   defaultProvider,
+  providers,
 }: {
   projectId: string | null;
   projectName: string | null;
@@ -956,6 +981,7 @@ function HarnessSubsection({
   modelRegistry: AgentModelRegistry;
   harnessOptions: typeof HARNESS_OPTIONS;
   defaultProvider: AgentProviderSettingsResponse | null;
+  providers: readonly AgentProviderSettingsResponse[];
 }) {
   const [showError, setShowError] = useState(false);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
@@ -1149,6 +1175,7 @@ function HarnessSubsection({
                     onLaneChange={(patch) => handleLaneSettingsChange(lane, patch)}
                     modelRegistry={modelRegistry}
                     harnessOptions={harnessOptions}
+                    providers={providers}
                     canResetToDefault={defaultProvider !== null}
                   />
                 );
@@ -1279,6 +1306,7 @@ function AgentHarnessSection({
             modelRegistry={modelRegistry}
             harnessOptions={harnessOptions}
             defaultProvider={defaultProvider}
+            providers={providerSettings.providers}
           />
         </TabsContent>
         <TabsContent value="project" className="mt-4">
@@ -1292,6 +1320,7 @@ function AgentHarnessSection({
             modelRegistry={modelRegistry}
             harnessOptions={harnessOptions}
             defaultProvider={defaultProvider}
+            providers={providerSettings.providers}
           />
         </TabsContent>
       </Tabs>

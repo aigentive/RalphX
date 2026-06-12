@@ -28,6 +28,7 @@ import {
   AGENT_EFFORT_CATALOG,
   agentEffortOptionsForModel,
   defaultModelForProvider,
+  isAgentModelSelectableForProvider,
   type AgentProvider,
 } from "@/lib/agent-models";
 
@@ -312,7 +313,14 @@ export function HarnessProvidersSection() {
                 ? provider.provider
                 : "claude";
               const providerModels = models.filter(
-                (model) => model.provider === provider.provider && model.enabled,
+                (model) =>
+                  model.provider === provider.provider &&
+                  model.enabled &&
+                  isAgentModelSelectableForProvider(
+                    agentProvider,
+                    model.modelId,
+                    provider.supportedModelAliases,
+                  ),
               );
               const selectedModel =
                 provider.model ?? PROVIDER_DEFAULT_SELECT_VALUE;
@@ -324,6 +332,8 @@ export function HarnessProvidersSection() {
               const effortOptions = agentEffortOptionsForModel(
                 agentProvider,
                 selectedModelId,
+                undefined,
+                provider.supportedEfforts,
               );
               const selectedEffort =
                 provider.effort ?? PROVIDER_DEFAULT_SELECT_VALUE;

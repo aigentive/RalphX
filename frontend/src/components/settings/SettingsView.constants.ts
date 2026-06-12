@@ -22,4 +22,9 @@ export const MODEL_OPTIONS: { value: Model; label: string; description: string }
     label: "Claude Opus 4.5",
     description: "Most capable, best for complex tasks",
   },
+  {
+    value: "fable",
+    label: "Claude Fable 5",
+    description: "Most capable, requires Claude Code 2.1.170+",
+  },
 ];

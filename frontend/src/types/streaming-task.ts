@@ -38,7 +38,7 @@ export interface StreamingTask {
   description: string;
   /** Subagent type: "Explore", "Plan", "Bash", etc. */
   subagentType: string;
-  /** Model used: "sonnet", "opus", "haiku" */
+  /** Model used: "sonnet", "opus", "haiku", "fable" */
   model: string;
   /** Current status */
   status: StreamingTaskProviderStatus;

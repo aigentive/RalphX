@@ -46,6 +46,7 @@ import {
   getProviderAvailabilityMessage,
   normalizeRuntimeForSelectableProvider,
   supportedEffortsForProvider,
+  supportedModelAliasesForProvider,
 } from "./agentProviderAvailability";
 import { useUiStore } from "@/stores/uiStore";
 
@@ -184,11 +185,16 @@ export function AgentsStartComposer({
     return normalizeRuntimeSelection(
       runtime,
       modelRegistry,
-      supportedEffortsForProvider(providerOptions, runtime.provider)
+      supportedEffortsForProvider(providerOptions, runtime.provider),
+      supportedModelAliasesForProvider(providerOptions, runtime.provider)
     );
   }, [defaultRuntime, modelRegistry, providerOptions]);
   const selectedProviderSupportedEfforts = useMemo(
     () => supportedEffortsForProvider(providerOptions, provider),
+    [provider, providerOptions]
+  );
+  const selectedProviderSupportedModelAliases = useMemo(
+    () => supportedModelAliasesForProvider(providerOptions, provider),
     [provider, providerOptions]
   );
   const selectableRuntime = useMemo(
@@ -229,8 +235,13 @@ export function AgentsStartComposer({
   }, [normalizedRuntime]);
 
   const modelOptions = useMemo(
-    () => agentModelOptions(provider, modelRegistry),
-    [modelRegistry, provider]
+    () =>
+      agentModelOptions(
+        provider,
+        modelRegistry,
+        selectedProviderSupportedModelAliases
+      ),
+    [modelRegistry, provider, selectedProviderSupportedModelAliases]
   );
   const effortOptions = useMemo(
     () =>
@@ -284,7 +295,8 @@ export function AgentsStartComposer({
         normalizeRuntimeSelection(
           runtime,
           modelRegistry,
-          supportedEffortsForProvider(providerOptions, runtime.provider)
+          supportedEffortsForProvider(providerOptions, runtime.provider),
+          supportedModelAliasesForProvider(providerOptions, runtime.provider)
         )
       );
     },
@@ -338,7 +350,8 @@ export function AgentsStartComposer({
           effort: remembered?.effort,
         },
         modelRegistry,
-        supportedEffortsForProvider(providerOptions, nextProvider)
+        supportedEffortsForProvider(providerOptions, nextProvider),
+        supportedModelAliasesForProvider(providerOptions, nextProvider)
       );
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
@@ -357,7 +370,8 @@ export function AgentsStartComposer({
           effort: defaultEffortForModel(provider, nextModelId, modelRegistry),
         },
         modelRegistry,
-        selectedProviderSupportedEfforts
+        selectedProviderSupportedEfforts,
+        selectedProviderSupportedModelAliases
       );
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
@@ -370,6 +384,7 @@ export function AgentsStartComposer({
       projectId,
       provider,
       selectedProviderSupportedEfforts,
+      selectedProviderSupportedModelAliases,
     ]
   );
 
@@ -382,7 +397,8 @@ export function AgentsStartComposer({
           effort: nextEffort,
         },
         modelRegistry,
-        selectedProviderSupportedEfforts
+        selectedProviderSupportedEfforts,
+        selectedProviderSupportedModelAliases
       );
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
@@ -396,6 +412,7 @@ export function AgentsStartComposer({
       projectId,
       provider,
       selectedProviderSupportedEfforts,
+      selectedProviderSupportedModelAliases,
     ]
   );
 

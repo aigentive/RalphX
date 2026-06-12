@@ -17,6 +17,7 @@ const MODEL_OPTIONS = [
   { value: "haiku", label: "Haiku" },
   { value: "sonnet", label: "Sonnet" },
   { value: "opus", label: "Opus" },
+  { value: "fable", label: "Fable" },
 ];
 const BUDGET_OPTIONS = [
   { value: "", label: "None" },

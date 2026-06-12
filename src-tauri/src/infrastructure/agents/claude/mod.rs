@@ -41,7 +41,7 @@ pub use claude_code_client::{
 pub use cli_capabilities::{
     clear_claude_cli_capability_cache, normalize_claude_effort_for_cli_path,
     parse_claude_cli_capabilities, parse_claude_version, probe_claude_cli,
-    probe_claude_cli_cached, ClaudeCliCapabilities,
+    probe_claude_cli_cached, validate_claude_model_for_cli_path, ClaudeCliCapabilities,
 };
 
 // Re-export stream processor types for use by services
@@ -643,6 +643,7 @@ fn build_base_cli_command_inner_with_runtime_context(
         }
     };
     if let Some(m) = model {
+        validate_claude_model_for_cli_path(cli_path, m)?;
         cmd.args(["--model", m]);
     }
 
