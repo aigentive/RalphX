@@ -23,12 +23,16 @@ describe("ExecutionSettingsSchema", () => {
       auto_commit: false,
       commit_message_prefix: "fix: ",
       pause_on_failure: false,
+      agent_workspace_pr_autofix_default: true,
+      agent_workspace_pr_auto_merge_default: true,
     };
     const result = ExecutionSettingsSchema.parse(data);
     expect(result.max_concurrent_tasks).toBe(4);
     expect(result.project_ideation_max).toBe(3);
     expect(result.auto_commit).toBe(false);
     expect(result.commit_message_prefix).toBe("fix: ");
+    expect(result.agent_workspace_pr_autofix_default).toBe(true);
+    expect(result.agent_workspace_pr_auto_merge_default).toBe(true);
   });
 
   it("applies defaults for missing fields", () => {

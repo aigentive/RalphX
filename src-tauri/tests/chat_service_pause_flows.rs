@@ -249,6 +249,7 @@ async fn test_task_execution_send_blocks_when_project_total_cap_is_reached() {
                 project_ideation_max: 1,
                 auto_commit: true,
                 pause_on_failure: true,
+                ..ExecutionSettings::default()
             },
         )
         .await
@@ -315,6 +316,7 @@ async fn test_review_send_blocks_when_same_project_ideation_consumes_only_slot()
                 project_ideation_max: 1,
                 auto_commit: true,
                 pause_on_failure: true,
+                ..ExecutionSettings::default()
             },
         )
         .await
@@ -373,6 +375,7 @@ async fn test_merge_send_blocks_when_same_project_ideation_consumes_only_slot() 
                 project_ideation_max: 1,
                 auto_commit: true,
                 pause_on_failure: true,
+                ..ExecutionSettings::default()
             },
         )
         .await

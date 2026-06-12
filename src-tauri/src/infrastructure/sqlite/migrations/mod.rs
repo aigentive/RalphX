@@ -390,9 +390,12 @@ mod v20260611110952_question_skip_progress_tests;
 mod v20260611152000_question_metadata;
 #[cfg(test)]
 mod v20260611152000_question_metadata_tests;
+mod v20260611191722_agent_workspace_pr_automation_defaults;
+#[cfg(test)]
+mod v20260611191722_agent_workspace_pr_automation_defaults_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260611152000;
+pub const SCHEMA_VERSION: i64 = 20260611191722;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1096,6 +1099,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260611152000,
         name: "question_metadata",
         migrate: v20260611152000_question_metadata::migrate,
+    },
+    Migration {
+        version: 20260611191722,
+        name: "agent_workspace_pr_automation_defaults",
+        migrate: v20260611191722_agent_workspace_pr_automation_defaults::migrate,
     },
 ];
 

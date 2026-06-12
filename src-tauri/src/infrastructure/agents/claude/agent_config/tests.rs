@@ -602,6 +602,8 @@ execution_defaults:
     project_ideation_max: 3
     auto_commit: false
     pause_on_failure: false
+    agent_workspace_pr_autofix_default: true
+    agent_workspace_pr_auto_merge_default: true
   global:
     global_max_concurrent: 28
     global_ideation_max: 5
@@ -613,6 +615,14 @@ execution_defaults:
     assert_eq!(parsed.execution_defaults.project.project_ideation_max, 3);
     assert!(!parsed.execution_defaults.project.auto_commit);
     assert!(!parsed.execution_defaults.project.pause_on_failure);
+    assert!(parsed
+        .execution_defaults
+        .project
+        .agent_workspace_pr_autofix_default);
+    assert!(parsed
+        .execution_defaults
+        .project
+        .agent_workspace_pr_auto_merge_default);
     assert_eq!(parsed.execution_defaults.global.global_max_concurrent, 28);
     assert_eq!(parsed.execution_defaults.global.global_ideation_max, 5);
     assert!(

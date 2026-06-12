@@ -12,6 +12,12 @@ pub struct ExecutionSettings {
     pub auto_commit: bool,
     /// Whether to pause execution when a task fails
     pub pause_on_failure: bool,
+    /// Default Autofix CI & Reviews setting for newly created agent workspaces.
+    #[serde(default)]
+    pub agent_workspace_pr_autofix_default: bool,
+    /// Default GitHub auto-merge setting for newly created agent workspaces.
+    #[serde(default)]
+    pub agent_workspace_pr_auto_merge_default: bool,
 }
 
 impl Default for ExecutionSettings {
@@ -22,6 +28,8 @@ impl Default for ExecutionSettings {
             project_ideation_max: 5,
             auto_commit: true,
             pause_on_failure: true,
+            agent_workspace_pr_autofix_default: false,
+            agent_workspace_pr_auto_merge_default: false,
         }
     }
 }

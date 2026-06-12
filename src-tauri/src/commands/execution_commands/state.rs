@@ -567,6 +567,10 @@ pub struct ExecutionSettingsResponse {
     pub auto_commit: bool,
     /// Whether to pause execution when a task fails
     pub pause_on_failure: bool,
+    /// Default Autofix CI & Reviews setting for new agent workspaces
+    pub agent_workspace_pr_autofix_default: bool,
+    /// Default GitHub auto-merge setting for new agent workspaces
+    pub agent_workspace_pr_auto_merge_default: bool,
 }
 
 impl From<ExecutionSettings> for ExecutionSettingsResponse {
@@ -576,6 +580,8 @@ impl From<ExecutionSettings> for ExecutionSettingsResponse {
             project_ideation_max: settings.project_ideation_max,
             auto_commit: settings.auto_commit,
             pause_on_failure: settings.pause_on_failure,
+            agent_workspace_pr_autofix_default: settings.agent_workspace_pr_autofix_default,
+            agent_workspace_pr_auto_merge_default: settings.agent_workspace_pr_auto_merge_default,
         }
     }
 }
@@ -591,6 +597,10 @@ pub struct UpdateExecutionSettingsInput {
     pub auto_commit: bool,
     /// Whether to pause execution when a task fails
     pub pause_on_failure: bool,
+    /// Default Autofix CI & Reviews setting for new agent workspaces
+    pub agent_workspace_pr_autofix_default: bool,
+    /// Default GitHub auto-merge setting for new agent workspaces
+    pub agent_workspace_pr_auto_merge_default: bool,
 }
 
 /// Response for global execution settings queries

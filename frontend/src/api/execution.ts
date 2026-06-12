@@ -153,6 +153,9 @@ export const executionApi = {
         project_ideation_max: defaults.project_ideation_max,
         auto_commit: defaults.auto_commit,
         pause_on_failure: defaults.pause_on_failure,
+        agent_workspace_pr_autofix_default: defaults.agent_workspace_pr_autofix_default,
+        agent_workspace_pr_auto_merge_default:
+          defaults.agent_workspace_pr_auto_merge_default,
       });
     }
 

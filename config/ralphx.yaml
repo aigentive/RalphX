@@ -44,6 +44,8 @@ execution_defaults:
     project_ideation_max: 5
     auto_commit: true
     pause_on_failure: true
+    agent_workspace_pr_autofix_default: false
+    agent_workspace_pr_auto_merge_default: false
   global:
     global_max_concurrent: 20
     global_ideation_max: 10
