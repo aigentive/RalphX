@@ -416,6 +416,9 @@ function AppContent() {
             project_ideation_max: response.projectIdeationMax,
             auto_commit: response.autoCommit,
             pause_on_failure: response.pauseOnFailure,
+            agent_workspace_pr_autofix_default: response.agentWorkspacePrAutofixDefault,
+            agent_workspace_pr_auto_merge_default:
+              response.agentWorkspacePrAutoMergeDefault,
           },
         });
       } catch (err) {
@@ -459,6 +462,10 @@ function AppContent() {
           projectIdeationMax: newSettings.execution.project_ideation_max,
           autoCommit: newSettings.execution.auto_commit,
           pauseOnFailure: newSettings.execution.pause_on_failure,
+          agentWorkspacePrAutofixDefault:
+            newSettings.execution.agent_workspace_pr_autofix_default,
+          agentWorkspacePrAutoMergeDefault:
+            newSettings.execution.agent_workspace_pr_auto_merge_default,
         }, currentProjectId || undefined);
       } catch (err) {
         console.error("Failed to save execution settings:", err);

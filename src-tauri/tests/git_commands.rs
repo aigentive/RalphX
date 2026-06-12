@@ -115,6 +115,7 @@ async fn setup_agent_workspace_review_state() -> (tempfile::TempDir, AppState, C
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             base_ref: Some("main".to_string()),
             display_name: None,
+            source_pull_request: None,
         },
     )
     .await

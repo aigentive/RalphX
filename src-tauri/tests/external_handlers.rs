@@ -628,6 +628,7 @@ async fn test_start_ideation_tauri_parent_workspace_binds_analysis_and_links_wor
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
         },
     )
     .await

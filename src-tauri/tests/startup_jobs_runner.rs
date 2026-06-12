@@ -487,6 +487,7 @@ async fn test_resumption_skips_project_when_ideation_already_uses_only_slot() {
                 project_ideation_max: 1,
                 auto_commit: true,
                 pause_on_failure: true,
+                ..ExecutionSettings::default()
             },
         )
         .await
@@ -1989,6 +1990,7 @@ async fn test_startup_loads_persisted_project_quota() {
         project_ideation_max: 2,
         auto_commit: false,
         pause_on_failure: false,
+        ..ExecutionSettings::default()
     };
     app_state
         .execution_settings_repo
@@ -2045,6 +2047,7 @@ async fn test_startup_quota_sync_before_resumption() {
         project_ideation_max: 1,
         auto_commit: false,
         pause_on_failure: false,
+        ..ExecutionSettings::default()
     };
     app_state
         .execution_settings_repo

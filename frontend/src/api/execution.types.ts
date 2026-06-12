@@ -44,6 +44,8 @@ export interface ExecutionSettingsResponse {
   projectIdeationMax: number;
   autoCommit: boolean;
   pauseOnFailure: boolean;
+  agentWorkspacePrAutofixDefault: boolean;
+  agentWorkspacePrAutoMergeDefault: boolean;
 }
 
 /**
@@ -54,6 +56,8 @@ export interface UpdateExecutionSettingsInput {
   projectIdeationMax: number;
   autoCommit: boolean;
   pauseOnFailure: boolean;
+  agentWorkspacePrAutofixDefault: boolean;
+  agentWorkspacePrAutoMergeDefault: boolean;
 }
 
 /**

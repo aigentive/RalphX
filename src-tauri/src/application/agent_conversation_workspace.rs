@@ -12,10 +12,11 @@ use crate::application::agent_conversation_workspace_base::{
 };
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
-    is_terminal_publication_pr_status,
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
-    AgentWorkspaceSourcePullRequest, IdeationAnalysisBaseRefKind, Project, Task,
+    is_terminal_publication_pr_status, AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentWorkspaceSourcePullRequest, ChatConversationId, IdeationAnalysisBaseRefKind, Project,
+    Task,
 };
+use crate::domain::execution::ExecutionSettings;
 use crate::domain::state_machine::transition_handler::run_pre_execution_setup;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names::{
@@ -37,6 +38,21 @@ pub struct AgentConversationWorkspaceBaseSelection {
 pub enum AgentConversationWorkspaceSetupMode {
     Blocking,
     Deferred,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AgentConversationWorkspacePrAutomationDefaults {
+    pub autofix_enabled: bool,
+    pub auto_merge_desired: bool,
+}
+
+impl From<&ExecutionSettings> for AgentConversationWorkspacePrAutomationDefaults {
+    fn from(settings: &ExecutionSettings) -> Self {
+        Self {
+            autofix_enabled: settings.agent_workspace_pr_autofix_default,
+            auto_merge_desired: settings.agent_workspace_pr_auto_merge_default,
+        }
+    }
 }
 
 pub async fn prepare_agent_conversation_workspace(
@@ -61,6 +77,25 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
     mode: AgentConversationWorkspaceMode,
     selection: AgentConversationWorkspaceBaseSelection,
     setup_mode: AgentConversationWorkspaceSetupMode,
+) -> AppResult<AgentConversationWorkspace> {
+    prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
+        project,
+        conversation_id,
+        mode,
+        selection,
+        setup_mode,
+        AgentConversationWorkspacePrAutomationDefaults::default(),
+    )
+    .await
+}
+
+pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
+    project: &Project,
+    conversation_id: &ChatConversationId,
+    mode: AgentConversationWorkspaceMode,
+    selection: AgentConversationWorkspaceBaseSelection,
+    setup_mode: AgentConversationWorkspaceSetupMode,
+    pr_automation_defaults: AgentConversationWorkspacePrAutomationDefaults,
 ) -> AppResult<AgentConversationWorkspace> {
     let total_started = Instant::now();
     let repo_path = PathBuf::from(&project.working_directory);
@@ -278,8 +313,8 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
         auto_publish_enabled: true,
         auto_publish_paused_pr_autofix_enabled: None,
         auto_publish_paused_pr_auto_merge_desired: None,
-        pr_autofix_enabled: false,
-        pr_auto_merge_desired: false,
+        pr_autofix_enabled: pr_automation_defaults.autofix_enabled,
+        pr_auto_merge_desired: pr_automation_defaults.auto_merge_desired,
         pr_auto_merge_method: crate::domain::entities::DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
             .to_string(),
         pr_auto_merge_current: None,
@@ -950,6 +985,44 @@ mod tests {
         })
         .await
         .expect("deferred setup should complete in the background");
+    }
+
+    #[tokio::test]
+    async fn prepare_agent_conversation_workspace_applies_pr_automation_defaults() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+
+        let mut project = Project::new(
+            "Agent Defaults".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+
+        let conversation_id =
+            ChatConversationId::from_string("conversation-defaults-test".to_string());
+        let workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+                source_pull_request: None,
+            },
+            AgentConversationWorkspaceSetupMode::Deferred,
+            AgentConversationWorkspacePrAutomationDefaults {
+                autofix_enabled: true,
+                auto_merge_desired: true,
+            },
+        )
+        .await
+        .expect("workspace should be prepared");
+
+        assert!(workspace.pr_autofix_enabled);
+        assert!(workspace.pr_auto_merge_desired);
     }
 
     #[tokio::test]

@@ -1835,6 +1835,7 @@ async fn reconcile_paused_provider_error_respects_project_execution_capacity() {
                 project_ideation_max: 1,
                 auto_commit: true,
                 pause_on_failure: true,
+                ..ExecutionSettings::default()
             },
         )
         .await

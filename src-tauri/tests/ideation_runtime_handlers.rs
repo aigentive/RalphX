@@ -742,6 +742,7 @@ async fn test_project_ideation_cap_blocks_same_project_spawn() {
                 project_ideation_max: 1,
                 auto_commit: true,
                 pause_on_failure: true,
+                ..ExecutionSettings::default()
             },
         )
         .await

@@ -142,6 +142,95 @@ describe("handleAskUserQuestion", () => {
         });
         expect(fetchMock).not.toHaveBeenCalled();
     });
+    it("rejects batched entries without question text", async () => {
+        const fetchMock = vi.fn();
+        vi.stubGlobal("fetch", fetchMock);
+        const result = await handleAskUserQuestion({
+            session_id: "session-1",
+            questions: [{ id: "empty", question: "   " }],
+        });
+        expect(parsedToolText(result)).toEqual({
+            error: true,
+            message: "Question 1 in questions[] is missing a question.",
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+    it("returns a structured error when registration fails", async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(new Response("backend unavailable", { status: 500 }));
+        vi.stubGlobal("fetch", fetchMock);
+        const result = await handleAskUserQuestion({
+            session_id: "session-1",
+            question: "Proceed?",
+        });
+        expect(parsedToolText(result)).toEqual({
+            error: true,
+            message: "Failed to ask question 1: Failed to register question: backend unavailable",
+        });
+    });
+    it("returns the timeout payload when backend await expires", async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(jsonResponse({ request_id: "req-timeout" }))
+            .mockResolvedValueOnce(new Response("timed out", { status: 408 }));
+        vi.stubGlobal("fetch", fetchMock);
+        const result = await handleAskUserQuestion({
+            session_id: "session-1",
+            question: "Proceed?",
+        });
+        expect(parsedToolText(result)).toMatchObject({
+            error: true,
+            message: expect.stringContaining("Question timed out waiting for user response"),
+        });
+    });
+    it("returns a structured error when backend await fails", async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(jsonResponse({ request_id: "req-error" }))
+            .mockResolvedValueOnce(new Response("wait failed", { status: 500 }));
+        vi.stubGlobal("fetch", fetchMock);
+        const result = await handleAskUserQuestion({
+            session_id: "session-1",
+            question: "Proceed?",
+        });
+        expect(parsedToolText(result)).toEqual({
+            error: true,
+            message: "Failed to ask question 1: Question await error: wait failed",
+        });
+    });
+    it("returns the timeout payload when the transport aborts the wait", async () => {
+        const abortError = new Error("The operation was aborted");
+        abortError.name = "AbortError";
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(jsonResponse({ request_id: "req-abort" }))
+            .mockRejectedValueOnce(abortError);
+        vi.stubGlobal("fetch", fetchMock);
+        const result = await handleAskUserQuestion({
+            session_id: "session-1",
+            question: "Proceed?",
+        });
+        expect(parsedToolText(result)).toMatchObject({
+            error: true,
+            message: expect.stringContaining("Question timed out waiting for user response"),
+        });
+    });
+    it("returns a structured error when the await transport fails before timeout", async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(jsonResponse({ request_id: "req-network" }))
+            .mockRejectedValueOnce(new Error("network down"));
+        vi.stubGlobal("fetch", fetchMock);
+        const result = await handleAskUserQuestion({
+            session_id: "session-1",
+            question: "Proceed?",
+        });
+        expect(parsedToolText(result)).toEqual({
+            error: true,
+            message: "Failed to ask question 1: network down",
+        });
+    });
 });
 describe("handleProposePlanMode", () => {
     afterEach(() => {
@@ -217,6 +306,58 @@ describe("handleProposePlanMode", () => {
             accepted: false,
             status: "skipped",
             skipped: true,
+        });
+    });
+    it("uses the MCP context id when explicit and parent ids are absent", async () => {
+        process.env.RALPHX_CONTEXT_ID = "conversation-context";
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(jsonResponse({ request_id: "req-plan" }))
+            .mockResolvedValueOnce(jsonResponse({
+            selected_options: [],
+            text: "not yet",
+            skipped: false,
+        }));
+        vi.stubGlobal("fetch", fetchMock);
+        const result = await handleProposePlanMode({
+            current_mode: "edit",
+            reason: "Needs planning.",
+        });
+        expect(parsedToolText(result)).toMatchObject({
+            type: "plan_mode_proposal",
+            conversation_id: "conversation-context",
+            accepted: false,
+            status: "declined",
+            text: "not yet",
+        });
+    });
+    it("returns a structured error when no conversation id is available", async () => {
+        const fetchMock = vi.fn();
+        vi.stubGlobal("fetch", fetchMock);
+        const result = await handleProposePlanMode({
+            current_mode: "edit",
+            reason: "Needs planning.",
+        });
+        expect(parsedToolText(result)).toEqual({
+            error: true,
+            message: "Failed to propose plan mode: propose_plan_mode requires conversation_id because RalphX did not provide the current conversation id to the MCP runtime context.",
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+    it("returns the timeout payload when proposal confirmation expires", async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(jsonResponse({ request_id: "req-plan-timeout" }))
+            .mockResolvedValueOnce(new Response("timed out", { status: 408 }));
+        vi.stubGlobal("fetch", fetchMock);
+        const result = await handleProposePlanMode({
+            conversation_id: "conversation-3",
+            current_mode: "edit",
+            reason: "Needs planning.",
+        });
+        expect(parsedToolText(result)).toMatchObject({
+            error: true,
+            message: expect.stringContaining("Question timed out waiting for user response"),
         });
     });
 });

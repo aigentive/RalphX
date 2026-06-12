@@ -7,6 +7,7 @@ import {
   Info,
   Loader2,
   MoreVertical,
+  Settings2,
   XCircle,
 } from "lucide-react";
 import {
@@ -46,6 +47,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useUiStore } from "@/stores/uiStore";
+import type { SettingsSectionId } from "@/components/settings/settings-registry";
 import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
 import {
@@ -116,10 +119,13 @@ const PUBLISH_PIPELINE_EVENT_STEPS = new Set([
 function PublishSwitchInfoTooltip({
   label,
   children,
+  settingsSection,
 }: {
   label: string;
   children: ReactNode;
+  settingsSection?: SettingsSectionId;
 }) {
+  const openModal = useUiStore((s) => s.openModal);
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -136,7 +142,20 @@ function PublishSwitchInfoTooltip({
         align="center"
         className="max-w-[300px] text-xs leading-relaxed"
       >
-        {children}
+        <div className="space-y-2">
+          <div>{children}</div>
+          {settingsSection && (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 rounded-[6px] px-1.5 py-1 text-[11px] font-medium text-[var(--accent-primary)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--focus-ring)]"
+              onClick={() => openModal("settings", { section: settingsSection })}
+              data-testid={`agents-tooltip-settings-${settingsSection}`}
+            >
+              <Settings2 className="h-3 w-3" aria-hidden="true" />
+              Change defaults in Settings
+            </button>
+          )}
+        </div>
       </TooltipContent>
     </Tooltip>
   );
@@ -955,7 +974,10 @@ export function AgentPublishPanel({
                   />
                   <span>Autofix CI &amp; Reviews</span>
                 </label>
-                <PublishSwitchInfoTooltip label="About Autofix CI and Reviews">
+                <PublishSwitchInfoTooltip
+                  label="About Autofix CI and Reviews"
+                  settingsSection="execution"
+                >
                   RalphX monitors this PR for failing checks and review feedback, then
                   publishes follow-up fixes from the workspace automatically.
                 </PublishSwitchInfoTooltip>
@@ -978,7 +1000,10 @@ export function AgentPublishPanel({
                   />
                   <span>GitHub auto-merge</span>
                 </label>
-                <PublishSwitchInfoTooltip label="About GitHub auto-merge">
+                <PublishSwitchInfoTooltip
+                  label="About GitHub auto-merge"
+                  settingsSection="execution"
+                >
                   RalphX asks GitHub to merge the PR after required checks and review
                   requirements pass.
                 </PublishSwitchInfoTooltip>

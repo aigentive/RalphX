@@ -63,6 +63,8 @@ export function transformExecutionSettings(
     projectIdeationMax: raw.project_ideation_max,
     autoCommit: raw.auto_commit,
     pauseOnFailure: raw.pause_on_failure,
+    agentWorkspacePrAutofixDefault: raw.agent_workspace_pr_autofix_default,
+    agentWorkspacePrAutoMergeDefault: raw.agent_workspace_pr_auto_merge_default,
   };
 }
 
@@ -76,12 +78,16 @@ export function transformExecutionSettingsInput(
   project_ideation_max: number;
   auto_commit: boolean;
   pause_on_failure: boolean;
+  agent_workspace_pr_autofix_default: boolean;
+  agent_workspace_pr_auto_merge_default: boolean;
 } {
   return {
     max_concurrent_tasks: input.maxConcurrentTasks,
     project_ideation_max: input.projectIdeationMax,
     auto_commit: input.autoCommit,
     pause_on_failure: input.pauseOnFailure,
+    agent_workspace_pr_autofix_default: input.agentWorkspacePrAutofixDefault,
+    agent_workspace_pr_auto_merge_default: input.agentWorkspacePrAutoMergeDefault,
   };
 }
 

@@ -93,6 +93,8 @@ pub async fn update_execution_settings(
         project_ideation_max: input.project_ideation_max,
         auto_commit: input.auto_commit,
         pause_on_failure: input.pause_on_failure,
+        agent_workspace_pr_autofix_default: input.agent_workspace_pr_autofix_default,
+        agent_workspace_pr_auto_merge_default: input.agent_workspace_pr_auto_merge_default,
     };
 
     // Persist to database
@@ -155,6 +157,8 @@ pub async fn update_execution_settings(
                 "project_ideation_max": updated.project_ideation_max,
                 "auto_commit": updated.auto_commit,
                 "pause_on_failure": updated.pause_on_failure,
+                "agent_workspace_pr_autofix_default": updated.agent_workspace_pr_autofix_default,
+                "agent_workspace_pr_auto_merge_default": updated.agent_workspace_pr_auto_merge_default,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }),
         );

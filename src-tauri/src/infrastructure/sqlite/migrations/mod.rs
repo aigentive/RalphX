@@ -390,6 +390,9 @@ mod v20260611110952_question_skip_progress_tests;
 mod v20260611152000_question_metadata;
 #[cfg(test)]
 mod v20260611152000_question_metadata_tests;
+mod v20260611191722_agent_workspace_pr_automation_defaults;
+#[cfg(test)]
+mod v20260611191722_agent_workspace_pr_automation_defaults_tests;
 mod v20260612124826_provider_cli_management_policy;
 #[cfg(test)]
 mod v20260612124826_provider_cli_management_policy_tests;
@@ -1099,6 +1102,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260611152000,
         name: "question_metadata",
         migrate: v20260611152000_question_metadata::migrate,
+    },
+    Migration {
+        version: 20260611191722,
+        name: "agent_workspace_pr_automation_defaults",
+        migrate: v20260611191722_agent_workspace_pr_automation_defaults::migrate,
     },
     Migration {
         version: 20260612124826,
