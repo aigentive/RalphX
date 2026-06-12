@@ -69,6 +69,9 @@ const GrepWidget = lazyWidget(() =>
 const GlobWidget = lazyWidget(() =>
   import("./GlobWidget").then((module) => ({ default: module.GlobWidget }))
 );
+const ListDirWidget = lazyWidget(() =>
+  import("./ListDirWidget").then((module) => ({ default: module.ListDirWidget }))
+);
 const ReadWidget = lazyWidget(() =>
   import("./ReadWidget").then((module) => ({ default: module.ReadWidget }))
 );
@@ -133,6 +136,7 @@ export const TOOL_CALL_WIDGETS: ToolCallWidgetRegistry = {
   // Search tools → GrepWidget / GlobWidget
   grep: GrepWidget,
   glob: GlobWidget,
+  list_dir: ListDirWidget,
   // Skill tool → SkillWidget (skill invocation card)
   "skill": SkillWidget,
   // Context tool → ContextWidget (always-visible context card)

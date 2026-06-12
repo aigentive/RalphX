@@ -674,6 +674,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.delegated_session_repo)
             });
+            let project_repo = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<AppState>();
+                Arc::clone(&app_state.project_repo)
+            });
             let atlassian_integration_service = app_handle.as_ref().map(|handle| {
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.atlassian_integration_service)
@@ -706,6 +710,16 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 runtime_content,
                 queued_agent_context.workspace.as_ref(),
             );
+            let filesystem_read_roots = if let Some(project_repo) = project_repo {
+                chat_service_context::resolve_mcp_filesystem_read_roots(
+                    project_id,
+                    project_repo,
+                    working_directory,
+                )
+                .await
+            } else {
+                Vec::new()
+            };
 
             // Build and spawn resume command
             let provider_spawnable = match chat_service_context::build_resume_command_for_harness(
@@ -720,7 +734,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 working_directory,
                 session_id,
                 project_id,
-                &[],
+                &filesystem_read_roots,
                 if context_type == ChatContextType::Project {
                     Some(conversation_id.as_str())
                 } else {

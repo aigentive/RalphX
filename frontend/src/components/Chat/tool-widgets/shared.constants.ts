@@ -149,6 +149,26 @@ function parseMcpTextContentArray(result: unknown): unknown {
   return result;
 }
 
+function extractMcpTextContent(result: unknown): string | null {
+  if (!Array.isArray(result) || result.length === 0) {
+    return null;
+  }
+
+  const texts: string[] = [];
+  for (const item of result) {
+    if (
+      item &&
+      typeof item === "object" &&
+      "text" in item &&
+      typeof (item as { text: unknown }).text === "string"
+    ) {
+      texts.push((item as { text: string }).text);
+    }
+  }
+
+  return texts.length > 0 ? texts.join("\n") : null;
+}
+
 /**
  * Unwrap MCP content array to raw parsed value (object OR array).
  * Unlike parseMcpToolResult, returns `unknown` to allow Array.isArray narrowing.
@@ -279,15 +299,22 @@ export function parseToolResultAsLines(result: unknown): string[] {
     text = result;
   } else if (Array.isArray(result)) {
     // MCP result wrapper: [{type: "text", text: "..."}]
-    const first = result[0];
-    if (first && typeof first === "object" && "text" in first) {
-      text = String((first as { text: string }).text);
+    const mcpText = extractMcpTextContent(result);
+    if (mcpText != null) {
+      text = mcpText;
     } else {
       // Array of strings
       return result.filter((item): item is string => typeof item === "string");
     }
   } else if (typeof result === "object" && result !== null && "text" in result) {
     text = String((result as { text: string }).text);
+  } else if (typeof result === "object" && result !== null && "content" in result) {
+    const obj = result as { content?: unknown };
+    if (typeof obj.content === "string") {
+      text = obj.content;
+    } else {
+      text = extractMcpTextContent(obj.content) ?? "";
+    }
   }
 
   if (!text) return [];
@@ -556,6 +583,8 @@ function extractRawText(result: unknown): string | null {
     const obj = result as Record<string, unknown>;
     if (typeof obj.text === "string") return obj.text;
     if (typeof obj.content === "string") return obj.content;
+    const contentText = extractMcpTextContent(obj.content);
+    if (contentText != null) return contentText;
   }
 
   return null;
