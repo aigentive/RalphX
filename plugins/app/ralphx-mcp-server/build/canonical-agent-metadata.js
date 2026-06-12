@@ -84,6 +84,8 @@ export function canonicalAgentName(agentType) {
             return "ralphx-utility-session-namer";
         case "pr-describer":
             return "ralphx-utility-pr-describer";
+        case "plan-complexity":
+            return "ralphx-utility-plan-complexity";
         case "qa-prep":
             return "ralphx-qa-prep";
         case "qa-tester":

@@ -45,7 +45,11 @@ function extractAttachedSessionId(toolCall: ToolCall): string | null {
     !name.includes("start_ideation_session") &&
     !name.includes("v1_start_ideation") &&
     !name.includes("v1_send_ideation_message") &&
-    !name.includes("create_child_session")
+    !name.includes("create_child_session") &&
+    !name.includes("create_plan_artifact") &&
+    !name.includes("update_plan_artifact") &&
+    !name.includes("edit_plan_artifact") &&
+    !name.includes("get_session_plan")
   ) {
     return null;
   }

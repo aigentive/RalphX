@@ -59,6 +59,7 @@ vi.mock("@/hooks/useChat", () => ({
   chatKeys: {
     conversationList: (type: string, id: string) => ["chat", "conversations", type, id],
     conversation: (id: string) => ["chat", "conversation", id],
+    conversationSummary: (id: string) => ["chat", "conversation", id, "summary"],
     conversationHistory: (id: string) => ["chat", "conversation", id, "history"],
     agentRun: (id: string) => ["chat", "agentRun", id],
   },
@@ -67,6 +68,9 @@ vi.mock("@/hooks/useChat", () => ({
     conversationId: string
   ) => {
     queryClient.invalidateQueries({ queryKey: ["chat", "conversation", conversationId] });
+    queryClient.invalidateQueries({
+      queryKey: ["chat", "conversation", conversationId, "summary"],
+    });
     queryClient.invalidateQueries({
       queryKey: ["chat", "conversation", conversationId, "history"],
     });
@@ -845,6 +849,9 @@ describe("useAgentEvents", () => {
         queryKey: ["agents", "conversation-workspace", "conv-snake"],
       });
       expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversation", "conv-snake", "summary"],
+      });
+      expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: ["agents", "sidebar-conversations"],
       });
       expect(invalidateSpy).toHaveBeenCalledWith({
@@ -865,6 +872,64 @@ describe("useAgentEvents", () => {
       expect(invalidateSpy).not.toHaveBeenCalledWith({
         queryKey: ["agents", "conversation-workspace", "   "],
       });
+    });
+
+    it("patches cached agent conversation mode from workspace-changed payloads", () => {
+      const { queryClient, wrapper } = createWrapperWithClient();
+      queryClient.setQueryData(["chat", "conversation", "conv-1", "summary"], {
+        id: "conv-1",
+        contextType: "project",
+        contextId: "project-1",
+        agentMode: "edit",
+      });
+      queryClient.setQueryData(["agents", "conversations", "project-1", "archived"], {
+        pages: [
+          {
+            conversations: [
+              {
+                id: "conv-1",
+                contextType: "project",
+                contextId: "project-1",
+                agentMode: "edit",
+              },
+              {
+                id: "conv-2",
+                contextType: "project",
+                contextId: "project-1",
+                agentMode: "edit",
+              },
+            ],
+          },
+        ],
+        pageParams: [],
+      });
+
+      renderHook(() => useAgentEvents("conv-1"), { wrapper });
+
+      act(() => {
+        emitEvent("agent:workspace_changed", {
+          conversation_id: "conv-1",
+          mode: "plan",
+        });
+      });
+
+      expect(
+        queryClient.getQueryData<{ agentMode: string }>([
+          "chat",
+          "conversation",
+          "conv-1",
+          "summary",
+        ])?.agentMode
+      ).toBe("plan");
+      expect(
+        queryClient.getQueryData<{
+          pages: Array<{ conversations: Array<{ id: string; agentMode: string }> }>;
+        }>(["agents", "conversations", "project-1", "archived"])?.pages[0]
+          .conversations
+      ).toEqual([
+        expect.objectContaining({ id: "conv-1", agentMode: "plan" }),
+        expect.objectContaining({ id: "conv-2", agentMode: "edit" }),
+      ]);
     });
 
     it("clears running state for task_execution on stop/completion", () => {
@@ -1620,7 +1685,7 @@ describe("useAgentEvents", () => {
     });
   });
 
-  describe("stale question cleanup", () => {
+  describe("durable question preservation", () => {
     const testQuestion: AskUserQuestionPayload = {
       requestId: "req-1",
       taskId: "task-123",
@@ -1631,7 +1696,7 @@ describe("useAgentEvents", () => {
       multiSelect: false,
     };
 
-    it("clears active question on agent:run_completed", () => {
+    it("keeps active question on agent:run_completed", () => {
       const wrapper = createWrapper();
 
       // Set up an active question for this context
@@ -1651,11 +1716,10 @@ describe("useAgentEvents", () => {
         });
       });
 
-      // Question should be cleaned up when agent dies
-      expect(useUiStore.getState().activeQuestions["task-123"]).toBeUndefined();
+      expect(useUiStore.getState().activeQuestions["task-123"]).toBeDefined();
     });
 
-    it("clears active question on agent:stopped", () => {
+    it("keeps active question on agent:stopped", () => {
       const wrapper = createWrapper();
 
       act(() => {
@@ -1673,10 +1737,10 @@ describe("useAgentEvents", () => {
         });
       });
 
-      expect(useUiStore.getState().activeQuestions["task-123"]).toBeUndefined();
+      expect(useUiStore.getState().activeQuestions["task-123"]).toBeDefined();
     });
 
-    it("clears active question on agent:error", () => {
+    it("keeps active question on agent:error", () => {
       const wrapper = createWrapper();
 
       act(() => {
@@ -1694,10 +1758,10 @@ describe("useAgentEvents", () => {
         });
       });
 
-      expect(useUiStore.getState().activeQuestions["task-123"]).toBeUndefined();
+      expect(useUiStore.getState().activeQuestions["task-123"]).toBeDefined();
     });
 
-    it("clears ideation session question on agent:run_completed", () => {
+    it("keeps ideation session question on agent:run_completed", () => {
       const wrapper = createWrapper();
       const ideationQuestion = { ...testQuestion, sessionId: "session-789" };
 
@@ -1716,7 +1780,7 @@ describe("useAgentEvents", () => {
         });
       });
 
-      expect(useUiStore.getState().activeQuestions["session-789"]).toBeUndefined();
+      expect(useUiStore.getState().activeQuestions["session-789"]).toBeDefined();
     });
 
     it("does not affect questions for other contexts", () => {
@@ -1738,8 +1802,7 @@ describe("useAgentEvents", () => {
         });
       });
 
-      // Only task-123 should be cleared
-      expect(useUiStore.getState().activeQuestions["task-123"]).toBeUndefined();
+      expect(useUiStore.getState().activeQuestions["task-123"]).toBeDefined();
       expect(useUiStore.getState().activeQuestions["task-456"]).toBeDefined();
     });
   });

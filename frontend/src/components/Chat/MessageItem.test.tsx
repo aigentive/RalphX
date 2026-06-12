@@ -62,6 +62,7 @@ describe("MessageItem - Attachment Integration", () => {
         role="user"
         composerReferences={{
           projectReferences: [{ path: "src/main.ts", kind: "file" }],
+          artifactReferences: [],
           integrationReferences: [
             {
               provider: "atlassian",
@@ -178,6 +179,7 @@ describe("MessageItem - Attachment Integration", () => {
         composerReferences={{
           projectReferences: [{ path: "src/main.ts", kind: "file" }],
           integrationReferences: [],
+          artifactReferences: [],
         }}
       />
     );
@@ -610,6 +612,53 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
     expect(container.querySelector('[data-testid="task-tool-call-card"]')).toBeInTheDocument();
     // Independent tool renders as generic indicator
     expect(container.querySelector('[data-testid="tool-call-indicator"]')).toBeInTheDocument();
+  });
+});
+
+describe("MessageItem - hydrated content block tool results", () => {
+  const createdAt = "2026-04-10T07:00:00Z";
+
+  it("hydrates a content-block tool widget result from the matching toolCalls entry", async () => {
+    const toolCallId = "tool-ask-question";
+    const contentBlocks = [
+      makeContentToolUse("mcp__ralphx__ask_user_question", {
+        id: toolCallId,
+        arguments: { question: "Which area should we focus on?" },
+      }),
+    ];
+    const toolCalls = [
+      makeToolCall("mcp__ralphx__ask_user_question", {
+        id: toolCallId,
+        arguments: { question: "Which area should we focus on?" },
+        result: {
+          answers: [
+            {
+              id: "scope",
+              request_id: "req-1",
+              question: "Which area should we focus on?",
+              options: [{ label: "Backend", value: "backend" }],
+              selected_options: ["backend"],
+              text: null,
+              skipped: false,
+            },
+          ],
+        },
+      }),
+    ];
+
+    renderMessageItem(
+      <MessageItem
+        role="assistant"
+        content=""
+        createdAt={createdAt}
+        contentBlocks={contentBlocks}
+        toolCalls={toolCalls}
+      />,
+    );
+
+    expect(await screen.findByText("Question answered")).toBeInTheDocument();
+    expect(screen.getByText("Which area should we focus on?")).toBeInTheDocument();
+    expect(screen.getByText("Backend")).toBeInTheDocument();
   });
 });
 

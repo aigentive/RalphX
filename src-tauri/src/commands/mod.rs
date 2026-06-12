@@ -35,6 +35,8 @@ pub mod plan_commands;
 pub mod project_commands;
 pub mod qa_commands;
 pub mod question_commands;
+#[cfg(test)]
+mod question_commands_tests;
 pub mod research_commands;
 pub mod release_notes_commands;
 pub mod registry;
@@ -63,9 +65,12 @@ pub use agent_model_commands::{
     UpsertCustomAgentModelInput,
 };
 pub use agent_composer_commands::{
-    list_agent_composer_skills, search_agent_composer_entries, AgentComposerEntryResponse,
-    AgentComposerSkillResponse, ListAgentComposerSkillsInput, ListAgentComposerSkillsResponse,
-    SearchAgentComposerEntriesInput, SearchAgentComposerEntriesResponse,
+    list_agent_composer_skills, search_agent_composer_entries,
+    search_agent_composer_plan_references, AgentComposerEntryResponse,
+    AgentComposerPlanReferenceResponse, AgentComposerSkillResponse, ListAgentComposerSkillsInput,
+    ListAgentComposerSkillsResponse, SearchAgentComposerEntriesInput,
+    SearchAgentComposerEntriesResponse, SearchAgentComposerPlanReferencesInput,
+    SearchAgentComposerPlanReferencesResponse,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,

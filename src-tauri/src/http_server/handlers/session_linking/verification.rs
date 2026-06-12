@@ -202,6 +202,7 @@ mod tests {
             spawn_reason: None,
             blocker_fingerprint: None,
             session_purpose: SessionPurpose::default(),
+            session_flow: Default::default(),
             cross_project_checked: true,
             plan_version_last_read: None,
             origin: SessionOrigin::External,

@@ -1,10 +1,15 @@
 use super::{
     list_canonical_prompt_backed_agents, load_canonical_agent_definition,
-    load_canonical_claude_metadata, load_canonical_codex_metadata, load_harness_agent_prompt,
+    load_canonical_agent_definition_for_profile, load_canonical_claude_metadata,
+    load_canonical_claude_metadata_for_profile, load_canonical_codex_metadata,
+    load_canonical_codex_metadata_for_profile, load_harness_agent_prompt,
+    load_harness_agent_prompt_for_profile, render_agent_runtime_profile_context,
     resolve_harness_agent_prompt_path, resolve_project_root_from_catalog_path,
     resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata, AgentPromptHarness,
 };
-use crate::infrastructure::agents::claude::get_agent_config;
+use crate::infrastructure::agents::claude::{
+    get_agent_config, get_agent_config_for_profile, get_preapproved_tools_for_profile,
+};
 use std::fs;
 use std::path::PathBuf;
 use tempfile::tempdir;
@@ -30,12 +35,18 @@ const PILOT_AGENTS: &[(&str, &str, &str)] = &[
         "pr_describer",
         "ralphx-utility-pr-describer",
     ),
+    (
+        "ralphx-utility-plan-complexity",
+        "plan_complexity_assessor",
+        "ralphx-utility-plan-complexity",
+    ),
 ];
 
 const CODEX_PILOT_AGENTS: &[&str] = &[
     "ralphx-ideation",
     "ralphx-utility-session-namer",
     "ralphx-utility-pr-describer",
+    "ralphx-utility-plan-complexity",
 ];
 const CODEX_DELEGATION_GUIDE_AGENTS: &[&str] = &[
     "ralphx-chat-task",
@@ -229,6 +240,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-ideation-team-lead",
     "ralphx-utility-session-namer",
     "ralphx-utility-pr-describer",
+    "ralphx-utility-plan-complexity",
     "ralphx-chat-task",
     "ralphx-chat-project",
     "ralphx-review-chat",
@@ -255,6 +267,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
 const CANONICAL_CODEX_RUNTIME_FEATURE_OWNED_AGENTS: &[&str] = &[
     "ralphx-general-explorer",
     "ralphx-utility-pr-describer",
+    "ralphx-utility-plan-complexity",
     "ralphx-plan-verifier",
     "ralphx-plan-critic-completeness",
     "ralphx-plan-critic-implementation-feasibility",
@@ -400,6 +413,7 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-agent-workspace-repair", "opus"),
     ("ralphx-agent-workspace-pr-fixer", "opus"),
     ("ralphx-utility-session-namer", "haiku"),
+    ("ralphx-utility-plan-complexity", "haiku"),
     ("ralphx-chat-task", "sonnet"),
     ("ralphx-chat-project", "sonnet"),
     ("ralphx-review-chat", "sonnet"),
@@ -787,6 +801,142 @@ fn project_chat_claude_surface_can_append_to_open_ideation_plans() {
 }
 
 #[test]
+fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
+    let root = project_root();
+    let definition = load_canonical_agent_definition_for_profile(
+        &root,
+        "ralphx-ideation",
+        Some("plan"),
+    )
+    .expect("missing plan profile for ralphx-ideation");
+    let runtime_config = get_agent_config_for_profile("ralphx-ideation", Some("plan"))
+        .expect("missing runtime plan profile for ralphx-ideation");
+    let preapproved_tools = get_preapproved_tools_for_profile("ralphx-ideation", Some("plan"))
+        .expect("missing preapproved tools for ralphx-ideation plan profile");
+    let claude_metadata =
+        load_canonical_claude_metadata_for_profile(&root, "ralphx-ideation", Some("plan"));
+    let codex_metadata =
+        load_canonical_codex_metadata_for_profile(&root, "ralphx-ideation", Some("plan"));
+    let claude_prompt = load_harness_agent_prompt_for_profile(
+        &root,
+        "ralphx-ideation",
+        AgentPromptHarness::Claude,
+        Some("plan"),
+    )
+    .expect("missing claude prompt for ralphx-ideation plan profile");
+    let codex_prompt = load_harness_agent_prompt_for_profile(
+        &root,
+        "ralphx-ideation",
+        AgentPromptHarness::Codex,
+        Some("plan"),
+    )
+    .expect("missing codex prompt for ralphx-ideation plan profile");
+    let runtime_profile_context =
+        render_agent_runtime_profile_context(&root, "ralphx-ideation", Some("plan"))
+            .expect("missing runtime profile context");
+
+    assert_eq!(
+        definition.capabilities.mcp_tools, runtime_config.allowed_mcp_tools,
+        "Plan profile runtime MCP grants should be sourced from canonical capabilities"
+    );
+    assert_eq!(definition.role, "plan_chat");
+    assert_eq!(definition.delegation.allowed_targets, Vec::<String>::new());
+    assert_eq!(
+        claude_metadata.tools.and_then(|tools| tools.extends),
+        Some("readonly_tools".to_string())
+    );
+    assert!(
+        !preapproved_tools.contains("Task(Plan)"),
+        "Plan profile should clear the base ideation Task preapproval"
+    );
+    assert_eq!(codex_metadata.runtime_features.get("shell_tool"), Some(&false));
+    assert!(runtime_profile_context.contains("<agent_runtime_profile>"));
+    assert!(runtime_profile_context.contains("<profile_slug>plan</profile_slug>"));
+    assert!(runtime_profile_context.contains("<profile_role>plan_chat</profile_role>"));
+    assert!(
+        render_agent_runtime_profile_context(&root, "ralphx-ideation", None).is_none(),
+        "default launches should not receive profile context"
+    );
+
+    for required_tool in [
+        "ask_user_question",
+        "create_plan_artifact",
+        "update_plan_artifact",
+        "edit_plan_artifact",
+        "get_session_plan",
+        "create_child_session",
+        "get_plan_verification",
+    ] {
+        assert!(
+            definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == required_tool),
+            "Plan profile canonical surface should include {required_tool}"
+        );
+        assert!(
+            runtime_config
+                .allowed_mcp_tools
+                .iter()
+                .any(|tool| tool == required_tool),
+            "Plan profile runtime surface should include {required_tool}"
+        );
+    }
+
+    for forbidden_tool in [
+        "create_task_proposal",
+        "finalize_proposals",
+        "migrate_proposals",
+        "v1_start_ideation",
+    ] {
+        assert!(
+            !definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == forbidden_tool),
+            "Plan profile canonical surface must not expose {forbidden_tool}"
+        );
+        assert!(
+            !runtime_config
+                .allowed_mcp_tools
+                .iter()
+                .any(|tool| tool == forbidden_tool),
+            "Plan profile runtime surface must not expose {forbidden_tool}"
+        );
+    }
+
+    for prompt in [claude_prompt, codex_prompt] {
+        assert!(prompt.contains("Agent Conversation Plan Mode"));
+        assert!(prompt.contains("<plan_mode_context>"));
+        assert!(prompt.contains("<planning_session_id>"));
+        assert!(prompt.contains("do not invent a session id"));
+        assert!(prompt.contains("ask_user_question"));
+        assert!(prompt.contains("Create or update exactly one linked plan artifact"));
+        assert!(prompt.contains("Call `get_session_plan` before"));
+        assert!(prompt.contains("clicks the Plan-mode UI action `Approve Plan`"));
+        assert!(prompt.contains("approval is backend/UI-owned"));
+        assert!(prompt.contains("Agent-owned unknowns are facts"));
+        assert!(prompt.contains("User-owned decisions are product, scope, priority"));
+        assert!(prompt.contains("do not ask it only in prose"));
+        assert!(prompt.contains("Separate evidence from inference"));
+        assert!(prompt.contains("`## Data / State`"));
+        assert!(prompt.contains("`## Agent And MCP Surface`"));
+        assert!(prompt.contains("`## UI / UX`"));
+        assert!(prompt.contains("`## Progression Scenarios`"));
+        assert!(prompt.contains("Do not end a normal chat reply with a user-facing question"));
+        assert!(prompt.contains("Do not paste the full plan into chat"));
+        assert!(prompt.contains("Do not expose raw tool names"));
+        assert!(prompt.contains("do not park blocking user-owned decisions there"));
+        assert!(prompt.contains("Do not create task proposals"));
+        assert!(prompt.contains("`Implement Plan` action"));
+        assert!(!prompt.contains("<agent_task_ledger_contract>"));
+        assert!(!prompt.contains("## RalphX Delegation Policy"));
+    }
+}
+
+#[test]
 fn codex_runtime_features_prefer_root_agent_metadata_over_legacy_harness_file() {
     let temp = tempfile::tempdir().expect("tempdir should exist");
     let agent_dir = temp.path().join("agents/test-agent");
@@ -1054,6 +1204,52 @@ fn canonical_mcp_tools_match_runtime_yaml_for_current_owned_agents() {
 }
 
 #[test]
+fn chat_and_edit_agents_expose_plan_mode_proposal_contract() {
+    let root = project_root();
+
+    for (agent_name, mode_name) in [
+        ("ralphx-general-explorer", "Chat mode"),
+        ("ralphx-general-worker", "Edit mode"),
+    ] {
+        let definition = load_canonical_agent_definition(&root, agent_name)
+            .unwrap_or_else(|| panic!("expected canonical definition for {agent_name}"));
+        assert!(
+            definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == "propose_plan_mode"),
+            "{agent_name} should receive propose_plan_mode"
+        );
+
+        for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+            let prompt = load_harness_agent_prompt(&root, agent_name, harness)
+                .unwrap_or_else(|| panic!("missing {harness:?} prompt for {agent_name}"));
+            assert!(
+                prompt.contains("Plan-mode proposal gate"),
+                "{agent_name} {harness:?} prompt should declare the plan proposal gate"
+            );
+            assert!(
+                prompt.contains(mode_name),
+                "{agent_name} {harness:?} prompt should scope the gate to {mode_name}"
+            );
+            assert!(
+                prompt.contains("call `propose_plan_mode` first"),
+                "{agent_name} {harness:?} prompt should make propose_plan_mode the first step"
+            );
+            assert!(
+                prompt.contains("broad planning, product-surface, architecture, workflow design"),
+                "{agent_name} {harness:?} prompt should define the trigger shape"
+            );
+            assert!(
+                prompt.contains("quick answer"),
+                "{agent_name} {harness:?} prompt should preserve a quick-answer escape hatch"
+            );
+        }
+    }
+}
+
+#[test]
 fn pr_describer_codex_surface_uses_shared_prompt_and_submit_tool() {
     let root = project_root();
     let definition = load_canonical_agent_definition(&root, "ralphx-utility-pr-describer")
@@ -1081,6 +1277,34 @@ fn pr_describer_codex_surface_uses_shared_prompt_and_submit_tool() {
     assert!(
         !prompt.contains("truncated"),
         "Codex PR describer prompt should not tell helpers to expose bounded-context truncation"
+    );
+    assert_eq!(metadata.runtime_features.get("shell_tool"), Some(&false));
+}
+
+#[test]
+fn plan_complexity_codex_surface_uses_shared_prompt_and_submit_tool() {
+    let root = project_root();
+    let definition = load_canonical_agent_definition(&root, "ralphx-utility-plan-complexity")
+        .expect("expected canonical plan complexity definition");
+    let prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-utility-plan-complexity",
+        AgentPromptHarness::Codex,
+    )
+    .expect("expected plan complexity Codex prompt");
+    let metadata = load_canonical_codex_metadata(&root, "ralphx-utility-plan-complexity");
+
+    assert_eq!(
+        definition.capabilities.mcp_tools,
+        vec!["submit_plan_complexity_assessment".to_string()]
+    );
+    assert!(
+        prompt.contains("submit_plan_complexity_assessment"),
+        "Codex plan complexity prompt should expose the submit contract"
+    );
+    assert!(
+        !prompt.contains("mcp__ralphx__"),
+        "Codex plan complexity prompt should not use Claude-style MCP names"
     );
     assert_eq!(metadata.runtime_features.get("shell_tool"), Some(&false));
 }
@@ -1233,7 +1457,9 @@ fn pilot_agent_prompt_paths_exist_for_both_harnesses() {
 
         if matches!(
             *agent_name,
-            "ralphx-utility-session-namer" | "ralphx-utility-pr-describer"
+            "ralphx-utility-session-namer"
+                | "ralphx-utility-pr-describer"
+                | "ralphx-utility-plan-complexity"
         ) {
             assert!(
                 claude_path.as_ref().is_some_and(
@@ -1343,33 +1569,18 @@ fn pilot_agent_prompt_paths_exist_for_both_harnesses() {
             codex_path.is_some(),
             "expected codex prompt path for {agent_name}"
         );
-        if *agent_name == "ralphx-chat-project" {
-            assert!(
-                claude_path.as_ref().is_some_and(
-                    |path| path.ends_with("agents/ralphx-chat-project/claude/prompt.md")
-                ),
-                "expected ralphx-chat-project claude prompt to resolve through claude/prompt.md"
-            );
-            assert!(
-                codex_path.as_ref().is_some_and(
-                    |path| path.ends_with("agents/ralphx-chat-project/codex/prompt.md")
-                ),
-                "expected ralphx-chat-project codex prompt to resolve through codex/prompt.md"
-            );
-        } else {
-            assert!(
-                claude_path.as_ref().is_some_and(
-                    |path| path.ends_with(format!("agents/{agent_name}/shared/prompt.md"))
-                ),
-                "expected {agent_name} claude prompt to resolve through shared/prompt.md"
-            );
-            assert!(
-                codex_path.as_ref().is_some_and(
-                    |path| path.ends_with(format!("agents/{agent_name}/shared/prompt.md"))
-                ),
-                "expected {agent_name} codex prompt to resolve through shared/prompt.md"
-            );
-        }
+        assert!(
+            claude_path.as_ref().is_some_and(
+                |path| path.ends_with(format!("agents/{agent_name}/shared/prompt.md"))
+            ),
+            "expected {agent_name} claude prompt to resolve through shared/prompt.md"
+        );
+        assert!(
+            codex_path.as_ref().is_some_and(
+                |path| path.ends_with(format!("agents/{agent_name}/shared/prompt.md"))
+            ),
+            "expected {agent_name} codex prompt to resolve through shared/prompt.md"
+        );
     }
 
     for (agent_name, _, _) in CROSS_HARNESS_SUPPORT_AGENTS {
@@ -1449,6 +1660,7 @@ fn legacy_agent_aliases_resolve_into_canonical_catalog_entries() {
         ("ralphx-worker", "ralphx-execution-worker"),
         ("session-namer", "ralphx-utility-session-namer"),
         ("pr-describer", "ralphx-utility-pr-describer"),
+        ("plan-complexity", "ralphx-utility-plan-complexity"),
     ];
 
     for (legacy_name, canonical_name) in cases {

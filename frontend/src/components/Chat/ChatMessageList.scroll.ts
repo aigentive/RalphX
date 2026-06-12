@@ -55,6 +55,25 @@ export function shouldStickToBottom({
   return isAtBottom || isVisuallyAtBottom;
 }
 
+export interface ScrollAwaySignalState {
+  hasUserScrollInput: boolean;
+  previousScrollTop: number | null;
+  currentScrollTop: number;
+  isVisuallyAtBottom: boolean;
+}
+
+export function shouldTreatScrollTopDecreaseAsUserAway({
+  hasUserScrollInput,
+  previousScrollTop,
+  currentScrollTop,
+  isVisuallyAtBottom,
+}: ScrollAwaySignalState): boolean {
+  if (!hasUserScrollInput || previousScrollTop === null || isVisuallyAtBottom) {
+    return false;
+  }
+  return currentScrollTop < previousScrollTop;
+}
+
 export interface ScrollToBottomControlState {
   timelineLength: number;
   scrollToTimestamp: string | null | undefined;

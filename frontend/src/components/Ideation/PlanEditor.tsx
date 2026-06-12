@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
 import { backendApiUrl } from "@/api/backend";
+import { ArtifactResponseSchema, transformArtifactResponse } from "@/api/artifact";
 import type { Artifact } from "@/types/artifact";
 import { PlanTemplateSelector } from "./PlanTemplateSelector";
 
@@ -193,27 +194,8 @@ export function PlanEditor({ plan, onSave, onCancel, isNewPlan = false }: PlanEd
         throw new Error(`Failed to update plan: ${response.statusText}`);
       }
 
-      const data = await response.json();
-
-      // Transform the response to match our Artifact type
-      const updatedPlan: Artifact = {
-        id: data.id,
-        type: data.artifact_type as Artifact["type"],
-        name: data.name,
-        content:
-          data.content_type === "inline"
-            ? { type: "inline", text: data.content }
-            : { type: "file", path: data.content },
-        metadata: {
-          createdAt: data.created_at,
-          createdBy: data.created_by,
-          version: data.version,
-          taskId: data.task_id ?? undefined,
-          processId: data.process_id ?? undefined,
-        },
-        derivedFrom: data.derived_from,
-        bucketId: data.bucket_id ?? undefined,
-      };
+      const data = ArtifactResponseSchema.parse(await response.json());
+      const updatedPlan: Artifact = transformArtifactResponse(data);
 
       onSave(updatedPlan);
     } catch (err) {

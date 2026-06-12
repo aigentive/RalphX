@@ -180,6 +180,32 @@ describe("GrepWidget", () => {
       expect(screen.queryByText(/^PATTERN:/)).not.toBeInTheDocument();
       expect(screen.queryByText(/^MATCHES:/)).not.toBeInTheDocument();
     });
+
+    it("parses persisted full MCP wrapper results", () => {
+      render(
+        <GrepWidget
+          toolCall={makeGrepCall({
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: [
+                    "ROOT: /workspace/project",
+                    "PATTERN: workspace",
+                    "MATCHES: 1",
+                    "",
+                    "src-tauri/src/application/chat_service/mod.rs:42:workspace",
+                  ].join("\n"),
+                },
+              ],
+              structured_content: null,
+            },
+          })}
+        />,
+      );
+
+      expect(screen.getByText("src-tauri/src/application/chat_service/mod.rs")).toBeInTheDocument();
+    });
   });
 
   describe("parseSearchResult integration", () => {

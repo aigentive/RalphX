@@ -6,6 +6,7 @@ const RALPHX_DOUBLE_COLON_PREFIX = "ralphx::";
 const RALPHX_INTERNAL_DOUBLE_COLON_PREFIX = "ralphx_internal::";
 const TOOL_ALIASES: Record<string, string> = {
   fs_read_file: "read",
+  fs_list_dir: "list_dir",
   fs_grep: "grep",
   fs_glob: "glob",
 };

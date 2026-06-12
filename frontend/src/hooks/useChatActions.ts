@@ -26,6 +26,7 @@ import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import type { ContextType } from "@/types/chat-conversation";
 import type {
+  ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
   SendAgentMessageOptions,
@@ -56,6 +57,7 @@ interface UseChatActionsProps {
       content: string;
       attachmentIds?: string[];
       target?: string;
+      composerArtifactReferences?: ComposerArtifactReference[];
       composerProjectReferences?: ComposerProjectReference[];
       composerIntegrationReferences?: ComposerIntegrationReference[];
     }) => Promise<SendAgentMessageResult>;
@@ -126,6 +128,7 @@ export function useChatActions({
       composerOptions?: {
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
+        artifactReferences?: ComposerArtifactReference[];
       },
     ) => {
       if (!content.trim() || sendMessage.isPending) return;
@@ -149,6 +152,7 @@ export function useChatActions({
               const referenceMetadata = serializeComposerReferencesMetadata({
                 projectReferences: composerOptions?.projectReferences,
                 integrationReferences: composerOptions?.integrationReferences,
+                artifactReferences: composerOptions?.artifactReferences,
               });
               const message = referenceMetadata
                 ? addOptimisticUserMessageToConversationCache(
@@ -173,21 +177,29 @@ export function useChatActions({
               content,
               attachmentIds,
               target,
-              composerOptions?.projectReferences?.length
+              composerOptions?.projectReferences?.length ||
+                composerOptions?.integrationReferences?.length ||
+                composerOptions?.artifactReferences?.length
                 ? {
-                    composerProjectReferences: composerOptions.projectReferences,
-                    ...(composerOptions.integrationReferences?.length
+                    ...(composerOptions?.projectReferences?.length
+                      ? {
+                          composerProjectReferences:
+                            composerOptions.projectReferences,
+                        }
+                      : {}),
+                    ...(composerOptions?.integrationReferences?.length
                       ? {
                           composerIntegrationReferences:
                             composerOptions.integrationReferences,
                         }
                       : {}),
+                    ...(composerOptions?.artifactReferences?.length
+                      ? {
+                          composerArtifactReferences:
+                            composerOptions.artifactReferences,
+                        }
+                      : {}),
                   }
-                : composerOptions?.integrationReferences?.length
-                  ? {
-                      composerIntegrationReferences:
-                        composerOptions.integrationReferences,
-                    }
                 : undefined,
             );
             sentResult = result;
@@ -216,6 +228,7 @@ export function useChatActions({
             content: string;
             attachmentIds?: string[];
             target?: string;
+            composerArtifactReferences?: ComposerArtifactReference[];
             composerProjectReferences?: ComposerProjectReference[];
             composerIntegrationReferences?: ComposerIntegrationReference[];
           } = { content };
@@ -231,6 +244,10 @@ export function useChatActions({
           if (composerOptions?.integrationReferences?.length) {
             params.composerIntegrationReferences =
               composerOptions.integrationReferences;
+          }
+          if (composerOptions?.artifactReferences?.length) {
+            params.composerArtifactReferences =
+              composerOptions.artifactReferences;
           }
           const result = await sendMessage.mutateAsync(params);
           sentResult = result;

@@ -122,8 +122,23 @@ describe("PlanDisplay", () => {
   it("shows approved badge when already approved", () => {
     render(<PlanDisplay plan={mockPlan} showApprove={true} isApproved={true} />);
 
-    expect(screen.getByText("Approved")).toBeInTheDocument();
+    expect(screen.getByText("Plan Approved")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
+  });
+
+  it("shows and handles Verify Plan action", () => {
+    const onVerifyPlan = vi.fn();
+    render(
+      <PlanDisplay
+        plan={mockPlan}
+        isApproved={true}
+        onVerifyPlan={onVerifyPlan}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Verify Plan/i }));
+
+    expect(onVerifyPlan).toHaveBeenCalledTimes(1);
   });
 
   it("shows no content for empty inline text", () => {
@@ -693,7 +708,7 @@ describe("PlanDisplay", () => {
       render(
         <PlanDisplay plan={mockPlan} chromeless={true} showApprove={true} isApproved={true} />,
       );
-      expect(screen.getByText("Approved")).toBeInTheDocument();
+      expect(screen.getByText("Plan Approved")).toBeInTheDocument();
     });
 
     it("renders Create Proposals in chromeless mode and dispatches handler", () => {

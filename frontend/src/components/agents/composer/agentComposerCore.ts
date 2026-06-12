@@ -1,5 +1,6 @@
 export type AgentComposerTriggerKind =
   | "path"
+  | "plan"
   | "skill"
   | "slash-command"
   | "integration";
@@ -25,6 +26,15 @@ export interface AgentComposerIntegrationReference {
   key?: string;
   title?: string;
   url?: string;
+}
+
+export interface AgentComposerArtifactReference {
+  artifactId: string;
+  kind: "plan" | string;
+  title?: string;
+  sessionId?: string;
+  version?: number;
+  status?: string;
 }
 
 const TOKEN_BOUNDARY_PATTERN = /\s/;
@@ -71,6 +81,15 @@ export function detectAgentComposerTrigger(
     return null;
   }
   if (marker === "@") {
+    const planTrigger = parsePlanTriggerQuery(query);
+    if (planTrigger) {
+      return {
+        kind: "plan",
+        query: planTrigger.query,
+        rangeStart,
+        rangeEnd: safeCursor,
+      };
+    }
     const integrationTrigger = parseIntegrationTriggerQuery(query);
     if (integrationTrigger) {
       return {
@@ -123,7 +142,12 @@ export function extractComposerPathTokens(text: string): AgentComposerProjectRef
   const references = new Map<string, AgentComposerProjectReference>();
   for (const match of text.matchAll(/@([^\s]+)/g)) {
     const rawPath = match[1]?.replace(/[),.;:]+$/g, "");
-    if (!rawPath || rawPath.includes("\0") || isIntegrationReferenceToken(rawPath)) {
+    if (
+      !rawPath ||
+      rawPath.includes("\0") ||
+      isIntegrationReferenceToken(rawPath) ||
+      isPlanReferenceToken(rawPath)
+    ) {
       continue;
     }
     references.set(rawPath, { path: rawPath });
@@ -155,6 +179,23 @@ export function extractComposerIntegrationTokens(
   return [...references.values()];
 }
 
+export function extractComposerArtifactTokens(
+  text: string,
+): AgentComposerArtifactReference[] {
+  const references = new Map<string, AgentComposerArtifactReference>();
+  for (const match of text.matchAll(/@plan:([^\s]+)/gi)) {
+    const rawId = match[1]?.replace(/[),.;]+$/g, "");
+    if (!rawId || rawId.includes("\0")) {
+      continue;
+    }
+    references.set(`plan:${rawId}`, {
+      artifactId: rawId,
+      kind: "plan",
+    });
+  }
+  return [...references.values()];
+}
+
 export function appendInternalSkillDirectives(
   text: string,
   skillNames: readonly string[],
@@ -169,6 +210,44 @@ export function appendInternalSkillDirectives(
     .map((name) => `<!-- ralphx_internal_skill=${name} -->`)
     .join("\n");
   return `${text.trimEnd()}\n\n${directives}`;
+}
+
+export function normalizeComposerArtifactReferences(
+  references: readonly AgentComposerArtifactReference[],
+): AgentComposerArtifactReference[] {
+  const safeReferences = new Map<string, AgentComposerArtifactReference>();
+  for (const reference of references) {
+    const artifactId = reference.artifactId.trim();
+    const kind = reference.kind.trim() || "plan";
+    if (
+      !artifactId ||
+      artifactId.includes("\n") ||
+      artifactId.includes("\r") ||
+      artifactId.includes("\0") ||
+      kind.includes("\n") ||
+      kind.includes("\r") ||
+      kind.includes("\0")
+    ) {
+      continue;
+    }
+    const version =
+      typeof reference.version === "number" && Number.isFinite(reference.version)
+        ? reference.version
+        : undefined;
+    const key = `${kind}:${artifactId}:${version ?? ""}`;
+    if (safeReferences.has(key)) {
+      continue;
+    }
+    safeReferences.set(key, {
+      artifactId,
+      kind,
+      ...(reference.title?.trim() ? { title: reference.title.trim() } : {}),
+      ...(reference.sessionId?.trim() ? { sessionId: reference.sessionId.trim() } : {}),
+      ...(version !== undefined ? { version } : {}),
+      ...(reference.status?.trim() ? { status: reference.status.trim() } : {}),
+    });
+  }
+  return [...safeReferences.values()];
 }
 
 export function normalizeComposerProjectReferences(
@@ -230,8 +309,20 @@ function parseIntegrationTriggerQuery(
   return { kind, query: match[2] ?? "" };
 }
 
+function parsePlanTriggerQuery(query: string): { query: string } | null {
+  const match = /^plan:(.*)$/i.exec(query);
+  if (!match) {
+    return null;
+  }
+  return { query: match[1] ?? "" };
+}
+
 function isIntegrationReferenceToken(token: string): boolean {
   return /^(jira|confluence|conf):/i.test(token);
+}
+
+function isPlanReferenceToken(token: string): boolean {
+  return /^plan:/i.test(token);
 }
 
 function detectIntegrationTriggerInLine(

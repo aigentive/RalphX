@@ -37,6 +37,7 @@ export interface IdeationSessionResponse {
   blockerFingerprint?: string | null;
   inheritedPlanArtifactId?: string | null;
   sessionPurpose: "general" | "verification";
+  sessionFlow: "ideation" | "planning";
   acceptanceStatus: "pending" | "accepted" | "rejected" | null;
   analysisBaseRefKind?: "project_default" | "current_branch" | "local_branch" | "pull_request" | null;
   analysisBaseRef?: string | null;

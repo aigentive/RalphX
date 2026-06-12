@@ -298,9 +298,9 @@ export const IDEATION_TOOLS: Tool[] = [
   {
     name: "ask_user_question",
     description:
-      "Ask the user a clarifying question with optional predefined answer options. " +
-      "The question appears as an inline card in the chat. " +
-      "This tool blocks until the user responds (up to 5 minutes). " +
+      "Ask the user one clarifying question, or provide questions[] to run a short interview from a single tool call. " +
+      "Questions appear one at a time as inline cards in the chat. " +
+      "Each question blocks until the user responds or skips it (up to 5 minutes). " +
       "Use for confirmations, multi-choice selections, or open-ended questions during ideation.",
     inputSchema: {
       type: "object",
@@ -311,7 +311,7 @@ export const IDEATION_TOOLS: Tool[] = [
         },
         question: {
           type: "string",
-          description: "The question text to display to the user",
+          description: "Single question text to display to the user. Omit when using questions[].",
         },
         header: {
           type: "string",
@@ -343,8 +343,64 @@ export const IDEATION_TOOLS: Tool[] = [
           type: "boolean",
           description: "If true and options are provided, user can select multiple options. Default: false.",
         },
+        allow_skip: {
+          type: "boolean",
+          description: "If true, the user can skip the question. Default: true.",
+        },
+        questions: {
+          type: "array",
+          description: "Optional ordered interview questions. RalphX renders one question at a time and returns answers in order.",
+          items: {
+            type: "object",
+            properties: {
+              id: {
+                type: "string",
+                description: "Optional stable question identifier returned with the answer.",
+              },
+              question: {
+                type: "string",
+                description: "The question text to display to the user.",
+              },
+              header: {
+                type: "string",
+                description: "Optional header/title above this question.",
+              },
+              options: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    label: {
+                      type: "string",
+                      description: "Short label for the option.",
+                    },
+                    value: {
+                      type: "string",
+                      description: "Programmatic value returned when this option is selected. Defaults to label if omitted.",
+                    },
+                    description: {
+                      type: "string",
+                      description: "Optional longer description of what this option means.",
+                    },
+                  },
+                  required: ["label"],
+                },
+                description: "Predefined answer options for this question. If omitted, user can type a free-form response.",
+              },
+              multi_select: {
+                type: "boolean",
+                description: "If true and options are provided, user can select multiple options. Default: false.",
+              },
+              allow_skip: {
+                type: "boolean",
+                description: "If true, the user can skip this question. Defaults to the top-level allow_skip or true.",
+              },
+            },
+            required: ["question"],
+          },
+        },
       },
-      required: ["session_id", "question"],
+      required: ["session_id"],
     },
   },
 

@@ -24,6 +24,9 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
             "project-456",
             "--working-directory",
             "/tmp/workspace",
+            "--filesystem-read-root",
+            "/tmp/project",
+            "--filesystem-read-root=/tmp/shared-artifacts",
             "--tauri-api-url",
             "http://127.0.0.1:3857",
             "--trace-dir",
@@ -35,6 +38,7 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
         expect(runtimeContext.parentConversationId).toBe("conversation-789");
         expect(runtimeContext.projectId).toBe("project-456");
         expect(runtimeContext.workingDirectory).toBe("/tmp/workspace");
+        expect(runtimeContext.filesystemReadRoots).toBe(JSON.stringify(["/tmp/project", "/tmp/shared-artifacts"]));
         expect(runtimeContext.tauriApiUrl).toBe("http://127.0.0.1:3857");
         expect(runtimeContext.traceDir).toBe("/tmp/ralphx-logs/mcp-proxy");
         expect(env.RALPHX_AGENT_TYPE).toBe("ralphx-plan-verifier");
@@ -43,6 +47,7 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
         expect(env.RALPHX_PARENT_CONVERSATION_ID).toBe("conversation-789");
         expect(env.RALPHX_PROJECT_ID).toBe("project-456");
         expect(env.RALPHX_WORKING_DIRECTORY).toBe("/tmp/workspace");
+        expect(env.RALPHX_FILESYSTEM_READ_ROOTS).toBe(JSON.stringify(["/tmp/project", "/tmp/shared-artifacts"]));
         expect(env.TAURI_API_URL).toBe("http://127.0.0.1:3857");
         expect(env.RALPHX_MCP_TRACE_DIR).toBe("/tmp/ralphx-logs/mcp-proxy");
     });

@@ -7,6 +7,7 @@ pub struct McpRuntimeContext {
     pub task_id: Option<String>,
     pub project_id: Option<String>,
     pub working_directory: Option<PathBuf>,
+    pub filesystem_read_roots: Vec<PathBuf>,
     pub lead_session_id: Option<String>,
     pub parent_conversation_id: Option<String>,
 }
@@ -72,6 +73,10 @@ pub fn append_mcp_runtime_args(
     if let Some(working_directory) = runtime_context.working_directory.as_ref() {
         args.push("--working-directory".to_string());
         args.push(working_directory.to_string_lossy().into_owned());
+    }
+    for filesystem_read_root in &runtime_context.filesystem_read_roots {
+        args.push("--filesystem-read-root".to_string());
+        args.push(filesystem_read_root.to_string_lossy().into_owned());
     }
     if let Some(lead_session_id) = runtime_context.lead_session_id.as_deref() {
         args.push("--lead-session-id".to_string());

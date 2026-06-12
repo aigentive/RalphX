@@ -6,8 +6,15 @@ import { formatFilesystemToolError, handleFilesystemToolCall, } from "../filesys
 describe("filesystem tools", () => {
     const tempDirs = [];
     const originalCwd = process.cwd();
+    const originalFilesystemReadRoots = process.env.RALPHX_FILESYSTEM_READ_ROOTS;
     afterEach(() => {
         process.chdir(originalCwd);
+        if (originalFilesystemReadRoots === undefined) {
+            delete process.env.RALPHX_FILESYSTEM_READ_ROOTS;
+        }
+        else {
+            process.env.RALPHX_FILESYSTEM_READ_ROOTS = originalFilesystemReadRoots;
+        }
         for (const dir of tempDirs.splice(0)) {
             fs.rmSync(dir, { recursive: true, force: true });
         }
@@ -34,6 +41,27 @@ describe("filesystem tools", () => {
         expect(text).toContain("LINES: 2-3/4");
         expect(text).toContain("2| line two");
         expect(text).toContain("3| line three");
+    });
+    it("reads and lists absolute paths from a configured extra read root", async () => {
+        makeWorkspace();
+        const projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-project-")));
+        tempDirs.push(projectRoot);
+        process.env.RALPHX_FILESYSTEM_READ_ROOTS = JSON.stringify([projectRoot]);
+        const target = path.join(projectRoot, ".artifacts", "specs", "ralphx-cli", "tracker.md");
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, "# CLI tracker\n\nreadable from project checkout\n");
+        const readResult = await handleFilesystemToolCall("fs_read_file", {
+            path: target,
+        });
+        const readText = readResult.content[0]?.text ?? "";
+        expect(readText).toContain(`FILE: ${target}`);
+        expect(readText).toContain("readable from project checkout");
+        const listResult = await handleFilesystemToolCall("fs_list_dir", {
+            path: path.dirname(target),
+            include_hidden: true,
+        });
+        const listText = listResult.content[0]?.text ?? "";
+        expect(listText).toContain("FILE tracker.md");
     });
     it("lists a directory while respecting hidden files and gitignore by default", async () => {
         const root = makeWorkspace();
@@ -156,7 +184,8 @@ describe("filesystem tools", () => {
         const result = formatFilesystemToolError(new Error("boom"));
         const text = result.content[0]?.text ?? "";
         expect(text).toContain("ERROR: boom");
-        expect(text).toContain(`Allowed filesystem root: ${root}`);
+        expect(text).toContain("Allowed filesystem roots:");
+        expect(text).toContain(`- ${root}`);
         expect(result.isError).toBe(true);
     });
 });

@@ -22,10 +22,11 @@ const QuestionResolvedPayloadSchema = z.object({
   requestId: z.string().min(1),
 });
 
-const QuestionExpiredPayloadSchema = z.object({
-  sessionId: z.string().min(1),
-  requestId: z.string().min(1),
-});
+export interface SubmitQuestionAnswerResult {
+  success: boolean;
+  deliveredToWaitingAgent: boolean;
+  planModeProposalHandled?: boolean;
+}
 
 /**
  * Module-level map of recently answered requestIds → timestamp.
@@ -85,7 +86,7 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
 
   // Hydrate on mount: fetch pending questions from backend in case the Tauri event was missed
   // (e.g., the panel wasn't mounted when the agent called ask_user_question).
-  // Also clears stale questions when backend says no question is pending (TTL kill scenario).
+  // Also clears records only after the backend says the question is no longer unresolved.
   useEffect(() => {
     if (!currentSessionId) return;
 
@@ -108,14 +109,13 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
         }
       }
     }).catch(() => {
-      // Non-critical — event listener is the primary delivery path
+      // Non-critical — event listener is the primary live delivery path
     });
   // Run once per session ID change — intentionally excludes activeQuestion to avoid loops
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSessionId]);
 
-  // Reconcile on window focus: detect stale questions when returning to the app.
-  // If the agent died via TTL while app was backgrounded, no events were emitted.
+  // Reconcile on window focus: detect resolved/removed questions when returning to the app.
   useEffect(() => {
     if (!currentSessionId) return undefined;
 
@@ -200,46 +200,33 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
     return unsubscribe;
   }, [eventBus, clearActiveQuestion]);
 
-  useEffect(() => {
-    const unsubscribe = eventBus.subscribe<unknown>("agent:question_expired", (payload) => {
-      const parsed = QuestionExpiredPayloadSchema.safeParse(payload);
-      if (!parsed.success) return;
-
-      const { sessionId, requestId } = parsed.data;
-      answeredRequestIds.set(requestId, Date.now());
-      pruneAnsweredRequestIds();
-
-      const fresh = useUiStore.getState().activeQuestions[sessionId];
-      if (fresh && fresh.requestId === requestId) {
-        clearActiveQuestion(sessionId);
-      }
-    });
-
-    return unsubscribe;
-  }, [eventBus, clearActiveQuestion]);
-
   /**
    * Submit an answer to the agent's question.
    * Routes to resolveQuestion (MCP flow) when requestId is present,
    * or answerQuestion (legacy task flow) otherwise.
    */
   const submitAnswer = useCallback(
-    async (response: AskUserQuestionResponse): Promise<boolean> => {
+    async (response: AskUserQuestionResponse): Promise<SubmitQuestionAnswerResult> => {
       if (!activeQuestion || !currentSessionId) {
-        return false;
+        return { success: false, deliveredToWaitingAgent: false };
       }
 
       // Capture the requestId we're answering — a new question may arrive while we await.
       const submittedRequestId = activeQuestion.requestId;
+      let deliveredToWaitingAgent = true;
+      let planModeProposalHandled = false;
 
       setIsLoading(true);
       try {
         if (response.requestId) {
-          await api.askUserQuestion.resolveQuestion({
+          const result = await api.askUserQuestion.resolveQuestion({
             requestId: response.requestId,
             selectedOptions: response.selectedOptions,
             ...(response.customResponse !== undefined && { customResponse: response.customResponse }),
+            ...(response.skipped !== undefined && { skipped: response.skipped }),
           });
+          deliveredToWaitingAgent = result?.deliveredToWaitingAgent ?? true;
+          planModeProposalHandled = result?.planModeProposalHandled ?? false;
         } else {
           await api.askUserQuestion.answerQuestion(response);
         }
@@ -249,9 +236,11 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
         if (!currentQuestion || currentQuestion.requestId === submittedRequestId) {
           answeredRequestIds.set(submittedRequestId, Date.now());
           pruneAnsweredRequestIds();
-          const summary = response.selectedOptions.length > 0
-            ? response.selectedOptions.join(", ")
-            : response.customResponse ?? "";
+          const summary = response.skipped === true
+            ? "Skipped"
+            : response.selectedOptions.length > 0
+              ? response.selectedOptions.join(", ")
+              : response.customResponse ?? "";
           setAnsweredQuestion(currentSessionId, summary);
           clearActiveQuestion(currentSessionId);
 
@@ -262,7 +251,7 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
             autoDismissTimerRef.current = null;
           }, 3500);
         }
-        return true;
+        return { success: true, deliveredToWaitingAgent, planModeProposalHandled };
       } catch {
         // Check if the question was already cleaned up (e.g., by useAgentEvents on agent death).
         const currentQuestion = useUiStore.getState().activeQuestions[currentSessionId];
@@ -271,7 +260,7 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
           toast.error("Agent session expired — question is no longer active", { duration: 5000 });
           clearActiveQuestion(currentSessionId);
         }
-        return false;
+        return { success: false, deliveredToWaitingAgent: false };
       } finally {
         setIsLoading(false);
       }

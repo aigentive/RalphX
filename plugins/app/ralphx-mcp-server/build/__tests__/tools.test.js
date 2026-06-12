@@ -9,7 +9,7 @@ import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
 import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
 import { callAgentWorkspaceTool, callCheckAgentWorkspacePublishReadinessTool, callCompleteAgentWorkspacePrFixTool, callCompleteAgentWorkspaceRepairTool, callGetAgentWorkspacePrFixContextTool, callGetAgentWorkspacePublishStatusTool, callPublishAgentWorkspaceTool, callSubmitAgentWorkspacePrDescriptionTool, callUpdateAgentWorkspaceFromBaseTool, isAgentWorkspaceToolName, } from '../agent-workspace-tools.js';
-import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, GENERAL_WORKER, AGENT_WORKSPACE_PR_FIXER, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
+import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, GENERAL_EXPLORER, GENERAL_WORKER, AGENT_WORKSPACE_PR_FIXER, PLAN_COMPLEXITY_ASSESSOR, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
 function toolsByAgent() {
     return getToolsByAgent();
 }
@@ -103,6 +103,12 @@ describe('getAllowedToolNames', () => {
         expect(canonicalAgentName('pr-describer')).toBe('ralphx-utility-pr-describer');
         expect(getAllowedToolNames()).toEqual(loadCanonicalMcpTools('pr-describer'));
         expect(getAllowedToolNames()).toContain('submit_agent_workspace_pr_description');
+    });
+    it('resolves the plan complexity legacy alias to canonical metadata', () => {
+        setAgentType('plan-complexity');
+        expect(canonicalAgentName('plan-complexity')).toBe('ralphx-utility-plan-complexity');
+        expect(getAllowedToolNames()).toEqual(loadCanonicalMcpTools('plan-complexity'));
+        expect(getAllowedToolNames()).toEqual(['submit_plan_complexity_assessment']);
     });
 });
 describe('getToolRecoveryHint', () => {
@@ -310,13 +316,36 @@ describe('getFilteredTools', () => {
         expect(toolNames).not.toContain('report_verification_round');
         expect(toolNames).not.toContain('complete_plan_verification');
     });
-    it('should keep project chat on the scoped ideation append tool only', () => {
+    it('should keep project chat on scoped parent-chat planning tools only', () => {
         setAgentType(CHAT_PROJECT);
         const tools = getFilteredTools();
         const toolNames = tools.map((t) => t.name);
         expect(toolNames).toContain('suggest_task');
         expect(toolNames).toContain('list_tasks');
+        expect(toolNames).toContain('propose_plan_mode');
         expect(toolNames).toContain('append_task_to_ideation_plan');
+        expect(toolNames).not.toContain('start_ideation_session');
+        expect(toolNames).not.toContain('create_child_session');
+        expect(toolNames).not.toContain('create_task_proposal');
+        expect(toolNames).not.toContain('update_plan_artifact');
+    });
+    it('should let the general chat explorer propose a Plan-mode handoff without edit or ideation tools', () => {
+        setAgentType(GENERAL_EXPLORER);
+        const tools = getFilteredTools();
+        const toolNames = tools.map((t) => t.name);
+        expect(toolNames).toContain('propose_plan_mode');
+        expect(toolNames).not.toContain('publish_agent_workspace');
+        expect(toolNames).not.toContain('update_agent_workspace_from_base');
+        expect(toolNames).not.toContain('start_ideation_session');
+        expect(toolNames).not.toContain('create_child_session');
+        expect(toolNames).not.toContain('create_task_proposal');
+        expect(toolNames).not.toContain('update_plan_artifact');
+    });
+    it('should let the general edit worker propose a Plan-mode handoff without exposing ideation tools', () => {
+        setAgentType(GENERAL_WORKER);
+        const tools = getFilteredTools();
+        const toolNames = tools.map((t) => t.name);
+        expect(toolNames).toContain('propose_plan_mode');
         expect(toolNames).not.toContain('start_ideation_session');
         expect(toolNames).not.toContain('create_child_session');
         expect(toolNames).not.toContain('create_task_proposal');
@@ -1102,6 +1131,40 @@ describe('agent workspace PR description tool', () => {
             title: 'Generated title',
             body_markdown: '## Summary\n\nGenerated body',
         });
+    });
+});
+describe('plan complexity assessment tool', () => {
+    const allTools = getAllTools();
+    const tool = allTools.find((t) => t.name === 'submit_plan_complexity_assessment');
+    it('should exist in ALL_TOOLS', () => {
+        expect(tool).toBeDefined();
+    });
+    it('should require the current approved plan assessment fields', () => {
+        expect(tool?.inputSchema.type).toBe('object');
+        expect(tool?.inputSchema.properties).toHaveProperty('session_id');
+        expect(tool?.inputSchema.properties).toHaveProperty('artifact_id');
+        expect(tool?.inputSchema.properties).toHaveProperty('artifact_version');
+        expect(tool?.inputSchema.properties).toHaveProperty('level');
+        expect(tool?.inputSchema.properties).toHaveProperty('score');
+        expect(tool?.inputSchema.properties).toHaveProperty('recommended_action');
+        expect(tool?.inputSchema.properties).toHaveProperty('confidence');
+        expect(tool?.inputSchema.properties).toHaveProperty('reason_summary');
+        expect(tool?.inputSchema.required).toEqual(expect.arrayContaining([
+            'session_id',
+            'artifact_id',
+            'artifact_version',
+            'level',
+            'score',
+            'recommended_action',
+            'confidence',
+            'reason_summary',
+        ]));
+    });
+    it('exposes the submit tool only through the utility assessor metadata', () => {
+        setAgentType(PLAN_COMPLEXITY_ASSESSOR);
+        const toolNames = getFilteredTools().map((candidate) => candidate.name);
+        expect(toolNames).toEqual(loadCanonicalMcpTools(PLAN_COMPLEXITY_ASSESSOR));
+        expect(toolNames).toEqual(['submit_plan_complexity_assessment']);
     });
 });
 describe('agent workspace publish tool transport', () => {

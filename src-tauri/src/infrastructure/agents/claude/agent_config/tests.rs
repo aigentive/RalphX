@@ -1,8 +1,8 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, AgentLane, LogicalEffort};
 use crate::infrastructure::agents::claude::agent_names::{
-    SHORT_CHAT_PROJECT, SHORT_CHAT_TASK, SHORT_CODER, SHORT_DEEP_RESEARCHER,
-    SHORT_AGENT_WORKSPACE_REPAIR, SHORT_AGENT_WORKSPACE_PR_FIXER, SHORT_GENERAL_EXPLORER,
+    SHORT_AGENT_WORKSPACE_PR_FIXER, SHORT_AGENT_WORKSPACE_REPAIR, SHORT_CHAT_PROJECT,
+    SHORT_CHAT_TASK, SHORT_CODER, SHORT_DEEP_RESEARCHER, SHORT_GENERAL_EXPLORER,
     SHORT_GENERAL_WORKER, SHORT_IDEATION_ADVOCATE, SHORT_IDEATION_CRITIC,
     SHORT_IDEATION_SPECIALIST_BACKEND,
     SHORT_IDEATION_SPECIALIST_CODE_QUALITY, SHORT_IDEATION_SPECIALIST_FRONTEND,
@@ -146,6 +146,7 @@ fn test_agents_screen_claude_modes_include_web_search_tools() {
     let mode_agents = [
         ("agent", SHORT_GENERAL_WORKER),
         ("chat", SHORT_GENERAL_EXPLORER),
+        ("plan", SHORT_GENERAL_EXPLORER),
         ("ideation", SHORT_CHAT_PROJECT),
     ];
 
@@ -215,6 +216,8 @@ fn test_all_agent_names_are_known() {
         "ralphx-ideation-specialist-pipeline-safety",
         // State machine safety specialist added in synthetic-data hardening session
         "ralphx-ideation-specialist-state-machine",
+        // Utility agent used for plan complexity checks.
+        "ralphx-utility-plan-complexity",
     ]);
 
     for agent in agent_configs() {

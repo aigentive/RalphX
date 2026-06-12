@@ -121,6 +121,12 @@ pub async fn edit_plan_artifact(
     let mut response = ArtifactResponse::from(created);
     response.previous_artifact_id = Some(old_artifact_id_str);
     response.session_id = sessions.first().map(|s| s.id.to_string());
+    if sessions
+        .first()
+        .is_some_and(|session| session.session_flow == IdeationSessionFlow::Planning)
+    {
+        attach_plan_approval(&mut response, PlanApprovalView::draft());
+    }
 
     Ok(Json(response))
 }

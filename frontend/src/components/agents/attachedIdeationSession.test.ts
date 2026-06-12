@@ -22,7 +22,10 @@ const conversation = toProjectAgentConversation({
   archivedAt: null,
 } satisfies ChatConversation);
 
-function messageWithToolCall(toolCall: unknown): ChatMessageResponse {
+function messageWithToolCall(
+  toolCall: unknown,
+  name = "mcp__ralphx__v1_send_ideation_message",
+): ChatMessageResponse {
   return {
     id: "message-1",
     conversationId: "conversation-1",
@@ -32,7 +35,7 @@ function messageWithToolCall(toolCall: unknown): ChatMessageResponse {
       {
         type: "tool_use",
         id: "tool-1",
-        name: "mcp__ralphx__v1_send_ideation_message",
+        name,
         arguments: {},
         result: toolCall,
       },
@@ -67,6 +70,17 @@ describe("resolveAttachedIdeationSessionId", () => {
     ]);
 
     expect(result).toBe("session-from-text");
+  });
+
+  it("extracts planning sessions from plan artifact tool results", () => {
+    const result = resolveAttachedIdeationSessionId(conversation, [
+      messageWithToolCall(
+        { session_id: "planning-session-1", artifact_id: "artifact-1" },
+        "mcp__ralphx__create_plan_artifact",
+      ),
+    ]);
+
+    expect(result).toBe("planning-session-1");
   });
 
   it("falls back to the linked workspace session when no transcript tool result is available", () => {

@@ -22,7 +22,6 @@ import { toast } from "sonner";
 import { useEventBus } from "@/providers/EventProvider";
 import { useChatStore } from "@/stores/chatStore";
 import { useIdeationStore } from "@/stores/ideationStore";
-import { useUiStore } from "@/stores/uiStore";
 import { useTeamStore } from "@/stores/teamStore";
 import { buildStoreKey, parseStoreKey } from "@/lib/chat-context-registry";
 import { buildAgentEventStoreKey } from "@/lib/agent-store-key";
@@ -139,8 +138,6 @@ export function useGlobalAgentLifecycle() {
     // the child session running. Normal termination events must not clear it prematurely.
     function guardedTermination(
       storeKey: string,
-      eventContextId: string,
-      contextType: string,
       conversationId: string,
       eventRunId: string | null,
       eventName: string
@@ -162,12 +159,7 @@ export function useGlobalAgentLifecycle() {
       useChatStore.getState().clearActiveAgentRun(storeKey, eventRunId);
       useChatStore.getState().setAgentStatus(storeKey, "idle");
 
-      // Scope guards for cleanup calls:
-      // clearActiveQuestion: ideation contexts only (semantically incorrect otherwise)
-      if (contextType === "ideation") {
-        useUiStore.getState().clearActiveQuestion(eventContextId);
-      }
-
+      // Scope guard for cleanup calls:
       // clearPendingPlan: team mode active only (no ghost approval banners)
       const chatState = useChatStore.getState();
       if (chatState.isTeamActive?.[storeKey]) {
@@ -235,8 +227,6 @@ export function useGlobalAgentLifecycle() {
         if (
           guardedTermination(
             eventContextKey,
-            eventContextId,
-            context_type,
             payload.conversation_id,
             lifecycleRunId(payload),
             "run_completed"
@@ -315,8 +305,6 @@ export function useGlobalAgentLifecycle() {
         if (
           guardedTermination(
             eventContextKey,
-            eventContextId,
-            context_type,
             payload.conversation_id,
             lifecycleRunId(payload),
             "stopped"
@@ -350,8 +338,6 @@ export function useGlobalAgentLifecycle() {
         if (
           !guardedTermination(
             eventContextKey,
-            eventContextId,
-            context_type,
             payload.conversation_id,
             lifecycleRunId(payload),
             "error"

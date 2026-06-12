@@ -1,6 +1,109 @@
 use super::*;
+use rusqlite::OptionalExtension;
 
 pub(super) const CALLER_SESSION_ID_HEADER: &str = "x-ralphx-caller-session-id";
+pub(super) const PLAN_APPROVAL_DRAFT: &str = "draft";
+pub(super) const PLAN_APPROVAL_APPROVED: &str = "approved";
+
+pub(super) struct PlanApprovalView {
+    pub status: &'static str,
+    pub approved_artifact_id: Option<String>,
+    pub approved_version: Option<u32>,
+    pub approved_at: Option<String>,
+}
+
+impl PlanApprovalView {
+    pub fn draft() -> Self {
+        Self {
+            status: PLAN_APPROVAL_DRAFT,
+            approved_artifact_id: None,
+            approved_version: None,
+            approved_at: None,
+        }
+    }
+
+    pub fn approved(artifact_id: String, version: u32, approved_at: String) -> Self {
+        Self {
+            status: PLAN_APPROVAL_APPROVED,
+            approved_artifact_id: Some(artifact_id),
+            approved_version: Some(version),
+            approved_at: Some(approved_at),
+        }
+    }
+}
+
+pub(super) fn attach_plan_approval(
+    response: &mut ArtifactResponse,
+    approval: PlanApprovalView,
+) {
+    response.plan_approval_status = Some(approval.status.to_string());
+    response.plan_approved_artifact_id = approval.approved_artifact_id;
+    response.plan_approved_version = approval.approved_version;
+    response.plan_approved_at = approval.approved_at;
+}
+
+pub(super) fn plan_approval_view_sync(
+    conn: &Connection,
+    session_id: &str,
+    artifact_id: &str,
+    artifact_version: u32,
+) -> Result<PlanApprovalView, AppError> {
+    let row = conn
+        .query_row(
+            "SELECT artifact_id, artifact_version, approved_at
+             FROM plan_artifact_approvals
+             WHERE session_id = ?1 AND status = 'approved'",
+            [session_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((approved_artifact_id, approved_version, approved_at)) = row else {
+        return Ok(PlanApprovalView::draft());
+    };
+
+    if approved_artifact_id == artifact_id && approved_version == i64::from(artifact_version) {
+        Ok(PlanApprovalView::approved(
+            approved_artifact_id,
+            artifact_version,
+            approved_at,
+        ))
+    } else {
+        Ok(PlanApprovalView::draft())
+    }
+}
+
+pub(super) fn upsert_plan_approval_sync(
+    conn: &Connection,
+    session_id: &str,
+    artifact: &Artifact,
+    approved_at: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO plan_artifact_approvals (
+            session_id, artifact_id, artifact_version, status, approved_at, approved_by
+         ) VALUES (?1, ?2, ?3, 'approved', ?4, 'user')
+         ON CONFLICT(session_id) DO UPDATE SET
+            artifact_id = excluded.artifact_id,
+            artifact_version = excluded.artifact_version,
+            status = excluded.status,
+            approved_at = excluded.approved_at,
+            approved_by = excluded.approved_by",
+        rusqlite::params![
+            session_id,
+            artifact.id.as_str(),
+            i64::from(artifact.metadata.version),
+            approved_at,
+        ],
+    )?;
+    Ok(())
+}
 
 // ============================================================================
 // EditError Types

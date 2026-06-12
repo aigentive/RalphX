@@ -105,6 +105,9 @@ pub struct IdeationSession {
     /// Purpose of this session: General (default) or Verification (ralphx-plan-verifier child)
     #[serde(default)]
     pub session_purpose: SessionPurpose,
+    /// User-facing flow for this ideation-family session.
+    #[serde(default)]
+    pub session_flow: IdeationSessionFlow,
     /// Whether cross_project_guide has been called on this session's plan.
     /// False = proposal creation is blocked until cross_project_guide sets it.
     /// Default false for new sessions; existing DB rows default to true via migration.
@@ -191,6 +194,7 @@ pub struct IdeationSessionBuilder {
     spawn_reason: Option<String>,
     blocker_fingerprint: Option<String>,
     session_purpose: Option<SessionPurpose>,
+    session_flow: Option<IdeationSessionFlow>,
     cross_project_checked: Option<bool>,
     plan_version_last_read: Option<i32>,
     origin: Option<SessionOrigin>,
@@ -364,6 +368,12 @@ impl IdeationSessionBuilder {
         self
     }
 
+    /// Set the user-facing session flow
+    pub fn session_flow(mut self, session_flow: IdeationSessionFlow) -> Self {
+        self.session_flow = Some(session_flow);
+        self
+    }
+
     /// Set whether cross-project guide has been called
     pub fn cross_project_checked(mut self, checked: bool) -> Self {
         self.cross_project_checked = Some(checked);
@@ -481,6 +491,7 @@ impl IdeationSessionBuilder {
             spawn_reason: self.spawn_reason,
             blocker_fingerprint: self.blocker_fingerprint,
             session_purpose: self.session_purpose.unwrap_or_default(),
+            session_flow: self.session_flow.unwrap_or_default(),
             cross_project_checked: self.cross_project_checked.unwrap_or(false),
             plan_version_last_read: self.plan_version_last_read,
             origin: self.origin.unwrap_or_default(),
@@ -668,6 +679,12 @@ impl IdeationSession {
                 .unwrap_or(None),
             session_purpose: row
                 .get::<_, Option<String>>("session_purpose")
+                .unwrap_or(None)
+                .as_deref()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_default(),
+            session_flow: row
+                .get::<_, Option<String>>("session_flow")
                 .unwrap_or(None)
                 .as_deref()
                 .and_then(|s| s.parse().ok())

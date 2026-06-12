@@ -618,7 +618,7 @@ const ChatConversationResponseSchema = z.object({
   effective_model_id: z.string().nullable().optional(),
   logical_effort: z.string().nullable().optional(),
   effective_effort: z.string().nullable().optional(),
-  agent_mode: z.enum(["chat", "edit", "ideation"]).nullable().optional(),
+  agent_mode: z.enum(["chat", "edit", "plan", "ideation"]).nullable().optional(),
   parent_conversation_id: z.string().nullable().optional(),
   title: z.string().nullable(),
   message_count: z.number(),
@@ -1610,6 +1610,15 @@ export interface ComposerIntegrationReference {
   url?: string;
 }
 
+export interface ComposerArtifactReference {
+  artifactId: string;
+  kind: string;
+  title?: string;
+  sessionId?: string;
+  version?: number;
+  status?: string;
+}
+
 export interface SendAgentMessageOptions {
   conversationId?: string | null;
   providerHarness?: string | null;
@@ -1617,6 +1626,7 @@ export interface SendAgentMessageOptions {
   logicalEffort?: string | null;
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
+  composerArtifactReferences?: ComposerArtifactReference[];
 }
 
 export type AgentConversationWorkspaceMode = AgentConversationMode;
@@ -1694,6 +1704,7 @@ export interface StartAgentConversationInput {
   base?: AgentConversationBaseSelection | null;
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
+  composerArtifactReferences?: ComposerArtifactReference[];
 }
 
 export interface StartAgentConversationResult {
@@ -2401,6 +2412,9 @@ export async function startAgentConversation(
         ...(input.composerIntegrationReferences?.length
           ? { composerIntegrationReferences: input.composerIntegrationReferences }
           : {}),
+        ...(input.composerArtifactReferences?.length
+          ? { composerArtifactReferences: input.composerArtifactReferences }
+          : {}),
         ...(input.base
           ? {
               baseRefKind: input.base.kind,
@@ -2501,6 +2515,9 @@ export async function sendAgentMessage(
           : {}),
         ...(options?.composerIntegrationReferences?.length
           ? { composerIntegrationReferences: options.composerIntegrationReferences }
+          : {}),
+        ...(options?.composerArtifactReferences?.length
+          ? { composerArtifactReferences: options.composerArtifactReferences }
           : {}),
       },
     },

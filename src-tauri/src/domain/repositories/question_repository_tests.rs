@@ -3,8 +3,21 @@ use crate::application::question_state::QuestionOption;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MockQuestionStatus {
+    Pending,
+    WaitExpired,
+    Resolved,
+}
+
+struct MockQuestionRecord {
+    info: PendingQuestionInfo,
+    answer: Option<QuestionAnswer>,
+    status: MockQuestionStatus,
+}
+
 struct MockQuestionRepository {
-    questions: RwLock<HashMap<String, (PendingQuestionInfo, Option<QuestionAnswer>)>>,
+    questions: RwLock<HashMap<String, MockQuestionRecord>>,
 }
 
 impl MockQuestionRepository {
@@ -19,14 +32,25 @@ impl MockQuestionRepository {
 impl QuestionRepository for MockQuestionRepository {
     async fn create_pending(&self, info: &PendingQuestionInfo) -> AppResult<()> {
         let mut questions = self.questions.write().unwrap();
-        questions.insert(info.request_id.clone(), (info.clone(), None));
+        questions.insert(
+            info.request_id.clone(),
+            MockQuestionRecord {
+                info: info.clone(),
+                answer: None,
+                status: MockQuestionStatus::Pending,
+            },
+        );
         Ok(())
     }
 
     async fn resolve(&self, request_id: &str, answer: &QuestionAnswer) -> AppResult<bool> {
         let mut questions = self.questions.write().unwrap();
         if let Some(entry) = questions.get_mut(request_id) {
-            entry.1 = Some(answer.clone());
+            if entry.status == MockQuestionStatus::Resolved {
+                return Ok(false);
+            }
+            entry.answer = Some(answer.clone());
+            entry.status = MockQuestionStatus::Resolved;
             Ok(true)
         } else {
             Ok(false)
@@ -37,33 +61,35 @@ impl QuestionRepository for MockQuestionRepository {
         let questions = self.questions.read().unwrap();
         Ok(questions
             .values()
-            .filter(|(_, answer)| answer.is_none())
-            .map(|(info, _)| info.clone())
+            .filter(|entry| entry.status != MockQuestionStatus::Resolved)
+            .map(|entry| entry.info.clone())
             .collect())
     }
 
     async fn get_by_request_id(&self, request_id: &str) -> AppResult<Option<PendingQuestionInfo>> {
         let questions = self.questions.read().unwrap();
-        Ok(questions.get(request_id).map(|(info, _)| info.clone()))
+        Ok(questions.get(request_id).map(|entry| entry.info.clone()))
     }
 
     async fn expire_all_pending(&self) -> AppResult<u64> {
         let mut questions = self.questions.write().unwrap();
-        let pending_ids: Vec<String> = questions
-            .iter()
-            .filter(|(_, (_, answer))| answer.is_none())
-            .map(|(id, _)| id.clone())
-            .collect();
-        let count = pending_ids.len() as u64;
-        for id in pending_ids {
-            questions.remove(&id);
+        let mut count = 0;
+        for entry in questions.values_mut() {
+            if entry.status == MockQuestionStatus::Pending {
+                entry.status = MockQuestionStatus::WaitExpired;
+                count += 1;
+            }
         }
         Ok(count)
     }
 
     async fn expire_by_request_id(&self, request_id: &str) -> AppResult<()> {
         let mut questions = self.questions.write().unwrap();
-        questions.remove(request_id);
+        if let Some(entry) = questions.get_mut(request_id) {
+            if entry.status == MockQuestionStatus::Pending {
+                entry.status = MockQuestionStatus::WaitExpired;
+            }
+        }
         Ok(())
     }
 
@@ -76,7 +102,7 @@ impl QuestionRepository for MockQuestionRepository {
         let questions = self.questions.read().unwrap();
         Ok(questions
             .get(request_id)
-            .and_then(|(_, answer)| answer.clone()))
+            .and_then(|entry| entry.answer.clone()))
     }
 }
 
@@ -101,6 +127,10 @@ async fn test_create_and_get_pending() {
             description: None,
         }],
         multi_select: false,
+        allow_skip: true,
+        batch_index: None,
+        batch_total: None,
+        metadata: None,
     };
 
     repo.create_pending(&info).await.unwrap();
@@ -120,6 +150,10 @@ async fn test_get_by_request_id() {
         header: Some("Header".to_string()),
         options: vec![],
         multi_select: false,
+        allow_skip: true,
+        batch_index: None,
+        batch_total: None,
+        metadata: None,
     };
 
     repo.create_pending(&info).await.unwrap();
@@ -142,6 +176,10 @@ async fn test_resolve() {
         header: None,
         options: vec![],
         multi_select: false,
+        allow_skip: true,
+        batch_index: None,
+        batch_total: None,
+        metadata: None,
     };
 
     repo.create_pending(&info).await.unwrap();
@@ -149,6 +187,7 @@ async fn test_resolve() {
     let answer = QuestionAnswer {
         selected_options: vec!["a".to_string()],
         text: None,
+        skipped: false,
     };
     let resolved = repo.resolve("req-1", &answer).await.unwrap();
     assert!(resolved);
@@ -168,6 +207,7 @@ async fn test_resolve_nonexistent() {
     let answer = QuestionAnswer {
         selected_options: vec![],
         text: None,
+        skipped: false,
     };
     let resolved = repo.resolve("nope", &answer).await.unwrap();
     assert!(!resolved);
@@ -185,6 +225,10 @@ async fn test_expire_all_pending() {
             header: None,
             options: vec![],
             multi_select: false,
+            allow_skip: true,
+            batch_index: None,
+            batch_total: None,
+            metadata: None,
         };
         repo.create_pending(&info).await.unwrap();
     }
@@ -193,6 +237,7 @@ async fn test_expire_all_pending() {
     let answer = QuestionAnswer {
         selected_options: vec![],
         text: Some("done".to_string()),
+        skipped: false,
     };
     repo.resolve("req-0", &answer).await.unwrap();
 
@@ -201,7 +246,7 @@ async fn test_expire_all_pending() {
     assert_eq!(expired, 2);
 
     let pending = repo.get_pending().await.unwrap();
-    assert!(pending.is_empty());
+    assert_eq!(pending.len(), 2);
 }
 
 #[tokio::test]
@@ -214,6 +259,10 @@ async fn test_remove() {
         header: None,
         options: vec![],
         multi_select: false,
+        allow_skip: true,
+        batch_index: None,
+        batch_total: None,
+        metadata: None,
     };
 
     repo.create_pending(&info).await.unwrap();
