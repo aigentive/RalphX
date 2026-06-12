@@ -10,6 +10,7 @@ import {
   createSingleSelectResponse,
   createMultiSelectResponse,
   createCustomResponse,
+  createSkippedResponse,
 } from "./ask-user-question";
 
 describe("AskUserQuestionOptionSchema", () => {
@@ -100,6 +101,18 @@ describe("AskUserQuestionPayloadSchema", () => {
   it("should parse a payload with sessionId", () => {
     const withSession = { ...validPayload, sessionId: "session-xyz" };
     expect(() => AskUserQuestionPayloadSchema.parse(withSession)).not.toThrow();
+  });
+
+  it("should parse skip and batch progress fields", () => {
+    const parsed = AskUserQuestionPayloadSchema.parse({
+      ...validPayload,
+      allowSkip: false,
+      batchIndex: 2,
+      batchTotal: 3,
+    });
+    expect(parsed.allowSkip).toBe(false);
+    expect(parsed.batchIndex).toBe(2);
+    expect(parsed.batchTotal).toBe(3);
   });
 
   it("should parse a multi-select payload", () => {
@@ -234,6 +247,15 @@ describe("AskUserQuestionResponseSchema", () => {
       customResponse: "I want to use a different approach",
     };
     expect(() => AskUserQuestionResponseSchema.parse(customResponse)).not.toThrow();
+  });
+
+  it("should parse a skipped response", () => {
+    const parsed = AskUserQuestionResponseSchema.parse({
+      requestId: "req-abc",
+      selectedOptions: [],
+      skipped: true,
+    });
+    expect(parsed.skipped).toBe(true);
   });
 
   it("should parse a response with empty selectedOptions", () => {
@@ -391,6 +413,16 @@ describe("AskUserQuestion helper functions", () => {
         })
       ).toBe(false);
     });
+
+    it("should return true when the question is skipped", () => {
+      expect(
+        isValidResponse({
+          taskId: "task-1",
+          selectedOptions: [],
+          skipped: true,
+        })
+      ).toBe(true);
+    });
   });
 
   describe("createSingleSelectResponse", () => {
@@ -428,6 +460,15 @@ describe("AskUserQuestion helper functions", () => {
       expect(response.taskId).toBe("task-abc");
       expect(response.selectedOptions).toEqual([]);
       expect(response.customResponse).toBe("My custom answer");
+    });
+  });
+
+  describe("createSkippedResponse", () => {
+    it("should create a skipped response", () => {
+      const response = createSkippedResponse({ requestId: "req-skip" });
+      expect(response.requestId).toBe("req-skip");
+      expect(response.selectedOptions).toEqual([]);
+      expect(response.skipped).toBe(true);
     });
   });
 });

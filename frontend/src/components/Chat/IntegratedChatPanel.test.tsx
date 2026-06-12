@@ -337,6 +337,51 @@ describe("IntegratedChatPanel", () => {
         })
       );
     });
+
+    it("observes the input container so composer chrome height changes can update transcript layout", async () => {
+      const observedTargets: Element[] = [];
+      const originalResizeObserver = globalThis.ResizeObserver;
+
+      class MockResizeObserver implements ResizeObserver {
+        disconnect = vi.fn();
+        observe = vi.fn((target: Element) => {
+          observedTargets.push(target);
+        });
+        unobserve = vi.fn();
+      }
+
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        value: MockResizeObserver,
+        configurable: true,
+        writable: true,
+      });
+
+      try {
+        render(
+          <TestWrapper>
+            <IntegratedChatPanel
+              projectId="project-1"
+              renderComposer={() => (
+                <div data-testid="custom-composer">Composer with CTA chrome</div>
+              )}
+            />
+          </TestWrapper>
+        );
+
+        const inputContainer = screen.getByTestId("chat-input-container");
+        await waitFor(() => expect(observedTargets).toContain(inputContainer));
+      } finally {
+        if (originalResizeObserver === undefined) {
+          Reflect.deleteProperty(globalThis, "ResizeObserver");
+        } else {
+          Object.defineProperty(globalThis, "ResizeObserver", {
+            value: originalResizeObserver,
+            configurable: true,
+            writable: true,
+          });
+        }
+      }
+    });
   });
 
   describe("transcript pagination", () => {

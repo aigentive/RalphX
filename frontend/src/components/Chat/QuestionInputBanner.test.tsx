@@ -115,6 +115,67 @@ describe("QuestionInputBanner", () => {
 
       expect(screen.getByTestId("question-input-banner")).toBeInTheDocument();
     });
+
+    it("renders an Approve Plan action without replacing answer controls", async () => {
+      const user = userEvent.setup();
+      const onApprovePlan = vi.fn();
+      const onChipClick = vi.fn();
+
+      render(
+        <QuestionInputBanner
+          {...defaultProps}
+          onChipClick={onChipClick}
+          planApprovalAction={{
+            label: "Approve Plan",
+            onClick: onApprovePlan,
+          }}
+        />
+      );
+
+      await user.click(screen.getByRole("button", { name: "Approve Plan" }));
+      await user.click(screen.getByRole("button", { name: /1\s*React/ }));
+
+      expect(onApprovePlan).toHaveBeenCalledTimes(1);
+      expect(onChipClick).toHaveBeenCalledWith(0);
+    });
+
+    it("renders batch progress and skip action when skipping is allowed", async () => {
+      const user = userEvent.setup();
+      const onSkip = vi.fn();
+
+      render(
+        <QuestionInputBanner
+          {...defaultProps}
+          question={{
+            ...singleSelectQuestion,
+            batchIndex: 2,
+            batchTotal: 3,
+            allowSkip: true,
+          }}
+          onSkip={onSkip}
+        />
+      );
+
+      expect(screen.getByText("2 of 3")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Skip" }));
+      expect(onSkip).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not render skip action when skipping is disabled", () => {
+      render(
+        <QuestionInputBanner
+          {...defaultProps}
+          question={{
+            ...singleSelectQuestion,
+            allowSkip: false,
+          }}
+          onSkip={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByRole("button", { name: "Skip" })).not.toBeInTheDocument();
+    });
   });
 
   describe("Answered/Collapsed State", () => {
@@ -141,6 +202,26 @@ describe("QuestionInputBanner", () => {
 
       expect(screen.getByText("React")).toBeInTheDocument();
       expect(screen.getByText("Answered:")).toBeInTheDocument();
+    });
+
+    it("keeps the plan approval action visible in answered state", async () => {
+      const user = userEvent.setup();
+      const onApprovePlan = vi.fn();
+
+      render(
+        <QuestionInputBanner
+          {...defaultProps}
+          question={null}
+          answeredValue="React"
+          planApprovalAction={{
+            label: "Approve Plan",
+            onClick: onApprovePlan,
+          }}
+        />
+      );
+
+      await user.click(screen.getByTestId("question-plan-approval-action"));
+      expect(onApprovePlan).toHaveBeenCalledTimes(1);
     });
 
     it("does not render question text or chips in answered state", () => {

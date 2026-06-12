@@ -388,6 +388,17 @@ fn session_clone_is_independent() {
     assert_eq!(cloned.status, IdeationSessionStatus::Archived);
 }
 
+#[test]
+fn session_flow_defaults_to_ideation_and_parses_planning() {
+    let session = IdeationSession::new(ProjectId::new());
+    assert_eq!(session.session_flow, IdeationSessionFlow::Ideation);
+    assert_eq!(
+        "planning".parse::<IdeationSessionFlow>().unwrap(),
+        IdeationSessionFlow::Planning
+    );
+    assert_eq!(IdeationSessionFlow::Planning.to_string(), "planning");
+}
+
 // ===== from_row Integration Tests =====
 
 use chrono::Timelike;

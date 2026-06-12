@@ -34,6 +34,7 @@ export function useAgentsAttachedIdeation({
     activeConversation?.contextType === "ideation" ||
     (activeConversation?.contextType === "project" &&
       (activeConversationMode === "ideation" ||
+        activeConversationMode === "plan" ||
         Boolean(activeWorkspace?.linkedIdeationSessionId || activeWorkspace?.linkedPlanBranchId)));
   const attachedIdeationSessionId = useMemo(
     () =>

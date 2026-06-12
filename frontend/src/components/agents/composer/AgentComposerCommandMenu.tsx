@@ -1,10 +1,11 @@
 import { useEffect, useRef } from "react";
-import { FileText, Folder, Hash, Link2, Wrench } from "lucide-react";
+import { FileText, Folder, Hash, Link2, ScrollText, Wrench } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
 export type AgentComposerMenuItemKind =
   | "path"
+  | "plan"
   | "skill"
   | "slash-command"
   | "integration";
@@ -77,6 +78,8 @@ export function AgentComposerCommandMenu({
                 ? item.detail === "directory"
                   ? Folder
                   : FileText
+                : item.kind === "plan"
+                  ? ScrollText
                 : item.kind === "skill"
                   ? Wrench
                   : item.kind === "integration"

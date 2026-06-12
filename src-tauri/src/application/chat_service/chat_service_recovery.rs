@@ -173,6 +173,7 @@ pub(super) async fn attempt_session_recovery<R: Runtime>(
         working_directory,
         entity_status.as_deref(),
         _resolved_project_id.as_deref(),
+        &[],
         team_mode,
         chat_attachment_repo,
         artifact_repo,

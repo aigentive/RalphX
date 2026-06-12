@@ -37,6 +37,58 @@ pub struct CanonicalAgentDefinition {
     pub harnesses: CanonicalAgentHarnesses,
     #[serde(default)]
     pub delegation: CanonicalDelegationMetadata,
+    #[serde(default)]
+    pub profiles: BTreeMap<String, CanonicalAgentRuntimeProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalAgentRuntimeProfile {
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub capabilities: CanonicalAgentCapabilities,
+    #[serde(default)]
+    pub harnesses: CanonicalAgentProfileHarnesses,
+    #[serde(default)]
+    pub delegation: Option<CanonicalDelegationMetadata>,
+}
+
+impl CanonicalAgentRuntimeProfile {
+    fn overlay_onto(self, mut definition: CanonicalAgentDefinition) -> CanonicalAgentDefinition {
+        if let Some(role) = self.role {
+            definition.role = role;
+        }
+        if let Some(description) = self.description {
+            definition.description = Some(description);
+        }
+        definition.capabilities = self.capabilities.overlay_onto(definition.capabilities);
+        definition.harnesses = self.harnesses.overlay_onto(definition.harnesses);
+        if let Some(delegation) = self.delegation {
+            definition.delegation = delegation;
+        }
+        definition
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalAgentProfileHarnesses {
+    #[serde(default)]
+    pub claude: CanonicalClaudeAgentProfileMetadata,
+    #[serde(default)]
+    pub codex: CanonicalCodexAgentProfileMetadata,
+}
+
+impl CanonicalAgentProfileHarnesses {
+    fn overlay_onto(self, base: CanonicalAgentHarnesses) -> CanonicalAgentHarnesses {
+        CanonicalAgentHarnesses {
+            claude: self.claude.overlay_onto(base.claude),
+            codex: self.codex.overlay_onto(base.codex),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -48,6 +100,18 @@ pub struct CanonicalAgentCapabilities {
     pub internal_skills: CanonicalInternalSkillsConfig,
 }
 
+impl CanonicalAgentCapabilities {
+    fn overlay_onto(self, mut base: Self) -> Self {
+        if !self.mcp_tools.is_empty() {
+            base.mcp_tools = self.mcp_tools;
+        }
+        if !self.internal_skills.is_empty() {
+            base.internal_skills = self.internal_skills;
+        }
+        base
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct CanonicalInternalSkillsConfig {
@@ -57,6 +121,12 @@ pub struct CanonicalInternalSkillsConfig {
     pub allowed: Vec<String>,
     #[serde(default)]
     pub max_auto_loaded: Option<usize>,
+}
+
+impl CanonicalInternalSkillsConfig {
+    fn is_empty(&self) -> bool {
+        !self.auto_match && self.allowed.is_empty() && self.max_auto_loaded.is_none()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -117,6 +187,72 @@ pub struct CanonicalClaudeToolSpec {
     pub extends: Option<String>,
     #[serde(default)]
     pub include: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalClaudeAgentProfileMetadata {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub mcp_transport: Option<String>,
+    #[serde(default)]
+    pub mcp_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub internal_mcp_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub tools: Option<CanonicalClaudeToolSpec>,
+    #[serde(default)]
+    pub disallowed_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub preapproved_cli_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    #[serde(default)]
+    pub skills: Option<Vec<String>>,
+    #[serde(default)]
+    pub max_turns: Option<u32>,
+}
+
+impl CanonicalClaudeAgentProfileMetadata {
+    fn overlay_onto(self, mut base: CanonicalClaudeAgentMetadata) -> CanonicalClaudeAgentMetadata {
+        if self.model.is_some() {
+            base.model = self.model;
+        }
+        if self.effort.is_some() {
+            base.effort = self.effort;
+        }
+        if self.mcp_transport.is_some() {
+            base.mcp_transport = self.mcp_transport;
+        }
+        if let Some(mcp_tools) = self.mcp_tools {
+            base.mcp_tools = mcp_tools;
+        }
+        if let Some(internal_mcp_tools) = self.internal_mcp_tools {
+            base.internal_mcp_tools = internal_mcp_tools;
+        }
+        if self.tools.is_some() {
+            base.tools = self.tools;
+        }
+        if let Some(disallowed_tools) = self.disallowed_tools {
+            base.disallowed_tools = disallowed_tools;
+        }
+        if let Some(preapproved_cli_tools) = self.preapproved_cli_tools {
+            base.preapproved_cli_tools = preapproved_cli_tools;
+        }
+        if self.permission_mode.is_some() {
+            base.permission_mode = self.permission_mode;
+        }
+        if let Some(skills) = self.skills {
+            base.skills = skills;
+        }
+        if self.max_turns.is_some() {
+            base.max_turns = self.max_turns;
+        }
+        base
+    }
 }
 
 impl CanonicalClaudeAgentMetadata {
@@ -185,6 +321,37 @@ pub struct CanonicalCodexAgentMetadata {
     pub internal_mcp_tools: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalCodexAgentProfileMetadata {
+    #[serde(default)]
+    pub runtime_features: Option<BTreeMap<String, bool>>,
+    #[serde(default)]
+    pub mcp_transport: Option<String>,
+    #[serde(default)]
+    pub mcp_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub internal_mcp_tools: Option<Vec<String>>,
+}
+
+impl CanonicalCodexAgentProfileMetadata {
+    fn overlay_onto(self, mut base: CanonicalCodexAgentMetadata) -> CanonicalCodexAgentMetadata {
+        if let Some(runtime_features) = self.runtime_features {
+            base.runtime_features = runtime_features;
+        }
+        if self.mcp_transport.is_some() {
+            base.mcp_transport = self.mcp_transport;
+        }
+        if let Some(mcp_tools) = self.mcp_tools {
+            base.mcp_tools = mcp_tools;
+        }
+        if let Some(internal_mcp_tools) = self.internal_mcp_tools {
+            base.internal_mcp_tools = internal_mcp_tools;
+        }
+        base
+    }
+}
+
 impl CanonicalCodexAgentMetadata {
     fn is_empty(&self) -> bool {
         self.runtime_features.is_empty()
@@ -192,6 +359,7 @@ impl CanonicalCodexAgentMetadata {
             && self.mcp_tools.is_empty()
             && self.internal_mcp_tools.is_empty()
     }
+
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +451,48 @@ fn trusted_canonical_agent_name(agent_name: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+fn trusted_canonical_profile_name(profile_name: &str) -> Option<&str> {
+    let valid_component = !profile_name.is_empty()
+        && !profile_name.contains("..")
+        && !profile_name.contains('/')
+        && !profile_name.contains('\\')
+        && profile_name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+
+    if valid_component {
+        Some(profile_name)
+    } else {
+        None
+    }
+}
+
+fn escape_prompt_context_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+pub fn render_agent_runtime_profile_context(
+    project_root: &Path,
+    agent_name: &str,
+    profile_name: Option<&str>,
+) -> Option<String> {
+    let profile_name = profile_name?;
+    let trusted_profile_name = trusted_canonical_profile_name(profile_name)?;
+    let definition =
+        load_canonical_agent_definition_for_profile(project_root, agent_name, Some(profile_name))?;
+    let agent_name = canonical_agent_name(agent_name);
+
+    Some(format!(
+        "<agent_runtime_profile>\n<agent_name>{}</agent_name>\n<profile_slug>{}</profile_slug>\n<profile_role>{}</profile_role>\n</agent_runtime_profile>",
+        escape_prompt_context_text(&agent_name),
+        escape_prompt_context_text(trusted_profile_name),
+        escape_prompt_context_text(&definition.role)
+    ))
 }
 
 fn canonical_agent_root(project_root: &Path, agent_name: &str) -> Option<PathBuf> {
@@ -531,6 +741,20 @@ pub fn load_canonical_agent_definition(
     }
 }
 
+pub fn load_canonical_agent_definition_for_profile(
+    project_root: &Path,
+    agent_name: &str,
+    profile_name: Option<&str>,
+) -> Option<CanonicalAgentDefinition> {
+    let definition = load_canonical_agent_definition(project_root, agent_name)?;
+    let Some(profile_name) = profile_name else {
+        return Some(definition);
+    };
+    let trusted_profile_name = trusted_canonical_profile_name(profile_name)?;
+    let profile = definition.profiles.get(trusted_profile_name)?.clone();
+    Some(profile.overlay_onto(definition))
+}
+
 pub fn list_canonical_prompt_backed_agents(
     project_root: &Path,
     harness: AgentPromptHarness,
@@ -565,12 +789,30 @@ pub fn load_canonical_claude_metadata(
     project_root: &Path,
     agent_name: &str,
 ) -> CanonicalClaudeAgentMetadata {
-    try_load_canonical_claude_metadata(project_root, agent_name).unwrap_or_default()
+    try_load_canonical_claude_metadata_for_profile(project_root, agent_name, None)
+        .unwrap_or_default()
 }
 
 pub fn try_load_canonical_claude_metadata(
     project_root: &Path,
     agent_name: &str,
+) -> Result<CanonicalClaudeAgentMetadata, String> {
+    try_load_canonical_claude_metadata_for_profile(project_root, agent_name, None)
+}
+
+pub fn load_canonical_claude_metadata_for_profile(
+    project_root: &Path,
+    agent_name: &str,
+    profile_name: Option<&str>,
+) -> CanonicalClaudeAgentMetadata {
+    try_load_canonical_claude_metadata_for_profile(project_root, agent_name, profile_name)
+        .unwrap_or_default()
+}
+
+pub fn try_load_canonical_claude_metadata_for_profile(
+    project_root: &Path,
+    agent_name: &str,
+    profile_name: Option<&str>,
 ) -> Result<CanonicalClaudeAgentMetadata, String> {
     let legacy =
         match load_harness_agent_metadata(project_root, agent_name, AgentPromptHarness::Claude) {
@@ -585,7 +827,22 @@ pub fn try_load_canonical_claude_metadata(
             None => CanonicalClaudeAgentMetadata::default(),
         };
 
-    let Some(definition) = load_canonical_agent_definition(project_root, agent_name) else {
+    let definition = if profile_name.is_some() {
+        Some(
+            load_canonical_agent_definition_for_profile(project_root, agent_name, profile_name)
+                .ok_or_else(|| {
+                    format!(
+                        "Missing canonical profile {:?} for agent {}",
+                        profile_name,
+                        canonical_agent_name(agent_name)
+                    )
+                })?,
+        )
+    } else {
+        load_canonical_agent_definition(project_root, agent_name)
+    };
+
+    let Some(definition) = definition else {
         return Ok(legacy);
     };
     if definition.harnesses.claude.is_empty() {
@@ -612,14 +869,47 @@ pub fn load_canonical_codex_metadata(
     project_root: &Path,
     agent_name: &str,
 ) -> CanonicalCodexAgentMetadata {
-    try_load_canonical_codex_metadata(project_root, agent_name).unwrap_or_default()
+    try_load_canonical_codex_metadata_for_profile(project_root, agent_name, None)
+        .unwrap_or_default()
 }
 
 pub fn try_load_canonical_codex_metadata(
     project_root: &Path,
     agent_name: &str,
 ) -> Result<CanonicalCodexAgentMetadata, String> {
-    if let Some(definition) = load_canonical_agent_definition(project_root, agent_name) {
+    try_load_canonical_codex_metadata_for_profile(project_root, agent_name, None)
+}
+
+pub fn load_canonical_codex_metadata_for_profile(
+    project_root: &Path,
+    agent_name: &str,
+    profile_name: Option<&str>,
+) -> CanonicalCodexAgentMetadata {
+    try_load_canonical_codex_metadata_for_profile(project_root, agent_name, profile_name)
+        .unwrap_or_default()
+}
+
+pub fn try_load_canonical_codex_metadata_for_profile(
+    project_root: &Path,
+    agent_name: &str,
+    profile_name: Option<&str>,
+) -> Result<CanonicalCodexAgentMetadata, String> {
+    let definition = if profile_name.is_some() {
+        Some(
+            load_canonical_agent_definition_for_profile(project_root, agent_name, profile_name)
+                .ok_or_else(|| {
+                    format!(
+                        "Missing canonical profile {:?} for agent {}",
+                        profile_name,
+                        canonical_agent_name(agent_name)
+                    )
+                })?,
+        )
+    } else {
+        load_canonical_agent_definition(project_root, agent_name)
+    };
+
+    if let Some(definition) = definition {
         if !definition.harnesses.codex.is_empty() {
             if let Some(raw) =
                 load_harness_agent_metadata(project_root, agent_name, AgentPromptHarness::Codex)
@@ -682,7 +972,17 @@ pub fn load_harness_agent_prompt(
     agent_name: &str,
     harness: AgentPromptHarness,
 ) -> Option<String> {
-    let definition = load_canonical_agent_definition(project_root, agent_name)?;
+    load_harness_agent_prompt_for_profile(project_root, agent_name, harness, None)
+}
+
+pub fn load_harness_agent_prompt_for_profile(
+    project_root: &Path,
+    agent_name: &str,
+    harness: AgentPromptHarness,
+    profile_name: Option<&str>,
+) -> Option<String> {
+    let definition =
+        load_canonical_agent_definition_for_profile(project_root, agent_name, profile_name)?;
     let raw = read_trusted_canonical_agent_file(
         project_root,
         agent_name,

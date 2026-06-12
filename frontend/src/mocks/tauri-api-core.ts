@@ -389,6 +389,7 @@ function toSnakeIdeationSession(session: IdeationSessionResponse) {
     blocker_fingerprint: session.blockerFingerprint ?? null,
     inherited_plan_artifact_id: session.inheritedPlanArtifactId ?? null,
     session_purpose: session.sessionPurpose,
+    session_flow: session.sessionFlow ?? "ideation",
     acceptance_status: session.acceptanceStatus,
     analysis_base_ref_kind: session.analysisBaseRefKind ?? null,
     analysis_base_ref: session.analysisBaseRef ?? null,
@@ -532,6 +533,29 @@ const commandHandlers: Record<
     ].filter((entry) => entry.path.toLowerCase().includes(query));
     return {
       entries: entries.slice(0, input?.limit ?? 80),
+      truncated: false,
+    };
+  },
+  search_agent_composer_plan_references: async (args) => {
+    const input = args.input as { query?: string; limit?: number } | undefined;
+    const query = input?.query?.toLowerCase() ?? "";
+    const plans = [
+      {
+        sessionId: "mock-planning-session",
+        artifactId: "mock-plan-artifact",
+        title: "Mock Implementation Plan",
+        status: "approved",
+        artifactVersion: 1,
+        updatedAt: new Date().toISOString(),
+        approvedAt: new Date().toISOString(),
+      },
+    ].filter((plan) =>
+      `${plan.title} ${plan.sessionId} ${plan.artifactId} ${plan.status}`
+        .toLowerCase()
+        .includes(query),
+    );
+    return {
+      plans: plans.slice(0, input?.limit ?? 12),
       truncated: false,
     };
   },

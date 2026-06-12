@@ -1,12 +1,24 @@
-import { BookOpen, ExternalLink, FileText, FolderOpen, Ticket } from "lucide-react";
+import {
+  BookOpen,
+  ExternalLink,
+  FileText,
+  FolderOpen,
+  ScrollText,
+  Ticket,
+} from "lucide-react";
 
 import type { MessageComposerReferences } from "./MessageReferences.parse";
 
 export function MessageReferences({
   projectReferences,
   integrationReferences,
+  artifactReferences,
 }: MessageComposerReferences) {
-  if (projectReferences.length === 0 && integrationReferences.length === 0) {
+  if (
+    projectReferences.length === 0 &&
+    integrationReferences.length === 0 &&
+    artifactReferences.length === 0
+  ) {
     return null;
   }
 
@@ -43,8 +55,41 @@ export function MessageReferences({
           />
         );
       })}
+      {artifactReferences.map((reference) => {
+        const label = reference.title ?? shortReferenceId(reference.artifactId);
+        const description = [
+          reference.status ? formatArtifactReferenceStatus(reference.status) : null,
+          reference.version ? `v${reference.version}` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return (
+          <ReferenceChip
+            key={`artifact:${reference.kind}:${reference.artifactId}`}
+            testId={`message-reference-artifact:${reference.kind}:${reference.artifactId}`}
+            icon={ScrollText}
+            typeLabel={reference.kind === "plan" ? "Plan" : "Artifact"}
+            label={label}
+            {...(description ? { description } : {})}
+          />
+        );
+      })}
     </div>
   );
+}
+
+function formatArtifactReferenceStatus(status: string): string {
+  if (status === "approved") {
+    return "Approved";
+  }
+  if (status === "accepted") {
+    return "Accepted";
+  }
+  return "Draft";
+}
+
+function shortReferenceId(id: string): string {
+  return id.length > 12 ? `${id.slice(0, 8)}...` : id;
 }
 
 function ReferenceChip({

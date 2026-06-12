@@ -26,6 +26,10 @@ fn sample_info() -> PendingQuestionInfo {
             },
         ],
         multi_select: false,
+        allow_skip: true,
+        batch_index: None,
+        batch_total: None,
+        metadata: None,
     }
 }
 
@@ -46,6 +50,59 @@ async fn test_create_and_get_pending() {
     assert_eq!(pending[0].options[0].value, "pg");
     assert_eq!(pending[0].options[1].label, "SQLite");
     assert!(!pending[0].multi_select);
+    assert!(pending[0].allow_skip);
+    assert_eq!(pending[0].batch_index, None);
+    assert_eq!(pending[0].batch_total, None);
+}
+
+#[tokio::test]
+async fn test_skip_and_batch_metadata_round_trip() {
+    let (_db, repo) = setup();
+    let info = PendingQuestionInfo {
+        request_id: "req-batch".to_string(),
+        session_id: "session-1".to_string(),
+        question: "Any deadline constraints?".to_string(),
+        header: Some("Planning interview".to_string()),
+        options: vec![],
+        multi_select: false,
+        allow_skip: false,
+        batch_index: Some(2),
+        batch_total: Some(3),
+        metadata: Some(serde_json::json!({
+            "kind": "plan_mode_proposal",
+            "conversation_id": "conversation-1",
+        })),
+    };
+    repo.create_pending(&info).await.unwrap();
+
+    let found = repo.get_by_request_id("req-batch").await.unwrap().unwrap();
+    assert!(!found.allow_skip);
+    assert_eq!(found.batch_index, Some(2));
+    assert_eq!(found.batch_total, Some(3));
+    assert_eq!(
+        found
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("kind"))
+            .and_then(|value| value.as_str()),
+        Some("plan_mode_proposal"),
+    );
+
+    let answer = QuestionAnswer {
+        selected_options: vec![],
+        text: None,
+        skipped: true,
+    };
+    assert!(repo.resolve("req-batch", &answer).await.unwrap());
+
+    let stored = repo
+        .get_resolved_answer("req-batch")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stored.skipped);
+    assert!(stored.selected_options.is_empty());
+    assert!(stored.text.is_none());
 }
 
 #[tokio::test]
@@ -71,6 +128,7 @@ async fn test_resolve() {
     let answer = QuestionAnswer {
         selected_options: vec!["pg".to_string()],
         text: None,
+        skipped: false,
     };
     let resolved = repo.resolve("req-1", &answer).await.unwrap();
     assert!(resolved);
@@ -90,6 +148,7 @@ async fn test_resolve_nonexistent() {
     let answer = QuestionAnswer {
         selected_options: vec![],
         text: None,
+        skipped: false,
     };
     let resolved = repo.resolve("nope", &answer).await.unwrap();
     assert!(!resolved);
@@ -107,6 +166,10 @@ async fn test_expire_all_pending() {
             header: None,
             options: vec![],
             multi_select: false,
+            allow_skip: true,
+            batch_index: None,
+            batch_total: None,
+            metadata: None,
         };
         repo.create_pending(&info).await.unwrap();
     }
@@ -115,6 +178,7 @@ async fn test_expire_all_pending() {
     let answer = QuestionAnswer {
         selected_options: vec![],
         text: Some("done".to_string()),
+        skipped: false,
     };
     repo.resolve("req-0", &answer).await.unwrap();
 
@@ -122,7 +186,10 @@ async fn test_expire_all_pending() {
     assert_eq!(expired, 2);
 
     let pending = repo.get_pending().await.unwrap();
-    assert!(pending.is_empty());
+    assert_eq!(pending.len(), 2);
+    let request_ids: Vec<_> = pending.iter().map(|p| p.request_id.as_str()).collect();
+    assert!(request_ids.contains(&"req-1"));
+    assert!(request_ids.contains(&"req-2"));
 }
 
 #[tokio::test]
@@ -155,6 +222,10 @@ async fn test_expire_all_pending_via_question_state() {
             header: None,
             options: vec![],
             multi_select: false,
+            allow_skip: true,
+            batch_index: None,
+            batch_total: None,
+            metadata: None,
         };
         repo.create_pending(&info).await.unwrap();
     }
@@ -163,6 +234,7 @@ async fn test_expire_all_pending_via_question_state() {
     let answer = QuestionAnswer {
         selected_options: vec![],
         text: Some("answered".to_string()),
+        skipped: false,
     };
     repo.resolve("stale-0", &answer).await.unwrap();
 
@@ -173,8 +245,31 @@ async fn test_expire_all_pending_via_question_state() {
         as Arc<dyn crate::domain::repositories::question_repository::QuestionRepository>);
     state.expire_stale_on_startup().await;
 
-    // All pending should be expired
+    // Startup only expires the live wait; durable questions stay user-visible.
+    assert_eq!(repo.get_pending().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn test_expired_wait_remains_resolvable() {
+    let (_db, repo) = setup();
+    repo.create_pending(&sample_info()).await.unwrap();
+
+    repo.expire_by_request_id("req-1").await.unwrap();
+
+    let pending = repo.get_pending().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].request_id, "req-1");
+
+    let answer = QuestionAnswer {
+        selected_options: vec![],
+        text: Some("Use SQLite".to_string()),
+        skipped: false,
+    };
+    assert!(repo.resolve("req-1", &answer).await.unwrap());
     assert!(repo.get_pending().await.unwrap().is_empty());
+
+    let stored = repo.get_resolved_answer("req-1").await.unwrap().unwrap();
+    assert_eq!(stored.text, Some("Use SQLite".to_string()));
 }
 
 #[tokio::test]
@@ -198,6 +293,10 @@ async fn test_multi_select_round_trip() {
             },
         ],
         multi_select: true,
+        allow_skip: true,
+        batch_index: None,
+        batch_total: None,
+        metadata: None,
     };
     repo.create_pending(&info).await.unwrap();
 

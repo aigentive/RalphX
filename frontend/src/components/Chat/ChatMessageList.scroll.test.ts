@@ -6,6 +6,7 @@ import {
   scrollElementToTrueBottom,
   shouldShowScrollToBottomControl,
   shouldStickToBottom,
+  shouldTreatScrollTopDecreaseAsUserAway,
   VISUAL_BOTTOM_EPSILON_PX,
 } from "./ChatMessageList.scroll";
 
@@ -201,6 +202,39 @@ describe("ChatMessageList scroll math", () => {
         isAtBottom: true,
         isVisuallyAtBottom: true,
         scrollToTimestamp: "2026-01-01T12:00:00.000Z",
+      })
+    ).toBe(false);
+  });
+
+  it("does not treat layout-clamped scrollTop decreases at visual bottom as user scroll-away", () => {
+    expect(
+      shouldTreatScrollTopDecreaseAsUserAway({
+        hasUserScrollInput: true,
+        previousScrollTop: 620,
+        currentScrollTop: 580,
+        isVisuallyAtBottom: true,
+      })
+    ).toBe(false);
+  });
+
+  it("treats scrollTop decreases away from visual bottom as user scroll-away after input", () => {
+    expect(
+      shouldTreatScrollTopDecreaseAsUserAway({
+        hasUserScrollInput: true,
+        previousScrollTop: 620,
+        currentScrollTop: 580,
+        isVisuallyAtBottom: false,
+      })
+    ).toBe(true);
+  });
+
+  it("ignores programmatic scrollTop decreases without prior user input", () => {
+    expect(
+      shouldTreatScrollTopDecreaseAsUserAway({
+        hasUserScrollInput: false,
+        previousScrollTop: 620,
+        currentScrollTop: 580,
+        isVisuallyAtBottom: false,
       })
     ).toBe(false);
   });

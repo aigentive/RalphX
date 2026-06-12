@@ -18,8 +18,11 @@
 //
 // ## For existing databases
 //
-// Existing databases have schema_migrations tracking what version they're at.
-// Only migrations newer than their current version will run.
+// Existing databases have schema_migrations tracking applied versions.
+// Any registered migration that is not recorded will run, even if a later
+// version was already applied by another branch.
+
+use std::collections::HashSet;
 
 use rusqlite::Connection;
 
@@ -363,12 +366,30 @@ mod v20260520150000_atlassian_oauth_tests;
 mod v20260521150003_agent_workspace_source_pull_request;
 #[cfg(test)]
 mod v20260521150003_agent_workspace_source_pull_request_tests;
+mod v20260521222911_agent_plan_mode;
+#[cfg(test)]
+mod v20260521222911_agent_plan_mode_tests;
+mod v20260522093000_ideation_session_flow;
+#[cfg(test)]
+mod v20260522093000_ideation_session_flow_tests;
+mod v20260523070000_plan_artifact_approvals;
+#[cfg(test)]
+mod v20260523070000_plan_artifact_approvals_tests;
+mod v20260523145711_plan_complexity_assessments;
+#[cfg(test)]
+mod v20260523145711_plan_complexity_assessments_tests;
 mod v20260523152748_agent_task_list_slices;
 #[cfg(test)]
 mod v20260523152748_agent_task_list_slices_tests;
 mod v20260527033000_agent_workspace_auto_publish;
 #[cfg(test)]
 mod v20260527033000_agent_workspace_auto_publish_tests;
+mod v20260611110952_question_skip_progress;
+#[cfg(test)]
+mod v20260611110952_question_skip_progress_tests;
+mod v20260611152000_question_metadata;
+#[cfg(test)]
+mod v20260611152000_question_metadata_tests;
 mod v20260612124826_provider_cli_management_policy;
 #[cfg(test)]
 mod v20260612124826_provider_cli_management_policy_tests;
@@ -1040,6 +1061,26 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260521150003_agent_workspace_source_pull_request::migrate,
     },
     Migration {
+        version: 20260521222911,
+        name: "agent_plan_mode",
+        migrate: v20260521222911_agent_plan_mode::migrate,
+    },
+    Migration {
+        version: 20260522093000,
+        name: "ideation_session_flow",
+        migrate: v20260522093000_ideation_session_flow::migrate,
+    },
+    Migration {
+        version: 20260523070000,
+        name: "plan_artifact_approvals",
+        migrate: v20260523070000_plan_artifact_approvals::migrate,
+    },
+    Migration {
+        version: 20260523145711,
+        name: "plan_complexity_assessments",
+        migrate: v20260523145711_plan_complexity_assessments::migrate,
+    },
+    Migration {
         version: 20260523152748,
         name: "agent_task_list_slices",
         migrate: v20260523152748_agent_task_list_slices::migrate,
@@ -1048,6 +1089,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260527033000,
         name: "agent_workspace_auto_publish",
         migrate: v20260527033000_agent_workspace_auto_publish::migrate,
+    },
+    Migration {
+        version: 20260611110952,
+        name: "question_skip_progress",
+        migrate: v20260611110952_question_skip_progress::migrate,
+    },
+    Migration {
+        version: 20260611152000,
+        name: "question_metadata",
+        migrate: v20260611152000_question_metadata::migrate,
     },
     Migration {
         version: 20260612124826,
@@ -1061,12 +1112,13 @@ pub fn run_migrations(conn: &Connection) -> AppResult<()> {
     // Create migrations table if it doesn't exist
     create_migrations_table(conn)?;
 
-    // Get current version
-    let current_version = get_schema_version(conn)?;
+    let mut applied_versions = get_applied_migration_versions(conn)?;
 
-    // Run migrations sequentially
+    // Run registered migrations sequentially. Membership checks repair dev and
+    // branch databases that have a later version recorded while missing an
+    // earlier migration added on this branch.
     for migration in MIGRATIONS {
-        if current_version < migration.version {
+        if !applied_versions.contains(&migration.version) {
             tracing::info!(
                 "Running migration v{}: {}",
                 migration.version,
@@ -1075,6 +1127,7 @@ pub fn run_migrations(conn: &Connection) -> AppResult<()> {
 
             (migration.migrate)(conn)?;
             set_schema_version(conn, migration.version)?;
+            applied_versions.insert(migration.version);
 
             tracing::info!("Migration v{} complete", migration.version);
         }
@@ -1087,13 +1140,13 @@ pub fn run_migrations(conn: &Connection) -> AppResult<()> {
 pub(super) fn run_migrations_through(conn: &Connection, target_version: i64) -> AppResult<()> {
     create_migrations_table(conn)?;
 
-    let mut current_version = get_schema_version(conn)?;
+    let mut applied_versions = get_applied_migration_versions(conn)?;
 
     for migration in MIGRATIONS {
-        if current_version < migration.version && migration.version <= target_version {
+        if migration.version <= target_version && !applied_versions.contains(&migration.version) {
             (migration.migrate)(conn)?;
             set_schema_version(conn, migration.version)?;
-            current_version = migration.version;
+            applied_versions.insert(migration.version);
         }
     }
 
@@ -1130,6 +1183,18 @@ pub fn get_schema_version(conn: &Connection) -> AppResult<i64> {
     );
 
     result.map_err(|e| AppError::Database(e.to_string()))
+}
+
+fn get_applied_migration_versions(conn: &Connection) -> AppResult<HashSet<i64>> {
+    let mut statement = conn
+        .prepare("SELECT version FROM schema_migrations")
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    let versions = statement
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(|e| AppError::Database(e.to_string()))?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    Ok(versions)
 }
 
 /// Set the schema version after a migration

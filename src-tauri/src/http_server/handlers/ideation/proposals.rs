@@ -9,6 +9,7 @@ use axum::{
 use tauri::Emitter;
 use tracing::error;
 
+use crate::application::agent_planning_session_titles::sync_linked_planning_session_title_from_conversation;
 use crate::application::task_cleanup_service::TaskCleanupService;
 use crate::application::{
     spawn_ready_task_scheduler_if_needed, CreateProposalOptions, UpdateProposalOptions,
@@ -534,8 +535,27 @@ pub async fn update_session_title(
                     );
                     StatusCode::NOT_FOUND
                 })?;
+            let synced_planning_session_id = sync_linked_planning_session_title_from_conversation(
+                &state.app_state,
+                &conversation_id,
+                &updated_title,
+            )
+            .await
+            .map_err(|e| {
+                error!("Failed to sync linked planning session title: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
 
             if let Some(app_handle) = &state.app_state.app_handle {
+                if let Some(session_id) = synced_planning_session_id {
+                    let _ = app_handle.emit(
+                        "ideation:session_title_updated",
+                        serde_json::json!({
+                            "sessionId": session_id.as_str(),
+                            "title": updated_title,
+                        }),
+                    );
+                }
                 let _ = app_handle.emit(
                     "agent:conversation_title_updated",
                     serde_json::json!({

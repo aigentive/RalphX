@@ -1,15 +1,18 @@
 use super::{
-    conversation_spawn_harness_override, get_agent_name, interactive_run_started_provider_session,
+    conversation_spawn_harness_override, edit_mode_plan_handoff_runtime_message, get_agent_name,
+    interactive_run_started_provider_session, plan_mode_runtime_message,
     resolve_agent_name_for_send, should_inherit_parent_harness_for_fresh_spawn,
     spawn_settings_require_task_metadata,
 };
 use crate::application::interactive_process_registry::InteractiveProcessMetadata;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ChatContextType, ChatConversation, IdeationSessionId, TaskId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactId, ArtifactType,
+    ChatContextType, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, ProjectId, TaskId,
 };
 use crate::infrastructure::agents::claude::agent_names::{
-    AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
+    AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER, AGENT_ORCHESTRATOR_IDEATION,
 };
 
 #[test]
@@ -68,13 +71,116 @@ fn project_agent_send_uses_workspace_mode_agent_before_project_default() {
         None,
         Some(AgentConversationWorkspaceMode::Ideation),
     );
+    let plan_agent = resolve_agent_name_for_send(
+        &ChatContextType::Project,
+        None,
+        false,
+        None,
+        Some(AgentConversationWorkspaceMode::Plan),
+    );
     let default_project_agent =
         resolve_agent_name_for_send(&ChatContextType::Project, None, false, None, None);
 
     assert_eq!(edit_agent, AGENT_GENERAL_WORKER);
     assert_eq!(chat_agent, AGENT_GENERAL_EXPLORER);
+    assert_eq!(plan_agent, AGENT_ORCHESTRATOR_IDEATION);
     assert_eq!(ideation_agent, AGENT_CHAT_PROJECT);
     assert_eq!(default_project_agent, AGENT_CHAT_PROJECT);
+}
+
+#[test]
+fn plan_mode_runtime_message_injects_linked_planning_session_context() {
+    let conversation_id = ChatConversationId::from_string("conversation-plan-1".to_string());
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        ProjectId::from_string("project-plan-1".to_string()),
+        AgentConversationWorkspaceMode::Plan,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        None,
+        "ralphx/project/agent-plan".to_string(),
+        "/tmp/ralphx-plan-workspace".to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(IdeationSessionId::from_string(
+        "planning-session-1".to_string(),
+    ));
+
+    let message =
+        plan_mode_runtime_message("draft the implementation".to_string(), Some(&workspace));
+
+    assert!(message.contains("<plan_mode_context>"));
+    assert!(message.contains("<planning_session_id>planning-session-1</planning_session_id>"));
+    assert!(message.contains("Use this planning session for ask_user_question"));
+    assert!(message.contains("<user_request>draft the implementation</user_request>"));
+}
+
+#[test]
+fn edit_mode_plan_handoff_runtime_message_injects_linked_plan_context() {
+    let conversation_id = ChatConversationId::from_string("conversation-plan-1".to_string());
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        ProjectId::from_string("project-plan-1".to_string()),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        None,
+        "ralphx/project/agent-plan".to_string(),
+        "/tmp/ralphx-plan-workspace".to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(IdeationSessionId::from_string(
+        "planning-session-1".to_string(),
+    ));
+    let mut artifact = Artifact::new_inline(
+        "Plan Mode Implementation Plan",
+        ArtifactType::Specification,
+        "# Plan\n\nImplement the composer Plan mode.",
+        "ralphx-ideation",
+    );
+    artifact.id = ArtifactId::from_string("plan-artifact-1".to_string());
+    artifact.metadata.version = 3;
+
+    let message = edit_mode_plan_handoff_runtime_message(
+        "execute the plan".to_string(),
+        Some(&workspace),
+        Some(&artifact),
+    );
+
+    assert!(message.contains("<plan_execution_context>"));
+    assert!(message.contains("<workspace_mode>edit</workspace_mode>"));
+    assert!(message.contains("<planning_session_id>planning-session-1</planning_session_id>"));
+    assert!(message.contains("<plan_artifact_reference kind=\"plan\""));
+    assert!(message.contains("artifact_id=\"plan-artifact-1\""));
+    assert!(message.contains("session_id=\"planning-session-1\""));
+    assert!(message.contains("version=\"3\""));
+    assert!(message.contains("Fetch the referenced plan artifact with get_artifact"));
+    assert!(message.contains("edit the workspace branch directly"));
+    assert!(message.contains("<user_request>execute the plan</user_request>"));
+}
+
+#[test]
+fn edit_mode_plan_handoff_runtime_message_leaves_unlinked_edit_messages_unchanged() {
+    let conversation_id = ChatConversationId::from_string("conversation-edit-1".to_string());
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        ProjectId::from_string("project-plan-1".to_string()),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        None,
+        "ralphx/project/agent-edit".to_string(),
+        "/tmp/ralphx-edit-workspace".to_string(),
+    );
+
+    let message = edit_mode_plan_handoff_runtime_message(
+        "make a small edit".to_string(),
+        Some(&workspace),
+        None,
+    );
+
+    assert_eq!(message, "make a small edit");
 }
 
 #[test]

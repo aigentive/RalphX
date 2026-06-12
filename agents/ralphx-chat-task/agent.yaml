@@ -6,6 +6,7 @@ capabilities:
     - update_task
     - add_task_note
     - get_task_details
+    - get_artifact
     - search_memories
     - get_memory
     - get_memories_for_paths

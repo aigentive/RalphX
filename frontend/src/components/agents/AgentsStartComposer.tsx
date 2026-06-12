@@ -4,6 +4,7 @@ import { PauseCircle, Sparkles } from "lucide-react";
 import type {
   AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
+  ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
 } from "@/api/chat";
@@ -75,6 +76,7 @@ interface AgentsStartComposerProps {
     mode: AgentConversationWorkspaceMode;
     base: AgentConversationBaseSelection | null;
     files: File[];
+    composerArtifactReferences?: ComposerArtifactReference[] | undefined;
     composerProjectReferences?: ComposerProjectReference[] | undefined;
     composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
   }) => Promise<void>;
@@ -105,6 +107,7 @@ const AGENT_MODE_OPTIONS: Array<{
   description: string;
 }> = [
   { id: "edit", label: "Agent", description: "Build, change, and review code in a branch." },
+  { id: "plan", label: "Plan", description: "Draft and refine a plan before execution." },
   { id: "chat", label: "Chat", description: "Ask read-only questions about the project." },
   { id: "ideation", label: "Ideation", description: "Plan work before creating tasks." },
 ];
@@ -642,6 +645,9 @@ export function AgentsStartComposer({
           : {}),
         ...(options?.integrationReferences?.length
           ? { composerIntegrationReferences: options.integrationReferences }
+          : {}),
+        ...(options?.artifactReferences?.length
+          ? { composerArtifactReferences: options.artifactReferences }
           : {}),
       });
       setContent("");

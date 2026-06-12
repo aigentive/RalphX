@@ -194,6 +194,36 @@ describe("ReadWidget", () => {
       expect(screen.queryByText(/TRUNCATED:/)).not.toBeInTheDocument();
     });
 
+    it("parses persisted full MCP wrapper results", () => {
+      render(
+        <ReadWidget
+          toolCall={makeReadCall({
+            arguments: { path: "CLAUDE.md" },
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: [
+                    "FILE: /workspace/project/CLAUDE.md",
+                    "LINES: 1-2/2",
+                    "TRUNCATED: false",
+                    "",
+                    "1| # Project Rules",
+                    "2| Keep prompts clean.",
+                  ].join("\n"),
+                },
+              ],
+              structured_content: null,
+            },
+          })}
+        />,
+      );
+
+      expect(screen.getByText("# Project Rules")).toBeInTheDocument();
+      expect(screen.getByText("Keep prompts clean.")).toBeInTheDocument();
+      expect(screen.queryByText("Reading...")).not.toBeInTheDocument();
+    });
+
     it("surfaces fs_read_file ERROR payloads as widget errors", () => {
       render(
         <ReadWidget

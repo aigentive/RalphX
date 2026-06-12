@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -262,20 +262,43 @@ describe("DiffToolCallView hunk rendering", () => {
   });
 
   it("hydrates oversized full diffs after the expansion paint", async () => {
+    const frameCallbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrameSpy = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        frameCallbacks.push(callback);
+        return frameCallbacks.length;
+      });
+    const cancelAnimationFrameSpy = vi
+      .spyOn(window, "cancelAnimationFrame")
+      .mockImplementation(() => {});
     const user = userEvent.setup();
-    render(
-      <TooltipProvider delayDuration={0}>
-        <DiffToolCallView toolCall={makeLargeEditCall()} />
-      </TooltipProvider>
-    );
 
-    expect(screen.getByTestId("diff-tool-call-preview-diff")).toBeInTheDocument();
-    expect(screen.queryByTestId("diff-tool-call-full-diff")).not.toBeInTheDocument();
+    try {
+      render(
+        <TooltipProvider delayDuration={0}>
+          <DiffToolCallView toolCall={makeLargeEditCall()} />
+        </TooltipProvider>
+      );
 
-    await user.click(screen.getByRole("button", { name: /edit .* click to expand/i }));
+      expect(screen.getByTestId("diff-tool-call-preview-diff")).toBeInTheDocument();
+      expect(screen.queryByTestId("diff-tool-call-full-diff")).not.toBeInTheDocument();
 
-    expect(await screen.findByText("Loading full diff...")).toBeInTheDocument();
-    expect(await screen.findByTestId("diff-tool-call-full-diff")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: /edit .* click to expand/i }));
+
+      expect(await screen.findByText("Loading full diff...")).toBeInTheDocument();
+      expect(screen.queryByTestId("diff-tool-call-full-diff")).not.toBeInTheDocument();
+      expect(frameCallbacks).toHaveLength(1);
+
+      act(() => {
+        frameCallbacks.shift()?.(performance.now());
+      });
+
+      expect(await screen.findByTestId("diff-tool-call-full-diff")).toBeInTheDocument();
+    } finally {
+      requestAnimationFrameSpy.mockRestore();
+      cancelAnimationFrameSpy.mockRestore();
+    }
   });
 
   it("cancels oversized full diff hydration when the card unmounts", async () => {

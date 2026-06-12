@@ -16,6 +16,7 @@ import {
   ArtifactContentFileSchema,
   ArtifactContentSchema,
   ArtifactMetadataSchema,
+  PlanApprovalSchema,
   ArtifactSchema,
   ArtifactBucketSchema,
   ArtifactRelationTypeSchema,
@@ -34,6 +35,7 @@ import {
   type ArtifactType,
   type ArtifactContent,
   type ArtifactMetadata,
+  type PlanApproval,
   type Artifact,
   type ArtifactBucket,
   type ArtifactRelationType,
@@ -277,6 +279,34 @@ describe("ArtifactMetadataSchema", () => {
   });
 });
 
+describe("PlanApprovalSchema", () => {
+  it("validates draft approval state", () => {
+    const approval: PlanApproval = {
+      status: "draft",
+    };
+
+    const result = PlanApprovalSchema.safeParse(approval);
+
+    expect(result.success).toBe(true);
+  });
+
+  it("validates approved approval state", () => {
+    const approval: PlanApproval = {
+      status: "approved",
+      approvedArtifactId: "artifact-123",
+      approvedVersion: 2,
+      approvedAt: "2026-05-23T05:00:00.000Z",
+    };
+
+    const result = PlanApprovalSchema.safeParse(approval);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.approvedVersion).toBe(2);
+    }
+  });
+});
+
 // ============================================
 // Artifact Tests
 // ============================================
@@ -312,12 +342,19 @@ describe("ArtifactSchema", () => {
       },
       derivedFrom: ["artifact-100", "artifact-101"],
       bucketId: "code-changes",
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-123",
+        approvedVersion: 1,
+        approvedAt: "2026-05-23T05:00:00.000Z",
+      },
     };
     const result = ArtifactSchema.safeParse(artifact);
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.derivedFrom).toHaveLength(2);
       expect(result.data.bucketId).toBe("code-changes");
+      expect(result.data.planApproval?.status).toBe("approved");
     }
   });
 

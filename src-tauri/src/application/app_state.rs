@@ -684,6 +684,28 @@ impl AppState {
         Ok(Self::lock_utility_agent_runtime_model(runtime))
     }
 
+    pub(crate) async fn resolve_plan_complexity_runtime_for_session(
+        &self,
+        session: &IdeationSession,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        if let Some(conversation) = self
+            .chat_conversation_repo
+            .get_active_for_context(ChatContextType::Ideation, session.id.as_str())
+            .await?
+        {
+            let runtime = self
+                .resolve_session_namer_runtime_for_conversation(
+                    &conversation,
+                    Some(session.project_id.as_str()),
+                )
+                .await?;
+            return Ok(Self::lock_utility_agent_runtime_model(runtime));
+        }
+
+        self.resolve_session_namer_runtime_for_project(Some(session.project_id.as_str()))
+            .await
+    }
+
     /// Create AppState for production use with SQLite repositories.
     /// Opens the database at the default path and runs migrations.
     pub fn new_production(app_handle: AppHandle) -> AppResult<Self> {

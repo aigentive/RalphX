@@ -21,8 +21,9 @@ pub use agent_config::team_config::{
 pub use agent_config::{
     agent_configs, agent_harness_defaults_config, claude_runtime_config, config_path,
     defer_merge_enabled, execution_defaults_config, external_mcp_config, external_mcp_config_path,
-    file_logging_enabled, get_agent_config, get_allowed_tools, get_effective_settings,
-    get_effective_settings_profile, get_preapproved_tools, git_runtime_config,
+    file_logging_enabled, get_agent_config, get_agent_config_for_profile, get_allowed_tools,
+    get_allowed_tools_for_profile, get_effective_settings, get_effective_settings_profile,
+    get_preapproved_tools, get_preapproved_tools_for_profile, git_runtime_config,
     ideation_activity_threshold_secs, limits_config, process_mapping, reconciliation_config,
     resolve_file_logging_early, scheduler_config, stream_timeouts, supervisor_runtime_config,
     team_constraints_config, ui_feature_flags_config, validate_external_mcp_config,
@@ -75,10 +76,12 @@ use crate::domain::agents::{
     AgentProviderSettings, CLAUDE_DEFAULT_PERMISSION_MODE,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
-    internal_mcp_server_name, load_canonical_claude_metadata, load_harness_agent_prompt,
-    resolve_harness_agent_prompt_path, resolve_project_root_from_plugin_dir, AgentPromptHarness,
+    internal_mcp_server_name, load_harness_agent_prompt_for_profile,
+    render_agent_runtime_profile_context,
+    resolve_harness_agent_prompt_path, resolve_project_root_from_plugin_dir,
+    try_load_canonical_claude_metadata_for_profile, AgentPromptHarness,
 };
-use crate::infrastructure::agents::internal_skills::inject_internal_skills_into_system_prompt;
+use crate::infrastructure::agents::internal_skills::inject_internal_skills_into_system_prompt_for_profile;
 use crate::infrastructure::agents::mcp_runtime_context::{
     append_mcp_runtime_args, append_mcp_runtime_query, McpRuntimeContext,
 };
@@ -294,6 +297,7 @@ pub fn canonical_short_agent_name(name: &str) -> &str {
         "memory-maintainer" => "ralphx-memory-maintainer",
         "session-namer" => "ralphx-utility-session-namer",
         "pr-describer" => "ralphx-utility-pr-describer",
+        "plan-complexity" => "ralphx-utility-plan-complexity",
         _ => short_name,
     }
 }
@@ -555,6 +559,31 @@ fn build_base_cli_command_inner_with_runtime_context(
     mcp_runtime_context: Option<&McpRuntimeContext>,
     enforce_spawn_guard: bool,
 ) -> Result<Command, String> {
+    build_base_cli_command_inner_with_runtime_context_and_profile(
+        cli_path,
+        plugin_dir,
+        agent_type,
+        None,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+        enforce_spawn_guard,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_base_cli_command_inner_with_runtime_context_and_profile(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    agent_type: Option<&str>,
+    agent_profile: Option<&str>,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+    enforce_spawn_guard: bool,
+) -> Result<Command, String> {
     if enforce_spawn_guard {
         ensure_claude_spawn_allowed()?;
     }
@@ -611,12 +640,18 @@ fn build_base_cli_command_inner_with_runtime_context(
         }
     }
 
+    let agent_profile_config =
+        agent_type.and_then(|agent| get_agent_config_for_profile(agent, agent_profile));
+
     // Effort level for this agent — use explicit override when provided, otherwise resolve from config.
     let effort_resolved;
     let effort = match effort_override {
         Some(e) => e,
         None => {
-            effort_resolved = resolve_effort(agent_type);
+            effort_resolved = agent_profile_config
+                .as_ref()
+                .and_then(|config| config.effort.clone())
+                .unwrap_or_else(|| claude_runtime_config().default_effort.clone());
             &effort_resolved
         }
     };
@@ -636,8 +671,8 @@ fn build_base_cli_command_inner_with_runtime_context(
     let model = match model_override {
         Some(m) => Some(m),
         None => {
-            model_resolved = agent_type
-                .and_then(|a| get_agent_config(a))
+            model_resolved = agent_profile_config
+                .as_ref()
                 .and_then(|cfg| cfg.model.clone());
             model_resolved.as_deref()
         }
@@ -652,14 +687,20 @@ fn build_base_cli_command_inner_with_runtime_context(
     // Always enforce strict MCP isolation from user/global servers.
     // Hard error on invalid config — MCP is critical infra, fail loud.
     if let Some(agent) = agent_type {
-        let temp_path = create_mcp_config_with_runtime_context(
+        let temp_path = create_mcp_config_with_runtime_context_for_profile(
             plugin_dir,
             agent,
+            agent_profile,
             is_external_mcp,
             mcp_runtime_context,
         )
         .map_err(|e| {
-            tracing::error!(error = %e, agent = %agent, "MCP config creation failed");
+            tracing::error!(
+                error = %e,
+                agent = %agent,
+                agent_profile = ?agent_profile,
+                "MCP config creation failed"
+            );
             e
         })?;
         cmd.args([
@@ -670,6 +711,7 @@ fn build_base_cli_command_inner_with_runtime_context(
         tracing::debug!(
             path = %temp_path.display(),
             agent_type = agent,
+            agent_profile = ?agent_profile,
             "Dynamic MCP config written (strict)"
         );
     }
@@ -689,22 +731,51 @@ pub(crate) fn resolve_agent_system_prompt_path(
 fn load_agent_system_prompt_with_internal_skills(
     plugin_dir: &Path,
     agent_name: &str,
+    agent_profile: Option<&str>,
     prompt: &str,
 ) -> Option<(String, Vec<String>)> {
     let short = mcp_agent_type(agent_name);
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
-    let system_prompt =
-        load_harness_agent_prompt(&project_root, short, AgentPromptHarness::Claude)?;
-    match inject_internal_skills_into_system_prompt(&project_root, short, &system_prompt, prompt) {
-        Ok(injection) => Some((injection.system_prompt, injection.injected_skill_names)),
+    let system_prompt = load_harness_agent_prompt_for_profile(
+        &project_root,
+        short,
+        AgentPromptHarness::Claude,
+        agent_profile,
+    )?;
+    let runtime_profile_context =
+        render_agent_runtime_profile_context(&project_root, short, agent_profile);
+    match inject_internal_skills_into_system_prompt_for_profile(
+        &project_root,
+        short,
+        agent_profile,
+        &system_prompt,
+        prompt,
+    ) {
+        Ok(injection) => Some((
+            append_runtime_profile_context(injection.system_prompt, runtime_profile_context),
+            injection.injected_skill_names,
+        )),
         Err(error) => {
             warn!(
                 agent = agent_name,
                 error = %error,
                 "Failed to inject internal skills into Claude prompt"
             );
-            Some((system_prompt, Vec::new()))
+            Some((
+                append_runtime_profile_context(system_prompt, runtime_profile_context),
+                Vec::new(),
+            ))
         }
+    }
+}
+
+fn append_runtime_profile_context(
+    system_prompt: String,
+    runtime_profile_context: Option<String>,
+) -> String {
+    match runtime_profile_context {
+        Some(context) => format!("{system_prompt}\n\n{context}"),
+        None => system_prompt,
     }
 }
 
@@ -886,7 +957,13 @@ pub fn create_mcp_config(
     agent_type: &str,
     is_external_mcp: bool,
 ) -> Result<PathBuf, String> {
-    create_mcp_config_with_runtime_context(plugin_dir, agent_type, is_external_mcp, None)
+    create_mcp_config_with_runtime_context_for_profile(
+        plugin_dir,
+        agent_type,
+        None,
+        is_external_mcp,
+        None,
+    )
 }
 
 pub fn create_mcp_config_with_runtime_context(
@@ -895,18 +972,52 @@ pub fn create_mcp_config_with_runtime_context(
     is_external_mcp: bool,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<PathBuf, String> {
-    let mcp_config = build_mcp_config_with_runtime_context(
+    create_mcp_config_with_runtime_context_for_profile(
         plugin_dir,
         agent_type,
+        None,
+        is_external_mcp,
+        mcp_runtime_context,
+    )
+}
+
+pub fn create_mcp_config_with_runtime_context_for_profile(
+    plugin_dir: &Path,
+    agent_type: &str,
+    agent_profile: Option<&str>,
+    is_external_mcp: bool,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+) -> Result<PathBuf, String> {
+    let mcp_config = build_mcp_config_with_runtime_context_for_profile(
+        plugin_dir,
+        agent_type,
+        agent_profile,
         is_external_mcp,
         mcp_runtime_context,
     )?;
     write_mcp_config_temp(&mcp_config)
 }
 
+#[cfg(test)]
 pub(crate) fn build_mcp_config_with_runtime_context(
     plugin_dir: &Path,
     agent_type: &str,
+    is_external_mcp: bool,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+) -> Result<serde_json::Value, String> {
+    build_mcp_config_with_runtime_context_for_profile(
+        plugin_dir,
+        agent_type,
+        None,
+        is_external_mcp,
+        mcp_runtime_context,
+    )
+}
+
+pub(crate) fn build_mcp_config_with_runtime_context_for_profile(
+    plugin_dir: &Path,
+    agent_type: &str,
+    agent_profile: Option<&str>,
     is_external_mcp: bool,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<serde_json::Value, String> {
@@ -922,7 +1033,11 @@ pub(crate) fn build_mcp_config_with_runtime_context(
     let short_name = mcp_agent_type(agent_type);
     let mcp_server_name = &claude_runtime_config().mcp_server_name;
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
-    let claude_metadata = load_canonical_claude_metadata(&project_root, short_name);
+    let claude_metadata = try_load_canonical_claude_metadata_for_profile(
+        &project_root,
+        short_name,
+        agent_profile,
+    )?;
     let mut mcp_servers = serde_json::Map::new();
     let mut server_names = Vec::new();
 
@@ -940,6 +1055,7 @@ pub(crate) fn build_mcp_config_with_runtime_context(
                 &node_command,
                 short_name,
                 agent_type,
+                agent_profile,
                 is_external_mcp,
                 mcp_runtime_context,
                 Some(&claude_metadata.internal_mcp_tools),
@@ -955,6 +1071,7 @@ pub(crate) fn build_mcp_config_with_runtime_context(
                 &node_command,
                 short_name,
                 agent_type,
+                agent_profile,
                 is_external_mcp,
                 mcp_runtime_context,
                 None,
@@ -980,6 +1097,7 @@ fn build_internal_mcp_server_config(
     node_command: &str,
     short_name: &str,
     agent_type: &str,
+    agent_profile: Option<&str>,
     is_external_mcp: bool,
     mcp_runtime_context: Option<&McpRuntimeContext>,
     explicit_allowed_tools: Option<&[String]>,
@@ -1006,8 +1124,15 @@ fn build_internal_mcp_server_config(
     let validated_tools: Option<Vec<String>> = if let Some(tools) = explicit_allowed_tools {
         Some(validated_mcp_tools(agent_type, tools, is_external_mcp))
     } else {
-        get_agent_config(agent_type)
-            .map(|cfg| validated_mcp_tools(agent_type, &cfg.allowed_mcp_tools, is_external_mcp))
+        match get_agent_config_for_profile(agent_type, agent_profile) {
+            Some(cfg) => Some(validated_mcp_tools(
+                agent_type,
+                &cfg.allowed_mcp_tools,
+                is_external_mcp,
+            )),
+            None if agent_profile.is_some() => Some(Vec::new()),
+            None => None,
+        }
     };
     if let Some(arg_value) = format_allowed_tools_arg_value(validated_tools.as_deref()) {
         args_vec.push(format!("--allowed-tools={}", arg_value));
@@ -1351,6 +1476,7 @@ fn add_prompt_args(
     plugin_dir: &Path,
     prompt: &str,
     agent: Option<&str>,
+    agent_profile: Option<&str>,
     resume_session: Option<&str>,
     interactive: bool,
 ) -> Option<String> {
@@ -1381,8 +1507,12 @@ fn add_prompt_args(
             cmd.args(["--agent", agent_name]);
         } else if let Some(prompt_path) = resolve_agent_system_prompt_path(plugin_dir, agent_name) {
             let runtime = claude_runtime_config();
-            let prompt_with_internal_skills =
-                load_agent_system_prompt_with_internal_skills(plugin_dir, agent_name, prompt);
+            let prompt_with_internal_skills = load_agent_system_prompt_with_internal_skills(
+                plugin_dir,
+                agent_name,
+                agent_profile,
+                prompt,
+            );
             if let Some((system_prompt, injected_skill_names)) =
                 prompt_with_internal_skills.as_ref()
             {
@@ -1460,7 +1590,7 @@ fn add_prompt_args(
         // Apply CLI tool restrictions from agent_config
         // Frontmatter tools/disallowedTools only work for subagent spawning,
         // NOT for direct CLI invocations with --agent -p. We must pass --tools flag.
-        if let Some(allowed_tools) = get_allowed_tools(agent_name) {
+        if let Some(allowed_tools) = get_allowed_tools_for_profile(agent_name, agent_profile) {
             // Pass --tools even if empty (restricts to MCP-only)
             cmd.args(["--tools", &allowed_tools]);
             tracing::debug!(
@@ -1475,7 +1605,7 @@ fn add_prompt_args(
         }
 
         // Pre-approve tools to bypass permission prompts (MCP + CLI permissions)
-        if let Some(preapproved) = get_preapproved_tools(agent_name) {
+        if let Some(preapproved) = get_preapproved_tools_for_profile(agent_name, agent_profile) {
             cmd.args(["--allowedTools", &preapproved]);
             tracing::debug!(agent = agent_name, preapproved = %preapproved, "Agent pre-approved tools");
         }
@@ -1563,7 +1693,46 @@ pub fn build_spawnable_command_with_mcp_runtime_context(
         mcp_runtime_context,
         true,
     )?;
-    let stdin_prompt = add_prompt_args(&mut cmd, plugin_dir, prompt, agent, resume_session, false);
+    let stdin_prompt =
+        add_prompt_args(&mut cmd, plugin_dir, prompt, agent, None, resume_session, false);
+    configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
+    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    agent: Option<&str>,
+    agent_profile: Option<&str>,
+    resume_session: Option<&str>,
+    working_directory: &Path,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+) -> Result<SpawnableCommand, String> {
+    let mut cmd = build_base_cli_command_inner_with_runtime_context_and_profile(
+        cli_path,
+        plugin_dir,
+        agent,
+        agent_profile,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+        true,
+    )?;
+    let stdin_prompt = add_prompt_args(
+        &mut cmd,
+        plugin_dir,
+        prompt,
+        agent,
+        agent_profile,
+        resume_session,
+        false,
+    );
     configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
     Ok(SpawnableCommand::new(cmd, stdin_prompt))
 }
@@ -1615,7 +1784,47 @@ pub fn build_spawnable_command_with_mcp_runtime_context_for_test(
         mcp_runtime_context,
         false,
     )?;
-    let stdin_prompt = add_prompt_args(&mut cmd, plugin_dir, prompt, agent, resume_session, false);
+    let stdin_prompt =
+        add_prompt_args(&mut cmd, plugin_dir, prompt, agent, None, resume_session, false);
+    configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
+    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub fn build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    agent: Option<&str>,
+    agent_profile: Option<&str>,
+    resume_session: Option<&str>,
+    working_directory: &Path,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+) -> Result<SpawnableCommand, String> {
+    let mut cmd = build_base_cli_command_inner_with_runtime_context_and_profile(
+        cli_path,
+        plugin_dir,
+        agent,
+        agent_profile,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+        false,
+    )?;
+    let stdin_prompt = add_prompt_args(
+        &mut cmd,
+        plugin_dir,
+        prompt,
+        agent,
+        agent_profile,
+        resume_session,
+        false,
+    );
     configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
     Ok(SpawnableCommand::new(cmd, stdin_prompt))
 }
@@ -1666,10 +1875,40 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
-    let mut cmd = build_base_cli_command_inner_with_runtime_context(
+    build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
+        cli_path,
+        plugin_dir,
+        prompt,
+        agent,
+        None,
+        resume_session,
+        working_directory,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    agent: Option<&str>,
+    agent_profile: Option<&str>,
+    resume_session: Option<&str>,
+    working_directory: &Path,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+) -> Result<SpawnableCommand, String> {
+    let mut cmd = build_base_cli_command_inner_with_runtime_context_and_profile(
         cli_path,
         plugin_dir,
         agent,
+        agent_profile,
         is_external_mcp,
         effort_override,
         model_override,
@@ -1677,7 +1916,8 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context(
         true,
     )?;
     // interactive=true: no -p flag; prompt stored in stdin_prompt for spawn_interactive()
-    let stdin_prompt = add_prompt_args(&mut cmd, plugin_dir, prompt, agent, resume_session, true);
+    let stdin_prompt =
+        add_prompt_args(&mut cmd, plugin_dir, prompt, agent, agent_profile, resume_session, true);
     configure_spawn(&mut cmd, working_directory, true);
     Ok(SpawnableCommand::new(cmd, stdin_prompt))
 }
@@ -1722,17 +1962,49 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_for_test(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
-    let mut cmd = build_base_cli_command_inner_with_runtime_context(
+    build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_for_test(
+        cli_path,
+        plugin_dir,
+        prompt,
+        agent,
+        None,
+        resume_session,
+        working_directory,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_for_test(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    agent: Option<&str>,
+    agent_profile: Option<&str>,
+    resume_session: Option<&str>,
+    working_directory: &Path,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+) -> Result<SpawnableCommand, String> {
+    let mut cmd = build_base_cli_command_inner_with_runtime_context_and_profile(
         cli_path,
         plugin_dir,
         agent,
+        agent_profile,
         is_external_mcp,
         effort_override,
         model_override,
         mcp_runtime_context,
         false,
     )?;
-    let stdin_prompt = add_prompt_args(&mut cmd, plugin_dir, prompt, agent, resume_session, true);
+    let stdin_prompt =
+        add_prompt_args(&mut cmd, plugin_dir, prompt, agent, agent_profile, resume_session, true);
     configure_spawn(&mut cmd, working_directory, true);
     Ok(SpawnableCommand::new(cmd, stdin_prompt))
 }

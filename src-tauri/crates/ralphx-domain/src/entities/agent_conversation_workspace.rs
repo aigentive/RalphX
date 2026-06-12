@@ -14,6 +14,7 @@ use crate::entities::{
 pub enum AgentConversationWorkspaceMode {
     Chat,
     Edit,
+    Plan,
     Ideation,
 }
 
@@ -22,6 +23,7 @@ impl std::fmt::Display for AgentConversationWorkspaceMode {
         match self {
             AgentConversationWorkspaceMode::Chat => write!(f, "chat"),
             AgentConversationWorkspaceMode::Edit => write!(f, "edit"),
+            AgentConversationWorkspaceMode::Plan => write!(f, "plan"),
             AgentConversationWorkspaceMode::Ideation => write!(f, "ideation"),
         }
     }
@@ -34,6 +36,7 @@ impl FromStr for AgentConversationWorkspaceMode {
         match value {
             "chat" => Ok(Self::Chat),
             "edit" => Ok(Self::Edit),
+            "plan" => Ok(Self::Plan),
             "ideation" => Ok(Self::Ideation),
             _ => Err(format!(
                 "unknown agent conversation workspace mode: '{value}'"

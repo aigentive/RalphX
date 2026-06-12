@@ -71,6 +71,42 @@ describe("IdeationWidget", () => {
       expect(screen.getByText("Preferred default for automatic PR creation?")).toBeInTheDocument();
       expect(screen.getByText("Question")).toBeInTheDocument();
     });
+
+    it("renders completed question answers from the tool result payload", () => {
+      const toolCall = makeToolCall("ask_user_question", {
+        result: mcpWrap({
+          answers: [
+            {
+              id: "scope",
+              request_id: "req-1",
+              header: "Focus area",
+              question: "Which area should we focus on?",
+              options: [{ label: "Backend", value: "backend" }],
+              selected_options: ["backend"],
+              text: null,
+              skipped: false,
+            },
+            {
+              id: "deadline",
+              request_id: "req-2",
+              question: "Any deadline?",
+              options: [],
+              selected_options: [],
+              text: null,
+              skipped: true,
+            },
+          ],
+        }),
+      });
+
+      render(<IdeationWidget toolCall={toolCall} />);
+
+      expect(screen.getByText("2 questions answered")).toBeInTheDocument();
+      expect(screen.getByText("Focus area: Which area should we focus on?")).toBeInTheDocument();
+      expect(screen.getByText("Backend")).toBeInTheDocument();
+      expect(screen.getByText("Any deadline?")).toBeInTheDocument();
+      expect(screen.getByText("Skipped")).toBeInTheDocument();
+    });
   });
 
   describe("GetProposal (get_proposal)", () => {
