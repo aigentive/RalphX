@@ -98,6 +98,10 @@ coverage:
           - "!src-tauri/src/commands/release_notes_commands.rs"
           - "!src-tauri/src/infrastructure/sqlite/sqlite_atlassian_integration_settings_repo.rs"
 
+parsers:
+  lcov:
+    partials_as_hits: true
+
 ignore:
   # Rust integration tests, sidecar test modules, and shared test support.
   - "src-tauri/tests/**"

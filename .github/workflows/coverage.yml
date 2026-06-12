@@ -758,7 +758,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
           disable_search: true
-          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info
+          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-lib
           name: rust-lib
           fail_ci_if_error: true
@@ -770,7 +770,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
           disable_search: true
-          files: coverage-artifacts/coverage-rust-ipc/lcov.info
+          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-ipc
           name: rust-ipc
           fail_ci_if_error: true
