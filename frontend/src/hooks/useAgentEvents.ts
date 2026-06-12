@@ -8,11 +8,11 @@
  */
 
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { chatApi } from "@/api/chat";
 import { useEventBus } from "@/providers/EventProvider";
-import type { ChatMessageResponse } from "@/api/chat";
+import type { AgentConversationWorkspaceMode, ChatMessageResponse } from "@/api/chat";
 import {
   mergeConversationProviderMetadata,
   type ChatConversation,
@@ -65,6 +65,94 @@ function updateConversationHistoryConversation(
       conversation: updateConversation(page.conversation),
     })),
   };
+}
+
+function workspaceChangedMode(payload: unknown): AgentConversationWorkspaceMode | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const mode = (payload as { mode?: unknown }).mode;
+  return mode === "chat" || mode === "edit" || mode === "plan" || mode === "ideation"
+    ? mode
+    : null;
+}
+
+function patchConversationMode<T>(
+  value: T | undefined,
+  conversationId: string,
+  mode: AgentConversationWorkspaceMode
+): T | undefined {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.id !== conversationId || !("agentMode" in record)) {
+    return value;
+  }
+  if (record.agentMode === mode) {
+    return value;
+  }
+  return { ...record, agentMode: mode } as T;
+}
+
+function patchConversationModeInListPages<T>(
+  value: T | undefined,
+  conversationId: string,
+  mode: AgentConversationWorkspaceMode
+): T | undefined {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const record = value as { pages?: unknown };
+  if (!Array.isArray(record.pages)) {
+    return value;
+  }
+
+  let changed = false;
+  const pages = record.pages.map((page) => {
+    if (!page || typeof page !== "object") {
+      return page;
+    }
+    const pageRecord = page as { conversations?: unknown };
+    if (!Array.isArray(pageRecord.conversations)) {
+      return page;
+    }
+    let pageChanged = false;
+    const conversations = pageRecord.conversations.map((conversation) => {
+      const patched = patchConversationMode(
+        conversation,
+        conversationId,
+        mode
+      );
+      pageChanged ||= patched !== conversation;
+      return patched;
+    });
+    changed ||= pageChanged;
+    return pageChanged ? { ...pageRecord, conversations } : page;
+  });
+
+  return changed ? ({ ...(value as object), pages } as T) : value;
+}
+
+function patchWorkspaceChangedModeCaches(
+  queryClient: QueryClient,
+  conversationId: string,
+  mode: AgentConversationWorkspaceMode | null
+) {
+  if (!mode) {
+    return;
+  }
+  queryClient.setQueryData<ChatConversation | null | undefined>(
+    chatKeys.conversationSummary(conversationId),
+    (current) => patchConversationMode(current, conversationId, mode)
+  );
+  queryClient.setQueriesData<unknown>(
+    {
+      predicate: (query) =>
+        Array.isArray(query.queryKey) && query.queryKey[0] === "agents",
+    },
+    (current: unknown) => patchConversationModeInListPages(current, conversationId, mode)
+  );
 }
 
 function shouldRouteRunStartSelectionToCallerStoreKey(
@@ -643,7 +731,13 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
       bus.subscribe<unknown>("agent:workspace_changed", (payload) => {
         const conversationId = workspaceChangedConversationId(payload);
         if (conversationId) {
+          patchWorkspaceChangedModeCaches(
+            queryClient,
+            conversationId,
+            workspaceChangedMode(payload)
+          );
           invalidateAgentWorkspacePublishQueries(conversationId);
+          invalidateConversationDataQueries(queryClient, conversationId);
           queryClient.invalidateQueries({
             queryKey: ["agents", "sidebar-conversations"],
           });

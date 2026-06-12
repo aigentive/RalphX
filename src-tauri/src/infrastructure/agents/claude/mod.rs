@@ -1698,6 +1698,44 @@ pub fn build_spawnable_command_with_mcp_runtime_context(
     Ok(SpawnableCommand::new(cmd, stdin_prompt))
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    agent: Option<&str>,
+    agent_profile: Option<&str>,
+    resume_session: Option<&str>,
+    working_directory: &Path,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+) -> Result<SpawnableCommand, String> {
+    let mut cmd = build_base_cli_command_inner_with_runtime_context_and_profile(
+        cli_path,
+        plugin_dir,
+        agent,
+        agent_profile,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+        true,
+    )?;
+    let stdin_prompt = add_prompt_args(
+        &mut cmd,
+        plugin_dir,
+        prompt,
+        agent,
+        agent_profile,
+        resume_session,
+        false,
+    );
+    configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
+    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+}
+
 #[cfg(test)]
 pub fn build_spawnable_command_for_test(
     cli_path: &Path,
@@ -1747,6 +1785,45 @@ pub fn build_spawnable_command_with_mcp_runtime_context_for_test(
     )?;
     let stdin_prompt =
         add_prompt_args(&mut cmd, plugin_dir, prompt, agent, None, resume_session, false);
+    configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
+    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub fn build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    agent: Option<&str>,
+    agent_profile: Option<&str>,
+    resume_session: Option<&str>,
+    working_directory: &Path,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+) -> Result<SpawnableCommand, String> {
+    let mut cmd = build_base_cli_command_inner_with_runtime_context_and_profile(
+        cli_path,
+        plugin_dir,
+        agent,
+        agent_profile,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+        false,
+    )?;
+    let stdin_prompt = add_prompt_args(
+        &mut cmd,
+        plugin_dir,
+        prompt,
+        agent,
+        agent_profile,
+        resume_session,
+        false,
+    );
     configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
     Ok(SpawnableCommand::new(cmd, stdin_prompt))
 }

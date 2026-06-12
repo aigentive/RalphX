@@ -297,6 +297,7 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         Path::new("/tmp"),
         Some("verification"), // → ralphx-plan-verifier agent
         Some("proj-1"),
+        &[],
         false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),

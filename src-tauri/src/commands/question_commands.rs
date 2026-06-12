@@ -3,14 +3,14 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Runtime, State};
 
-use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::chat_service::{ChatService, SendMessageOptions};
+use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::{PendingQuestionInfo, QuestionAnswer};
 use crate::commands::unified_chat_commands::{
-    create_chat_service, switch_agent_conversation_mode_for_state_allowing_running,
-    SwitchAgentConversationModeInput,
+    create_chat_service, ensure_plan_workspace_planning_session_link_for_send,
+    switch_agent_conversation_mode_for_state_allowing_running, SwitchAgentConversationModeInput,
 };
 use crate::commands::ExecutionState;
 use crate::domain::entities::{ChatContextType, ChatConversationId};
@@ -98,11 +98,20 @@ fn build_plan_mode_proposal_continuation(reason: Option<&str>) -> String {
     }
 }
 
-async fn handle_accepted_plan_mode_proposal(
+fn plan_mode_proposal_continuation_metadata() -> String {
+    serde_json::json!({
+        "source": "accepted_plan_mode_proposal",
+        "resume_in_place": true,
+        "persist_hidden_marker": true,
+    })
+    .to_string()
+}
+
+async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
     team_service: Arc<crate::application::TeamService>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
     proposal: AcceptedPlanModeProposal,
     delivered_to_waiting_agent: bool,
 ) -> Result<(), String> {
@@ -128,10 +137,14 @@ async fn handle_accepted_plan_mode_proposal(
         state,
     )
     .await?;
+    ensure_plan_workspace_planning_session_link_for_send(state, &conversation_id).await?;
 
     let _ = app.emit(
         "agent:workspace_changed",
-        serde_json::json!({ "conversation_id": conversation_id.as_str() }),
+        serde_json::json!({
+            "conversation_id": conversation_id.as_str(),
+            "mode": "plan",
+        }),
     );
 
     let continuation = build_plan_mode_proposal_continuation(proposal.reason.as_deref());
@@ -140,21 +153,9 @@ async fn handle_accepted_plan_mode_proposal(
             ChatContextType::Project,
             conversation_id.as_str(),
             continuation,
+            Some(plan_mode_proposal_continuation_metadata()),
             None,
             None,
-            None,
-        );
-        let _ = app.emit(
-            "agent:message_queued",
-            serde_json::json!({
-                "message_id": queued.id,
-                "content": queued.content,
-                "context_type": ChatContextType::Project.to_string(),
-                "context_id": conversation_id.as_str(),
-                "conversation_id": conversation_id.as_str(),
-                "created_at": queued.created_at,
-                "attachment_ids": [],
-            }),
         );
 
         let ipr_key = InteractiveProcessKey::new(
@@ -168,8 +169,9 @@ async fn handle_accepted_plan_mode_proposal(
             .is_some();
         tracing::info!(
             conversation_id = %conversation_id,
+            queued_message_id = %queued.id,
             removed_interactive_process = removed,
-            "Accepted Plan-mode proposal queued continuation and invalidated current interactive process"
+            "Accepted Plan-mode proposal queued hidden continuation and invalidated current interactive process"
         );
         return Ok(());
     }
@@ -195,11 +197,11 @@ async fn handle_accepted_plan_mode_proposal(
 /// Called by the frontend AskUserQuestionCard when the user submits their answer.
 /// Signals the waiting MCP long-poll request with the answer.
 #[tauri::command]
-pub async fn resolve_user_question(
+pub async fn resolve_user_question<R: Runtime + 'static>(
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
     team_service: State<'_, Arc<crate::application::TeamService>>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
     args: ResolveQuestionArgs,
 ) -> Result<ResolveQuestionResponse, String> {
     let request_id = args.request_id;

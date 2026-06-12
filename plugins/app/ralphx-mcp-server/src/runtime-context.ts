@@ -3,6 +3,7 @@ type RuntimeContextKey =
   | "taskId"
   | "projectId"
   | "workingDirectory"
+  | "filesystemReadRoots"
   | "contextType"
   | "contextId"
   | "parentConversationId"
@@ -37,20 +38,30 @@ export function parseCliOptionFromArgs(
   args: readonly string[],
   optionName: string
 ): string | undefined {
+  return parseCliOptionsFromArgs(args, optionName)[0];
+}
+
+export function parseCliOptionsFromArgs(
+  args: readonly string[],
+  optionName: string
+): string[] {
   const inlinePrefix = `--${optionName}=`;
   const pairToken = `--${optionName}`;
+  const values: string[] = [];
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg.startsWith(inlinePrefix)) {
-      return arg.slice(inlinePrefix.length);
+      values.push(arg.slice(inlinePrefix.length));
+      continue;
     }
     if (arg === pairToken && index + 1 < args.length) {
-      return args[index + 1];
+      values.push(args[index + 1]);
+      index += 1;
     }
   }
 
-  return undefined;
+  return values;
 }
 
 export function hydrateRalphxRuntimeEnvFromCli(
@@ -70,6 +81,21 @@ export function hydrateRalphxRuntimeEnvFromCli(
     const envValue = env[mapping.envName];
     if (envValue && envValue.length > 0) {
       context[mapping.key] = envValue;
+    }
+  }
+
+  const cliFilesystemReadRoots = parseCliOptionsFromArgs(
+    args,
+    "filesystem-read-root"
+  ).filter((value) => value.length > 0);
+  if (cliFilesystemReadRoots.length > 0) {
+    const serialized = JSON.stringify(cliFilesystemReadRoots);
+    env.RALPHX_FILESYSTEM_READ_ROOTS = serialized;
+    context.filesystemReadRoots = serialized;
+  } else {
+    const envValue = env.RALPHX_FILESYSTEM_READ_ROOTS;
+    if (envValue && envValue.length > 0) {
+      context.filesystemReadRoots = envValue;
     }
   }
 

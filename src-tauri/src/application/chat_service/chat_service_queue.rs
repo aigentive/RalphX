@@ -21,7 +21,8 @@ use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    AgentRun, AgentRunId, ChatContextType, ChatConversationId, InternalStatus, MessageRole, TaskId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
+    ChatContextType, ChatConversationId, InternalStatus, MessageRole, TaskId,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatMessageRepository,
@@ -174,6 +175,82 @@ fn build_queued_agent_run(
     run.harness = Some(harness);
     run.provider_session_id = Some(provider_session_id.to_string());
     run
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct QueuedAgentIdentity {
+    agent_name: Option<&'static str>,
+    agent_profile: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct QueuedProjectAgentContext {
+    identity: QueuedAgentIdentity,
+    workspace: Option<AgentConversationWorkspace>,
+}
+
+fn queued_agent_identity_for_mode(
+    mode: Option<AgentConversationWorkspaceMode>,
+) -> QueuedAgentIdentity {
+    let Some(mode) = mode else {
+        return QueuedAgentIdentity::default();
+    };
+
+    QueuedAgentIdentity {
+        agent_name: Some(super::agent_name_for_conversation_mode(mode)),
+        agent_profile: super::agent_profile_for_conversation_mode(mode),
+    }
+}
+
+async fn resolve_queued_project_agent_context<R: Runtime + 'static>(
+    app_handle: Option<&AppHandle<R>>,
+    context_type: ChatContextType,
+    conversation_id: &ChatConversationId,
+) -> QueuedProjectAgentContext {
+    if context_type != ChatContextType::Project {
+        return QueuedProjectAgentContext::default();
+    }
+    let Some(handle) = app_handle else {
+        return QueuedProjectAgentContext::default();
+    };
+
+    let app_state = handle.state::<AppState>();
+    let conversation_mode = match app_state
+        .chat_conversation_repo
+        .get_by_id(conversation_id)
+        .await
+    {
+        Ok(conversation) => conversation.and_then(|conversation| conversation.agent_mode),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                %conversation_id,
+                "[QUEUE] Failed to resolve queued conversation mode"
+            );
+            None
+        }
+    };
+    let workspace = match app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+    {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                %conversation_id,
+                "[QUEUE] Failed to resolve queued workspace mode"
+            );
+            None
+        }
+    };
+    let mode = conversation_mode.or_else(|| workspace.as_ref().map(|workspace| workspace.mode));
+
+    QueuedProjectAgentContext {
+        identity: queued_agent_identity_for_mode(mode),
+        workspace,
+    }
 }
 
 async fn fail_queued_agent_run(
@@ -367,6 +444,12 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     },
                 );
             }
+            let queued_agent_context = resolve_queued_project_agent_context(
+                app_handle.as_ref(),
+                context_type,
+                &conversation_id,
+            )
+            .await;
 
             // Emit run_started for the queued message (so frontend shows activity)
             let queued_run = build_queued_agent_run(
@@ -403,6 +486,8 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 queued_run_id = %queued_run_id,
                 run_chain_id = run_chain_id.unwrap_or("none"),
                 parent_run_id = parent_run_id.unwrap_or("none"),
+                agent_name = queued_agent_context.identity.agent_name.unwrap_or("auto"),
+                agent_profile = queued_agent_context.identity.agent_profile.unwrap_or("none"),
                 "[QUEUE] Continuation run"
             );
             if let Some(ref handle) = app_handle {
@@ -617,6 +702,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     &runtime_content,
                     &queued_msg.composer_artifact_references,
                 );
+            let runtime_content = super::plan_mode_runtime_message(
+                runtime_content,
+                queued_agent_context.workspace.as_ref(),
+            );
 
             // Build and spawn resume command
             let provider_spawnable = match chat_service_context::build_resume_command_for_harness(
@@ -626,9 +715,12 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 context_type,
                 context_id,
                 &runtime_content,
+                queued_agent_context.identity.agent_name,
+                queued_agent_context.identity.agent_profile,
                 working_directory,
                 session_id,
                 project_id,
+                &[],
                 if context_type == ChatContextType::Project {
                     Some(conversation_id.as_str())
                 } else {
@@ -928,6 +1020,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
 mod tests {
     use super::*;
     use crate::domain::services::{ComposerProjectReference, ComposerProjectReferenceKind};
+    use crate::infrastructure::agents::claude::agent_names;
 
     #[test]
     fn queued_persisted_metadata_embeds_composer_references() {
@@ -981,5 +1074,16 @@ mod tests {
         assert!(
             hidden_resume_in_place_marker_metadata(Some(r#"{"resume_in_place":true}"#)).is_none()
         );
+    }
+
+    #[test]
+    fn queued_agent_identity_for_plan_uses_ideation_agent_plan_profile() {
+        let identity = queued_agent_identity_for_mode(Some(AgentConversationWorkspaceMode::Plan));
+
+        assert_eq!(
+            identity.agent_name,
+            Some(agent_names::AGENT_ORCHESTRATOR_IDEATION)
+        );
+        assert_eq!(identity.agent_profile, Some("plan"));
     }
 }

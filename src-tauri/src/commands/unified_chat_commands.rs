@@ -569,7 +569,7 @@ async fn ensure_plan_workspace_planning_session_link(
     Ok(true)
 }
 
-async fn ensure_plan_workspace_planning_session_link_for_send(
+pub(crate) async fn ensure_plan_workspace_planning_session_link_for_send(
     state: &AppState,
     conversation_id: &ChatConversationId,
 ) -> Result<bool, String> {

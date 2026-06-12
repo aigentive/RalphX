@@ -377,12 +377,14 @@ fn test_create_mcp_config_injects_app_owned_trace_dir() {
 fn test_create_mcp_config_injects_runtime_context_args() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
     let workspace_dir = plugin_dir.join("workspace");
+    let project_root = plugin_dir.join("project-root");
     let runtime_context = McpRuntimeContext {
         context_type: Some("project".to_string()),
         context_id: Some("project-123".to_string()),
         task_id: None,
         project_id: Some("project-123".to_string()),
         working_directory: Some(workspace_dir.clone()),
+        filesystem_read_roots: vec![project_root.clone()],
         lead_session_id: Some("lead-456".to_string()),
         parent_conversation_id: Some("conversation-789".to_string()),
     };
@@ -421,6 +423,14 @@ fn test_create_mcp_config_injects_runtime_context_args() {
     );
     assert!(
         args.contains(&workspace_dir.to_string_lossy().into_owned()),
+        "args: {args:?}"
+    );
+    assert!(
+        args.contains(&"--filesystem-read-root".to_string()),
+        "args: {args:?}"
+    );
+    assert!(
+        args.contains(&project_root.to_string_lossy().into_owned()),
         "args: {args:?}"
     );
     assert!(

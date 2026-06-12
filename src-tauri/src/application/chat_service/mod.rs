@@ -1955,6 +1955,7 @@ impl<R: Runtime> AppChatService<R> {
             working_directory,
             entity_status,
             project_id,
+            &[],
             self.team_mode.load(Ordering::Relaxed),
             Arc::clone(&self.chat_attachment_repo),
             Arc::clone(&self.artifact_repo),
@@ -2048,6 +2049,12 @@ impl<R: Runtime> AppChatService<R> {
         let agent_workspace_prompt_context = self
             .agent_workspace_prompt_context_for_send(context_type, conversation)
             .await?;
+        let filesystem_read_roots = chat_service_context::resolve_mcp_filesystem_read_roots(
+            project_id,
+            Arc::clone(&self.project_repo),
+            working_directory,
+        )
+        .await;
         let build_plan_started = Instant::now();
         let launch_plan = chat_service_context::build_launch_plan_for_harness(
             effective_harness,
@@ -2062,6 +2069,7 @@ impl<R: Runtime> AppChatService<R> {
             working_directory,
             entity_status,
             project_id,
+            &filesystem_read_roots,
             runtime_team_mode,
             Arc::clone(&self.chat_attachment_repo),
             Arc::clone(&self.artifact_repo),

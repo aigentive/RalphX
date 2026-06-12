@@ -705,6 +705,7 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         task_id: None,
         project_id: Some("project-456".to_string()),
         working_directory: Some(root.join("workspace")),
+        filesystem_read_roots: vec![root.join("project-root")],
         lead_session_id: Some("lead-789".to_string()),
         parent_conversation_id: Some("conversation-abc".to_string()),
     };
@@ -757,6 +758,14 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
     assert!(
         args_override.contains("--project-id"),
         "expected project-id CLI arg in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("--filesystem-read-root"),
+        "expected filesystem read-root CLI arg in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("project-root"),
+        "expected filesystem read-root value in overrides: {args_override}"
     );
     assert!(
         args_override.contains("project-456"),
@@ -1026,6 +1035,7 @@ harnesses:
         task_id: None,
         project_id: Some("project-123".to_string()),
         working_directory: Some(root.join("workspace")),
+        filesystem_read_roots: Vec::new(),
         lead_session_id: None,
         parent_conversation_id: Some("conversation 456".to_string()),
     };
