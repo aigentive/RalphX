@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
 
+import { MessageReferences } from "./MessageReferences";
 import {
   parseComposerReferencesFromMetadata,
   serializeComposerReferencesMetadata,
@@ -118,5 +120,84 @@ describe("parseComposerReferencesFromMetadata", () => {
         ],
       }),
     ).toBeNull();
+  });
+});
+
+describe("MessageReferences", () => {
+  it("renders artifact reference status, version, and fallback labels", () => {
+    render(
+      <MessageReferences
+        projectReferences={[]}
+        integrationReferences={[]}
+        artifactReferences={[
+          {
+            kind: "plan",
+            artifactId: "plan-approved",
+            title: "Implementation Plan",
+            sessionId: "session-1",
+            version: 2,
+            status: "approved",
+          },
+          {
+            kind: "artifact",
+            artifactId: "accepted-artifact-1234567890",
+            sessionId: "session-2",
+            status: "accepted",
+          },
+          {
+            kind: "artifact",
+            artifactId: "draft-id",
+            sessionId: "session-3",
+            status: "needs_review",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByTestId("message-reference-artifact:plan:plan-approved")).toBeTruthy();
+    expect(screen.getByText("Implementation Plan")).toBeTruthy();
+    expect(screen.getByText("Approved · v2")).toBeTruthy();
+    expect(screen.getByText("accepted...")).toBeTruthy();
+    expect(screen.getByText("Accepted")).toBeTruthy();
+    expect(screen.getByText("draft-id")).toBeTruthy();
+    expect(screen.getByText("Draft")).toBeTruthy();
+  });
+
+  it("renders project and integration reference chips", () => {
+    render(
+      <MessageReferences
+        projectReferences={[
+          { path: "src/main.ts", kind: "file" },
+          { path: "docs/specs", kind: "directory" },
+        ]}
+        integrationReferences={[
+          {
+            provider: "atlassian",
+            kind: "jira",
+            id: "10001",
+            key: "RX-42",
+            title: "Fix composer references",
+            url: "https://example.atlassian.net/browse/RX-42",
+          },
+          {
+            provider: "atlassian",
+            kind: "confluence",
+            id: "20002",
+            title: "Implementation Notes",
+          },
+        ]}
+        artifactReferences={[]}
+      />,
+    );
+
+    expect(screen.getByTestId("message-reference-project:src/main.ts")).toBeTruthy();
+    expect(screen.getByTestId("message-reference-project:docs/specs")).toBeTruthy();
+    expect(screen.getByTestId("message-reference-integration:jira:10001")).toHaveAttribute(
+      "href",
+      "https://example.atlassian.net/browse/RX-42",
+    );
+    expect(screen.getByText("RX-42")).toBeTruthy();
+    expect(screen.getByText("Fix composer references")).toBeTruthy();
+    expect(screen.getByText("Implementation Notes")).toBeTruthy();
   });
 });

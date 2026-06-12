@@ -63,6 +63,37 @@ describe("ListDirWidget", () => {
     expect(screen.getByText(/outside the allowed filesystem roots/)).toBeInTheDocument();
   });
 
+  it("renders pending listings from base_path arguments", () => {
+    render(
+      <ListDirWidget
+        toolCall={makeListDirCall({
+          arguments: { base_path: "src-tauri" },
+          result: undefined,
+        })}
+      />,
+    );
+
+    expect(screen.getByText("src-tauri")).toBeInTheDocument();
+    expect(screen.getByText("Listing...")).toBeInTheDocument();
+  });
+
+  it("renders unclassified entries with the default directory label", () => {
+    render(
+      <ListDirWidget
+        toolCall={makeListDirCall({
+          arguments: null,
+          result: {
+            content: [{ type: "text", text: "README.md" }],
+            structured_content: null,
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByText("directory")).toBeInTheDocument();
+    expect(screen.getByText("README.md")).toBeInTheDocument();
+  });
+
   it("routes prefixed fs_list_dir through ToolCallIndicator instead of generic Calling", async () => {
     render(<ToolCallIndicator toolCall={makeListDirCall()} />);
 
