@@ -1,13 +1,17 @@
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
+use crate::application::AppState;
 use crate::domain::agents::{
     AgentHarnessKind, AgentProviderCliManagementMode, AgentProviderSettings,
 };
+use crate::domain::entities::{AgentRun, ChatConversationId};
+use crate::domain::services::RunningAgentKey;
 
 use super::{
-    compare_version_strings, managed_cli_status_response, managed_codex_bin_dir,
-    managed_codex_install_plan, normalize_codex_release_tag, parse_codex_version,
+    compare_version_strings, install_or_update_managed_provider_cli_inner,
+    managed_cli_status_response, managed_codex_bin_dir, managed_codex_install_plan,
+    managed_provider_has_active_runtime, normalize_codex_release_tag, parse_codex_version,
     path_with_prepended_dir, unsupported_claude_observation, ManagedProviderCliObservation,
 };
 
@@ -38,6 +42,7 @@ fn codex_rx_managed_missing_cli_suggests_install() {
     let status = managed_cli_status_response(
         codex_settings(AgentProviderCliManagementMode::RxManaged),
         codex_observation(false, None, Some("0.137.0")),
+        false,
     );
 
     assert_eq!(status.provider, "codex");
@@ -52,6 +57,7 @@ fn codex_rx_managed_stale_cli_suggests_update() {
     let status = managed_cli_status_response(
         codex_settings(AgentProviderCliManagementMode::RxManaged),
         codex_observation(true, Some("0.136.0"), Some("0.137.0")),
+        false,
     );
 
     assert_eq!(status.action, "update");
@@ -65,6 +71,7 @@ fn codex_user_managed_policy_suppresses_managed_actions() {
     let status = managed_cli_status_response(
         codex_settings(AgentProviderCliManagementMode::UserManaged),
         codex_observation(true, Some("0.136.0"), Some("0.137.0")),
+        false,
     );
 
     assert_eq!(status.action, "none");
@@ -75,13 +82,59 @@ fn codex_user_managed_policy_suppresses_managed_actions() {
 #[test]
 fn claude_managed_installs_are_reported_as_unsupported() {
     let settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
-    let status = managed_cli_status_response(settings, unsupported_claude_observation());
+    let status = managed_cli_status_response(settings, unsupported_claude_observation(), false);
 
     assert_eq!(status.provider, "claude");
     assert!(!status.supported);
     assert_eq!(status.action, "unsupported");
     assert!(status.status.contains("unavailable"));
     assert!(status.error.unwrap().contains("install prefix"));
+}
+
+#[test]
+fn codex_rx_managed_active_cli_suppresses_update_action() {
+    let status = managed_cli_status_response(
+        codex_settings(AgentProviderCliManagementMode::RxManaged),
+        codex_observation(true, Some("0.136.0"), Some("0.137.0")),
+        true,
+    );
+
+    assert_eq!(status.action, "none");
+    assert!(status.update_available);
+    assert!(status.status.contains("currently in use"));
+}
+
+#[tokio::test]
+async fn active_runtime_detection_matches_provider_from_agent_run() {
+    let state = state_with_active_run(AgentHarnessKind::Codex).await;
+
+    assert!(
+        managed_provider_has_active_runtime(&state, AgentHarnessKind::Codex)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !managed_provider_has_active_runtime(&state, AgentHarnessKind::Claude)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn install_or_update_rejects_active_managed_provider() {
+    let state = state_with_active_run(AgentHarnessKind::Codex).await;
+    let settings = codex_settings(AgentProviderCliManagementMode::RxManaged);
+    state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .unwrap();
+
+    let error = install_or_update_managed_provider_cli_inner(AgentHarnessKind::Codex, &state)
+        .await
+        .expect_err("active Codex runtime should block managed updates");
+
+    assert!(error.contains("currently in use"));
 }
 
 #[test]
@@ -158,4 +211,25 @@ fn path_with_prepended_dir_preserves_existing_path_order() {
     assert_eq!(entries[0], PathBuf::from("/managed/bin"));
     assert_eq!(entries[1], PathBuf::from("/usr/bin"));
     assert_eq!(entries[2], PathBuf::from("/bin"));
+}
+
+async fn state_with_active_run(provider: AgentHarnessKind) -> AppState {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let mut run = AgentRun::new(conversation_id);
+    run.harness = Some(provider);
+    let run_id = run.id;
+    state.agent_run_repo.create(run).await.unwrap();
+    state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", provider.to_string()),
+            0,
+            conversation_id.as_str(),
+            run_id.as_str(),
+            None,
+            None,
+        )
+        .await;
+    state
 }

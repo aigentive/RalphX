@@ -20,6 +20,7 @@ use crate::domain::agents::{
     AgentHarnessKind, AgentProviderCliManagementMode, AgentProviderSettings,
     STANDARD_AGENT_HARNESSES,
 };
+use crate::domain::entities::{AgentRunId, ChatConversationId};
 use crate::infrastructure::tool_paths::{agent_subprocess_env_path, resolve_shell_cli_path};
 use crate::utils::runtime_log_paths::{
     managed_codex_bin_dir, managed_codex_binary_path, managed_codex_home_dir,
@@ -121,11 +122,15 @@ fn settings_for_provider(
 fn managed_cli_action(
     settings: &AgentProviderSettings,
     observation: &ManagedProviderCliObservation,
+    provider_active: bool,
 ) -> &'static str {
     if !observation.supported {
         return "unsupported";
     }
     if settings.cli_management_mode != AgentProviderCliManagementMode::RxManaged {
+        return "none";
+    }
+    if provider_active {
         return "none";
     }
     if !observation.installed {
@@ -151,6 +156,7 @@ fn managed_cli_status_text(
     provider: AgentHarnessKind,
     settings: &AgentProviderSettings,
     observation: &ManagedProviderCliObservation,
+    provider_active: bool,
 ) -> String {
     if provider == AgentHarnessKind::Claude && !observation.supported {
         return "RX-managed Claude installs are unavailable for this installer path.".to_string();
@@ -160,6 +166,11 @@ fn managed_cli_status_text(
     }
     if settings.cli_management_mode != AgentProviderCliManagementMode::RxManaged {
         return format!("{provider} CLI is user-managed. RX will not install or update it.");
+    }
+    if provider_active {
+        return format!(
+            "RX-managed {provider} is currently in use. Install and update actions will be available after active {provider} runs finish."
+        );
     }
     if !observation.installed {
         return format!("RX-managed {provider} is not installed.");
@@ -178,10 +189,12 @@ fn managed_cli_status_text(
 fn managed_cli_status_response(
     settings: AgentProviderSettings,
     observation: ManagedProviderCliObservation,
+    provider_active: bool,
 ) -> ManagedProviderCliStatusResponse {
-    let action = managed_cli_action(&settings, &observation);
+    let action = managed_cli_action(&settings, &observation, provider_active);
     let update_available = managed_cli_update_available(&observation);
-    let status = managed_cli_status_text(settings.provider, &settings, &observation);
+    let status =
+        managed_cli_status_text(settings.provider, &settings, &observation, provider_active);
     ManagedProviderCliStatusResponse {
         provider: settings.provider.to_string(),
         cli_management_mode: settings.cli_management_mode.to_string(),
@@ -264,9 +277,10 @@ async fn managed_codex_observation(include_latest_version: bool) -> ManagedProvi
 }
 
 async fn managed_provider_cli_status_for_settings(
+    state: &AppState,
     settings: AgentProviderSettings,
     include_latest_version: bool,
-) -> ManagedProviderCliStatusResponse {
+) -> Result<ManagedProviderCliStatusResponse, String> {
     let observation = match settings.provider {
         AgentHarnessKind::Codex => {
             managed_codex_observation(
@@ -277,7 +291,12 @@ async fn managed_provider_cli_status_for_settings(
         }
         AgentHarnessKind::Claude => unsupported_claude_observation(),
     };
-    managed_cli_status_response(settings, observation)
+    let provider_active = managed_provider_has_active_runtime(state, settings.provider).await?;
+    Ok(managed_cli_status_response(
+        settings,
+        observation,
+        provider_active,
+    ))
 }
 
 async fn read_managed_provider_cli_statuses(
@@ -293,13 +312,86 @@ async fn read_managed_provider_cli_statuses(
     for provider in STANDARD_AGENT_HARNESSES {
         providers.push(
             managed_provider_cli_status_for_settings(
+                state,
                 settings_for_provider(&stored, provider),
                 include_latest_version,
             )
-            .await,
+            .await?,
         );
     }
     Ok(ManagedProviderCliStatusesResponse { providers })
+}
+
+async fn managed_provider_has_active_runtime(
+    state: &AppState,
+    provider: AgentHarnessKind,
+) -> Result<bool, String> {
+    for key in state.interactive_process_registry.dump_state().await {
+        if state
+            .interactive_process_registry
+            .get_metadata(&key)
+            .await
+            .and_then(|metadata| metadata.harness)
+            .is_some_and(|harness| harness == provider)
+        {
+            return Ok(true);
+        }
+    }
+
+    for (_key, info) in state.running_agent_registry.list_all().await {
+        if running_agent_matches_provider(
+            state,
+            &info.agent_run_id,
+            &info.conversation_id,
+            provider,
+        )
+        .await?
+        {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+async fn running_agent_matches_provider(
+    state: &AppState,
+    agent_run_id: &str,
+    conversation_id: &str,
+    provider: AgentHarnessKind,
+) -> Result<bool, String> {
+    if let Some(run) = state
+        .agent_run_repo
+        .get_by_id(&AgentRunId::from_string(agent_run_id))
+        .await
+        .map_err(|err| err.to_string())?
+    {
+        if !run.status.is_active() {
+            return Ok(false);
+        }
+        if run.harness.is_some() {
+            return Ok(run.harness == Some(provider));
+        }
+    }
+
+    Ok(state
+        .chat_conversation_repo
+        .get_by_id(&ChatConversationId::from_string(conversation_id))
+        .await
+        .map_err(|err| err.to_string())?
+        .is_some_and(|conversation| conversation.provider_harness == Some(provider)))
+}
+
+async fn ensure_managed_provider_inactive(
+    state: &AppState,
+    provider: AgentHarnessKind,
+) -> Result<(), String> {
+    if managed_provider_has_active_runtime(state, provider).await? {
+        return Err(format!(
+            "RX-managed {provider} is currently in use. Stop active {provider} runs before installing or updating it."
+        ));
+    }
+    Ok(())
 }
 
 fn path_with_prepended_dir(dir: &Path, existing_path: &OsStr) -> OsString {
@@ -429,9 +521,10 @@ async fn install_or_update_managed_provider_cli_inner(
             "RX-managed installs are not available for {provider}."
         ));
     }
+    ensure_managed_provider_inactive(state, provider).await?;
 
     let output = run_managed_codex_installer().await?;
-    let status = managed_provider_cli_status_for_settings(settings, true).await;
+    let status = managed_provider_cli_status_for_settings(state, settings, true).await?;
     Ok(ManagedProviderCliActionResponse {
         provider: provider.to_string(),
         success: true,
