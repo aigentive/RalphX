@@ -58,6 +58,8 @@ const CODEX_SANDBOX_MODES = ["danger-full-access", "workspace-write", "read-only
 const PROVIDER_DEFAULT_SELECT_VALUE = "__harness_default__";
 const CODEX_MCP_LOCK_COPY =
   "RalphX MCP tools currently require Codex to run with Never approval and Danger Full Access.";
+const RX_MANAGED_CLI_MODE = "rx_managed";
+const USER_MANAGED_CLI_MODE = "user_managed";
 
 function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
@@ -225,6 +227,12 @@ export function HarnessProvidersSection() {
       input.claudeAllowDangerouslySkipPermissions =
         changes.claudeAllowDangerouslySkipPermissions;
     }
+    if (changes.cliManagementMode !== undefined) {
+      input.cliManagementMode = changes.cliManagementMode;
+    }
+    if (changes.autoUpdateEnabled !== undefined) {
+      input.autoUpdateEnabled = changes.autoUpdateEnabled;
+    }
     if (changes.resetToDefaults !== undefined) {
       input.resetToDefaults = changes.resetToDefaults;
     }
@@ -341,6 +349,8 @@ export function HarnessProvidersSection() {
                 provider.model != null &&
                 provider.model.trim() !== "" &&
                 selectedModelEntry == null;
+              const isRxManagedCli =
+                provider.cliManagementMode === RX_MANAGED_CLI_MODE;
 
               return (
                 <div
@@ -383,6 +393,75 @@ export function HarnessProvidersSection() {
                         disabled={isUpdating || !provider.available}
                         onCheckedChange={(checked) =>
                           void updateProvider(provider, { enabled: checked })
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div
+                    className={`grid gap-3 border-t border-[var(--border-subtle)] px-4 py-3 md:grid-cols-2 ${
+                      provider.enabled
+                        ? "border-b border-[var(--border-subtle)]"
+                        : ""
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
+                      <div className="space-y-1">
+                        <Label
+                          htmlFor={`provider-managed-cli-${provider.provider}`}
+                          className="text-xs text-[var(--text-primary)]"
+                        >
+                          Let RX manage this CLI
+                        </Label>
+                        <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
+                          Allows RX-managed installs and updates without
+                          changing user-managed PATH installs.
+                        </p>
+                      </div>
+                      <Switch
+                        id={`provider-managed-cli-${provider.provider}`}
+                        checked={isRxManagedCli}
+                        disabled={isUpdating}
+                        onCheckedChange={(checked) =>
+                          void updateProvider(provider, {
+                            cliManagementMode: checked
+                              ? RX_MANAGED_CLI_MODE
+                              : USER_MANAGED_CLI_MODE,
+                            autoUpdateEnabled: checked
+                              ? Boolean(provider.autoUpdateEnabled)
+                              : false,
+                          })
+                        }
+                      />
+                    </div>
+
+                    <div
+                      className={`flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 ${
+                        isRxManagedCli ? "" : "opacity-75"
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <Label
+                          htmlFor={`provider-auto-update-${provider.provider}`}
+                          className="text-xs text-[var(--text-primary)]"
+                        >
+                          Update automatically
+                        </Label>
+                        <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
+                          Runs only for the RX-managed copy. User-managed CLI
+                          installs are never modified.
+                        </p>
+                      </div>
+                      <Switch
+                        id={`provider-auto-update-${provider.provider}`}
+                        checked={
+                          isRxManagedCli && Boolean(provider.autoUpdateEnabled)
+                        }
+                        disabled={isUpdating || !isRxManagedCli}
+                        onCheckedChange={(checked) =>
+                          void updateProvider(provider, {
+                            autoUpdateEnabled: checked,
+                          })
                         }
                       />
                     </div>

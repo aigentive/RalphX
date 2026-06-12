@@ -11,6 +11,11 @@ fn disabled_codex_defaults_are_mcp_ready_but_not_enabled() {
     assert_eq!(settings.effort, Some(LogicalEffort::XHigh));
     assert_eq!(settings.approval_policy.as_deref(), Some("never"));
     assert_eq!(settings.sandbox_mode.as_deref(), Some("danger-full-access"));
+    assert_eq!(
+        settings.cli_management_mode,
+        AgentProviderCliManagementMode::UserManaged
+    );
+    assert!(!settings.auto_update_enabled);
 }
 
 #[test]
@@ -28,4 +33,30 @@ fn disabled_claude_defaults_are_most_permissive_but_not_enabled() {
     );
     assert!(settings.claude_dangerously_skip_permissions);
     assert!(!settings.claude_allow_dangerously_skip_permissions);
+    assert_eq!(
+        settings.cli_management_mode,
+        AgentProviderCliManagementMode::UserManaged
+    );
+    assert!(!settings.auto_update_enabled);
+}
+
+#[test]
+fn provider_cli_management_modes_parse_and_display() {
+    assert_eq!(
+        "user_managed"
+            .parse::<AgentProviderCliManagementMode>()
+            .unwrap(),
+        AgentProviderCliManagementMode::UserManaged
+    );
+    assert_eq!(
+        "rx_managed"
+            .parse::<AgentProviderCliManagementMode>()
+            .unwrap(),
+        AgentProviderCliManagementMode::RxManaged
+    );
+    assert_eq!(
+        AgentProviderCliManagementMode::UserManaged.to_string(),
+        "user_managed"
+    );
+    assert!("invalid".parse::<AgentProviderCliManagementMode>().is_err());
 }

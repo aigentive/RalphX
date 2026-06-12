@@ -48,6 +48,8 @@ const settings: AgentProvidersSettingsResponse = {
       claudePermissionMode: null,
       claudeDangerouslySkipPermissions: false,
       claudeAllowDangerouslySkipPermissions: false,
+      cliManagementMode: "rx_managed",
+      autoUpdateEnabled: true,
       available: true,
       binaryFound: true,
       binaryPath: "/opt/homebrew/bin/codex",
@@ -67,6 +69,8 @@ const settings: AgentProvidersSettingsResponse = {
       claudePermissionMode: "bypassPermissions",
       claudeDangerouslySkipPermissions: true,
       claudeAllowDangerouslySkipPermissions: true,
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
       available: false,
       binaryFound: false,
       binaryPath: null,
@@ -191,6 +195,12 @@ describe("HarnessProvidersSection", () => {
     ).toBeEnabled();
 
     const claudeCard = screen.getByTestId("provider-card-claude");
+    expect(
+      within(claudeCard).getByLabelText("Let RX manage this CLI"),
+    ).toBeInTheDocument();
+    expect(
+      within(claudeCard).getByLabelText("Update automatically"),
+    ).toBeDisabled();
     expect(within(claudeCard).queryByText("Default Model")).toBeNull();
     expect(within(claudeCard).queryByText("Default Effort")).toBeNull();
     expect(
@@ -212,6 +222,52 @@ describe("HarnessProvidersSection", () => {
     expect(updateProviderAsync).toHaveBeenCalledWith({
       provider: "codex",
       enabled: false,
+    });
+  });
+
+  it("updates managed CLI and auto-update policy controls", async () => {
+    const user = userEvent.setup();
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    expect(
+      within(codexCard).getByLabelText("Let RX manage this CLI"),
+    ).toBeChecked();
+    expect(
+      within(codexCard).getByLabelText("Update automatically"),
+    ).toBeChecked();
+    expect(
+      within(codexCard).getByText(/Runs only for the RX-managed copy/i),
+    ).toBeInTheDocument();
+
+    await user.click(within(codexCard).getByLabelText("Update automatically"));
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      autoUpdateEnabled: false,
+    });
+
+    await user.click(within(codexCard).getByLabelText("Let RX manage this CLI"));
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
+    });
+
+    const claudeCard = screen.getByTestId("provider-card-claude");
+    expect(
+      within(claudeCard).getByLabelText("Update automatically"),
+    ).toBeDisabled();
+    expect(
+      within(claudeCard).getByText(/User-managed CLI installs are never modified/i),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(claudeCard).getByLabelText("Let RX manage this CLI"),
+    );
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "claude",
+      cliManagementMode: "rx_managed",
+      autoUpdateEnabled: false,
     });
   });
 

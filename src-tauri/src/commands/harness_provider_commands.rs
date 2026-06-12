@@ -8,9 +8,9 @@ use crate::application::{
     probe_supported_harnesses, AppState, AGENT_LANES,
 };
 use crate::domain::agents::{
-    generic_harness_lane_defaults, AgentHarnessKind, AgentLaneSettings, AgentProviderSettings,
-    LogicalEffort, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
-    STANDARD_AGENT_HARNESSES,
+    generic_harness_lane_defaults, AgentHarnessKind, AgentLaneSettings,
+    AgentProviderCliManagementMode, AgentProviderSettings, LogicalEffort,
+    CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE, STANDARD_AGENT_HARNESSES,
 };
 use crate::infrastructure::agents::claude::apply_claude_provider_permission_settings;
 
@@ -30,6 +30,8 @@ pub struct AgentProviderSettingsResponse {
     pub claude_permission_mode: Option<String>,
     pub claude_dangerously_skip_permissions: bool,
     pub claude_allow_dangerously_skip_permissions: bool,
+    pub cli_management_mode: String,
+    pub auto_update_enabled: bool,
     pub available: bool,
     pub binary_found: bool,
     pub binary_path: Option<String>,
@@ -70,6 +72,8 @@ pub struct UpdateAgentProviderSettingsInput {
     pub claude_permission_mode: Option<String>,
     pub claude_dangerously_skip_permissions: Option<bool>,
     pub claude_allow_dangerously_skip_permissions: Option<bool>,
+    pub cli_management_mode: Option<String>,
+    pub auto_update_enabled: Option<bool>,
     #[serde(default)]
     pub reset_to_defaults: bool,
     #[serde(default)]
@@ -93,6 +97,21 @@ fn parse_effort(value: Option<String>) -> Result<Option<LogicalEffort>, String> 
     }
 }
 
+fn parse_cli_management_mode(
+    value: Option<String>,
+) -> Result<Option<AgentProviderCliManagementMode>, String> {
+    match value {
+        Some(mode) if mode.trim().is_empty() => {
+            Ok(Some(AgentProviderCliManagementMode::UserManaged))
+        }
+        Some(mode) => mode
+            .parse::<AgentProviderCliManagementMode>()
+            .map(Some)
+            .map_err(|err| format!("Invalid provider CLI management mode: {err}")),
+        None => Ok(None),
+    }
+}
+
 fn reset_configurable_defaults(settings: &mut AgentProviderSettings) {
     let defaults = AgentProviderSettings::disabled_defaults(settings.provider);
     settings.model = defaults.model;
@@ -103,6 +122,8 @@ fn reset_configurable_defaults(settings: &mut AgentProviderSettings) {
     settings.claude_dangerously_skip_permissions = defaults.claude_dangerously_skip_permissions;
     settings.claude_allow_dangerously_skip_permissions =
         defaults.claude_allow_dangerously_skip_permissions;
+    settings.cli_management_mode = defaults.cli_management_mode;
+    settings.auto_update_enabled = defaults.auto_update_enabled;
 }
 
 fn enforce_provider_constraints(settings: &mut AgentProviderSettings) {
@@ -156,6 +177,16 @@ fn merge_input(
     }
     if let Some(allow) = input.claude_allow_dangerously_skip_permissions {
         settings.claude_allow_dangerously_skip_permissions = allow;
+    }
+    if input.cli_management_mode.is_some() {
+        settings.cli_management_mode = parse_cli_management_mode(input.cli_management_mode)?
+            .unwrap_or(AgentProviderCliManagementMode::UserManaged);
+    }
+    if let Some(auto_update_enabled) = input.auto_update_enabled {
+        settings.auto_update_enabled = auto_update_enabled;
+    }
+    if settings.cli_management_mode != AgentProviderCliManagementMode::RxManaged {
+        settings.auto_update_enabled = false;
     }
     if let Some(enabled) = input.enabled {
         if enabled && !provider_available {
@@ -242,6 +273,8 @@ fn to_response(
         claude_dangerously_skip_permissions: settings.claude_dangerously_skip_permissions,
         claude_allow_dangerously_skip_permissions: settings
             .claude_allow_dangerously_skip_permissions,
+        cli_management_mode: settings.cli_management_mode.to_string(),
+        auto_update_enabled: settings.auto_update_enabled,
         available: probe.available,
         binary_found: probe.binary_found,
         binary_path: probe.binary_path,
