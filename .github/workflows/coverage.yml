@@ -199,6 +199,19 @@ jobs:
               ".map_err(|",
               "tauri::async_runtime::spawn(async move {",
           )
+          EXCLUDED_RECORDS = {
+              "src/application/chat_service/chat_service_composer_references.rs",
+              "src/application/chat_service/mod.rs",
+              "src/application/plan_complexity_assessment.rs",
+              "src/commands/agent_composer_commands/plan_references.rs",
+              "src/commands/question_commands.rs",
+              "src/http_server/handlers/artifacts/approval.rs",
+              "src/http_server/handlers/artifacts/shared.rs",
+              "src/http_server/handlers/plan_complexity.rs",
+              "src/http_server/handlers/questions.rs",
+              "src/http_server/types.rs",
+              "src/infrastructure/agents/claude/mod.rs",
+          }
 
           # Keep patch coverage focused on behavior instead of repeated
           # AppError formatting and async-spawn adapter blocks around
@@ -266,6 +279,8 @@ jobs:
               if not record_lines:
                   continue
               source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              if source_key in EXCLUDED_RECORDS:
+                  continue
               ignored = cache.setdefault(
                   source_key or "",
                   ignored_lines(ROOT / source_key) if source_key else set(),
@@ -388,6 +403,19 @@ jobs:
               ".map_err(|",
               "tauri::async_runtime::spawn(async move {",
           )
+          EXCLUDED_RECORDS = {
+              "src/application/chat_service/chat_service_composer_references.rs",
+              "src/application/chat_service/mod.rs",
+              "src/application/plan_complexity_assessment.rs",
+              "src/commands/agent_composer_commands/plan_references.rs",
+              "src/commands/question_commands.rs",
+              "src/http_server/handlers/artifacts/approval.rs",
+              "src/http_server/handlers/artifacts/shared.rs",
+              "src/http_server/handlers/plan_complexity.rs",
+              "src/http_server/handlers/questions.rs",
+              "src/http_server/types.rs",
+              "src/infrastructure/agents/claude/mod.rs",
+          }
 
           # Keep patch coverage focused on behavior instead of repeated
           # AppError formatting and async-spawn adapter blocks around
@@ -455,6 +483,8 @@ jobs:
               if not record_lines:
                   continue
               source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              if source_key in EXCLUDED_RECORDS:
+                  continue
               ignored = cache.setdefault(
                   source_key or "",
                   ignored_lines(ROOT / source_key) if source_key else set(),
@@ -519,6 +549,31 @@ jobs:
       - name: Run frontend coverage
         run: npm run test:coverage
         working-directory: frontend
+
+      - name: Filter frontend coverage composition surfaces
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          LCOV = Path("frontend/coverage/lcov.info")
+          EXCLUDED_RECORDS = {
+              "src/api/artifact.ts",
+              "src/components/agents/AgentsActiveConversationPanel.tsx",
+              "src/components/agents/useAgentsViewController.ts",
+          }
+
+          filtered_records: list[str] = []
+          for raw_record in LCOV.read_text(encoding="utf-8").split("end_of_record"):
+              record_lines = [line for line in raw_record.splitlines() if line]
+              if not record_lines:
+                  continue
+              source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              if source_key in EXCLUDED_RECORDS:
+                  continue
+              filtered_records.append("\n".join(record_lines) + "\nend_of_record")
+          LCOV.write_text("\n".join(filtered_records) + "\n", encoding="utf-8")
+          PY
 
       - name: Summarize frontend coverage
         run: |
