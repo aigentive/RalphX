@@ -131,6 +131,10 @@ export interface ParsedMcpResult {
   [key: string]: unknown;
 }
 
+function hasRecordField(obj: unknown, key: string): obj is Record<string, unknown> {
+  return obj != null && typeof obj === "object" && key in obj;
+}
+
 function parseMcpTextContentArray(result: unknown): unknown {
   if (!Array.isArray(result) || result.length === 0) {
     return null;
@@ -306,14 +310,18 @@ export function parseToolResultAsLines(result: unknown): string[] {
       // Array of strings
       return result.filter((item): item is string => typeof item === "string");
     }
-  } else if (typeof result === "object" && result !== null && "text" in result) {
-    text = String((result as { text: string }).text);
-  } else if (typeof result === "object" && result !== null && "content" in result) {
-    const obj = result as { content?: unknown };
-    if (typeof obj.content === "string") {
-      text = obj.content;
+  } else if (typeof result === "object") {
+    if (hasRecordField(result, "text")) {
+      text = String(result.text);
+    } else if (hasRecordField(result, "content")) {
+      const content = result.content;
+      if (typeof content === "string") {
+        text = content;
+      } else {
+        text = extractMcpTextContent(content) ?? "";
+      }
     } else {
-      text = extractMcpTextContent(obj.content) ?? "";
+      text = "";
     }
   }
 
