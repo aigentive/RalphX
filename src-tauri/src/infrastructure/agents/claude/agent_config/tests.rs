@@ -216,6 +216,8 @@ fn test_all_agent_names_are_known() {
         "ralphx-ideation-specialist-pipeline-safety",
         // State machine safety specialist added in synthetic-data hardening session
         "ralphx-ideation-specialist-state-machine",
+        // Utility agent used for plan complexity checks.
+        "ralphx-utility-plan-complexity",
     ]);
 
     for agent in agent_configs() {

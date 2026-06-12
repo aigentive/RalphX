@@ -184,8 +184,9 @@ describe("AgentsView", () => {
   it("focuses the main chat on an attached ideation run when Open Run is used", async () => {
     mockAgentViewData();
     getAgentConversationWorkspaceMock.mockResolvedValue(
-      conversationWorkspace({ mode: "edit" })
+      conversationWorkspace({ mode: "ideation", linkedIdeationSessionId: "session-1" })
     );
+    mockSessionWithData({ id: "session-1", planArtifactId: "plan-1" });
 
     renderAgentsView();
     selectSidebarConversationRow();

@@ -51,10 +51,7 @@ fn make_temp_project_plugin_dir() -> (tempfile::TempDir, std::path::PathBuf, std
     (dir, root, plugin_dir)
 }
 
-fn allowed_tools_arg_from_mcp_config(config_path: &Path) -> Option<String> {
-    // codeql[rust/path-injection]
-    let content = std::fs::read_to_string(config_path).expect("should read config");
-    let json: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+fn allowed_tools_arg_from_mcp_config(json: &serde_json::Value) -> Option<String> {
     json["mcpServers"]
         .as_object()
         .and_then(|servers| servers.values().next())
@@ -141,12 +138,10 @@ fn symlink_dir(source: impl AsRef<Path>, target: impl AsRef<Path>) {
     std::os::windows::fs::symlink_dir(source, target).expect("create directory symlink");
 }
 
-/// Parse the JSON args array from a generated MCP config temp file.
-fn get_json_args(config_path: &Path) -> Vec<String> {
-    // codeql[rust/path-injection]
-    let content = std::fs::read_to_string(config_path).expect("read config file");
-    let v: serde_json::Value = serde_json::from_str(&content).expect("parse JSON");
-    v.get("mcpServers")
+/// Parse the JSON args array from an MCP config value without touching temp files.
+fn get_json_args(config: &serde_json::Value) -> Vec<String> {
+    config
+        .get("mcpServers")
         .and_then(|s| s.as_object())
         .and_then(|m| m.values().next())
         .and_then(|server| server.get("args"))
@@ -307,9 +302,9 @@ fn test_format_allowed_tools_arg_value_absent_mcp_tools_returns_none() {
 fn test_create_mcp_config_injects_allowed_tools_for_agent_with_mcp_tools() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
     // ralphx-ideation has a non-empty mcp_tools list in config/ralphx.yaml
-    let config_path = create_mcp_config(&plugin_dir, "ralphx-ideation", false)
-        .expect("should create config file");
-    let args = get_json_args(&config_path);
+    let config = build_mcp_config_with_runtime_context(&plugin_dir, "ralphx-ideation", false, None)
+        .expect("should create config");
+    let args = get_json_args(&config);
 
     let allowed_tools_arg = args.iter().find(|a| a.starts_with("--allowed-tools="));
     assert!(
@@ -333,9 +328,9 @@ fn test_create_mcp_config_injects_allowed_tools_for_agent_with_mcp_tools() {
 #[test]
 fn test_create_mcp_config_injects_agent_type_alongside_allowed_tools() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
-    let config_path = create_mcp_config(&plugin_dir, "ralphx-ideation", false)
-        .expect("should create config file");
-    let args = get_json_args(&config_path);
+    let config = build_mcp_config_with_runtime_context(&plugin_dir, "ralphx-ideation", false, None)
+        .expect("should create config");
+    let args = get_json_args(&config);
 
     // Both --agent-type and --allowed-tools must be present
     assert!(
@@ -351,9 +346,9 @@ fn test_create_mcp_config_injects_agent_type_alongside_allowed_tools() {
 #[test]
 fn test_create_mcp_config_injects_app_owned_trace_dir() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
-    let config_path = create_mcp_config(&plugin_dir, "ralphx-ideation", false)
-        .expect("should create config file");
-    let args = get_json_args(&config_path);
+    let config = build_mcp_config_with_runtime_context(&plugin_dir, "ralphx-ideation", false, None)
+        .expect("should create config");
+    let args = get_json_args(&config);
 
     let trace_dir_index = args
         .iter()
@@ -447,9 +442,14 @@ fn test_create_mcp_config_injects_runtime_context_args() {
 fn test_create_mcp_config_no_allowed_tools_arg_for_unknown_agent() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
     // Unknown agent has no config → mcp_tools absent → no --allowed-tools injected
-    let config_path = create_mcp_config(&plugin_dir, "completely-unknown-agent-xyz", false)
-        .expect("should create config file even for unknown agent");
-    let args = get_json_args(&config_path);
+    let config = build_mcp_config_with_runtime_context(
+        &plugin_dir,
+        "completely-unknown-agent-xyz",
+        false,
+        None,
+    )
+    .expect("should create config even for unknown agent");
+    let args = get_json_args(&config);
 
     let has_allowed_tools = args.iter().any(|a| a.starts_with("--allowed-tools="));
     assert!(
@@ -467,9 +467,14 @@ fn test_create_mcp_config_no_allowed_tools_arg_for_unknown_agent() {
 fn test_create_mcp_config_allowed_tools_value_matches_agent_mcp_tools() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
     // ralphx-utility-session-namer has a small mcp_tools list: [update_session_title]
-    let config_path = create_mcp_config(&plugin_dir, "ralphx-utility-session-namer", false)
-        .expect("should create config file");
-    let args = get_json_args(&config_path);
+    let config = build_mcp_config_with_runtime_context(
+        &plugin_dir,
+        "ralphx-utility-session-namer",
+        false,
+        None,
+    )
+    .expect("should create config");
+    let args = get_json_args(&config);
 
     let allowed_arg = args
         .iter()
@@ -608,21 +613,9 @@ fn test_filter_interactive_tools_empty_input() {
 fn test_create_mcp_config_external_mcp_filters_ask_user_question() {
     let (dir, plugin_dir) = make_temp_plugin_dir();
     // ralphx-ideation has ask_user_question in its mcp_tools
-    let config_path =
-        create_mcp_config(&plugin_dir, "ralphx-ideation", true).expect("should succeed");
-    // codeql[rust/path-injection]
-    let content = std::fs::read_to_string(&config_path).expect("should read config");
-    let json: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
-    let args: Vec<String> = json["mcpServers"]
-        .as_object()
-        .and_then(|servers| servers.values().next())
-        .and_then(|server| server["args"].as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let config = build_mcp_config_with_runtime_context(&plugin_dir, "ralphx-ideation", true, None)
+        .expect("should create config");
+    let args = get_json_args(&config);
     let allowed_tools_arg = args.iter().find(|a| a.starts_with("--allowed-tools="));
     if let Some(arg) = allowed_tools_arg {
         assert!(
@@ -637,21 +630,9 @@ fn test_create_mcp_config_external_mcp_filters_ask_user_question() {
 fn test_create_mcp_config_non_external_mcp_keeps_ask_user_question() {
     let (dir, plugin_dir) = make_temp_plugin_dir();
     // ralphx-ideation has ask_user_question in its mcp_tools — should be present when not external
-    let config_path =
-        create_mcp_config(&plugin_dir, "ralphx-ideation", false).expect("should succeed");
-    // codeql[rust/path-injection]
-    let content = std::fs::read_to_string(&config_path).expect("should read config");
-    let json: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
-    let args: Vec<String> = json["mcpServers"]
-        .as_object()
-        .and_then(|servers| servers.values().next())
-        .and_then(|server| server["args"].as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let config = build_mcp_config_with_runtime_context(&plugin_dir, "ralphx-ideation", false, None)
+        .expect("should create config");
+    let args = get_json_args(&config);
     let allowed_tools_arg = args.iter().find(|a| a.starts_with("--allowed-tools="));
     if let Some(arg) = allowed_tools_arg {
         assert!(
@@ -666,7 +647,7 @@ fn test_create_mcp_config_non_external_mcp_keeps_ask_user_question() {
 fn test_plan_profile_mcp_config_non_external_keeps_ask_user_question() {
     let (dir, root, plugin_dir) = make_temp_project_plugin_dir();
     seed_live_agent_yaml(&root, "ralphx-ideation");
-    let config_path = create_mcp_config_with_runtime_context_for_profile(
+    let config = build_mcp_config_with_runtime_context_for_profile(
         &plugin_dir,
         "ralphx-ideation",
         Some("plan"),
@@ -674,8 +655,7 @@ fn test_plan_profile_mcp_config_non_external_keeps_ask_user_question() {
         None,
     )
     .expect("should succeed");
-    let allowed_tools_arg =
-        allowed_tools_arg_from_mcp_config(&config_path).expect("allowed tools arg");
+    let allowed_tools_arg = allowed_tools_arg_from_mcp_config(&config).expect("allowed tools arg");
 
     assert!(
         allowed_tools_arg.contains("ask_user_question"),
@@ -688,7 +668,7 @@ fn test_plan_profile_mcp_config_non_external_keeps_ask_user_question() {
 fn test_plan_profile_mcp_config_external_filters_ask_user_question() {
     let (dir, root, plugin_dir) = make_temp_project_plugin_dir();
     seed_live_agent_yaml(&root, "ralphx-ideation");
-    let config_path = create_mcp_config_with_runtime_context_for_profile(
+    let config = build_mcp_config_with_runtime_context_for_profile(
         &plugin_dir,
         "ralphx-ideation",
         Some("plan"),
@@ -696,8 +676,7 @@ fn test_plan_profile_mcp_config_external_filters_ask_user_question() {
         None,
     )
     .expect("should succeed");
-    let allowed_tools_arg =
-        allowed_tools_arg_from_mcp_config(&config_path).expect("allowed tools arg");
+    let allowed_tools_arg = allowed_tools_arg_from_mcp_config(&config).expect("allowed tools arg");
 
     assert!(
         !allowed_tools_arg.contains("ask_user_question"),

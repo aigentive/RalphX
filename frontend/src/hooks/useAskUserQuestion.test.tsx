@@ -755,6 +755,7 @@ describe("useAskUserQuestion", () => {
       expect(returnValue).toEqual({
         success: true,
         deliveredToWaitingAgent: true,
+        planModeProposalHandled: false,
       });
     });
 
