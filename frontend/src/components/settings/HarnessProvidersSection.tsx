@@ -545,8 +545,8 @@ export function HarnessProvidersSection() {
                           Update automatically
                         </Label>
                         <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
-                          Runs only for the RX-managed copy. User-managed CLI
-                          installs are never modified.
+                          Runs only when RX-managed CLI handling is enabled.
+                          User-managed CLI installs are never modified.
                         </p>
                       </div>
                       <Switch

@@ -18,9 +18,7 @@ pub(crate) fn managed_provider_cli_launch_path(
 
     match settings.provider {
         AgentHarnessKind::Codex => Some(Ok(managed_codex_cli_path())),
-        AgentHarnessKind::Claude => Some(Err(
-            "RX-managed Claude launches are unavailable for this installer path.".to_string(),
-        )),
+        AgentHarnessKind::Claude => None,
     }
 }
 

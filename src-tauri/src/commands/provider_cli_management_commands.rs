@@ -21,12 +21,20 @@ use crate::domain::agents::{
     STANDARD_AGENT_HARNESSES,
 };
 use crate::domain::entities::{AgentRunId, ChatConversationId};
-use crate::infrastructure::tool_paths::{agent_subprocess_env_path, resolve_shell_cli_path};
+use crate::infrastructure::agents::claude::parse_claude_version;
+use crate::infrastructure::tool_paths::{
+    agent_subprocess_env_path, claude_native_cli_path, find_claude_native_cli_path,
+    resolve_shell_cli_path,
+};
 use crate::utils::runtime_log_paths::{
     managed_codex_bin_dir, managed_codex_binary_path, managed_codex_home_dir,
     managed_codex_installer_home_dir,
 };
 
+const CLAUDE_INSTALLER_SCRIPT_URL: &str = "https://claude.ai/install.sh";
+const CLAUDE_LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/anthropics/claude-code/releases/latest";
+const CLAUDE_INSTALLER_COMMAND: &str = "curl -fsSL https://claude.ai/install.sh | bash -s latest";
 const CODEX_INSTALLER_SCRIPT_URL: &str = "https://chatgpt.com/codex/install.sh";
 const CODEX_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
 const CODEX_INSTALLER_COMMAND: &str = "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
@@ -102,6 +110,15 @@ struct ManagedCodexInstallPlan {
     path_env: OsString,
 }
 
+#[derive(Debug, Clone)]
+struct ManagedClaudeInstallPlan {
+    shell_path: PathBuf,
+    command: &'static str,
+    home_dir: PathBuf,
+    binary_path: PathBuf,
+    path_env: OsString,
+}
+
 fn parse_provider(value: &str) -> Result<AgentHarnessKind, String> {
     value
         .parse::<AgentHarnessKind>()
@@ -158,9 +175,6 @@ fn managed_cli_status_text(
     observation: &ManagedProviderCliObservation,
     provider_active: bool,
 ) -> String {
-    if provider == AgentHarnessKind::Claude && !observation.supported {
-        return "RX-managed Claude installs are unavailable for this installer path.".to_string();
-    }
     if !observation.supported {
         return format!("RX-managed {provider} installs are unavailable.");
     }
@@ -210,19 +224,6 @@ fn managed_cli_status_response(
         action: action.to_string(),
         status,
         error: observation.error,
-    }
-}
-
-fn unsupported_claude_observation() -> ManagedProviderCliObservation {
-    ManagedProviderCliObservation {
-        supported: false,
-        installed: false,
-        binary_path: None,
-        current_version: None,
-        latest_version: None,
-        error: Some(
-            "Claude Code does not expose a documented RX-owned install prefix yet.".to_string(),
-        ),
     }
 }
 
@@ -276,6 +277,67 @@ async fn managed_codex_observation(include_latest_version: bool) -> ManagedProvi
     }
 }
 
+async fn managed_claude_observation(include_latest_version: bool) -> ManagedProviderCliObservation {
+    if !cfg!(any(target_os = "macos", target_os = "linux")) {
+        return ManagedProviderCliObservation {
+            supported: false,
+            installed: false,
+            binary_path: None,
+            current_version: None,
+            latest_version: None,
+            error: Some(
+                "RX-managed native Claude installs are only supported on macOS and Linux."
+                    .to_string(),
+            ),
+        };
+    }
+
+    let Some(binary_path) = claude_native_cli_path() else {
+        return ManagedProviderCliObservation {
+            supported: false,
+            installed: false,
+            binary_path: None,
+            current_version: None,
+            latest_version: None,
+            error: Some("Could not determine the native Claude install path.".to_string()),
+        };
+    };
+
+    let installed = find_claude_native_cli_path().is_some();
+    let current_version = if installed {
+        match probe_cli_version(&binary_path).await {
+            Ok(output) => parse_claude_version(&output).or_else(|| Some(output.trim().to_string())),
+            Err(error) => {
+                return ManagedProviderCliObservation {
+                    supported: true,
+                    installed,
+                    binary_path: Some(binary_path),
+                    current_version: None,
+                    latest_version: None,
+                    error: Some(error),
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    let latest_version = if include_latest_version {
+        fetch_latest_claude_version().await.ok()
+    } else {
+        None
+    };
+
+    ManagedProviderCliObservation {
+        supported: true,
+        installed,
+        binary_path: Some(binary_path),
+        current_version,
+        latest_version,
+        error: None,
+    }
+}
+
 async fn managed_provider_cli_status_for_settings(
     state: &AppState,
     settings: AgentProviderSettings,
@@ -289,7 +351,13 @@ async fn managed_provider_cli_status_for_settings(
             )
             .await
         }
-        AgentHarnessKind::Claude => unsupported_claude_observation(),
+        AgentHarnessKind::Claude => {
+            managed_claude_observation(
+                include_latest_version
+                    && settings.cli_management_mode == AgentProviderCliManagementMode::RxManaged,
+            )
+            .await
+        }
     };
     let provider_active = managed_provider_has_active_runtime(state, settings.provider).await?;
     Ok(managed_cli_status_response(
@@ -417,6 +485,27 @@ fn managed_codex_install_plan() -> ManagedCodexInstallPlan {
     }
 }
 
+fn managed_claude_install_plan() -> Result<ManagedClaudeInstallPlan, String> {
+    let binary_path = claude_native_cli_path()
+        .ok_or_else(|| "Could not determine the native Claude install path.".to_string())?;
+    let bin_dir = binary_path
+        .parent()
+        .ok_or_else(|| "Native Claude install path is missing a parent directory.".to_string())?;
+    let home_dir = bin_dir
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "Native Claude install path is missing a home directory.".to_string())?
+        .to_path_buf();
+    let base_path = agent_subprocess_env_path();
+    Ok(ManagedClaudeInstallPlan {
+        shell_path: resolve_shell_cli_path(),
+        command: CLAUDE_INSTALLER_COMMAND,
+        home_dir,
+        path_env: path_with_prepended_dir(bin_dir, base_path.as_os_str()),
+        binary_path,
+    })
+}
+
 fn ensure_managed_codex_dirs(plan: &ManagedCodexInstallPlan) -> Result<(), String> {
     for dir in [&plan.bin_dir, &plan.home_dir, &plan.installer_home_dir] {
         // Directory is derived from RalphX-owned app runtime storage and fixed components.
@@ -478,6 +567,91 @@ async fn run_managed_codex_installer() -> Result<ManagedProviderCliActionOutput,
     Ok(ManagedProviderCliActionOutput { stdout, stderr })
 }
 
+async fn run_managed_claude_installer() -> Result<ManagedProviderCliActionOutput, String> {
+    let plan = managed_claude_install_plan()?;
+
+    tracing::info!(
+        binary_path = %plan.binary_path.display(),
+        script_url = CLAUDE_INSTALLER_SCRIPT_URL,
+        "Starting RX-managed native Claude installer"
+    );
+
+    let mut command = Command::new(&plan.shell_path);
+    command
+        .arg("-c")
+        .arg(plan.command)
+        .env("HOME", &plan.home_dir)
+        .env("PATH", &plan.path_env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    run_managed_claude_command(command, "RX-managed native Claude installer").await
+}
+
+async fn run_managed_claude_update() -> Result<ManagedProviderCliActionOutput, String> {
+    let binary_path = find_claude_native_cli_path()
+        .ok_or_else(|| "RX-managed native Claude is not installed.".to_string())?;
+    let bin_dir = binary_path
+        .parent()
+        .ok_or_else(|| "Native Claude install path is missing a parent directory.".to_string())?;
+    let base_path = agent_subprocess_env_path();
+    let path_env = path_with_prepended_dir(bin_dir, base_path.as_os_str());
+
+    tracing::info!(
+        binary_path = %binary_path.display(),
+        "Starting RX-managed native Claude update"
+    );
+
+    // Native Claude path is built by tool_paths from a shape-validated home-local fixed path.
+    // codeql[rust/path-injection]
+    let mut command = Command::new(&binary_path);
+    command
+        .arg("update")
+        .env("PATH", path_env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    run_managed_claude_command(command, "RX-managed native Claude update").await
+}
+
+async fn run_managed_claude_install_or_update() -> Result<ManagedProviderCliActionOutput, String> {
+    if find_claude_native_cli_path().is_some() {
+        run_managed_claude_update().await
+    } else {
+        run_managed_claude_installer().await
+    }
+}
+
+async fn run_managed_claude_command(
+    mut command: Command,
+    operation: &str,
+) -> Result<ManagedProviderCliActionOutput, String> {
+    let output = tokio::time::timeout(
+        Duration::from_secs(MANAGED_CLI_INSTALL_TIMEOUT_SECS),
+        command.output(),
+    )
+    .await
+    .map_err(|_| format!("{operation} timed out after {MANAGED_CLI_INSTALL_TIMEOUT_SECS}s"))?
+    .map_err(|error| format!("Failed to run {operation}: {error}"))?;
+
+    let stdout = truncate_process_output(&String::from_utf8_lossy(&output.stdout));
+    let stderr = truncate_process_output(&String::from_utf8_lossy(&output.stderr));
+    if !output.status.success() {
+        return Err(format!(
+            "{operation} failed with status {}. {}",
+            output.status,
+            stderr
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("No stderr captured.")
+        ));
+    }
+
+    Ok(ManagedProviderCliActionOutput { stdout, stderr })
+}
+
 #[derive(Debug, Clone)]
 struct ManagedProviderCliActionOutput {
     stdout: Option<String>,
@@ -516,14 +690,12 @@ async fn install_or_update_managed_provider_cli_inner(
             "{provider} is configured as user-managed. Enable RX-managed installs before running this action."
         ));
     }
-    if provider != AgentHarnessKind::Codex {
-        return Err(format!(
-            "RX-managed installs are not available for {provider}."
-        ));
-    }
     ensure_managed_provider_inactive(state, provider).await?;
 
-    let output = run_managed_codex_installer().await?;
+    let output = match provider {
+        AgentHarnessKind::Codex => run_managed_codex_installer().await?,
+        AgentHarnessKind::Claude => run_managed_claude_install_or_update().await?,
+    };
     let status = managed_provider_cli_status_for_settings(state, settings, true).await?;
     Ok(ManagedProviderCliActionResponse {
         provider: provider.to_string(),
@@ -579,6 +751,15 @@ fn parse_codex_version(output: &str) -> Option<String> {
 }
 
 async fn fetch_latest_codex_version() -> Result<String, String> {
+    fetch_latest_github_release_version(CODEX_LATEST_RELEASE_URL, "latest Codex CLI version").await
+}
+
+async fn fetch_latest_claude_version() -> Result<String, String> {
+    fetch_latest_github_release_version(CLAUDE_LATEST_RELEASE_URL, "latest Claude Code version")
+        .await
+}
+
+async fn fetch_latest_github_release_version(url: &str, label: &str) -> Result<String, String> {
     install_rustls_crypto_provider();
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_native_roots()
@@ -588,9 +769,9 @@ async fn fetch_latest_codex_version() -> Result<String, String> {
         .build();
     let client: Client<HttpsConnector<HttpConnector>, Full<Bytes>> =
         Client::builder(TokioExecutor::new()).build(https);
-    let uri = CODEX_LATEST_RELEASE_URL
+    let uri = url
         .parse::<hyper::Uri>()
-        .map_err(|error| format!("Invalid Codex release URL: {error}"))?;
+        .map_err(|error| format!("Invalid GitHub release URL: {error}"))?;
     let request = Request::builder()
         .method(Method::GET)
         .uri(uri)
@@ -603,29 +784,29 @@ async fn fetch_latest_codex_version() -> Result<String, String> {
         client.request(request),
     )
     .await
-    .map_err(|_| "Timed out while checking latest Codex CLI version".to_string())?
-    .map_err(|error| format!("Failed to check latest Codex CLI version: {error}"))?;
+    .map_err(|_| format!("Timed out while checking {label}"))?
+    .map_err(|error| format!("Failed to check {label}: {error}"))?;
     let status = response.status();
     let bytes = response
         .into_body()
         .collect()
         .await
-        .map_err(|error| format!("Failed to read latest Codex CLI version: {error}"))?
+        .map_err(|error| format!("Failed to read {label}: {error}"))?
         .to_bytes();
     if !status.is_success() {
         return Err(format!(
-            "GitHub returned HTTP {} while checking latest Codex CLI version",
+            "GitHub returned HTTP {} while checking {label}",
             status.as_u16()
         ));
     }
     let value: Value = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("Failed to parse latest Codex CLI version: {error}"))?;
+        .map_err(|error| format!("Failed to parse {label}: {error}"))?;
     let tag = value
         .get("tag_name")
         .and_then(Value::as_str)
-        .ok_or_else(|| "Latest Codex CLI release is missing tag_name".to_string())?;
+        .ok_or_else(|| format!("{label} release is missing tag_name"))?;
     normalize_codex_release_tag(tag)
-        .ok_or_else(|| format!("Latest Codex CLI release tag is not supported: {tag}"))
+        .ok_or_else(|| format!("{label} release tag is not supported: {tag}"))
 }
 
 fn normalize_codex_release_tag(tag: &str) -> Option<String> {

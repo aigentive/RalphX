@@ -10,13 +10,20 @@ use crate::domain::services::RunningAgentKey;
 
 use super::{
     compare_version_strings, install_or_update_managed_provider_cli_inner,
-    managed_cli_status_response, managed_codex_bin_dir, managed_codex_install_plan,
-    managed_provider_has_active_runtime, normalize_codex_release_tag, parse_codex_version,
-    path_with_prepended_dir, unsupported_claude_observation, ManagedProviderCliObservation,
+    managed_claude_install_plan, managed_cli_status_response, managed_codex_bin_dir,
+    managed_codex_install_plan, managed_provider_has_active_runtime, normalize_codex_release_tag,
+    parse_codex_version, path_with_prepended_dir, ManagedProviderCliObservation,
 };
 
 fn codex_settings(mode: AgentProviderCliManagementMode) -> AgentProviderSettings {
     let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    settings.cli_management_mode = mode;
+    settings.auto_update_enabled = mode == AgentProviderCliManagementMode::RxManaged;
+    settings
+}
+
+fn claude_settings(mode: AgentProviderCliManagementMode) -> AgentProviderSettings {
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
     settings.cli_management_mode = mode;
     settings.auto_update_enabled = mode == AgentProviderCliManagementMode::RxManaged;
     settings
@@ -31,6 +38,21 @@ fn codex_observation(
         supported: true,
         installed,
         binary_path: Some(PathBuf::from("/tmp/ralphx-managed/codex")),
+        current_version: current_version.map(str::to_string),
+        latest_version: latest_version.map(str::to_string),
+        error: None,
+    }
+}
+
+fn claude_observation(
+    installed: bool,
+    current_version: Option<&str>,
+    latest_version: Option<&str>,
+) -> ManagedProviderCliObservation {
+    ManagedProviderCliObservation {
+        supported: true,
+        installed,
+        binary_path: Some(PathBuf::from("/Users/example/.local/bin/claude")),
         current_version: current_version.map(str::to_string),
         latest_version: latest_version.map(str::to_string),
         error: None,
@@ -80,18 +102,6 @@ fn codex_user_managed_policy_suppresses_managed_actions() {
 }
 
 #[test]
-fn claude_managed_installs_are_reported_as_unsupported() {
-    let settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
-    let status = managed_cli_status_response(settings, unsupported_claude_observation(), false);
-
-    assert_eq!(status.provider, "claude");
-    assert!(!status.supported);
-    assert_eq!(status.action, "unsupported");
-    assert!(status.status.contains("unavailable"));
-    assert!(status.error.unwrap().contains("install prefix"));
-}
-
-#[test]
 fn codex_rx_managed_active_cli_suppresses_update_action() {
     let status = managed_cli_status_response(
         codex_settings(AgentProviderCliManagementMode::RxManaged),
@@ -102,6 +112,35 @@ fn codex_rx_managed_active_cli_suppresses_update_action() {
     assert_eq!(status.action, "none");
     assert!(status.update_available);
     assert!(status.status.contains("currently in use"));
+}
+
+#[test]
+fn claude_rx_managed_missing_native_cli_suggests_install() {
+    let status = managed_cli_status_response(
+        claude_settings(AgentProviderCliManagementMode::RxManaged),
+        claude_observation(false, None, Some("2.1.175")),
+        false,
+    );
+
+    assert_eq!(status.provider, "claude");
+    assert!(status.supported);
+    assert!(!status.installed);
+    assert_eq!(status.action, "install");
+    assert!(status.status.contains("not installed"));
+}
+
+#[test]
+fn claude_rx_managed_stale_native_cli_suggests_update() {
+    let status = managed_cli_status_response(
+        claude_settings(AgentProviderCliManagementMode::RxManaged),
+        claude_observation(true, Some("2.1.170"), Some("2.1.175")),
+        false,
+    );
+
+    assert_eq!(status.action, "update");
+    assert!(status.update_available);
+    assert!(status.status.contains("2.1.170"));
+    assert!(status.status.contains("2.1.175"));
 }
 
 #[tokio::test]
@@ -133,6 +172,23 @@ async fn install_or_update_rejects_active_managed_provider() {
     let error = install_or_update_managed_provider_cli_inner(AgentHarnessKind::Codex, &state)
         .await
         .expect_err("active Codex runtime should block managed updates");
+
+    assert!(error.contains("currently in use"));
+}
+
+#[tokio::test]
+async fn install_or_update_rejects_active_managed_claude_provider() {
+    let state = state_with_active_run(AgentHarnessKind::Claude).await;
+    let settings = claude_settings(AgentProviderCliManagementMode::RxManaged);
+    state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .unwrap();
+
+    let error = install_or_update_managed_provider_cli_inner(AgentHarnessKind::Claude, &state)
+        .await
+        .expect_err("active Claude runtime should block managed updates");
 
     assert!(error.contains("currently in use"));
 }
@@ -204,6 +260,36 @@ fn managed_codex_install_plan_uses_rx_owned_dirs_and_prepended_path() {
 }
 
 #[test]
+fn managed_claude_install_plan_uses_native_installer_and_home_local_path() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _home = EnvGuard::set_os("HOME", temp_dir.path());
+
+    let plan = managed_claude_install_plan().expect("managed Claude install plan");
+    let first_path = std::env::split_paths(&plan.path_env)
+        .next()
+        .expect("first PATH entry");
+    let expected_bin_dir = temp_dir.path().join(".local").join("bin");
+
+    assert_eq!(
+        plan.command,
+        "curl -fsSL https://claude.ai/install.sh | bash -s latest"
+    );
+    assert_eq!(plan.home_dir, temp_dir.path());
+    assert_eq!(first_path, expected_bin_dir);
+    assert_eq!(
+        plan.binary_path,
+        expected_bin_dir.join(if cfg!(windows) {
+            "claude.exe"
+        } else {
+            "claude"
+        })
+    );
+}
+
+#[test]
 fn path_with_prepended_dir_preserves_existing_path_order() {
     let path = path_with_prepended_dir(&PathBuf::from("/managed/bin"), OsStr::new("/usr/bin:/bin"));
     let entries = std::env::split_paths(&path).collect::<Vec<_>>();
@@ -211,6 +297,28 @@ fn path_with_prepended_dir_preserves_existing_path_order() {
     assert_eq!(entries[0], PathBuf::from("/managed/bin"));
     assert_eq!(entries[1], PathBuf::from("/usr/bin"));
     assert_eq!(entries[2], PathBuf::from("/bin"));
+}
+
+struct EnvGuard {
+    key: &'static str,
+    original: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
 }
 
 async fn state_with_active_run(provider: AgentHarnessKind) -> AppState {

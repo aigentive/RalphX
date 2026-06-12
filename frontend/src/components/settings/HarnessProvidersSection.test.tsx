@@ -109,15 +109,15 @@ const managedCliStatuses = {
       provider: "claude" as const,
       cliManagementMode: "user_managed" as const,
       autoUpdateEnabled: false,
-      supported: false,
+      supported: true,
       installed: false,
-      binaryPath: null,
+      binaryPath: "/Users/example/.local/bin/claude",
       currentVersion: null,
-      latestVersion: null,
+      latestVersion: "1.0.128",
       updateAvailable: false,
-      action: "unsupported" as const,
-      status: "RX-managed Claude installs are unavailable for this installer path.",
-      error: "Claude Code does not expose a documented RX-owned install prefix yet.",
+      action: "install" as const,
+      status: "RX-managed Claude is not installed.",
+      error: null,
     },
   ],
 };
@@ -322,7 +322,7 @@ describe("HarnessProvidersSection", () => {
       within(codexCard).getByLabelText("Update automatically"),
     ).toBeChecked();
     expect(
-      within(codexCard).getByText(/Runs only for the RX-managed copy/i),
+      within(codexCard).getByText(/RX-managed CLI handling is enabled/i),
     ).toBeInTheDocument();
 
     await user.click(within(codexCard).getByLabelText("Update automatically"));
@@ -375,7 +375,7 @@ describe("HarnessProvidersSection", () => {
     });
   });
 
-  it("shows unsupported managed CLI status without an action", () => {
+  it("shows managed Claude install status with an action", () => {
     const nextSettings: AgentProvidersSettingsResponse = {
       ...settings,
       providers: [
@@ -392,13 +392,11 @@ describe("HarnessProvidersSection", () => {
 
     const claudeCard = screen.getByTestId("provider-card-claude");
     expect(
-      within(claudeCard).getByText(
-        "RX-managed Claude installs are unavailable for this installer path.",
-      ),
+      within(claudeCard).getByText("RX-managed Claude is not installed."),
     ).toBeInTheDocument();
     expect(
-      within(claudeCard).queryByRole("button", { name: "Install Claude" }),
-    ).toBeNull();
+      within(claudeCard).getByRole("button", { name: "Install Claude" }),
+    ).toBeEnabled();
   });
 
   it("updates provider model settings and applies an enabled provider to all agents", async () => {

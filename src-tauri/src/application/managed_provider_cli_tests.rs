@@ -43,18 +43,12 @@ fn rx_managed_codex_launches_from_app_owned_binary_path() {
 }
 
 #[test]
-fn rx_managed_claude_is_explicitly_unavailable() {
+fn rx_managed_native_claude_uses_default_launch_resolution() {
     let settings = provider_settings(
         AgentHarnessKind::Claude,
         AgentProviderCliManagementMode::RxManaged,
     );
 
-    let error = managed_provider_cli_launch_path(&settings)
-        .expect("managed Claude override")
-        .expect_err("managed Claude path unsupported");
-    let probe = managed_provider_runtime_probe(&settings).expect("managed Claude probe");
-
-    assert!(error.contains("unavailable"));
-    assert!(!probe.available);
-    assert!(probe.error.unwrap().contains("unavailable"));
+    assert!(managed_provider_cli_launch_path(&settings).is_none());
+    assert!(managed_provider_runtime_probe(&settings).is_none());
 }
