@@ -210,6 +210,8 @@ mod prune_engine_tests;
 #[cfg(test)]
 mod publish_resilience_tests;
 #[cfg(test)]
+mod plan_complexity_assessment_tests;
+#[cfg(test)]
 mod session_export_service_tests;
 #[cfg(test)]
 mod session_namer_agent_tests;

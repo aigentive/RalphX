@@ -1,4 +1,6 @@
 pub mod plan_references;
+#[cfg(test)]
+mod plan_references_tests;
 pub mod project_entries;
 mod root;
 pub mod skills;

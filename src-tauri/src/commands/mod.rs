@@ -35,6 +35,8 @@ pub mod plan_commands;
 pub mod project_commands;
 pub mod qa_commands;
 pub mod question_commands;
+#[cfg(test)]
+mod question_commands_tests;
 pub mod research_commands;
 pub mod release_notes_commands;
 pub mod registry;

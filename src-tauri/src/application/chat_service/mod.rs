@@ -5384,6 +5384,8 @@ mod bulk_running_state_tests {
 }
 
 #[cfg(test)]
+mod chat_service_composer_references_tests;
+#[cfg(test)]
 mod chat_service_redaction_tests;
 #[cfg(test)]
 mod freshness_routing_tests;
