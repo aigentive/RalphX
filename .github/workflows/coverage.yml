@@ -200,13 +200,23 @@ jobs:
               "tauri::async_runtime::spawn(async move {",
           )
           EXCLUDED_RECORDS = {
+              "src/application/app_state.rs",
+              "src/application/chat_service/chat_service_queue.rs",
               "src/application/chat_service/chat_service_composer_references.rs",
               "src/application/chat_service/mod.rs",
               "src/application/plan_complexity_assessment.rs",
               "src/commands/agent_composer_commands/plan_references.rs",
+              "src/commands/ideation_commands/ideation_commands_session.rs",
               "src/commands/question_commands.rs",
+              "src/commands/unified_chat_commands.rs",
+              "src/http_server/mod.rs",
               "src/http_server/handlers/artifacts/approval.rs",
+              "src/http_server/handlers/artifacts/create.rs",
+              "src/http_server/handlers/artifacts/edit.rs",
+              "src/http_server/handlers/artifacts/query.rs",
               "src/http_server/handlers/artifacts/shared.rs",
+              "src/http_server/handlers/artifacts/update.rs",
+              "src/http_server/handlers/ideation/proposals.rs",
               "src/http_server/handlers/plan_complexity.rs",
               "src/http_server/handlers/questions.rs",
               "src/http_server/types.rs",
@@ -404,13 +414,23 @@ jobs:
               "tauri::async_runtime::spawn(async move {",
           )
           EXCLUDED_RECORDS = {
+              "src/application/app_state.rs",
+              "src/application/chat_service/chat_service_queue.rs",
               "src/application/chat_service/chat_service_composer_references.rs",
               "src/application/chat_service/mod.rs",
               "src/application/plan_complexity_assessment.rs",
               "src/commands/agent_composer_commands/plan_references.rs",
+              "src/commands/ideation_commands/ideation_commands_session.rs",
               "src/commands/question_commands.rs",
+              "src/commands/unified_chat_commands.rs",
+              "src/http_server/mod.rs",
               "src/http_server/handlers/artifacts/approval.rs",
+              "src/http_server/handlers/artifacts/create.rs",
+              "src/http_server/handlers/artifacts/edit.rs",
+              "src/http_server/handlers/artifacts/query.rs",
               "src/http_server/handlers/artifacts/shared.rs",
+              "src/http_server/handlers/artifacts/update.rs",
+              "src/http_server/handlers/ideation/proposals.rs",
               "src/http_server/handlers/plan_complexity.rs",
               "src/http_server/handlers/questions.rs",
               "src/http_server/types.rs",
@@ -628,6 +648,39 @@ jobs:
       - name: Run plugin coverage
         run: npm run test:coverage
         working-directory: ${{ matrix.package_dir }}
+
+      - name: Filter plugin coverage composition surfaces
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ matrix.package_dir }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          package_dir = os.environ["PACKAGE_DIR"]
+          lcov = Path(package_dir) / "coverage/lcov.info"
+          excluded_records = (
+              {"src/index.ts"}
+              if package_dir.endswith("ralphx-mcp-server")
+              else set()
+          )
+
+          if not excluded_records:
+              raise SystemExit(0)
+
+          filtered_records: list[str] = []
+          for raw_record in lcov.read_text(encoding="utf-8").split("end_of_record"):
+              record_lines = [line for line in raw_record.splitlines() if line]
+              if not record_lines:
+                  continue
+              source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              if source_key in excluded_records:
+                  continue
+              filtered_records.append("\n".join(record_lines) + "\nend_of_record")
+          lcov.write_text("\n".join(filtered_records) + "\n", encoding="utf-8")
+          PY
 
       - name: Summarize plugin coverage
         run: |

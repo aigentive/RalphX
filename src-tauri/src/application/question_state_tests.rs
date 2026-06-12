@@ -72,6 +72,21 @@ async fn test_pending_question_info_serialization() {
 }
 
 #[tokio::test]
+async fn test_pending_question_info_defaults_allow_skip_when_missing() {
+    let info: PendingQuestionInfo = serde_json::from_value(serde_json::json!({
+        "request_id": "req-default-skip",
+        "session_id": "session-1",
+        "question": "Proceed?",
+        "header": null,
+        "options": [],
+        "multi_select": false
+    }))
+    .expect("pending question info deserializes");
+
+    assert!(info.allow_skip);
+}
+
+#[tokio::test]
 async fn test_register_with_metadata_tracks_skip_and_batch_progress() {
     let state = QuestionState::new();
 
@@ -583,6 +598,26 @@ mod with_repo {
 
         let answer = state.get_resolved_answer("req-late").await.unwrap();
         assert_eq!(answer.unwrap().text, Some("Late answer".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_unknown_question_with_repo_returns_unresolved() {
+        let (state, _repo) = make_state_with_repo();
+
+        let result = state
+            .resolve(
+                "req-missing",
+                QuestionAnswer {
+                    selected_options: vec![],
+                    text: Some("late answer".to_string()),
+                    skipped: false,
+                },
+            )
+            .await;
+
+        assert!(!result.resolved);
+        assert!(result.session_id.is_none());
+        assert!(!result.delivered_to_waiting_agent);
     }
 
     #[tokio::test]

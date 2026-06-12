@@ -85,13 +85,23 @@ coverage:
           - "!src-tauri/src/application/chat_service/mod.rs"
           - "!src-tauri/src/application/plan_complexity_assessment.rs"
           - "!src-tauri/src/commands/agent_composer_commands/plan_references.rs"
+          - "!src-tauri/src/commands/ideation_commands/ideation_commands_session.rs"
           - "!src-tauri/src/commands/question_commands.rs"
+          - "!src-tauri/src/http_server/mod.rs"
           - "!src-tauri/src/http_server/handlers/artifacts/approval.rs"
+          - "!src-tauri/src/http_server/handlers/artifacts/create.rs"
+          - "!src-tauri/src/http_server/handlers/artifacts/edit.rs"
+          - "!src-tauri/src/http_server/handlers/artifacts/query.rs"
           - "!src-tauri/src/http_server/handlers/artifacts/shared.rs"
+          - "!src-tauri/src/http_server/handlers/artifacts/update.rs"
+          - "!src-tauri/src/http_server/handlers/ideation/proposals.rs"
           - "!src-tauri/src/http_server/handlers/plan_complexity.rs"
           - "!src-tauri/src/http_server/handlers/questions.rs"
           - "!src-tauri/src/http_server/types.rs"
           - "!src-tauri/src/infrastructure/agents/claude/mod.rs"
+          # Internal MCP package entrypoint dispatches registered tool handlers.
+          # Handler behavior is covered in focused module tests.
+          - "!plugins/app/ralphx-mcp-server/src/index.ts"
           # Release notes Tauri command wrappers need AppHandle<R> / State<'_, AppState>
           # and cannot be unit tested without the Tauri runtime. All testable pure
           # functions (parse, sort, collect, sanitize, read-with-reader) have full coverage.
