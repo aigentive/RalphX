@@ -280,3 +280,151 @@ pub async fn get_pending_questions(
     let pending = state.question_state.get_pending_info().await;
     Ok(pending)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::QuestionOption;
+
+    fn answer(selected_options: Vec<&str>, skipped: bool) -> QuestionAnswer {
+        QuestionAnswer {
+            selected_options: selected_options.into_iter().map(str::to_string).collect(),
+            text: None,
+            skipped,
+        }
+    }
+
+    fn pending_question(metadata: serde_json::Value) -> PendingQuestionInfo {
+        PendingQuestionInfo {
+            request_id: "question-1".to_string(),
+            session_id: "22222222-2222-2222-2222-222222222222".to_string(),
+            question: "Switch to plan mode?".to_string(),
+            header: Some("Plan mode".to_string()),
+            options: vec![QuestionOption {
+                value: PLAN_MODE_PROPOSAL_ACCEPT_VALUE.to_string(),
+                label: "Switch".to_string(),
+                description: None,
+            }],
+            multi_select: false,
+            allow_skip: true,
+            batch_index: None,
+            batch_total: None,
+            metadata: Some(metadata),
+        }
+    }
+
+    #[test]
+    fn accepted_plan_mode_proposal_extracts_conversation_and_reason() {
+        let question = pending_question(serde_json::json!({
+            "kind": PLAN_MODE_PROPOSAL_KIND,
+            "conversation_id": "11111111-1111-1111-1111-111111111111",
+            "reason": "  tighten scope first  "
+        }));
+
+        let proposal = accepted_plan_mode_proposal(
+            Some(&question),
+            &answer(vec![PLAN_MODE_PROPOSAL_ACCEPT_VALUE], false),
+        )
+        .expect("accepted proposal");
+
+        assert_eq!(
+            proposal.conversation_id.as_str(),
+            "11111111-1111-1111-1111-111111111111"
+        );
+        assert_eq!(proposal.reason.as_deref(), Some("tighten scope first"));
+    }
+
+    #[test]
+    fn accepted_plan_mode_proposal_falls_back_to_question_session_id() {
+        let question = pending_question(serde_json::json!({
+            "kind": PLAN_MODE_PROPOSAL_KIND,
+            "reason": " "
+        }));
+
+        let proposal = accepted_plan_mode_proposal(
+            Some(&question),
+            &answer(vec![PLAN_MODE_PROPOSAL_ACCEPT_VALUE], false),
+        )
+        .expect("accepted proposal");
+
+        assert_eq!(
+            proposal.conversation_id.as_str(),
+            "22222222-2222-2222-2222-222222222222"
+        );
+        assert_eq!(proposal.reason, None);
+    }
+
+    #[test]
+    fn accepted_plan_mode_proposal_rejects_non_acceptance_cases() {
+        let question = pending_question(serde_json::json!({
+            "kind": PLAN_MODE_PROPOSAL_KIND,
+            "conversation_id": "11111111-1111-1111-1111-111111111111"
+        }));
+        assert!(accepted_plan_mode_proposal(
+            Some(&question),
+            &answer(vec![PLAN_MODE_PROPOSAL_ACCEPT_VALUE], true),
+        )
+        .is_none());
+        assert!(
+            accepted_plan_mode_proposal(Some(&question), &answer(vec!["keep_edit"], false))
+                .is_none()
+        );
+        assert!(accepted_plan_mode_proposal(
+            None,
+            &answer(vec![PLAN_MODE_PROPOSAL_ACCEPT_VALUE], false)
+        )
+        .is_none());
+
+        let wrong_kind = pending_question(serde_json::json!({
+            "kind": "other",
+            "conversation_id": "11111111-1111-1111-1111-111111111111"
+        }));
+        assert!(accepted_plan_mode_proposal(
+            Some(&wrong_kind),
+            &answer(vec![PLAN_MODE_PROPOSAL_ACCEPT_VALUE], false),
+        )
+        .is_none());
+
+        let empty_conversation = pending_question(serde_json::json!({
+            "kind": PLAN_MODE_PROPOSAL_KIND,
+            "conversation_id": " "
+        }));
+        assert!(accepted_plan_mode_proposal(
+            Some(&empty_conversation),
+            &answer(vec![PLAN_MODE_PROPOSAL_ACCEPT_VALUE], false),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn continuation_message_and_metadata_are_hidden_resume_payloads() {
+        assert_eq!(
+            build_plan_mode_proposal_continuation(None),
+            PLAN_MODE_PROPOSAL_CONTINUATION_BASE
+        );
+        assert_eq!(
+            build_plan_mode_proposal_continuation(Some("  check scope  ")),
+            format!("{PLAN_MODE_PROPOSAL_CONTINUATION_BASE}\n\nPlanning focus: check scope")
+        );
+
+        let metadata: serde_json::Value =
+            serde_json::from_str(&plan_mode_proposal_continuation_metadata())
+                .expect("metadata json");
+        assert_eq!(
+            metadata.get("source").and_then(|value| value.as_str()),
+            Some("accepted_plan_mode_proposal")
+        );
+        assert_eq!(
+            metadata
+                .get("resume_in_place")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            metadata
+                .get("persist_hidden_marker")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+    }
+}
