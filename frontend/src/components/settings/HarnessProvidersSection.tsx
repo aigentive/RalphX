@@ -3,13 +3,16 @@ import {
   ChevronDown,
   ChevronRight,
   Cpu,
+  Download,
   ExternalLink,
   RefreshCw,
   RotateCcw,
   ShieldCheck,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import type { AgentProviderSettingsResponse } from "@/api/harness-providers";
+import type { ManagedProviderCliStatusResponse } from "@/api/provider-cli-management";
 import type { UpdateAgentProviderSettingsInput } from "@/api/harness-providers";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -24,6 +27,7 @@ import { Switch } from "@/components/ui/switch";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useProviderCliManagement } from "@/hooks/useProviderCliManagement";
 import {
   AGENT_EFFORT_CATALOG,
   agentEffortOptionsForModel,
@@ -140,6 +144,71 @@ function ProviderCliStatus({
   );
 }
 
+function ProviderManagedCliStatus({
+  provider,
+  status,
+  isLoading,
+  isInstalling,
+  onInstallOrUpdate,
+}: {
+  provider: AgentProviderSettingsResponse;
+  status: ManagedProviderCliStatusResponse | undefined;
+  isLoading: boolean;
+  isInstalling: boolean;
+  onInstallOrUpdate: () => void;
+}) {
+  const label = providerLabel(provider.provider);
+  const canRunAction =
+    status?.supported && (status.action === "install" || status.action === "update");
+  const actionLabel =
+    status?.action === "install"
+      ? `Install ${label}`
+      : status?.action === "update"
+        ? `Update ${label}`
+        : null;
+
+  return (
+    <div className="border-t border-[var(--border-subtle)] px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
+        <div className="min-w-0 space-y-1">
+          <div className="text-xs font-medium text-[var(--text-primary)]">
+            RX-managed CLI
+          </div>
+          <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
+            {isLoading && !status ? "Checking managed CLI status." : status?.status}
+          </p>
+          {status?.binaryPath && (
+            <code className="block max-w-full truncate rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 text-[0.6875rem] text-[var(--text-muted)]">
+              {status.binaryPath}
+            </code>
+          )}
+          {status?.error && !status.supported && (
+            <p className="text-[0.6875rem] leading-relaxed text-[var(--status-warning)]">
+              {status.error}
+            </p>
+          )}
+        </div>
+        {canRunAction && actionLabel && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={isInstalling}
+            onClick={onInstallOrUpdate}
+          >
+            {status.action === "install" ? (
+              <Download className="mr-2 h-4 w-4" />
+            ) : (
+              <RefreshCw className="mr-2 h-4 w-4" />
+            )}
+            {actionLabel}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ProvidersLoadingState() {
   return (
     <div className="space-y-4" data-testid="providers-loading-state">
@@ -189,6 +258,13 @@ export function HarnessProvidersSection() {
   const { models } = useAgentModels();
   const { confirm, confirmationDialogProps, ConfirmationDialog } =
     useConfirmation();
+  const {
+    statusByProvider,
+    isLoadingStatus,
+    installOrUpdateProviderAsync,
+    isInstallingProvider,
+    refetchStatus,
+  } = useProviderCliManagement();
   const [expandedPermissions, setExpandedPermissions] = useState<
     Record<string, boolean>
   >({});
@@ -279,6 +355,26 @@ export function HarnessProvidersSection() {
     });
   };
 
+  const installOrUpdateManagedCli = async (
+    provider: AgentProviderSettingsResponse,
+  ) => {
+    const status = statusByProvider.get(provider.provider);
+    const actionVerb = status?.action === "install" ? "Installing" : "Updating";
+    const label = providerLabel(provider.provider);
+    const toastId = `provider-cli-management:${provider.provider}`;
+    toast.loading(`${actionVerb} ${label} CLI...`, { id: toastId });
+    try {
+      await installOrUpdateProviderAsync({ provider: provider.provider });
+      toast.success(`${label} CLI is ready.`, { id: toastId });
+      await Promise.all([refetchStatus(), refetchProviders()]);
+    } catch (error) {
+      toast.error(`Failed to update ${label} CLI.`, {
+        id: toastId,
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  };
+
   return (
     <SectionCard
       icon={<ShieldCheck className="h-5 w-5" />}
@@ -351,6 +447,7 @@ export function HarnessProvidersSection() {
                 selectedModelEntry == null;
               const isRxManagedCli =
                 provider.cliManagementMode === RX_MANAGED_CLI_MODE;
+              const managedCliStatus = statusByProvider.get(provider.provider);
 
               return (
                 <div
@@ -466,6 +563,18 @@ export function HarnessProvidersSection() {
                       />
                     </div>
                   </div>
+
+                  {isRxManagedCli && (
+                    <ProviderManagedCliStatus
+                      provider={provider}
+                      status={managedCliStatus}
+                      isLoading={isLoadingStatus}
+                      isInstalling={isInstallingProvider}
+                      onInstallOrUpdate={() =>
+                        void installOrUpdateManagedCli(provider)
+                      }
+                    />
+                  )}
 
                   {provider.enabled && (
                     <>

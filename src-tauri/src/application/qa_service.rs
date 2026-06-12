@@ -8,6 +8,7 @@ use crate::domain::qa::{AcceptanceCriteria, QAOverallStatus, QAResults, QATestSt
 use crate::domain::repositories::TaskQARepository;
 use crate::error::{AppError, AppResult};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -71,7 +72,9 @@ pub struct QAService<R: TaskQARepository, C: AgenticClient> {
     /// State for each task being processed
     task_states: Arc<RwLock<HashMap<String, TaskQAState>>>,
     /// Working directory for agents
-    working_directory: std::path::PathBuf,
+    working_directory: PathBuf,
+    /// Optional provider CLI executable path override for direct QA spawns
+    cli_path_override: Option<PathBuf>,
 }
 
 impl<R: TaskQARepository, C: AgenticClient> QAService<R, C> {
@@ -82,13 +85,28 @@ impl<R: TaskQARepository, C: AgenticClient> QAService<R, C> {
             client,
             task_states: Arc::new(RwLock::new(HashMap::new())),
             working_directory: std::env::current_dir().unwrap_or_else(|_| ".".into()),
+            cli_path_override: None,
         }
     }
 
     /// Set the working directory for agents
-    pub fn with_working_dir(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+    pub fn with_working_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.working_directory = path.into();
         self
+    }
+
+    /// Set the provider CLI executable path override for direct QA agent spawns.
+    pub fn with_cli_path_override(mut self, path: impl Into<PathBuf>) -> Self {
+        self.cli_path_override = Some(path.into());
+        self
+    }
+
+    fn apply_agent_config_overrides(&self, config: AgentConfig) -> AgentConfig {
+        if let Some(path) = self.cli_path_override.as_ref() {
+            config.with_cli_path_override(path.clone())
+        } else {
+            config
+        }
     }
 
     /// Start QA prep for a task (runs in background)
@@ -122,7 +140,9 @@ impl<R: TaskQARepository, C: AgenticClient> QAService<R, C> {
         );
 
         // Spawn QA prep agent
-        let config = AgentConfig::qa_prep(prompt).with_working_dir(&self.working_directory);
+        let config = self.apply_agent_config_overrides(
+            AgentConfig::qa_prep(prompt).with_working_dir(&self.working_directory),
+        );
         let handle = self.client.spawn_agent(config).await?;
 
         // Update state
@@ -265,6 +285,7 @@ impl<R: TaskQARepository, C: AgenticClient> QAService<R, C> {
             role: AgentRole::QaTester,
             prompt,
             working_directory: self.working_directory.clone(),
+            cli_path_override: self.cli_path_override.clone(),
             ..Default::default()
         };
         let handle = self.client.spawn_agent(config).await?;

@@ -40,6 +40,7 @@ pub(crate) mod git_artifact_cleanup;
 pub mod harness_runtime_registry;
 pub mod ideation_service;
 pub mod interactive_process_registry;
+pub(crate) mod managed_provider_cli;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
 pub(crate) mod native_menu;

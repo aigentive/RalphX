@@ -351,11 +351,14 @@ async fn read_provider_settings(
         .list()
         .await
         .map_err(|err| err.to_string())?;
-    let probes = if refresh_runtime {
+    let mut probes = if refresh_runtime {
         probe_supported_harnesses()
     } else {
         snapshot_probes_from_provider_settings(&stored)
     };
+    if refresh_runtime {
+        overlay_managed_provider_runtime_probes(&stored, &mut probes);
+    }
     tracing::info!(
         refresh_runtime,
         provider_rows = stored.len(),
@@ -363,6 +366,19 @@ async fn read_provider_settings(
         "Agent provider settings loaded"
     );
     read_provider_settings_with_stored_and_probes(stored, &probes).await
+}
+
+fn overlay_managed_provider_runtime_probes(
+    stored: &[AgentProviderSettings],
+    probes: &mut HashMap<AgentHarnessKind, HarnessRuntimeProbe>,
+) {
+    for settings in stored {
+        if let Some(probe) =
+            crate::application::managed_provider_cli::managed_provider_runtime_probe(settings)
+        {
+            probes.insert(settings.provider, probe);
+        }
+    }
 }
 
 async fn read_provider_settings_with_probes(
@@ -454,7 +470,19 @@ pub async fn update_agent_provider_settings(
         .map_err(|err| err.to_string())?;
     let mut probes = snapshot_probes_from_provider_settings(&stored);
     if input.enabled == Some(true) {
-        probes.insert(provider, refresh_harness_runtime_probe(provider));
+        let existing = stored
+            .iter()
+            .find(|row| row.provider == provider)
+            .cloned()
+            .unwrap_or_else(|| AgentProviderSettings::disabled_defaults(provider));
+        let probe = if let Some(probe) =
+            crate::application::managed_provider_cli::managed_provider_runtime_probe(&existing)
+        {
+            probe
+        } else {
+            refresh_harness_runtime_probe(provider)
+        };
+        probes.insert(provider, probe);
     }
     update_provider_settings_with_probes(input, &state, &probes).await
 }

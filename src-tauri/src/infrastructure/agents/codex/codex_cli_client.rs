@@ -40,10 +40,7 @@ pub async fn kill_all_tracked_processes() {
         return;
     }
 
-    tracing::info!(
-        count,
-        "Killing tracked Codex agent processes on exit"
-    );
+    tracing::info!(count, "Killing tracked Codex agent processes on exit");
 
     #[cfg(unix)]
     {
@@ -79,23 +76,41 @@ impl CodexCliClient {
         }
     }
 
-    fn resolve_cli_path(&self) -> AgentResult<PathBuf> {
-        if self.cli_path.exists() {
-            return Ok(self.cli_path.clone());
+    fn resolve_cli_path(&self, cli_path: &Path) -> AgentResult<PathBuf> {
+        if cli_path.exists() {
+            return Ok(cli_path.to_path_buf());
         }
 
-        which::which(&self.cli_path).map_err(|_| {
-            AgentError::CliNotAvailable(format!("codex CLI not found at {:?}", self.cli_path))
+        which::which(cli_path).map_err(|_| {
+            AgentError::CliNotAvailable(format!("codex CLI not found at {:?}", cli_path))
         })
     }
 
     fn resolve_cli(&self) -> AgentResult<(PathBuf, CodexCliCapabilities)> {
-        if self.cli_path == Path::new("codex") {
+        self.resolve_cli_for_path(&self.cli_path)
+    }
+
+    fn resolve_cli_for_config(
+        &self,
+        config: &AgentConfig,
+    ) -> AgentResult<(PathBuf, CodexCliCapabilities)> {
+        let cli_path = config
+            .cli_path_override
+            .as_deref()
+            .unwrap_or(self.cli_path.as_path());
+        self.resolve_cli_for_path(cli_path)
+    }
+
+    fn resolve_cli_for_path(
+        &self,
+        cli_path: &Path,
+    ) -> AgentResult<(PathBuf, CodexCliCapabilities)> {
+        if cli_path == Path::new("codex") {
             let resolved = resolve_codex_cli().map_err(AgentError::CliNotAvailable)?;
             return Ok((resolved.path, resolved.capabilities));
         }
 
-        let cli_path = self.resolve_cli_path()?;
+        let cli_path = self.resolve_cli_path(cli_path)?;
         let capabilities =
             probe_codex_cli(&cli_path).map_err(|error| AgentError::CliNotAvailable(error))?;
         Ok((cli_path, capabilities))
@@ -138,7 +153,7 @@ impl Default for CodexCliClient {
 #[async_trait]
 impl AgenticClient for CodexCliClient {
     async fn spawn_agent(&self, config: AgentConfig) -> AgentResult<AgentHandle> {
-        let (cli_path, capabilities) = self.resolve_cli()?;
+        let (cli_path, capabilities) = self.resolve_cli_for_config(&config)?;
         if !capabilities.has_core_exec_support() {
             return Err(AgentError::CliNotAvailable(format!(
                 "Codex CLI is missing required capability: {}",

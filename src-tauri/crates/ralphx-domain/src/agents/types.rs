@@ -83,6 +83,8 @@ pub struct AgentConfig {
     pub model: Option<String>,
     /// Optional provider harness override for the spawn.
     pub harness: Option<AgentHarnessKind>,
+    /// Optional provider CLI executable path override for this spawn.
+    pub cli_path_override: Option<PathBuf>,
     /// Optional provider-neutral reasoning effort.
     pub logical_effort: Option<LogicalEffort>,
     /// Optional provider approval policy.
@@ -107,6 +109,7 @@ impl Default for AgentConfig {
             agent: None,
             model: None,
             harness: None,
+            cli_path_override: None,
             logical_effort: None,
             approval_policy: None,
             sandbox_mode: None,
@@ -160,6 +163,12 @@ impl AgentConfig {
     /// Set the provider harness.
     pub fn with_harness(mut self, harness: AgentHarnessKind) -> Self {
         self.harness = Some(harness);
+        self
+    }
+
+    /// Set the provider CLI executable path override.
+    pub fn with_cli_path_override(mut self, path: impl Into<PathBuf>) -> Self {
+        self.cli_path_override = Some(path.into());
         self
     }
 

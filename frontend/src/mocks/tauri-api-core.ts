@@ -133,6 +133,39 @@ const mockAgentProviderSettings = {
   requiresOnboarding: false,
 };
 
+const mockManagedProviderCliStatuses = {
+  providers: [
+    {
+      provider: "codex",
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
+      supported: true,
+      installed: false,
+      binaryPath: "/mock/ralphx/managed-cli/codex/bin/codex",
+      currentVersion: null,
+      latestVersion: "0.137.0",
+      updateAvailable: false,
+      action: "none",
+      status: "Codex CLI is user-managed. RX will not install or update it.",
+      error: null,
+    },
+    {
+      provider: "claude",
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
+      supported: false,
+      installed: false,
+      binaryPath: null,
+      currentVersion: null,
+      latestVersion: null,
+      updateAvailable: false,
+      action: "unsupported",
+      status: "RX-managed Claude installs are unavailable for this installer path.",
+      error: "Claude Code does not expose a documented RX-owned install prefix yet.",
+    },
+  ],
+};
+
 const mockAgentModels = [
   {
     provider: "codex",
@@ -546,6 +579,35 @@ const commandHandlers: Record<
     ],
   }),
   get_agent_provider_settings: async () => mockAgentProviderSettings,
+  get_managed_provider_cli_status: async () => mockManagedProviderCliStatuses,
+  install_or_update_managed_provider_cli: async (args) => {
+    const input = args.input as { provider?: string };
+    const status = mockManagedProviderCliStatuses.providers.find(
+      (entry) => entry.provider === input.provider,
+    );
+    if (!status || !status.supported) {
+      throw new Error("Managed CLI installs are not available for this provider.");
+    }
+    Object.assign(status, {
+      cliManagementMode: "rx_managed",
+      installed: true,
+      currentVersion: status.latestVersion ?? "0.137.0",
+      updateAvailable: false,
+      action: "none",
+      status: `RX-managed ${status.provider} ${status.latestVersion ?? "0.137.0"} is installed.`,
+    });
+    return {
+      provider: status.provider,
+      success: true,
+      status,
+      stdout: "mock install complete",
+      stderr: null,
+    };
+  },
+  auto_update_managed_provider_clis: async () => ({
+    updated: [],
+    skipped: mockManagedProviderCliStatuses.providers,
+  }),
   get_atlassian_integration_settings: async () => mockAtlassianIntegrationSettings,
   save_atlassian_integration_settings: async (args) => {
     const input = args.input as {

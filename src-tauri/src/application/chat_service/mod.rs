@@ -1870,6 +1870,33 @@ impl<R: Runtime> AppChatService<R> {
         .map_err(ChatServiceError::SpawnFailed)
     }
 
+    async fn resolve_launch_cli_path_for_harness(
+        &self,
+        effective_harness: AgentHarnessKind,
+    ) -> Result<PathBuf, ChatServiceError> {
+        if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
+            let settings = provider_repo
+                .get(effective_harness)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+            if let Some(settings) = settings.as_ref() {
+                if let Some(path) =
+                    crate::application::managed_provider_cli::managed_provider_cli_launch_path(
+                        settings,
+                    )
+                {
+                    return path.map_err(ChatServiceError::SpawnFailed);
+                }
+            }
+        }
+
+        Ok(if effective_harness == DEFAULT_AGENT_HARNESS {
+            self.cli_path.clone()
+        } else {
+            resolve_chat_service_bootstrap(effective_harness).cli_path
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn spawn_process_for_harness(
         &self,
@@ -1901,11 +1928,9 @@ impl<R: Runtime> AppChatService<R> {
         let effective_harness = resolved_spawn_settings.effective_harness;
         let bootstrap_started = Instant::now();
         let cli_resolve_started = Instant::now();
-        let cli_path = if effective_harness == DEFAULT_AGENT_HARNESS {
-            self.cli_path.clone()
-        } else {
-            resolve_chat_service_bootstrap(effective_harness).cli_path
-        };
+        let cli_path = self
+            .resolve_launch_cli_path_for_harness(effective_harness)
+            .await?;
         tracing::info!(
             %context_type,
             context_id,
@@ -4609,6 +4634,39 @@ mod stale_registry_gate_tests {
 
     fn pid_zero() -> u32 {
         0
+    }
+}
+
+#[cfg(test)]
+mod managed_provider_launch_path_tests {
+    use crate::application::AppState;
+    use crate::domain::agents::{
+        AgentHarnessKind, AgentProviderCliManagementMode, AgentProviderSettings,
+    };
+    use crate::utils::runtime_log_paths::managed_codex_binary_path;
+
+    #[tokio::test]
+    async fn rx_managed_codex_provider_overrides_chat_launch_cli_path() {
+        let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+            .lock()
+            .expect("test env mutex");
+        let app_state = AppState::new_sqlite_test();
+        let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+        settings.enabled = true;
+        settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
+        app_state
+            .agent_provider_settings_repo
+            .upsert(&settings)
+            .await
+            .expect("save provider settings");
+        let service = app_state.build_chat_service();
+
+        let path = service
+            .resolve_launch_cli_path_for_harness(AgentHarnessKind::Codex)
+            .await
+            .expect("launch path");
+
+        assert_eq!(path, managed_codex_binary_path());
     }
 }
 
