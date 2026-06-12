@@ -19,7 +19,7 @@ use crate::domain::entities::{
 use crate::domain::state_machine::transition_handler::run_pre_execution_setup;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names::{
-    AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
+    AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER, AGENT_ORCHESTRATOR_IDEATION,
 };
 
 pub const AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE: &str =
@@ -280,8 +280,8 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
         auto_publish_paused_pr_auto_merge_desired: None,
         pr_autofix_enabled: false,
         pr_auto_merge_desired: false,
-        pr_auto_merge_method:
-            crate::domain::entities::DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
+        pr_auto_merge_method: crate::domain::entities::DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
+            .to_string(),
         pr_auto_merge_current: None,
         pr_supervision_status: None,
         pr_supervision_summary: None,
@@ -604,6 +604,7 @@ pub fn agent_name_for_workspace_mode(mode: AgentConversationWorkspaceMode) -> &'
     match mode {
         AgentConversationWorkspaceMode::Chat => AGENT_GENERAL_EXPLORER,
         AgentConversationWorkspaceMode::Edit => AGENT_GENERAL_WORKER,
+        AgentConversationWorkspaceMode::Plan => AGENT_ORCHESTRATOR_IDEATION,
         AgentConversationWorkspaceMode::Ideation => AGENT_CHAT_PROJECT,
     }
 }

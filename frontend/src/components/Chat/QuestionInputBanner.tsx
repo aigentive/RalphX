@@ -10,7 +10,7 @@
  */
 
 import { useState, useCallback, useEffect } from "react";
-import { Check, X, Maximize2, Minimize2 } from "lucide-react";
+import { Check, CheckCircle2, Loader2, X, Maximize2, Minimize2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AskUserQuestionPayload } from "@/types/ask-user-question";
@@ -29,12 +29,21 @@ export interface QuestionInputBannerProps {
   selectedIndices: Set<number>;
   /** Called when user clicks a chip */
   onChipClick: (index: number) => void;
+  /** Called when user explicitly skips an optional question */
+  onSkip?: () => void;
   /** Called when user clicks the dismiss (X) button */
   onDismiss: () => void;
   /** When set, shows the collapsed answered state */
   answeredValue?: string | undefined;
   /** Called when user clicks dismiss on the answered banner */
   onDismissAnswered?: (() => void) | undefined;
+  /** Optional Plan-mode artifact approval action shown alongside the question. */
+  planApprovalAction?: {
+    label: string;
+    onClick: () => void;
+    disabled?: boolean;
+    isPending?: boolean;
+  } | undefined;
 }
 
 // ============================================================================
@@ -111,6 +120,38 @@ function OptionChip({
   );
 }
 
+function PlanApprovalActionButton({
+  action,
+}: {
+  action: NonNullable<QuestionInputBannerProps["planApprovalAction"]>;
+}) {
+  const isDisabled = Boolean(action.disabled || action.isPending);
+
+  return (
+    <button
+      type="button"
+      onClick={action.onClick}
+      disabled={isDisabled}
+      data-testid="question-plan-approval-action"
+      className="inline-flex h-7 flex-shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[0.6875rem] font-semibold transition-colors"
+      style={{
+        border: "1px solid var(--accent-border)",
+        background: "var(--accent-muted)",
+        color: "var(--accent-primary)",
+        cursor: isDisabled ? "not-allowed" : "pointer",
+        opacity: isDisabled ? 0.65 : 1,
+      }}
+    >
+      {action.isPending ? (
+        <Loader2 className="h-3 w-3 animate-spin" />
+      ) : (
+        <CheckCircle2 className="h-3 w-3" />
+      )}
+      {action.isPending ? "Approving..." : action.label}
+    </button>
+  );
+}
+
 // ============================================================================
 // Main Component
 // ============================================================================
@@ -119,9 +160,11 @@ export function QuestionInputBanner({
   question,
   selectedIndices,
   onChipClick,
+  onSkip,
   onDismiss,
   answeredValue,
   onDismissAnswered,
+  planApprovalAction,
 }: QuestionInputBannerProps) {
   const [visible, setVisible] = useState(false);
   const [computedHeight, setComputedHeight] = useState(320);
@@ -157,6 +200,10 @@ export function QuestionInputBanner({
 
   const isAnswered = answeredValue !== undefined;
   const showExpandButton = computedHeight >= 280;
+  const canSkip = Boolean(question && question.allowSkip !== false && onSkip);
+  const progressLabel = question?.batchIndex && question?.batchTotal && question.batchTotal > 1
+    ? `${question.batchIndex} of ${question.batchTotal}`
+    : null;
 
   // Nothing to show: no active question and no answered state
   if (!question && !isAnswered) return null;
@@ -220,6 +267,10 @@ export function QuestionInputBanner({
               {answeredValue}
             </span>
 
+            {planApprovalAction && (
+              <PlanApprovalActionButton action={planApprovalAction} />
+            )}
+
             {onDismissAnswered && (
               <button
                 type="button"
@@ -265,12 +316,45 @@ export function QuestionInputBanner({
                 ?
               </span>
 
-              <span
-                className="text-[0.6875rem] font-semibold flex-1"
-                style={{ color: "var(--text-muted)" }}
-              >
-                {question.header ?? "Question from agent"}
+              <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                <span
+                  className="truncate text-[0.6875rem] font-semibold"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {question.header ?? "Question from agent"}
+                </span>
+                {progressLabel && (
+                  <span
+                    className="flex-shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] font-semibold"
+                    style={{
+                      background: "var(--overlay-weak)",
+                      color: "var(--text-muted)",
+                    }}
+                  >
+                    {progressLabel}
+                  </span>
+                )}
               </span>
+
+              {planApprovalAction && (
+                <PlanApprovalActionButton action={planApprovalAction} />
+              )}
+
+              {canSkip && (
+                <button
+                  type="button"
+                  onClick={onSkip}
+                  className="flex-shrink-0 rounded-md px-2 py-1 text-[0.6875rem] font-semibold transition-colors"
+                  style={{
+                    border: "1px solid var(--overlay-moderate)",
+                    background: "var(--bg-surface)",
+                    color: "var(--text-muted)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Skip
+                </button>
+              )}
 
               {/* Expand/collapse button - only shown when content is near clipping threshold */}
               {showExpandButton && (

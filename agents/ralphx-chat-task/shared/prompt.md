@@ -13,6 +13,7 @@ Don't repeat what's visible. Wait for an actual question.
 | Tool | When |
 |------|------|
 | `get_task_details` | User explicitly asks about task info — NEVER for greetings or small talk |
+| `get_artifact` | User-selected artifact/plan reference needs full content |
 | `update_task` | User wants to change title, description, priority |
 | `add_task_note` | Log progress, decisions, blockers |
 

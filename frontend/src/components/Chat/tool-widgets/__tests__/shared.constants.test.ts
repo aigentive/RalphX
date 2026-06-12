@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { parseMcpToolResult, parseMcpToolResultRaw } from "../shared.constants";
+import {
+  parseMcpToolResult,
+  parseMcpToolResultRaw,
+  parseToolResultAsLines,
+} from "../shared.constants";
 
 describe("parseMcpToolResult", () => {
   it("unwraps MCP content array to parsed object", () => {
@@ -82,5 +86,23 @@ describe("parseMcpToolResultRaw", () => {
 
   it("returns null for null", () => {
     expect(parseMcpToolResultRaw(null)).toBeNull();
+  });
+});
+
+describe("parseToolResultAsLines", () => {
+  it("reads an object text field as trimmed lines", () => {
+    expect(parseToolResultAsLines({ text: " one \n\n two " })).toEqual(["one", "two"]);
+  });
+
+  it("reads an object content string as trimmed lines", () => {
+    expect(parseToolResultAsLines({ content: " alpha \n beta " })).toEqual([
+      "alpha",
+      "beta",
+    ]);
+  });
+
+  it("unwraps object content from MCP text blocks", () => {
+    const content = [{ type: "text", text: " first \n second " }];
+    expect(parseToolResultAsLines({ content })).toEqual(["first", "second"]);
   });
 });

@@ -54,6 +54,7 @@ vi.mock("@tanstack/react-query", () => ({
 
 vi.mock("./useIdeation", () => ({
   ideationKeys: {
+    sessionDetail: (sessionId: string) => ["ideation", "session", sessionId],
     sessionWithData: (sessionId: string) => ["ideation", "session", sessionId, "with-data"],
   },
 }));
@@ -189,7 +190,13 @@ describe("usePlanArtifactEvents", () => {
         expect.objectContaining({ id: "artifact-2" })
       );
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["ideation", "session", "session-1", "with-data"],
+        queryKey: ["ideation", "session", "session-1"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "session-plan", "session-1"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "plan-approval", "session-1"],
       });
     });
 
@@ -212,9 +219,15 @@ describe("usePlanArtifactEvents", () => {
       // Tier 1 returned early — one store update, plus the session and artifact
       // cache invalidations owned by that tier only.
       expect(mockSetPlanArtifact).toHaveBeenCalledTimes(1);
-      expect(mockInvalidateQueries).toHaveBeenCalledTimes(3);
+      expect(mockInvalidateQueries).toHaveBeenCalledTimes(5);
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["ideation", "session", "session-1", "with-data"],
+        queryKey: ["ideation", "session", "session-1"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "session-plan", "session-1"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "plan-approval", "session-1"],
       });
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
         queryKey: ["agents", "artifact", "artifact-2"],
@@ -278,7 +291,10 @@ describe("usePlanArtifactEvents", () => {
         planUpdateSeq: 1,
       });
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["ideation", "session", "session-1", "with-data"],
+        queryKey: ["ideation", "session", "session-1"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "session-plan", "session-1"],
       });
     });
 
@@ -326,7 +342,10 @@ describe("usePlanArtifactEvents", () => {
         planUpdateSeq: 1,
       });
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["ideation", "session", "session-other", "with-data"],
+        queryKey: ["ideation", "session", "session-other"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "session-plan", "session-other"],
       });
     });
   });
@@ -355,7 +374,10 @@ describe("usePlanArtifactEvents", () => {
       expect(mockSetPlanArtifact).not.toHaveBeenCalled();
       expect(mockUpdateSession).not.toHaveBeenCalled();
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["ideation", "session", "session-active", "with-data"],
+        queryKey: ["ideation", "session", "session-active"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "session-plan", "session-active"],
       });
     });
 
@@ -401,7 +423,7 @@ describe("usePlanArtifactEvents", () => {
       });
 
       expect(mockSetPlanArtifact).toHaveBeenCalledTimes(1);
-      expect(mockInvalidateQueries).toHaveBeenCalledTimes(3);
+      expect(mockInvalidateQueries).toHaveBeenCalledTimes(5);
     });
 
     it("same created event emitted twice → only processed once", () => {
@@ -587,7 +609,7 @@ describe("usePlanArtifactEvents", () => {
         planUpdateSeq: 1,
       });
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["ideation", "session", "session-followup", "with-data"],
+        queryKey: ["ideation", "session", "session-followup"],
       });
     });
   });

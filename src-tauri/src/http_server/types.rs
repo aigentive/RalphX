@@ -824,6 +824,50 @@ pub struct EditPlanArtifactRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ApprovePlanArtifactRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub artifact_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SubmitPlanComplexityAssessmentRequest {
+    pub session_id: String,
+    pub artifact_id: String,
+    pub artifact_version: u32,
+    pub level: String,
+    pub score: u8,
+    pub recommended_action: String,
+    pub confidence: f64,
+    pub reason_summary: String,
+    #[serde(default)]
+    pub signals: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SubmitPlanComplexityAssessmentResponse {
+    pub success: bool,
+    pub assessment: PlanComplexityAssessmentResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanComplexityAssessmentResponse {
+    pub id: String,
+    pub session_id: String,
+    pub artifact_id: String,
+    pub artifact_version: u32,
+    pub level: String,
+    pub score: u8,
+    pub recommended_action: String,
+    pub confidence: f64,
+    pub reason_summary: String,
+    pub signals: Value,
+    pub assessed_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct PlanEdit {
     pub old_text: String,
     pub new_text: String,
@@ -859,10 +903,15 @@ pub struct ArtifactResponse {
     pub id: String,
     pub artifact_type: String,
     pub name: String,
+    pub content_type: String,
     pub content: String,
     pub version: u32,
     pub created_at: String,
     pub created_by: String,
+    pub bucket_id: Option<String>,
+    pub task_id: Option<String>,
+    pub process_id: Option<String>,
+    pub derived_from: Vec<String>,
     /// The artifact ID that was replaced (only set on update responses)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_artifact_id: Option<String>,
@@ -876,27 +925,55 @@ pub struct ArtifactResponse {
     /// The working directory of the project this session belongs to (only set on get_session_plan responses).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_working_directory: Option<String>,
+    /// Plan-mode approval state for the current artifact version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_approval_status: Option<String>,
+    /// Approved artifact id when the current artifact version is approved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_approved_artifact_id: Option<String>,
+    /// Approved artifact version when the current artifact version is approved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_approved_version: Option<u32>,
+    /// Approval timestamp for the current artifact version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_approved_at: Option<String>,
 }
 
 impl From<Artifact> for ArtifactResponse {
     fn from(artifact: Artifact) -> Self {
-        let content = match &artifact.content {
-            ArtifactContent::Inline { text } => text.clone(),
-            ArtifactContent::File { path } => format!("[File: {}]", path),
+        let (content_type, content) = match &artifact.content {
+            ArtifactContent::Inline { text } => ("inline".to_string(), text.clone()),
+            ArtifactContent::File { path } => ("file".to_string(), path.clone()),
         };
 
         Self {
             id: artifact.id.to_string(),
-            artifact_type: format!("{:?}", artifact.artifact_type),
+            artifact_type: artifact.artifact_type.to_string(),
             name: artifact.name,
+            content_type,
             content,
             version: artifact.metadata.version,
             created_at: artifact.metadata.created_at.to_rfc3339(),
             created_by: artifact.metadata.created_by.clone(),
+            bucket_id: artifact.bucket_id.map(|id| id.as_str().to_string()),
+            task_id: artifact.metadata.task_id.map(|id| id.as_str().to_string()),
+            process_id: artifact
+                .metadata
+                .process_id
+                .map(|id| id.as_str().to_string()),
+            derived_from: artifact
+                .derived_from
+                .iter()
+                .map(|id| id.as_str().to_string())
+                .collect(),
             previous_artifact_id: None,
             session_id: None,
             is_inherited: None,
             project_working_directory: None,
+            plan_approval_status: None,
+            plan_approved_artifact_id: None,
+            plan_approved_version: None,
+            plan_approved_at: None,
         }
     }
 }
@@ -1055,6 +1132,11 @@ pub struct QuestionRequestInput {
     pub options: Vec<QuestionOptionInput>,
     #[serde(default)]
     pub multi_select: bool,
+    #[serde(default = "default_question_allow_skip")]
+    pub allow_skip: bool,
+    pub batch_index: Option<u32>,
+    pub batch_total: Option<u32>,
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1067,6 +1149,12 @@ pub struct ResolveQuestionInput {
     pub request_id: String,
     pub selected_options: Vec<String>,
     pub text: Option<String>,
+    #[serde(default)]
+    pub skipped: bool,
+}
+
+fn default_question_allow_skip() -> bool {
+    true
 }
 
 // ============================================================================

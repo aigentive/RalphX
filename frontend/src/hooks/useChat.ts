@@ -19,6 +19,7 @@ import {
   parseContentBlocks,
   parseToolCalls,
   type ChatMessageResponse,
+  type ComposerArtifactReference,
   type ComposerIntegrationReference,
   type ComposerProjectReference,
   type ConversationMessagesPageResponse,
@@ -78,6 +79,7 @@ type SendMessageVariables = {
   content: string;
   attachmentIds?: string[];
   target?: string;
+  composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
 };
@@ -1163,11 +1165,14 @@ export function useChat(
       content,
       attachmentIds,
       target,
+      composerArtifactReferences,
       composerProjectReferences,
       composerIntegrationReferences,
     }) => {
       const sendOptions =
-        composerProjectReferences?.length || composerIntegrationReferences?.length
+        composerProjectReferences?.length ||
+        composerIntegrationReferences?.length ||
+        composerArtifactReferences?.length
           ? {
               ...options?.sendOptions,
               ...(composerProjectReferences?.length
@@ -1175,6 +1180,9 @@ export function useChat(
                 : {}),
               ...(composerIntegrationReferences?.length
                 ? { composerIntegrationReferences }
+                : {}),
+              ...(composerArtifactReferences?.length
+                ? { composerArtifactReferences }
                 : {}),
             }
           : options?.sendOptions;
@@ -1211,6 +1219,7 @@ export function useChat(
           metadata: serializeComposerReferencesMetadata({
             projectReferences: variables.composerProjectReferences,
             integrationReferences: variables.composerIntegrationReferences,
+            artifactReferences: variables.composerArtifactReferences,
           }),
         }
       );

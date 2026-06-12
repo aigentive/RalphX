@@ -635,12 +635,15 @@ export async function handleFilesystemToolCall(name, rawArgs) {
 }
 export function formatFilesystemToolError(error) {
     const message = error instanceof Error ? error.message : String(error);
-    const root = normalizePathLike(getPrimaryFilesystemRoot());
+    const roots = getAllowedFilesystemRoots()
+        .map((root) => normalizePathLike(root))
+        .map((root) => `- ${root}`)
+        .join("\n");
     return {
         content: [
             {
                 type: "text",
-                text: `ERROR: ${message}\nAllowed filesystem root: ${root}`,
+                text: `ERROR: ${message}\nAllowed filesystem roots:\n${roots}`,
             },
         ],
         isError: true,

@@ -6,7 +6,7 @@
  * - run_completed, stopped, error: guardedTermination sets idle / re-asserts generating
  * - turn_completed: sets waiting_for_input with verification child guard
  * - Verification child reverse link cleanup on child termination
- * - clearActiveQuestion scoped to ideation contexts only
+ * - ask-user-question state survives terminal lifecycle events
  * - clearPendingPlan scoped to team-mode-active contexts only
  * - Error toasts with deterministic id for task_execution/review/merge
  * - heartbeat/task events update lastAgentEventTimestamp
@@ -776,17 +776,17 @@ describe("useGlobalAgentLifecycle", () => {
   });
 
   // --------------------------------------------------------------------------
-  // clearActiveQuestion scope guard
+  // durable question preservation
   // --------------------------------------------------------------------------
 
-  it("clearActiveQuestion called for ideation context on termination", () => {
+  it("clearActiveQuestion is not called for ideation context on termination", () => {
     renderHook(() => useGlobalAgentLifecycle());
 
     act(() => {
       fireEvent("agent:run_completed", mkRunCompleted("ideation", "session-1"));
     });
 
-    expect(uiStoreMocks.clearActiveQuestion).toHaveBeenCalledWith("session-1");
+    expect(uiStoreMocks.clearActiveQuestion).not.toHaveBeenCalled();
   });
 
   it("clearActiveQuestion NOT called for task_execution context", () => {

@@ -6,8 +6,21 @@ use crate::application::question_state::{PendingQuestionInfo, QuestionAnswer};
 use crate::domain::repositories::QuestionRepository;
 use crate::error::AppResult;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryQuestionStatus {
+    Pending,
+    WaitExpired,
+    Resolved,
+}
+
+struct MemoryQuestionRecord {
+    info: PendingQuestionInfo,
+    answer: Option<QuestionAnswer>,
+    status: MemoryQuestionStatus,
+}
+
 pub struct MemoryQuestionRepository {
-    questions: RwLock<HashMap<String, (PendingQuestionInfo, Option<QuestionAnswer>)>>,
+    questions: RwLock<HashMap<String, MemoryQuestionRecord>>,
 }
 
 impl MemoryQuestionRepository {
@@ -28,14 +41,25 @@ impl Default for MemoryQuestionRepository {
 impl QuestionRepository for MemoryQuestionRepository {
     async fn create_pending(&self, info: &PendingQuestionInfo) -> AppResult<()> {
         let mut questions = self.questions.write().unwrap();
-        questions.insert(info.request_id.clone(), (info.clone(), None));
+        questions.insert(
+            info.request_id.clone(),
+            MemoryQuestionRecord {
+                info: info.clone(),
+                answer: None,
+                status: MemoryQuestionStatus::Pending,
+            },
+        );
         Ok(())
     }
 
     async fn resolve(&self, request_id: &str, answer: &QuestionAnswer) -> AppResult<bool> {
         let mut questions = self.questions.write().unwrap();
         if let Some(entry) = questions.get_mut(request_id) {
-            entry.1 = Some(answer.clone());
+            if entry.status == MemoryQuestionStatus::Resolved {
+                return Ok(false);
+            }
+            entry.answer = Some(answer.clone());
+            entry.status = MemoryQuestionStatus::Resolved;
             Ok(true)
         } else {
             Ok(false)
@@ -46,33 +70,35 @@ impl QuestionRepository for MemoryQuestionRepository {
         let questions = self.questions.read().unwrap();
         Ok(questions
             .values()
-            .filter(|(_, answer)| answer.is_none())
-            .map(|(info, _)| info.clone())
+            .filter(|entry| entry.status != MemoryQuestionStatus::Resolved)
+            .map(|entry| entry.info.clone())
             .collect())
     }
 
     async fn get_by_request_id(&self, request_id: &str) -> AppResult<Option<PendingQuestionInfo>> {
         let questions = self.questions.read().unwrap();
-        Ok(questions.get(request_id).map(|(info, _)| info.clone()))
+        Ok(questions.get(request_id).map(|entry| entry.info.clone()))
     }
 
     async fn expire_all_pending(&self) -> AppResult<u64> {
         let mut questions = self.questions.write().unwrap();
-        let pending_ids: Vec<String> = questions
-            .iter()
-            .filter(|(_, (_, answer))| answer.is_none())
-            .map(|(id, _)| id.clone())
-            .collect();
-        let count = pending_ids.len() as u64;
-        for id in pending_ids {
-            questions.remove(&id);
+        let mut count = 0;
+        for entry in questions.values_mut() {
+            if entry.status == MemoryQuestionStatus::Pending {
+                entry.status = MemoryQuestionStatus::WaitExpired;
+                count += 1;
+            }
         }
         Ok(count)
     }
 
     async fn expire_by_request_id(&self, request_id: &str) -> AppResult<()> {
         let mut questions = self.questions.write().unwrap();
-        questions.remove(request_id);
+        if let Some(entry) = questions.get_mut(request_id) {
+            if entry.status == MemoryQuestionStatus::Pending {
+                entry.status = MemoryQuestionStatus::WaitExpired;
+            }
+        }
         Ok(())
     }
 
@@ -85,7 +111,7 @@ impl QuestionRepository for MemoryQuestionRepository {
         let questions = self.questions.read().unwrap();
         Ok(questions
             .get(request_id)
-            .and_then(|(_, answer)| answer.clone()))
+            .and_then(|entry| entry.answer.clone()))
     }
 }
 

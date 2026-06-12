@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use crate::infrastructure::agents::harness_agent_catalog::load_canonical_agent_definition;
+use crate::infrastructure::agents::harness_agent_catalog::{
+    load_canonical_agent_definition, load_canonical_agent_definition_for_profile,
+};
 
 const SKILL_FILE_NAME: &str = "SKILL.md";
 const APP_SKILLS_DIR: &[&str] = &["plugins", "app", "skills"];
@@ -64,7 +66,25 @@ pub fn inject_internal_skills_into_system_prompt(
     system_prompt: &str,
     match_text: &str,
 ) -> Result<InternalSkillInjection, String> {
-    let Some(definition) = load_canonical_agent_definition(project_root, agent_name) else {
+    inject_internal_skills_into_system_prompt_for_profile(
+        project_root,
+        agent_name,
+        None,
+        system_prompt,
+        match_text,
+    )
+}
+
+pub fn inject_internal_skills_into_system_prompt_for_profile(
+    project_root: &Path,
+    agent_name: &str,
+    profile_name: Option<&str>,
+    system_prompt: &str,
+    match_text: &str,
+) -> Result<InternalSkillInjection, String> {
+    let Some(definition) =
+        load_canonical_agent_definition_for_profile(project_root, agent_name, profile_name)
+    else {
         return Ok(InternalSkillInjection {
             system_prompt: system_prompt.to_string(),
             injected_skill_names: Vec::new(),

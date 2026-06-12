@@ -1002,6 +1002,13 @@ describe("AgentsView start conversation", () => {
           title: "Fix composer references",
         },
       ],
+      composerArtifactReferences: [
+        {
+          kind: "plan",
+          artifactId: "artifact-1",
+          title: "Implementation Plan",
+        },
+      ],
     });
 
     await waitFor(() =>
@@ -1021,6 +1028,13 @@ describe("AgentsView start conversation", () => {
           id: "RX-42",
           key: "RX-42",
           title: "Fix composer references",
+        },
+      ],
+      composer_artifact_references: [
+        {
+          kind: "plan",
+          artifactId: "artifact-1",
+          title: "Implementation Plan",
         },
       ],
     });

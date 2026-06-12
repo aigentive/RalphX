@@ -129,6 +129,33 @@ describe("GlobWidget", () => {
       expect(screen.getByText("mcp-other.ts")).toBeInTheDocument();
     });
 
+    it("parses persisted full MCP wrapper results", () => {
+      render(
+        <GlobWidget
+          toolCall={makeGlobCall({
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: [
+                    "ROOT: /workspace/project",
+                    "PATTERN: **/*.rs",
+                    "MATCHES: 2",
+                    "",
+                    "src-tauri/src/lib.rs",
+                    "src-tauri/src/main.rs",
+                  ].join("\n"),
+                },
+              ],
+              structured_content: null,
+            },
+          })}
+        />
+      );
+      expect(screen.getByText("src-tauri/src/lib.rs")).toBeInTheDocument();
+      expect(screen.getByText("src-tauri/src/main.rs")).toBeInTheDocument();
+    });
+
     it("parses string array result", () => {
       render(
         <GlobWidget

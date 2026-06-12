@@ -7,6 +7,10 @@ use tauri::{Emitter, State};
 
 use ralphx_domain::entities::EventType;
 
+use crate::application::agent_planning_session_titles::{
+    hydrate_agent_conversation_planning_session_title,
+    hydrate_agent_conversation_planning_session_titles,
+};
 use crate::application::git_service::GitService;
 use crate::application::ideation_workspace::{
     prepare_ideation_analysis_state, IdeationAnalysisBaseSelection,
@@ -21,8 +25,8 @@ use crate::domain::entities::{
 
 use super::ideation_commands_types::{
     ChatMessageResponse, CreateSessionInput, IdeationSessionResponse,
-    IdeationSessionWithProgressResponse, LatestChildSessionIdResponse,
-    SessionGroupCountsResponse, SessionListResponse, SessionWithDataResponse, TaskProposalResponse,
+    IdeationSessionWithProgressResponse, LatestChildSessionIdResponse, SessionGroupCountsResponse,
+    SessionListResponse, SessionWithDataResponse, TaskProposalResponse,
 };
 
 // ============================================================================
@@ -166,12 +170,18 @@ pub async fn get_ideation_session(
     state: State<'_, AppState>,
 ) -> Result<Option<IdeationSessionResponse>, String> {
     let session_id = IdeationSessionId::from_string(id);
-    state
+    let session = state
         .ideation_session_repo
         .get_by_id(&session_id)
         .await
-        .map(|opt| opt.map(IdeationSessionResponse::from))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    match session {
+        Some(session) => hydrate_agent_conversation_planning_session_title(&state, session)
+            .await
+            .map(|session| Some(IdeationSessionResponse::from(session)))
+            .map_err(|e| e.to_string()),
+        None => Ok(None),
+    }
 }
 
 /// Get session with proposals and messages
@@ -192,6 +202,9 @@ pub async fn get_ideation_session_with_data(
         Some(s) => s,
         None => return Ok(None),
     };
+    let session = hydrate_agent_conversation_planning_session_title(&state, session)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Get proposals
     let proposals = state
@@ -228,20 +241,26 @@ pub async fn list_ideation_sessions(
     state: State<'_, AppState>,
 ) -> Result<Vec<IdeationSessionResponse>, String> {
     let project_id = ProjectId::from_string(project_id);
-    state
+    let sessions = state
         .ideation_session_repo
         .get_by_project(&project_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let sessions = sessions
+        .into_iter()
+        .filter(|s| {
+            if let Some(ref p) = purpose {
+                s.session_purpose.to_string() == p.as_str()
+            } else {
+                true
+            }
+        })
+        .collect();
+    hydrate_agent_conversation_planning_session_titles(&state, sessions)
         .await
         .map(|sessions| {
             sessions
                 .into_iter()
-                .filter(|s| {
-                    if let Some(ref p) = purpose {
-                        s.session_purpose.to_string() == p.as_str()
-                    } else {
-                        true
-                    }
-                })
                 .map(IdeationSessionResponse::from)
                 .collect()
         })

@@ -85,7 +85,11 @@ describe("useAskUserQuestion", () => {
     vi.clearAllMocks();
     vi.clearAllTimers();
     mockSubscribers.clear();
-    mockResolve.mockResolvedValue(undefined);
+    mockResolve.mockResolvedValue({
+      success: true,
+      message: null,
+      deliveredToWaitingAgent: true,
+    });
     mockAnswer.mockResolvedValue(undefined);
     mockGetPending.mockResolvedValue([]);
     // Reset store state
@@ -289,6 +293,28 @@ describe("useAskUserQuestion", () => {
       expect(state.answeredQuestions[TEST_SESSION]).toBe("JWT tokens");
     });
 
+    it("should submit skipped answers and summarize them", async () => {
+      useUiStore.getState().setActiveQuestion(TEST_SESSION, validPayload);
+      const { result } = renderHook(() => useAskUserQuestion(TEST_SESSION));
+
+      const response: AskUserQuestionResponse = {
+        requestId: "req-test-123",
+        selectedOptions: [],
+        skipped: true,
+      };
+
+      await act(async () => {
+        await result.current.submitAnswer(response);
+      });
+
+      expect(mockResolve).toHaveBeenCalledWith({
+        requestId: "req-test-123",
+        selectedOptions: [],
+        skipped: true,
+      });
+      expect(useUiStore.getState().answeredQuestions[TEST_SESSION]).toBe("Skipped");
+    });
+
     it("should not call api if no active question", async () => {
       const { result } = renderHook(() => useAskUserQuestion(TEST_SESSION));
 
@@ -484,9 +510,10 @@ describe("useAskUserQuestion", () => {
   });
 
   describe("question lifecycle events", () => {
-    it("clears the active question when a matching question_expired event arrives", async () => {
+    it("keeps the active question when a matching question_expired event arrives", async () => {
       const activeQuestion = { ...validPayload, requestId: "req-expire-active" };
       useUiStore.getState().setActiveQuestion(TEST_SESSION, activeQuestion);
+      mockGetPending.mockResolvedValueOnce([activeQuestion]);
       renderHook(() => useAskUserQuestion(TEST_SESSION));
 
       await act(async () => {
@@ -500,7 +527,7 @@ describe("useAskUserQuestion", () => {
         });
       });
 
-      expect(useUiStore.getState().activeQuestions[TEST_SESSION]).toBeUndefined();
+      expect(useUiStore.getState().activeQuestions[TEST_SESSION]).toEqual(activeQuestion);
     });
 
     it("does not clear the active question when question_expired is for another request", async () => {
@@ -523,7 +550,7 @@ describe("useAskUserQuestion", () => {
       expect(useUiStore.getState().activeQuestions[TEST_SESSION]).toEqual(activeQuestion);
     });
 
-    it("does not rehydrate a question after it has already expired", async () => {
+    it("rehydrates a question after its agent wait has expired", async () => {
       const expiredQuestion: AskUserQuestionPayload = {
         requestId: "req-expired-1",
         sessionId: TEST_SESSION,
@@ -558,7 +585,7 @@ describe("useAskUserQuestion", () => {
         await Promise.resolve();
       });
 
-      expect(result.current.activeQuestion).toBeNull();
+      expect(result.current.activeQuestion).toEqual(expiredQuestion);
     });
   });
 
@@ -711,7 +738,7 @@ describe("useAskUserQuestion", () => {
   });
 
   describe("submitAnswer return value and error handling", () => {
-    it("returns true on successful submission", async () => {
+    it("returns delivery metadata on successful submission", async () => {
       useUiStore.getState().setActiveQuestion(TEST_SESSION, validPayload);
       const { result } = renderHook(() => useAskUserQuestion(TEST_SESSION));
 
@@ -720,15 +747,19 @@ describe("useAskUserQuestion", () => {
         selectedOptions: ["JWT tokens"],
       };
 
-      let returnValue: boolean | undefined;
+      let returnValue: Awaited<ReturnType<typeof result.current.submitAnswer>> | undefined;
       await act(async () => {
         returnValue = await result.current.submitAnswer(response);
       });
 
-      expect(returnValue).toBe(true);
+      expect(returnValue).toEqual({
+        success: true,
+        deliveredToWaitingAgent: true,
+        planModeProposalHandled: false,
+      });
     });
 
-    it("returns false when no active question", async () => {
+    it("returns unsuccessful delivery metadata when no active question", async () => {
       // Don't set an active question
       const { result } = renderHook(() => useAskUserQuestion(TEST_SESSION));
 
@@ -737,15 +768,18 @@ describe("useAskUserQuestion", () => {
         selectedOptions: ["JWT tokens"],
       };
 
-      let returnValue: boolean | undefined;
+      let returnValue: Awaited<ReturnType<typeof result.current.submitAnswer>> | undefined;
       await act(async () => {
         returnValue = await result.current.submitAnswer(response);
       });
 
-      expect(returnValue).toBe(false);
+      expect(returnValue).toEqual({
+        success: false,
+        deliveredToWaitingAgent: false,
+      });
     });
 
-    it("returns false when API call fails", async () => {
+    it("returns unsuccessful delivery metadata when API call fails", async () => {
       useUiStore.getState().setActiveQuestion(TEST_SESSION, validPayload);
       const { result } = renderHook(() => useAskUserQuestion(TEST_SESSION));
 
@@ -756,12 +790,15 @@ describe("useAskUserQuestion", () => {
         selectedOptions: ["JWT tokens"],
       };
 
-      let returnValue: boolean | undefined;
+      let returnValue: Awaited<ReturnType<typeof result.current.submitAnswer>> | undefined;
       await act(async () => {
         returnValue = await result.current.submitAnswer(response);
       });
 
-      expect(returnValue).toBe(false);
+      expect(returnValue).toEqual({
+        success: false,
+        deliveredToWaitingAgent: false,
+      });
     });
 
     it("clears stale active question on API failure", async () => {

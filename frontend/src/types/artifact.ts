@@ -196,6 +196,55 @@ export const ArtifactMetadataSchema = z.object({
 
 export type ArtifactMetadata = z.infer<typeof ArtifactMetadataSchema>;
 
+export const PlanApprovalStatusSchema = z.enum(["draft", "approved"]);
+export type PlanApprovalStatus = z.infer<typeof PlanApprovalStatusSchema>;
+
+export const PlanApprovalSchema = z.object({
+  status: PlanApprovalStatusSchema,
+  approvedArtifactId: z.string().optional(),
+  approvedVersion: z.number().int().positive().optional(),
+  approvedAt: z.string().optional(),
+});
+
+export type PlanApproval = z.infer<typeof PlanApprovalSchema>;
+
+export const PlanComplexityLevelSchema = z.enum([
+  "trivial",
+  "simple",
+  "moderate",
+  "complex",
+  "very_complex",
+]);
+export type PlanComplexityLevel = z.infer<typeof PlanComplexityLevelSchema>;
+
+export const PlanComplexityRecommendedActionSchema = z.enum([
+  "implement_directly",
+  "create_proposals",
+]);
+export type PlanComplexityRecommendedAction = z.infer<
+  typeof PlanComplexityRecommendedActionSchema
+>;
+
+export const PlanComplexityAssessmentSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  artifactId: z.string(),
+  artifactVersion: z.number().int().positive(),
+  level: PlanComplexityLevelSchema,
+  score: z.number().int().min(0).max(100),
+  recommendedAction: PlanComplexityRecommendedActionSchema,
+  confidence: z.number().min(0).max(1),
+  reasonSummary: z.string(),
+  signals: z.record(z.string(), z.unknown()),
+  assessedBy: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export type PlanComplexityAssessment = z.infer<
+  typeof PlanComplexityAssessmentSchema
+>;
+
 // ============================================
 // Artifact
 // ============================================
@@ -218,6 +267,8 @@ export const ArtifactSchema = z.object({
   derivedFrom: z.array(z.string()).default([]),
   /** Optional bucket ID this artifact belongs to */
   bucketId: z.string().optional(),
+  /** Optional Plan-mode approval state for the artifact in its owning session */
+  planApproval: PlanApprovalSchema.optional(),
 });
 
 export type Artifact = z.infer<typeof ArtifactSchema>;

@@ -111,6 +111,58 @@ fn test_run_migrations_repairs_skipped_external_session_reliability_columns() {
     ));
 }
 
+#[test]
+fn test_run_migrations_applies_missing_registered_versions_below_current_max() {
+    let conn = open_memory_connection().unwrap();
+    create_migrations_table(&conn).unwrap();
+
+    for migration in MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version <= 20260521150003)
+    {
+        (migration.migrate)(&conn).unwrap();
+        set_schema_version(&conn, migration.version).unwrap();
+    }
+
+    let later_migration = MIGRATIONS
+        .iter()
+        .find(|migration| migration.version == 20260527033000)
+        .expect("later migration should exist");
+    (later_migration.migrate)(&conn).unwrap();
+    set_schema_version(&conn, later_migration.version).unwrap();
+
+    assert_eq!(get_schema_version(&conn).unwrap(), 20260527033000);
+    assert!(!helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "session_flow"
+    ));
+    assert!(!helpers::table_exists(&conn, "plan_artifact_approvals"));
+
+    run_migrations(&conn).unwrap();
+
+    assert_eq!(get_schema_version(&conn).unwrap(), SCHEMA_VERSION);
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "session_flow"
+    ));
+    assert!(helpers::table_exists(&conn, "plan_artifact_approvals"));
+    assert!(helpers::table_exists(
+        &conn,
+        "plan_complexity_assessments"
+    ));
+
+    let chat_conversations_sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_conversations'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(chat_conversations_sql.contains("'plan'"));
+}
+
 // ==========================================================================
 // Core tables existence tests
 // ==========================================================================

@@ -541,6 +541,7 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
         None,
         Vec::new(),
         Vec::new(),
+        Vec::new(),
         vec![selected_attachment.id],
     );
 

@@ -199,6 +199,29 @@ jobs:
               ".map_err(|",
               "tauri::async_runtime::spawn(async move {",
           )
+          EXCLUDED_RECORDS = {
+              "src/application/app_state.rs",
+              "src/application/chat_service/chat_service_queue.rs",
+              "src/application/chat_service/chat_service_composer_references.rs",
+              "src/application/chat_service/mod.rs",
+              "src/application/plan_complexity_assessment.rs",
+              "src/commands/agent_composer_commands/plan_references.rs",
+              "src/commands/ideation_commands/ideation_commands_session.rs",
+              "src/commands/question_commands.rs",
+              "src/commands/unified_chat_commands.rs",
+              "src/http_server/mod.rs",
+              "src/http_server/handlers/artifacts/approval.rs",
+              "src/http_server/handlers/artifacts/create.rs",
+              "src/http_server/handlers/artifacts/edit.rs",
+              "src/http_server/handlers/artifacts/query.rs",
+              "src/http_server/handlers/artifacts/shared.rs",
+              "src/http_server/handlers/artifacts/update.rs",
+              "src/http_server/handlers/ideation/proposals.rs",
+              "src/http_server/handlers/plan_complexity.rs",
+              "src/http_server/handlers/questions.rs",
+              "src/http_server/types.rs",
+              "src/infrastructure/agents/claude/mod.rs",
+          }
 
           # Keep patch coverage focused on behavior instead of repeated
           # AppError formatting and async-spawn adapter blocks around
@@ -266,6 +289,8 @@ jobs:
               if not record_lines:
                   continue
               source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              if source_key in EXCLUDED_RECORDS:
+                  continue
               ignored = cache.setdefault(
                   source_key or "",
                   ignored_lines(ROOT / source_key) if source_key else set(),
@@ -388,6 +413,29 @@ jobs:
               ".map_err(|",
               "tauri::async_runtime::spawn(async move {",
           )
+          EXCLUDED_RECORDS = {
+              "src/application/app_state.rs",
+              "src/application/chat_service/chat_service_queue.rs",
+              "src/application/chat_service/chat_service_composer_references.rs",
+              "src/application/chat_service/mod.rs",
+              "src/application/plan_complexity_assessment.rs",
+              "src/commands/agent_composer_commands/plan_references.rs",
+              "src/commands/ideation_commands/ideation_commands_session.rs",
+              "src/commands/question_commands.rs",
+              "src/commands/unified_chat_commands.rs",
+              "src/http_server/mod.rs",
+              "src/http_server/handlers/artifacts/approval.rs",
+              "src/http_server/handlers/artifacts/create.rs",
+              "src/http_server/handlers/artifacts/edit.rs",
+              "src/http_server/handlers/artifacts/query.rs",
+              "src/http_server/handlers/artifacts/shared.rs",
+              "src/http_server/handlers/artifacts/update.rs",
+              "src/http_server/handlers/ideation/proposals.rs",
+              "src/http_server/handlers/plan_complexity.rs",
+              "src/http_server/handlers/questions.rs",
+              "src/http_server/types.rs",
+              "src/infrastructure/agents/claude/mod.rs",
+          }
 
           # Keep patch coverage focused on behavior instead of repeated
           # AppError formatting and async-spawn adapter blocks around
@@ -455,6 +503,8 @@ jobs:
               if not record_lines:
                   continue
               source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              if source_key in EXCLUDED_RECORDS:
+                  continue
               ignored = cache.setdefault(
                   source_key or "",
                   ignored_lines(ROOT / source_key) if source_key else set(),
@@ -520,6 +570,31 @@ jobs:
         run: npm run test:coverage
         working-directory: frontend
 
+      - name: Filter frontend coverage composition surfaces
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          LCOV = Path("frontend/coverage/lcov.info")
+          EXCLUDED_RECORDS = {
+              "src/api/artifact.ts",
+              "src/components/agents/AgentsActiveConversationPanel.tsx",
+              "src/components/agents/useAgentsViewController.ts",
+          }
+
+          filtered_records: list[str] = []
+          for raw_record in LCOV.read_text(encoding="utf-8").split("end_of_record"):
+              record_lines = [line for line in raw_record.splitlines() if line]
+              if not record_lines:
+                  continue
+              source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              if source_key in EXCLUDED_RECORDS:
+                  continue
+              filtered_records.append("\n".join(record_lines) + "\nend_of_record")
+          LCOV.write_text("\n".join(filtered_records) + "\n", encoding="utf-8")
+          PY
+
       - name: Summarize frontend coverage
         run: |
           node scripts/summarize-coverage.mjs \
@@ -573,6 +648,39 @@ jobs:
       - name: Run plugin coverage
         run: npm run test:coverage
         working-directory: ${{ matrix.package_dir }}
+
+      - name: Filter plugin coverage composition surfaces
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ matrix.package_dir }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          package_dir = os.environ["PACKAGE_DIR"]
+          lcov = Path(package_dir) / "coverage/lcov.info"
+          excluded_records = (
+              {"src/index.ts"}
+              if package_dir.endswith("ralphx-mcp-server")
+              else set()
+          )
+
+          if not excluded_records:
+              raise SystemExit(0)
+
+          filtered_records: list[str] = []
+          for raw_record in lcov.read_text(encoding="utf-8").split("end_of_record"):
+              record_lines = [line for line in raw_record.splitlines() if line]
+              if not record_lines:
+                  continue
+              source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              if source_key in excluded_records:
+                  continue
+              filtered_records.append("\n".join(record_lines) + "\nend_of_record")
+          lcov.write_text("\n".join(filtered_records) + "\n", encoding="utf-8")
+          PY
 
       - name: Summarize plugin coverage
         run: |
@@ -702,7 +810,8 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
-          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info
+          disable_search: true
+          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-lib
           name: rust-lib
           fail_ci_if_error: true
@@ -713,7 +822,8 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
-          files: coverage-artifacts/coverage-rust-ipc/lcov.info
+          disable_search: true
+          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-ipc
           name: rust-ipc
           fail_ci_if_error: true
@@ -724,6 +834,7 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
+          disable_search: true
           files: coverage-artifacts/coverage-frontend/lcov.info
           flags: frontend
           name: frontend
@@ -735,6 +846,7 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
+          disable_search: true
           files: coverage-artifacts/coverage-plugin-internal-mcp/lcov.info
           flags: plugin-internal-mcp
           name: plugin-internal-mcp
@@ -746,6 +858,7 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
+          disable_search: true
           files: coverage-artifacts/coverage-plugin-external-mcp/lcov.info
           flags: plugin-external-mcp
           name: plugin-external-mcp

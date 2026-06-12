@@ -102,6 +102,71 @@ fn preview_tool_payloads_keeps_task_results_structured() {
 }
 
 #[test]
+fn preview_tool_payloads_keeps_ask_user_question_results_structured() {
+    let answer_result = json!({
+        "answers": [
+            {
+                "id": "scope",
+                "request_id": "req-1",
+                "header": "Scope",
+                "question": "Which area should we focus on?",
+                "options": [
+                    { "label": "Backend", "value": "backend" },
+                    { "label": "Frontend", "value": "frontend" },
+                    { "label": "Both", "value": "both" }
+                ],
+                "selected_options": ["backend"],
+                "text": null,
+                "skipped": false
+            }
+        ],
+        "request_id": "req-1",
+        "question_count": 1
+    });
+    let tool_calls = json!([
+        {
+            "id": "ask-1",
+            "name": "mcp__ralphx__ask_user_question",
+            "arguments": { "question": "Which area should we focus on?" },
+            "result": answer_result.clone(),
+        }
+    ]);
+    let content_blocks = json!([
+        {
+            "type": "tool_use",
+            "id": "ask-1",
+            "name": "mcp__ralphx__ask_user_question",
+            "arguments": { "question": "Which area should we focus on?" },
+            "result": answer_result,
+        }
+    ]);
+
+    let (previewed_tool_calls, previewed_content_blocks) = preview_tool_payloads_for_message(
+        "conv-1",
+        "msg-1",
+        Some(tool_calls),
+        Some(content_blocks),
+    );
+    let previewed_tool_calls = previewed_tool_calls.unwrap();
+    let previewed_content_blocks = previewed_content_blocks.unwrap();
+    let tool_call = &previewed_tool_calls[0];
+    let content_block = &previewed_content_blocks[0];
+
+    assert_eq!(
+        tool_call["result"]["answers"][0]["question"],
+        "Which area should we focus on?"
+    );
+    assert_eq!(
+        content_block["result"]["answers"][0]["selected_options"],
+        json!(["backend"])
+    );
+    assert!(tool_call.get("result_preview_truncated").is_none());
+    assert!(content_block.get("result_preview_truncated").is_none());
+    assert!(tool_call.get("detail_ref").is_none());
+    assert!(content_block.get("detail_ref").is_none());
+}
+
+#[test]
 fn preview_tool_payloads_adds_content_block_detail_refs() {
     let content_blocks = json!([
         { "type": "text", "text": "before" },

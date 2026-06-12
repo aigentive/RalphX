@@ -1249,6 +1249,7 @@ async fn test_build_command_with_team_mode_true() {
         &working_dir,
         None,
         None,
+        &[],
         true, // team_mode=true
         chat_attachment_repo,
         artifact_repo,
@@ -1259,6 +1260,7 @@ async fn test_build_command_with_team_mode_true() {
         0,
         None, // effort_override
         None, // model_override
+        None, // attachment_context_override
     )
     .await;
 
@@ -1287,6 +1289,7 @@ async fn test_build_command_with_team_mode_false() {
         &working_dir,
         None,
         None,
+        &[],
         false, // team_mode=false
         chat_attachment_repo,
         artifact_repo,
@@ -1297,6 +1300,7 @@ async fn test_build_command_with_team_mode_false() {
         0,
         None, // effort_override
         None, // model_override
+        None, // attachment_context_override
     )
     .await;
 
@@ -1425,9 +1429,12 @@ async fn test_build_resume_command_with_team_mode() {
         ChatContextType::Ideation,
         "test-session-id",
         "test message",
+        None,
+        None,
         &working_dir,
         "session-123",
         None,
+        &[],
         None,
         true, // team_mode=true
         chat_attachment_repo.clone(),
@@ -1442,6 +1449,7 @@ async fn test_build_resume_command_with_team_mode() {
         0,
         None, // effort_override
         None, // model_override
+        None, // attachment_context_override
     )
     .await;
 
@@ -1452,9 +1460,12 @@ async fn test_build_resume_command_with_team_mode() {
         ChatContextType::Ideation,
         "test-session-id",
         "test message",
+        None,
+        None,
         &working_dir,
         "session-123",
         None,
+        &[],
         None,
         false, // team_mode=false
         chat_attachment_repo,
@@ -1469,6 +1480,7 @@ async fn test_build_resume_command_with_team_mode() {
         0,
         None, // effort_override
         None, // model_override
+        None, // attachment_context_override
     )
     .await;
 
@@ -1508,9 +1520,12 @@ async fn codex_resume_command_falls_back_to_exec_when_session_is_missing() {
             ChatContextType::Project,
             "project-1",
             "continue",
+            None,
+            None,
             &working_dir,
             "missing-session",
             None,
+            &[],
             None,
             false,
             Arc::new(MemoryChatAttachmentRepository::new()),
@@ -1526,6 +1541,7 @@ async fn codex_resume_command_falls_back_to_exec_when_session_is_missing() {
             None,
             None,
             false,
+            None,
         )
         .await
     })
@@ -1573,9 +1589,12 @@ async fn codex_resume_command_uses_resume_subcommand_when_session_exists() {
             ChatContextType::Project,
             "project-1",
             "continue",
+            None,
+            None,
             &working_dir,
             "session-123",
             None,
+            &[],
             None,
             false,
             Arc::new(MemoryChatAttachmentRepository::new()),
@@ -1591,6 +1610,7 @@ async fn codex_resume_command_uses_resume_subcommand_when_session_exists() {
             None,
             None,
             false,
+            None,
         )
         .await
     })
@@ -1646,9 +1666,12 @@ async fn codex_verifier_command_disables_shell_tool() {
             ChatContextType::Ideation,
             child_id.as_str(),
             "continue",
+            None,
+            None,
             &working_dir,
             "missing-session",
             None,
+            &[],
             None,
             false,
             Arc::new(MemoryChatAttachmentRepository::new()),
@@ -1664,6 +1687,7 @@ async fn codex_verifier_command_disables_shell_tool() {
             None,
             None,
             false,
+            None,
         )
         .await
     })
@@ -2596,6 +2620,7 @@ async fn test_plan_verifier_sets_subagent_cap_env_var() {
             std::path::Path::new("/tmp"),
             Some("verification"),
             Some("proj-1"),
+            &[],
             false,
             attachment_repo,
             artifact_repo,
@@ -2604,6 +2629,7 @@ async fn test_plan_verifier_sets_subagent_cap_env_var() {
             Some(settings_repo),
             &[],
             0,
+            None,
             None,
             None,
         )
@@ -2648,6 +2674,7 @@ async fn test_plan_verifier_subagent_cap_uses_haiku_default_when_no_db_rows() {
             std::path::Path::new("/tmp"),
             Some("verification"),
             None, // no project_id → no project row
+            &[],
             false,
             attachment_repo,
             artifact_repo,
@@ -2656,6 +2683,7 @@ async fn test_plan_verifier_subagent_cap_uses_haiku_default_when_no_db_rows() {
             Some(settings_repo),
             &[],
             0,
+            None,
             None,
             None,
         )
@@ -2730,6 +2758,7 @@ async fn test_non_verifier_ideation_agent_subagent_cap_is_agent_own_model() {
             std::path::Path::new("/tmp"),
             None, // no entity_status → ralphx-ideation
             Some("proj-1"),
+            &[],
             false,
             attachment_repo,
             artifact_repo,
@@ -2738,6 +2767,7 @@ async fn test_non_verifier_ideation_agent_subagent_cap_is_agent_own_model() {
             None,
             &[],
             0,
+            None,
             None,
             None,
         )
@@ -2820,6 +2850,7 @@ async fn test_orchestrator_ideation_uses_ideation_subagent_cap() {
             std::path::Path::new("/tmp"),
             None, // no entity_status → ralphx-ideation
             Some("proj-1"),
+            &[],
             false,
             attachment_repo,
             artifact_repo,
@@ -2830,6 +2861,7 @@ async fn test_orchestrator_ideation_uses_ideation_subagent_cap() {
             0,
             None,
             None, // model_override=None; primary model is "opus" from lane row
+            None, // attachment_context_override
         )
         .await
     })
@@ -2894,6 +2926,7 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             std::path::Path::new("/tmp"),
             None,
             Some("proj-1"),
+            &[],
             false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
@@ -2902,6 +2935,7 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             None,
             &[],
             0,
+            None,
             None,
             None,
         )
@@ -2934,9 +2968,12 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             ChatContextType::Ideation,
             session_id.as_str(),
             "continue",
+            None,
+            None,
             std::path::Path::new("/tmp"),
             "fake-session-id",
             Some("proj-1"),
+            &[],
             None,
             false,
             Arc::new(MemoryChatAttachmentRepository::new()),
@@ -2949,6 +2986,7 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             Arc::new(MemoryTaskRepository::new()),
             &[],
             0,
+            None,
             None,
             None,
         )
@@ -2994,6 +3032,7 @@ async fn test_build_command_resumes_from_provider_session_ref_without_legacy_ali
                 std::path::Path::new("/tmp"),
                 None,
                 None,
+                &[],
                 false,
                 Arc::new(MemoryChatAttachmentRepository::new()),
                 Arc::new(MemoryArtifactRepository::new()),
@@ -3004,6 +3043,7 @@ async fn test_build_command_resumes_from_provider_session_ref_without_legacy_ali
                 0,
                 None,
                 None,
+            None,
             )
             .await
         })

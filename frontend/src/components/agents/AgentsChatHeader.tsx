@@ -306,9 +306,13 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
       ),
     [availableArtifactTabs],
   );
-  const showIdeationArtifacts =
-    conversationMode === "ideation" && visibleHeaderArtifactTabs.length > 0;
-  const showArtifactToggle = conversationMode === "ideation" || artifactOpen;
+  const showHeaderArtifactShortcuts =
+    (conversationMode === "ideation" || conversationMode === "plan") &&
+    visibleHeaderArtifactTabs.length > 0;
+  const showArtifactToggle =
+    artifactOpen ||
+    conversationMode === "ideation" ||
+    (conversationMode === "plan" && visibleHeaderArtifactTabs.length > 0);
   // Hide the publish shortcut whenever any artifact pane is open — the user
   // can already reach Commit & Publish via the artifact tab bar, so the
   // header CTA is redundant (and visually crowds the Update-from-base label).
@@ -519,7 +523,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
           </Tooltip>
         )}
 
-        {showIdeationArtifacts && !artifactOpen &&
+        {showHeaderArtifactShortcuts && !artifactOpen &&
           visibleHeaderArtifactTabs.map(({ id, label, icon: Icon }) => {
             const isActive = activeArtifactTab === id && artifactOpen;
             return (

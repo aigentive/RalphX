@@ -262,10 +262,12 @@ pub(crate) fn should_skip_tool_result_preview(name: Option<&str>) -> bool {
     let Some(name) = name else {
         return false;
     };
-    let normalized = name.to_ascii_lowercase();
-    matches!(normalized.as_str(), "task" | "agent" | "delegate_start")
-        || normalized.ends_with("::delegate_start")
-        || normalized.ends_with("__delegate_start")
+    let normalized =
+        canonical_tool_payload_name(Some(name)).unwrap_or_else(|| name.trim().to_ascii_lowercase());
+    matches!(
+        normalized.as_str(),
+        "task" | "agent" | "delegate_start" | "ask_user_question"
+    )
 }
 
 pub(crate) fn tool_detail_ref(

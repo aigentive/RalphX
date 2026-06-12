@@ -1,4 +1,5 @@
 import type {
+  ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
 } from "@/api/chat";
@@ -6,22 +7,27 @@ import type {
 export interface MessageComposerReferences {
   projectReferences: ComposerProjectReference[];
   integrationReferences: ComposerIntegrationReference[];
+  artifactReferences: ComposerArtifactReference[];
 }
 
 export function serializeComposerReferencesMetadata({
   projectReferences,
   integrationReferences,
+  artifactReferences,
 }: {
   projectReferences?: ComposerProjectReference[] | null | undefined;
   integrationReferences?: ComposerIntegrationReference[] | null | undefined;
+  artifactReferences?: ComposerArtifactReference[] | null | undefined;
 }): string | null {
   const normalizedProjectReferences = parseProjectReferences(projectReferences);
   const normalizedIntegrationReferences =
     parseIntegrationReferences(integrationReferences);
+  const normalizedArtifactReferences = parseArtifactReferences(artifactReferences);
 
   if (
     normalizedProjectReferences.length === 0 &&
-    normalizedIntegrationReferences.length === 0
+    normalizedIntegrationReferences.length === 0 &&
+    normalizedArtifactReferences.length === 0
   ) {
     return null;
   }
@@ -32,6 +38,9 @@ export function serializeComposerReferencesMetadata({
       : {}),
     ...(normalizedIntegrationReferences.length > 0
       ? { composer_integration_references: normalizedIntegrationReferences }
+      : {}),
+    ...(normalizedArtifactReferences.length > 0
+      ? { composer_artifact_references: normalizedArtifactReferences }
       : {}),
   });
 }
@@ -49,12 +58,19 @@ export function parseComposerReferencesFromMetadata(
   const integrationReferences = parseIntegrationReferences(
     metadata.composer_integration_references ?? metadata.composerIntegrationReferences,
   );
+  const artifactReferences = parseArtifactReferences(
+    metadata.composer_artifact_references ?? metadata.composerArtifactReferences,
+  );
 
-  if (projectReferences.length === 0 && integrationReferences.length === 0) {
+  if (
+    projectReferences.length === 0 &&
+    integrationReferences.length === 0 &&
+    artifactReferences.length === 0
+  ) {
     return null;
   }
 
-  return { projectReferences, integrationReferences };
+  return { projectReferences, integrationReferences, artifactReferences };
 }
 
 function parseProjectReferences(raw: unknown): ComposerProjectReference[] {
@@ -115,6 +131,53 @@ function parseIntegrationReferences(raw: unknown): ComposerIntegrationReference[
         : {}),
       ...(typeof record.url === "string" && record.url.trim().length > 0
         ? { url: record.url }
+        : {}),
+    });
+  }
+  return references;
+}
+
+function parseArtifactReferences(raw: unknown): ComposerArtifactReference[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  const references: ComposerArtifactReference[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const artifactId =
+      typeof record.artifactId === "string"
+        ? record.artifactId
+        : typeof record.artifact_id === "string"
+          ? record.artifact_id
+          : null;
+    if (!artifactId || artifactId.trim().length === 0) {
+      continue;
+    }
+    const kind = typeof record.kind === "string" && record.kind.trim() ? record.kind : "plan";
+    const sessionId =
+      typeof record.sessionId === "string"
+        ? record.sessionId
+        : typeof record.session_id === "string"
+          ? record.session_id
+          : undefined;
+    const version =
+      typeof record.version === "number" && Number.isFinite(record.version)
+        ? record.version
+        : undefined;
+    references.push({
+      artifactId,
+      kind,
+      ...(typeof record.title === "string" && record.title.trim().length > 0
+        ? { title: record.title }
+        : {}),
+      ...(sessionId && sessionId.trim().length > 0 ? { sessionId } : {}),
+      ...(version !== undefined ? { version } : {}),
+      ...(typeof record.status === "string" && record.status.trim().length > 0
+        ? { status: record.status }
         : {}),
     });
   }

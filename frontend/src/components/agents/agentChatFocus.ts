@@ -1,3 +1,5 @@
+import type { AgentConversationWorkspaceMode } from "@/api/chat";
+
 export type AgentsChatFocus =
   | { type: "workspace" }
   | { type: "ideation"; sessionId: string }
@@ -18,6 +20,50 @@ export interface AgentsChatFocusSwitchOption {
   label: string;
   description: string;
   tone?: AgentsChatFocusTone;
+}
+
+export function getAgentChatFocusSwitchOptions({
+  mode,
+  focusSwitcherIdeationSessionId,
+  verificationFocusTarget,
+  hasPlanArtifact,
+}: {
+  mode: AgentConversationWorkspaceMode | null;
+  focusSwitcherIdeationSessionId: string | null;
+  verificationFocusTarget: Extract<AgentsChatFocus, { type: "verification" }> | null;
+  hasPlanArtifact: boolean;
+}): AgentsChatFocusSwitchOption[] {
+  const options: AgentsChatFocusSwitchOption[] = [
+    {
+      type: "workspace",
+      label: "Workspace",
+      description: "Show the workspace agent chat",
+    },
+  ];
+
+  if (mode === "ideation" && focusSwitcherIdeationSessionId) {
+    options.push({
+      type: "ideation",
+      label: "Ideation",
+      description: "Show the attached ideation chat",
+      tone: "accent",
+    });
+  }
+
+  const canShowVerification =
+    Boolean(verificationFocusTarget) &&
+    (mode === "ideation" || (mode === "plan" && hasPlanArtifact));
+
+  if (canShowVerification) {
+    options.push({
+      type: "verification",
+      label: "Verification",
+      description: "Show the verification agent chat",
+      tone: "warning",
+    });
+  }
+
+  return options;
 }
 
 export function latestVerificationChildSessionIdQueryKey(

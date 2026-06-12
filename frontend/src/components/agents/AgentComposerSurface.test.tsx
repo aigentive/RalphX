@@ -106,6 +106,9 @@ describe("AgentComposerSurface", () => {
       if (cmd === "search_agent_composer_entries") {
         return Promise.resolve({ entries: [], truncated: false });
       }
+      if (cmd === "search_agent_composer_plan_references") {
+        return Promise.resolve({ plans: [], truncated: false });
+      }
       if (cmd === "search_atlassian_resources") {
         return Promise.resolve({ resources: [] });
       }
@@ -240,6 +243,7 @@ describe("AgentComposerSurface", () => {
         options: [
           { id: "edit", label: "Agent" },
           { id: "chat", label: "Chat" },
+          { id: "plan", label: "Plan" },
         ],
       },
     });
@@ -253,6 +257,32 @@ describe("AgentComposerSurface", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
 
     expect(onValueChange).toHaveBeenCalledWith("chat");
+    expect(textarea.value).toBe("");
+  });
+
+  it("runs the plan slash mode command from the composer menu", async () => {
+    const onValueChange = vi.fn();
+    renderComposer({
+      mode: {
+        value: "edit",
+        onValueChange,
+        options: [
+          { id: "edit", label: "Agent" },
+          { id: "plan", label: "Plan" },
+          { id: "chat", label: "Chat" },
+        ],
+      },
+    });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "/pl" } });
+    textarea.setSelectionRange(3, 3);
+    fireEvent.keyUp(textarea);
+    await screen.findByTestId("agent-composer-menu-item-command:mode:plan");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    expect(onValueChange).toHaveBeenCalledWith("plan");
     expect(textarea.value).toBe("");
   });
 
@@ -279,6 +309,57 @@ describe("AgentComposerSurface", () => {
 
     await waitFor(() => expect(onFork).toHaveBeenCalledTimes(1));
     expect(textarea.value).toBe("");
+  });
+
+  it("runs the refine slash command from Plan mode", async () => {
+    const onSend = vi.fn();
+    renderComposer({
+      mode: {
+        value: "plan",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "plan", label: "Plan" },
+          { id: "edit", label: "Agent" },
+        ],
+      },
+      onSend,
+    });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "/ref" } });
+    textarea.setSelectionRange(4, 4);
+    fireEvent.keyUp(textarea);
+    await screen.findByTestId("agent-composer-menu-item-command:plan:refine");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalledWith("Please verify and refine the current plan.");
+    });
+    expect(textarea.value).toBe("");
+  });
+
+  it("submits question-mode answers while the agent is generating", () => {
+    const onSend = vi.fn();
+    const onMatchedOptions = vi.fn();
+    renderComposer({
+      agentStatus: "generating",
+      isSubmitting: true,
+      onSend,
+      questionMode: {
+        optionCount: 2,
+        multiSelect: false,
+        onMatchedOptions,
+      },
+    });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "1" } });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onMatchedOptions).toHaveBeenLastCalledWith([0]);
+    expect(onSend).toHaveBeenCalledWith("1");
   });
 
   it("bounds slash command suggestions to five visible rows", async () => {
@@ -518,6 +599,83 @@ describe("AgentComposerSurface", () => {
     });
   });
 
+  it("sends selected plans as structured artifact references", async () => {
+    const onSend = vi.fn();
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "search_agent_composer_plan_references") {
+        return Promise.resolve({
+          plans: [
+            {
+              sessionId: "session-1",
+              artifactId: "artifact-1",
+              title: "Checkout Plan",
+              status: "approved",
+              artifactVersion: 2,
+              updatedAt: "2026-05-23T10:00:00Z",
+              approvedAt: "2026-05-23T10:01:00Z",
+            },
+          ],
+          truncated: false,
+        });
+      }
+      if (cmd === "list_agent_composer_skills") {
+        return Promise.resolve({ skills: [] });
+      }
+      if (cmd === "search_atlassian_resources") {
+        return Promise.resolve({ resources: [] });
+      }
+      return Promise.resolve({ entries: [], truncated: false });
+    });
+    renderComposer({ onSend });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "Use @plan:checkout" } });
+    textarea.setSelectionRange("Use @plan:checkout".length, "Use @plan:checkout".length);
+    fireEvent.keyUp(textarea);
+
+    const item = await screen.findByTestId(
+      "agent-composer-menu-item-plan:artifact-1",
+    );
+    fireEvent.mouseDown(item);
+    fireEvent.click(item);
+    expect(textarea).toHaveValue("Use ");
+    expect(
+      screen.getByTestId("agent-composer-reference-pill-artifact:plan:artifact-1"),
+    ).toHaveTextContent("Plan");
+    expect(
+      screen.getByTestId("agent-composer-reference-pill-artifact:plan:artifact-1"),
+    ).toHaveTextContent("Checkout Plan");
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Use", {
+      artifactReferences: [
+        {
+          kind: "plan",
+          artifactId: "artifact-1",
+          title: "Checkout Plan",
+          sessionId: "session-1",
+          version: 2,
+          status: "approved",
+        },
+      ],
+    });
+  });
+
+  it("extracts typed @plan references when sent without selecting a menu item", async () => {
+    const onSend = vi.fn();
+    renderComposer({ onSend });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "Use @plan:artifact-2" } });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Use @plan:artifact-2", {
+      artifactReferences: [{ kind: "plan", artifactId: "artifact-2" }],
+    });
+  });
+
   it.each([
     ["Jira", "@jira:", "jira"],
     ["Confluence", "@confluence:", "confluence"],
@@ -534,6 +692,23 @@ describe("AgentComposerSurface", () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("search_atlassian_resources", {
         input: { kind, query: "", limit: 12 },
+      }),
+    );
+  });
+
+  it("inserts plan triggers from the plus menu and opens plan search", async () => {
+    renderComposer();
+
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    fireEvent.click(screen.getByText("Plan"));
+
+    const textarea = screen.getByLabelText("Message input");
+    expect(textarea).toHaveValue("@plan:");
+    await waitFor(() => expect(textarea).toHaveFocus());
+    expect(await screen.findByTestId("agent-composer-command-menu")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("search_agent_composer_plan_references", {
+        input: { projectId: "project-1", query: "", limit: 12 },
       }),
     );
   });

@@ -51,6 +51,7 @@ import {
   scrollElementToTrueBottom,
   shouldShowScrollToBottomControl,
   shouldStickToBottom,
+  shouldTreatScrollTopDecreaseAsUserAway,
   VISUAL_BOTTOM_EPSILON_PX,
 } from "./ChatMessageList.scroll";
 import {
@@ -510,6 +511,8 @@ interface ChatMessageListProps {
   hasOlderMessages?: boolean;
   isFetchingOlderMessages?: boolean;
   onLoadOlderMessages?: (() => void | Promise<void>) | undefined;
+  /** Incremented by the host when sibling chrome below the transcript changes size. */
+  externalLayoutVersion?: number | undefined;
   initialPaintCoverKey?: string | null | undefined;
   onInitialPaintReady?: ((key: string) => void) | undefined;
 }
@@ -545,6 +548,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       hasOlderMessages = false,
       isFetchingOlderMessages = false,
       onLoadOlderMessages,
+      externalLayoutVersion = 0,
       initialPaintCoverKey = null,
       onInitialPaintReady,
     },
@@ -1387,14 +1391,17 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       const previousScrollTop = lastObservedScrollTopRef.current;
       const isScrollingTowardBottom =
         previousScrollTop === null || el.scrollTop >= previousScrollTop;
-      if (
-        hasUserScrollInputRef.current &&
-        previousScrollTop !== null &&
-        el.scrollTop < previousScrollTop
+      if (visuallyAtBottom) {
+        isUserScrollingAwayFromBottomRef.current = false;
+      } else if (
+        shouldTreatScrollTopDecreaseAsUserAway({
+          hasUserScrollInput: hasUserScrollInputRef.current,
+          previousScrollTop,
+          currentScrollTop: el.scrollTop,
+          isVisuallyAtBottom: visuallyAtBottom,
+        })
       ) {
         markUserScrollingAwayFromBottom();
-      } else if (visuallyAtBottom) {
-        isUserScrollingAwayFromBottomRef.current = false;
       }
       lastObservedScrollTopRef.current = el.scrollTop;
       setHasScrollableOverflow(
@@ -1446,17 +1453,21 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
 
       const previousScrollTop = lastObservedScrollTopRef.current;
+      const visuallyAtBottom = isScrollElementVisuallyAtBottom(el);
+      if (visuallyAtBottom) {
+        isUserScrollingAwayFromBottomRef.current = false;
+        return;
+      }
       if (
-        hasUserScrollInputRef.current &&
-        previousScrollTop !== null &&
-        el.scrollTop < previousScrollTop
+        shouldTreatScrollTopDecreaseAsUserAway({
+          hasUserScrollInput: hasUserScrollInputRef.current,
+          previousScrollTop,
+          currentScrollTop: el.scrollTop,
+          isVisuallyAtBottom: visuallyAtBottom,
+        })
       ) {
         markUserScrollingAwayFromBottom();
         return;
-      }
-
-      if (isScrollElementVisuallyAtBottom(el)) {
-        isUserScrollingAwayFromBottomRef.current = false;
       }
     }, [markUserScrollingAwayFromBottom]);
 
@@ -1591,6 +1602,13 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         reconcileScrollerBottomState();
       });
     }, [reconcileScrollerBottomState, scrollToTrueBottom, shouldKeepBottomPinned]);
+
+    useEffect(() => {
+      if (externalLayoutVersion <= 0) {
+        return;
+      }
+      handleScrollerResize();
+    }, [externalLayoutVersion, handleScrollerResize]);
 
     const handleTotalListHeightChanged = useCallback(
       (height: number) => {

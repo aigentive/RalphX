@@ -11,6 +11,7 @@ import { useInputHistory } from "@/hooks/useInputHistory";
 import {
   useAgentComposerEntries,
   useAgentComposerIntegrationResources,
+  useAgentComposerPlanReferences,
   useAgentComposerSkills,
 } from "@/hooks/useAgentComposerResources";
 import {
@@ -30,6 +31,7 @@ import {
   Plus,
   Search,
   Settings,
+  ScrollText,
   Square,
   Ticket,
   X,
@@ -67,10 +69,13 @@ import { cn } from "@/lib/utils";
 import {
   appendInternalSkillDirectives,
   detectAgentComposerTrigger,
+  extractComposerArtifactTokens,
   extractComposerSkillTokens,
+  normalizeComposerArtifactReferences,
   normalizeComposerIntegrationReferences,
   normalizeComposerProjectReferences,
   replaceAgentComposerTrigger,
+  type AgentComposerArtifactReference,
   type AgentComposerIntegrationKind,
   type AgentComposerIntegrationReference,
   type AgentComposerProjectReference,
@@ -88,6 +93,8 @@ interface ComposerOption {
   disabled?: boolean;
   disabledReason?: string;
 }
+
+const PLAN_REFINE_COMMAND_MESSAGE = "Please verify and refine the current plan.";
 
 interface ProjectFieldConfig {
   value: string;
@@ -168,6 +175,7 @@ export interface AgentComposerQuestionMode {
 export interface AgentComposerSendOptions {
   projectReferences?: AgentComposerProjectReference[];
   integrationReferences?: AgentComposerIntegrationReference[];
+  artifactReferences?: AgentComposerArtifactReference[];
 }
 
 export interface AgentComposerSlashCommand {
@@ -271,6 +279,9 @@ export function AgentComposerSurface({
   const [selectedIntegrationReferences, setSelectedIntegrationReferences] = useState<
     Map<string, AgentComposerIntegrationReference>
   >(() => new Map());
+  const [selectedArtifactReferences, setSelectedArtifactReferences] = useState<
+    Map<string, AgentComposerArtifactReference>
+  >(() => new Map());
   const surfaceRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -303,6 +314,7 @@ export function AgentComposerSurface({
     activeTrigger?.kind === "path" ? activeTrigger.query : "";
   const integrationQuery =
     activeTrigger?.kind === "integration" ? activeTrigger.query : "";
+  const planQuery = activeTrigger?.kind === "plan" ? activeTrigger.query : "";
   const integrationKind =
     activeTrigger?.kind === "integration" ? activeTrigger.integrationKind : null;
   const pathEntriesQuery = useAgentComposerEntries({
@@ -321,6 +333,14 @@ export function AgentComposerSurface({
       composerAssistEnabled &&
       isFocused &&
       activeTrigger?.kind === "integration",
+  });
+  const planReferencesQuery = useAgentComposerPlanReferences({
+    projectId: project.value,
+    query: planQuery,
+    enabled:
+      composerAssistEnabled &&
+      isFocused &&
+      activeTrigger?.kind === "plan",
   });
   const skillsQuery = useAgentComposerSkills({
     projectId: project.value,
@@ -416,6 +436,7 @@ export function AgentComposerSurface({
     setSelectedInternalSkillNames(new Set());
     setSelectedProjectReferences(new Map());
     setSelectedIntegrationReferences(new Map());
+    setSelectedArtifactReferences(new Map());
     questionMode?.onMatchedOptions([]);
   }, [isControlled, onChangeProp, questionMode]);
 
@@ -477,6 +498,20 @@ export function AgentComposerSurface({
     }
     return map;
   }, [integrationResourcesQuery.data]);
+  const planReferenceByMenuId = useMemo(() => {
+    const map = new Map<string, AgentComposerArtifactReference>();
+    for (const plan of planReferencesQuery.data?.plans ?? []) {
+      map.set(`plan:${plan.artifactId}`, {
+        artifactId: plan.artifactId,
+        kind: "plan",
+        ...(plan.title ? { title: plan.title } : {}),
+        sessionId: plan.sessionId,
+        version: plan.artifactVersion,
+        status: plan.status,
+      });
+    }
+    return map;
+  }, [planReferencesQuery.data?.plans]);
   const selectedProjectReferenceList = useMemo(
     () => normalizeComposerProjectReferences([...selectedProjectReferences.values()]),
     [selectedProjectReferences],
@@ -488,6 +523,10 @@ export function AgentComposerSurface({
       ]),
     [selectedIntegrationReferences],
   );
+  const selectedArtifactReferenceList = useMemo(
+    () => normalizeComposerArtifactReferences([...selectedArtifactReferences.values()]),
+    [selectedArtifactReferences],
+  );
   const slashCommandByMenuId = useMemo(() => {
     const map = new Map<string, AgentComposerSlashCommand>();
     for (const command of slashCommands) {
@@ -497,13 +536,15 @@ export function AgentComposerSurface({
   }, [slashCommands]);
   const hasSelectedReferences =
     selectedProjectReferenceList.length > 0 ||
-    selectedIntegrationReferenceList.length > 0;
+    selectedIntegrationReferenceList.length > 0 ||
+    selectedArtifactReferenceList.length > 0;
   const slashCommandItems = useMemo<AgentComposerMenuItem[]>(() => {
     const items: AgentComposerMenuItem[] = [];
     if (mode && !mode.disabled) {
       const modeCommands: Record<string, string> = {
         edit: "agent",
         chat: "chat",
+        plan: "plan",
         ideation: "ideation",
       };
       for (const option of mode.options) {
@@ -517,6 +558,15 @@ export function AgentComposerSurface({
           ...(option.disabled !== undefined ? { disabled: option.disabled } : {}),
         });
       }
+    }
+    if (mode?.value === "plan" && !mode.disabled) {
+      items.push({
+        id: "command:plan:refine",
+        kind: "slash-command",
+        label: "/refine",
+        description: "Verify and refine the current plan",
+        detail: "plan:refine",
+      });
     }
     for (const command of slashCommands) {
       const item: AgentComposerMenuItem = {
@@ -575,6 +625,20 @@ export function AgentComposerSurface({
         detail: entry.kind,
       }));
     }
+    if (activeTrigger.kind === "plan") {
+      return (planReferencesQuery.data?.plans ?? []).map((plan) => ({
+        id: `plan:${plan.artifactId}`,
+        kind: "plan" as const,
+        label: `@plan:${plan.title ?? plan.artifactId}`,
+        description: [
+          formatPlanReferenceStatus(plan.status),
+          `v${plan.artifactVersion}`,
+          shortReferenceId(plan.sessionId),
+        ].join(" · "),
+        detail: plan.status,
+        sourceLabel: "Plan",
+      }));
+    }
     if (activeTrigger.kind === "skill") {
       return skills
         .filter((skill) => skill.enabled)
@@ -628,6 +692,7 @@ export function AgentComposerSurface({
     integrationResourcesQuery.data,
     integrationResourcesQuery.isError,
     pathEntriesQuery.data?.entries,
+    planReferencesQuery.data?.plans,
     skills,
     slashCommandItems,
   ]);
@@ -658,6 +723,10 @@ export function AgentComposerSurface({
   const menuEmptyLabel =
     activeTrigger?.kind === "path"
       ? "No matching files or folders"
+      : activeTrigger?.kind === "plan"
+        ? planQuery.trim()
+          ? "No matching plans"
+          : "Type to search plans"
       : activeTrigger?.kind === "skill"
         ? "No matching skills"
         : activeTrigger?.kind === "integration"
@@ -666,6 +735,8 @@ export function AgentComposerSurface({
   const menuLoading =
     activeTrigger?.kind === "path"
       ? pathEntriesQuery.isFetching
+      : activeTrigger?.kind === "plan"
+        ? planReferencesQuery.isFetching
       : activeTrigger?.kind === "skill"
         ? skillsQuery.isFetching
         : activeTrigger?.kind === "integration"
@@ -689,6 +760,20 @@ export function AgentComposerSurface({
             path,
             kind: item.detail === "directory" ? "directory" : "file",
           });
+          return nextSet;
+        });
+        const next = replaceAgentComposerTrigger(value, activeTrigger, "");
+        applyComposerText(next.text, next.cursor);
+        return;
+      }
+      if (item.kind === "plan") {
+        const reference = planReferenceByMenuId.get(item.id);
+        if (!reference) {
+          return;
+        }
+        setSelectedArtifactReferences((current) => {
+          const nextSet = new Map(current);
+          nextSet.set(`${reference.kind}:${reference.artifactId}`, reference);
           return nextSet;
         });
         const next = replaceAgentComposerTrigger(value, activeTrigger, "");
@@ -734,6 +819,15 @@ export function AgentComposerSurface({
         clearValue();
         return;
       }
+      if (item.detail === "plan:refine") {
+        if ((isSubmitting && !canQueue) || isReadOnly || sendDisabledReason) {
+          return;
+        }
+        addHistoryEntry(PLAN_REFINE_COMMAND_MESSAGE);
+        clearValue();
+        void Promise.resolve(onSend(PLAN_REFINE_COMMAND_MESSAGE)).catch(() => {});
+        return;
+      }
       if (item.detail?.startsWith("skill:")) {
         const skill = skillByMenuId.get(item.detail);
         const replacement = skill?.invocationValue || item.label;
@@ -771,10 +865,17 @@ export function AgentComposerSurface({
     },
     [
       activeTrigger,
+      addHistoryEntry,
       applyComposerText,
+      canQueue,
       clearValue,
       integrationByMenuId,
+      isReadOnly,
+      isSubmitting,
       mode,
+      onSend,
+      planReferenceByMenuId,
+      sendDisabledReason,
       slashCommandByMenuId,
       skillByMenuId,
       value,
@@ -810,14 +911,32 @@ export function AgentComposerSurface({
       const normalizedIntegrationReferences = normalizeComposerIntegrationReferences([
         ...integrationReferences.values(),
       ]);
+      const artifactReferences = new Map<string, AgentComposerArtifactReference>();
+      for (const reference of selectedArtifactReferenceList) {
+        artifactReferences.set(`${reference.kind}:${reference.artifactId}`, reference);
+      }
+      for (const reference of extractComposerArtifactTokens(message)) {
+        const key = `${reference.kind}:${reference.artifactId}`;
+        if (!artifactReferences.has(key)) {
+          artifactReferences.set(key, reference);
+        }
+      }
+      const normalizedArtifactReferences = normalizeComposerArtifactReferences([
+        ...artifactReferences.values(),
+      ]);
       return {
         message: withInternalSkillDirectives,
-        ...(projectReferences.length > 0 || normalizedIntegrationReferences.length > 0
+        ...(projectReferences.length > 0 ||
+        normalizedIntegrationReferences.length > 0 ||
+        normalizedArtifactReferences.length > 0
           ? {
               options: {
                 ...(projectReferences.length > 0 ? { projectReferences } : {}),
                 ...(normalizedIntegrationReferences.length > 0
                   ? { integrationReferences: normalizedIntegrationReferences }
+                  : {}),
+                ...(normalizedArtifactReferences.length > 0
+                  ? { artifactReferences: normalizedArtifactReferences }
                   : {}),
               },
             }
@@ -826,6 +945,7 @@ export function AgentComposerSurface({
     },
     [
       questionMode,
+      selectedArtifactReferenceList,
       selectedIntegrationReferenceList,
       selectedInternalSkillNames,
       selectedProjectReferenceList,
@@ -850,6 +970,18 @@ export function AgentComposerSurface({
       setSelectedIntegrationReferences((current) => {
         const nextSet = new Map(current);
         nextSet.delete(`${reference.kind}:${reference.id}`);
+        return nextSet;
+      });
+      focusTextareaAtComposerCursor(cursorPosition);
+    },
+    [cursorPosition, focusTextareaAtComposerCursor],
+  );
+
+  const removeSelectedArtifactReference = useCallback(
+    (reference: AgentComposerArtifactReference) => {
+      setSelectedArtifactReferences((current) => {
+        const nextSet = new Map(current);
+        nextSet.delete(`${reference.kind}:${reference.artifactId}`);
         return nextSet;
       });
       focusTextareaAtComposerCursor(cursorPosition);
@@ -910,6 +1042,7 @@ export function AgentComposerSurface({
       setSelectedInternalSkillNames(new Set());
       setSelectedProjectReferences(new Map());
       setSelectedIntegrationReferences(new Map());
+      setSelectedArtifactReferences(new Map());
       return;
     }
 
@@ -1123,8 +1256,10 @@ export function AgentComposerSurface({
                 <ComposerReferencePills
                   projectReferences={selectedProjectReferenceList}
                   integrationReferences={selectedIntegrationReferenceList}
+                  artifactReferences={selectedArtifactReferenceList}
                   onRemoveProjectReference={removeSelectedProjectReference}
                   onRemoveIntegrationReference={removeSelectedIntegrationReference}
+                  onRemoveArtifactReference={removeSelectedArtifactReference}
                 />
               </div>
             )}
@@ -1173,6 +1308,17 @@ export function AgentComposerSurface({
                 markComposerFocused();
                 insertIntegrationTrigger(
                   kind,
+                  value,
+                  cursorPosition,
+                  applyComposerText,
+                  textareaRef.current,
+                );
+                setActionMenuOpen(false);
+              }}
+              onInsertPlanTrigger={() => {
+                restoreTextareaFocusOnActionMenuCloseRef.current = true;
+                markComposerFocused();
+                insertPlanTrigger(
                   value,
                   cursorPosition,
                   applyComposerText,
@@ -1284,6 +1430,7 @@ function ComposerActionMenu({
   open,
   onOpenChange,
   onInsertIntegrationTrigger,
+  onInsertPlanTrigger,
   onCloseAutoFocus,
 }: {
   project: ProjectFieldConfig;
@@ -1296,6 +1443,7 @@ function ComposerActionMenu({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onInsertIntegrationTrigger: (kind: AgentComposerIntegrationKind) => void;
+  onInsertPlanTrigger: () => void;
   onCloseAutoFocus?: (event: Event) => void;
 }) {
   const hasPersistentActions = true;
@@ -1416,6 +1564,20 @@ function ComposerActionMenu({
         )}
         <div className="py-1">
           <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+            References
+          </div>
+          <button
+            type="button"
+            className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
+            onClick={onInsertPlanTrigger}
+          >
+            <ScrollText className="h-4 w-4" />
+            Plan
+          </button>
+        </div>
+        <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
+        <div className="py-1">
+          <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
             Integrations
           </div>
           <div className="space-y-1">
@@ -1445,15 +1607,23 @@ function ComposerActionMenu({
 function ComposerReferencePills({
   projectReferences,
   integrationReferences,
+  artifactReferences,
   onRemoveProjectReference,
   onRemoveIntegrationReference,
+  onRemoveArtifactReference,
 }: {
   projectReferences: AgentComposerProjectReference[];
   integrationReferences: AgentComposerIntegrationReference[];
+  artifactReferences: AgentComposerArtifactReference[];
   onRemoveProjectReference: (path: string) => void;
   onRemoveIntegrationReference: (reference: AgentComposerIntegrationReference) => void;
+  onRemoveArtifactReference: (reference: AgentComposerArtifactReference) => void;
 }) {
-  if (projectReferences.length === 0 && integrationReferences.length === 0) {
+  if (
+    projectReferences.length === 0 &&
+    integrationReferences.length === 0 &&
+    artifactReferences.length === 0
+  ) {
     return null;
   }
 
@@ -1489,6 +1659,27 @@ function ComposerReferencePills({
             label={label}
             removeLabel={`Remove ${isJira ? "Jira" : "Confluence"} reference ${label}`}
             onRemove={() => onRemoveIntegrationReference(reference)}
+            {...(description ? { description } : {})}
+          />
+        );
+      })}
+      {artifactReferences.map((reference) => {
+        const label = reference.title ?? shortReferenceId(reference.artifactId);
+        const description = [
+          reference.status ? formatPlanReferenceStatus(reference.status) : null,
+          reference.version ? `v${reference.version}` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return (
+          <ComposerReferencePill
+            key={`artifact:${reference.kind}:${reference.artifactId}`}
+            testId={`agent-composer-reference-pill-artifact:${reference.kind}:${reference.artifactId}`}
+            icon={ScrollText}
+            typeLabel={reference.kind === "plan" ? "Plan" : "Artifact"}
+            label={label}
+            removeLabel={`Remove ${reference.kind === "plan" ? "plan" : "artifact"} reference ${label}`}
+            onRemove={() => onRemoveArtifactReference(reference)}
             {...(description ? { description } : {})}
           />
         );
@@ -1566,6 +1757,36 @@ function insertIntegrationTrigger(
   const spacer = before.length > 0 && !/\s$/.test(before) ? " " : "";
   const nextText = `${before}${spacer}${trigger}${after}`;
   applyComposerText(nextText, before.length + spacer.length + trigger.length);
+}
+
+function insertPlanTrigger(
+  value: string,
+  cursorPosition: number,
+  applyComposerText: (nextValue: string, nextCursor: number) => void,
+  textarea: HTMLTextAreaElement | null,
+) {
+  const start = textarea?.selectionStart ?? cursorPosition;
+  const end = textarea?.selectionEnd ?? cursorPosition;
+  const trigger = "@plan:";
+  const before = value.slice(0, start);
+  const after = value.slice(end);
+  const spacer = before.length > 0 && !/\s$/.test(before) ? " " : "";
+  const nextText = `${before}${spacer}${trigger}${after}`;
+  applyComposerText(nextText, before.length + spacer.length + trigger.length);
+}
+
+function formatPlanReferenceStatus(status: string): string {
+  if (status === "approved") {
+    return "Approved";
+  }
+  if (status === "accepted") {
+    return "Accepted";
+  }
+  return "Draft";
+}
+
+function shortReferenceId(id: string): string {
+  return id.length > 12 ? `${id.slice(0, 8)}...` : id;
 }
 
 function ComposerModeChip({
