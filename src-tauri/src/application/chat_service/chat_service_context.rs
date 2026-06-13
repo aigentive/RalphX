@@ -27,8 +27,8 @@ use crate::infrastructure::agents::claude::{
 };
 use crate::infrastructure::agents::{
     build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
-    build_spawnable_codex_resume_command, compose_codex_prompt_for_profile, CodexCliCapabilities,
-    CodexExecCliConfig, McpRuntimeContext,
+    build_spawnable_codex_resume_command, compose_codex_prompt_for_profile_with_runtime_context,
+    CodexCliCapabilities, CodexExecCliConfig, McpRuntimeContext,
 };
 use crate::utils::truncate_str;
 
@@ -1503,12 +1503,11 @@ pub async fn resolve_mcp_filesystem_read_roots(
         return Vec::new();
     }
 
-    let normalized_working_directory =
-        crate::utils::path_safety::validate_absolute_non_root_path(
-            working_directory,
-            "MCP working directory",
-        )
-        .unwrap_or_else(|_| working_directory.to_path_buf());
+    let normalized_working_directory = crate::utils::path_safety::validate_absolute_non_root_path(
+        working_directory,
+        "MCP working directory",
+    )
+    .unwrap_or_else(|_| working_directory.to_path_buf());
     if project_path == normalized_working_directory {
         return Vec::new();
     }
@@ -2377,25 +2376,6 @@ pub async fn build_codex_command(
         elapsed_ms = prompt_build_started.elapsed().as_millis() as u64,
         "chat_service.build_codex_command phase completed"
     );
-    let prompt_compose_started = Instant::now();
-    let prompt = compose_codex_prompt_for_profile(
-        &format!("{}{}", initial_prompt, attachment_context),
-        Some(plugin_dir),
-        Some(agent_name),
-        agent_profile,
-    );
-    tracing::info!(
-        context_type = %conversation.context_type,
-        context_id = %conversation.context_id,
-        conversation_id = %conversation.id,
-        agent_name,
-        phase = "compose_codex_prompt",
-        prompt_len = prompt.len(),
-        elapsed_ms = prompt_compose_started.elapsed().as_millis() as u64,
-        "chat_service.build_codex_command phase completed"
-    );
-
-    let mcp_config_started = Instant::now();
     let runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
@@ -2409,6 +2389,26 @@ pub async fn build_codex_command(
             None
         },
     );
+    let prompt_compose_started = Instant::now();
+    let prompt = compose_codex_prompt_for_profile_with_runtime_context(
+        &format!("{}{}", initial_prompt, attachment_context),
+        Some(plugin_dir),
+        Some(agent_name),
+        agent_profile,
+        Some(&runtime_context),
+    );
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "compose_codex_prompt",
+        prompt_len = prompt.len(),
+        elapsed_ms = prompt_compose_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
+    );
+
+    let mcp_config_started = Instant::now();
     let config_overrides = build_codex_mcp_overrides_for_profile(
         plugin_dir,
         agent_name,
@@ -3117,11 +3117,12 @@ pub async fn build_codex_resume_command(
                 resume_prompt,
                 attachment_context_override.unwrap_or_default()
             );
-            let prompt = compose_codex_prompt_for_profile(
+            let prompt = compose_codex_prompt_for_profile_with_runtime_context(
                 &resume_prompt,
                 Some(plugin_dir),
                 Some(agent_name),
                 agent_profile,
+                Some(&runtime_context),
             );
 
             let mut spawnable = build_spawnable_codex_resume_command(
@@ -3167,11 +3168,12 @@ pub async fn build_codex_resume_command(
                 attachment_context_override.unwrap_or_default()
             );
 
-            let prompt = compose_codex_prompt_for_profile(
+            let prompt = compose_codex_prompt_for_profile_with_runtime_context(
                 &recovery_prompt,
                 Some(plugin_dir),
                 Some(agent_name),
                 agent_profile,
+                Some(&runtime_context),
             );
             let mut spawnable =
                 build_spawnable_codex_exec_command(cli_path, &prompt, capabilities, &codex_config)?;

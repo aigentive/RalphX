@@ -14,10 +14,11 @@ use crate::domain::agents::{
 };
 
 use super::{
-    build_codex_mcp_overrides, build_spawnable_codex_exec_command, compose_codex_prompt,
-    normalize_codex_exec_output, probe_codex_cli, resolve_codex_cli, CodexCliCapabilities,
-    CodexExecCliConfig,
+    build_codex_mcp_overrides, build_spawnable_codex_exec_command,
+    compose_codex_prompt_for_profile_with_runtime_context, normalize_codex_exec_output,
+    probe_codex_cli, resolve_codex_cli, CodexCliCapabilities, CodexExecCliConfig,
 };
+use crate::infrastructure::agents::mcp_runtime_context::McpRuntimeContext;
 
 lazy_static! {
     static ref PROCESSES: Mutex<HashMap<String, (tokio::process::Child, Instant)>> =
@@ -117,10 +118,25 @@ impl CodexCliClient {
     }
 
     fn build_prompt(&self, config: &AgentConfig) -> String {
-        compose_codex_prompt(
+        let runtime_context = config.agent.as_ref().and_then(|_| {
+            let project_id = config.env.get("RALPHX_PROJECT_ID")?;
+            Some(McpRuntimeContext {
+                context_type: None,
+                context_id: config.env.get("RALPHX_TASK_ID").cloned(),
+                task_id: config.env.get("RALPHX_TASK_ID").cloned(),
+                project_id: Some(project_id.clone()),
+                working_directory: Some(config.working_directory.clone()),
+                filesystem_read_roots: Vec::new(),
+                lead_session_id: None,
+                parent_conversation_id: None,
+            })
+        });
+        compose_codex_prompt_for_profile_with_runtime_context(
             &config.prompt,
             config.plugin_dir.as_deref(),
             config.agent.as_deref(),
+            None,
+            runtime_context.as_ref(),
         )
     }
 

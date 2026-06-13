@@ -8,13 +8,21 @@
 /// - create_mcp_config(): --agent-type still present alongside --allowed-tools
 /// - create_mcp_config(): no --allowed-tools arg when agent has no mcp_tools config
 use super::*;
+use crate::domain::services::learned_skill_adapters::{
+    LearnedSkillBucket, LearnedSkillRecord, LearnedSkillSelectionRequest, LearnedSkillStage,
+    LearnedSkillStatus,
+};
 use crate::infrastructure::agents::harness_agent_catalog::{
     internal_mcp_server_name, load_canonical_agent_definition, load_canonical_claude_metadata,
     load_harness_agent_prompt, AgentPromptHarness,
 };
+use crate::infrastructure::agents::internal_skills::{
+    PreExecutionLearnedSkillContext, PRE_EXECUTION_LEARNED_SKILLS_ENV,
+};
 use crate::infrastructure::agents::mcp_runtime_context::McpRuntimeContext;
 use serde_yaml::Value;
 use std::collections::BTreeSet;
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -49,6 +57,44 @@ fn make_temp_project_plugin_dir() -> (tempfile::TempDir, std::path::PathBuf, std
     )
     .unwrap();
     (dir, root, plugin_dir)
+}
+
+fn learned_skill(id: &str, project_id: &str) -> LearnedSkillRecord {
+    LearnedSkillRecord {
+        id: id.to_string(),
+        project_id: project_id.to_string(),
+        title: format!("Skill {id}"),
+        status: LearnedSkillStatus::Approved,
+        caller_surfaces: Vec::new(),
+        stages: Vec::new(),
+        buckets: Vec::new(),
+        path_scopes: Vec::new(),
+        compact_guidance: format!("Follow {id}."),
+        predicted_effect: format!("Improve {id}."),
+        provenance_refs: vec![format!("outcome:{id}")],
+    }
+}
+
+struct EnvGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
 }
 
 fn allowed_tools_arg_from_mcp_config(json: &serde_json::Value) -> Option<String> {
@@ -697,6 +743,7 @@ fn test_plan_profile_system_prompt_includes_runtime_profile_context() {
         "ralphx-ideation",
         Some("plan"),
         "Create a plan",
+        None,
     )
     .expect("plan profile prompt");
 
@@ -710,6 +757,7 @@ fn test_plan_profile_system_prompt_includes_runtime_profile_context() {
         "ralphx-ideation",
         None,
         "Create a plan",
+        None,
     )
     .expect("default profile prompt");
     assert!(!default_prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
@@ -809,8 +857,7 @@ harnesses:
         .filter_map(|arg| arg.as_str())
         .collect::<Vec<_>>();
     assert!(
-        args.iter()
-            .any(|arg| *arg == "--allowed-tools=create_agent_task,list_agent_tasks"),
+        args.contains(&"--allowed-tools=create_agent_task,list_agent_tasks"),
         "internal sidecar should be narrowed to declared internal tools: {args:?}"
     );
 }
@@ -987,6 +1034,148 @@ Report only unless workspace intervention is explicit.
         !args.contains(&"--append-system-prompt-file".to_string()),
         "Claude must use inline prompt when internal skill context is selected"
     );
+}
+
+#[test]
+fn load_claude_prompt_injects_pre_execution_learned_skill_citations() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/ralphx-chat-project");
+    std::fs::create_dir_all(agent_root.join("shared")).expect("create shared prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        r#"name: ralphx-chat-project
+role: project_chat
+"#,
+    )
+    .expect("write shared definition");
+    std::fs::write(agent_root.join("shared/prompt.md"), "Project chat prompt")
+        .expect("write shared prompt");
+
+    let context = PreExecutionLearnedSkillContext {
+        request: LearnedSkillSelectionRequest {
+            project_id: "project-1".to_string(),
+            caller_surface: "ralphx-chat-project".to_string(),
+            stage: LearnedSkillStage::Planning,
+            bucket: LearnedSkillBucket::Planning,
+            touched_paths: vec!["src-tauri/src/domain/services/mod.rs".to_string()],
+            max_skills: 4,
+        },
+        available_skills: vec![
+            learned_skill("skill-planning", "project-1")
+                .with_caller_surfaces(vec!["ralphx-chat-project"])
+                .with_stages(vec![LearnedSkillStage::Planning])
+                .with_buckets(vec![LearnedSkillBucket::Planning])
+                .with_path_scopes(vec!["src-tauri/src/domain"]),
+            learned_skill("skill-review", "project-1")
+                .with_caller_surfaces(vec!["ralphx-review-history"])
+                .with_stages(vec![LearnedSkillStage::Planning])
+                .with_buckets(vec![LearnedSkillBucket::Planning])
+                .with_path_scopes(vec!["src-tauri/src/domain"]),
+        ],
+    };
+
+    let (system_prompt, injected_names) = load_agent_system_prompt_with_internal_skills(
+        &plugin_dir,
+        "ralphx:ralphx-chat-project",
+        None,
+        "Plan the domain change.",
+        Some(&context),
+    )
+    .expect("load prompt");
+
+    assert!(system_prompt.contains("Project chat prompt"));
+    assert!(system_prompt.contains("<ralphx_learned_skill_citations>"));
+    assert!(system_prompt.contains("skill-planning"));
+    assert!(!system_prompt.contains("skill-review"));
+    assert_eq!(injected_names, vec!["learned:skill-planning"]);
+}
+
+#[test]
+fn build_spawnable_command_injects_pre_execution_learned_skills_from_runtime_context() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let (_guard, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/ralphx-chat-project");
+    std::fs::create_dir_all(agent_root.join("shared")).expect("create shared prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        r#"name: ralphx-chat-project
+role: project_chat
+"#,
+    )
+    .expect("write shared definition");
+    std::fs::write(agent_root.join("shared/prompt.md"), "Project chat prompt")
+        .expect("write shared prompt");
+
+    let payload = serde_json::json!({
+        "skills": [
+            {
+                "id": "skill-planning",
+                "project_id": "project-1",
+                "title": "Skill planning",
+                "status": "approved",
+                "caller_surfaces": ["ralphx-chat-project"],
+                "stages": ["planning"],
+                "buckets": ["planning"],
+                "path_scopes": ["src-tauri/src/domain"],
+                "compact_guidance": "Follow planning.",
+                "predicted_effect": "Improve planning.",
+                "provenance_refs": ["outcome:skill-planning"]
+            },
+            {
+                "id": "skill-review",
+                "project_id": "project-1",
+                "title": "Skill review",
+                "status": "approved",
+                "caller_surfaces": ["ralphx-review-history"],
+                "stages": ["planning"],
+                "buckets": ["planning"],
+                "path_scopes": ["src-tauri/src/domain"],
+                "compact_guidance": "Follow review.",
+                "predicted_effect": "Improve review.",
+                "provenance_refs": ["outcome:skill-review"]
+            }
+        ],
+        "touched_paths": ["src-tauri/src/domain/services/mod.rs"],
+        "max_skills": 4
+    })
+    .to_string();
+    let _env = EnvGuard::set_os(PRE_EXECUTION_LEARNED_SKILLS_ENV, payload);
+    let runtime_context = McpRuntimeContext {
+        context_type: Some("project".to_string()),
+        context_id: Some("project-1".to_string()),
+        task_id: None,
+        project_id: Some("project-1".to_string()),
+        working_directory: Some(root.join("workspace")),
+        filesystem_read_roots: Vec::new(),
+        lead_session_id: None,
+        parent_conversation_id: Some("conversation-1".to_string()),
+    };
+
+    let spawnable = build_spawnable_command_with_mcp_runtime_context_for_test(
+        Path::new("/fake/claude"),
+        &plugin_dir,
+        "Plan the domain change.",
+        Some("ralphx:ralphx-chat-project"),
+        None,
+        Path::new("/tmp"),
+        None,
+        None,
+        Some(&runtime_context),
+    )
+    .expect("build spawnable");
+    let args = spawnable.get_args_for_test();
+    let prompt_index = args
+        .iter()
+        .position(|arg| arg == "--append-system-prompt")
+        .expect("expected inline system prompt with learned-skill citations");
+    let system_prompt = &args[prompt_index + 1];
+
+    assert!(system_prompt.contains("Project chat prompt"));
+    assert!(system_prompt.contains("<ralphx_learned_skill_citations>"));
+    assert!(system_prompt.contains("skill-planning"));
+    assert!(!system_prompt.contains("skill-review"));
 }
 
 #[test]
