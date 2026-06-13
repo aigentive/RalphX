@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+use crate::domain::services::learned_skill_adapters::LearnedSkillConstraintCitation;
 use crate::infrastructure::agents::harness_agent_catalog::{
     load_canonical_agent_definition, load_canonical_agent_definition_for_profile,
 };
@@ -217,6 +218,61 @@ pub fn list_internal_skill_summaries_for_agent(
     Ok(summaries)
 }
 
+pub fn inject_learned_skill_citations_into_system_prompt(
+    system_prompt: &str,
+    citations: &[LearnedSkillConstraintCitation],
+) -> InternalSkillInjection {
+    let mut selected = citations
+        .iter()
+        .filter(|citation| is_safe_learned_skill_id(&citation.skill_id))
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return InternalSkillInjection {
+            system_prompt: system_prompt.to_string(),
+            injected_skill_names: Vec::new(),
+        };
+    }
+
+    selected.sort_by(|left, right| left.skill_id.cmp(&right.skill_id));
+    let mut learned_skill_names = Vec::with_capacity(selected.len());
+    let mut lines = vec![
+        "<ralphx_learned_skill_citations>".to_string(),
+        "RalphX selected the following approved learned project skill citations for this turn. Treat them as compact constraints with cited provenance.".to_string(),
+    ];
+    for citation in selected {
+        learned_skill_names.push(format!("learned:{}", citation.skill_id));
+        lines.push(format!(
+            "<learned_skill_citation id=\"{}\">",
+            escape_prompt_text(&citation.skill_id)
+        ));
+        lines.push(format!("title: {}", escape_prompt_text(&citation.title)));
+        lines.push(format!(
+            "predicted_effect: {}",
+            escape_prompt_text(&citation.predicted_effect)
+        ));
+        lines.push(format!(
+            "guidance: {}",
+            escape_prompt_text(&citation.compact_guidance)
+        ));
+        if !citation.provenance_refs.is_empty() {
+            lines.push(format!(
+                "provenance_refs: {}",
+                escape_prompt_text(&citation.provenance_refs.join(", "))
+            ));
+        }
+        lines.push("</learned_skill_citation>".to_string());
+    }
+    lines.push("</ralphx_learned_skill_citations>".to_string());
+
+    let mut enriched = system_prompt.trim().to_string();
+    enriched.push_str("\n\n");
+    enriched.push_str(&lines.join("\n"));
+    InternalSkillInjection {
+        system_prompt: enriched,
+        injected_skill_names: learned_skill_names,
+    }
+}
+
 fn render_internal_skill_context(project_root: &Path, skills: &[InternalSkill]) -> String {
     let mut lines = vec![
         "<ralphx_internal_skills>".to_string(),
@@ -282,6 +338,28 @@ fn trusted_skill_name(skill_name: &str) -> Option<&str> {
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
     valid.then_some(skill_name)
+}
+
+fn is_safe_learned_skill_id(skill_id: &str) -> bool {
+    !skill_id.is_empty()
+        && skill_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+}
+
+fn escape_prompt_text(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
 }
 
 fn load_internal_skill(project_root: &Path, skill_name: &str) -> Result<InternalSkill, String> {
