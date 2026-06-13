@@ -17,13 +17,13 @@ use crate::infrastructure::agents::claude::{
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     internal_mcp_server_name, load_harness_agent_prompt_for_profile,
-    render_agent_runtime_profile_context,
-    resolve_project_root_from_plugin_dir, try_load_canonical_codex_metadata_for_profile,
-    AgentPromptHarness, CanonicalCodexAgentMetadata,
+    render_agent_runtime_profile_context, resolve_project_root_from_plugin_dir,
+    try_load_canonical_codex_metadata_for_profile, AgentPromptHarness, CanonicalCodexAgentMetadata,
 };
 use crate::infrastructure::agents::internal_skills::{
     inject_internal_skills_into_system_prompt_for_profile,
-    inject_pre_execution_learned_skills_into_existing_injection, InternalSkillInjection,
+    inject_pre_execution_learned_skills_into_existing_injection,
+    pre_execution_learned_skill_context_from_runtime, InternalSkillInjection,
     PreExecutionLearnedSkillContext,
 };
 use crate::infrastructure::agents::mcp_runtime_context::{
@@ -328,12 +328,30 @@ pub fn compose_codex_prompt_for_profile(
     agent_name: Option<&str>,
     agent_profile: Option<&str>,
 ) -> String {
-    compose_codex_prompt_for_profile_with_learned_skills(
+    compose_codex_prompt_for_profile_with_runtime_context(
         prompt,
         plugin_dir,
         agent_name,
         agent_profile,
         None,
+    )
+}
+
+pub fn compose_codex_prompt_for_profile_with_runtime_context(
+    prompt: &str,
+    plugin_dir: Option<&Path>,
+    agent_name: Option<&str>,
+    agent_profile: Option<&str>,
+    runtime_context: Option<&McpRuntimeContext>,
+) -> String {
+    let pre_execution_learned_skills = agent_name
+        .and_then(|name| pre_execution_learned_skill_context_from_runtime(name, runtime_context));
+    compose_codex_prompt_for_profile_with_learned_skills(
+        prompt,
+        plugin_dir,
+        agent_name,
+        agent_profile,
+        pre_execution_learned_skills.as_ref(),
     )
 }
 

@@ -2,7 +2,8 @@ use super::{
     build_codex_exec_args, build_codex_exec_resume_args, build_codex_mcp_overrides,
     build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
     compose_codex_prompt, compose_codex_prompt_for_profile,
-    compose_codex_prompt_for_profile_with_learned_skills, configure_spawn, probe_codex_cli,
+    compose_codex_prompt_for_profile_with_learned_skills,
+    compose_codex_prompt_for_profile_with_runtime_context, configure_spawn, probe_codex_cli,
     resolve_codex_cli_from_candidates, CodexCliCapabilities, CodexExecCliConfig,
     CodexMcpRuntimeContext,
 };
@@ -11,7 +12,9 @@ use crate::domain::services::learned_skill_adapters::{
     LearnedSkillBucket, LearnedSkillRecord, LearnedSkillSelectionRequest, LearnedSkillStage,
     LearnedSkillStatus,
 };
-use crate::infrastructure::agents::internal_skills::PreExecutionLearnedSkillContext;
+use crate::infrastructure::agents::internal_skills::{
+    PreExecutionLearnedSkillContext, PRE_EXECUTION_LEARNED_SKILLS_ENV,
+};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
@@ -651,6 +654,89 @@ role: project_chat
         Some("ralphx-chat-project"),
         None,
         Some(&context),
+    );
+
+    assert!(composed.contains("Project chat prompt"));
+    assert!(composed.contains("<ralphx_learned_skill_citations>"));
+    assert!(composed.contains("skill-planning"));
+    assert!(!composed.contains("skill-review"));
+}
+
+#[test]
+fn compose_codex_prompt_injects_pre_execution_learned_skills_from_runtime_context() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    let plugin_dir = create_plugin_dir(root);
+
+    std::fs::create_dir_all(root.join("agents/ralphx-chat-project/shared"))
+        .expect("create shared prompt dir");
+    std::fs::write(
+        root.join("agents/ralphx-chat-project/agent.yaml"),
+        r#"name: ralphx-chat-project
+role: project_chat
+"#,
+    )
+    .expect("write shared definition");
+    std::fs::write(
+        root.join("agents/ralphx-chat-project/shared/prompt.md"),
+        "Project chat prompt",
+    )
+    .expect("write shared prompt");
+
+    let payload = serde_json::json!({
+        "skills": [
+            {
+                "id": "skill-planning",
+                "project_id": "project-1",
+                "title": "Skill planning",
+                "status": "approved",
+                "caller_surfaces": ["ralphx-chat-project"],
+                "stages": ["planning"],
+                "buckets": ["planning"],
+                "path_scopes": ["src-tauri/src/domain"],
+                "compact_guidance": "Follow planning.",
+                "predicted_effect": "Improve planning.",
+                "provenance_refs": ["outcome:skill-planning"]
+            },
+            {
+                "id": "skill-review",
+                "project_id": "project-1",
+                "title": "Skill review",
+                "status": "approved",
+                "caller_surfaces": ["ralphx-review-history"],
+                "stages": ["planning"],
+                "buckets": ["planning"],
+                "path_scopes": ["src-tauri/src/domain"],
+                "compact_guidance": "Follow review.",
+                "predicted_effect": "Improve review.",
+                "provenance_refs": ["outcome:skill-review"]
+            }
+        ],
+        "touched_paths": ["src-tauri/src/domain/services/mod.rs"],
+        "max_skills": 4
+    })
+    .to_string();
+    let _env = EnvGuard::set_os(PRE_EXECUTION_LEARNED_SKILLS_ENV, payload);
+    let runtime_context = CodexMcpRuntimeContext {
+        context_type: Some("project".to_string()),
+        context_id: Some("project-1".to_string()),
+        task_id: None,
+        project_id: Some("project-1".to_string()),
+        working_directory: Some(root.join("workspace")),
+        filesystem_read_roots: Vec::new(),
+        lead_session_id: None,
+        parent_conversation_id: Some("conversation-1".to_string()),
+    };
+
+    let composed = compose_codex_prompt_for_profile_with_runtime_context(
+        "Plan the domain change.",
+        Some(&plugin_dir),
+        Some("ralphx-chat-project"),
+        None,
+        Some(&runtime_context),
     );
 
     assert!(composed.contains("Project chat prompt"));

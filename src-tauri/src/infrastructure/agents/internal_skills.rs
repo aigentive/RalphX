@@ -5,15 +5,19 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::services::learned_skill_adapters::{
     build_constraint_bundle_skill_citations, select_pre_execution_learned_skills,
-    LearnedSkillConstraintCitation, LearnedSkillRecord, LearnedSkillSelectionRequest,
+    LearnedSkillBucket, LearnedSkillConstraintCitation, LearnedSkillRecord,
+    LearnedSkillSelectionRequest, LearnedSkillStage,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     load_canonical_agent_definition, load_canonical_agent_definition_for_profile,
 };
+use crate::infrastructure::agents::mcp_runtime_context::McpRuntimeContext;
 
 const SKILL_FILE_NAME: &str = "SKILL.md";
 const APP_SKILLS_DIR: &[&str] = &["plugins", "app", "skills"];
 const SHARED_SKILLS_DIR: &[&str] = &["plugins", "shared", "skills"];
+pub const PRE_EXECUTION_LEARNED_SKILLS_ENV: &str = "RALPHX_PRE_EXECUTION_LEARNED_SKILLS_JSON";
+const DEFAULT_PRE_EXECUTION_LEARNED_SKILL_LIMIT: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InternalSkillInjection {
@@ -25,6 +29,139 @@ pub struct InternalSkillInjection {
 pub struct PreExecutionLearnedSkillContext {
     pub request: LearnedSkillSelectionRequest,
     pub available_skills: Vec<LearnedSkillRecord>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PreExecutionLearnedSkillPayload {
+    #[serde(default)]
+    skills: Vec<LearnedSkillRecord>,
+    #[serde(default)]
+    touched_paths: Vec<String>,
+    #[serde(default)]
+    max_skills: Option<usize>,
+}
+
+pub fn pre_execution_learned_skill_context_from_runtime(
+    agent_name: &str,
+    runtime_context: Option<&McpRuntimeContext>,
+) -> Option<PreExecutionLearnedSkillContext> {
+    let raw = std::env::var(PRE_EXECUTION_LEARNED_SKILLS_ENV).ok()?;
+    let payload = match parse_pre_execution_learned_skill_payload(&raw) {
+        Ok(payload) => payload,
+        Err(error) => {
+            tracing::warn!(
+                env_var = PRE_EXECUTION_LEARNED_SKILLS_ENV,
+                error = %error,
+                "Ignoring invalid pre-execution learned skill payload"
+            );
+            return None;
+        }
+    };
+
+    pre_execution_learned_skill_context_from_records(
+        agent_name,
+        runtime_context,
+        payload.skills,
+        payload.touched_paths,
+        payload.max_skills,
+    )
+}
+
+pub fn pre_execution_learned_skill_context_from_records(
+    agent_name: &str,
+    runtime_context: Option<&McpRuntimeContext>,
+    available_skills: Vec<LearnedSkillRecord>,
+    touched_paths: Vec<String>,
+    max_skills: Option<usize>,
+) -> Option<PreExecutionLearnedSkillContext> {
+    if available_skills.is_empty() {
+        return None;
+    }
+    let runtime_context = runtime_context?;
+    let project_id = runtime_context
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let caller_surface = learned_skill_caller_surface(agent_name)?;
+    let stage = inferred_pre_execution_learned_skill_stage(
+        runtime_context.context_type.as_deref(),
+        agent_name,
+    );
+    let bucket = learned_skill_bucket_for_stage(stage);
+
+    Some(PreExecutionLearnedSkillContext {
+        request: LearnedSkillSelectionRequest {
+            project_id: project_id.to_string(),
+            caller_surface,
+            stage,
+            bucket,
+            touched_paths,
+            max_skills: max_skills.unwrap_or(DEFAULT_PRE_EXECUTION_LEARNED_SKILL_LIMIT),
+        },
+        available_skills,
+    })
+}
+
+fn parse_pre_execution_learned_skill_payload(
+    raw: &str,
+) -> Result<PreExecutionLearnedSkillPayload, serde_json::Error> {
+    match serde_json::from_str::<PreExecutionLearnedSkillPayload>(raw) {
+        Ok(payload) => Ok(payload),
+        Err(payload_error) => serde_json::from_str::<Vec<LearnedSkillRecord>>(raw)
+            .map(|skills| PreExecutionLearnedSkillPayload {
+                skills,
+                touched_paths: Vec::new(),
+                max_skills: None,
+            })
+            .map_err(|_| payload_error),
+    }
+}
+
+fn learned_skill_caller_surface(agent_name: &str) -> Option<String> {
+    let surface = agent_name
+        .trim()
+        .strip_prefix("ralphx:")
+        .unwrap_or_else(|| agent_name.trim())
+        .trim();
+    (!surface.is_empty()).then(|| surface.to_string())
+}
+
+fn inferred_pre_execution_learned_skill_stage(
+    context_type: Option<&str>,
+    agent_name: &str,
+) -> LearnedSkillStage {
+    let key = format!(
+        "{} {}",
+        context_type.unwrap_or_default().to_ascii_lowercase(),
+        agent_name.to_ascii_lowercase()
+    );
+    if key.contains("verification") || key.contains("verifier") {
+        LearnedSkillStage::Verification
+    } else if key.contains("review") {
+        LearnedSkillStage::Review
+    } else if key.contains("merge") {
+        LearnedSkillStage::Merge
+    } else if key.contains("task_execution")
+        || key.contains("task-execution")
+        || key.contains("execution")
+        || key.contains("worker")
+        || key.contains("coder")
+    {
+        LearnedSkillStage::Execution
+    } else {
+        LearnedSkillStage::Planning
+    }
+}
+
+fn learned_skill_bucket_for_stage(stage: LearnedSkillStage) -> LearnedSkillBucket {
+    match stage {
+        LearnedSkillStage::Planning => LearnedSkillBucket::Planning,
+        LearnedSkillStage::Verification => LearnedSkillBucket::Verification,
+        LearnedSkillStage::Review => LearnedSkillBucket::Review,
+        LearnedSkillStage::Execution => LearnedSkillBucket::Execution,
+        LearnedSkillStage::Merge => LearnedSkillBucket::Merge,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

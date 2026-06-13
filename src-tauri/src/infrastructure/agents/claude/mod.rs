@@ -83,7 +83,8 @@ use crate::infrastructure::agents::harness_agent_catalog::{
 };
 use crate::infrastructure::agents::internal_skills::{
     inject_internal_skills_into_system_prompt_for_profile,
-    inject_pre_execution_learned_skills_into_existing_injection, InternalSkillInjection,
+    inject_pre_execution_learned_skills_into_existing_injection,
+    pre_execution_learned_skill_context_from_runtime, InternalSkillInjection,
     PreExecutionLearnedSkillContext,
 };
 use crate::infrastructure::agents::mcp_runtime_context::{
@@ -1496,6 +1497,7 @@ fn add_prompt_args(
     agent_profile: Option<&str>,
     resume_session: Option<&str>,
     interactive: bool,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
     pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
 ) -> Option<String> {
     // Add resume if continuing an existing session
@@ -1525,6 +1527,10 @@ fn add_prompt_args(
             cmd.args(["--agent", agent_name]);
         } else if let Some(prompt_path) = resolve_agent_system_prompt_path(plugin_dir, agent_name) {
             let runtime = claude_runtime_config();
+            let runtime_pre_execution_learned_skills =
+                pre_execution_learned_skill_context_from_runtime(agent_name, mcp_runtime_context);
+            let pre_execution_learned_skills =
+                pre_execution_learned_skills.or(runtime_pre_execution_learned_skills.as_ref());
             let prompt_with_internal_skills = load_agent_system_prompt_with_internal_skills(
                 plugin_dir,
                 agent_name,
@@ -1720,6 +1726,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context(
         None,
         resume_session,
         false,
+        mcp_runtime_context,
         None,
     );
     configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
@@ -1759,6 +1766,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
         agent_profile,
         resume_session,
         false,
+        mcp_runtime_context,
         None,
     );
     configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
@@ -1820,6 +1828,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_for_test(
         None,
         resume_session,
         false,
+        mcp_runtime_context,
         None,
     );
     configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
@@ -1860,6 +1869,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
         agent_profile,
         resume_session,
         false,
+        mcp_runtime_context,
         None,
     );
     configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
@@ -1961,6 +1971,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
         agent_profile,
         resume_session,
         true,
+        mcp_runtime_context,
         None,
     );
     configure_spawn(&mut cmd, working_directory, true);
@@ -2056,6 +2067,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_
         agent_profile,
         resume_session,
         true,
+        mcp_runtime_context,
         None,
     );
     configure_spawn(&mut cmd, working_directory, true);

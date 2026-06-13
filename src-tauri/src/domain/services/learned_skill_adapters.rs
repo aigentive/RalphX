@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::domain::{entities::ideation::VerificationRoundSnapshot, services::gap_fingerprint};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanModeVerdict {
@@ -32,7 +32,8 @@ pub struct PlanModeVerdictOutcome {
     pub mutates_accepted_session: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LearnedSkillStatus {
     Staged,
     Approved,
@@ -40,7 +41,8 @@ pub enum LearnedSkillStatus {
     Archived,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LearnedSkillStage {
     Planning,
     Verification,
@@ -49,7 +51,8 @@ pub enum LearnedSkillStage {
     Merge,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LearnedSkillBucket {
     Planning,
     Verification,
@@ -58,7 +61,7 @@ pub enum LearnedSkillBucket {
     Merge,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LearnedSkillRecord {
     pub id: String,
     pub project_id: String,
