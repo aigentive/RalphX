@@ -1,9 +1,12 @@
 use super::question_commands::{
     accepted_plan_mode_proposal, build_plan_mode_proposal_continuation,
-    plan_mode_proposal_continuation_metadata, PLAN_MODE_PROPOSAL_ACCEPT_VALUE,
+    plan_mode_proposal_continuation_metadata,
+    plan_mode_proposal_continuation_metadata_with_outcome, PLAN_MODE_PROPOSAL_ACCEPT_VALUE,
     PLAN_MODE_PROPOSAL_CONTINUATION_BASE, PLAN_MODE_PROPOSAL_KIND,
 };
 use crate::application::{PendingQuestionInfo, QuestionAnswer, QuestionOption};
+use crate::domain::services::learned_skill_adapters::PlanModeVerdictOutcome;
+use std::collections::BTreeMap;
 
 fn answer(selected_options: Vec<&str>, skipped: bool) -> QuestionAnswer {
     QuestionAnswer {
@@ -142,5 +145,55 @@ fn continuation_message_and_metadata_are_hidden_resume_payloads() {
             .get("persist_hidden_marker")
             .and_then(|value| value.as_bool()),
         Some(true)
+    );
+}
+
+#[test]
+fn continuation_metadata_can_carry_compact_plan_mode_verdict_outcome() {
+    let outcome = PlanModeVerdictOutcome {
+        project_id: "project-1".to_string(),
+        source: "plan_mode".to_string(),
+        outcome_class: "plan_mode_accepted".to_string(),
+        status: "eligible".to_string(),
+        refs: BTreeMap::from([
+            (
+                "conversation_id".to_string(),
+                "conversation-plan-1".to_string(),
+            ),
+            (
+                "planning_session_id".to_string(),
+                "planning-session-1".to_string(),
+            ),
+        ]),
+        evidence_summary: "Plan first.".to_string(),
+        mutates_accepted_session: false,
+    };
+
+    let metadata: serde_json::Value = serde_json::from_str(
+        &plan_mode_proposal_continuation_metadata_with_outcome(Some(&outcome)),
+    )
+    .expect("metadata json");
+    let captured = metadata
+        .get("plan_mode_verdict_outcome")
+        .expect("metadata should include captured outcome");
+
+    assert_eq!(
+        captured
+            .get("outcome_class")
+            .and_then(|value| value.as_str()),
+        Some("plan_mode_accepted")
+    );
+    assert_eq!(
+        captured
+            .get("refs")
+            .and_then(|value| value.get("planning_session_id"))
+            .and_then(|value| value.as_str()),
+        Some("planning-session-1")
+    );
+    assert_eq!(
+        captured
+            .get("mutates_accepted_session")
+            .and_then(|value| value.as_bool()),
+        Some(false)
     );
 }

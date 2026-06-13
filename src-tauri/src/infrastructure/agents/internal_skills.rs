@@ -3,7 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use crate::domain::services::learned_skill_adapters::LearnedSkillConstraintCitation;
+use crate::domain::services::learned_skill_adapters::{
+    build_constraint_bundle_skill_citations, select_pre_execution_learned_skills,
+    LearnedSkillConstraintCitation, LearnedSkillRecord, LearnedSkillSelectionRequest,
+};
 use crate::infrastructure::agents::harness_agent_catalog::{
     load_canonical_agent_definition, load_canonical_agent_definition_for_profile,
 };
@@ -16,6 +19,12 @@ const SHARED_SKILLS_DIR: &[&str] = &["plugins", "shared", "skills"];
 pub struct InternalSkillInjection {
     pub system_prompt: String,
     pub injected_skill_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreExecutionLearnedSkillContext {
+    pub request: LearnedSkillSelectionRequest,
+    pub available_skills: Vec<LearnedSkillRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,6 +280,39 @@ pub fn inject_learned_skill_citations_into_system_prompt(
         system_prompt: enriched,
         injected_skill_names: learned_skill_names,
     }
+}
+
+pub fn inject_pre_execution_learned_skills_into_system_prompt(
+    system_prompt: &str,
+    request: LearnedSkillSelectionRequest,
+    skills: &[LearnedSkillRecord],
+) -> InternalSkillInjection {
+    let selected = select_pre_execution_learned_skills(request, skills);
+    let citations = build_constraint_bundle_skill_citations(&selected);
+    inject_learned_skill_citations_into_system_prompt(system_prompt, &citations)
+}
+
+pub fn inject_pre_execution_learned_skills_into_existing_injection(
+    mut injection: InternalSkillInjection,
+    context: Option<&PreExecutionLearnedSkillContext>,
+) -> InternalSkillInjection {
+    let Some(context) = context else {
+        return injection;
+    };
+    let learned_injection = inject_pre_execution_learned_skills_into_system_prompt(
+        &injection.system_prompt,
+        context.request.clone(),
+        &context.available_skills,
+    );
+    if learned_injection.injected_skill_names.is_empty() {
+        return injection;
+    }
+
+    injection.system_prompt = learned_injection.system_prompt;
+    injection
+        .injected_skill_names
+        .extend(learned_injection.injected_skill_names);
+    injection
 }
 
 fn render_internal_skill_context(project_root: &Path, skills: &[InternalSkill]) -> String {
@@ -803,7 +845,10 @@ Alpha body.
             list_internal_skill_summaries_for_agent(root, "test-agent").expect("summaries");
 
         assert_eq!(
-            summaries.iter().map(|summary| summary.name.as_str()).collect::<Vec<_>>(),
+            summaries
+                .iter()
+                .map(|summary| summary.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["alpha-skill", "zebra-skill"]
         );
         assert_eq!(
@@ -901,7 +946,10 @@ Body.
         );
 
         assert_eq!(directives, vec!["workspace-swe"]);
-        assert!(is_manual_invocation("Please run /workspace-swe.", "workspace-swe"));
+        assert!(is_manual_invocation(
+            "Please run /workspace-swe.",
+            "workspace-swe"
+        ));
         assert_eq!(
             split_match_terms("Workspace bridge, code-quality."),
             vec!["workspace", "bridge", "code-quality"]

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::domain::{entities::ideation::VerificationRoundSnapshot, services::gap_fingerprint};
+use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanModeVerdict {
@@ -20,7 +21,7 @@ pub struct PlanModeVerdictCaptureInput {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlanModeVerdictOutcome {
     pub project_id: String,
     pub source: String,
@@ -63,6 +64,7 @@ pub struct LearnedSkillRecord {
     pub project_id: String,
     pub title: String,
     pub status: LearnedSkillStatus,
+    pub caller_surfaces: Vec<String>,
     pub stages: Vec<LearnedSkillStage>,
     pub buckets: Vec<LearnedSkillBucket>,
     pub path_scopes: Vec<String>,
@@ -72,6 +74,11 @@ pub struct LearnedSkillRecord {
 }
 
 impl LearnedSkillRecord {
+    pub fn with_caller_surfaces(mut self, caller_surfaces: Vec<&str>) -> Self {
+        self.caller_surfaces = caller_surfaces.into_iter().map(str::to_string).collect();
+        self
+    }
+
     pub fn with_stages(mut self, stages: Vec<LearnedSkillStage>) -> Self {
         self.stages = stages;
         self
@@ -101,6 +108,7 @@ impl LearnedSkillRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LearnedSkillSelectionRequest {
     pub project_id: String,
+    pub caller_surface: String,
     pub stage: LearnedSkillStage,
     pub bucket: LearnedSkillBucket,
     pub touched_paths: Vec<String>,
@@ -207,6 +215,7 @@ pub fn select_pre_execution_learned_skills(
         .iter()
         .filter(|skill| skill.status == LearnedSkillStatus::Approved)
         .filter(|skill| skill.project_id == request.project_id)
+        .filter(|skill| caller_surface_matches(&request.caller_surface, &skill.caller_surfaces))
         .filter(|skill| skill.stages.contains(&request.stage))
         .filter(|skill| skill.buckets.contains(&request.bucket))
         .filter(|skill| path_scope_matches(&request.touched_paths, &skill.path_scopes))
@@ -215,6 +224,17 @@ pub fn select_pre_execution_learned_skills(
     selected.sort_by(|left, right| left.id.cmp(&right.id));
     selected.truncate(request.max_skills);
     selected
+}
+
+fn caller_surface_matches(caller_surface: &str, allowed_surfaces: &[String]) -> bool {
+    let caller_surface = caller_surface.trim();
+    if caller_surface.is_empty() || allowed_surfaces.is_empty() {
+        return false;
+    }
+
+    allowed_surfaces
+        .iter()
+        .any(|surface| surface.trim() == caller_surface)
 }
 
 pub fn build_constraint_bundle_skill_citations(
@@ -316,10 +336,12 @@ fn path_scope_matches(touched_paths: &[String], path_scopes: &[String]) -> bool 
 }
 
 fn normalize_relative_path(path: &str) -> Option<String> {
-    let trimmed = path.trim().trim_matches('/');
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed.starts_with('/') || trimmed.contains('\\') {
+        return None;
+    }
+    let trimmed = trimmed.trim_end_matches('/');
     if trimmed.is_empty()
-        || trimmed.starts_with('/')
-        || trimmed.contains('\\')
         || trimmed.split('/').any(|part| {
             part.is_empty()
                 || part == "."

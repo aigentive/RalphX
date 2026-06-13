@@ -9,7 +9,8 @@ use ralphx_lib::domain::{
     entities::ideation::VerificationRoundSnapshot, services::gap_fingerprint,
 };
 use ralphx_lib::infrastructure::agents::internal_skills::{
-    inject_learned_skill_citations_into_system_prompt, InternalSkillInjection,
+    inject_learned_skill_citations_into_system_prompt,
+    inject_pre_execution_learned_skills_into_system_prompt, InternalSkillInjection,
 };
 
 #[test]
@@ -71,6 +72,7 @@ fn pre_execution_selection_filters_by_approval_project_stage_bucket_and_path() {
     let selected = select_pre_execution_learned_skills(
         LearnedSkillSelectionRequest {
             project_id: "project-1".to_string(),
+            caller_surface: "ralphx-execution-worker".to_string(),
             stage: LearnedSkillStage::Execution,
             bucket: LearnedSkillBucket::Execution,
             touched_paths: vec!["src-tauri/src/application/chat_service/mod.rs".to_string()],
@@ -78,22 +80,32 @@ fn pre_execution_selection_filters_by_approval_project_stage_bucket_and_path() {
         },
         &[
             skill("skill-match", "project-1", LearnedSkillStatus::Approved)
+                .with_caller_surfaces(vec!["ralphx-execution-worker"])
+                .with_stages(vec![LearnedSkillStage::Execution])
+                .with_buckets(vec![LearnedSkillBucket::Execution])
+                .with_path_scopes(vec!["src-tauri/src/application"]),
+            skill("skill-surface", "project-1", LearnedSkillStatus::Approved)
+                .with_caller_surfaces(vec!["ralphx-review-history"])
                 .with_stages(vec![LearnedSkillStage::Execution])
                 .with_buckets(vec![LearnedSkillBucket::Execution])
                 .with_path_scopes(vec!["src-tauri/src/application"]),
             skill("skill-staged", "project-1", LearnedSkillStatus::Staged)
+                .with_caller_surfaces(vec!["ralphx-execution-worker"])
                 .with_stages(vec![LearnedSkillStage::Execution])
                 .with_buckets(vec![LearnedSkillBucket::Execution])
                 .with_path_scopes(vec!["src-tauri/src/application"]),
             skill("skill-project", "project-2", LearnedSkillStatus::Approved)
+                .with_caller_surfaces(vec!["ralphx-execution-worker"])
                 .with_stages(vec![LearnedSkillStage::Execution])
                 .with_buckets(vec![LearnedSkillBucket::Execution])
                 .with_path_scopes(vec!["src-tauri/src/application"]),
             skill("skill-stage", "project-1", LearnedSkillStatus::Approved)
+                .with_caller_surfaces(vec!["ralphx-execution-worker"])
                 .with_stages(vec![LearnedSkillStage::Planning])
                 .with_buckets(vec![LearnedSkillBucket::Execution])
                 .with_path_scopes(vec!["src-tauri/src/application"]),
             skill("skill-path", "project-1", LearnedSkillStatus::Approved)
+                .with_caller_surfaces(vec!["ralphx-execution-worker"])
                 .with_stages(vec![LearnedSkillStage::Execution])
                 .with_buckets(vec![LearnedSkillBucket::Execution])
                 .with_path_scopes(vec!["frontend/src"]),
@@ -110,12 +122,39 @@ fn pre_execution_selection_filters_by_approval_project_stage_bucket_and_path() {
 }
 
 #[test]
+fn pre_execution_selection_rejects_absolute_touched_paths_before_scope_matching() {
+    let selected = select_pre_execution_learned_skills(
+        LearnedSkillSelectionRequest {
+            project_id: "project-1".to_string(),
+            caller_surface: "ralphx-execution-worker".to_string(),
+            stage: LearnedSkillStage::Execution,
+            bucket: LearnedSkillBucket::Execution,
+            touched_paths: vec!["/src-tauri/src/application/chat_service/mod.rs".to_string()],
+            max_skills: 4,
+        },
+        &[
+            skill("skill-match", "project-1", LearnedSkillStatus::Approved)
+                .with_caller_surfaces(vec!["ralphx-execution-worker"])
+                .with_stages(vec![LearnedSkillStage::Execution])
+                .with_buckets(vec![LearnedSkillBucket::Execution])
+                .with_path_scopes(vec!["src-tauri/src/application"]),
+        ],
+    );
+
+    assert!(
+        selected.is_empty(),
+        "absolute paths must not be converted into relative scope matches"
+    );
+}
+
+#[test]
 fn constraint_bundle_citations_render_compact_approved_skill_context_without_tool_mentions() {
     let selected = vec![skill(
         "skill-review-loop",
         "project-1",
         LearnedSkillStatus::Approved,
     )
+    .with_caller_surfaces(vec!["ralphx-ideation"])
     .with_stages(vec![LearnedSkillStage::Planning])
     .with_buckets(vec![LearnedSkillBucket::Planning])
     .with_path_scopes(vec!["src-tauri/src/domain"])
@@ -143,6 +182,48 @@ fn constraint_bundle_citations_render_compact_approved_skill_context_without_too
     assert_eq!(
         injection.injected_skill_names,
         vec!["learned:skill-review-loop"]
+    );
+}
+
+#[test]
+fn pre_execution_injection_filters_eligible_skills_before_rendering_citations() {
+    let injection = inject_pre_execution_learned_skills_into_system_prompt(
+        "Base system prompt.",
+        LearnedSkillSelectionRequest {
+            project_id: "project-1".to_string(),
+            caller_surface: "ralphx-ideation".to_string(),
+            stage: LearnedSkillStage::Planning,
+            bucket: LearnedSkillBucket::Planning,
+            touched_paths: vec!["src-tauri/src/domain/services/mod.rs".to_string()],
+            max_skills: 4,
+        },
+        &[
+            skill("skill-planning", "project-1", LearnedSkillStatus::Approved)
+                .with_caller_surfaces(vec!["ralphx-ideation"])
+                .with_stages(vec![LearnedSkillStage::Planning])
+                .with_buckets(vec![LearnedSkillBucket::Planning])
+                .with_path_scopes(vec!["src-tauri/src/domain"])
+                .with_predicted_effect("Reduce repeated planning misses."),
+            skill(
+                "skill-wrong-surface",
+                "project-1",
+                LearnedSkillStatus::Approved,
+            )
+            .with_caller_surfaces(vec!["ralphx-review-history"])
+            .with_stages(vec![LearnedSkillStage::Planning])
+            .with_buckets(vec![LearnedSkillBucket::Planning])
+            .with_path_scopes(vec!["src-tauri/src/domain"]),
+        ],
+    );
+
+    assert!(injection
+        .system_prompt
+        .contains("<ralphx_learned_skill_citations>"));
+    assert!(injection.system_prompt.contains("skill-planning"));
+    assert!(!injection.system_prompt.contains("skill-wrong-surface"));
+    assert_eq!(
+        injection.injected_skill_names,
+        vec!["learned:skill-planning"]
     );
 }
 
@@ -208,6 +289,7 @@ fn skill(id: &str, project_id: &str, status: LearnedSkillStatus) -> LearnedSkill
         project_id: project_id.to_string(),
         title: format!("Skill {id}"),
         status,
+        caller_surfaces: Vec::new(),
         stages: Vec::new(),
         buckets: Vec::new(),
         path_scopes: Vec::new(),

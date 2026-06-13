@@ -14,6 +14,9 @@ use crate::commands::unified_chat_commands::{
 };
 use crate::commands::ExecutionState;
 use crate::domain::entities::{ChatContextType, ChatConversationId};
+use crate::domain::services::learned_skill_adapters::{
+    capture_plan_mode_verdict, PlanModeVerdict, PlanModeVerdictCaptureInput, PlanModeVerdictOutcome,
+};
 use crate::AppState;
 
 pub(crate) const PLAN_MODE_PROPOSAL_KIND: &str = "plan_mode_proposal";
@@ -99,12 +102,58 @@ pub(crate) fn build_plan_mode_proposal_continuation(reason: Option<&str>) -> Str
 }
 
 pub(crate) fn plan_mode_proposal_continuation_metadata() -> String {
-    serde_json::json!({
+    plan_mode_proposal_continuation_metadata_with_outcome(None)
+}
+
+pub(crate) fn plan_mode_proposal_continuation_metadata_with_outcome(
+    outcome: Option<&PlanModeVerdictOutcome>,
+) -> String {
+    let mut metadata = serde_json::json!({
         "source": "accepted_plan_mode_proposal",
         "resume_in_place": true,
         "persist_hidden_marker": true,
+    });
+    if let Some(outcome) = outcome {
+        metadata["plan_mode_verdict_outcome"] = serde_json::json!(outcome);
+    }
+    metadata.to_string()
+}
+
+async fn capture_accepted_plan_mode_proposal_outcome(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    project_id: &str,
+    reason: Option<&str>,
+) -> Option<PlanModeVerdictOutcome> {
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .ok()
+        .flatten()?;
+    let planning_session_id = workspace.linked_ideation_session_id.as_ref()?;
+    let planning_session = state
+        .ideation_session_repo
+        .get_by_id(planning_session_id)
+        .await
+        .ok()
+        .flatten();
+    let plan_artifact_id = planning_session.and_then(|session| {
+        session
+            .plan_artifact_id
+            .or(session.inherited_plan_artifact_id)
+            .map(|artifact_id| artifact_id.as_str().to_string())
+    });
+
+    capture_plan_mode_verdict(PlanModeVerdictCaptureInput {
+        project_id: project_id.to_string(),
+        conversation_id: conversation_id.as_str(),
+        planning_session_id: Some(planning_session_id.0.clone()),
+        accepted_session_id: None,
+        plan_artifact_id,
+        verdict: PlanModeVerdict::Accepted,
+        reason: reason.map(str::to_string),
     })
-    .to_string()
 }
 
 async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
@@ -138,6 +187,13 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
     )
     .await?;
     ensure_plan_workspace_planning_session_link_for_send(state, &conversation_id).await?;
+    let plan_mode_outcome = capture_accepted_plan_mode_proposal_outcome(
+        state,
+        &conversation_id,
+        &conversation.context_id,
+        proposal.reason.as_deref(),
+    )
+    .await;
 
     let _ = app.emit(
         "agent:workspace_changed",
@@ -148,12 +204,16 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
     );
 
     let continuation = build_plan_mode_proposal_continuation(proposal.reason.as_deref());
+    let continuation_metadata = match plan_mode_outcome.as_ref() {
+        Some(outcome) => plan_mode_proposal_continuation_metadata_with_outcome(Some(outcome)),
+        None => plan_mode_proposal_continuation_metadata(),
+    };
     if delivered_to_waiting_agent {
         let queued = state.message_queue.queue_with_overrides(
             ChatContextType::Project,
             conversation_id.as_str(),
             continuation,
-            Some(plan_mode_proposal_continuation_metadata()),
+            Some(continuation_metadata),
             None,
             None,
         );
@@ -183,6 +243,7 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
             &conversation.context_id,
             &continuation,
             SendMessageOptions {
+                metadata: Some(continuation_metadata),
                 conversation_id_override: Some(conversation_id),
                 ..Default::default()
             },
