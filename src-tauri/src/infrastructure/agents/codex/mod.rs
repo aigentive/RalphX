@@ -17,11 +17,15 @@ use crate::infrastructure::agents::claude::{
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     internal_mcp_server_name, load_harness_agent_prompt_for_profile,
-    render_agent_runtime_profile_context,
-    resolve_project_root_from_plugin_dir, try_load_canonical_codex_metadata_for_profile,
-    AgentPromptHarness, CanonicalCodexAgentMetadata,
+    render_agent_runtime_profile_context, resolve_project_root_from_plugin_dir,
+    try_load_canonical_codex_metadata_for_profile, AgentPromptHarness, CanonicalCodexAgentMetadata,
 };
-use crate::infrastructure::agents::internal_skills::inject_internal_skills_into_system_prompt_for_profile;
+use crate::infrastructure::agents::internal_skills::{
+    inject_internal_skills_into_system_prompt_for_profile,
+    inject_pre_execution_learned_skills_into_existing_injection,
+    pre_execution_learned_skill_context_from_runtime, InternalSkillInjection,
+    PreExecutionLearnedSkillContext,
+};
 use crate::infrastructure::agents::mcp_runtime_context::{
     append_mcp_runtime_args, append_mcp_runtime_query, McpRuntimeContext,
 };
@@ -324,6 +328,40 @@ pub fn compose_codex_prompt_for_profile(
     agent_name: Option<&str>,
     agent_profile: Option<&str>,
 ) -> String {
+    compose_codex_prompt_for_profile_with_runtime_context(
+        prompt,
+        plugin_dir,
+        agent_name,
+        agent_profile,
+        None,
+    )
+}
+
+pub fn compose_codex_prompt_for_profile_with_runtime_context(
+    prompt: &str,
+    plugin_dir: Option<&Path>,
+    agent_name: Option<&str>,
+    agent_profile: Option<&str>,
+    runtime_context: Option<&McpRuntimeContext>,
+) -> String {
+    let pre_execution_learned_skills = agent_name
+        .and_then(|name| pre_execution_learned_skill_context_from_runtime(name, runtime_context));
+    compose_codex_prompt_for_profile_with_learned_skills(
+        prompt,
+        plugin_dir,
+        agent_name,
+        agent_profile,
+        pre_execution_learned_skills.as_ref(),
+    )
+}
+
+pub fn compose_codex_prompt_for_profile_with_learned_skills(
+    prompt: &str,
+    plugin_dir: Option<&Path>,
+    agent_name: Option<&str>,
+    agent_profile: Option<&str>,
+    pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
+) -> String {
     let Some(plugin_dir) = plugin_dir else {
         return prompt.to_string();
     };
@@ -350,14 +388,27 @@ pub fn compose_codex_prompt_for_profile(
         &system_prompt,
         prompt,
     ) {
-        Ok(injection) => injection.system_prompt,
+        Ok(injection) => {
+            inject_pre_execution_learned_skills_into_existing_injection(
+                injection,
+                pre_execution_learned_skills,
+            )
+            .system_prompt
+        }
         Err(error) => {
             warn!(
                 agent = agent_name,
                 error = %error,
                 "Failed to inject internal skills into Codex prompt"
             );
-            system_prompt
+            inject_pre_execution_learned_skills_into_existing_injection(
+                InternalSkillInjection {
+                    system_prompt,
+                    injected_skill_names: Vec::new(),
+                },
+                pre_execution_learned_skills,
+            )
+            .system_prompt
         }
     };
     let system_prompt = match runtime_profile_context {

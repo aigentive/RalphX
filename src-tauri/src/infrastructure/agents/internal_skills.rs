@@ -3,18 +3,165 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+use crate::domain::services::learned_skill_adapters::{
+    build_constraint_bundle_skill_citations, select_pre_execution_learned_skills,
+    LearnedSkillBucket, LearnedSkillConstraintCitation, LearnedSkillRecord,
+    LearnedSkillSelectionRequest, LearnedSkillStage,
+};
 use crate::infrastructure::agents::harness_agent_catalog::{
     load_canonical_agent_definition, load_canonical_agent_definition_for_profile,
 };
+use crate::infrastructure::agents::mcp_runtime_context::McpRuntimeContext;
 
 const SKILL_FILE_NAME: &str = "SKILL.md";
 const APP_SKILLS_DIR: &[&str] = &["plugins", "app", "skills"];
 const SHARED_SKILLS_DIR: &[&str] = &["plugins", "shared", "skills"];
+pub const PRE_EXECUTION_LEARNED_SKILLS_ENV: &str = "RALPHX_PRE_EXECUTION_LEARNED_SKILLS_JSON";
+const DEFAULT_PRE_EXECUTION_LEARNED_SKILL_LIMIT: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InternalSkillInjection {
     pub system_prompt: String,
     pub injected_skill_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreExecutionLearnedSkillContext {
+    pub request: LearnedSkillSelectionRequest,
+    pub available_skills: Vec<LearnedSkillRecord>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PreExecutionLearnedSkillPayload {
+    #[serde(default)]
+    skills: Vec<LearnedSkillRecord>,
+    #[serde(default)]
+    touched_paths: Vec<String>,
+    #[serde(default)]
+    max_skills: Option<usize>,
+}
+
+pub fn pre_execution_learned_skill_context_from_runtime(
+    agent_name: &str,
+    runtime_context: Option<&McpRuntimeContext>,
+) -> Option<PreExecutionLearnedSkillContext> {
+    let raw = std::env::var(PRE_EXECUTION_LEARNED_SKILLS_ENV).ok()?;
+    let payload = match parse_pre_execution_learned_skill_payload(&raw) {
+        Ok(payload) => payload,
+        Err(error) => {
+            tracing::warn!(
+                env_var = PRE_EXECUTION_LEARNED_SKILLS_ENV,
+                error = %error,
+                "Ignoring invalid pre-execution learned skill payload"
+            );
+            return None;
+        }
+    };
+
+    pre_execution_learned_skill_context_from_records(
+        agent_name,
+        runtime_context,
+        payload.skills,
+        payload.touched_paths,
+        payload.max_skills,
+    )
+}
+
+pub fn pre_execution_learned_skill_context_from_records(
+    agent_name: &str,
+    runtime_context: Option<&McpRuntimeContext>,
+    available_skills: Vec<LearnedSkillRecord>,
+    touched_paths: Vec<String>,
+    max_skills: Option<usize>,
+) -> Option<PreExecutionLearnedSkillContext> {
+    if available_skills.is_empty() {
+        return None;
+    }
+    let runtime_context = runtime_context?;
+    let project_id = runtime_context
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let caller_surface = learned_skill_caller_surface(agent_name)?;
+    let stage = inferred_pre_execution_learned_skill_stage(
+        runtime_context.context_type.as_deref(),
+        agent_name,
+    );
+    let bucket = learned_skill_bucket_for_stage(stage);
+
+    Some(PreExecutionLearnedSkillContext {
+        request: LearnedSkillSelectionRequest {
+            project_id: project_id.to_string(),
+            caller_surface,
+            stage,
+            bucket,
+            touched_paths,
+            max_skills: max_skills.unwrap_or(DEFAULT_PRE_EXECUTION_LEARNED_SKILL_LIMIT),
+        },
+        available_skills,
+    })
+}
+
+fn parse_pre_execution_learned_skill_payload(
+    raw: &str,
+) -> Result<PreExecutionLearnedSkillPayload, serde_json::Error> {
+    match serde_json::from_str::<PreExecutionLearnedSkillPayload>(raw) {
+        Ok(payload) => Ok(payload),
+        Err(payload_error) => serde_json::from_str::<Vec<LearnedSkillRecord>>(raw)
+            .map(|skills| PreExecutionLearnedSkillPayload {
+                skills,
+                touched_paths: Vec::new(),
+                max_skills: None,
+            })
+            .map_err(|_| payload_error),
+    }
+}
+
+fn learned_skill_caller_surface(agent_name: &str) -> Option<String> {
+    let surface = agent_name
+        .trim()
+        .strip_prefix("ralphx:")
+        .unwrap_or_else(|| agent_name.trim())
+        .trim();
+    (!surface.is_empty()).then(|| surface.to_string())
+}
+
+fn inferred_pre_execution_learned_skill_stage(
+    context_type: Option<&str>,
+    agent_name: &str,
+) -> LearnedSkillStage {
+    let key = format!(
+        "{} {}",
+        context_type.unwrap_or_default().to_ascii_lowercase(),
+        agent_name.to_ascii_lowercase()
+    );
+    if key.contains("verification") || key.contains("verifier") {
+        LearnedSkillStage::Verification
+    } else if key.contains("review") {
+        LearnedSkillStage::Review
+    } else if key.contains("merge") {
+        LearnedSkillStage::Merge
+    } else if key.contains("task_execution")
+        || key.contains("task-execution")
+        || key.contains("execution")
+        || key.contains("worker")
+        || key.contains("coder")
+    {
+        LearnedSkillStage::Execution
+    } else {
+        LearnedSkillStage::Planning
+    }
+}
+
+fn learned_skill_bucket_for_stage(stage: LearnedSkillStage) -> LearnedSkillBucket {
+    match stage {
+        LearnedSkillStage::Planning => LearnedSkillBucket::Planning,
+        LearnedSkillStage::Verification => LearnedSkillBucket::Verification,
+        LearnedSkillStage::Review => LearnedSkillBucket::Review,
+        LearnedSkillStage::Execution => LearnedSkillBucket::Execution,
+        LearnedSkillStage::Merge => LearnedSkillBucket::Merge,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +364,94 @@ pub fn list_internal_skill_summaries_for_agent(
     Ok(summaries)
 }
 
+pub fn inject_learned_skill_citations_into_system_prompt(
+    system_prompt: &str,
+    citations: &[LearnedSkillConstraintCitation],
+) -> InternalSkillInjection {
+    let mut selected = citations
+        .iter()
+        .filter(|citation| is_safe_learned_skill_id(&citation.skill_id))
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return InternalSkillInjection {
+            system_prompt: system_prompt.to_string(),
+            injected_skill_names: Vec::new(),
+        };
+    }
+
+    selected.sort_by(|left, right| left.skill_id.cmp(&right.skill_id));
+    let mut learned_skill_names = Vec::with_capacity(selected.len());
+    let mut lines = vec![
+        "<ralphx_learned_skill_citations>".to_string(),
+        "RalphX selected the following approved learned project skill citations for this turn. Treat them as compact constraints with cited provenance.".to_string(),
+    ];
+    for citation in selected {
+        learned_skill_names.push(format!("learned:{}", citation.skill_id));
+        lines.push(format!(
+            "<learned_skill_citation id=\"{}\">",
+            escape_prompt_text(&citation.skill_id)
+        ));
+        lines.push(format!("title: {}", escape_prompt_text(&citation.title)));
+        lines.push(format!(
+            "predicted_effect: {}",
+            escape_prompt_text(&citation.predicted_effect)
+        ));
+        lines.push(format!(
+            "guidance: {}",
+            escape_prompt_text(&citation.compact_guidance)
+        ));
+        if !citation.provenance_refs.is_empty() {
+            lines.push(format!(
+                "provenance_refs: {}",
+                escape_prompt_text(&citation.provenance_refs.join(", "))
+            ));
+        }
+        lines.push("</learned_skill_citation>".to_string());
+    }
+    lines.push("</ralphx_learned_skill_citations>".to_string());
+
+    let mut enriched = system_prompt.trim().to_string();
+    enriched.push_str("\n\n");
+    enriched.push_str(&lines.join("\n"));
+    InternalSkillInjection {
+        system_prompt: enriched,
+        injected_skill_names: learned_skill_names,
+    }
+}
+
+pub fn inject_pre_execution_learned_skills_into_system_prompt(
+    system_prompt: &str,
+    request: LearnedSkillSelectionRequest,
+    skills: &[LearnedSkillRecord],
+) -> InternalSkillInjection {
+    let selected = select_pre_execution_learned_skills(request, skills);
+    let citations = build_constraint_bundle_skill_citations(&selected);
+    inject_learned_skill_citations_into_system_prompt(system_prompt, &citations)
+}
+
+pub fn inject_pre_execution_learned_skills_into_existing_injection(
+    mut injection: InternalSkillInjection,
+    context: Option<&PreExecutionLearnedSkillContext>,
+) -> InternalSkillInjection {
+    let Some(context) = context else {
+        return injection;
+    };
+    let learned_injection = inject_pre_execution_learned_skills_into_system_prompt(
+        &injection.system_prompt,
+        context.request.clone(),
+        &context.available_skills,
+    );
+    if learned_injection.injected_skill_names.is_empty() {
+        return injection;
+    }
+
+    injection.system_prompt = learned_injection.system_prompt;
+    injection
+        .injected_skill_names
+        .extend(learned_injection.injected_skill_names);
+    injection
+}
+
 fn render_internal_skill_context(project_root: &Path, skills: &[InternalSkill]) -> String {
     let mut lines = vec![
         "<ralphx_internal_skills>".to_string(),
@@ -282,6 +517,28 @@ fn trusted_skill_name(skill_name: &str) -> Option<&str> {
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
     valid.then_some(skill_name)
+}
+
+fn is_safe_learned_skill_id(skill_id: &str) -> bool {
+    !skill_id.is_empty()
+        && skill_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+}
+
+fn escape_prompt_text(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
 }
 
 fn load_internal_skill(project_root: &Path, skill_name: &str) -> Result<InternalSkill, String> {
@@ -725,7 +982,10 @@ Alpha body.
             list_internal_skill_summaries_for_agent(root, "test-agent").expect("summaries");
 
         assert_eq!(
-            summaries.iter().map(|summary| summary.name.as_str()).collect::<Vec<_>>(),
+            summaries
+                .iter()
+                .map(|summary| summary.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["alpha-skill", "zebra-skill"]
         );
         assert_eq!(
@@ -823,7 +1083,10 @@ Body.
         );
 
         assert_eq!(directives, vec!["workspace-swe"]);
-        assert!(is_manual_invocation("Please run /workspace-swe.", "workspace-swe"));
+        assert!(is_manual_invocation(
+            "Please run /workspace-swe.",
+            "workspace-swe"
+        ));
         assert_eq!(
             split_match_terms("Workspace bridge, code-quality."),
             vec!["workspace", "bridge", "code-quality"]

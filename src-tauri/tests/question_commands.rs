@@ -318,4 +318,33 @@ async fn accepted_plan_mode_proposal_links_planning_session_before_hidden_contin
         .as_deref()
         .expect("queued continuation should carry metadata")
         .contains("\"resume_in_place\":true"));
+    let metadata: serde_json::Value = serde_json::from_str(
+        queued[0]
+            .metadata_override
+            .as_deref()
+            .expect("queued continuation should carry metadata"),
+    )
+    .expect("queued continuation metadata should be valid json");
+    let outcome = metadata
+        .get("plan_mode_verdict_outcome")
+        .expect("accepted Plan-mode proposal should capture compact outcome metadata");
+    assert_eq!(
+        outcome
+            .get("outcome_class")
+            .and_then(|value| value.as_str()),
+        Some("plan_mode_accepted")
+    );
+    assert_eq!(
+        outcome
+            .get("refs")
+            .and_then(|value| value.get("planning_session_id"))
+            .and_then(|value| value.as_str()),
+        Some(planning_session_id.0.as_str())
+    );
+    assert_eq!(
+        outcome
+            .get("mutates_accepted_session")
+            .and_then(|value| value.as_bool()),
+        Some(false)
+    );
 }

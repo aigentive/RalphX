@@ -11,6 +11,7 @@ pub mod gap_fingerprint;
 pub mod github_service;
 pub mod index_rewriter;
 pub mod key_crypto;
+pub mod learned_skill_adapters;
 pub mod message_queue;
 pub mod methodology_service;
 pub mod payload_enrichment;
