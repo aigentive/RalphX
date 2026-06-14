@@ -45,6 +45,7 @@ pub mod sqlite_ideation_effort_settings_repo;
 pub mod sqlite_ideation_model_settings_repo;
 pub mod sqlite_ideation_session_repo;
 pub mod sqlite_ideation_settings_repo;
+pub mod sqlite_learned_skill_repos;
 pub mod sqlite_memory_archive_job_repository;
 #[cfg(test)]
 mod sqlite_memory_archive_job_repository_tests;
@@ -119,6 +120,9 @@ pub use sqlite_ideation_effort_settings_repo::SqliteIdeationEffortSettingsReposi
 pub use sqlite_ideation_model_settings_repo::SqliteIdeationModelSettingsRepository;
 pub use sqlite_ideation_session_repo::SqliteIdeationSessionRepository;
 pub use sqlite_ideation_settings_repo::SqliteIdeationSettingsRepository;
+pub use sqlite_learned_skill_repos::{
+    SqliteProjectSkillRepository, SqliteSkillUsageEventRepository, SqliteTaskOutcomeRepository,
+};
 pub use sqlite_memory_archive_job_repository::SqliteMemoryArchiveJobRepository;
 pub use sqlite_memory_archive_repo::SqliteMemoryArchiveRepository;
 pub use sqlite_memory_entry_repo::SqliteMemoryEntryRepository;

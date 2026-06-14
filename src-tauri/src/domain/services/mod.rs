@@ -12,6 +12,7 @@ pub mod github_service;
 pub mod index_rewriter;
 pub mod key_crypto;
 pub mod learned_skill_adapters;
+pub mod learned_skill_substrate;
 pub mod message_queue;
 pub mod methodology_service;
 pub mod payload_enrichment;
@@ -39,6 +40,10 @@ pub use github_service::{
     PrStatus, PrSyncState,
 };
 pub use index_rewriter::{IndexRewriter, RewriteResult};
+pub use learned_skill_substrate::{
+    new_empty_task_outcome, new_skill_usage_event, OutcomeLedgerService, ProjectSkillService,
+    SkillUsageService,
+};
 pub use verification_events::{
     build_verification_payload, build_verification_started_snapshot,
     emit_verification_pending_confirmation, emit_verification_started,

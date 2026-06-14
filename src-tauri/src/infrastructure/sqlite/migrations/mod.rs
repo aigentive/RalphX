@@ -396,9 +396,12 @@ mod v20260611191722_agent_workspace_pr_automation_defaults_tests;
 mod v20260612124826_provider_cli_management_policy;
 #[cfg(test)]
 mod v20260612124826_provider_cli_management_policy_tests;
+mod v20260614120000_learned_skill_substrate;
+#[cfg(test)]
+mod v20260614120000_learned_skill_substrate_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260612124826;
+pub const SCHEMA_VERSION: i64 = 20260614120000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1112,6 +1115,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260612124826,
         name: "provider_cli_management_policy",
         migrate: v20260612124826_provider_cli_management_policy::migrate,
+    },
+    Migration {
+        version: 20260614120000,
+        name: "learned_skill_substrate",
+        migrate: v20260614120000_learned_skill_substrate::migrate,
     },
 ];
 
