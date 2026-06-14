@@ -10,7 +10,7 @@ use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{
     AgentTaskState, Artifact, ArtifactContent, AuditLogEntry, MemoryEntry, StepProgressSummary,
-    TaskProposal, TaskStep,
+    ProjectSkill, TaskProposal, TaskStep,
 };
 use crate::http_server::delegation::DelegationService;
 use crate::http_server::handlers::artifacts::EditError;
@@ -1278,6 +1278,82 @@ pub struct MarkMemoryObsoleteRequest {
 pub struct MarkMemoryObsoleteResponse {
     pub success: bool,
     pub message: String,
+}
+
+// ============================================================================
+// Request/Response Types - Learned Project Skills (read-only)
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillResponse {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub status: String,
+    pub pinned: bool,
+    pub archived: bool,
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: Option<String>,
+    pub provenance_json: Value,
+    pub companion_of_skill_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<ProjectSkill> for ProjectSkillResponse {
+    fn from(skill: ProjectSkill) -> Self {
+        Self {
+            id: skill.id.as_str().to_string(),
+            project_id: skill.project_id.as_str().to_string(),
+            title: skill.title,
+            bucket: skill.bucket,
+            stage: skill.stage,
+            status: skill.status.to_string(),
+            pinned: skill.pinned,
+            archived: skill.archived,
+            scope_paths: skill.scope_paths,
+            compact_guidance: skill.compact_guidance,
+            body_markdown: skill.body_markdown,
+            predicted_effect: skill.predicted_effect,
+            provenance_json: skill.provenance_json,
+            companion_of_skill_id: skill
+                .companion_of_skill_id
+                .map(|id| id.as_str().to_string()),
+            created_at: skill.created_at.to_rfc3339(),
+            updated_at: skill.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListProjectSkillsRequest {
+    pub project_id: String,
+    pub status: Option<String>,
+    #[serde(default)]
+    pub include_archived: bool,
+    pub stage: Option<String>,
+    pub bucket: Option<String>,
+    pub scope_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ListProjectSkillsResponse {
+    pub skills: Vec<ProjectSkillResponse>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GetProjectSkillRequest {
+    pub project_skill_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GetProjectSkillResponse {
+    pub skill: Option<ProjectSkillResponse>,
 }
 
 #[derive(Debug, Deserialize)]
