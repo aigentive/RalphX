@@ -18,9 +18,10 @@ use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, ChatConversationId,
     ExecutionPlanId, IdeationAnalysisBaseRefKind, IdeationSessionId, InternalStatus, PlanBranch,
     PlanBranchId, Project, ProjectId, ReviewOutcome, ReviewerType, Task, TaskCategory,
+    TaskOutcomeStatus,
 };
 use ralphx_lib::domain::repositories::{
-    AgentConversationWorkspaceRepository, PlanBranchRepository,
+    AgentConversationWorkspaceRepository, PlanBranchRepository, TaskOutcomeListOptions,
 };
 use ralphx_lib::domain::services::github_service::{
     GithubServiceTrait, PrReviewCommentFeedback, PrReviewFeedback, PrStatus,
@@ -86,7 +87,8 @@ fn build_transition_service_with_pr_deps(
             Arc::clone(&app_state.memory_event_repo),
         )
         .with_plan_branch_repo(plan_branch_repo)
-        .with_review_repo(Arc::clone(&app_state.review_repo)),
+        .with_review_repo(Arc::clone(&app_state.review_repo))
+        .with_task_outcome_repo(Arc::clone(&app_state.task_outcome_repo)),
     )
 }
 
@@ -1205,4 +1207,26 @@ async fn test_poller_changes_requested_creates_plan_correction_task() {
         !refreshed_branch.pr_polling_active,
         "polling should stop while correction task is active"
     );
+
+    let outcomes = app_state
+        .task_outcome_repo
+        .list_by_project(&project.id, TaskOutcomeListOptions::default())
+        .await
+        .expect("task outcomes query should succeed");
+    assert_eq!(outcomes.len(), 1);
+    let outcome = &outcomes[0];
+    assert_eq!(outcome.source, "github_pr_review");
+    assert_eq!(outcome.source_ref_kind, "github_review");
+    assert_eq!(outcome.source_ref_id, "4136652897");
+    assert_eq!(outcome.task_id.as_deref(), Some(merge_task.id.as_str()));
+    assert_eq!(
+        outcome.outcome_class.as_deref(),
+        Some("github_pr_changes_requested")
+    );
+    assert_eq!(outcome.status, TaskOutcomeStatus::Failed);
+    assert_eq!(
+        outcome.evidence_json["correction_task_id"].as_str(),
+        Some(correction.id.as_str())
+    );
+    assert_eq!(outcome.evidence_json["comment_count"].as_u64(), Some(1));
 }
