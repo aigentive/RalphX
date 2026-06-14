@@ -1,5 +1,63 @@
 use super::*;
 
+async fn record_verification_gap_recurrence_outcomes(
+    state: &HttpServerState,
+    session: &crate::domain::entities::IdeationSession,
+    session_id: &str,
+    run_snapshot: &crate::domain::entities::ideation::VerificationRunSnapshot,
+) {
+    use crate::domain::services::learned_skill_adapters::{
+        verification_gap_recurrence_candidates, VerificationGapRecurrenceGate,
+    };
+    use crate::domain::services::{new_empty_task_outcome, OutcomeLedgerService};
+
+    let report = verification_gap_recurrence_candidates(
+        &run_snapshot.rounds,
+        VerificationGapRecurrenceGate {
+            min_occurrences: 2,
+            min_rounds: 2,
+            min_corpus_size: 2,
+        },
+    );
+
+    if report.recurring_gaps.is_empty() {
+        return;
+    }
+
+    let service = OutcomeLedgerService::new(Arc::clone(&state.app_state.task_outcome_repo));
+    for recurring in report.recurring_gaps {
+        let mut outcome = new_empty_task_outcome(
+            session.project_id.clone(),
+            "verification",
+            "gap_recurrence",
+            format!(
+                "{}:{}:{}",
+                session_id, run_snapshot.generation, recurring.fingerprint
+            ),
+        );
+        outcome.verification_id = Some(session_id.to_string());
+        outcome.outcome_class = Some("verification_gap_recurring".to_string());
+        outcome.status = crate::domain::entities::TaskOutcomeStatus::Eligible;
+        outcome.evidence_json = serde_json::json!({
+            "session_id": session_id,
+            "generation": run_snapshot.generation,
+            "fingerprint": recurring.fingerprint,
+            "occurrences": recurring.occurrences,
+            "distinct_rounds": recurring.distinct_rounds,
+            "corpus_size": report.corpus_size,
+            "descriptions": recurring.descriptions.into_iter().take(5).collect::<Vec<_>>(),
+        });
+
+        if let Err(error) = service.record_outcome(outcome).await {
+            tracing::warn!(
+                session_id,
+                error = %error,
+                "Failed to record recurring verification gap outcome"
+            );
+        }
+    }
+}
+
 /// POST /api/ideation/sessions/:id/verification
 ///
 /// Update verification state for a session's plan via the canonical POST /verification endpoint.
@@ -576,6 +634,9 @@ pub async fn post_verification_status(
                 "Failed to persist verification snapshot",
             )
         })?;
+
+    record_verification_gap_recurrence_outcomes(&state, &session, &session_id, &run_snapshot)
+        .await;
 
     // Emit plan_verification:status_changed event (B1: includes current_gaps + last 5 rounds)
     if let Some(app_handle) = &state.app_state.app_handle {
