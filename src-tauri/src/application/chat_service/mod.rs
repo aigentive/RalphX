@@ -59,9 +59,9 @@ use crate::domain::repositories::{
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
     ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
-    StateHistoryMetadata, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository,
+    MemoryEventRepository, PlanBranchRepository, ProjectMemorySettingsRepository,
+    ProjectRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
@@ -871,6 +871,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     message_queue: Arc<MessageQueue>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
+    project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository>,
     app_handle: Option<AppHandle<R>>,
     execution_state: Option<Arc<crate::commands::ExecutionState>>,
     question_state: Option<Arc<QuestionState>>,
@@ -918,6 +919,7 @@ impl<R: Runtime> AppChatService<R> {
         message_queue: Arc<MessageQueue>,
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
         memory_event_repo: Arc<dyn MemoryEventRepository>,
+        project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository>,
     ) -> Self {
         let bootstrap = resolve_default_chat_service_bootstrap();
 
@@ -946,6 +948,7 @@ impl<R: Runtime> AppChatService<R> {
             message_queue,
             running_agent_registry,
             memory_event_repo,
+            project_memory_settings_repo,
             app_handle: None,
             execution_state: None,
             question_state: None,
@@ -4030,6 +4033,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     .clone(),
                 activity_event_repo: Arc::clone(&self.activity_event_repo),
                 memory_event_repo: Arc::clone(&self.memory_event_repo),
+                project_memory_settings_repo: Arc::clone(&self.project_memory_settings_repo),
                 message_queue: Arc::clone(&self.message_queue),
                 running_agent_registry: Arc::clone(&self.running_agent_registry),
                 task_proposal_repo: self.task_proposal_repo.clone(),

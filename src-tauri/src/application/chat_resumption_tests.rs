@@ -32,6 +32,7 @@ fn build_runner(
             Arc::clone(&app_state.message_queue),
             Arc::clone(&app_state.running_agent_registry),
             Arc::clone(&app_state.memory_event_repo),
+            Arc::clone(&app_state.project_memory_settings_repo),
         ),
     )
 }

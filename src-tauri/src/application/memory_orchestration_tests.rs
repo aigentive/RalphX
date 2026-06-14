@@ -1,5 +1,10 @@
 use super::*;
+use crate::domain::repositories::MemoryEventRepository;
+use crate::infrastructure::memory::{
+    InMemoryMemoryEventRepository, MemoryProjectMemorySettingsRepository,
+};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[test]
 fn test_context_to_category_mapping() {
@@ -40,8 +45,10 @@ fn test_category_as_str() {
 
 #[test]
 fn test_default_settings() {
-    let settings = ProjectMemorySettings::default();
-    assert!(!settings.enabled);
+    let project_id = ProjectId::from_string("proj-default".to_string());
+    let settings = ProjectMemorySettings::default_for_project(project_id.clone());
+    assert_eq!(settings.project_id, project_id);
+    assert!(settings.enabled);
     assert!(settings
         .maintenance_categories
         .contains(&"execution".to_string()));
@@ -62,13 +69,17 @@ fn test_default_settings() {
 
 #[test]
 fn test_default_settings_maintenance_categories_count() {
-    let settings = ProjectMemorySettings::default();
+    let settings = ProjectMemorySettings::default_for_project(ProjectId::from_string(
+        "proj-default".to_string(),
+    ));
     assert_eq!(settings.maintenance_categories.len(), 3);
 }
 
 #[test]
 fn test_default_settings_capture_categories_count() {
-    let settings = ProjectMemorySettings::default();
+    let settings = ProjectMemorySettings::default_for_project(ProjectId::from_string(
+        "proj-default".to_string(),
+    ));
     assert_eq!(settings.capture_categories.len(), 3);
 }
 
@@ -89,6 +100,7 @@ async fn test_trigger_memory_pipelines_no_project_id() {
         &cli_path,
         &plugin_dir,
         &wd,
+        None,
         None,
         None,
     )
@@ -116,6 +128,7 @@ async fn test_trigger_memory_pipelines_recursion_guard_maintainer() {
         &wd,
         None,
         None,
+        None,
     )
     .await;
     // Test passes if no spawn happens (verified via logs in real scenario)
@@ -139,6 +152,7 @@ async fn test_trigger_memory_pipelines_recursion_guard_capture() {
         &cli_path,
         &plugin_dir,
         &wd,
+        None,
         None,
         None,
     )
@@ -196,10 +210,7 @@ async fn test_spawn_memory_capture_fails_in_test_env() {
 fn test_resolve_pipelines_parallel_spawn_both_enabled() {
     // "execution" is in both maintenance_categories AND capture_categories by default
     let project_id = ProjectId::from_string("proj-123".to_string());
-    let settings = ProjectMemorySettings {
-        enabled: true,
-        ..Default::default()
-    };
+    let settings = ProjectMemorySettings::default_for_project(project_id.clone());
 
     let result = resolve_pipelines(
         ChatContextType::TaskExecution,
@@ -224,8 +235,10 @@ fn test_resolve_pipelines_parallel_spawn_both_enabled() {
 fn test_resolve_pipelines_disabled_project_skips_spawn() {
     let project_id = ProjectId::from_string("proj-123".to_string());
     let settings = ProjectMemorySettings {
+        project_id: project_id.clone(),
         enabled: false,
-        ..ProjectMemorySettings::default()
+        maintenance_categories: vec!["execution".to_string()],
+        capture_categories: vec!["execution".to_string()],
     };
 
     let result = resolve_pipelines(
@@ -239,4 +252,48 @@ fn test_resolve_pipelines_disabled_project_skips_spawn() {
         result.is_none(),
         "Should return None when memory is disabled"
     );
+}
+
+#[tokio::test]
+async fn test_trigger_memory_pipelines_uses_repository_settings_and_logs_disabled_skip() {
+    let project_id = ProjectId::from_string("proj-repo-settings".to_string());
+    let conv_id = ChatConversationId::from_string("conv-repo-settings".to_string());
+    let cli_path = PathBuf::from("/usr/bin/claude");
+    let plugin_dir = PathBuf::from("/plugins");
+    let wd = PathBuf::from("/tmp");
+
+    let settings_repo = Arc::new(MemoryProjectMemorySettingsRepository::new());
+    settings_repo
+        .insert(ProjectMemorySettings {
+            project_id: project_id.clone(),
+            enabled: false,
+            maintenance_categories: vec!["execution".to_string()],
+            capture_categories: vec!["execution".to_string()],
+        })
+        .await;
+    let event_repo = Arc::new(InMemoryMemoryEventRepository::new());
+
+    trigger_memory_pipelines(
+        ChatContextType::TaskExecution,
+        "task-123",
+        &conv_id,
+        Some(&project_id),
+        Some("ralphx:ralphx-execution-worker"),
+        &cli_path,
+        &plugin_dir,
+        &wd,
+        None,
+        Some(event_repo.clone()),
+        Some(settings_repo),
+    )
+    .await;
+
+    let events = event_repo
+        .get_by_type("memory_pipeline_skipped")
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].project_id, project_id);
+    assert_eq!(events[0].details["reason"], "disabled");
+    assert_eq!(events[0].details["conversation_id"], conv_id.as_str());
 }

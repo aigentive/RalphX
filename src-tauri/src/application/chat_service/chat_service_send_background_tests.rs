@@ -708,6 +708,7 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         task_proposal_repo: Some(Arc::clone(&state.task_proposal_repo)),
         activity_event_repo: Arc::clone(&state.activity_event_repo),
         memory_event_repo: Arc::clone(&state.memory_event_repo),
+        project_memory_settings_repo: Arc::clone(&state.project_memory_settings_repo),
         message_queue: Arc::clone(&message_queue),
         running_agent_registry: Arc::clone(&state.running_agent_registry),
         task_step_repo: Some(Arc::clone(&state.task_step_repo)),
@@ -1233,8 +1234,14 @@ async fn finalize_structured_writes_chat_message_and_finalized_timeline_rows() {
         .iter()
         .all(|item| item.status == ChatTimelineItemStatus::Finalized));
     assert_eq!(assistant_blocks[0].text.as_deref(), Some("Done"));
-    assert_eq!(assistant_blocks[1].tool_call_id.as_deref(), Some("toolu-read"));
-    assert_eq!(assistant_blocks[1].tool_status.as_deref(), Some("completed"));
+    assert_eq!(
+        assistant_blocks[1].tool_call_id.as_deref(),
+        Some("toolu-read")
+    );
+    assert_eq!(
+        assistant_blocks[1].tool_status.as_deref(),
+        Some("completed")
+    );
     assert!(assistant_blocks[1]
         .raw_block_json
         .as_deref()
@@ -1330,8 +1337,14 @@ async fn finalize_structured_split_transcript_writes_timeline_for_each_segment()
         .items
         .iter()
         .all(|item| item.status == ChatTimelineItemStatus::Finalized));
-    assert_eq!(page.items[0].message_id.as_ref().unwrap().as_str(), pre_assistant_id);
-    assert_eq!(page.items[1].message_id.as_ref().unwrap().as_str(), pre_assistant_id);
+    assert_eq!(
+        page.items[0].message_id.as_ref().unwrap().as_str(),
+        pre_assistant_id
+    );
+    assert_eq!(
+        page.items[1].message_id.as_ref().unwrap().as_str(),
+        pre_assistant_id
+    );
     assert_eq!(
         page.items[2].message_id.as_ref().unwrap().as_str(),
         messages[1].id.as_str()

@@ -61,6 +61,9 @@ pub mod sqlite_plan_branch_repo;
 pub mod sqlite_plan_selection_stats_repo;
 pub mod sqlite_process_repo;
 pub mod sqlite_project_repo;
+pub mod sqlite_project_memory_settings_repo;
+#[cfg(test)]
+mod sqlite_project_memory_settings_repo_tests;
 pub mod sqlite_proposal_dependency_repo;
 pub mod sqlite_question_repo;
 pub mod sqlite_review_issue_repo;
@@ -134,6 +137,7 @@ pub use sqlite_plan_branch_repo::SqlitePlanBranchRepository;
 pub use sqlite_plan_selection_stats_repo::SqlitePlanSelectionStatsRepository;
 pub use sqlite_process_repo::SqliteProcessRepository;
 pub use sqlite_project_repo::SqliteProjectRepository;
+pub use sqlite_project_memory_settings_repo::SqliteProjectMemorySettingsRepository;
 pub use sqlite_proposal_dependency_repo::SqliteProposalDependencyRepository;
 pub use sqlite_question_repo::SqliteQuestionRepository;
 pub use sqlite_review_issue_repo::{ReviewIssueRepository, SqliteReviewIssueRepository};

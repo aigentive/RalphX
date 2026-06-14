@@ -27,8 +27,9 @@ use crate::domain::repositories::{
     ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
     MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository,
-    OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
+    OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository, ProjectMemorySettingsRepository,
+    ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskRepository,
+    TaskStepRepository,
 };
 use crate::domain::services::{
     running_agent_registry::kill_orphaned_mcp_servers, MessageQueue, RunningAgentRegistry,
@@ -65,6 +66,7 @@ pub(crate) struct StartupPipelineDeps {
     pub message_queue: Arc<MessageQueue>,
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
+    pub project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository>,
     pub app_state_repo: Arc<dyn AppStateRepository>,
     pub memory_archive_repo: Arc<dyn MemoryArchiveRepository>,
     pub memory_entry_repo: Arc<dyn MemoryEntryRepository>,
@@ -174,6 +176,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         message_queue,
         running_agent_registry,
         memory_event_repo,
+        project_memory_settings_repo,
         app_state_repo,
         memory_archive_repo,
         memory_entry_repo,
@@ -368,6 +371,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&message_queue),
         Arc::clone(&running_agent_registry),
         Arc::clone(&memory_event_repo),
+        Arc::clone(&project_memory_settings_repo),
     )
     .with_agent_conversation_workspace_repo(Some(Arc::clone(&agent_conversation_workspace_repo)))
     .with_runtime_support(
