@@ -11,10 +11,10 @@ use crate::application::{
     AppState, InteractiveProcessRegistry,
 };
 use crate::domain::entities::{
-    app_state::ExecutionHaltMode, ChatConversation, IdeationSessionId, InternalStatus, Project,
-    ProjectId, Task, VerificationStatus,
+    app_state::ExecutionHaltMode, ChatConversation, ChatConversationId, IdeationSessionId,
+    InternalStatus, Project, ProjectId, Task, TaskOutcomeStatus, VerificationStatus,
 };
-use crate::domain::repositories::{StateHistoryMetadata, StatusTransition};
+use crate::domain::repositories::{StateHistoryMetadata, StatusTransition, TaskOutcomeListOptions};
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 
@@ -1032,11 +1032,13 @@ async fn assert_late_execution_finalizer_preserves_status(target_status: Interna
             task_id: task_id.clone(),
             target_status,
         }));
+    let conversation_id = ChatConversationId::new();
 
     handle_stream_success::<MockRuntime>(
         "late-run-id",
         ChatContextType::TaskExecution,
         task_id.as_str(),
+        &conversation_id,
         false,
         false,
         &execution_state,
@@ -1083,9 +1085,17 @@ async fn test_late_execution_finalizer_cannot_overwrite_pending_review_or_review
 
 #[tokio::test]
 async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_metadata() {
-    let state = AppState::new_test();
+    let app_state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
+
+    let app = mock_builder()
+        .manage(app_state)
+        .manage(Arc::clone(&exec))
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = app.handle().clone();
+    let state = handle.state::<AppState>();
 
     let project = Project::new("Incomplete Execution".into(), "/tmp/incomplete-execution".into());
     state.project_repo.create(project.clone()).await.unwrap();
@@ -1094,11 +1104,13 @@ async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_
     task.internal_status = InternalStatus::Executing;
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
+    let conversation_id = ChatConversationId::new();
 
     handle_stream_success::<MockRuntime>(
         "run-id-incomplete-success",
         ChatContextType::TaskExecution,
         task_id.as_str(),
+        &conversation_id,
         false,
         false,
         &execution_state,
@@ -1118,7 +1130,7 @@ async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &Some(handle.clone()),
         &None,
         &None,
         &None,
@@ -1154,6 +1166,32 @@ async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_
             .and_then(|value| value.as_str()),
         Some("Agent ended without completing all task steps")
     );
+
+    let outcomes = state
+        .task_outcome_repo
+        .list_by_project(&project.id, TaskOutcomeListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(outcomes.len(), 1);
+    let outcome = &outcomes[0];
+    assert_eq!(outcome.source, "agent_session");
+    assert_eq!(outcome.source_ref_kind, "agent_run");
+    assert_eq!(outcome.source_ref_id, "run-id-incomplete-success");
+    assert_eq!(outcome.task_id.as_deref(), Some(task_id.as_str()));
+    let conversation_id_string = conversation_id.as_str();
+    assert_eq!(
+        outcome.conversation_id.as_deref(),
+        Some(conversation_id_string.as_str())
+    );
+    assert_eq!(
+        outcome.agent_run_id.as_deref(),
+        Some("run-id-incomplete-success")
+    );
+    assert_eq!(
+        outcome.outcome_class.as_deref(),
+        Some("task_execution_no_output")
+    );
+    assert_eq!(outcome.status, TaskOutcomeStatus::Failed);
 }
 
 // ========================================
@@ -2236,11 +2274,13 @@ async fn test_task_execution_shutdown_success_persists_startup_recovery_metadata
     task.internal_status = InternalStatus::Executing;
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
+    let conversation_id = ChatConversationId::new();
 
     handle_stream_success::<MockRuntime>(
         "run-id-shutdown-success",
         ChatContextType::TaskExecution,
         task_id.as_str(),
+        &conversation_id,
         false,
         false,
         &execution_state,
