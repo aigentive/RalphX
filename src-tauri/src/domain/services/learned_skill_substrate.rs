@@ -1,6 +1,8 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use chrono::Utc;
+use serde_json::Value;
 
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
@@ -11,6 +13,7 @@ use crate::domain::repositories::{
     ProjectSkillListOptions, ProjectSkillRepository, SkillUsageEventRepository,
     SkillUsageListOptions, TaskOutcomeListOptions, TaskOutcomeRepository, UpsertTaskOutcomeInput,
 };
+use crate::domain::services::learned_skill_adapters::LearnedSkillConstraintCitation;
 use crate::error::{AppError, AppResult};
 
 pub struct OutcomeLedgerService {
@@ -73,6 +76,31 @@ impl ProjectSkillService {
         options: ProjectSkillListOptions,
     ) -> AppResult<Vec<ProjectSkill>> {
         self.repo.list_by_project(project_id, options).await
+    }
+
+    pub async fn prompt_selected_citations(
+        &self,
+        project_id: &ProjectId,
+        prompt: &str,
+    ) -> AppResult<Vec<LearnedSkillConstraintCitation>> {
+        let mut citations = Vec::new();
+        for skill_id in extract_project_skill_directives(prompt) {
+            let Some(skill) = self
+                .repo
+                .get_by_id(&ProjectSkillId::from_string(skill_id))
+                .await?
+            else {
+                continue;
+            };
+            if &skill.project_id != project_id
+                || skill.status != ProjectSkillLifecycleStatus::Approved
+                || skill.archived
+            {
+                continue;
+            }
+            citations.push(project_skill_to_constraint_citation(skill));
+        }
+        Ok(citations)
     }
 
     pub async fn approve_skill(&self, id: &ProjectSkillId) -> AppResult<Option<ProjectSkill>> {
@@ -182,6 +210,61 @@ fn validate_non_empty(label: &str, value: &str) -> AppResult<()> {
     Ok(())
 }
 
+fn extract_project_skill_directives(text: &str) -> Vec<String> {
+    let mut skill_ids = BTreeSet::new();
+    for line in text.lines() {
+        if let Some(index) = line.find("ralphx_project_skill=") {
+            let raw = &line[index + "ralphx_project_skill=".len()..];
+            if let Some(value) = raw.split_whitespace().next() {
+                let skill_id = value
+                    .trim_matches(|char| matches!(char, '<' | '>' | '-' | '"' | '\'' | ';' | ','));
+                if is_safe_project_skill_id(skill_id) {
+                    skill_ids.insert(skill_id.to_string());
+                }
+            }
+        }
+    }
+    skill_ids.into_iter().collect()
+}
+
+fn is_safe_project_skill_id(skill_id: &str) -> bool {
+    !skill_id.is_empty()
+        && skill_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn project_skill_to_constraint_citation(skill: ProjectSkill) -> LearnedSkillConstraintCitation {
+    LearnedSkillConstraintCitation {
+        skill_id: skill.id.as_str().to_string(),
+        title: skill.title,
+        predicted_effect: skill.predicted_effect.unwrap_or_default(),
+        compact_guidance: skill.compact_guidance,
+        provenance_refs: provenance_refs_from_json(&skill.provenance_json),
+    }
+}
+
+fn provenance_refs_from_json(value: &Value) -> Vec<String> {
+    for key in ["provenance_refs", "refs"] {
+        if let Some(refs) = value.get(key).and_then(Value::as_array) {
+            return refs
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+    }
+    value
+        .get("source")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| vec![value.to_string()])
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -276,5 +359,80 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(usage.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn prompt_selected_citations_resolve_only_approved_same_project_skills() {
+        let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+        let skill_service = ProjectSkillService::new(skill_repo);
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let other_project_id = ProjectId::from_string("project-2".to_string());
+
+        let approved = skill_service
+            .stage_skill(staged_skill(project_id.clone()))
+            .await
+            .unwrap();
+        let approved = skill_service
+            .approve_skill(&approved.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let staged = skill_service
+            .stage_skill(staged_skill(project_id.clone()))
+            .await
+            .unwrap();
+
+        let archived = skill_service
+            .stage_skill(staged_skill(project_id.clone()))
+            .await
+            .unwrap();
+        let archived = skill_service
+            .approve_skill(&archived.id)
+            .await
+            .unwrap()
+            .unwrap();
+        skill_service
+            .archive_skill(&archived.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let other_project = skill_service
+            .stage_skill(staged_skill(other_project_id))
+            .await
+            .unwrap();
+        let other_project = skill_service
+            .approve_skill(&other_project.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let prompt = format!(
+            "Use these.\n\
+             <!-- ralphx_project_skill={} -->\n\
+             <!-- ralphx_project_skill={} -->\n\
+             <!-- ralphx_project_skill={} -->\n\
+             <!-- ralphx_project_skill={} -->\n\
+             <!-- ralphx_project_skill=../bad -->\n\
+             <!-- ralphx_project_skill={} -->",
+            approved.id.as_str(),
+            staged.id.as_str(),
+            archived.id.as_str(),
+            other_project.id.as_str(),
+            approved.id.as_str()
+        );
+
+        let citations = skill_service
+            .prompt_selected_citations(&project_id, &prompt)
+            .await
+            .unwrap();
+
+        assert_eq!(citations.len(), 1);
+        assert_eq!(citations[0].skill_id, approved.id.as_str());
+        assert_eq!(
+            citations[0].predicted_effect,
+            "Avoids adapter-only injection."
+        );
     }
 }
