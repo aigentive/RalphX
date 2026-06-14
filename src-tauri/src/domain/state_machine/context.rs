@@ -18,7 +18,7 @@ use crate::commands::ExecutionState;
 use crate::domain::entities::PlanBranchId;
 use crate::domain::repositories::{
     ActivityEventRepository, ArtifactRepository, IdeationSessionRepository, PlanBranchRepository,
-    ProjectRepository, TaskRepository, TaskStepRepository,
+    ProjectRepository, TaskOutcomeRepository, TaskRepository, TaskStepRepository,
 };
 use ralphx_domain::repositories::ExternalEventsRepository;
 use dashmap::DashMap;
@@ -135,6 +135,10 @@ pub struct TaskServices {
     /// Optional — None when external event persistence is not configured.
     pub external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
 
+    /// Outcome ledger repository for learned-skill/eval evidence emitted by state transitions.
+    /// Optional — if not wired, outcome evidence is skipped without blocking workflow progress.
+    pub task_outcome_repo: Option<Arc<dyn TaskOutcomeRepository>>,
+
     /// Per-session mutex map for serializing concurrent plan:delivered checks.
     /// Shared across all TaskServices instances so concurrent PlanMerge completions
     /// in the same session cannot race on the all-merged check and fire plan:delivered twice.
@@ -178,6 +182,7 @@ impl TaskServices {
             transition_service: None,
             webhook_publisher: None,
             external_events_repo: None,
+            task_outcome_repo: None,
             session_merge_locks: Arc::new(DashMap::new()),
         }
     }
@@ -327,6 +332,12 @@ impl TaskServices {
         self
     }
 
+    /// Set the task outcome repository for learned-skill/eval evidence (builder pattern).
+    pub fn with_task_outcome_repo(mut self, repo: Arc<dyn TaskOutcomeRepository>) -> Self {
+        self.task_outcome_repo = Some(repo);
+        self
+    }
+
     /// Set the shared session merge locks DashMap (builder pattern).
     /// Use this to share the same map across multiple TaskServices instances.
     pub fn with_session_merge_locks(mut self, locks: Arc<DashMap<String, Arc<Mutex<()>>>>) -> Self {
@@ -364,6 +375,7 @@ impl TaskServices {
             transition_service: None,
             webhook_publisher: None,
             external_events_repo: None,
+            task_outcome_repo: None,
             session_merge_locks: Arc::new(DashMap::new()),
         }
     }
@@ -461,6 +473,13 @@ impl std::fmt::Debug for TaskServices {
                     .external_events_repo
                     .as_ref()
                     .map(|_| "<ExternalEventsRepository>"),
+            )
+            .field(
+                "task_outcome_repo",
+                &self
+                    .task_outcome_repo
+                    .as_ref()
+                    .map(|_| "<TaskOutcomeRepository>"),
             )
             .field(
                 "session_merge_locks",
