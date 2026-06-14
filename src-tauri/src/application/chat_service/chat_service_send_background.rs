@@ -1142,6 +1142,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &agent_run_id,
                     context_type,
                     &context_id,
+                    &conversation_id,
                     effective_has_output,
                     execution_slot_held,
                     &execution_state,
