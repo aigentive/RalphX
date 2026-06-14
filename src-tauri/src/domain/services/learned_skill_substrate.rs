@@ -45,6 +45,18 @@ pub struct ProjectSkillService {
     repo: Arc<dyn ProjectSkillRepository>,
 }
 
+pub struct StageProjectSkillFromOutcomeInput {
+    pub outcome: TaskOutcome,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+    pub additional_provenance: Value,
+}
+
 impl ProjectSkillService {
     pub fn new(repo: Arc<dyn ProjectSkillRepository>) -> Self {
         Self { repo }
@@ -64,6 +76,51 @@ impl ProjectSkillService {
             ));
         }
         self.repo.create(skill).await
+    }
+
+    pub async fn stage_skill_from_outcome(
+        &self,
+        input: StageProjectSkillFromOutcomeInput,
+    ) -> AppResult<ProjectSkill> {
+        if input.outcome.status != TaskOutcomeStatus::Eligible {
+            return Err(AppError::Validation(
+                "project skill distillation requires an eligible task outcome".to_string(),
+            ));
+        }
+        validate_non_empty("predicted_effect", &input.predicted_effect)?;
+
+        let now = Utc::now();
+        let skill = ProjectSkill {
+            id: ProjectSkillId::new(),
+            project_id: input.outcome.project_id.clone(),
+            title: input.title,
+            bucket: input.bucket,
+            stage: input.stage,
+            status: ProjectSkillLifecycleStatus::Staged,
+            pinned: false,
+            archived: false,
+            scope_paths: input.scope_paths,
+            compact_guidance: input.compact_guidance,
+            body_markdown: input.body_markdown,
+            predicted_effect: Some(input.predicted_effect),
+            provenance_json: serde_json::json!({
+                "source": "task_outcome",
+                "outcome_id": input.outcome.id.as_str(),
+                "outcome_source": input.outcome.source,
+                "outcome_source_ref_kind": input.outcome.source_ref_kind,
+                "outcome_source_ref_id": input.outcome.source_ref_id,
+                "outcome_class": input.outcome.outcome_class,
+                "task_id": input.outcome.task_id,
+                "agent_run_id": input.outcome.agent_run_id,
+                "review_id": input.outcome.review_id,
+                "additional": input.additional_provenance,
+            }),
+            companion_of_skill_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        self.stage_skill(skill).await
     }
 
     pub async fn get_skill(&self, id: &ProjectSkillId) -> AppResult<Option<ProjectSkill>> {
@@ -285,9 +342,14 @@ mod tests {
     use chrono::Utc;
     use serde_json::json;
 
-    use super::{new_skill_usage_event, ProjectSkillService, SkillUsageService};
+    use super::{
+        new_empty_task_outcome, new_skill_usage_event, ProjectSkillService, SkillUsageService,
+        StageProjectSkillFromOutcomeInput,
+    };
     use crate::domain::entities::types::ProjectId;
-    use crate::domain::entities::{ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus};
+    use crate::domain::entities::{
+        ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, TaskOutcomeStatus,
+    };
     use crate::domain::repositories::{ProjectSkillListOptions, SkillUsageListOptions};
     use crate::infrastructure::memory::{
         MemoryProjectSkillRepository, MemorySkillUsageEventRepository,
@@ -372,6 +434,74 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(usage.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn project_skill_distillation_requires_eligible_outcome() {
+        let service = ProjectSkillService::new(Arc::new(MemoryProjectSkillRepository::new()));
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let outcome = new_empty_task_outcome(project_id, "review", "review_note", "review-1");
+
+        let result = service
+            .stage_skill_from_outcome(StageProjectSkillFromOutcomeInput {
+                outcome,
+                title: "Use review feedback as regression guidance".to_string(),
+                bucket: "review".to_string(),
+                stage: "review".to_string(),
+                scope_paths: Vec::new(),
+                compact_guidance: "Check the same regression before approving.".to_string(),
+                body_markdown: "Detailed guidance".to_string(),
+                predicted_effect: "Reduces repeat review changes.".to_string(),
+                additional_provenance: json!({ "test": true }),
+            })
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn project_skill_distillation_stages_skill_with_outcome_provenance() {
+        let service = ProjectSkillService::new(Arc::new(MemoryProjectSkillRepository::new()));
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let mut outcome =
+            new_empty_task_outcome(project_id.clone(), "merge_validation", "task", "task-1");
+        outcome.status = TaskOutcomeStatus::Eligible;
+        outcome.outcome_class = Some("merge_validation_failed".to_string());
+        outcome.task_id = Some("task-1".to_string());
+
+        let staged = service
+            .stage_skill_from_outcome(StageProjectSkillFromOutcomeInput {
+                outcome: outcome.clone(),
+                title: "Run merge validation before marking complete".to_string(),
+                bucket: "merge".to_string(),
+                stage: "review".to_string(),
+                scope_paths: vec!["src-tauri".to_string()],
+                compact_guidance: "Before approving merge recovery, check the validation failure class.".to_string(),
+                body_markdown: "Use the validation log as evidence before repeating a failed merge.".to_string(),
+                predicted_effect: "Prevents repeated failed merge validation loops.".to_string(),
+                additional_provenance: json!({ "distiller": "service-test" }),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(staged.project_id, project_id);
+        assert_eq!(staged.status, ProjectSkillLifecycleStatus::Staged);
+        assert_eq!(
+            staged.predicted_effect.as_deref(),
+            Some("Prevents repeated failed merge validation loops.")
+        );
+        assert_eq!(
+            staged.provenance_json["outcome_id"].as_str(),
+            Some(outcome.id.as_str())
+        );
+        assert_eq!(
+            staged.provenance_json["outcome_source"].as_str(),
+            Some("merge_validation")
+        );
+        assert_eq!(
+            staged.provenance_json["additional"]["distiller"].as_str(),
+            Some("service-test")
+        );
     }
 
     #[tokio::test]
