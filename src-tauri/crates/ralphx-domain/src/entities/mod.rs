@@ -13,6 +13,7 @@ pub mod chat_timeline;
 pub mod delegated_session;
 pub mod execution_plan;
 pub mod ideation;
+pub mod learned_skill;
 pub mod memory_archive;
 pub mod memory_event;
 pub mod memory_entry;
@@ -99,6 +100,10 @@ pub use ideation::{
     ProposalStatus, SessionLink, SessionOrigin, SessionPurpose, SessionRelationship, TaskProposal,
     UserHintFactor, VerificationConfirmationStatus, VerificationError, VerificationGap,
     VerificationRoundSnapshot, VerificationRunSnapshot, VerificationStatus,
+};
+pub use learned_skill::{
+    ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, SkillUsageEvent, SkillUsageEventId,
+    TaskOutcome, TaskOutcomeId, TaskOutcomeStatus,
 };
 pub use memory_archive::{
     ArchiveJobPayload, ArchiveJobStatus, ArchiveJobType, FullRebuildPayload, MemoryArchiveJob,

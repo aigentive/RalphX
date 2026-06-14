@@ -393,9 +393,12 @@ mod v20260611152000_question_metadata_tests;
 mod v20260611191722_agent_workspace_pr_automation_defaults;
 #[cfg(test)]
 mod v20260611191722_agent_workspace_pr_automation_defaults_tests;
+mod v20260614120000_learned_skill_substrate;
+#[cfg(test)]
+mod v20260614120000_learned_skill_substrate_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260611191722;
+pub const SCHEMA_VERSION: i64 = 20260614120000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1104,6 +1107,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260611191722,
         name: "agent_workspace_pr_automation_defaults",
         migrate: v20260611191722_agent_workspace_pr_automation_defaults::migrate,
+    },
+    Migration {
+        version: 20260614120000,
+        name: "learned_skill_substrate",
+        migrate: v20260614120000_learned_skill_substrate::migrate,
     },
 ];
 
