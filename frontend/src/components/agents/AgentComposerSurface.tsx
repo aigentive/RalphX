@@ -68,6 +68,7 @@ import { extractErrorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import {
   appendInternalSkillDirectives,
+  appendProjectSkillDirectives,
   detectAgentComposerTrigger,
   extractComposerArtifactTokens,
   extractComposerSkillTokens,
@@ -273,6 +274,9 @@ export function AgentComposerSurface({
   const [selectedInternalSkillNames, setSelectedInternalSkillNames] = useState<Set<string>>(
     () => new Set()
   );
+  const [selectedProjectSkillIds, setSelectedProjectSkillIds] = useState<Set<string>>(
+    () => new Set()
+  );
   const [selectedProjectReferences, setSelectedProjectReferences] = useState<
     Map<string, AgentComposerProjectReference>
   >(() => new Map());
@@ -434,6 +438,7 @@ export function AgentComposerSurface({
     }
     setCursorPosition(0);
     setSelectedInternalSkillNames(new Set());
+    setSelectedProjectSkillIds(new Set());
     setSelectedProjectReferences(new Map());
     setSelectedIntegrationReferences(new Map());
     setSelectedArtifactReferences(new Map());
@@ -655,10 +660,7 @@ export function AgentComposerSurface({
             kind: "skill",
             label: `$${skill.name}`,
             detail: skill.name,
-            sourceLabel:
-              skill.source === "ralphx-internal"
-                ? "RalphX"
-                : skill.providerHarness ?? "native",
+            sourceLabel: skillSourceLabel(skill),
           };
           if (skill.description) {
             item.description = skill.description;
@@ -792,6 +794,12 @@ export function AgentComposerSurface({
             nextSet.add(skill.invocationValue || skill.name);
             return nextSet;
           });
+        } else if (skill?.source === "learned" && skill.invocationValue) {
+          setSelectedProjectSkillIds((current) => {
+            const nextSet = new Set(current);
+            nextSet.add(skill.invocationValue);
+            return nextSet;
+          });
         }
         const replacement =
           skill?.source === "harness-native"
@@ -897,6 +905,10 @@ export function AgentComposerSurface({
       const withInternalSkillDirectives = appendInternalSkillDirectives(message, [
         ...internalNames,
       ]);
+      const withSkillDirectives = appendProjectSkillDirectives(
+        withInternalSkillDirectives,
+        [...selectedProjectSkillIds],
+      );
       const references = new Map<string, AgentComposerProjectReference>();
       for (const reference of selectedProjectReferenceList) {
         references.set(reference.path, reference);
@@ -925,7 +937,7 @@ export function AgentComposerSurface({
         ...artifactReferences.values(),
       ]);
       return {
-        message: withInternalSkillDirectives,
+        message: withSkillDirectives,
         ...(projectReferences.length > 0 ||
         normalizedIntegrationReferences.length > 0 ||
         normalizedArtifactReferences.length > 0
@@ -948,6 +960,7 @@ export function AgentComposerSurface({
       selectedArtifactReferenceList,
       selectedIntegrationReferenceList,
       selectedInternalSkillNames,
+      selectedProjectSkillIds,
       selectedProjectReferenceList,
       skills,
     ]
@@ -1040,6 +1053,7 @@ export function AgentComposerSurface({
     if (questionMode || isControlled) {
       await sendOutgoing();
       setSelectedInternalSkillNames(new Set());
+      setSelectedProjectSkillIds(new Set());
       setSelectedProjectReferences(new Map());
       setSelectedIntegrationReferences(new Map());
       setSelectedArtifactReferences(new Map());
@@ -1783,6 +1797,16 @@ function formatPlanReferenceStatus(status: string): string {
     return "Accepted";
   }
   return "Draft";
+}
+
+function skillSourceLabel(skill: AgentComposerSkill): string {
+  if (skill.source === "ralphx-internal") {
+    return "RalphX";
+  }
+  if (skill.source === "learned") {
+    return "learned";
+  }
+  return skill.providerHarness ?? "native";
 }
 
 function shortReferenceId(id: string): string {
