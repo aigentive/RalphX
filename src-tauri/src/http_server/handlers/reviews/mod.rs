@@ -20,6 +20,7 @@ use crate::domain::review::{
     update_review_scope_metadata, validate_complete_review_policy, RawReviewIssueInput,
 };
 use crate::domain::services::running_agent_registry::RunningAgentKey;
+use crate::domain::services::{new_empty_task_outcome, OutcomeLedgerService};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::{
     deferred_merge_cleanup, set_no_code_changes_metadata, set_pending_cleanup_metadata,
