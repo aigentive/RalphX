@@ -8,21 +8,23 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
+use crate::application::AppState;
 use crate::application::GitService;
-use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::domain::entities::{
     merge_progress_event::{MergePhase, MergePhaseStatus},
     task_metadata::{
         CleanupPhase, MergeFailureSource, MergeRecoveryEvent, MergeRecoveryEventKind,
         MergeRecoveryMetadata, MergeRecoveryReasonCode, MergeRecoverySource, MergeRecoveryState,
     },
-    InternalStatus, Project, Task, TaskCategory, TaskId,
+    InternalStatus, Project, Task, TaskCategory, TaskId, TaskOutcomeStatus,
 };
 use crate::domain::repositories::TaskRepository;
+use crate::domain::services::{new_empty_task_outcome, OutcomeLedgerService};
 use crate::domain::state_machine::services::WebhookPublisher;
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::agents::claude::git_runtime_config;
 use ralphx_domain::repositories::ExternalEventsRepository;
 
 use crate::domain::services::payload_enrichment::{
@@ -33,6 +35,50 @@ use super::merge_helpers::{
     sync_plan_branch_pr_after_regular_task_merge, PlanBranchPrSyncServices,
 };
 use super::merge_validation::emit_merge_progress;
+
+#[allow(clippy::too_many_arguments)]
+async fn record_merge_completion_outcome<R: tauri::Runtime>(
+    task: &Task,
+    project: &Project,
+    commit_sha: &str,
+    source_branch: &str,
+    target_branch: &str,
+    old_status: &InternalStatus,
+    app_handle: Option<&AppHandle<R>>,
+) {
+    let Some(app_state) = app_handle.and_then(|handle| handle.try_state::<AppState>()) else {
+        return;
+    };
+
+    let mut outcome = new_empty_task_outcome(
+        project.id.clone(),
+        "merge",
+        "task",
+        task.id.as_str().to_string(),
+    );
+    outcome.task_id = Some(task.id.as_str().to_string());
+    outcome.outcome_class = Some("merge_completed".to_string());
+    outcome.status = TaskOutcomeStatus::Succeeded;
+    outcome.evidence_json = serde_json::json!({
+        "task_id": task.id.as_str(),
+        "commit_sha": commit_sha,
+        "source_branch": source_branch,
+        "target_branch": target_branch,
+        "old_status": old_status.as_str(),
+        "new_status": InternalStatus::Merged.as_str(),
+        "task_category": task.category.to_string(),
+    });
+
+    let service = OutcomeLedgerService::new(Arc::clone(&app_state.task_outcome_repo));
+    if let Err(error) = service.record_outcome(outcome).await {
+        tracing::warn!(
+            task_id = task.id.as_str(),
+            commit_sha,
+            error = %error,
+            "Failed to record merge completion outcome"
+        );
+    }
+}
 
 /// Complete a merge operation by transitioning task to Merged (Phase 2 MERGE).
 ///
@@ -276,6 +322,17 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
     {
         tracing::warn!(error = %e, task_id = task_id_str, "Failed to record merge transition (non-fatal)");
     }
+
+    record_merge_completion_outcome(
+        task,
+        project,
+        commit_sha,
+        source_branch,
+        target_branch,
+        &old_status,
+        app_handle,
+    )
+    .await;
 
     // 4. Emit Tauri events (intentional: no frontend listeners is OK)
     if let Some(handle) = app_handle {
