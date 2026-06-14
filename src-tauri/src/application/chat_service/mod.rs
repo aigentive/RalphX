@@ -44,14 +44,15 @@ use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
 };
 use crate::application::question_state::QuestionState;
-use crate::application::AtlassianIntegrationService;
+use crate::application::{AppState, AtlassianIntegrationService};
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     AgentRun, AgentRunId, AgentRunStatus, Artifact, ChatAttachment, ChatAttachmentId,
     ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageAttribution,
-    ChatMessageId, IdeationSessionId, InternalStatus, MessageRole, ProjectId, TaskId,
+    ChatMessageId, IdeationSessionId, InternalStatus, MessageRole, ProjectId, ProjectSkill,
+    TaskId,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
@@ -64,10 +65,11 @@ use crate::domain::repositories::{
     TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
-    is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
-    ComposerProjectReference, MessageQueue, QueuedMessage, RunningAgentInfo, RunningAgentKey,
-    RunningAgentRegistry,
+    is_process_alive, kill_process, new_skill_usage_event, ComposerArtifactReference,
+    ComposerIntegrationReference, ComposerProjectReference, MessageQueue, ProjectSkillService,
+    QueuedMessage, RunningAgentInfo, RunningAgentKey, RunningAgentRegistry, SkillUsageService,
 };
+use crate::infrastructure::agents::internal_skills::inject_learned_skill_citations_into_system_prompt;
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER, AGENT_ORCHESTRATOR_IDEATION,
 };
@@ -78,7 +80,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio_util::sync::CancellationToken;
 
 /// Prefix used when formatting agent errors into chat messages.
@@ -2346,6 +2348,113 @@ impl<R: Runtime> AppChatService<R> {
         )
     }
 
+    async fn learned_skill_runtime_message(
+        &self,
+        project_id: Option<&str>,
+        runtime_message: String,
+    ) -> (String, Vec<ProjectSkill>) {
+        let Some(project_id) = project_id.map(str::trim).filter(|value| !value.is_empty()) else {
+            return (runtime_message, Vec::new());
+        };
+        let Some(app_state) = self
+            .app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+        else {
+            return (runtime_message, Vec::new());
+        };
+
+        let project_id = ProjectId::from_string(project_id.to_string());
+        let service = ProjectSkillService::new(Arc::clone(&app_state.project_skill_repo));
+        let selected_skills = match service
+            .prompt_selected_skills(&project_id, &runtime_message)
+            .await
+        {
+            Ok(skills) => skills,
+            Err(error) => {
+                tracing::warn!(
+                    project_id = project_id.as_str(),
+                    error = %error,
+                    "Failed to resolve learned project skill directives"
+                );
+                return (runtime_message, Vec::new());
+            }
+        };
+        if selected_skills.is_empty() {
+            return (runtime_message, Vec::new());
+        }
+
+        let citations = match service
+            .prompt_selected_citations(&project_id, &runtime_message)
+            .await
+        {
+            Ok(citations) => citations,
+            Err(error) => {
+                tracing::warn!(
+                    project_id = project_id.as_str(),
+                    error = %error,
+                    "Failed to build learned project skill citations"
+                );
+                return (runtime_message, Vec::new());
+            }
+        };
+        let injection = inject_learned_skill_citations_into_system_prompt("", &citations);
+        if injection.injected_skill_names.is_empty() {
+            return (runtime_message, Vec::new());
+        }
+
+        let mut enriched = runtime_message.trim_end().to_string();
+        enriched.push_str("\n\n");
+        enriched.push_str(injection.system_prompt.trim());
+        (enriched, selected_skills)
+    }
+
+    async fn record_learned_skill_usage_for_launch(
+        &self,
+        project_id: Option<&str>,
+        conversation_id: &ChatConversationId,
+        agent_run_id: &str,
+        harness: AgentHarnessKind,
+        selected_skills: &[ProjectSkill],
+    ) {
+        if selected_skills.is_empty() {
+            return;
+        }
+        let Some(project_id) = project_id.map(str::trim).filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let Some(app_state) = self
+            .app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+        else {
+            return;
+        };
+
+        let project_id = ProjectId::from_string(project_id.to_string());
+        let service = SkillUsageService::new(Arc::clone(&app_state.skill_usage_event_repo));
+        for skill in selected_skills {
+            let mut event =
+                new_skill_usage_event(project_id.clone(), skill.id.clone(), "composer_directive");
+            event.conversation_id = Some(conversation_id.as_str().to_string());
+            event.agent_run_id = Some(agent_run_id.to_string());
+            event.provider_harness = Some(harness.to_string());
+            event.stage = Some(skill.stage.clone());
+            event.bucket = Some(skill.bucket.clone());
+            event.metadata_json = serde_json::json!({
+                "source": "ralphx_project_skill_directive",
+            });
+            if let Err(error) = service.record_usage(event).await {
+                tracing::warn!(
+                    project_skill_id = skill.id.as_str(),
+                    agent_run_id,
+                    error = %error,
+                    "Failed to record learned project skill usage"
+                );
+            }
+        }
+    }
+
     async fn load_edit_mode_plan_handoff_artifact(
         &self,
         workspace: Option<&AgentConversationWorkspace>,
@@ -2818,6 +2927,17 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     Some(&conversation.id),
                     options.working_directory_override.as_ref(),
                 )
+                .await;
+            let interactive_project_id = chat_service_context::resolve_project_id(
+                context_type,
+                context_id,
+                Arc::clone(&self.task_repo),
+                Arc::clone(&self.ideation_session_repo),
+                Arc::clone(&self.delegated_session_repo),
+            )
+            .await;
+            let (runtime_message, _) = self
+                .learned_skill_runtime_message(interactive_project_id.as_deref(), runtime_message)
                 .await;
             let stdin_prompt = chat_service_context::build_initial_prompt(
                 context_type,
@@ -3887,6 +4007,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 Some(&working_directory),
             )
             .await;
+        let (runtime_message, selected_learned_skills) = self
+            .learned_skill_runtime_message(project_id.as_deref(), runtime_message)
+            .await;
         let (selected_cli_path, child, interactive_process_registry) = match self
             .spawn_process_for_harness(
                 &conversation,
@@ -3912,6 +4035,14 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             Ok(result) => result,
             Err(error) => cleanup_and_err!(error),
         };
+        self.record_learned_skill_usage_for_launch(
+            project_id.as_deref(),
+            &conversation_id,
+            &agent_run_id,
+            resolved_spawn_settings.effective_harness,
+            &selected_learned_skills,
+        )
+        .await;
 
         // Register verification child PID for explicit cleanup after reconciliation (Fix A).
         // Only for Ideation sessions with SessionPurpose::Verification.
