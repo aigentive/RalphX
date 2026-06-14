@@ -13,10 +13,13 @@ use crate::commands::unified_chat_commands::{
     switch_agent_conversation_mode_for_state_allowing_running, SwitchAgentConversationModeInput,
 };
 use crate::commands::ExecutionState;
-use crate::domain::entities::{ChatContextType, ChatConversationId};
+use crate::domain::entities::{
+    ChatContextType, ChatConversationId, ProjectId, TaskOutcome, TaskOutcomeId, TaskOutcomeStatus,
+};
 use crate::domain::services::learned_skill_adapters::{
     capture_plan_mode_verdict, PlanModeVerdict, PlanModeVerdictCaptureInput, PlanModeVerdictOutcome,
 };
+use crate::domain::services::OutcomeLedgerService;
 use crate::AppState;
 
 pub(crate) const PLAN_MODE_PROPOSAL_KIND: &str = "plan_mode_proposal";
@@ -119,6 +122,41 @@ pub(crate) fn plan_mode_proposal_continuation_metadata_with_outcome(
     metadata.to_string()
 }
 
+pub(crate) fn task_outcome_from_plan_mode_verdict(
+    outcome: &PlanModeVerdictOutcome,
+) -> Option<TaskOutcome> {
+    let planning_session_id = outcome.refs.get("planning_session_id")?.trim();
+    if planning_session_id.is_empty() {
+        return None;
+    }
+    let status = outcome
+        .status
+        .parse::<TaskOutcomeStatus>()
+        .unwrap_or(TaskOutcomeStatus::Unknown);
+    let now = chrono::Utc::now();
+    Some(TaskOutcome {
+        id: TaskOutcomeId::new(),
+        project_id: ProjectId::from_string(outcome.project_id.clone()),
+        source: outcome.source.clone(),
+        source_ref_kind: "planning_session".to_string(),
+        source_ref_id: planning_session_id.to_string(),
+        task_id: None,
+        conversation_id: outcome.refs.get("conversation_id").cloned(),
+        agent_run_id: None,
+        pull_request_id: None,
+        proposal_id: None,
+        verification_id: None,
+        review_id: None,
+        outcome_class: Some(outcome.outcome_class.clone()),
+        status,
+        evidence_json: serde_json::to_value(outcome).unwrap_or_else(|_| serde_json::json!({})),
+        provider_harness: None,
+        provider_session_id: None,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
 async fn capture_accepted_plan_mode_proposal_outcome(
     state: &AppState,
     conversation_id: &ChatConversationId,
@@ -145,7 +183,7 @@ async fn capture_accepted_plan_mode_proposal_outcome(
             .map(|artifact_id| artifact_id.as_str().to_string())
     });
 
-    capture_plan_mode_verdict(PlanModeVerdictCaptureInput {
+    let outcome = capture_plan_mode_verdict(PlanModeVerdictCaptureInput {
         project_id: project_id.to_string(),
         conversation_id: conversation_id.as_str(),
         planning_session_id: Some(planning_session_id.0.clone()),
@@ -153,7 +191,20 @@ async fn capture_accepted_plan_mode_proposal_outcome(
         plan_artifact_id,
         verdict: PlanModeVerdict::Accepted,
         reason: reason.map(str::to_string),
-    })
+    })?;
+
+    if let Some(task_outcome) = task_outcome_from_plan_mode_verdict(&outcome) {
+        let service = OutcomeLedgerService::new(Arc::clone(&state.task_outcome_repo));
+        if let Err(error) = service.record_outcome(task_outcome).await {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                error = %error,
+                "Failed to persist accepted Plan-mode proposal outcome"
+            );
+        }
+    }
+
+    Some(outcome)
 }
 
 async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
