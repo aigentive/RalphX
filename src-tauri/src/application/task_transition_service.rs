@@ -33,6 +33,7 @@ use crate::domain::entities::{
     ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
     InternalStatus, ReviewNote, ReviewOutcome, ReviewerType, Task, TaskCategory, TaskId,
+    TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
@@ -47,7 +48,8 @@ use crate::domain::services::{
         PrMergeStateStatus, PrMergeableState, PrReviewFeedback, PrStatus, PrSyncState,
     },
     payload_enrichment::{PresentationKind, WebhookPresentationContext},
-    MessageQueue, PlanPrPublisher, PrReviewState, RunningAgentRegistry,
+    new_empty_task_outcome, MessageQueue, OutcomeLedgerService, PlanPrPublisher, PrReviewState,
+    RunningAgentRegistry,
 };
 use crate::domain::state_machine::services::{
     AgentSpawner, DependencyManager, EventEmitter, Notifier, ReviewStartResult, ReviewStarter,
@@ -1335,6 +1337,12 @@ impl<R: Runtime> TaskTransitionService<R> {
         self
     }
 
+    /// Set the task outcome repository for learned-skill/eval evidence (builder pattern).
+    pub fn with_task_outcome_repo(mut self, repo: Arc<dyn TaskOutcomeRepository>) -> Self {
+        self.task_outcome_repo = Some(repo);
+        self
+    }
+
     /// Inject execution settings so the internal task-agent spawner can honor project caps.
     pub fn with_execution_settings_repo(
         mut self,
@@ -1941,6 +1949,55 @@ impl<R: Runtime> TaskTransitionService<R> {
         }
     }
 
+    async fn record_github_pr_review_outcome(
+        &self,
+        merge_task: &Task,
+        correction_task: &Task,
+        pr_number: i64,
+        feedback: &PrReviewFeedback,
+    ) {
+        let Some(repo) = self.task_outcome_repo.as_ref() else {
+            return;
+        };
+
+        let mut outcome = new_empty_task_outcome(
+            merge_task.project_id.clone(),
+            "github_pr_review",
+            "github_review",
+            feedback.review_id.clone(),
+        );
+        outcome.task_id = Some(merge_task.id.as_str().to_string());
+        outcome.review_id = Some(feedback.review_id.clone());
+        outcome.outcome_class = Some("github_pr_changes_requested".to_string());
+        outcome.status = TaskOutcomeStatus::Failed;
+        outcome.evidence_json = serde_json::json!({
+            "task_id": merge_task.id.as_str(),
+            "correction_task_id": correction_task.id.as_str(),
+            "pr_number": pr_number,
+            "review_id": feedback.review_id,
+            "author": feedback.author,
+            "submitted_at": feedback.submitted_at,
+            "body": feedback.body,
+            "comment_count": feedback.comments.len(),
+            "comments": feedback.comments.iter().map(|comment| serde_json::json!({
+                "id": comment.id,
+                "author": comment.author,
+                "path": comment.path,
+                "line": comment.line,
+            })).collect::<Vec<_>>(),
+        });
+
+        let service = OutcomeLedgerService::new(Arc::clone(repo));
+        if let Err(error) = service.record_outcome(outcome).await {
+            tracing::warn!(
+                task_id = merge_task.id.as_str(),
+                review_id = feedback.review_id,
+                error = %error,
+                "Failed to record GitHub PR review outcome"
+            );
+        }
+    }
+
     /// Convert an actionable GitHub requested-changes review into normal plan work.
     ///
     /// The final plan merge task is system-managed, so it should not be re-executed as
@@ -2021,6 +2078,13 @@ impl<R: Runtime> TaskTransitionService<R> {
 
             self.persist_github_pr_review_note_once(&correction_task, pr_number, &feedback)
                 .await;
+            self.record_github_pr_review_outcome(
+                &merge_task,
+                &correction_task,
+                pr_number,
+                &feedback,
+            )
+            .await;
 
             crate::domain::state_machine::transition_handler::merge_metadata_into(
                 &mut merge_task,
