@@ -212,6 +212,22 @@ export function appendInternalSkillDirectives(
   return `${text.trimEnd()}\n\n${directives}`;
 }
 
+export function appendProjectSkillDirectives(
+  text: string,
+  projectSkillIds: readonly string[],
+): string {
+  const safeIds = [...new Set(projectSkillIds)]
+    .map((id) => id.trim())
+    .filter((id) => /^[a-zA-Z0-9_-]+$/.test(id));
+  if (safeIds.length === 0) {
+    return text;
+  }
+  const directives = safeIds
+    .map((id) => `<!-- ralphx_project_skill=${id} -->`)
+    .join("\n");
+  return `${text.trimEnd()}\n\n${directives}`;
+}
+
 export function normalizeComposerArtifactReferences(
   references: readonly AgentComposerArtifactReference[],
 ): AgentComposerArtifactReference[] {

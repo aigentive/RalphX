@@ -15,7 +15,10 @@ use super::types::{
 use crate::application::agent_conversation_workspace::agent_name_for_workspace_mode;
 use crate::application::AppState;
 use crate::domain::agents::AgentHarnessKind;
-use crate::domain::entities::{AgentConversationWorkspaceMode, ProjectId};
+use crate::domain::entities::{
+    AgentConversationWorkspaceMode, ProjectId, ProjectSkill, ProjectSkillLifecycleStatus,
+};
+use crate::domain::repositories::ProjectSkillListOptions;
 use crate::infrastructure::agents::harness_agent_catalog::load_canonical_agent_definition;
 use crate::infrastructure::agents::internal_skills::list_internal_skill_summaries_for_agent;
 use crate::utils::path_safety::validate_absolute_non_root_path;
@@ -55,9 +58,26 @@ pub async fn list_agent_composer_skills(
         .provider_harness
         .as_deref()
         .and_then(|value| AgentHarnessKind::from_str(value).ok());
+    let learned_skills = state
+        .project_skill_repo
+        .list_by_project(
+            &project_id,
+            ProjectSkillListOptions {
+                status: Some(ProjectSkillLifecycleStatus::Approved),
+                include_archived: false,
+                ..ProjectSkillListOptions::default()
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|skill| skill.scope_paths.is_empty())
+        .map(project_skill_to_composer_skill)
+        .collect::<Vec<_>>();
 
     tokio::task::spawn_blocking(move || {
         let mut skills = list_internal_composer_skills(&root, agent_name)?;
+        skills.extend(learned_skills);
         match harness {
             Some(AgentHarnessKind::Claude) => {
                 skills.extend(list_claude_native_skills(&root, agent_name)?);
@@ -78,6 +98,61 @@ pub async fn list_agent_composer_skills(
     })
     .await
     .map_err(|error| format!("Agent composer skill catalog failed: {error}"))?
+}
+
+fn project_skill_to_composer_skill(skill: ProjectSkill) -> AgentComposerSkillResponse {
+    let id = skill.id.as_str().to_string();
+    let name = composer_token_from_project_skill(&skill);
+    let description = skill
+        .predicted_effect
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .or_else(|| {
+            let compact = skill.compact_guidance.trim();
+            if compact.is_empty() {
+                None
+            } else {
+                Some(compact.to_string())
+            }
+        });
+    AgentComposerSkillResponse {
+        id: format!("learned:{id}"),
+        name,
+        display_name: Some(skill.title),
+        description,
+        source: "learned".to_string(),
+        provider_harness: None,
+        scope: Some("project".to_string()),
+        invocation_kind: "project-skill-directive".to_string(),
+        invocation_value: id,
+        enabled: true,
+        source_path: None,
+    }
+}
+
+fn composer_token_from_project_skill(skill: &ProjectSkill) -> String {
+    let mut token = String::new();
+    for character in skill.title.chars() {
+        if character.is_ascii_alphanumeric() {
+            token.push(character.to_ascii_lowercase());
+        } else if matches!(character, '-' | '_' | ' ') && !token.ends_with('-') {
+            token.push('-');
+        }
+    }
+    let token = token.trim_matches('-');
+    if token.is_empty() {
+        short_project_skill_token(skill.id.as_str())
+    } else {
+        token.to_string()
+    }
+}
+
+fn short_project_skill_token(id: &str) -> String {
+    id.chars()
+        .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+        .take(16)
+        .collect::<String>()
 }
 
 fn list_internal_composer_skills(
@@ -768,6 +843,41 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn project_skill_composer_response_carries_stable_learned_identity() {
+        let skill = ProjectSkill {
+            id: crate::domain::entities::ProjectSkillId::from_string("skill-123"),
+            project_id: ProjectId::from_string("project-1".to_string()),
+            title: "Review Error Paths".to_string(),
+            bucket: "reviewer".to_string(),
+            stage: "approved".to_string(),
+            status: ProjectSkillLifecycleStatus::Approved,
+            pinned: false,
+            archived: false,
+            scope_paths: Vec::new(),
+            compact_guidance: "Check fail-closed paths.".to_string(),
+            body_markdown: "Check fail-closed paths.".to_string(),
+            predicted_effect: Some("Reduces missed rejection paths.".to_string()),
+            provenance_json: serde_json::json!({ "source": "test" }),
+            companion_of_skill_id: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let response = project_skill_to_composer_skill(skill);
+
+        assert_eq!(response.id, "learned:skill-123");
+        assert_eq!(response.source, "learned");
+        assert_eq!(response.name, "review-error-paths");
+        assert_eq!(response.display_name.as_deref(), Some("Review Error Paths"));
+        assert_eq!(response.invocation_kind, "project-skill-directive");
+        assert_eq!(response.invocation_value, "skill-123");
+        assert_eq!(
+            response.description.as_deref(),
+            Some("Reduces missed rejection paths.")
+        );
+    }
 
     #[test]
     fn claude_native_skill_discovery_reads_project_skills_and_commands() {
