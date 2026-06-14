@@ -32,14 +32,15 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
     ChatConversationRepository, ChatMessageRepository, ExecutionSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository,
+    ProjectMemorySettingsRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
+use crate::infrastructure::memory::MemoryProjectMemorySettingsRepository;
 
 use super::chat_service_context;
 use super::chat_service_errors::{
@@ -407,6 +408,12 @@ fn build_recovery_retry_background_context<R: Runtime>(
 ) -> super::chat_service_send_background::BackgroundRunContext<R> {
     use super::chat_service_send_background::{BackgroundRunContext, BackgroundRunRepos};
 
+    let project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository> = app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|app_state| Arc::clone(&app_state.project_memory_settings_repo))
+        .unwrap_or_else(|| Arc::new(MemoryProjectMemorySettingsRepository::new()));
+
     BackgroundRunContext {
         child: retry_child,
         harness: recovery_harness,
@@ -439,6 +446,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
             task_proposal_repo: task_proposal_repo.clone(),
             activity_event_repo: Arc::clone(activity_event_repo),
             memory_event_repo: Arc::clone(memory_event_repo),
+            project_memory_settings_repo,
             message_queue: Arc::clone(message_queue),
             running_agent_registry: Arc::clone(running_agent_registry),
             task_step_repo: task_step_repo.clone(),

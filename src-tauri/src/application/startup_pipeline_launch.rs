@@ -34,6 +34,7 @@ fn build_startup_pipeline_deps(
     let startup_message_queue = Arc::clone(&app_state.message_queue);
     let startup_running_agent_registry = Arc::clone(&app_state.running_agent_registry);
     let startup_memory_event_repo = Arc::clone(&app_state.memory_event_repo);
+    let startup_project_memory_settings_repo = Arc::clone(&app_state.project_memory_settings_repo);
     let startup_app_state_repo = Arc::clone(&app_state.app_state_repo);
     let startup_memory_archive_repo = Arc::clone(&app_state.memory_archive_repo);
     let startup_memory_entry_repo = Arc::clone(&app_state.memory_entry_repo);
@@ -74,6 +75,7 @@ fn build_startup_pipeline_deps(
         message_queue: startup_message_queue,
         running_agent_registry: startup_running_agent_registry,
         memory_event_repo: startup_memory_event_repo,
+        project_memory_settings_repo: startup_project_memory_settings_repo,
         app_state_repo: startup_app_state_repo,
         memory_archive_repo: startup_memory_archive_repo,
         memory_entry_repo: startup_memory_entry_repo,

@@ -36,9 +36,9 @@ use crate::domain::repositories::{
     AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
     ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository,
+    ProjectMemorySettingsRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentKey, RunningAgentRegistry};
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
@@ -65,6 +65,7 @@ pub(super) struct BackgroundRunRepos {
     pub task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
+    pub project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository>,
     pub message_queue: Arc<MessageQueue>,
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub task_step_repo: Option<Arc<dyn TaskStepRepository>>,
@@ -722,6 +723,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             task_proposal_repo,
             activity_event_repo,
             memory_event_repo,
+            project_memory_settings_repo,
             message_queue,
             running_agent_registry,
             task_step_repo,
@@ -1214,6 +1216,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                             Arc::clone(&message_queue),
                             Arc::clone(&running_agent_registry),
                             Arc::clone(&memory_event_repo),
+                            Arc::clone(&project_memory_settings_repo),
                         )
                         .with_runtime_support(
                             Some(exec_settings.clone()),
@@ -1416,6 +1419,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         &working_directory,
                         None,
                         Some(Arc::clone(&memory_event_repo)),
+                        Some(Arc::clone(&project_memory_settings_repo)),
                     )
                     .await;
                 } else {
@@ -1518,6 +1522,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         &working_directory,
                         None,
                         Some(Arc::clone(&memory_event_repo)),
+                        Some(Arc::clone(&project_memory_settings_repo)),
                     )
                     .await;
                 } else {

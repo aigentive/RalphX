@@ -5,9 +5,11 @@
 
 use crate::domain::entities::{
     ChatContextType, ChatConversationId, MemoryActorType, MemoryEvent, ProjectId,
+    ProjectMemorySettings,
 };
-use crate::domain::repositories::MemoryEventRepository;
-use crate::infrastructure::agents::claude::build_spawnable_command;
+use crate::domain::repositories::{MemoryEventRepository, ProjectMemorySettingsRepository};
+use crate::infrastructure::agents::claude::build_spawnable_command_with_mcp_runtime_context;
+use crate::infrastructure::agents::mcp_runtime_context::McpRuntimeContext;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -45,28 +47,21 @@ impl MemoryCategory {
     }
 }
 
-/// Project memory settings (stub - will be replaced with repository-backed implementation)
-#[derive(Debug, Clone)]
-pub struct ProjectMemorySettings {
-    pub enabled: bool,
-    pub maintenance_categories: Vec<String>,
-    pub capture_categories: Vec<String>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemoryPipelineSkipReason {
+    NoProjectId,
+    RecursionGuard,
+    Disabled,
+    NoEnabledCategory,
 }
 
-impl Default for ProjectMemorySettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            maintenance_categories: vec![
-                "execution".to_string(),
-                "review".to_string(),
-                "merge".to_string(),
-            ],
-            capture_categories: vec![
-                "planning".to_string(),
-                "execution".to_string(),
-                "review".to_string(),
-            ],
+impl MemoryPipelineSkipReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NoProjectId => "no_project_id",
+            Self::RecursionGuard => "recursion_guard",
+            Self::Disabled => "disabled",
+            Self::NoEnabledCategory => "no_enabled_category",
         }
     }
 }
@@ -81,10 +76,19 @@ pub fn resolve_pipelines(
     agent_name: Option<&str>,
     settings: &ProjectMemorySettings,
 ) -> Option<(bool, bool)> {
+    resolve_pipelines_with_reason(context_type, project_id, agent_name, settings).ok()
+}
+
+pub fn resolve_pipelines_with_reason(
+    context_type: ChatContextType,
+    project_id: Option<&ProjectId>,
+    agent_name: Option<&str>,
+    settings: &ProjectMemorySettings,
+) -> Result<(bool, bool), MemoryPipelineSkipReason> {
     // Guard: If no project ID, skip (memory is project-scoped)
     if project_id.is_none() {
         tracing::debug!("resolve_pipelines: no project_id, skipping");
-        return None;
+        return Err(MemoryPipelineSkipReason::NoProjectId);
     }
 
     // Recursion guard: Skip if current agent is a memory agent
@@ -94,14 +98,14 @@ pub fn resolve_pipelines(
                 agent_name = name,
                 "resolve_pipelines: recursion guard triggered, skipping"
             );
-            return None;
+            return Err(MemoryPipelineSkipReason::RecursionGuard);
         }
     }
 
     // Early exit if memory disabled
     if !settings.enabled {
         tracing::debug!("resolve_pipelines: memory disabled for project, skipping");
-        return None;
+        return Err(MemoryPipelineSkipReason::Disabled);
     }
 
     // Map context to category
@@ -120,10 +124,10 @@ pub fn resolve_pipelines(
             category = category_str,
             "resolve_pipelines: category not in any enabled categories, skipping"
         );
-        return None;
+        return Err(MemoryPipelineSkipReason::NoEnabledCategory);
     }
 
-    Some((should_maintain, should_capture))
+    Ok((should_maintain, should_capture))
 }
 
 /// Trigger memory pipelines after agent run completion
@@ -146,6 +150,7 @@ pub async fn trigger_memory_pipelines(
     working_directory: &Path,
     settings: Option<ProjectMemorySettings>,
     memory_event_repo: Option<Arc<dyn MemoryEventRepository>>,
+    project_memory_settings_repo: Option<Arc<dyn ProjectMemorySettingsRepository>>,
 ) {
     tracing::debug!(
         %context_type,
@@ -162,14 +167,38 @@ pub async fn trigger_memory_pipelines(
         }
     };
 
-    // Use provided settings or defaults
-    let settings = settings.unwrap_or_default();
-
-    let Some((should_maintain, should_capture)) =
-        resolve_pipelines(context_type, project_id, agent_name, &settings)
-    else {
-        return;
+    let settings = match resolve_project_memory_settings(
+        proj_id,
+        settings,
+        project_memory_settings_repo.as_ref(),
+        memory_event_repo.as_ref(),
+        conversation_id,
+        context_type,
+        context_id,
+    )
+    .await
+    {
+        Some(settings) => settings,
+        None => return,
     };
+
+    let (should_maintain, should_capture) =
+        match resolve_pipelines_with_reason(context_type, project_id, agent_name, &settings) {
+            Ok(decision) => decision,
+            Err(reason) => {
+                log_memory_pipeline_skip(
+                    memory_event_repo.as_ref(),
+                    proj_id,
+                    conversation_id,
+                    context_type,
+                    context_id,
+                    reason.as_str(),
+                    None,
+                )
+                .await;
+                return;
+            }
+        };
 
     let category = MemoryCategory::from_context_type(context_type);
 
@@ -282,6 +311,91 @@ pub async fn trigger_memory_pipelines(
     // Tasks will log their own errors
 }
 
+async fn resolve_project_memory_settings(
+    project_id: &ProjectId,
+    provided: Option<ProjectMemorySettings>,
+    settings_repo: Option<&Arc<dyn ProjectMemorySettingsRepository>>,
+    memory_event_repo: Option<&Arc<dyn MemoryEventRepository>>,
+    conversation_id: &ChatConversationId,
+    context_type: ChatContextType,
+    context_id: &str,
+) -> Option<ProjectMemorySettings> {
+    if let Some(settings) = provided {
+        return Some(settings);
+    }
+
+    if let Some(repo) = settings_repo {
+        match repo.get_for_project(project_id).await {
+            Ok(Some(settings)) => return Some(settings),
+            Ok(None) => {
+                tracing::debug!(
+                    project_id = project_id.as_str(),
+                    "No project memory settings row found; using project defaults"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    project_id = project_id.as_str(),
+                    error = %error,
+                    "Failed to load project memory settings; skipping memory pipeline"
+                );
+                log_memory_pipeline_skip(
+                    memory_event_repo,
+                    project_id,
+                    conversation_id,
+                    context_type,
+                    context_id,
+                    "settings_load_failed",
+                    Some(error.to_string()),
+                )
+                .await;
+                return None;
+            }
+        }
+    }
+
+    Some(ProjectMemorySettings::default_for_project(
+        project_id.clone(),
+    ))
+}
+
+async fn log_memory_pipeline_skip(
+    memory_event_repo: Option<&Arc<dyn MemoryEventRepository>>,
+    project_id: &ProjectId,
+    conversation_id: &ChatConversationId,
+    context_type: ChatContextType,
+    context_id: &str,
+    reason: &str,
+    error: Option<String>,
+) {
+    let Some(repo) = memory_event_repo else {
+        return;
+    };
+
+    let mut details = serde_json::json!({
+        "reason": reason,
+        "conversation_id": conversation_id.as_str(),
+        "context_type": context_type.to_string(),
+        "context_id": context_id,
+    });
+    if let Some(error) = error {
+        details["error"] = serde_json::json!(error);
+    }
+
+    let event = MemoryEvent::new(
+        project_id.clone(),
+        "memory_pipeline_skipped",
+        MemoryActorType::System,
+        details,
+    );
+    if let Err(log_err) = repo.create(event).await {
+        tracing::warn!(
+            error = %log_err,
+            "trigger_memory_pipelines: failed to log memory pipeline skip"
+        );
+    }
+}
+
 /// Spawn ralphx-memory-maintainer agent
 ///
 /// Spawns the ralphx-memory-maintainer agent with appropriate context and environment variables.
@@ -314,7 +428,15 @@ async fn spawn_memory_maintainer(
         context_id
     );
 
-    let mut cmd = build_spawnable_command(
+    let runtime_context = memory_agent_runtime_context(
+        conversation_id,
+        context_type,
+        context_id,
+        project_id,
+        working_directory,
+    );
+
+    let mut cmd = build_spawnable_command_with_mcp_runtime_context(
         cli_path,
         plugin_dir,
         &prompt,
@@ -323,6 +445,7 @@ async fn spawn_memory_maintainer(
         working_directory,
         None, // effort_override: memory pipelines use default
         None, // model_override: use agent config default
+        Some(&runtime_context),
     )?;
 
     cmd.env("RALPHX_CONVERSATION_ID", &conv_id_str);
@@ -368,7 +491,15 @@ async fn spawn_memory_capture(
         conv_id_str, proj_id_str, context_type, context_id
     );
 
-    let mut cmd = build_spawnable_command(
+    let runtime_context = memory_agent_runtime_context(
+        conversation_id,
+        context_type,
+        context_id,
+        project_id,
+        working_directory,
+    );
+
+    let mut cmd = build_spawnable_command_with_mcp_runtime_context(
         cli_path,
         plugin_dir,
         &prompt,
@@ -377,6 +508,7 @@ async fn spawn_memory_capture(
         working_directory,
         None, // effort_override: memory pipelines use default
         None, // model_override: use agent config default
+        Some(&runtime_context),
     )?;
 
     cmd.env("RALPHX_CONVERSATION_ID", &conv_id_str);
@@ -391,6 +523,23 @@ async fn spawn_memory_capture(
         .map_err(|e| format!("Failed to spawn ralphx-memory-capture: {}", e))?;
 
     Ok(())
+}
+
+fn memory_agent_runtime_context(
+    conversation_id: &ChatConversationId,
+    context_type: ChatContextType,
+    context_id: &str,
+    project_id: &ProjectId,
+    working_directory: &Path,
+) -> McpRuntimeContext {
+    McpRuntimeContext {
+        context_type: Some(context_type.to_string()),
+        context_id: Some(context_id.to_string()),
+        project_id: Some(project_id.as_str().to_string()),
+        working_directory: Some(working_directory.to_path_buf()),
+        parent_conversation_id: Some(conversation_id.as_str().to_string()),
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]

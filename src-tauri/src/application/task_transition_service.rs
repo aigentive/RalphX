@@ -58,6 +58,7 @@ use crate::domain::state_machine::transition_handler::metadata_builder::{
 use crate::domain::state_machine::transition_handler::set_trigger_origin;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::spawner::AgenticClientSpawner;
+use crate::infrastructure::memory::MemoryProjectMemorySettingsRepository;
 use ralphx_domain::entities::EventType;
 
 #[allow(clippy::too_many_arguments)]
@@ -77,6 +78,11 @@ fn build_transition_chat_service_fallback<R: Runtime>(
     execution_state: Arc<ExecutionState>,
     app_handle: Option<AppHandle<R>>,
 ) -> AppChatService<R> {
+    let project_memory_settings_repo = app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|app_state| Arc::clone(&app_state.project_memory_settings_repo))
+        .unwrap_or_else(|| Arc::new(MemoryProjectMemorySettingsRepository::new()));
     let deps = ChatRuntimeFactoryDeps::from_core(
         chat_message_repo,
         chat_attachment_repo,
@@ -91,6 +97,7 @@ fn build_transition_chat_service_fallback<R: Runtime>(
         message_queue,
         running_agent_registry,
         memory_event_repo,
+        project_memory_settings_repo,
     );
 
     build_chat_service_with_fallback(&app_handle, Some(execution_state), &deps)
