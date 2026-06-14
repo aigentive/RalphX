@@ -39,7 +39,8 @@ use crate::domain::repositories::{
     AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, ExecutionSettingsRepository, ExternalEventsRepository,
     IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
+    ReviewRepository, TaskDependencyRepository, TaskOutcomeRepository, TaskRepository,
+    TaskStepRepository,
 };
 use crate::domain::services::{
     github_service::{
@@ -916,6 +917,9 @@ pub struct TaskTransitionService<R: Runtime = tauri::Wry> {
     /// so external consumers (poll/SSE) can observe transitions.
     external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
 
+    /// Outcome ledger repository for learned-skill/eval evidence emitted by transition actions.
+    task_outcome_repo: Option<Arc<dyn TaskOutcomeRepository>>,
+
     /// PR poller registry for GitHub PR polling (AD18).
     /// Passed to TaskServices so state machine actions can start/stop polling.
     /// None disables PR integration.
@@ -1198,6 +1202,11 @@ impl<R: Runtime> TaskTransitionService<R> {
         };
         Self::log_build_step("initial_chat_service", started_at);
 
+        let task_outcome_repo = app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|app_state| Arc::clone(&app_state.task_outcome_repo));
+
         // Create other services
         let started_at = Instant::now();
         let event_emitter: Arc<dyn EventEmitter> = Arc::new(
@@ -1254,6 +1263,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             merge_lock: Arc::new(tokio::sync::Mutex::new(())),
             merges_in_flight: Arc::new(std::sync::Mutex::new(HashSet::new())),
             external_events_repo: None,
+            task_outcome_repo,
             validation_tokens: Arc::new(dashmap::DashMap::new()),
             running_agent_registry,
             pr_poller_registry: None,
@@ -2740,6 +2750,9 @@ impl<R: Runtime> TaskTransitionService<R> {
         }
         if let Some(ref repo) = self.external_events_repo {
             services = services.with_external_events_repo(Arc::clone(repo));
+        }
+        if let Some(ref repo) = self.task_outcome_repo {
+            services = services.with_task_outcome_repo(Arc::clone(repo));
         }
         services = services.with_session_merge_locks(Arc::clone(&self.session_merge_locks));
         services

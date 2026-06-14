@@ -12,12 +12,14 @@
 use super::helpers::*;
 use crate::domain::entities::{
     IdeationSessionId, InternalStatus, MergeStrategy, MergeValidationMode, PlanBranchStatus,
-    ProjectId, Task,
+    ProjectId, Task, TaskOutcomeStatus,
 };
-use crate::domain::repositories::PlanBranchRepository;
+use crate::domain::repositories::{
+    PlanBranchRepository, TaskOutcomeListOptions, TaskOutcomeRepository,
+};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::{State, TransitionHandler};
-use crate::infrastructure::memory::MemoryPlanBranchRepository;
+use crate::infrastructure::memory::{MemoryPlanBranchRepository, MemoryTaskOutcomeRepository};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Shared helper: TaskServices with a retained Arc<MockChatService>
@@ -30,9 +32,10 @@ use crate::infrastructure::memory::MemoryPlanBranchRepository;
 fn make_services_with_tracked_chat(
     task_repo: Arc<MemoryTaskRepository>,
     project_repo: Arc<MemoryProjectRepository>,
+    task_outcome_repo: Option<Arc<MemoryTaskOutcomeRepository>>,
 ) -> (Arc<MockChatService>, TaskServices) {
     let chat_service = Arc::new(MockChatService::new());
-    let services = TaskServices::new(
+    let mut services = TaskServices::new(
         Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
         Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
         Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
@@ -43,6 +46,9 @@ fn make_services_with_tracked_chat(
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
     .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
     .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
+    if let Some(repo) = task_outcome_repo {
+        services = services.with_task_outcome_repo(repo as Arc<dyn TaskOutcomeRepository>);
+    }
     (chat_service, services)
 }
 
@@ -101,7 +107,7 @@ async fn b2_merge_conflict_transitions_to_merging_and_spawns_agent() {
     project_repo.create(project).await.unwrap();
 
     let (chat_service, services) =
-        make_services_with_tracked_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
+        make_services_with_tracked_chat(Arc::clone(&task_repo), Arc::clone(&project_repo), None);
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
     let handler = TransitionHandler::new(&mut machine);
@@ -162,6 +168,7 @@ async fn c1_autofix_validation_failure_transitions_to_merging_and_spawns_agent()
 
     let task_repo = Arc::new(MemoryTaskRepository::new());
     let project_repo = Arc::new(MemoryProjectRepository::new());
+    let task_outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
 
     let project_id = ProjectId::from_string("proj-1".to_string());
     let mut task = Task::new(
@@ -186,8 +193,11 @@ async fn c1_autofix_validation_failure_transitions_to_merging_and_spawns_agent()
         Some(r#"[{"path": ".", "label": "Test", "validate": ["false"]}]"#.to_string());
     project_repo.create(project).await.unwrap();
 
-    let (chat_service, services) =
-        make_services_with_tracked_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
+    let (chat_service, services) = make_services_with_tracked_chat(
+        Arc::clone(&task_repo),
+        Arc::clone(&project_repo),
+        Some(Arc::clone(&task_outcome_repo)),
+    );
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
     let handler = TransitionHandler::new(&mut machine);
@@ -217,6 +227,27 @@ async fn c1_autofix_validation_failure_transitions_to_merging_and_spawns_agent()
         "AutoFix validation failure must spawn a merger agent (call_count={}). \
          handle_validation_failure must call on_enter_dispatch(Merging) → chat_service.send_message().",
         chat_service.call_count(),
+    );
+
+    let outcomes = task_outcome_repo
+        .list_by_project(&updated.project_id, TaskOutcomeListOptions::default())
+        .await
+        .expect("task outcome query should succeed");
+    assert_eq!(outcomes.len(), 1);
+    let outcome = &outcomes[0];
+    assert_eq!(outcome.source, "merge_validation");
+    assert_eq!(outcome.source_ref_kind, "task");
+    assert_eq!(outcome.source_ref_id, updated.id.as_str());
+    assert_eq!(outcome.task_id.as_deref(), Some(updated.id.as_str()));
+    assert_eq!(
+        outcome.outcome_class.as_deref(),
+        Some("merge_validation_failed")
+    );
+    assert_eq!(outcome.status, TaskOutcomeStatus::Failed);
+    assert_eq!(outcome.evidence_json["failure_count"].as_u64(), Some(1));
+    assert_eq!(
+        outcome.evidence_json["validation_mode"].as_str(),
+        Some("auto_fix")
     );
 }
 
@@ -290,7 +321,7 @@ async fn toctou_merge_branches_cached_in_metadata_before_merge() {
     plan_branch_repo.create(pb).await.unwrap();
 
     let (_, services) =
-        make_services_with_tracked_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
+        make_services_with_tracked_chat(Arc::clone(&task_repo), Arc::clone(&project_repo), None);
     let services = services
         .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>);
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);

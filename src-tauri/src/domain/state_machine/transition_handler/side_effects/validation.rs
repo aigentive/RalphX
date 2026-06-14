@@ -1,8 +1,61 @@
 use super::*;
+use crate::domain::entities::TaskOutcomeStatus;
+use crate::domain::services::{new_empty_task_outcome, OutcomeLedgerService};
 use crate::domain::state_machine::TransitionHandler;
 use crate::domain::state_machine::transition_handler::{
     merge_helpers, BranchPair, ProjectCtx, TaskCore,
 };
+
+#[allow(clippy::too_many_arguments)]
+async fn record_merge_validation_failure_outcome(
+    task: &Task,
+    project: &Project,
+    source_branch: &str,
+    target_branch: &str,
+    failures: &[ValidationFailure],
+    log: &[ValidationLogEntry],
+    mode_label: &str,
+    validation_mode: &MergeValidationMode,
+    task_outcome_repo: &Option<Arc<dyn crate::domain::repositories::TaskOutcomeRepository>>,
+) {
+    let Some(repo) = task_outcome_repo.as_ref() else {
+        return;
+    };
+
+    let mut outcome = new_empty_task_outcome(
+        project.id.clone(),
+        "merge_validation",
+        "task",
+        task.id.as_str().to_string(),
+    );
+    outcome.task_id = Some(task.id.as_str().to_string());
+    outcome.outcome_class = Some("merge_validation_failed".to_string());
+    outcome.status = TaskOutcomeStatus::Failed;
+    outcome.evidence_json = serde_json::json!({
+        "task_id": task.id.as_str(),
+        "source_branch": source_branch,
+        "target_branch": target_branch,
+        "mode_label": mode_label,
+        "validation_mode": validation_mode.to_string(),
+        "failure_count": failures.len(),
+        "failures": failures.iter().map(|failure| serde_json::json!({
+            "command": failure.command,
+            "path": failure.path,
+            "exit_code": failure.exit_code,
+            "stderr": truncate_str(&failure.stderr, 2000),
+        })).collect::<Vec<_>>(),
+        "validation_log": log,
+    });
+
+    let service = OutcomeLedgerService::new(Arc::clone(repo));
+    if let Err(error) = service.record_outcome(outcome).await {
+        tracing::warn!(
+            task_id = task.id.as_str(),
+            error = %error,
+            "Failed to record merge validation failure outcome"
+        );
+    }
+}
 
 impl<'a> TransitionHandler<'a> {
     /// Handle post-merge validation failure: revert the merge commit, then transition
@@ -25,6 +78,19 @@ impl<'a> TransitionHandler<'a> {
         let (task, task_id, task_id_str, task_repo) = (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
         let (source_branch, target_branch) = (bp.source_branch, bp.target_branch);
         let (project, repo_path) = (pc.project, pc.repo_path);
+        record_merge_validation_failure_outcome(
+            task,
+            project,
+            source_branch,
+            target_branch,
+            failures,
+            log,
+            mode_label,
+            validation_mode,
+            &self.machine.context.services.task_outcome_repo,
+        )
+        .await;
+
         if *validation_mode == MergeValidationMode::AutoFix {
             // AutoFix: DON'T revert — keep the merged (failing) code for the agent to fix
             tracing::info!(
