@@ -10,8 +10,10 @@ use ralphx_lib::domain::entities::ideation::{
 };
 use ralphx_lib::domain::entities::{
     ChatContextType, ChatMessage, IdeationSession, IdeationSessionBuilder, IdeationSessionId,
-    ProjectId, VerificationGap, VerificationRoundSnapshot, VerificationRunSnapshot,
+    ProjectId, TaskOutcomeStatus, VerificationGap, VerificationRoundSnapshot,
+    VerificationRunSnapshot,
 };
+use ralphx_lib::domain::repositories::TaskOutcomeListOptions;
 use ralphx_lib::domain::services::RunningAgentKey;
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::project_scope::ProjectScope;
@@ -845,6 +847,71 @@ async fn test_get_plan_verification_round_trip_post_then_get() {
     );
     assert_eq!(response.rounds[0].round, 1);
     assert_eq!(response.rounds[0].gap_count, 2); // 2 fingerprints (one per gap)
+}
+
+#[tokio::test]
+async fn test_post_verification_status_records_recurring_gap_outcome() {
+    let state = setup_test_state().await;
+    let project_id = ProjectId::new();
+    let session = IdeationSession::new(project_id.clone());
+    let session_id = session.id.clone();
+    let session_id_str = session_id.as_str().to_string();
+
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+
+    for round in [1, 2] {
+        let result = post_verification_status(
+            State(state.clone()),
+            Path(session_id_str.clone()),
+            Json(UpdateVerificationRequest {
+                status: "reviewing".to_string(),
+                in_progress: true,
+                round: Some(round),
+                gaps: Some(vec![VerificationGapRequest {
+                    severity: "high".to_string(),
+                    category: "testing".to_string(),
+                    description: "Missing regression tests for the import path".to_string(),
+                    why_it_matters: Some("The same bug can reappear silently".to_string()),
+                    source: Some("layer2".to_string()),
+                }]),
+                convergence_reason: None,
+                max_rounds: Some(5),
+                parse_failed: None,
+                generation: None,
+            }),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "round {round} verification update should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    let outcomes = state
+        .app_state
+        .task_outcome_repo
+        .list_by_project(&project_id, TaskOutcomeListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(outcomes.len(), 1);
+    let outcome = &outcomes[0];
+    assert_eq!(outcome.source, "verification");
+    assert_eq!(outcome.source_ref_kind, "gap_recurrence");
+    assert_eq!(
+        outcome.outcome_class.as_deref(),
+        Some("verification_gap_recurring")
+    );
+    assert_eq!(outcome.status, TaskOutcomeStatus::Eligible);
+    assert_eq!(outcome.verification_id.as_deref(), Some(session_id_str.as_str()));
+    assert_eq!(outcome.evidence_json["occurrences"].as_u64(), Some(2));
+    assert_eq!(outcome.evidence_json["distinct_rounds"].as_u64(), Some(2));
 }
 
 #[tokio::test]
