@@ -83,7 +83,20 @@ impl ProjectSkillService {
         project_id: &ProjectId,
         prompt: &str,
     ) -> AppResult<Vec<LearnedSkillConstraintCitation>> {
-        let mut citations = Vec::new();
+        Ok(self
+            .prompt_selected_skills(project_id, prompt)
+            .await?
+            .into_iter()
+            .map(project_skill_to_constraint_citation)
+            .collect())
+    }
+
+    pub async fn prompt_selected_skills(
+        &self,
+        project_id: &ProjectId,
+        prompt: &str,
+    ) -> AppResult<Vec<ProjectSkill>> {
+        let mut skills = Vec::new();
         for skill_id in extract_project_skill_directives(prompt) {
             let Some(skill) = self
                 .repo
@@ -98,9 +111,9 @@ impl ProjectSkillService {
             {
                 continue;
             }
-            citations.push(project_skill_to_constraint_citation(skill));
+            skills.push(skill);
         }
-        Ok(citations)
+        Ok(skills)
     }
 
     pub async fn approve_skill(&self, id: &ProjectSkillId) -> AppResult<Option<ProjectSkill>> {
@@ -434,5 +447,15 @@ mod tests {
             citations[0].predicted_effect,
             "Avoids adapter-only injection."
         );
+
+        let selected_skills = skill_service
+            .prompt_selected_skills(&project_id, &prompt)
+            .await
+            .unwrap();
+
+        assert_eq!(selected_skills.len(), 1);
+        assert_eq!(selected_skills[0].id, approved.id);
+        assert_eq!(selected_skills[0].stage, "execution");
+        assert_eq!(selected_skills[0].bucket, "execution");
     }
 }
