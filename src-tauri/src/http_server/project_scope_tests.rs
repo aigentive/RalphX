@@ -60,6 +60,28 @@ fn make_review(project_id: &str, task_id: &str) -> crate::domain::entities::revi
     )
 }
 
+fn make_project_skill(project_id: &str) -> crate::domain::entities::ProjectSkill {
+    use crate::domain::entities::{ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus};
+    ProjectSkill {
+        id: ProjectSkillId::new(),
+        project_id: ProjectId::from_string(project_id.to_string()),
+        title: "test skill".to_string(),
+        bucket: "execution".to_string(),
+        stage: "execution".to_string(),
+        status: ProjectSkillLifecycleStatus::Approved,
+        pinned: false,
+        archived: false,
+        scope_paths: Vec::new(),
+        compact_guidance: "test guidance".to_string(),
+        body_markdown: "test body".to_string(),
+        predicted_effect: Some("test effect".to_string()),
+        provenance_json: serde_json::json!({}),
+        companion_of_skill_id: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    }
+}
+
 fn scoped(ids: &[&str]) -> ProjectScope {
     let vec: Vec<ProjectId> = ids
         .iter()
@@ -214,6 +236,18 @@ fn review_scope_guard() {
     assert!(review
         .assert_project_scope(&scoped(&["proj-other"]))
         .is_err());
+}
+
+#[test]
+fn project_skill_scope_guard() {
+    let skill = make_project_skill("proj-skill");
+    assert_eq!(skill.project_id().as_str(), "proj-skill");
+
+    assert!(skill.assert_project_scope(&scoped(&["proj-skill"])).is_ok());
+    assert!(skill
+        .assert_project_scope(&scoped(&["proj-other"]))
+        .is_err());
+    assert!(skill.assert_project_scope(&unrestricted()).is_ok());
 }
 
 #[test]
