@@ -265,6 +265,9 @@ pub async fn start_http_server(
         // Learned project skill read tools
         .route("/api/project_skills/list", post(list_project_skills))
         .route("/api/project_skills/get", post(get_project_skill))
+        .route("/api/project_skills/approve", post(approve_project_skill))
+        .route("/api/project_skills/reject", post(reject_project_skill))
+        .route("/api/project_skills/archive", post(archive_project_skill))
         // Task tools (ralphx-chat-task agent)
         .route("/api/update_task", post(update_task))
         .route("/api/add_task_note", post(add_task_note))

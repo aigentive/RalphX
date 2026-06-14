@@ -1356,6 +1356,16 @@ pub struct GetProjectSkillResponse {
     pub skill: Option<ProjectSkillResponse>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProjectSkillLifecycleRequest {
+    pub project_skill_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillLifecycleResponse {
+    pub skill: Option<ProjectSkillResponse>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RefreshMemoryRuleIndexRequest {
     pub project_id: String,
