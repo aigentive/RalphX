@@ -437,6 +437,8 @@ describe('getFilteredTools', () => {
 
     expect(toolNames).toContain('suggest_task');
     expect(toolNames).toContain('list_tasks');
+    expect(toolNames).toContain('list_project_skills');
+    expect(toolNames).toContain('get_project_skill');
     expect(toolNames).toContain('propose_plan_mode');
     expect(toolNames).toContain('append_task_to_ideation_plan');
     expect(toolNames).not.toContain('start_ideation_session');
@@ -451,6 +453,8 @@ describe('getFilteredTools', () => {
     const toolNames = tools.map((t) => t.name);
 
     expect(toolNames).toContain('propose_plan_mode');
+    expect(toolNames).toContain('list_project_skills');
+    expect(toolNames).toContain('get_project_skill');
     expect(toolNames).not.toContain('publish_agent_workspace');
     expect(toolNames).not.toContain('update_agent_workspace_from_base');
     expect(toolNames).not.toContain('start_ideation_session');
@@ -529,6 +533,34 @@ describe('getFilteredTools', () => {
     expect(toolNames).toContain('get_session_plan');
     expect(toolNames).toContain('create_team_artifact');
     expect(tools.length).toBe(2);
+  });
+});
+
+describe('learned project skill tools', () => {
+  const allTools = getAllTools();
+  const learnedSkillTools = ['list_project_skills', 'get_project_skill'];
+
+  it.each(learnedSkillTools)('%s should exist in ALL_TOOLS', (toolName) => {
+    expect(allTools.some((tool) => tool.name === toolName)).toBe(true);
+  });
+
+  it.each([CHAT_PROJECT, GENERAL_EXPLORER, GENERAL_WORKER, WORKER, REVIEWER, MERGER])(
+    '%s should include read-only learned skill tools',
+    (agent) => {
+      setAgentType(agent);
+      const toolNames = getFilteredTools().map((tool) => tool.name);
+      for (const toolName of learnedSkillTools) {
+        expect(toolNames).toContain(toolName);
+      }
+    }
+  );
+
+  it('keeps ideation planner surface free of learned skill read tools until prompt contracts use them', () => {
+    setAgentType(ORCHESTRATOR_IDEATION);
+    const toolNames = getFilteredTools().map((tool) => tool.name);
+    for (const toolName of learnedSkillTools) {
+      expect(toolNames).not.toContain(toolName);
+    }
   });
 });
 

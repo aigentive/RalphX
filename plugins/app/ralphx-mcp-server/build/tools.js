@@ -11,6 +11,7 @@ import { IDEATION_TOOLS } from "./ideation-tools.js";
 import { WORKFLOW_TOOLS } from "./workflow-tools.js";
 import { AGENT_WORKSPACE_TOOLS } from "./agent-workspace-tools.js";
 import { AGENT_TASK_TOOLS } from "./agent-task-tools.js";
+import { LEARNED_SKILL_TOOLS } from "./learned-skill-tools.js";
 import { SUPPORT_TOOLS } from "./support-tools.js";
 import { formatToolErrorMessageFromRegistry, getToolRecoveryHintFromRegistry, } from "./tool-recovery.js";
 import { logToolsByAgent } from "./tool-debug.js";
@@ -32,6 +33,10 @@ export const ALL_TOOLS = [
     // AGENT TASK TOOLS (native todo/dependency tracking)
     // ========================================================================
     ...AGENT_TASK_TOOLS,
+    // ========================================================================
+    // LEARNED PROJECT SKILL READ TOOLS
+    // ========================================================================
+    ...LEARNED_SKILL_TOOLS,
     // ========================================================================
     // PLAN ARTIFACT TOOLS (ralphx-ideation agent)
     // ========================================================================
