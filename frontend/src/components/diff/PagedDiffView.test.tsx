@@ -119,6 +119,25 @@ function makePage(offset: number, limit: number, totalRows = 260): FileDiffPage 
   };
 }
 
+async function triggerObservedSentinel(testId: string) {
+  await screen.findByTestId(testId);
+  await waitFor(() => {
+    expect(
+      intersectionObservers.some((observer) =>
+        Array.from(observer.elements).some(
+          (element) => element.getAttribute("data-testid") === testId
+        )
+      )
+    ).toBe(true);
+  });
+
+  await act(async () => {
+    for (const observer of intersectionObservers) {
+      observer.trigger(testId);
+    }
+  });
+}
+
 describe("PagedDiffView", () => {
   beforeEach(() => {
     latestRangeChanged = undefined;
@@ -180,11 +199,7 @@ describe("PagedDiffView", () => {
 
     await screen.findByTestId("paged-diff-view");
 
-    await act(async () => {
-      for (const observer of intersectionObservers) {
-        observer.trigger("paged-diff-next-sentinel");
-      }
-    });
+    await triggerObservedSentinel("paged-diff-next-sentinel");
 
     await waitFor(() =>
       expect(mockGetDiffPage).toHaveBeenCalledWith({
@@ -214,25 +229,13 @@ describe("PagedDiffView", () => {
 
     await screen.findByText("line 1");
 
-    await act(async () => {
-      for (const observer of intersectionObservers) {
-        observer.trigger("paged-diff-next-sentinel");
-      }
-    });
+    await triggerObservedSentinel("paged-diff-next-sentinel");
     expect(await screen.findByText("line 120")).toBeInTheDocument();
 
-    await act(async () => {
-      for (const observer of intersectionObservers) {
-        observer.trigger("paged-diff-next-sentinel");
-      }
-    });
+    await triggerObservedSentinel("paged-diff-next-sentinel");
     expect(await screen.findByText("line 220")).toBeInTheDocument();
 
-    await act(async () => {
-      for (const observer of intersectionObservers) {
-        observer.trigger("paged-diff-next-sentinel");
-      }
-    });
+    await triggerObservedSentinel("paged-diff-next-sentinel");
     expect(await screen.findByText("line 320")).toBeInTheDocument();
 
     await waitFor(() => {
@@ -265,33 +268,17 @@ describe("PagedDiffView", () => {
 
     await screen.findByText("line 1");
 
-    await act(async () => {
-      for (const observer of intersectionObservers) {
-        observer.trigger("paged-diff-next-sentinel");
-      }
-    });
+    await triggerObservedSentinel("paged-diff-next-sentinel");
     expect(await screen.findByText("line 120")).toBeInTheDocument();
 
-    await act(async () => {
-      for (const observer of intersectionObservers) {
-        observer.trigger("paged-diff-next-sentinel");
-      }
-    });
+    await triggerObservedSentinel("paged-diff-next-sentinel");
     expect(await screen.findByText("line 220")).toBeInTheDocument();
 
-    await act(async () => {
-      for (const observer of intersectionObservers) {
-        observer.trigger("paged-diff-next-sentinel");
-      }
-    });
+    await triggerObservedSentinel("paged-diff-next-sentinel");
     expect(await screen.findByText("line 320")).toBeInTheDocument();
     expect(screen.queryByText("line 120")).toBeNull();
 
-    await act(async () => {
-      for (const observer of intersectionObservers) {
-        observer.trigger("paged-diff-previous-sentinel");
-      }
-    });
+    await triggerObservedSentinel("paged-diff-previous-sentinel");
 
     await waitFor(() =>
       expect(mockGetDiffPage).toHaveBeenCalledWith({
