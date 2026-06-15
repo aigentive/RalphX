@@ -1,9 +1,40 @@
 import { describe, expect, it } from "vitest";
 
+import type { AgentConversationWorkspace } from "@/api/chat";
 import {
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
+  shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
+
+function workspace(
+  overrides: Partial<AgentConversationWorkspace> = {},
+): AgentConversationWorkspace {
+  return {
+    conversationId: "conversation-1",
+    projectId: "project-1",
+    mode: "edit",
+    baseRefKind: "project_default",
+    baseRef: "main",
+    baseDisplayName: "Project default (main)",
+    baseCommit: null,
+    branchName: "ralphx/ralphx/agent-abcdef12",
+    worktreePath: "/tmp/ralphx/conversation-1",
+    linkedIdeationSessionId: null,
+    linkedPlanBranchId: null,
+    publicationPrNumber: null,
+    publicationPrUrl: null,
+    publicationPrStatus: null,
+    publicationPushStatus: null,
+    autoPublishEnabled: true,
+    autoPublishPausedPrAutofixEnabled: null,
+    autoPublishPausedPrAutoMergeDesired: null,
+    status: "active",
+    createdAt: "2026-04-23T09:00:00Z",
+    updatedAt: "2026-04-23T09:00:00Z",
+    ...overrides,
+  };
+}
 
 const base = {
   autoMergeDesired: true,
@@ -117,6 +148,35 @@ describe("isAgentWorkspaceAutoMergeDeferred", () => {
         ...base,
         prSupervisionStatus: "monitoring",
       }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldShowAgentWorkspacePublishSurface", () => {
+  it("shows the publish surface for edit workspaces linked to a planning session", () => {
+    expect(
+      shouldShowAgentWorkspacePublishSurface(
+        workspace({ linkedIdeationSessionId: "planning-session-1" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("shows the publish surface for edit workspaces linked to a plan branch", () => {
+    expect(
+      shouldShowAgentWorkspacePublishSurface(
+        workspace({ linkedPlanBranchId: "plan-branch-1" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps non-execution planning workspaces out of the publish surface", () => {
+    expect(
+      shouldShowAgentWorkspacePublishSurface(
+        workspace({
+          mode: "plan",
+          linkedIdeationSessionId: "planning-session-1",
+        }),
+      ),
     ).toBe(false);
   });
 });
