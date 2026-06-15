@@ -43,7 +43,24 @@ const DistillProjectSkillsResponseSchema = z.object({
   skipped_existing: z.number(),
 });
 
+const ProjectSkillExportFileResponseSchema = z.object({
+  project_skill_id: z.string(),
+  title: z.string(),
+  relative_path: z.string(),
+  pinned: z.boolean(),
+  status: ProjectSkillStatusSchema,
+  will_write: z.boolean(),
+});
+
+const ProjectSkillExportResponseSchema = z.object({
+  project_id: z.string(),
+  target_root: z.string(),
+  files: z.array(ProjectSkillExportFileResponseSchema),
+  count: z.number(),
+});
+
 type RawProjectSkill = z.infer<typeof ProjectSkillResponseSchema>;
+type RawProjectSkillExport = z.infer<typeof ProjectSkillExportResponseSchema>;
 
 export type ProjectSkillStatus = z.infer<typeof ProjectSkillStatusSchema>;
 
@@ -86,6 +103,22 @@ export interface DistillProjectSkillsResult {
   skippedExisting: number;
 }
 
+export interface ProjectSkillExportFile {
+  projectSkillId: string;
+  title: string;
+  relativePath: string;
+  pinned: boolean;
+  status: ProjectSkillStatus;
+  willWrite: boolean;
+}
+
+export interface ProjectSkillExportResult {
+  projectId: string;
+  targetRoot: string;
+  files: ProjectSkillExportFile[];
+  count: number;
+}
+
 function transformProjectSkill(raw: RawProjectSkill): ProjectSkill {
   return {
     id: raw.id,
@@ -104,6 +137,22 @@ function transformProjectSkill(raw: RawProjectSkill): ProjectSkill {
     companionOfSkillId: raw.companion_of_skill_id ?? null,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+  };
+}
+
+function transformProjectSkillExport(raw: RawProjectSkillExport): ProjectSkillExportResult {
+  return {
+    projectId: raw.project_id,
+    targetRoot: raw.target_root,
+    count: raw.count,
+    files: raw.files.map((file) => ({
+      projectSkillId: file.project_skill_id,
+      title: file.title,
+      relativePath: file.relative_path,
+      pinned: file.pinned,
+      status: file.status,
+      willWrite: file.will_write,
+    })),
   };
 }
 
@@ -182,5 +231,20 @@ export const projectSkillsApi = {
       stagedSkills: parsed.staged_skills.map(transformProjectSkill),
       skippedExisting: parsed.skipped_existing,
     };
+  },
+
+  async previewExport(projectId: string): Promise<ProjectSkillExportResult> {
+    const raw = await postJson<unknown>("project_skills/export/preview", {
+      project_id: projectId,
+    });
+    return transformProjectSkillExport(ProjectSkillExportResponseSchema.parse(raw));
+  },
+
+  async applyExport(projectId: string): Promise<ProjectSkillExportResult> {
+    const raw = await postJson<unknown>("project_skills/export/apply", {
+      project_id: projectId,
+      confirm_export: true,
+    });
+    return transformProjectSkillExport(ProjectSkillExportResponseSchema.parse(raw));
   },
 } as const;

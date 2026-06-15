@@ -34,6 +34,25 @@ function projectSkill(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function exportResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    project_id: "project-1",
+    target_root: "/repo/.claude/skills",
+    count: 1,
+    files: [
+      {
+        project_skill_id: "skill-1",
+        title: "Check merge validation",
+        relative_path: ".claude/skills/check-merge-validation/SKILL.md",
+        pinned: true,
+        status: "approved",
+        will_write: true,
+      },
+    ],
+    ...overrides,
+  };
+}
+
 describe("projectSkillsApi", () => {
   beforeEach(() => {
     fetchMock.mockReset();
@@ -183,6 +202,49 @@ describe("projectSkillsApi", () => {
           project_id: "project-1",
           source: "review",
           limit: 5,
+        }),
+      }),
+    );
+  });
+
+  it("previews project skill export files", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(exportResponse()));
+
+    await expect(projectSkillsApi.previewExport("project-1")).resolves.toEqual({
+      projectId: "project-1",
+      targetRoot: "/repo/.claude/skills",
+      count: 1,
+      files: [
+        {
+          projectSkillId: "skill-1",
+          title: "Check merge validation",
+          relativePath: ".claude/skills/check-merge-validation/SKILL.md",
+          pinned: true,
+          status: "approved",
+          willWrite: true,
+        },
+      ],
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:3847/api/project_skills/export/preview",
+      expect.objectContaining({
+        body: JSON.stringify({ project_id: "project-1" }),
+      }),
+    );
+  });
+
+  it("applies project skill export with explicit confirmation", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(exportResponse()));
+
+    await expect(projectSkillsApi.applyExport("project-1")).resolves.toMatchObject({
+      count: 1,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:3847/api/project_skills/export/apply",
+      expect.objectContaining({
+        body: JSON.stringify({
+          project_id: "project-1",
+          confirm_export: true,
         }),
       }),
     );

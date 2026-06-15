@@ -271,6 +271,14 @@ pub async fn start_http_server(
         .route("/api/project_skills/pin", post(pin_project_skill))
         .route("/api/project_skills/unpin", post(unpin_project_skill))
         .route("/api/project_skills/distill", post(distill_project_skills))
+        .route(
+            "/api/project_skills/export/preview",
+            post(preview_project_skill_export),
+        )
+        .route(
+            "/api/project_skills/export/apply",
+            post(apply_project_skill_export),
+        )
         // Task tools (ralphx-chat-task agent)
         .route("/api/update_task", post(update_task))
         .route("/api/add_task_note", post(add_task_note))
