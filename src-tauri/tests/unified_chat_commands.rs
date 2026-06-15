@@ -884,6 +884,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_merged_pr_artifacts() {
         repo_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.task_outcome_repo),
         Arc::new(MockChatService::new()),
     );
 
@@ -968,6 +969,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
         repo_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.task_outcome_repo),
         Arc::new(MockChatService::new()),
     );
 
@@ -1581,6 +1583,7 @@ mod ipc_contract {
         recover_stale_agent_workspace_publish_repairs_on_startup(
             std::sync::Arc::clone(&state.agent_conversation_workspace_repo),
             std::sync::Arc::clone(&state.agent_run_repo),
+            std::sync::Arc::clone(&state.task_outcome_repo),
         )
         .await;
 
@@ -1611,6 +1614,7 @@ mod ipc_contract {
         recover_stale_agent_workspace_publish_repairs_on_startup(
             std::sync::Arc::clone(&state.agent_conversation_workspace_repo),
             std::sync::Arc::clone(&state.agent_run_repo),
+            std::sync::Arc::clone(&state.task_outcome_repo),
         )
         .await;
         let refreshed = state
@@ -2539,9 +2543,7 @@ mod ipc_contract {
         assert_eq!(built_ins.len(), 9);
         let fable = built_ins
             .iter()
-            .find(|model| {
-                model.provider == AgentHarnessKind::Claude && model.model_id == "fable"
-            })
+            .find(|model| model.provider == AgentHarnessKind::Claude && model.model_id == "fable")
             .expect("Fable should be exposed as a built-in Claude model");
         assert_eq!(fable.source, AgentModelSource::BuiltIn);
         assert_eq!(fable.default_effort, LogicalEffort::High);
