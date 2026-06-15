@@ -155,6 +155,25 @@ impl ProjectSkillRepository for MemoryProjectSkillRepository {
         Ok(rows)
     }
 
+    async fn update_content(&self, skill: ProjectSkill) -> AppResult<Option<ProjectSkill>> {
+        let mut rows = self.rows.write().unwrap();
+        let Some(row) = rows
+            .iter_mut()
+            .find(|row| row.id.as_str() == skill.id.as_str())
+        else {
+            return Ok(None);
+        };
+        row.title = skill.title;
+        row.bucket = skill.bucket;
+        row.stage = skill.stage;
+        row.scope_paths = skill.scope_paths;
+        row.compact_guidance = skill.compact_guidance;
+        row.body_markdown = skill.body_markdown;
+        row.predicted_effect = skill.predicted_effect;
+        row.updated_at = Utc::now();
+        Ok(Some(row.clone()))
+    }
+
     async fn update_lifecycle_status(
         &self,
         id: &ProjectSkillId,

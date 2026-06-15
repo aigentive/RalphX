@@ -279,6 +279,7 @@ pub async fn start_http_server(
         .route("/api/project_skills/archive", post(archive_project_skill))
         .route("/api/project_skills/pin", post(pin_project_skill))
         .route("/api/project_skills/unpin", post(unpin_project_skill))
+        .route("/api/project_skills/update", post(update_project_skill))
         .route("/api/project_skills/distill", post(distill_project_skills))
         .route(
             "/api/project_skills/report_cards",

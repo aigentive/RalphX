@@ -1,5 +1,10 @@
 use axum::{extract::State, http::StatusCode, Json};
+use std::path::Path;
+use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::process::Command;
+use tokio::time::timeout;
 use tracing::error;
 
 use super::*;
@@ -18,11 +23,23 @@ use crate::domain::services::{
     ProjectSkillImportCandidate, ProjectSkillImportPreview, ProjectSkillImportPreviewInput,
     ProjectSkillImportPreviewRow, ProjectSkillImportPreviewService, ProjectSkillReportOptions,
     ProjectSkillReportService, ProjectSkillService, PromoteMemoryToProjectSkillInput,
+    UpdateProjectSkillContentInput,
 };
-use crate::error::AppError;
+use crate::error::{AppError, AppResult};
 use crate::http_server::handlers::learned_skills_export::assert_project_id_scope;
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
 use crate::http_server::types::HttpError;
+use crate::infrastructure::tool_paths::resolve_git_cli_path;
+use crate::utils::path_safety::validate_absolute_non_root_path;
+
+const GIT_HISTORY_SCAN_LIMIT: usize = 50;
+const GIT_HISTORY_DISTILL_SOURCE: &str = "git_commit_history";
+
+#[derive(Debug, Clone, Copy, Default)]
+struct GitHistoryIngestSummary {
+    ingested_outcomes: usize,
+    scanned_git_commits: usize,
+}
 
 pub async fn list_project_skills(
     State(state): State<HttpServerState>,
@@ -370,6 +387,62 @@ pub async fn unpin_project_skill(
     update_project_skill_pin(state, scope, req.project_skill_id, false).await
 }
 
+pub async fn update_project_skill(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<UpdateProjectSkillRequest>,
+) -> Result<Json<ProjectSkillLifecycleResponse>, HttpError> {
+    let skill_id = ProjectSkillId::from_string(req.project_skill_id);
+    let existing = state
+        .app_state
+        .project_skill_repo
+        .get_by_id(&skill_id)
+        .await
+        .map_err(|error| {
+            error!("failed to get project skill before update: {}", error);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to get project skill".to_string()),
+            }
+        })?;
+
+    let Some(existing) = existing else {
+        return Ok(Json(ProjectSkillLifecycleResponse { skill: None }));
+    };
+    existing.assert_project_scope(&scope)?;
+
+    let service = ProjectSkillService::new(Arc::clone(&state.app_state.project_skill_repo));
+    let updated = service
+        .update_skill_content(UpdateProjectSkillContentInput {
+            project_skill_id: skill_id,
+            title: req.title,
+            bucket: req.bucket,
+            stage: req.stage,
+            scope_paths: req.scope_paths,
+            compact_guidance: req.compact_guidance,
+            body_markdown: req.body_markdown,
+            predicted_effect: req.predicted_effect,
+        })
+        .await
+        .map_err(|error| match error {
+            AppError::Validation(message) => HttpError {
+                status: StatusCode::BAD_REQUEST,
+                message: Some(message),
+            },
+            other => {
+                error!("failed to update project skill: {}", other);
+                HttpError {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: Some("failed to update project skill".to_string()),
+                }
+            }
+        })?;
+
+    Ok(Json(ProjectSkillLifecycleResponse {
+        skill: updated.map(ProjectSkillResponse::from),
+    }))
+}
+
 pub async fn distill_project_skills(
     State(state): State<HttpServerState>,
     scope: ProjectScope,
@@ -377,16 +450,23 @@ pub async fn distill_project_skills(
 ) -> Result<Json<DistillProjectSkillsResponse>, HttpError> {
     let project_id = ProjectId::from_string(req.project_id);
     assert_project_id_scope(&project_id, &scope)?;
+    let requested_source = req.source.clone();
+    let limit = req.limit.unwrap_or(25);
+    let include_git_history = req.include_git_history.unwrap_or_else(|| {
+        requested_source
+            .as_deref()
+            .map_or(true, |source| source == GIT_HISTORY_DISTILL_SOURCE)
+    });
 
     let distiller = ProjectSkillDistillerService::new(
         Arc::clone(&state.app_state.task_outcome_repo),
         Arc::clone(&state.app_state.project_skill_repo),
     );
-    let result = distiller
+    let mut result = distiller
         .distill_eligible_outcomes(DistillEligibleOutcomesInput {
-            project_id,
-            source: req.source,
-            limit: req.limit.unwrap_or(25),
+            project_id: project_id.clone(),
+            source: requested_source.clone(),
+            limit,
             origin: ProjectSkillDistillationOrigin::ManualCurator,
         })
         .await
@@ -397,6 +477,38 @@ pub async fn distill_project_skills(
                 message: Some("failed to distill project skills".to_string()),
             }
         })?;
+    let mut ingested_outcomes = 0;
+    let mut scanned_git_commits = 0;
+
+    if result.staged_skills.is_empty() && include_git_history {
+        match ingest_recent_git_history_outcomes(&state, &project_id).await {
+            Ok(summary) if summary.ingested_outcomes > 0 => {
+                ingested_outcomes = summary.ingested_outcomes;
+                scanned_git_commits = summary.scanned_git_commits;
+                result = distiller
+                    .distill_eligible_outcomes(DistillEligibleOutcomesInput {
+                        project_id: project_id.clone(),
+                        source: Some(GIT_HISTORY_DISTILL_SOURCE.to_string()),
+                        limit,
+                        origin: ProjectSkillDistillationOrigin::ManualCurator,
+                    })
+                    .await
+                    .map_err(|error| {
+                        error!("failed to distill git history project skills: {}", error);
+                        HttpError {
+                            status: StatusCode::INTERNAL_SERVER_ERROR,
+                            message: Some("failed to distill project skills".to_string()),
+                        }
+                    })?;
+            }
+            Ok(summary) => {
+                scanned_git_commits = summary.scanned_git_commits;
+            }
+            Err(error) => {
+                error!("failed to ingest git history for skill candidates: {}", error);
+            }
+        }
+    }
 
     Ok(Json(DistillProjectSkillsResponse {
         staged_skills: result
@@ -405,6 +517,8 @@ pub async fn distill_project_skills(
             .map(ProjectSkillResponse::from)
             .collect(),
         skipped_existing: result.skipped_existing,
+        ingested_outcomes,
+        scanned_git_commits,
     }))
 }
 
@@ -444,6 +558,128 @@ pub async fn list_project_skill_report_cards(
     let count = cards.len();
 
     Ok(Json(ListProjectSkillReportCardsResponse { cards, count }))
+}
+
+async fn ingest_recent_git_history_outcomes(
+    state: &HttpServerState,
+    project_id: &ProjectId,
+) -> AppResult<GitHistoryIngestSummary> {
+    let project = state
+        .app_state
+        .project_repo
+        .get_by_id(project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {} not found", project_id)))?;
+    let working_dir =
+        validate_absolute_non_root_path(Path::new(&project.working_directory), "project root")?;
+    if !working_dir.is_dir() {
+        return Ok(GitHistoryIngestSummary::default());
+    }
+
+    let commits = read_recent_git_commits(&working_dir, GIT_HISTORY_SCAN_LIMIT).await?;
+    let scanned_git_commits = commits.len();
+    let mut ingested_outcomes = 0;
+    for commit in commits {
+        let mut outcome = new_empty_task_outcome(
+            project_id.clone(),
+            GIT_HISTORY_DISTILL_SOURCE,
+            "commit",
+            commit.sha.clone(),
+        );
+        outcome.status = TaskOutcomeStatus::Eligible;
+        outcome.outcome_class = Some("git_history_commit".to_string());
+        outcome.evidence_json = serde_json::json!({
+            "source": "git_log",
+            "commit_sha": commit.sha,
+            "authored_at": commit.authored_at,
+            "author_name": commit.author_name,
+            "subject": commit.subject,
+            "scan_limit": GIT_HISTORY_SCAN_LIMIT,
+        });
+        state
+            .app_state
+            .task_outcome_repo
+            .upsert(UpsertTaskOutcomeInput { outcome })
+            .await?;
+        ingested_outcomes += 1;
+    }
+
+    Ok(GitHistoryIngestSummary {
+        ingested_outcomes,
+        scanned_git_commits,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitCommitSummary {
+    sha: String,
+    authored_at: String,
+    author_name: String,
+    subject: String,
+}
+
+async fn read_recent_git_commits(
+    working_dir: &Path,
+    limit: usize,
+) -> AppResult<Vec<GitCommitSummary>> {
+    let output = timeout(Duration::from_secs(8), async {
+        let child = Command::new(resolve_git_cli_path())
+            .arg("-C")
+            .arg(working_dir)
+            .arg("log")
+            .arg("--no-merges")
+            .arg(format!("--max-count={}", limit.max(1)))
+            .arg("--pretty=format:%H%x1f%aI%x1f%an%x1f%s%x1e")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| {
+                AppError::Infrastructure(format!("failed to start git log: {error}"))
+            })?;
+        child.wait_with_output().await.map_err(|error| {
+            AppError::Infrastructure(format!("failed to read git log output: {error}"))
+        })
+    })
+    .await
+    .map_err(|_| AppError::Infrastructure("timed out reading git history".to_string()))??;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_git_log_summaries(&stdout)
+        .into_iter()
+        .take(limit.max(1))
+        .collect())
+}
+
+fn parse_git_log_summaries(output: &str) -> Vec<GitCommitSummary> {
+    output
+        .split('\x1e')
+        .filter_map(|record| {
+            let record = record.trim();
+            if record.is_empty() {
+                return None;
+            }
+            let mut parts = record.splitn(4, '\x1f');
+            let sha = parts.next()?.trim();
+            let authored_at = parts.next()?.trim();
+            let author_name = parts.next()?.trim();
+            let subject = parts.next()?.trim();
+            if sha.is_empty() || subject.is_empty() {
+                return None;
+            }
+            Some(GitCommitSummary {
+                sha: sha.to_string(),
+                authored_at: authored_at.to_string(),
+                author_name: author_name.to_string(),
+                subject: subject.to_string(),
+            })
+        })
+        .collect()
 }
 
 pub async fn preview_project_skill_import(
@@ -891,6 +1127,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_project_skill_handler_updates_reviewable_fields() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-update".to_string());
+        let mut skill = staged_skill(project_id.clone());
+        skill.id = ProjectSkillId::from_string("skill-update".to_string());
+        let skill_id = skill.id.clone();
+        app_state.project_skill_repo.create(skill).await.unwrap();
+
+        let response = update_project_skill(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![project_id])),
+            Json(UpdateProjectSkillRequest {
+                project_skill_id: skill_id.as_str().to_string(),
+                title: "Check branch before skill export".to_string(),
+                bucket: "execution".to_string(),
+                stage: "execution".to_string(),
+                scope_paths: vec!["src-tauri".to_string()],
+                compact_guidance: "Check the current branch before exporting skills.".to_string(),
+                body_markdown: "Detailed updated procedure.".to_string(),
+                predicted_effect: "Prevents exporting from protected branches.".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .0
+        .skill
+        .expect("updated skill");
+
+        assert_eq!(response.title, "Check branch before skill export");
+        assert_eq!(response.bucket, "execution");
+        assert_eq!(response.scope_paths, vec!["src-tauri".to_string()]);
+        assert_eq!(
+            response.predicted_effect.as_deref(),
+            Some("Prevents exporting from protected branches.")
+        );
+    }
+
+    #[tokio::test]
     async fn list_conversation_project_skills_scopes_generated_and_used_skills() {
         let app_state = Arc::new(AppState::new_test());
         let project_id = ProjectId::from_string("project-a".to_string());
@@ -1132,6 +1406,7 @@ mod tests {
                 project_id: "project-distill".to_string(),
                 source: Some("review".to_string()),
                 limit: Some(5),
+                include_git_history: Some(false),
             }),
         )
         .await
@@ -1141,6 +1416,20 @@ mod tests {
         assert_eq!(response.0.staged_skills[0].status, "staged");
         assert_eq!(response.0.staged_skills[0].bucket, "review");
         assert_eq!(response.0.skipped_existing, 0);
+        assert_eq!(response.0.ingested_outcomes, 0);
+        assert_eq!(response.0.scanned_git_commits, 0);
+    }
+
+    #[test]
+    fn parse_git_log_summaries_parses_metadata_records() {
+        let parsed = parse_git_log_summaries(
+            "abc123\x1f2026-06-15T10:00:00Z\x1fAda\x1fAdd skill candidate fallback\x1edef456\x1f2026-06-14T10:00:00Z\x1fAda\x1fFix export branch gate\x1e",
+        );
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].sha, "abc123");
+        assert_eq!(parsed[0].subject, "Add skill candidate fallback");
+        assert_eq!(parsed[1].author_name, "Ada");
     }
 
     #[tokio::test]
@@ -1153,6 +1442,7 @@ mod tests {
                 project_id: "project-a".to_string(),
                 source: None,
                 limit: None,
+                include_git_history: None,
             }),
         )
         .await

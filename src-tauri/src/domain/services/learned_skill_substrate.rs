@@ -92,6 +92,17 @@ pub struct StageProjectSkillFromOutcomeInput {
     pub additional_provenance: Value,
 }
 
+pub struct UpdateProjectSkillContentInput {
+    pub project_skill_id: ProjectSkillId,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+}
+
 pub struct DistillEligibleOutcomesInput {
     pub project_id: ProjectId,
     pub source: Option<String>,
@@ -181,6 +192,40 @@ impl ProjectSkillService {
         options: ProjectSkillListOptions,
     ) -> AppResult<Vec<ProjectSkill>> {
         self.repo.list_by_project(project_id, options).await
+    }
+
+    pub async fn update_skill_content(
+        &self,
+        input: UpdateProjectSkillContentInput,
+    ) -> AppResult<Option<ProjectSkill>> {
+        validate_non_empty("project skill title", &input.title)?;
+        validate_non_empty("project skill bucket", &input.bucket)?;
+        validate_non_empty("project skill stage", &input.stage)?;
+        validate_non_empty("project skill compact_guidance", &input.compact_guidance)?;
+        validate_non_empty("project skill body_markdown", &input.body_markdown)?;
+        validate_non_empty("predicted_effect", &input.predicted_effect)?;
+
+        let Some(mut skill) = self.repo.get_by_id(&input.project_skill_id).await? else {
+            return Ok(None);
+        };
+        if skill.archived
+            || matches!(
+                skill.status,
+                ProjectSkillLifecycleStatus::Archived | ProjectSkillLifecycleStatus::Retired
+            )
+        {
+            return Err(AppError::Validation(
+                "archived or retired project skills cannot be edited".to_string(),
+            ));
+        }
+        skill.title = input.title;
+        skill.bucket = input.bucket;
+        skill.stage = input.stage;
+        skill.scope_paths = input.scope_paths;
+        skill.compact_guidance = input.compact_guidance;
+        skill.body_markdown = input.body_markdown;
+        skill.predicted_effect = Some(input.predicted_effect);
+        self.repo.update_content(skill).await
     }
 
     pub async fn prompt_selected_citations(
@@ -1021,6 +1066,10 @@ fn build_distilled_skill_candidate(
     outcome: &TaskOutcome,
     origin: ProjectSkillDistillationOrigin,
 ) -> StageProjectSkillFromOutcomeInput {
+    if outcome.source == "git_commit_history" {
+        return build_git_commit_skill_candidate(outcome, origin);
+    }
+
     let outcome_class = outcome
         .outcome_class
         .as_deref()
@@ -1052,6 +1101,46 @@ fn build_distilled_skill_candidate(
         ),
         additional_provenance: serde_json::json!({
             "distiller": "deterministic_eligible_outcome_v1",
+            "distillation_origin": origin.as_str(),
+            "pipeline_role": origin.pipeline_role(),
+        }),
+    }
+}
+
+fn build_git_commit_skill_candidate(
+    outcome: &TaskOutcome,
+    origin: ProjectSkillDistillationOrigin,
+) -> StageProjectSkillFromOutcomeInput {
+    let subject = outcome
+        .evidence_json
+        .get("subject")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("recent repository change");
+    let title_subject = truncate_for_skill_title(subject, 72);
+    let evidence_summary =
+        serde_json::to_string(&outcome.evidence_json).unwrap_or_else(|_| "{}".to_string());
+    let evidence_summary = truncate_for_skill_body(&evidence_summary, 1200);
+
+    StageProjectSkillFromOutcomeInput {
+        outcome: outcome.clone(),
+        title: format!("Review reusable commit pattern: {title_subject}"),
+        bucket: "execution".to_string(),
+        stage: "execution".to_string(),
+        scope_paths: scope_paths_from_outcome(outcome),
+        compact_guidance: format!(
+            "Before similar code work, review the prior commit `{title_subject}` and extract only the reusable procedure that applies to this project."
+        ),
+        body_markdown: format!(
+            "## Candidate from git history\n\nRalphX found this recent commit while scanning project history. Edit this draft before approval so it describes a reusable agent procedure, not just a past change.\n\nCommit evidence:\n\n```json\n{}\n```",
+            evidence_summary
+        ),
+        predicted_effect: format!(
+            "Helps agents reuse the implementation pattern behind `{title_subject}` without rereading the full repository history."
+        ),
+        additional_provenance: serde_json::json!({
+            "distiller": "git_history_commit_v1",
             "distillation_origin": origin.as_str(),
             "pipeline_role": origin.pipeline_role(),
         }),
@@ -1100,6 +1189,16 @@ fn truncate_for_skill_body(value: &str, max_chars: usize) -> String {
         return value.to_string();
     }
     let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+fn truncate_for_skill_title(value: &str, max_chars: usize) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let mut truncated = trimmed.chars().take(max_chars).collect::<String>();
     truncated.push_str("...");
     truncated
 }

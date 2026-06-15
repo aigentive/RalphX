@@ -59,6 +59,8 @@ const ProjectSkillLifecycleResponseSchema = z.object({
 const DistillProjectSkillsResponseSchema = z.object({
   staged_skills: z.array(ProjectSkillResponseSchema),
   skipped_existing: z.number(),
+  ingested_outcomes: z.number().optional().default(0),
+  scanned_git_commits: z.number().optional().default(0),
 });
 
 const ProjectSkillExportFileResponseSchema = z.object({
@@ -193,11 +195,14 @@ export interface DistillProjectSkillsInput {
   projectId: string;
   source?: string | null;
   limit?: number | null;
+  includeGitHistory?: boolean | null;
 }
 
 export interface DistillProjectSkillsResult {
   stagedSkills: ProjectSkill[];
   skippedExisting: number;
+  ingestedOutcomes: number;
+  scannedGitCommits: number;
 }
 
 export interface ProjectSkillExportFile {
@@ -299,6 +304,17 @@ export interface PromoteMemoryToProjectSkillInput {
   title?: string | null;
   bucket: string;
   stage: string;
+  compactGuidance: string;
+  bodyMarkdown: string;
+  predictedEffect: string;
+}
+
+export interface UpdateProjectSkillInput {
+  projectSkillId: string;
+  title: string;
+  bucket: string;
+  stage: string;
+  scopePaths: string[];
   compactGuidance: string;
   bodyMarkdown: string;
   predictedEffect: string;
@@ -501,12 +517,32 @@ export const projectSkillsApi = {
       project_id: input.projectId,
       ...(input.source ? { source: input.source } : {}),
       ...(input.limit != null ? { limit: input.limit } : {}),
+      ...(input.includeGitHistory != null
+        ? { include_git_history: input.includeGitHistory }
+        : {}),
     });
     const parsed = DistillProjectSkillsResponseSchema.parse(raw);
     return {
       stagedSkills: parsed.staged_skills.map(transformProjectSkill),
       skippedExisting: parsed.skipped_existing,
+      ingestedOutcomes: parsed.ingested_outcomes,
+      scannedGitCommits: parsed.scanned_git_commits,
     };
+  },
+
+  async update(input: UpdateProjectSkillInput): Promise<ProjectSkill | null> {
+    const raw = await postJson<unknown>("project_skills/update", {
+      project_skill_id: input.projectSkillId,
+      title: input.title,
+      bucket: input.bucket,
+      stage: input.stage,
+      scope_paths: input.scopePaths,
+      compact_guidance: input.compactGuidance,
+      body_markdown: input.bodyMarkdown,
+      predicted_effect: input.predictedEffect,
+    });
+    const parsed = ProjectSkillLifecycleResponseSchema.parse(raw);
+    return parsed.skill ? transformProjectSkill(parsed.skill) : null;
   },
 
   async listReportCards(

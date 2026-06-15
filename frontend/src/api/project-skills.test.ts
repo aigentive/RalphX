@@ -255,6 +255,8 @@ describe("projectSkillsApi", () => {
       jsonResponse({
         staged_skills: [projectSkill({ id: "skill-2", status: "staged" })],
         skipped_existing: 1,
+        ingested_outcomes: 3,
+        scanned_git_commits: 8,
       }),
     );
 
@@ -263,10 +265,13 @@ describe("projectSkillsApi", () => {
         projectId: "project-1",
         source: "review",
         limit: 5,
+        includeGitHistory: false,
       }),
     ).resolves.toMatchObject({
       stagedSkills: [{ id: "skill-2", status: "staged" }],
       skippedExisting: 1,
+      ingestedOutcomes: 3,
+      scannedGitCommits: 8,
     });
     expect(fetchMock).toHaveBeenCalledWith(
       "http://localhost:3847/api/project_skills/distill",
@@ -275,6 +280,51 @@ describe("projectSkillsApi", () => {
           project_id: "project-1",
           source: "review",
           limit: 5,
+          include_git_history: false,
+        }),
+      }),
+    );
+  });
+
+  it("updates project skill reviewable fields", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        skill: projectSkill({
+          id: "skill-1",
+          title: "Updated skill",
+          compact_guidance: "Updated guidance",
+        }),
+      }),
+    );
+
+    await expect(
+      projectSkillsApi.update({
+        projectSkillId: "skill-1",
+        title: "Updated skill",
+        bucket: "review",
+        stage: "review",
+        scopePaths: ["src-tauri"],
+        compactGuidance: "Updated guidance",
+        bodyMarkdown: "Updated body",
+        predictedEffect: "Improves review consistency.",
+      }),
+    ).resolves.toMatchObject({
+      id: "skill-1",
+      title: "Updated skill",
+      compactGuidance: "Updated guidance",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:3847/api/project_skills/update",
+      expect.objectContaining({
+        body: JSON.stringify({
+          project_skill_id: "skill-1",
+          title: "Updated skill",
+          bucket: "review",
+          stage: "review",
+          scope_paths: ["src-tauri"],
+          compact_guidance: "Updated guidance",
+          body_markdown: "Updated body",
+          predicted_effect: "Improves review consistency.",
         }),
       }),
     );

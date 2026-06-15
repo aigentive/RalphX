@@ -54,7 +54,7 @@ pub use learned_skill_substrate::{
     ProjectSkillImportPreviewRow, ProjectSkillImportPreviewService, ProjectSkillReportCard,
     ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService,
     PromoteMemoryToProjectSkillInput, PromoteMemoryToProjectSkillResult, SkillUsageService,
-    StageProjectSkillFromOutcomeInput,
+    StageProjectSkillFromOutcomeInput, UpdateProjectSkillContentInput,
 };
 pub use verification_events::{
     build_verification_payload, build_verification_started_snapshot,

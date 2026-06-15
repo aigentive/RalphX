@@ -25,6 +25,8 @@ pub trait ProjectSkillRepository: Send + Sync {
         options: ProjectSkillListOptions,
     ) -> AppResult<Vec<ProjectSkill>>;
 
+    async fn update_content(&self, skill: ProjectSkill) -> AppResult<Option<ProjectSkill>>;
+
     async fn update_lifecycle_status(
         &self,
         id: &ProjectSkillId,

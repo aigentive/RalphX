@@ -4,6 +4,8 @@ import {
   Check,
   ClipboardList,
   FileDown,
+  Info,
+  Pencil,
   Pin,
   PinOff,
   RefreshCw,
@@ -22,6 +24,7 @@ import {
   type ProjectSkill,
   type ProjectSkillExportResult,
   type ProjectSkillReportCard,
+  type UpdateProjectSkillInput,
 } from "@/api/project-skills";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -72,6 +75,8 @@ interface MemoryPromotionFormState {
   predictedEffect: string;
 }
 
+type CandidateSourceMode = "auto" | "stored" | "commits";
+
 export function ProjectSkillsCuratorPanel({
   projectId,
   className,
@@ -80,6 +85,8 @@ export function ProjectSkillsCuratorPanel({
   const [exportPreview, setExportPreview] =
     useState<ProjectSkillExportResult | null>(null);
   const [candidateDialogOpen, setCandidateDialogOpen] = useState(false);
+  const [candidateSourceMode, setCandidateSourceMode] =
+    useState<CandidateSourceMode>("auto");
   const [candidateResult, setCandidateResult] =
     useState<DistillProjectSkillsResult | null>(null);
   const [importManifest, setImportManifest] = useState("");
@@ -142,7 +149,14 @@ export function ProjectSkillsCuratorPanel({
   };
 
   const distillMutation = useMutation({
-    mutationFn: () => projectSkillsApi.distill({ projectId, limit: 10 }),
+    mutationFn: () =>
+      projectSkillsApi.distill({
+        projectId,
+        limit: 10,
+        source:
+          candidateSourceMode === "commits" ? "git_commit_history" : undefined,
+        includeGitHistory: candidateSourceMode !== "stored",
+      }),
     onMutate: () => setCandidateResult(null),
     onSuccess: (result) => {
       setCandidateResult(result);
@@ -172,6 +186,11 @@ export function ProjectSkillsCuratorPanel({
 
   const unpinMutation = useMutation({
     mutationFn: (skillId: string) => projectSkillsApi.unpin(skillId),
+    onSuccess: invalidateSkills,
+  });
+
+  const updateSkillMutation = useMutation({
+    mutationFn: (input: UpdateProjectSkillInput) => projectSkillsApi.update(input),
     onSuccess: invalidateSkills,
   });
 
@@ -257,6 +276,7 @@ export function ProjectSkillsCuratorPanel({
     archiveMutation.isPending ||
     pinMutation.isPending ||
     unpinMutation.isPending ||
+    updateSkillMutation.isPending ||
     updateSettingsMutation.isPending ||
     previewExportMutation.isPending ||
     applyExportMutation.isPending ||
@@ -276,6 +296,7 @@ export function ProjectSkillsCuratorPanel({
         archiveMutation.error ??
         pinMutation.error ??
         unpinMutation.error ??
+        updateSkillMutation.error ??
         updateSettingsMutation.error ??
         previewExportMutation.error ??
         applyExportMutation.error ??
@@ -319,20 +340,22 @@ export function ProjectSkillsCuratorPanel({
         />
       </div>
 
-      <div className="flex flex-wrap items-center justify-end gap-2">
+      <div className="flex flex-wrap items-center justify-start gap-2 sm:justify-end">
         <CandidateDiscoveryDialog
           disabled={isBusy}
           open={candidateDialogOpen}
           pending={distillMutation.isPending}
           result={candidateResult}
           error={distillMutation.error}
+          sourceMode={candidateSourceMode}
+          onSourceModeChange={setCandidateSourceMode}
           onOpenChange={setCandidateDialogOpen}
           onFindCandidates={() => distillMutation.mutate()}
         />
       </div>
 
       <Tabs defaultValue="review" className="grid gap-4">
-        <TabsList className="h-auto justify-start rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-1">
+        <TabsList className="h-auto flex-wrap justify-start rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-1">
           <TabsTrigger value="review" className="text-xs">
             Review queue
           </TabsTrigger>
@@ -364,6 +387,7 @@ export function ProjectSkillsCuratorPanel({
                   onApprove={() => approveMutation.mutate(skill.id)}
                   onReject={() => rejectMutation.mutate(skill.id)}
                   onArchive={() => archiveMutation.mutate(skill.id)}
+                  onUpdate={(input) => updateSkillMutation.mutate(input)}
                 />
               )}
             />
@@ -371,11 +395,24 @@ export function ProjectSkillsCuratorPanel({
         </TabsContent>
 
         <TabsContent value="approved" className="mt-0 grid gap-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3">
-            <p className="text-xs leading-5 text-[var(--text-secondary)]">
-              Approved skills are available to agents for this project. Export
-              is optional and opens in a separate review dialog.
-            </p>
+          <div
+            className="flex flex-wrap items-start justify-between gap-3 rounded-md border px-3 py-2 text-[0.6875rem] leading-relaxed"
+            style={{
+              backgroundColor: "var(--notice-info-bg)",
+              borderColor: "var(--notice-info-border)",
+              color: "var(--notice-info-text)",
+            }}
+          >
+            <div className="flex min-w-0 flex-1 items-start gap-2">
+              <Info
+                className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                style={{ color: "var(--notice-info-icon)" }}
+              />
+              <p>
+                Approved skills are available to agents for this project.
+                Export is optional and opens in a separate review dialog.
+              </p>
+            </div>
             <ProjectSkillsExportDialog
               disabled={isBusy}
               exportEnabled={exportEnabled}
@@ -404,6 +441,7 @@ export function ProjectSkillsCuratorPanel({
                   onPin={() => pinMutation.mutate(skill.id)}
                   onUnpin={() => unpinMutation.mutate(skill.id)}
                   onArchive={() => archiveMutation.mutate(skill.id)}
+                  onUpdate={(input) => updateSkillMutation.mutate(input)}
                 />
               )}
             />
@@ -455,6 +493,8 @@ function CandidateDiscoveryDialog({
   pending,
   result,
   error,
+  sourceMode,
+  onSourceModeChange,
   onOpenChange,
   onFindCandidates,
 }: {
@@ -463,13 +503,27 @@ function CandidateDiscoveryDialog({
   pending: boolean;
   result: DistillProjectSkillsResult | null;
   error: Error | null;
+  sourceMode: CandidateSourceMode;
+  onSourceModeChange: (mode: CandidateSourceMode) => void;
   onOpenChange: (open: boolean) => void;
   onFindCandidates: () => void;
 }) {
+  const sourceDescription =
+    sourceMode === "commits"
+      ? "Scans the latest 50 non-merge commits and stages up to 10 commit-pattern drafts."
+      : sourceMode === "stored"
+        ? "Scans only RalphX-recorded task, conversation, PR, review, and workspace outcomes."
+        : "Scans stored RalphX outcomes first, then falls back to recent git commits when no candidates exist.";
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
-        <Button type="button" size="sm" disabled={disabled}>
+        <Button
+          type="button"
+          size="sm"
+          disabled={disabled}
+          className="w-full sm:w-auto"
+        >
           <RefreshCw className={cn(pending && "animate-spin")} />
           Find candidates...
         </Button>
@@ -486,9 +540,31 @@ function CandidateDiscoveryDialog({
           </div>
         </DialogHeader>
         <div className="grid gap-4 px-6 py-5">
+          <div className="grid gap-2">
+            <div className="text-xs font-medium uppercase text-[var(--text-tertiary)]">
+              Candidate source
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { id: "auto" as const, label: "Auto" },
+                { id: "stored" as const, label: "Stored outcomes" },
+                { id: "commits" as const, label: "Recent commits" },
+              ].map((option) => (
+                <Button
+                  key={option.id}
+                  type="button"
+                  size="sm"
+                  variant={sourceMode === option.id ? "default" : "outline"}
+                  onClick={() => onSourceModeChange(option.id)}
+                >
+                  {option.label}
+                </Button>
+              ))}
+            </div>
+          </div>
           <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-            The current run checks up to 10 eligible outcomes for this project
-            and skips duplicates already represented by an existing skill.
+            {sourceDescription} Duplicates already represented by an existing
+            skill are skipped.
           </div>
           {pending ? (
             <div className="flex items-center gap-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs text-[var(--text-secondary)]">
@@ -502,6 +578,15 @@ function CandidateDiscoveryDialog({
               {result.stagedSkills.length === 1 ? "" : "s"} in the Review
               Queue. Skipped {result.skippedExisting} duplicate
               {result.skippedExisting === 1 ? "" : "s"}.
+              {result.scannedGitCommits > 0 ? (
+                <>
+                  {" "}
+                  Git fallback scanned {result.scannedGitCommits} recent commit
+                  {result.scannedGitCommits === 1 ? "" : "s"} and recorded{" "}
+                  {result.ingestedOutcomes} reusable outcome
+                  {result.ingestedOutcomes === 1 ? "" : "s"}.
+                </>
+              ) : null}
             </div>
           ) : null}
           {error ? (
@@ -549,6 +634,7 @@ function ProjectSkillsExportDialog({
           size="sm"
           variant="outline"
           disabled={disabled}
+          className="w-full sm:w-auto"
         >
           <FileDown />
           Export...
@@ -581,6 +667,168 @@ function ProjectSkillsExportDialog({
           {exportPreview ? (
             <ProjectSkillsExportSummary preview={exportPreview} />
           ) : null}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ProjectSkillEditDialog({
+  skill,
+  disabled,
+  onUpdate,
+}: {
+  skill: ProjectSkill;
+  disabled: boolean;
+  onUpdate: (input: UpdateProjectSkillInput) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState(skill.title);
+  const [bucket, setBucket] = useState(skill.bucket);
+  const [stage, setStage] = useState(skill.stage);
+  const [compactGuidance, setCompactGuidance] = useState(skill.compactGuidance);
+  const [bodyMarkdown, setBodyMarkdown] = useState(skill.bodyMarkdown);
+  const [predictedEffect, setPredictedEffect] = useState(skill.predictedEffect ?? "");
+  const [scopePaths, setScopePaths] = useState(skill.scopePaths.join("\n"));
+
+  const resetForm = () => {
+    setTitle(skill.title);
+    setBucket(skill.bucket);
+    setStage(skill.stage);
+    setCompactGuidance(skill.compactGuidance);
+    setBodyMarkdown(skill.bodyMarkdown);
+    setPredictedEffect(skill.predictedEffect ?? "");
+    setScopePaths(skill.scopePaths.join("\n"));
+  };
+  const canSave =
+    title.trim().length > 0 &&
+    bucket.trim().length > 0 &&
+    stage.trim().length > 0 &&
+    compactGuidance.trim().length > 0 &&
+    bodyMarkdown.trim().length > 0 &&
+    predictedEffect.trim().length > 0;
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (nextOpen) {
+          resetForm();
+        }
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button type="button" size="sm" variant="outline" disabled={disabled}>
+          <Pencil />
+          Edit
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-[760px]">
+        <DialogHeader>
+          <div>
+            <DialogTitle>Edit skill draft</DialogTitle>
+            <DialogDescription className="mt-1 leading-5">
+              Refine the reusable procedure before approval or future injection.
+              Provenance and lifecycle state stay unchanged.
+            </DialogDescription>
+          </div>
+        </DialogHeader>
+        <div className="grid max-h-[70vh] gap-4 overflow-auto px-6 py-5">
+          <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
+            Title
+            <Input
+              aria-label="Skill title"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+            />
+          </label>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
+              Bucket
+              <Input
+                aria-label="Skill bucket"
+                value={bucket}
+                onChange={(event) => setBucket(event.target.value)}
+              />
+            </label>
+            <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
+              Stage
+              <Input
+                aria-label="Skill stage"
+                value={stage}
+                onChange={(event) => setStage(event.target.value)}
+              />
+            </label>
+          </div>
+          <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
+            Compact guidance
+            <Textarea
+              aria-label="Skill compact guidance"
+              className="min-h-20 text-xs"
+              value={compactGuidance}
+              onChange={(event) => setCompactGuidance(event.target.value)}
+            />
+          </label>
+          <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
+            Full procedure
+            <Textarea
+              aria-label="Skill body"
+              className="min-h-36 text-xs"
+              value={bodyMarkdown}
+              onChange={(event) => setBodyMarkdown(event.target.value)}
+            />
+          </label>
+          <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
+            Expected effect
+            <Textarea
+              aria-label="Skill predicted effect"
+              className="min-h-16 text-xs"
+              value={predictedEffect}
+              onChange={(event) => setPredictedEffect(event.target.value)}
+            />
+          </label>
+          <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
+            Scope paths
+            <Textarea
+              aria-label="Skill scope paths"
+              className="min-h-16 text-xs"
+              placeholder="Optional, one path prefix per line"
+              value={scopePaths}
+              onChange={(event) => setScopePaths(event.target.value)}
+            />
+          </label>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={disabled || !canSave}
+              onClick={() => {
+                onUpdate({
+                  projectSkillId: skill.id,
+                  title: title.trim(),
+                  bucket: bucket.trim(),
+                  stage: stage.trim(),
+                  scopePaths: scopePaths
+                    .split(/\r?\n/)
+                    .map((path) => path.trim())
+                    .filter(Boolean),
+                  compactGuidance: compactGuidance.trim(),
+                  bodyMarkdown: bodyMarkdown.trim(),
+                  predictedEffect: predictedEffect.trim(),
+                });
+                setOpen(false);
+              }}
+            >
+              Save changes
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
@@ -923,6 +1171,7 @@ interface ProjectSkillCandidateCardProps {
   onApprove: () => void;
   onReject: () => void;
   onArchive: () => void;
+  onUpdate: (input: UpdateProjectSkillInput) => void;
 }
 
 interface ProjectSkillApprovedCardProps {
@@ -931,6 +1180,7 @@ interface ProjectSkillApprovedCardProps {
   onPin: () => void;
   onUnpin: () => void;
   onArchive: () => void;
+  onUpdate: (input: UpdateProjectSkillInput) => void;
 }
 
 function ProjectSkillApprovedCard({
@@ -939,13 +1189,14 @@ function ProjectSkillApprovedCard({
   onPin,
   onUnpin,
   onArchive,
+  onUpdate,
 }: ProjectSkillApprovedCardProps) {
   return (
     <Card className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="truncate text-sm font-semibold text-[var(--text-primary)]">
+            <h3 className="min-w-0 break-words text-sm font-semibold text-[var(--text-primary)]">
               {skill.title}
             </h3>
             <Badge variant="outline" className="text-xs">
@@ -961,7 +1212,12 @@ function ProjectSkillApprovedCard({
             {skill.compactGuidance}
           </p>
         </div>
-        <div className="flex shrink-0 flex-wrap gap-2">
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:shrink-0 sm:justify-end">
+          <ProjectSkillEditDialog
+            skill={skill}
+            disabled={disabled}
+            onUpdate={onUpdate}
+          />
           {skill.pinned ? (
             <Button
               type="button"
@@ -1007,13 +1263,14 @@ function ProjectSkillCandidateCard({
   onApprove,
   onReject,
   onArchive,
+  onUpdate,
 }: ProjectSkillCandidateCardProps) {
   return (
     <Card className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="truncate text-sm font-semibold text-[var(--text-primary)]">
+            <h3 className="min-w-0 break-words text-sm font-semibold text-[var(--text-primary)]">
               {skill.title}
             </h3>
             <Badge variant="outline" className="text-xs">
@@ -1032,7 +1289,12 @@ function ProjectSkillCandidateCard({
             </p>
           ) : null}
         </div>
-        <div className="flex shrink-0 flex-wrap gap-2">
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:shrink-0 sm:justify-end">
+          <ProjectSkillEditDialog
+            skill={skill}
+            disabled={disabled}
+            onUpdate={onUpdate}
+          />
           <Button
             type="button"
             size="sm"

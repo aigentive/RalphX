@@ -421,6 +421,48 @@ impl ProjectSkillRepository for SqliteProjectSkillRepository {
             .await
     }
 
+    async fn update_content(&self, mut skill: ProjectSkill) -> AppResult<Option<ProjectSkill>> {
+        let scope_paths_json = serde_json::to_string(&skill.scope_paths)
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        skill.updated_at = Utc::now();
+        let saved = skill;
+        self.db
+            .query_optional(move |conn| {
+                conn.execute(
+                    "UPDATE project_skills
+                     SET title = ?2,
+                         bucket = ?3,
+                         stage = ?4,
+                         scope_paths_json = ?5,
+                         compact_guidance = ?6,
+                         body_markdown = ?7,
+                         predicted_effect = ?8,
+                         updated_at = ?9
+                     WHERE id = ?1",
+                    rusqlite::params![
+                        saved.id.as_str(),
+                        saved.title,
+                        saved.bucket,
+                        saved.stage,
+                        scope_paths_json,
+                        saved.compact_guidance,
+                        saved.body_markdown,
+                        saved.predicted_effect,
+                        saved.updated_at.to_rfc3339(),
+                    ],
+                )?;
+                conn.query_row(
+                    &format!(
+                        "SELECT {} FROM project_skills WHERE id = ?1",
+                        select_skill_columns()
+                    ),
+                    [saved.id.as_str()],
+                    skill_from_row,
+                )
+            })
+            .await
+    }
+
     async fn update_lifecycle_status(
         &self,
         id: &ProjectSkillId,

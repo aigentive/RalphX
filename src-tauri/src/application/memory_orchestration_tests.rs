@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::agents::LogicalEffort;
+use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::repositories::MemoryEventRepository;
 use crate::infrastructure::memory::{
     InMemoryMemoryEventRepository, MemoryProjectMemorySettingsRepository,

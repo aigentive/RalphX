@@ -1397,6 +1397,18 @@ pub struct ProjectSkillLifecycleRequest {
     pub project_skill_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateProjectSkillRequest {
+    pub project_skill_id: String,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectSkillLifecycleResponse {
     pub skill: Option<ProjectSkillResponse>,
@@ -1407,12 +1419,15 @@ pub struct DistillProjectSkillsRequest {
     pub project_id: String,
     pub source: Option<String>,
     pub limit: Option<usize>,
+    pub include_git_history: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DistillProjectSkillsResponse {
     pub staged_skills: Vec<ProjectSkillResponse>,
     pub skipped_existing: usize,
+    pub ingested_outcomes: usize,
+    pub scanned_git_commits: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]

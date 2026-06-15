@@ -22,8 +22,8 @@ export function SkillsView() {
       className="flex flex-1 flex-col overflow-auto"
       style={{ backgroundColor: "var(--bg-base)" }}
     >
-      <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 p-6">
-        <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[var(--border-subtle)] pb-5">
+      <div className="mx-auto flex w-full max-w-[1440px] min-w-0 flex-col gap-5 px-4 py-5 sm:p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--border-subtle)] pb-5 sm:items-end">
           <div className="min-w-0">
             <div className="text-xs font-medium uppercase text-[var(--text-tertiary)]">
               Project-scoped skills
@@ -43,14 +43,14 @@ export function SkillsView() {
               explicitly export selected skills to the target repository.
             </p>
           </div>
-          <div className="grid gap-1">
+          <div className="grid w-full gap-1 sm:w-auto">
             <span className="text-xs font-medium text-[var(--text-tertiary)]">
               Project
             </span>
             <ProjectSelector
               onNewProject={() => undefined}
               align="end"
-              className="max-w-[320px]"
+              className="w-full max-w-[320px]"
             />
           </div>
         </div>

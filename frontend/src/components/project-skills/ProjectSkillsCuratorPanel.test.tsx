@@ -15,6 +15,7 @@ vi.mock("@/api/project-skills", () => ({
     archive: vi.fn(),
     pin: vi.fn(),
     unpin: vi.fn(),
+    update: vi.fn(),
     previewExport: vi.fn(),
     applyExport: vi.fn(),
     getSettings: vi.fn(),
@@ -100,6 +101,9 @@ describe("ProjectSkillsCuratorPanel", () => {
     mockedProjectSkillsApi.unpin.mockResolvedValue(
       stagedSkill({ id: "approved-skill", status: "approved", pinned: false }),
     );
+    mockedProjectSkillsApi.update.mockResolvedValue(
+      stagedSkill({ title: "Updated skill" }),
+    );
     mockedProjectSkillsApi.getSettings.mockResolvedValue({
       projectId: "project-1",
       exportEnabled: false,
@@ -141,6 +145,8 @@ describe("ProjectSkillsCuratorPanel", () => {
     mockedProjectSkillsApi.distill.mockResolvedValue({
       stagedSkills: [stagedSkill({ id: "skill-2" })],
       skippedExisting: 0,
+      ingestedOutcomes: 0,
+      scannedGitCommits: 0,
     });
     mockedProjectSkillsApi.listReportCards.mockResolvedValue({
       count: 1,
@@ -374,10 +380,30 @@ describe("ProjectSkillsCuratorPanel", () => {
       expect(mockedProjectSkillsApi.distill).toHaveBeenCalledWith({
         projectId: "project-1",
         limit: 10,
+        source: undefined,
+        includeGitHistory: true,
       });
     });
     expect(await screen.findByText(/Staged 1 candidate/i)).toBeInTheDocument();
     expect(await screen.findByText("Review PR evidence")).toBeInTheDocument();
+  });
+
+  it("can scan recent commits explicitly for candidates", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole("button", { name: /find candidates\.\.\./i }));
+    await user.click(screen.getByRole("button", { name: /recent commits/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^find candidates$/i }));
+
+    await waitFor(() => {
+      expect(mockedProjectSkillsApi.distill).toHaveBeenCalledWith({
+        projectId: "project-1",
+        limit: 10,
+        source: "git_commit_history",
+        includeGitHistory: true,
+      });
+    });
   });
 
   it("runs lifecycle actions for staged skills", async () => {
@@ -398,6 +424,37 @@ describe("ProjectSkillsCuratorPanel", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /archive/i })[0]);
     await waitFor(() => {
       expect(mockedProjectSkillsApi.archive).toHaveBeenCalledWith("skill-1");
+    });
+  });
+
+  it("edits staged skills before approval", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    expect(await screen.findByText("Check merge validation")).toBeInTheDocument();
+
+    await user.click(screen.getAllByRole("button", { name: /^edit$/i })[0]);
+    expect(
+      await screen.findByRole("dialog", { name: /edit skill draft/i }),
+    ).toBeInTheDocument();
+
+    const titleInput = screen.getByLabelText("Skill title");
+    await user.clear(titleInput);
+    await user.type(titleInput, "Check branch before export");
+    const guidanceInput = screen.getByLabelText("Skill compact guidance");
+    await user.clear(guidanceInput);
+    await user.type(guidanceInput, "Check the branch before exporting approved skills.");
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(mockedProjectSkillsApi.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectSkillId: "skill-1",
+          title: "Check branch before export",
+          compactGuidance: "Check the branch before exporting approved skills.",
+          predictedEffect: "Prevents repeated validation loops.",
+        }),
+      );
     });
   });
 
