@@ -248,6 +248,9 @@ describe("ProjectSkillsCuratorPanel", () => {
     renderPanel();
 
     await screen.findByText("Import");
+    expect(
+      screen.getByText(/Preview is read-only; Apply stages only rows/i),
+    ).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Project skill import manifest"), {
       target: {
         value: JSON.stringify({
@@ -291,6 +294,13 @@ describe("ProjectSkillsCuratorPanel", () => {
     renderPanel();
 
     await screen.findByText("Promote memory");
+    expect(
+      screen.getByText(/The memory stays unchanged/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Memory ID")).toBeInTheDocument();
+    expect(screen.getByText("Compact guidance")).toBeInTheDocument();
+    expect(screen.getByText("Skill body")).toBeInTheDocument();
+    expect(screen.getByText("Predicted effect")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Memory id"), {
       target: { value: "memory-1" },
     });
@@ -438,6 +448,13 @@ describe("ProjectSkillsCuratorPanel", () => {
       );
     });
     expect(await screen.findByText(/1 pending file/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Apply requires a clean git worktree on a named review branch/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(".claude/skills/approved-review-convention/SKILL.md"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("will write")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("switch", { name: /enable project skill export/i }));
     await waitFor(() => {

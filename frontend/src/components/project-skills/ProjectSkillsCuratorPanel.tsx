@@ -416,8 +416,13 @@ function ImportPromotionPanel({
           <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
             Import
           </h3>
+          <p className="text-xs text-[var(--text-secondary)]">
+            Paste a JSON manifest of reusable procedural skills. Preview is
+            read-only; Apply stages only rows that pass backend eligibility.
+          </p>
           <Textarea
             aria-label="Project skill import manifest"
+            placeholder='{"candidates":[{"title":"...","bucket":"review","stage":"review","compactGuidance":"...","bodyMarkdown":"...","predictedEffect":"...","provenance":{},"sourceSnapshot":{}}]}'
             className="min-h-32 text-xs"
             value={importManifest}
             onChange={(event) => onImportManifestChange(event.target.value)}
@@ -456,47 +461,80 @@ function ImportPromotionPanel({
           <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
             Promote memory
           </h3>
+          <p className="text-xs text-[var(--text-secondary)]">
+            Convert a factual memory into a staged procedural skill. The memory
+            stays unchanged; you must write the reusable guidance, body, and
+            predicted effect explicitly.
+          </p>
           <div className="grid gap-2 sm:grid-cols-2">
-            <Input
-              aria-label="Memory id"
-              value={memoryPromotion.memoryId}
-              onChange={(event) => updatePromotion({ memoryId: event.target.value })}
-            />
-            <Input
-              aria-label="Promoted skill title"
-              value={memoryPromotion.title}
-              onChange={(event) => updatePromotion({ title: event.target.value })}
-            />
-            <Input
-              aria-label="Promoted skill bucket"
-              value={memoryPromotion.bucket}
-              onChange={(event) => updatePromotion({ bucket: event.target.value })}
-            />
-            <Input
-              aria-label="Promoted skill stage"
-              value={memoryPromotion.stage}
-              onChange={(event) => updatePromotion({ stage: event.target.value })}
-            />
+            <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
+              Memory ID
+              <Input
+                aria-label="Memory id"
+                placeholder="memory_..."
+                value={memoryPromotion.memoryId}
+                onChange={(event) => updatePromotion({ memoryId: event.target.value })}
+              />
+            </label>
+            <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
+              Skill title
+              <Input
+                aria-label="Promoted skill title"
+                placeholder="Defaults to memory title"
+                value={memoryPromotion.title}
+                onChange={(event) => updatePromotion({ title: event.target.value })}
+              />
+            </label>
+            <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
+              Bucket
+              <Input
+                aria-label="Promoted skill bucket"
+                placeholder="review"
+                value={memoryPromotion.bucket}
+                onChange={(event) => updatePromotion({ bucket: event.target.value })}
+              />
+            </label>
+            <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
+              Stage
+              <Input
+                aria-label="Promoted skill stage"
+                placeholder="review"
+                value={memoryPromotion.stage}
+                onChange={(event) => updatePromotion({ stage: event.target.value })}
+              />
+            </label>
           </div>
-          <Textarea
-            aria-label="Promoted skill guidance"
-            className="min-h-20 text-xs"
-            value={memoryPromotion.compactGuidance}
-            onChange={(event) =>
-              updatePromotion({ compactGuidance: event.target.value })
-            }
-          />
-          <Textarea
-            aria-label="Promoted skill body"
-            className="min-h-24 text-xs"
-            value={memoryPromotion.bodyMarkdown}
-            onChange={(event) => updatePromotion({ bodyMarkdown: event.target.value })}
-          />
-          <Input
-            aria-label="Promoted skill predicted effect"
-            value={memoryPromotion.predictedEffect}
-            onChange={(event) => updatePromotion({ predictedEffect: event.target.value })}
-          />
+          <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
+            Compact guidance
+            <Textarea
+              aria-label="Promoted skill guidance"
+              placeholder="One or two sentences the agent should see during skill selection."
+              className="min-h-20 text-xs"
+              value={memoryPromotion.compactGuidance}
+              onChange={(event) =>
+                updatePromotion({ compactGuidance: event.target.value })
+              }
+            />
+          </label>
+          <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
+            Skill body
+            <Textarea
+              aria-label="Promoted skill body"
+              placeholder="Reusable procedure, checks, examples, and boundaries. Do not paste raw memory facts."
+              className="min-h-24 text-xs"
+              value={memoryPromotion.bodyMarkdown}
+              onChange={(event) => updatePromotion({ bodyMarkdown: event.target.value })}
+            />
+          </label>
+          <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
+            Predicted effect
+            <Input
+              aria-label="Promoted skill predicted effect"
+              placeholder="Expected improvement, e.g. fewer repeated merge validation failures."
+              value={memoryPromotion.predictedEffect}
+              onChange={(event) => updatePromotion({ predictedEffect: event.target.value })}
+            />
+          </label>
           <div>
             <Button
               type="button"
