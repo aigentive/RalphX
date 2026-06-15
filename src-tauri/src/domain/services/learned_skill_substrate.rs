@@ -50,6 +50,34 @@ pub struct ProjectSkillDistillerService {
     skill_service: ProjectSkillService,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectSkillDistillationOrigin {
+    ManualCurator,
+    VerificationObserver,
+    PlanModeObserver,
+    MemoryPipelineRole,
+    DeterministicService,
+}
+
+impl ProjectSkillDistillationOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ManualCurator => "manual_curator",
+            Self::VerificationObserver => "verification_observer",
+            Self::PlanModeObserver => "plan_mode_observer",
+            Self::MemoryPipelineRole => "memory_pipeline_role",
+            Self::DeterministicService => "deterministic_service",
+        }
+    }
+
+    pub fn pipeline_role(self) -> Option<&'static str> {
+        match self {
+            Self::MemoryPipelineRole => Some("memory_capture.skill_distiller"),
+            _ => None,
+        }
+    }
+}
+
 pub struct StageProjectSkillFromOutcomeInput {
     pub outcome: TaskOutcome,
     pub title: String,
@@ -66,6 +94,7 @@ pub struct DistillEligibleOutcomesInput {
     pub project_id: ProjectId,
     pub source: Option<String>,
     pub limit: usize,
+    pub origin: ProjectSkillDistillationOrigin,
 }
 
 #[derive(Debug, Clone)]
@@ -282,7 +311,10 @@ impl ProjectSkillDistillerService {
                 skipped_existing += 1;
                 continue;
             }
-            if let Some(staged) = self.stage_eligible_outcome_candidate(&outcome).await? {
+            if let Some(staged) = self
+                .stage_eligible_outcome_candidate_with_origin(&outcome, input.origin)
+                .await?
+            {
                 staged_skills.push(staged);
             } else {
                 skipped_existing += 1;
@@ -299,6 +331,18 @@ impl ProjectSkillDistillerService {
         &self,
         outcome: &TaskOutcome,
     ) -> AppResult<Option<ProjectSkill>> {
+        self.stage_eligible_outcome_candidate_with_origin(
+            outcome,
+            ProjectSkillDistillationOrigin::DeterministicService,
+        )
+        .await
+    }
+
+    pub async fn stage_eligible_outcome_candidate_with_origin(
+        &self,
+        outcome: &TaskOutcome,
+        origin: ProjectSkillDistillationOrigin,
+    ) -> AppResult<Option<ProjectSkill>> {
         if outcome.status != TaskOutcomeStatus::Eligible {
             return Ok(None);
         }
@@ -313,14 +357,17 @@ impl ProjectSkillDistillerService {
             )
             .await?;
         let already_staged = existing_skills.iter().any(|skill| {
-            skill.provenance_json.get("outcome_id").and_then(Value::as_str)
+            skill
+                .provenance_json
+                .get("outcome_id")
+                .and_then(Value::as_str)
                 == Some(outcome.id.as_str())
         });
         if already_staged {
             return Ok(None);
         }
 
-        let candidate = build_distilled_skill_candidate(outcome);
+        let candidate = build_distilled_skill_candidate(outcome, origin);
         self.skill_service
             .stage_skill_from_outcome(candidate)
             .await
@@ -416,13 +463,19 @@ fn validate_non_empty(label: &str, value: &str) -> AppResult<()> {
     Ok(())
 }
 
-fn build_distilled_skill_candidate(outcome: &TaskOutcome) -> StageProjectSkillFromOutcomeInput {
-    let outcome_class = outcome.outcome_class.as_deref().unwrap_or("unknown_outcome");
+fn build_distilled_skill_candidate(
+    outcome: &TaskOutcome,
+    origin: ProjectSkillDistillationOrigin,
+) -> StageProjectSkillFromOutcomeInput {
+    let outcome_class = outcome
+        .outcome_class
+        .as_deref()
+        .unwrap_or("unknown_outcome");
     let readable_class = humanize_identifier(outcome_class);
     let bucket = bucket_for_outcome_source(&outcome.source).to_string();
     let stage = stage_for_outcome_source(&outcome.source).to_string();
-    let evidence_summary = serde_json::to_string(&outcome.evidence_json)
-        .unwrap_or_else(|_| "{}".to_string());
+    let evidence_summary =
+        serde_json::to_string(&outcome.evidence_json).unwrap_or_else(|_| "{}".to_string());
     let evidence_summary = truncate_for_skill_body(&evidence_summary, 1200);
 
     StageProjectSkillFromOutcomeInput {
@@ -445,6 +498,8 @@ fn build_distilled_skill_candidate(outcome: &TaskOutcome) -> StageProjectSkillFr
         ),
         additional_provenance: serde_json::json!({
             "distiller": "deterministic_eligible_outcome_v1",
+            "distillation_origin": origin.as_str(),
+            "pipeline_role": origin.pipeline_role(),
         }),
     }
 }
@@ -559,8 +614,8 @@ mod tests {
 
     use super::{
         new_empty_task_outcome, new_skill_usage_event, DistillEligibleOutcomesInput,
-        ProjectSkillDistillerService, ProjectSkillService, SkillUsageService,
-        StageProjectSkillFromOutcomeInput,
+        ProjectSkillDistillationOrigin, ProjectSkillDistillerService, ProjectSkillService,
+        SkillUsageService, StageProjectSkillFromOutcomeInput,
     };
     use crate::domain::entities::types::ProjectId;
     use crate::domain::entities::{
@@ -640,7 +695,11 @@ mod tests {
             .unwrap();
         assert_eq!(listed.len(), 1);
 
-        let pinned = skill_service.pin_skill(&approved.id).await.unwrap().unwrap();
+        let pinned = skill_service
+            .pin_skill(&approved.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(pinned.pinned);
 
         let unpinned = skill_service
@@ -669,10 +728,7 @@ mod tests {
     async fn project_skill_service_rejects_pinning_unapproved_skills() {
         let service = ProjectSkillService::new(Arc::new(MemoryProjectSkillRepository::new()));
         let project_id = ProjectId::from_string("project-1".to_string());
-        let staged = service
-            .stage_skill(staged_skill(project_id))
-            .await
-            .unwrap();
+        let staged = service.stage_skill(staged_skill(project_id)).await.unwrap();
 
         let result = service.pin_skill(&staged.id).await;
 
@@ -719,8 +775,12 @@ mod tests {
                 bucket: "merge".to_string(),
                 stage: "review".to_string(),
                 scope_paths: vec!["src-tauri".to_string()],
-                compact_guidance: "Before approving merge recovery, check the validation failure class.".to_string(),
-                body_markdown: "Use the validation log as evidence before repeating a failed merge.".to_string(),
+                compact_guidance:
+                    "Before approving merge recovery, check the validation failure class."
+                        .to_string(),
+                body_markdown:
+                    "Use the validation log as evidence before repeating a failed merge."
+                        .to_string(),
                 predicted_effect: "Prevents repeated failed merge validation loops.".to_string(),
                 additional_provenance: json!({ "distiller": "service-test" }),
             })
@@ -752,8 +812,12 @@ mod tests {
         let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
         let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
         let project_id = ProjectId::from_string("project-1".to_string());
-        let mut outcome =
-            new_empty_task_outcome(project_id.clone(), "github_pr_review", "github_review", "r1");
+        let mut outcome = new_empty_task_outcome(
+            project_id.clone(),
+            "github_pr_review",
+            "github_review",
+            "r1",
+        );
         outcome.status = TaskOutcomeStatus::Eligible;
         outcome.outcome_class = Some("github_pr_changes_requested".to_string());
         outcome.evidence_json = json!({
@@ -773,6 +837,7 @@ mod tests {
                 project_id,
                 source: None,
                 limit: 10,
+                origin: ProjectSkillDistillationOrigin::ManualCurator,
             })
             .await
             .unwrap();
@@ -787,6 +852,10 @@ mod tests {
         assert_eq!(
             staged.provenance_json["outcome_id"].as_str(),
             Some(outcome.id.as_str())
+        );
+        assert_eq!(
+            staged.provenance_json["additional"]["distillation_origin"].as_str(),
+            Some("manual_curator")
         );
         assert!(staged
             .predicted_effect
@@ -833,6 +902,7 @@ mod tests {
                 project_id,
                 source: None,
                 limit: 10,
+                origin: ProjectSkillDistillationOrigin::ManualCurator,
             })
             .await
             .unwrap();
@@ -846,8 +916,12 @@ mod tests {
         let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
         let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
         let project_id = ProjectId::from_string("project-1".to_string());
-        let mut outcome =
-            new_empty_task_outcome(project_id.clone(), "verification", "gap_recurrence", "gap-1");
+        let mut outcome = new_empty_task_outcome(
+            project_id.clone(),
+            "verification",
+            "gap_recurrence",
+            "gap-1",
+        );
         outcome.status = TaskOutcomeStatus::Eligible;
         outcome.outcome_class = Some("verification_gap_recurring".to_string());
 
@@ -870,6 +944,37 @@ mod tests {
             .await
             .unwrap();
         assert!(duplicate.is_none());
+    }
+
+    #[tokio::test]
+    async fn project_skill_distiller_records_memory_pipeline_role_origin() {
+        let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
+        let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let mut outcome =
+            new_empty_task_outcome(project_id.clone(), "task_pipeline", "task", "task-1");
+        outcome.status = TaskOutcomeStatus::Eligible;
+        outcome.outcome_class = Some("repeated_task_failure".to_string());
+
+        let distiller = ProjectSkillDistillerService::new(outcome_repo, skill_repo);
+        let staged = distiller
+            .stage_eligible_outcome_candidate_with_origin(
+                &outcome,
+                ProjectSkillDistillationOrigin::MemoryPipelineRole,
+            )
+            .await
+            .unwrap()
+            .expect("eligible outcome should stage a candidate");
+
+        assert_eq!(staged.project_id, project_id);
+        assert_eq!(
+            staged.provenance_json["additional"]["distillation_origin"].as_str(),
+            Some("memory_pipeline_role")
+        );
+        assert_eq!(
+            staged.provenance_json["additional"]["pipeline_role"].as_str(),
+            Some("memory_capture.skill_distiller")
+        );
     }
 
     #[tokio::test]
