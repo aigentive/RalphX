@@ -5,7 +5,7 @@
 
 use crate::application::app_state::ResolvedBackgroundAgentRuntime;
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
-use crate::domain::agents::{AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS};
+use crate::domain::agents::{AgentConfig, AgentRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
     ChatContextType, ChatConversationId, MemoryActorType, MemoryEvent, ProjectId,
     ProjectMemorySettings,
