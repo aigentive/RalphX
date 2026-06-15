@@ -32,6 +32,7 @@ const VIEW_LABELS: Partial<Record<ViewType, string>> = {
   ideation: "Ideation",
   graph: "Graph",
   kanban: "Kanban",
+  skills: "Skills",
   insights: "Insights",
   extensibility: "Extensibility",
   activity: "Activity",
@@ -44,7 +45,7 @@ const FONT_SCALE_OPTIONS: Array<{ value: FontScale; label: string }> = [
   { value: "xl", label: "125%" },
 ];
 
-const PROJECT_SELECTOR_VIEWS = new Set<ViewType>(["ideation", "graph", "kanban"]);
+const PROJECT_SELECTOR_VIEWS = new Set<ViewType>(["ideation", "graph", "kanban", "skills"]);
 
 function viewLabel(view: ViewType): string {
   return VIEW_LABELS[view] ?? "Workspace";

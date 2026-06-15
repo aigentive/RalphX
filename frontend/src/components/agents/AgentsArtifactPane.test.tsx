@@ -699,9 +699,10 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
-  it("renders only the publish tab for edit workspaces", () => {
+  it("renders skills and publish tabs for edit workspaces", () => {
     renderPane("publish", workspace({ mode: "edit" }));
 
+    expect(screen.getByTestId("agents-artifact-tab-skills")).toBeInTheDocument();
     expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-plan")).not.toBeInTheDocument();

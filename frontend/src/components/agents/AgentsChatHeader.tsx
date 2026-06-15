@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useState, type ElementType } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
+  BookOpenCheck,
   CheckCircle2,
   ChevronDown,
   ClipboardList,
@@ -63,7 +64,7 @@ import {
   agentWorkspaceKeys,
 } from "./agentWorkspaceQueries";
 
-const HEADER_ARTIFACT_TABS: Array<{
+const HEADER_IDEATION_ARTIFACT_TABS: Array<{
   id: IdeationArtifactTab;
   label: string;
   icon: ElementType;
@@ -73,6 +74,12 @@ const HEADER_ARTIFACT_TABS: Array<{
   { id: "proposal", label: "Proposals", icon: GitPullRequestArrow },
   { id: "tasks", label: "Tasks", icon: ClipboardList },
 ];
+
+const HEADER_SKILLS_TAB = {
+  id: "skills" as const,
+  label: "Skills",
+  icon: BookOpenCheck,
+};
 
 const FOCUS_TONE_STYLES: Record<
   AgentsChatFocusTone,
@@ -304,24 +311,22 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     Boolean(workspace?.linkedIdeationSessionId || workspace?.linkedPlanBranchId);
   const visibleHeaderArtifactTabs = useMemo(
     () => {
-      const tabs = HEADER_ARTIFACT_TABS.filter((tab) =>
+      const tabs = HEADER_IDEATION_ARTIFACT_TABS.filter((tab) =>
         availableArtifactTabs.includes(tab.id),
       );
       return isLinkedPlanEditWorkspace
         ? tabs.filter((tab) => tab.id === "plan")
-        : tabs;
+        : [...tabs, HEADER_SKILLS_TAB];
     },
     [availableArtifactTabs, isLinkedPlanEditWorkspace],
   );
   const showHeaderArtifactShortcuts =
-    visibleHeaderArtifactTabs.length > 0 &&
-    (conversationMode === "ideation" ||
-      conversationMode === "plan" ||
-      isLinkedPlanEditWorkspace);
+    Boolean(conversation) && visibleHeaderArtifactTabs.length > 0;
   const showArtifactToggle =
     artifactOpen ||
     conversationMode === "ideation" ||
-    (conversationMode === "plan" && visibleHeaderArtifactTabs.length > 0);
+    (conversationMode === "plan" && visibleHeaderArtifactTabs.length > 0) ||
+    Boolean(conversation);
   // Hide the publish shortcut whenever any artifact pane is open — the user
   // can already reach Commit & Publish via the artifact tab bar, so the
   // header CTA is redundant (and visually crowds the Update-from-base label).

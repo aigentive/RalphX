@@ -265,6 +265,14 @@ pub async fn start_http_server(
         .route("/api/agent_tasks/complete", post(complete_agent_task))
         // Learned project skill read tools
         .route("/api/project_skills/list", post(list_project_skills))
+        .route(
+            "/api/project_skills/conversation",
+            post(list_conversation_project_skills),
+        )
+        .route(
+            "/api/project_skills/conversation/process",
+            post(process_conversation_project_skills),
+        )
         .route("/api/project_skills/get", post(get_project_skill))
         .route("/api/project_skills/approve", post(approve_project_skill))
         .route("/api/project_skills/reject", post(reject_project_skill))

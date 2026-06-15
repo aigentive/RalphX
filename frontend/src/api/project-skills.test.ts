@@ -136,6 +136,79 @@ describe("projectSkillsApi", () => {
     );
   });
 
+  it("lists skills generated or used by a conversation", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        skills: [
+          {
+            skill: projectSkill({ id: "skill-2", status: "approved" }),
+            generated_by_conversation: true,
+            used_by_conversation: true,
+            usage_count: 2,
+          },
+        ],
+        count: 1,
+      }),
+    );
+
+    await expect(
+      projectSkillsApi.listForConversation({
+        projectId: "project-1",
+        conversationId: "conversation-1",
+      }),
+    ).resolves.toEqual([
+      {
+        skill: expect.objectContaining({
+          id: "skill-2",
+          projectId: "project-1",
+          status: "approved",
+        }),
+        generatedByConversation: true,
+        usedByConversation: true,
+        usageCount: 2,
+      },
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:3847/api/project_skills/conversation",
+      expect.objectContaining({
+        body: JSON.stringify({
+          project_id: "project-1",
+          conversation_id: "conversation-1",
+        }),
+      }),
+    );
+  });
+
+  it("processes a conversation for staged project skills", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        staged_skills: [projectSkill({ id: "skill-3", status: "staged" })],
+        skipped_existing: 1,
+        message_count: 4,
+      }),
+    );
+
+    await expect(
+      projectSkillsApi.processConversation({
+        projectId: "project-1",
+        conversationId: "conversation-1",
+      }),
+    ).resolves.toMatchObject({
+      stagedSkills: [{ id: "skill-3", status: "staged" }],
+      skippedExisting: 1,
+      messageCount: 4,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:3847/api/project_skills/conversation/process",
+      expect.objectContaining({
+        body: JSON.stringify({
+          project_id: "project-1",
+          conversation_id: "conversation-1",
+        }),
+      }),
+    );
+  });
+
   it("pins and unpins project skills through lifecycle endpoints", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({

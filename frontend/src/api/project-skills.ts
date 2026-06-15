@@ -34,6 +34,24 @@ const ListProjectSkillsResponseSchema = z.object({
   count: z.number(),
 });
 
+const ConversationProjectSkillResponseSchema = z.object({
+  skill: ProjectSkillResponseSchema,
+  generated_by_conversation: z.boolean(),
+  used_by_conversation: z.boolean(),
+  usage_count: z.number(),
+});
+
+const ListConversationProjectSkillsResponseSchema = z.object({
+  skills: z.array(ConversationProjectSkillResponseSchema),
+  count: z.number(),
+});
+
+const ProcessConversationProjectSkillsResponseSchema = z.object({
+  staged_skills: z.array(ProjectSkillResponseSchema),
+  skipped_existing: z.number(),
+  message_count: z.number(),
+});
+
 const ProjectSkillLifecycleResponseSchema = z.object({
   skill: ProjectSkillResponseSchema.nullable().optional(),
 });
@@ -113,6 +131,9 @@ const PromoteMemoryToProjectSkillResponseSchema = z.object({
 });
 
 type RawProjectSkill = z.infer<typeof ProjectSkillResponseSchema>;
+type RawConversationProjectSkill = z.infer<
+  typeof ConversationProjectSkillResponseSchema
+>;
 type RawProjectSkillExport = z.infer<typeof ProjectSkillExportResponseSchema>;
 type RawProjectSkillSettings = z.infer<typeof ProjectSkillSettingsResponseSchema>;
 type RawProjectSkillReportCard = z.infer<typeof ProjectSkillReportCardResponseSchema>;
@@ -148,6 +169,24 @@ export interface ListProjectSkillsInput {
   stage?: string | null;
   bucket?: string | null;
   scopePath?: string | null;
+}
+
+export interface ListConversationProjectSkillsInput {
+  projectId: string;
+  conversationId: string;
+}
+
+export interface ConversationProjectSkill {
+  skill: ProjectSkill;
+  generatedByConversation: boolean;
+  usedByConversation: boolean;
+  usageCount: number;
+}
+
+export interface ProcessConversationProjectSkillsResult {
+  stagedSkills: ProjectSkill[];
+  skippedExisting: number;
+  messageCount: number;
 }
 
 export interface DistillProjectSkillsInput {
@@ -286,6 +325,17 @@ function transformProjectSkill(raw: RawProjectSkill): ProjectSkill {
   };
 }
 
+function transformConversationProjectSkill(
+  raw: RawConversationProjectSkill,
+): ConversationProjectSkill {
+  return {
+    skill: transformProjectSkill(raw.skill),
+    generatedByConversation: raw.generated_by_conversation,
+    usedByConversation: raw.used_by_conversation,
+    usageCount: raw.usage_count,
+  };
+}
+
 function transformProjectSkillExport(raw: RawProjectSkillExport): ProjectSkillExportResult {
   return {
     projectId: raw.project_id,
@@ -398,6 +448,32 @@ export const projectSkillsApi = {
     });
     const parsed = ListProjectSkillsResponseSchema.parse(raw);
     return parsed.skills.map(transformProjectSkill);
+  },
+
+  async listForConversation(
+    input: ListConversationProjectSkillsInput,
+  ): Promise<ConversationProjectSkill[]> {
+    const raw = await postJson<unknown>("project_skills/conversation", {
+      project_id: input.projectId,
+      conversation_id: input.conversationId,
+    });
+    const parsed = ListConversationProjectSkillsResponseSchema.parse(raw);
+    return parsed.skills.map(transformConversationProjectSkill);
+  },
+
+  async processConversation(
+    input: ListConversationProjectSkillsInput,
+  ): Promise<ProcessConversationProjectSkillsResult> {
+    const raw = await postJson<unknown>("project_skills/conversation/process", {
+      project_id: input.projectId,
+      conversation_id: input.conversationId,
+    });
+    const parsed = ProcessConversationProjectSkillsResponseSchema.parse(raw);
+    return {
+      stagedSkills: parsed.staged_skills.map(transformProjectSkill),
+      skippedExisting: parsed.skipped_existing,
+      messageCount: parsed.message_count,
+    };
   },
 
   approve(projectSkillId: string): Promise<ProjectSkill | null> {

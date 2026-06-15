@@ -5,6 +5,7 @@
 
 import {
   Activity,
+  BookOpenCheck,
   Briefcase,
   GitBranch,
   LayoutGrid,
@@ -50,6 +51,12 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
     label: "Kanban",
     icon: LayoutGrid,
     shortcut: "⌘4",
+    visible: () => true,
+  },
+  {
+    view: "skills",
+    label: "Skills",
+    icon: BookOpenCheck,
     visible: () => true,
   },
   {

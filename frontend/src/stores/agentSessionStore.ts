@@ -12,7 +12,13 @@ import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 
 export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/agent-models";
 
-export type AgentArtifactTab = "plan" | "verification" | "proposal" | "tasks" | "publish";
+export type AgentArtifactTab =
+  | "plan"
+  | "verification"
+  | "proposal"
+  | "tasks"
+  | "skills"
+  | "publish";
 export type AgentTaskArtifactMode = "graph" | "kanban";
 export type AgentProjectSort = "latest" | "az" | "za";
 export type AgentSidebarGroupBy = "project" | "publication";

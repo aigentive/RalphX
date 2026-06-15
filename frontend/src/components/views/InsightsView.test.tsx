@@ -73,11 +73,6 @@ vi.mock("./insights/MetricsDetails", () => ({
 vi.mock("./insights/UsageInsightsCard", () => ({
   UsageInsightsCard: () => <div data-testid="usage-insights" />,
 }));
-vi.mock("@/components/project-skills/ProjectSkillsCuratorPanel", () => ({
-  ProjectSkillsCuratorPanel: ({ projectId }: { projectId: string }) => (
-    <div data-testid="project-skills-curator" data-project={projectId} />
-  ),
-}));
 vi.mock("@/components/tasks/detail-views/shared/DetailCard", () => ({
   DetailCard: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="detail-card">{children}</div>
@@ -320,10 +315,6 @@ describe("InsightsView — full render with stats + trends", () => {
     // Breakdowns
     expect(screen.getByTestId("cycle-breakdown")).toBeInTheDocument();
     expect(screen.getByTestId("column-dwell")).toBeInTheDocument();
-    expect(screen.getByTestId("project-skills-curator")).toHaveAttribute(
-      "data-project",
-      "proj-1",
-    );
     // Copy markdown button
     expect(screen.getByTestId("copy-md")).toBeInTheDocument();
   });

@@ -119,6 +119,10 @@ vi.mock("@/components/activity", () => ({
   ),
 }));
 
+vi.mock("@/components/views/SkillsView", () => ({
+  SkillsView: () => <div data-testid="skills-view-mock">Skills View</div>,
+}));
+
 // Mock AgentsView
 vi.mock("@/components/agents", () => ({
   AgentsView: ({
@@ -1130,6 +1134,7 @@ describe("App", () => {
       expect(screen.getByTestId("nav-kanban")).toBeInTheDocument();
       expect(screen.getByTestId("nav-graph")).toBeInTheDocument();
       expect(screen.getByTestId("nav-ideation")).toBeInTheDocument();
+      expect(screen.getByTestId("nav-skills")).toBeInTheDocument();
       expect(screen.getByTestId("nav-extensibility")).toBeInTheDocument();
       expect(screen.getByTestId("nav-activity")).toBeInTheDocument();
       expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
@@ -1144,6 +1149,7 @@ describe("App", () => {
         { testId: "nav-kanban", label: /Kanban/i },
         { testId: "nav-graph", label: /Graph/i },
         { testId: "nav-ideation", label: /Ideation/i },
+        { testId: "nav-skills", label: /Skills/i },
         { testId: "nav-extensibility", label: /Extensibility/i },
         { testId: "nav-activity", label: /Activity/i },
         { testId: "nav-settings", label: /Settings/i },
@@ -1386,6 +1392,7 @@ describe("App", () => {
       expect(screen.queryByTestId("nav-ideation")).toBeNull();
       expect(screen.queryByTestId("nav-graph")).toBeNull();
       expect(screen.queryByTestId("nav-kanban")).toBeNull();
+      expect(screen.queryByTestId("nav-skills")).toBeNull();
 
       // v27 topbar controls stay mounted even when the project-scoped rail collapses.
       expect(screen.getByTestId("reviews-toggle")).toBeInTheDocument();

@@ -17,6 +17,7 @@ export const VIEW_TYPE_VALUES = [
   "agents",
   "extensibility",
   "activity",
+  "skills",
   "insights",
   "task_detail",
   "team",
