@@ -620,6 +620,7 @@ async fn run_managed_codex_installer() -> Result<ManagedProviderCliActionOutput,
         bin_dir = %plan.bin_dir.display(),
         home_dir = %plan.home_dir.display(),
         installer_home_dir = %plan.installer_home_dir.display(),
+        binary_path = %plan.binary_path.display(),
         script_url = CODEX_INSTALLER_SCRIPT_URL,
         "Starting RX-managed Codex installer"
     );
