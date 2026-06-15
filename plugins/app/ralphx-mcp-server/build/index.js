@@ -929,6 +929,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const { proposal_id } = args;
             result = await callTauri("archive_task_proposal", { proposal_id });
         }
+        else if (name === "reject_task_proposal") {
+            const { proposal_id } = args;
+            result = await callTauri("reject_task_proposal", { proposal_id });
+        }
         else if (name === "append_task_to_ideation_plan") {
             result = await callTauri(name, buildAppendTaskToIdeationPlanPayload(args || {}));
         }

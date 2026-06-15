@@ -22,7 +22,7 @@ use crate::domain::services::{
 use crate::http_server::handlers::ideation::stop_verification_children;
 use crate::http_server::helpers::{
     archive_proposal_impl, create_proposal_impl, finalize_proposals_impl, parse_category,
-    parse_priority, update_proposal_impl,
+    parse_priority, reject_proposal_impl, update_proposal_impl,
 };
 use crate::http_server::types::{
     CreateProposalRequest, DeleteProposalRequest, FinalizeProposalsRequest,
@@ -469,6 +469,29 @@ pub async fn archive_task_proposal(
     Ok(Json(SuccessResponse {
         success: true,
         message: "Proposal archived successfully".to_string(),
+    }))
+}
+
+pub async fn reject_task_proposal(
+    State(state): State<HttpServerState>,
+    Json(req): Json<DeleteProposalRequest>,
+) -> Result<Json<SuccessResponse>, StatusCode> {
+    let proposal_id = TaskProposalId::from_string(req.proposal_id.clone());
+
+    reject_proposal_impl(&state.app_state, proposal_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to reject proposal {}: {}", req.proposal_id, e);
+            match e {
+                crate::error::AppError::NotFound(_) => StatusCode::NOT_FOUND,
+                crate::error::AppError::Validation(_) => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            }
+        })?;
+
+    Ok(Json(SuccessResponse {
+        success: true,
+        message: "Proposal rejected successfully".to_string(),
     }))
 }
 

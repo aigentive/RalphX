@@ -10,7 +10,8 @@ use crate::domain::entities::{
     PriorityAssessmentFactors, ProposalCategory, TaskProposal, TaskProposalId, UserHintFactor,
 };
 use crate::http_server::helpers::{
-    archive_proposal_impl, assert_session_mutable, create_proposal_impl, update_proposal_impl,
+    archive_proposal_impl, assert_session_mutable, create_proposal_impl, reject_proposal_impl,
+    update_proposal_impl,
 };
 
 use super::ideation_commands_types::{
@@ -172,6 +173,17 @@ pub async fn delete_task_proposal(id: String, state: State<'_, AppState>) -> Res
     // Delegates all checks (including assert_session_mutable), ARCHIVE, event emission,
     // and dep analysis to shared impl
     archive_proposal_impl(state.inner(), proposal_id)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Reject a task proposal without archiving it or dropping dependency rows.
+#[tauri::command]
+pub async fn reject_task_proposal(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let proposal_id = TaskProposalId::from_string(id);
+
+    reject_proposal_impl(state.inner(), proposal_id)
         .await
         .map(|_| ())
         .map_err(|e| e.to_string())

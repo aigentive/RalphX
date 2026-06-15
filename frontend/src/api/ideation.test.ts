@@ -598,6 +598,18 @@ describe("ideationApi.proposals", () => {
     });
   });
 
+  describe("reject", () => {
+    it("should call reject_task_proposal with id", async () => {
+      mockInvoke.mockResolvedValue(undefined);
+
+      await ideationApi.proposals.reject("proposal-1");
+
+      expect(mockInvoke).toHaveBeenCalledWith("reject_task_proposal", {
+        id: "proposal-1",
+      });
+    });
+  });
+
   describe("reorder", () => {
     it("should call reorder_proposals with session_id and proposal_ids", async () => {
       mockInvoke.mockResolvedValue(undefined);

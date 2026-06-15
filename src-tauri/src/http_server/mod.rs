@@ -135,6 +135,7 @@ pub async fn start_http_server(
         .route("/api/finalize_proposals", post(finalize_proposals))
         .route("/api/update_task_proposal", post(update_task_proposal))
         .route("/api/archive_task_proposal", post(archive_task_proposal))
+        .route("/api/reject_task_proposal", post(reject_task_proposal))
         // Proposal query tools (ralphx-ideation agent)
         .route(
             "/api/list_session_proposals/:session_id",

@@ -441,7 +441,7 @@ Plan archetypes: Phase-driven (temporal dependencies): N phases → waves → wa
 | `get_acceptance_status` | Check current acceptance state after `finalize_proposals` returns `pending_acceptance`; returns `accepted`, `rejected`, or `pending` |
 | `get_pending_confirmations` | Check for any outstanding acceptance gates at session start (Phase 0 RECOVER); returns list of pending confirmation items |
 | `get_verification_confirmation_status` | Check whether user has confirmed/rejected/is pending the verification confirmation dialog after `create_plan_artifact`; returns `pending`, `accepted`, `rejected`, or `not_applicable` |
-| `delete_task_proposal` / `list_session_proposals` / `get_proposal` | Manage proposals |
+| `archive_task_proposal` / `delete_task_proposal` / `reject_task_proposal` / `list_session_proposals` / `get_proposal` | Manage proposals |
 | `analyze_session_dependencies` | Graph analysis — critical path, cycles, blocking relationships. Side effect: sets `dependencies_acknowledged=true` on the session, satisfying the finalize gate. |
 | `create_child_session` | `initial_prompt` triggers auto-spawn of orchestrator agent |
 | `get_parent_session_context` | Child sessions only; provides parent plan + proposals |
