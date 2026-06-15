@@ -455,6 +455,33 @@ impl ProjectSkillRepository for SqliteProjectSkillRepository {
             })
             .await
     }
+
+    async fn update_pinned(
+        &self,
+        id: &ProjectSkillId,
+        pinned: bool,
+    ) -> AppResult<Option<ProjectSkill>> {
+        let id = id.as_str().to_string();
+        let pinned_value = if pinned { 1 } else { 0 };
+        self.db
+            .query_optional(move |conn| {
+                conn.execute(
+                    "UPDATE project_skills
+                     SET pinned = ?2, updated_at = ?3
+                     WHERE id = ?1",
+                    rusqlite::params![id, pinned_value, Utc::now().to_rfc3339()],
+                )?;
+                conn.query_row(
+                    &format!(
+                        "SELECT {} FROM project_skills WHERE id = ?1",
+                        select_skill_columns()
+                    ),
+                    [&id],
+                    skill_from_row,
+                )
+            })
+            .await
+    }
 }
 
 #[async_trait]

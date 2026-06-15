@@ -30,4 +30,10 @@ pub trait ProjectSkillRepository: Send + Sync {
         id: &ProjectSkillId,
         status: ProjectSkillLifecycleStatus,
     ) -> AppResult<Option<ProjectSkill>>;
+
+    async fn update_pinned(
+        &self,
+        id: &ProjectSkillId,
+        pinned: bool,
+    ) -> AppResult<Option<ProjectSkill>>;
 }

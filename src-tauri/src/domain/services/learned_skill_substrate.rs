@@ -207,6 +207,22 @@ impl ProjectSkillService {
             .update_lifecycle_status(id, ProjectSkillLifecycleStatus::Archived)
             .await
     }
+
+    pub async fn pin_skill(&self, id: &ProjectSkillId) -> AppResult<Option<ProjectSkill>> {
+        let Some(skill) = self.repo.get_by_id(id).await? else {
+            return Ok(None);
+        };
+        if skill.archived || skill.status != ProjectSkillLifecycleStatus::Approved {
+            return Err(AppError::Validation(
+                "only approved active project skills can be pinned".to_string(),
+            ));
+        }
+        self.repo.update_pinned(id, true).await
+    }
+
+    pub async fn unpin_skill(&self, id: &ProjectSkillId) -> AppResult<Option<ProjectSkill>> {
+        self.repo.update_pinned(id, false).await
+    }
 }
 
 impl ProjectSkillDistillerService {
@@ -624,6 +640,16 @@ mod tests {
             .unwrap();
         assert_eq!(listed.len(), 1);
 
+        let pinned = skill_service.pin_skill(&approved.id).await.unwrap().unwrap();
+        assert!(pinned.pinned);
+
+        let unpinned = skill_service
+            .unpin_skill(&approved.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!unpinned.pinned);
+
         usage_service
             .record_usage(new_skill_usage_event(
                 project_id.clone(),
@@ -637,6 +663,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(usage.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn project_skill_service_rejects_pinning_unapproved_skills() {
+        let service = ProjectSkillService::new(Arc::new(MemoryProjectSkillRepository::new()));
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let staged = service
+            .stage_skill(staged_skill(project_id))
+            .await
+            .unwrap();
+
+        let result = service.pin_skill(&staged.id).await;
+
+        assert!(matches!(result, Err(crate::error::AppError::Validation(_))));
     }
 
     #[tokio::test]

@@ -117,6 +117,41 @@ describe("projectSkillsApi", () => {
     );
   });
 
+  it("pins and unpins project skills through lifecycle endpoints", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        skill: projectSkill({ status: "approved", pinned: true }),
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        skill: projectSkill({ status: "approved", pinned: false }),
+      }),
+    );
+
+    await expect(projectSkillsApi.pin("skill-1")).resolves.toMatchObject({
+      pinned: true,
+    });
+    await expect(projectSkillsApi.unpin("skill-1")).resolves.toMatchObject({
+      pinned: false,
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:3847/api/project_skills/pin",
+      expect.objectContaining({
+        body: JSON.stringify({ project_skill_id: "skill-1" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost:3847/api/project_skills/unpin",
+      expect.objectContaining({
+        body: JSON.stringify({ project_skill_id: "skill-1" }),
+      }),
+    );
+  });
+
   it("returns null when a lifecycle endpoint finds no skill", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ skill: null }));
 
