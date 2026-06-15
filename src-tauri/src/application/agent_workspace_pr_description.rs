@@ -313,6 +313,7 @@ pub async fn draft_agent_workspace_pr_description(
             agent: Some(bootstrap.agent_name),
             model: runtime.model,
             harness: runtime.harness,
+            cli_path_override: runtime.cli_path_override,
             logical_effort: runtime.logical_effort,
             approval_policy: runtime.approval_policy,
             sandbox_mode: runtime.sandbox_mode,

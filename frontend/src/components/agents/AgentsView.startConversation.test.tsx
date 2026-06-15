@@ -35,6 +35,7 @@ const {
   listIdeationSessionsMock,
   spawnConversationSessionNamerMock,
   startAgentConversationMock,
+  useHarnessProvidersMock,
   useConversationMock,
   useProjectAgentConversationsMock,
   useProjectsMock,
@@ -810,6 +811,51 @@ describe("AgentsView start conversation", () => {
         })
       )
     );
+  });
+
+  it("shows Fable in the starter model selector when refreshed Claude capabilities report it", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    const snapshotSettings = agentProviderSettings();
+    const refreshedSettings = agentProviderSettings({
+      providers: [
+        snapshotSettings.providers[0]!,
+        {
+          ...snapshotSettings.providers[1]!,
+          supportedModelAliases: ["sonnet", "opus", "haiku", "fable"],
+          supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+        },
+      ],
+    });
+    useHarnessProvidersMock.mockImplementation(
+      (options?: { refreshRuntime?: boolean }) => {
+        const settings = options?.refreshRuntime ? refreshedSettings : snapshotSettings;
+        return {
+          settings,
+          providers: settings.providers,
+          isLoading: false,
+          isPlaceholderData: false,
+          isError: false,
+          error: null,
+          refetchProviders: vi.fn(),
+          updateProviderAsync: vi.fn(),
+          isUpdating: false,
+          updateError: null,
+        };
+      }
+    );
+
+    renderAgentsView();
+
+    await user.click(screen.getByTestId("agent-composer-runtime-pill"));
+    await user.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
+
+    expect(useHarnessProvidersMock).toHaveBeenCalledWith({ refreshRuntime: true });
+    expect(await screen.findByTestId("agents-start-model-fable")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("agents-start-model-fable"));
+
+    expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent("fable");
   });
 
   it("shows manage models link in the runtime selector popover", async () => {

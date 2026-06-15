@@ -26,6 +26,13 @@ fn test_model_within_cap_opus_under_opus() {
 }
 
 #[test]
+fn test_model_within_cap_fable_above_opus() {
+    assert!(!model_within_cap("fable", "opus"));
+    assert!(model_within_cap("opus", "fable"));
+    assert!(model_within_cap("claude-fable-5", "fable"));
+}
+
+#[test]
 fn test_model_within_cap_unknown_model_always_within() {
     assert!(model_within_cap("unknown", "haiku"));
 }
@@ -757,6 +764,12 @@ fn test_min_model_cap_sonnet_vs_opus() {
 }
 
 #[test]
+fn test_min_model_cap_opus_vs_fable() {
+    assert_eq!(min_model_cap("opus", "fable"), "opus");
+    assert_eq!(min_model_cap("fable", "opus"), "opus");
+}
+
+#[test]
 fn test_min_model_cap_haiku_vs_opus() {
     assert_eq!(min_model_cap("haiku", "opus"), "haiku");
     assert_eq!(min_model_cap("opus", "haiku"), "haiku");
@@ -767,6 +780,7 @@ fn test_min_model_cap_equal_models() {
     assert_eq!(min_model_cap("sonnet", "sonnet"), "sonnet");
     assert_eq!(min_model_cap("opus", "opus"), "opus");
     assert_eq!(min_model_cap("haiku", "haiku"), "haiku");
+    assert_eq!(min_model_cap("fable", "fable"), "fable");
 }
 
 #[test]

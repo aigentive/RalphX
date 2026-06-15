@@ -29,8 +29,8 @@ use crate::application::UnavailableAtlassianApiClient;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
     default_approval_policy_for_harness, default_sandbox_mode_for_harness,
-    lightweight_model_for_provider, AgentHarnessKind, AgenticClient, LogicalEffort,
-    DEFAULT_AGENT_HARNESS,
+    lightweight_model_for_provider, AgentHarnessKind, AgentProviderCliManagementMode,
+    AgentProviderSettings, AgenticClient, LogicalEffort, DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{ChatContextType, ChatConversation, IdeationSession};
 use crate::domain::qa::QASettings;
@@ -112,6 +112,7 @@ pub(crate) struct ResolvedBackgroundAgentRuntime {
     pub client: Arc<dyn AgenticClient>,
     pub harness: Option<AgentHarnessKind>,
     pub model: Option<String>,
+    pub cli_path_override: Option<PathBuf>,
     pub logical_effort: Option<LogicalEffort>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
@@ -319,6 +320,7 @@ impl AppState {
         client: Arc<dyn AgenticClient>,
         harness: AgentHarnessKind,
         model: Option<String>,
+        cli_path_override: Option<PathBuf>,
         logical_effort: Option<LogicalEffort>,
         approval_policy: Option<String>,
         sandbox_mode: Option<String>,
@@ -327,6 +329,7 @@ impl AppState {
             client,
             harness: Some(harness),
             model,
+            cli_path_override,
             logical_effort,
             approval_policy: approval_policy
                 .or_else(|| default_approval_policy_for_harness(harness).map(str::to_string)),
@@ -344,6 +347,70 @@ impl AppState {
             logical_effort: Some(LogicalEffort::Medium),
             ..runtime
         }
+    }
+
+    fn managed_cli_path_override_for_provider(
+        provider_settings: &AgentProviderSettings,
+        purpose: &str,
+    ) -> AppResult<Option<PathBuf>> {
+        let Some(launch_path) =
+            crate::application::managed_provider_cli::managed_provider_cli_launch_path(
+                provider_settings,
+            )
+        else {
+            return Ok(None);
+        };
+
+        let cli_path = launch_path.map_err(AppError::Infrastructure)?;
+        if let Some(probe) =
+            crate::application::managed_provider_cli::managed_provider_runtime_probe(
+                provider_settings,
+            )
+        {
+            if !probe.available {
+                return Err(AppError::Infrastructure(probe.error.unwrap_or_else(|| {
+                    format!(
+                        "{purpose} harness unavailable: {}",
+                        provider_settings.provider
+                    )
+                })));
+            }
+        }
+
+        Ok(Some(cli_path))
+    }
+
+    async fn resolve_background_agent_client_and_cli_path_override(
+        &self,
+        harness: AgentHarnessKind,
+        purpose: &str,
+        provider_settings: &AgentProviderSettings,
+    ) -> AppResult<(Arc<dyn AgenticClient>, Option<PathBuf>)> {
+        let cli_path_override =
+            Self::managed_cli_path_override_for_provider(provider_settings, purpose)?;
+
+        if harness == self.agent_clients.default_harness {
+            return Ok((
+                Arc::clone(&self.agent_clients.default_client),
+                cli_path_override,
+            ));
+        }
+
+        if cli_path_override.is_some() {
+            if let Some(client) = self.agent_clients.explicit_harness_client(harness) {
+                return Ok((client, cli_path_override));
+            }
+        } else if let Some(client) = self
+            .agent_clients
+            .explicit_available_harness_client(harness)
+            .await
+        {
+            return Ok((client, None));
+        }
+
+        Err(AppError::Infrastructure(format!(
+            "{purpose} harness unavailable: {harness}"
+        )))
     }
 
     async fn resolve_background_agent_runtime_for_harness(
@@ -366,36 +433,23 @@ impl AppState {
             .unwrap_or_else(|| {
                 crate::domain::agents::AgentProviderSettings::disabled_defaults(harness)
             });
-
-        if harness == self.agent_clients.default_harness {
-            return Ok(self.background_agent_runtime_for_harness(
-                Arc::clone(&self.agent_clients.default_client),
+        let (client, cli_path_override) = self
+            .resolve_background_agent_client_and_cli_path_override(
                 harness,
-                provider_settings.model,
-                provider_settings.effort,
-                provider_settings.approval_policy,
-                provider_settings.sandbox_mode,
-            ));
-        }
+                purpose,
+                &provider_settings,
+            )
+            .await?;
 
-        if let Some(client) = self
-            .agent_clients
-            .explicit_available_harness_client(harness)
-            .await
-        {
-            return Ok(self.background_agent_runtime_for_harness(
-                client,
-                harness,
-                provider_settings.model,
-                provider_settings.effort,
-                provider_settings.approval_policy,
-                provider_settings.sandbox_mode,
-            ));
-        }
-
-        Err(AppError::Infrastructure(format!(
-            "{purpose} harness unavailable: {harness}"
-        )))
+        Ok(self.background_agent_runtime_for_harness(
+            client,
+            harness,
+            provider_settings.model,
+            cli_path_override,
+            provider_settings.effort,
+            provider_settings.approval_policy,
+            provider_settings.sandbox_mode,
+        ))
     }
 
     pub fn build_chat_service(&self) -> AppChatService {
@@ -472,59 +526,73 @@ impl AppState {
         )
         .await;
 
-        if let Some(client) = self
-            .agent_clients
-            .explicit_available_harness_client(resolved.effective_harness)
-            .await
-        {
-            crate::application::ensure_provider_spawn_enabled(
-                &self.agent_provider_settings_repo,
-                resolved.effective_harness,
-                "ideation sidecar runtime",
-            )
-            .await
-            .map_err(AppError::Infrastructure)?;
-            return Ok(self.background_agent_runtime_for_harness(
-                client,
-                resolved.effective_harness,
-                Some(resolved.model),
-                resolved.logical_effort,
-                resolved.approval_policy,
-                resolved.sandbox_mode,
-            ));
-        }
-
-        if resolved.effective_harness != self.agent_clients.default_harness {
-            return Err(crate::error::AppError::Infrastructure(format!(
-                "Configured ideation sidecar harness unavailable for project {}: {}",
-                project_id.unwrap_or(""),
-                resolved.effective_harness
-            )));
-        }
-
-        if resolved.effective_harness == AgentHarnessKind::Codex {
-            crate::application::ensure_provider_spawn_enabled(
-                &self.agent_provider_settings_repo,
-                resolved.effective_harness,
-                "ideation sidecar runtime",
-            )
-            .await
-            .map_err(AppError::Infrastructure)?;
-            return Ok(self.background_agent_runtime_for_harness(
-                Arc::clone(&self.agent_clients.default_client),
-                resolved.effective_harness,
-                Some(resolved.model),
-                resolved.logical_effort,
-                resolved.approval_policy,
-                resolved.sandbox_mode,
-            ));
-        }
-
-        self.resolve_background_agent_runtime_for_harness(
-            self.agent_clients.default_harness,
+        crate::application::ensure_provider_spawn_enabled(
+            &self.agent_provider_settings_repo,
+            resolved.effective_harness,
             "ideation sidecar runtime",
         )
         .await
+        .map_err(AppError::Infrastructure)?;
+        let provider_settings = self
+            .agent_provider_settings_repo
+            .get(resolved.effective_harness)
+            .await
+            .map_err(|error| AppError::Infrastructure(error.to_string()))?
+            .unwrap_or_else(|| {
+                crate::domain::agents::AgentProviderSettings::disabled_defaults(
+                    resolved.effective_harness,
+                )
+            });
+        let preserve_resolution_error =
+            provider_settings.cli_management_mode == AgentProviderCliManagementMode::RxManaged;
+        let (client, cli_path_override) = self
+            .resolve_background_agent_client_and_cli_path_override(
+                resolved.effective_harness,
+                "ideation sidecar runtime",
+                &provider_settings,
+            )
+            .await
+            .map_err(|error| {
+                if resolved.effective_harness != self.agent_clients.default_harness
+                    && !preserve_resolution_error
+                {
+                    AppError::Infrastructure(format!(
+                        "Configured ideation sidecar harness unavailable for project {}: {}",
+                        project_id.unwrap_or(""),
+                        resolved.effective_harness
+                    ))
+                } else {
+                    error
+                }
+            })?;
+        let use_resolved_lane_settings = resolved.effective_harness
+            != self.agent_clients.default_harness
+            || resolved.effective_harness == AgentHarnessKind::Codex;
+        let (model, logical_effort, approval_policy, sandbox_mode) = if use_resolved_lane_settings {
+            (
+                Some(resolved.model),
+                resolved.logical_effort,
+                resolved.approval_policy,
+                resolved.sandbox_mode,
+            )
+        } else {
+            (
+                provider_settings.model,
+                provider_settings.effort,
+                provider_settings.approval_policy,
+                provider_settings.sandbox_mode,
+            )
+        };
+
+        Ok(self.background_agent_runtime_for_harness(
+            client,
+            resolved.effective_harness,
+            model,
+            cli_path_override,
+            logical_effort,
+            approval_policy,
+            sandbox_mode,
+        ))
     }
 
     pub(crate) async fn resolve_session_namer_runtime_for_project(

@@ -77,6 +77,7 @@ import {
   buildAgentProviderAvailabilityOptions,
   getProviderAvailabilityMessage,
   supportedEffortsForProvider,
+  supportedModelAliasesForProvider,
 } from "./agentProviderAvailability";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
 import { AGENTS_CHAT_MIN_WIDTH } from "./AgentsArtifactPaneRegion";
@@ -356,11 +357,13 @@ interface AgentsActiveConversationPanelProps {
   onActiveConversationModeMenuOpen: () => void;
   onActiveEffortChange: (
     effort: string,
-    providerSupportedEfforts?: readonly string[] | null
+    providerSupportedEfforts?: readonly string[] | null,
+    providerSupportedModelAliases?: readonly string[] | null
   ) => void;
   onActiveModelChange: (
     modelId: string,
-    providerSupportedEfforts?: readonly string[] | null
+    providerSupportedEfforts?: readonly string[] | null,
+    providerSupportedModelAliases?: readonly string[] | null
   ) => void;
   onActiveProviderChange: (
     provider: AgentProvider,
@@ -443,7 +446,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     providers: configuredProviders,
     isLoading: isLoadingProviderSettings,
     isPlaceholderData: isPlaceholderProviderSettings,
-  } = useHarnessProviders();
+  } = useHarnessProviders({ refreshRuntime: true });
   const providerSettingsReady =
     !isLoadingProviderSettings && !isPlaceholderProviderSettings;
   const providerOptions = useMemo(
@@ -499,14 +502,28 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       ),
     [normalizedActiveRuntime.provider, providerOptions]
   );
+  const workspaceProviderSupportedModelAliases = useMemo(
+    () =>
+      supportedModelAliasesForProvider(
+        providerOptions,
+        normalizedActiveRuntime.provider,
+      ),
+    [normalizedActiveRuntime.provider, providerOptions]
+  );
   const selectableWorkspaceRuntime = useMemo(
     () =>
       normalizeRuntimeSelection(
         normalizedActiveRuntime,
         modelRegistry,
-        workspaceProviderSupportedEfforts
+        workspaceProviderSupportedEfforts,
+        workspaceProviderSupportedModelAliases
       ),
-    [modelRegistry, normalizedActiveRuntime, workspaceProviderSupportedEfforts]
+    [
+      modelRegistry,
+      normalizedActiveRuntime,
+      workspaceProviderSupportedEfforts,
+      workspaceProviderSupportedModelAliases,
+    ]
   );
   const openProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
@@ -591,8 +608,17 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     };
   }, [chatFocus.type, chatFocusOptions, onSelectChatFocus]);
   const workspaceModelOptions = useMemo(
-    () => agentModelOptions(selectableWorkspaceRuntime.provider, modelRegistry),
-    [modelRegistry, selectableWorkspaceRuntime.provider]
+    () =>
+      agentModelOptions(
+        selectableWorkspaceRuntime.provider,
+        modelRegistry,
+        workspaceProviderSupportedModelAliases,
+      ),
+    [
+      modelRegistry,
+      selectableWorkspaceRuntime.provider,
+      workspaceProviderSupportedModelAliases,
+    ]
   );
   const workspaceEffortOptions = useMemo(
     () =>
@@ -1573,6 +1599,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                               onActiveModelChange(
                                 modelId,
                                 workspaceProviderSupportedEfforts,
+                                workspaceProviderSupportedModelAliases,
                               ),
                             options: workspaceModelOptions,
                             disabled: Boolean(workspaceProviderStatusMessage),
@@ -1585,6 +1612,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                               onActiveEffortChange(
                                 effort,
                                 workspaceProviderSupportedEfforts,
+                                workspaceProviderSupportedModelAliases,
                               ),
                             options: workspaceEffortOptions,
                             disabled: Boolean(workspaceProviderStatusMessage),

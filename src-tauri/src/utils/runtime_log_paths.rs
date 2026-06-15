@@ -31,6 +31,40 @@ pub fn app_artifact_dir() -> PathBuf {
     app_runtime_dir().join("artifacts")
 }
 
+/// RalphX-owned root for managed provider CLI installs.
+pub fn managed_provider_cli_dir() -> PathBuf {
+    app_runtime_dir().join("managed-cli")
+}
+
+/// RalphX-owned visible Codex binary directory used by the standalone installer.
+pub fn managed_codex_bin_dir() -> PathBuf {
+    managed_provider_cli_dir().join("codex").join("bin")
+}
+
+/// RalphX-owned Codex state/package root used by the standalone installer.
+pub fn managed_codex_home_dir() -> PathBuf {
+    managed_provider_cli_dir().join("codex").join("home")
+}
+
+/// RalphX-owned HOME value for the Codex installer process.
+pub fn managed_codex_installer_home_dir() -> PathBuf {
+    managed_provider_cli_dir()
+        .join("codex")
+        .join("installer-home")
+}
+
+pub fn managed_codex_binary_path() -> PathBuf {
+    managed_codex_bin_dir().join(managed_codex_binary_name())
+}
+
+fn managed_codex_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "codex.exe"
+    } else {
+        "codex"
+    }
+}
+
 /// RalphX-owned directory for MCP proxy JSONL trace files.
 pub fn mcp_proxy_trace_dir() -> PathBuf {
     app_log_dir().join("mcp-proxy")

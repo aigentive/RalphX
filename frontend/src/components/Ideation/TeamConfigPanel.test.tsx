@@ -51,11 +51,12 @@ describe("TeamConfigPanel", () => {
   });
 
   describe("model ceiling select", () => {
-    it("renders Haiku, Sonnet, Opus options", () => {
+    it("renders Haiku, Sonnet, Opus, and Fable options", () => {
       renderPanel();
       expect(screen.getByText("Haiku")).toBeInTheDocument();
       expect(screen.getByText("Sonnet")).toBeInTheDocument();
       expect(screen.getByText("Opus")).toBeInTheDocument();
+      expect(screen.getByText("Fable")).toBeInTheDocument();
     });
 
     it("reflects current modelCeiling value", () => {

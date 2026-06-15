@@ -143,6 +143,10 @@ vi.mock("@/components/UpdateChecker", () => ({
   UpdateChecker: () => null,
 }));
 
+vi.mock("@/components/ProviderCliUpdateChecker", () => ({
+  ProviderCliUpdateChecker: () => null,
+}));
+
 // Mock SettingsView (still exported from index for backward compat, but no longer used in App)
 vi.mock("@/components/settings", () => ({
   SettingsView: () => <div data-testid="settings-view-mock">Settings View</div>,

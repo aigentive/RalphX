@@ -3,6 +3,11 @@ import { z } from "zod";
 
 import { HarnessSchema } from "./ideation-harness";
 
+export const ProviderCliManagementModeSchema = z.enum([
+  "user_managed",
+  "rx_managed",
+]);
+
 export const AgentProviderSettingsResponseSchema = z.object({
   provider: HarnessSchema,
   enabled: z.boolean(),
@@ -14,12 +19,16 @@ export const AgentProviderSettingsResponseSchema = z.object({
   claudePermissionMode: z.string().nullable().optional(),
   claudeDangerouslySkipPermissions: z.boolean(),
   claudeAllowDangerouslySkipPermissions: z.boolean(),
+  cliManagementMode: ProviderCliManagementModeSchema.optional(),
+  autoUpdateEnabled: z.boolean().optional(),
   available: z.boolean(),
   binaryFound: z.boolean(),
   binaryPath: z.string().nullable().optional(),
   status: z.string(),
   error: z.string().nullable().optional(),
   missingCoreExecFeatures: z.array(z.string()),
+  cliVersion: z.string().nullable().optional(),
+  supportedModelAliases: z.array(z.string().min(1)).nullable().optional(),
   supportedEfforts: z.array(z.string().min(1)).nullable().optional(),
   updatedAt: z.string(),
 });
@@ -49,6 +58,8 @@ export interface UpdateAgentProviderSettingsInput {
   claudePermissionMode?: string | null;
   claudeDangerouslySkipPermissions?: boolean;
   claudeAllowDangerouslySkipPermissions?: boolean;
+  cliManagementMode?: z.infer<typeof ProviderCliManagementModeSchema>;
+  autoUpdateEnabled?: boolean;
   resetToDefaults?: boolean;
   applyToAllLanes?: boolean;
 }

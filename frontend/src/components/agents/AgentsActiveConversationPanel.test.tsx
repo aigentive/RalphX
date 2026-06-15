@@ -589,7 +589,7 @@ describe("AgentsActiveConversationPanel", () => {
     confirmVerificationMock.mockResolvedValue({ status: "ok" });
   });
 
-  it("normalizes workspace runtime and forwards provider-supported efforts", () => {
+  it("normalizes workspace runtime and forwards provider-supported capabilities", () => {
     const onActiveModelChange = vi.fn();
     const onActiveEffortChange = vi.fn();
     renderPanel({ onActiveEffortChange, onActiveModelChange });
@@ -606,13 +606,13 @@ describe("AgentsActiveConversationPanel", () => {
       "medium",
       "high",
       "max",
-    ]);
+    ], null);
     expect(onActiveEffortChange).toHaveBeenCalledWith("max", [
       "low",
       "medium",
       "high",
       "max",
-    ]);
+    ], null);
   });
 
   it("allows provider changes in an existing workspace conversation", () => {

@@ -206,7 +206,9 @@ jobs:
               "src/application/chat_service/mod.rs",
               "src/application/plan_complexity_assessment.rs",
               "src/commands/agent_composer_commands/plan_references.rs",
+              "src/commands/harness_provider_commands.rs",
               "src/commands/ideation_commands/ideation_commands_session.rs",
+              "src/commands/provider_cli_management_commands.rs",
               "src/commands/question_commands.rs",
               "src/commands/unified_chat_commands.rs",
               "src/http_server/mod.rs",
@@ -221,6 +223,8 @@ jobs:
               "src/http_server/handlers/questions.rs",
               "src/http_server/types.rs",
               "src/infrastructure/agents/claude/mod.rs",
+              "src/infrastructure/agents/codex/codex_cli_client.rs",
+              "src/infrastructure/agents/spawner.rs",
           }
 
           # Keep patch coverage focused on behavior instead of repeated
@@ -420,7 +424,9 @@ jobs:
               "src/application/chat_service/mod.rs",
               "src/application/plan_complexity_assessment.rs",
               "src/commands/agent_composer_commands/plan_references.rs",
+              "src/commands/harness_provider_commands.rs",
               "src/commands/ideation_commands/ideation_commands_session.rs",
+              "src/commands/provider_cli_management_commands.rs",
               "src/commands/question_commands.rs",
               "src/commands/unified_chat_commands.rs",
               "src/http_server/mod.rs",
@@ -435,6 +441,8 @@ jobs:
               "src/http_server/handlers/questions.rs",
               "src/http_server/types.rs",
               "src/infrastructure/agents/claude/mod.rs",
+              "src/infrastructure/agents/codex/codex_cli_client.rs",
+              "src/infrastructure/agents/spawner.rs",
           }
 
           # Keep patch coverage focused on behavior instead of repeated

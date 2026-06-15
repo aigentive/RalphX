@@ -1,7 +1,9 @@
 use super::*;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
-    AgentHarnessKind, AgentLane, AgentLaneSettings, AgenticClient, ClientType, LogicalEffort,
+    AgentConfig, AgentError, AgentHandle, AgentHarnessKind, AgentLane, AgentLaneSettings,
+    AgentOutput, AgentProviderCliManagementMode, AgentProviderSettings, AgentResponse, AgentResult,
+    AgenticClient, ClientCapabilities, ClientType, LogicalEffort, ResponseChunk,
     CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
 use crate::domain::entities::{
@@ -9,6 +11,86 @@ use crate::domain::entities::{
     ProposalCategory, Task, TaskProposal,
 };
 use crate::infrastructure::{MockAgenticClient, MockCallType};
+use futures::Stream;
+use std::fs;
+use std::path::Path;
+use std::pin::Pin;
+
+struct UnavailableCodexAgentClient {
+    capabilities: ClientCapabilities,
+}
+
+impl UnavailableCodexAgentClient {
+    fn new() -> Self {
+        Self {
+            capabilities: ClientCapabilities::codex(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AgenticClient for UnavailableCodexAgentClient {
+    async fn spawn_agent(&self, _config: AgentConfig) -> AgentResult<AgentHandle> {
+        Err(AgentError::CliNotAvailable(
+            "static Codex client unavailable".to_string(),
+        ))
+    }
+
+    async fn stop_agent(&self, _handle: &AgentHandle) -> AgentResult<()> {
+        Ok(())
+    }
+
+    async fn wait_for_completion(&self, _handle: &AgentHandle) -> AgentResult<AgentOutput> {
+        Err(AgentError::CliNotAvailable(
+            "static Codex client unavailable".to_string(),
+        ))
+    }
+
+    async fn send_prompt(
+        &self,
+        _handle: &AgentHandle,
+        _prompt: &str,
+    ) -> AgentResult<AgentResponse> {
+        Err(AgentError::CliNotAvailable(
+            "static Codex client unavailable".to_string(),
+        ))
+    }
+
+    fn stream_response(
+        &self,
+        _handle: &AgentHandle,
+        _prompt: &str,
+    ) -> Pin<Box<dyn Stream<Item = AgentResult<ResponseChunk>> + Send>> {
+        Box::pin(futures::stream::empty())
+    }
+
+    fn capabilities(&self) -> &ClientCapabilities {
+        &self.capabilities
+    }
+
+    async fn is_available(&self) -> AgentResult<bool> {
+        Ok(false)
+    }
+}
+
+fn write_executable(path: &Path, contents: &str) {
+    // Path is created under this test's tempfile root.
+    // codeql[rust/path-injection]
+    fs::write(path, contents).expect("write executable");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Path is created under this test's tempfile root.
+        // codeql[rust/path-injection]
+        let mut permissions = fs::metadata(path)
+            .expect("executable metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        // Path is created under this test's tempfile root.
+        // codeql[rust/path-injection]
+        fs::set_permissions(path, permissions).expect("mark executable");
+    }
+}
 
 #[tokio::test]
 async fn test_new_test_creates_empty_repositories() {
@@ -328,6 +410,60 @@ async fn test_resolve_ideation_background_agent_runtime_uses_registered_harness_
     assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
     assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
     assert_eq!(runtime.sandbox_mode.as_deref(), Some("danger-full-access"));
+}
+
+#[tokio::test]
+async fn test_resolve_background_agent_runtime_uses_rx_managed_codex_override() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp = tempfile::tempdir().expect("temp dir");
+    let managed_codex_path = temp.path().join("codex");
+    write_executable(
+        &managed_codex_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 0.116.0\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+    );
+    let _managed_codex_override =
+        crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests(
+            managed_codex_path.clone(),
+        );
+    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let unavailable_codex: Arc<dyn AgenticClient> = Arc::new(UnavailableCodexAgentClient::new());
+    let state = AppState::new_test()
+        .with_agent_client(default_mock)
+        .with_harness_agent_client(AgentHarnessKind::Codex, Arc::clone(&unavailable_codex));
+
+    let mut codex_provider = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex_provider.enabled = true;
+    codex_provider.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
+    state
+        .agent_provider_settings_repo
+        .upsert(&codex_provider)
+        .await
+        .unwrap();
+
+    let runtime = state
+        .resolve_background_agent_runtime_for_harness(
+            AgentHarnessKind::Codex,
+            "managed Codex helper runtime",
+        )
+        .await
+        .expect("managed Codex helper runtime should resolve");
+
+    assert!(Arc::ptr_eq(&runtime.client, &unavailable_codex));
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.cli_path_override, Some(managed_codex_path));
 }
 
 #[tokio::test]

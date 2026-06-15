@@ -2569,6 +2569,7 @@ async fn test_apply_proposals_core_linked_agent_workspace_reuses_conversation_br
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
         },
     )
     .await

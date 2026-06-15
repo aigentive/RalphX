@@ -46,16 +46,27 @@ export { defaultEffortForModel, defaultModelForProvider };
 export function normalizeRuntimeSelection(
   runtime: unknown,
   registry?: AgentModelRegistry,
-  providerSupportedEfforts?: readonly unknown[] | null
+  providerSupportedEfforts?: readonly unknown[] | null,
+  providerSupportedModelAliases?: readonly unknown[] | null
 ): AgentRuntimeSelection {
-  return normalizeAgentRuntimeSelection(runtime, registry, providerSupportedEfforts);
+  return normalizeAgentRuntimeSelection(
+    runtime,
+    registry,
+    providerSupportedEfforts,
+    providerSupportedModelAliases
+  );
 }
 
 export function agentModelOptions(
   provider: AgentProvider,
-  registry?: AgentModelRegistry
+  registry?: AgentModelRegistry,
+  providerSupportedModelAliases?: readonly unknown[] | null
 ): AgentModelOption[] {
-  return agentModelOptionsForProvider(provider, registry).map(
+  return agentModelOptionsForProvider(
+    provider,
+    registry,
+    providerSupportedModelAliases
+  ).map(
     ({ id, menuLabel, description }) => ({
       id,
       label: menuLabel,

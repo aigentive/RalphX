@@ -112,6 +112,7 @@ fn test_agent_config_default() {
     assert_eq!(config.plugin_dir, Some(PathBuf::from("./plugins/app")));
     assert!(config.agent.is_none());
     assert!(config.model.is_none());
+    assert!(config.cli_path_override.is_none());
     assert!(config.max_tokens.is_none());
     assert!(config.timeout_secs.is_none());
     assert!(config.env.is_empty());
@@ -148,6 +149,15 @@ fn test_agent_config_with_working_dir() {
 fn test_agent_config_with_model() {
     let config = AgentConfig::default().with_model("claude-sonnet-4-5");
     assert_eq!(config.model, Some("claude-sonnet-4-5".to_string()));
+}
+
+#[test]
+fn test_agent_config_with_cli_path_override() {
+    let config = AgentConfig::default().with_cli_path_override("/managed/bin/codex");
+    assert_eq!(
+        config.cli_path_override,
+        Some(PathBuf::from("/managed/bin/codex"))
+    );
 }
 
 #[test]

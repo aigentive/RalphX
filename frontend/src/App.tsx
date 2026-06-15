@@ -26,6 +26,7 @@ import { TeamSplitView } from "@/components/Team";
 import { TaskGraphView } from "@/components/TaskGraph";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { UpdateChecker } from "@/components/UpdateChecker";
+import { ProviderCliUpdateChecker } from "@/components/ProviderCliUpdateChecker";
 import { PostUpdatePreparingScreen } from "@/components/PostUpdatePreparingScreen";
 import { ProjectCreationWizard } from "@/components/projects/ProjectCreationWizard";
 import { PlanQuickSwitcherPalette } from "@/components/plan/PlanQuickSwitcherPalette";
@@ -929,6 +930,7 @@ function AppContent() {
       >
       {/* Update checker - runs on mount, shows toast if update available */}
       <UpdateChecker />
+      <ProviderCliUpdateChecker />
 
       {isPostUpdatePreparing ? (
         <PostUpdatePreparingScreen />

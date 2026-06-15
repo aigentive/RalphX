@@ -41,6 +41,7 @@ pub(crate) mod git_artifact_cleanup;
 pub mod harness_runtime_registry;
 pub mod ideation_service;
 pub mod interactive_process_registry;
+pub(crate) mod managed_provider_cli;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
 pub(crate) mod native_menu;
@@ -193,6 +194,8 @@ mod agent_terminal_tests;
 mod chat_service_output_tests;
 #[cfg(test)]
 mod git_artifact_cleanup_tests;
+#[cfg(test)]
+mod harness_runtime_registry_tests;
 #[cfg(test)]
 mod ideation_harness_availability_tests;
 #[cfg(test)]
