@@ -250,6 +250,50 @@ describe("projectSkillsApi", () => {
     );
   });
 
+  it("reads and updates project skill settings", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        project_id: "project-1",
+        export_enabled: false,
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        project_id: "project-1",
+        export_enabled: true,
+      }),
+    );
+
+    await expect(projectSkillsApi.getSettings("project-1")).resolves.toEqual({
+      projectId: "project-1",
+      exportEnabled: false,
+    });
+    await expect(
+      projectSkillsApi.updateSettings("project-1", { exportEnabled: true }),
+    ).resolves.toEqual({
+      projectId: "project-1",
+      exportEnabled: true,
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:3847/api/project_skills/settings/get",
+      expect.objectContaining({
+        body: JSON.stringify({ project_id: "project-1" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost:3847/api/project_skills/settings/update",
+      expect.objectContaining({
+        body: JSON.stringify({
+          project_id: "project-1",
+          export_enabled: true,
+        }),
+      }),
+    );
+  });
+
   it("throws HTTP failures", async () => {
     fetchMock.mockResolvedValue(jsonResponse({}, { status: 500, statusText: "Server Error" }));
 

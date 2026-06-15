@@ -7,6 +7,7 @@ use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{ProjectSkill, ProjectSkillLifecycleStatus};
 use crate::domain::repositories::{
     ProjectRepository, ProjectSkillListOptions, ProjectSkillRepository,
+    ProjectSkillSettingsRepository,
 };
 use crate::error::{AppError, AppResult};
 use crate::utils::path_safety::validate_absolute_non_root_path;
@@ -14,6 +15,7 @@ use crate::utils::path_safety::validate_absolute_non_root_path;
 pub struct ProjectSkillExportService {
     project_repo: Arc<dyn ProjectRepository>,
     project_skill_repo: Arc<dyn ProjectSkillRepository>,
+    project_skill_settings_repo: Arc<dyn ProjectSkillSettingsRepository>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,10 +39,12 @@ impl ProjectSkillExportService {
     pub fn new(
         project_repo: Arc<dyn ProjectRepository>,
         project_skill_repo: Arc<dyn ProjectSkillRepository>,
+        project_skill_settings_repo: Arc<dyn ProjectSkillSettingsRepository>,
     ) -> Self {
         Self {
             project_repo,
             project_skill_repo,
+            project_skill_settings_repo,
         }
     }
 
@@ -63,6 +67,24 @@ impl ProjectSkillExportService {
         project_id: &ProjectId,
         apply: bool,
     ) -> AppResult<ProjectSkillExportPreview> {
+        if apply {
+            let settings = self
+                .project_skill_settings_repo
+                .get_for_project(project_id)
+                .await?
+                .unwrap_or_else(|| {
+                    crate::domain::entities::ProjectSkillSettings::default_for_project(
+                        project_id.clone(),
+                    )
+                });
+            if !settings.export_enabled {
+                return Err(AppError::Validation(
+                    "project skill export must be enabled in project settings before applying"
+                        .to_string(),
+                ));
+            }
+        }
+
         let project = self
             .project_repo
             .get_by_id(project_id)
@@ -161,7 +183,11 @@ impl ExportTarget {
         reject_symlink(&dot_claude, "project skill export .claude directory")?;
         let root = dot_claude.join("skills");
         reject_symlink(&root, "project skill export skills directory")?;
-        assert_child_path(&project_root, &root, "project skill export skills directory")?;
+        assert_child_path(
+            &project_root,
+            &root,
+            "project skill export skills directory",
+        )?;
 
         Ok(Self { project_root, root })
     }

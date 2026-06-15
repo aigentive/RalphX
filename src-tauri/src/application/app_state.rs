@@ -47,10 +47,10 @@ use crate::domain::repositories::{
     MemoryEventRepository, MethodologyRepository, OrphanWorktreeCleanupMarkerRepository,
     PlanBranchRepository, PlanSelectionStatsRepository, ProcessRepository,
     ProjectMemorySettingsRepository, ProjectRepository, ProjectSkillRepository,
-    ProposalDependencyRepository, ReviewRepository, ReviewSettingsRepository,
-    SessionLinkRepository, SkillUsageEventRepository, TaskDependencyRepository,
-    TaskOutcomeRepository, TaskProposalRepository, TaskQARepository, TaskRepository,
-    TaskStepRepository, TeamMessageRepository, TeamSessionRepository,
+    ProjectSkillSettingsRepository, ProposalDependencyRepository, ReviewRepository,
+    ReviewSettingsRepository, SessionLinkRepository, SkillUsageEventRepository,
+    TaskDependencyRepository, TaskOutcomeRepository, TaskProposalRepository, TaskQARepository,
+    TaskRepository, TaskStepRepository, TeamMessageRepository, TeamSessionRepository,
     WebhookRegistrationRepository, WorkflowRepository,
 };
 use crate::domain::services::{
@@ -74,12 +74,13 @@ use crate::infrastructure::memory::{
     MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
     MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
     MemoryProjectMemorySettingsRepository, MemoryProjectRepository, MemoryProjectSkillRepository,
-    MemoryProposalDependencyRepository, MemoryQuestionRepository, MemoryReviewIssueRepository,
-    MemoryReviewRepository, MemoryReviewSettingsRepository, MemorySecretStore,
-    MemorySessionLinkRepository, MemorySkillUsageEventRepository, MemoryTaskDependencyRepository,
-    MemoryTaskOutcomeRepository, MemoryTaskProposalRepository, MemoryTaskQARepository,
-    MemoryTaskRepository, MemoryTaskStepRepository, MemoryTeamMessageRepository,
-    MemoryTeamSessionRepository, MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
+    MemoryProjectSkillSettingsRepository, MemoryProposalDependencyRepository,
+    MemoryQuestionRepository, MemoryReviewIssueRepository, MemoryReviewRepository,
+    MemoryReviewSettingsRepository, MemorySecretStore, MemorySessionLinkRepository,
+    MemorySkillUsageEventRepository, MemoryTaskDependencyRepository, MemoryTaskOutcomeRepository,
+    MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
+    MemoryTaskStepRepository, MemoryTeamMessageRepository, MemoryTeamSessionRepository,
+    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
 use crate::infrastructure::sqlite::ReviewIssueRepository;
@@ -102,12 +103,13 @@ use crate::infrastructure::sqlite::{
     SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
     SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
     SqliteProjectMemorySettingsRepository, SqliteProjectRepository, SqliteProjectSkillRepository,
-    SqliteProposalDependencyRepository, SqliteQuestionRepository, SqliteReviewIssueRepository,
-    SqliteReviewRepository, SqliteReviewSettingsRepository, SqliteRunningAgentRegistry,
-    SqliteSessionLinkRepository, SqliteSkillUsageEventRepository, SqliteTaskDependencyRepository,
-    SqliteTaskOutcomeRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
-    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
-    SqliteTeamSessionRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqliteProjectSkillSettingsRepository, SqliteProposalDependencyRepository,
+    SqliteQuestionRepository, SqliteReviewIssueRepository, SqliteReviewRepository,
+    SqliteReviewSettingsRepository, SqliteRunningAgentRegistry, SqliteSessionLinkRepository,
+    SqliteSkillUsageEventRepository, SqliteTaskDependencyRepository, SqliteTaskOutcomeRepository,
+    SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
+    SqliteTaskStepRepository, SqliteTeamMessageRepository, SqliteTeamSessionRepository,
+    SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
 };
 use crate::infrastructure::GhCliGithubService;
 use crate::infrastructure::HyperAtlassianApiClient;
@@ -231,6 +233,8 @@ pub struct AppState {
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
     /// Project memory settings repository
     pub project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository>,
+    /// Project learned skill settings repository
+    pub project_skill_settings_repo: Arc<dyn ProjectSkillSettingsRepository>,
     /// Memory archive repository for snapshot generation job queue
     pub memory_archive_repo: Arc<dyn MemoryArchiveRepository>,
     /// Learned task outcome ledger repository
@@ -831,6 +835,9 @@ impl AppState {
             project_memory_settings_repo: Arc::new(
                 SqliteProjectMemorySettingsRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            project_skill_settings_repo: Arc::new(
+                SqliteProjectSkillSettingsRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             memory_archive_repo: Arc::new(SqliteMemoryArchiveRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1001,6 +1008,7 @@ impl AppState {
             memory_entry_repo: Arc::new(InMemoryMemoryEntryRepository::new()),
             memory_event_repo: Arc::new(InMemoryMemoryEventRepository::new()),
             project_memory_settings_repo: Arc::new(MemoryProjectMemorySettingsRepository::new()),
+            project_skill_settings_repo: Arc::new(MemoryProjectSkillSettingsRepository::new()),
             memory_archive_repo: Arc::new(SqliteMemoryArchiveRepository::new(
                 open_connection(&std::path::PathBuf::from(":memory:"))
                     .expect("Failed to create in-memory connection for memory_archive"),
@@ -1128,6 +1136,7 @@ impl AppState {
             memory_entry_repo: Arc::new(InMemoryMemoryEntryRepository::new()),
             memory_event_repo: Arc::new(InMemoryMemoryEventRepository::new()),
             project_memory_settings_repo: Arc::new(MemoryProjectMemorySettingsRepository::new()),
+            project_skill_settings_repo: Arc::new(MemoryProjectSkillSettingsRepository::new()),
             memory_archive_repo: Arc::new(SqliteMemoryArchiveRepository::new(
                 open_connection(&std::path::PathBuf::from(":memory:"))
                     .expect("Failed to create in-memory connection for memory_archive"),
@@ -1271,6 +1280,7 @@ impl AppState {
             memory_entry_repo: Arc::new(InMemoryMemoryEntryRepository::new()),
             memory_event_repo: Arc::new(InMemoryMemoryEventRepository::new()),
             project_memory_settings_repo: Arc::new(MemoryProjectMemorySettingsRepository::new()),
+            project_skill_settings_repo: Arc::new(MemoryProjectSkillSettingsRepository::new()),
             memory_archive_repo: Arc::new(SqliteMemoryArchiveRepository::new(
                 open_connection(&std::path::PathBuf::from(":memory:"))
                     .expect("Failed to create in-memory connection for memory_archive"),
@@ -1387,6 +1397,7 @@ impl AppState {
             memory_entry_repo: Arc::new(InMemoryMemoryEntryRepository::new()),
             memory_event_repo: Arc::new(InMemoryMemoryEventRepository::new()),
             project_memory_settings_repo: Arc::new(MemoryProjectMemorySettingsRepository::new()),
+            project_skill_settings_repo: Arc::new(MemoryProjectSkillSettingsRepository::new()),
             memory_archive_repo: Arc::new(SqliteMemoryArchiveRepository::new(
                 open_connection(&PathBuf::from(":memory:"))
                     .expect("Failed to create in-memory connection"),

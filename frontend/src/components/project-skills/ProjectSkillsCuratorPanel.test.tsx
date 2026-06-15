@@ -16,6 +16,8 @@ vi.mock("@/api/project-skills", () => ({
     unpin: vi.fn(),
     previewExport: vi.fn(),
     applyExport: vi.fn(),
+    getSettings: vi.fn(),
+    updateSettings: vi.fn(),
     distill: vi.fn(),
   },
 }));
@@ -93,6 +95,14 @@ describe("ProjectSkillsCuratorPanel", () => {
     mockedProjectSkillsApi.unpin.mockResolvedValue(
       stagedSkill({ id: "approved-skill", status: "approved", pinned: false }),
     );
+    mockedProjectSkillsApi.getSettings.mockResolvedValue({
+      projectId: "project-1",
+      exportEnabled: false,
+    });
+    mockedProjectSkillsApi.updateSettings.mockResolvedValue({
+      projectId: "project-1",
+      exportEnabled: true,
+    });
     mockedProjectSkillsApi.previewExport.mockResolvedValue({
       projectId: "project-1",
       targetRoot: "/repo/.claude/skills",
@@ -253,10 +263,12 @@ describe("ProjectSkillsCuratorPanel", () => {
     });
   });
 
-  it("previews and applies approved skill export", async () => {
+  it("previews and applies approved skill export after opt-in", async () => {
     renderPanel();
 
     expect(await screen.findByText("Approved review convention")).toBeInTheDocument();
+    const exportButton = screen.getByRole("button", { name: /^export$/i });
+    expect(exportButton).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: /preview export/i }));
     await waitFor(() => {
@@ -265,6 +277,21 @@ describe("ProjectSkillsCuratorPanel", () => {
       );
     });
     expect(await screen.findByText(/1 pending file/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("switch", { name: /enable project skill export/i }));
+    await waitFor(() => {
+      expect(mockedProjectSkillsApi.updateSettings).toHaveBeenCalledWith(
+        "project-1",
+        { exportEnabled: true },
+      );
+    });
+    mockedProjectSkillsApi.getSettings.mockResolvedValue({
+      projectId: "project-1",
+      exportEnabled: true,
+    });
+    await waitFor(() => {
+      expect(exportButton).toBeEnabled();
+    });
 
     fireEvent.click(screen.getByRole("button", { name: /^export$/i }));
     await waitFor(() => {

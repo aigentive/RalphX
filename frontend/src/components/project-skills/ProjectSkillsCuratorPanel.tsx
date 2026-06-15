@@ -30,6 +30,9 @@ const stagedSkillsKey = (projectId: string) =>
 const approvedSkillsKey = (projectId: string) =>
   ["project-skills", projectId, "approved"] as const;
 
+const settingsKey = (projectId: string) =>
+  ["project-skills", projectId, "settings"] as const;
+
 export function ProjectSkillsCuratorPanel({
   projectId,
   className,
@@ -39,6 +42,7 @@ export function ProjectSkillsCuratorPanel({
     useState<ProjectSkillExportResult | null>(null);
   const stagedQueryKey = stagedSkillsKey(projectId);
   const approvedQueryKey = approvedSkillsKey(projectId);
+  const projectSkillSettingsKey = settingsKey(projectId);
 
   const stagedQuery = useQuery({
     queryKey: stagedQueryKey,
@@ -58,6 +62,11 @@ export function ProjectSkillsCuratorPanel({
         status: "approved",
         includeArchived: false,
       }),
+  });
+
+  const settingsQuery = useQuery({
+    queryKey: projectSkillSettingsKey,
+    queryFn: () => projectSkillsApi.getSettings(projectId),
   });
 
   const invalidateSkills = () => {
@@ -95,6 +104,14 @@ export function ProjectSkillsCuratorPanel({
     onSuccess: invalidateSkills,
   });
 
+  const updateSettingsMutation = useMutation({
+    mutationFn: (exportEnabled: boolean) =>
+      projectSkillsApi.updateSettings(projectId, { exportEnabled }),
+    onSuccess: (settings) => {
+      queryClient.setQueryData(projectSkillSettingsKey, settings);
+    },
+  });
+
   const previewExportMutation = useMutation({
     mutationFn: () => projectSkillsApi.previewExport(projectId),
     onSuccess: setExportPreview,
@@ -114,19 +131,23 @@ export function ProjectSkillsCuratorPanel({
     archiveMutation.isPending ||
     pinMutation.isPending ||
     unpinMutation.isPending ||
+    updateSettingsMutation.isPending ||
     previewExportMutation.isPending ||
     applyExportMutation.isPending;
   const error =
     stagedQuery.error ??
     approvedQuery.error ??
+    settingsQuery.error ??
     distillMutation.error ??
     approveMutation.error ??
     rejectMutation.error ??
     archiveMutation.error ??
     pinMutation.error ??
     unpinMutation.error ??
+    updateSettingsMutation.error ??
     previewExportMutation.error ??
     applyExportMutation.error;
+  const exportEnabled = settingsQuery.data?.exportEnabled ?? false;
 
   return (
     <section
@@ -145,6 +166,10 @@ export function ProjectSkillsCuratorPanel({
         <div className="flex flex-wrap items-center gap-2">
           <ProjectSkillsExportControls
             disabled={isBusy || approvedSkills.length === 0}
+            exportEnabled={exportEnabled}
+            onExportEnabledChange={(enabled) =>
+              updateSettingsMutation.mutate(enabled)
+            }
             onPreview={() => previewExportMutation.mutate()}
             onApply={() => applyExportMutation.mutate()}
           />
