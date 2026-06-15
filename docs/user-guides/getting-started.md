@@ -297,5 +297,6 @@ The task moves to **Merged**. The merge commit SHA is shown in the task detail v
 | [Graph View](graph-view.md) | Dependency graph, critical path, timeline panel, battle mode |
 | [Execution Pipeline](execution.md) | Worker/coder/reviewer agents, concurrency, revision cycles, recovery |
 | [Merge Pipeline](merge.md) | Merge strategies, validation, conflict resolution, recovery |
+| [Project Skills](project-skills.md) | Learned skills, Promote Memory, import, export, approval, and troubleshooting |
 | [Task State Machine](task-state-machine.md) | All 24 states, transitions, and state invariants |
 | [Configuration](configuration.md) | Project settings, model config, supervisor, ralphx.yaml reference |
