@@ -78,6 +78,19 @@ import { ScreenshotGalleryTestPage } from "@/test-pages/ScreenshotGalleryTest";
 const queryClient = getQueryClient();
 const ATLASSIAN_AWARENESS_TOAST_KEY = "ralphx.atlassianIntegrationAwareness.v1";
 
+function ensureCreatedProjectVisibleInAgentFilters(projectId: string) {
+  const {
+    showAllProjects,
+    sidebarProjectFilterIds,
+    setSidebarProjectFilterIds,
+  } = useAgentSessionStore.getState();
+  if (!showAllProjects) {
+    setSidebarProjectFilterIds([
+      ...new Set([...sidebarProjectFilterIds, projectId]),
+    ]);
+  }
+}
+
 /**
  * Test page router - checks URL params and returns test page if applicable
  * This is extracted to avoid hooks being called after conditional returns
@@ -717,13 +730,21 @@ function AppContent() {
       await queryClient.invalidateQueries({ queryKey: projectKeys.list() });
       addProject(newProject);
       selectProject(newProject.id);
+      setFocusedAgentProject(newProject.id);
+      clearAgentSelection();
+      ensureCreatedProjectVisibleInAgentFilters(newProject.id);
       setIsProjectWizardOpen(false);
     } catch (error) {
       setProjectCreationError(error instanceof Error ? error.message : "Failed to create project");
     } finally {
       setIsCreatingProject(false);
     }
-  }, [addProject, selectProject]);
+  }, [
+    addProject,
+    clearAgentSelection,
+    selectProject,
+    setFocusedAgentProject,
+  ]);
 
   const handleBrowseFolder = useCallback(async (): Promise<string | null> => {
     try {
