@@ -73,6 +73,11 @@ vi.mock("./insights/MetricsDetails", () => ({
 vi.mock("./insights/UsageInsightsCard", () => ({
   UsageInsightsCard: () => <div data-testid="usage-insights" />,
 }));
+vi.mock("@/components/project-skills/ProjectSkillsCuratorPanel", () => ({
+  ProjectSkillsCuratorPanel: ({ projectId }: { projectId: string }) => (
+    <div data-testid="project-skills-curator" data-project={projectId} />
+  ),
+}));
 vi.mock("@/components/tasks/detail-views/shared/DetailCard", () => ({
   DetailCard: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="detail-card">{children}</div>
@@ -83,6 +88,35 @@ const mockedStats = vi.mocked(useProjectStats);
 const mockedTrends = vi.mocked(useProjectTrends);
 const mockedUsage = vi.mocked(useProjectChatUsageStats);
 const mockedStore = vi.mocked(useProjectStore);
+
+function installLocalStorage() {
+  const values = new Map<string, string>();
+  const storage = {
+    get length() {
+      return values.size;
+    },
+    clear: vi.fn(() => values.clear()),
+    getItem: vi.fn((key: string) => values.get(key) ?? null),
+    key: vi.fn((index: number) => Array.from(values.keys())[index] ?? null),
+    removeItem: vi.fn((key: string) => {
+      values.delete(key);
+    }),
+    setItem: vi.fn((key: string, value: string) => {
+      values.set(key, String(value));
+    }),
+  };
+
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: storage,
+  });
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: storage,
+  });
+}
+
+installLocalStorage();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -286,6 +320,10 @@ describe("InsightsView — full render with stats + trends", () => {
     // Breakdowns
     expect(screen.getByTestId("cycle-breakdown")).toBeInTheDocument();
     expect(screen.getByTestId("column-dwell")).toBeInTheDocument();
+    expect(screen.getByTestId("project-skills-curator")).toHaveAttribute(
+      "data-project",
+      "proj-1",
+    );
     // Copy markdown button
     expect(screen.getByTestId("copy-md")).toBeInTheDocument();
   });
