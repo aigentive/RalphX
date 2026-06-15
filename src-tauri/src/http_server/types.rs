@@ -1350,6 +1350,39 @@ pub struct ListProjectSkillsResponse {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ListConversationProjectSkillsRequest {
+    pub project_id: String,
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationProjectSkillResponse {
+    pub skill: ProjectSkillResponse,
+    pub generated_by_conversation: bool,
+    pub used_by_conversation: bool,
+    pub usage_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ListConversationProjectSkillsResponse {
+    pub skills: Vec<ConversationProjectSkillResponse>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProcessConversationProjectSkillsRequest {
+    pub project_id: String,
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessConversationProjectSkillsResponse {
+    pub staged_skills: Vec<ProjectSkillResponse>,
+    pub skipped_existing: usize,
+    pub message_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct GetProjectSkillRequest {
     pub project_skill_id: String,
 }

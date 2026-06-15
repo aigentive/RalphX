@@ -73,6 +73,7 @@ describe("Navigation", () => {
     expect(screen.getByTestId("nav-ideation")).toBeInTheDocument();
     expect(screen.getByTestId("nav-kanban")).toBeInTheDocument();
     expect(screen.getByTestId("nav-graph")).toBeInTheDocument();
+    expect(screen.getByTestId("nav-skills")).toBeInTheDocument();
     expect(screen.getByTestId("nav-activity")).toBeInTheDocument();
   });
 
@@ -92,7 +93,7 @@ describe("Navigation", () => {
     ]);
   });
 
-  it("orders the shortcut-backed main views as Agents, Ideation, Graph, Kanban, Insights", () => {
+  it("orders the main views as Agents, Ideation, Graph, Kanban, Skills, Insights", () => {
     mockTaskCount = 10;
 
     render(<Navigation {...defaultProps} />);
@@ -102,11 +103,12 @@ describe("Navigation", () => {
       element.getAttribute("data-testid")
     );
 
-    expect(navItemIds.slice(0, 5)).toEqual([
+    expect(navItemIds.slice(0, 6)).toEqual([
       "nav-agents",
       "nav-ideation",
       "nav-graph",
       "nav-kanban",
+      "nav-skills",
       "nav-insights",
     ]);
     expect(screen.getByText("⌘1")).toBeInTheDocument();
@@ -209,6 +211,7 @@ describe("Navigation — feature flag filtering", () => {
     expect(screen.getByTestId("nav-ideation")).toBeInTheDocument();
     expect(screen.getByTestId("nav-graph")).toBeInTheDocument();
     expect(screen.getByTestId("nav-kanban")).toBeInTheDocument();
+    expect(screen.getByTestId("nav-skills")).toBeInTheDocument();
     expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
   });
 });
@@ -233,6 +236,7 @@ describe("Navigation — hideViews (welcome mode)", () => {
     expect(screen.queryByTestId("nav-ideation")).toBeNull();
     expect(screen.queryByTestId("nav-graph")).toBeNull();
     expect(screen.queryByTestId("nav-kanban")).toBeNull();
+    expect(screen.queryByTestId("nav-skills")).toBeNull();
     expect(screen.queryByTestId("nav-insights")).toBeNull();
     expect(screen.queryByTestId("nav-activity")).toBeNull();
     expect(screen.queryByTestId("nav-extensibility")).toBeNull();

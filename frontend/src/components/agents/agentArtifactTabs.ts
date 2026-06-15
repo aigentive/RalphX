@@ -1,6 +1,6 @@
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 
-export type IdeationArtifactTab = Exclude<AgentArtifactTab, "publish">;
+export type IdeationArtifactTab = Exclude<AgentArtifactTab, "skills" | "publish">;
 
 export interface IdeationArtifactAvailability {
   hasAttachedIdeationSession: boolean;

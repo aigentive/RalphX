@@ -21,6 +21,7 @@ import { ExtensibilityView } from "@/components/ExtensibilityView";
 import { ActivityView } from "@/components/activity";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { InsightsView } from "@/components/views/InsightsView";
+import { SkillsView } from "@/components/views/SkillsView";
 import { AgentsView } from "@/components/agents";
 import { TeamSplitView } from "@/components/Team";
 import { TaskGraphView } from "@/components/TaskGraph";
@@ -1016,6 +1017,7 @@ function AppContent() {
                     : null
               )}
               {currentView === "insights" && <InsightsView />}
+              {currentView === "skills" && <SkillsView />}
               {currentView === "team" && <TeamSplitView />}
             </div>
         </div>

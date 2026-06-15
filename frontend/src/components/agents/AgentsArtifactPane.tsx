@@ -1,4 +1,5 @@
 import {
+  BookOpenCheck,
   CheckCircle2,
   FileText,
   GitPullRequestArrow,
@@ -20,6 +21,7 @@ import {
   type AgentConversationWorkspace,
 } from "@/api/chat";
 import { Button } from "@/components/ui/button";
+import { ConversationSkillsPanel } from "@/components/project-skills/ConversationSkillsPanel";
 import {
   Tooltip,
   TooltipContent,
@@ -125,6 +127,12 @@ const PUBLISH_TAB = {
   id: "publish" as const,
   label: "Commit & Publish",
   icon: GitPullRequestArrow,
+};
+
+const SKILLS_TAB = {
+  id: "skills" as const,
+  label: "Skills",
+  icon: BookOpenCheck,
 };
 
 const SELECTED_TASK_STORAGE_PREFIX = "agents:artifact:selected-task:";
@@ -298,6 +306,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const visibleTabs = useMemo(
     () => [
       ...ARTIFACT_TABS.filter((tab) => availableIdeationTabIds.includes(tab.id)),
+      SKILLS_TAB,
       ...(showPublishTab ? [PUBLISH_TAB] : []),
     ],
     [availableIdeationTabIds, showPublishTab],
@@ -307,7 +316,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ? activeTab
       : showPublishTab
         ? "publish"
-        : "plan";
+        : "skills";
   const shouldLoadVerificationData =
     shouldLoadIdeationData && effectiveActiveTab === "verification";
   const shouldLoadDependencyGraph =
@@ -580,6 +589,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       >
         <ArtifactContent
           activeTab={effectiveActiveTab}
+          conversationId={conversation?.id ?? null}
           workspace={workspace}
           conversationTitle={conversation?.title ?? null}
           projectBaseBranch={projectBaseBranch}
@@ -612,6 +622,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 
 type ArtifactContentProps = {
   activeTab: AgentArtifactTab;
+  conversationId: string | null;
   workspace: AgentConversationWorkspace | null;
   conversationTitle: string | null;
   projectBaseBranch: string | null;
@@ -643,6 +654,7 @@ type ArtifactContentProps = {
 
 function ArtifactContent({
   activeTab,
+  conversationId,
   workspace,
   conversationTitle,
   projectBaseBranch,
@@ -713,6 +725,18 @@ function ArtifactContent({
         onPublishWorkspace={onPublishWorkspace}
         isPublishingWorkspace={isPublishingWorkspace}
         publishFocusRequest={publishFocusRequest}
+      />
+    );
+  }
+
+  if (activeTab === "skills") {
+    if (!projectId || !conversationId) {
+      return <EmptyArtifactState title="No conversation selected" />;
+    }
+    return (
+      <ConversationSkillsPanel
+        projectId={projectId}
+        conversationId={conversationId}
       />
     );
   }

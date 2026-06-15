@@ -4,14 +4,20 @@ use tracing::error;
 
 use super::*;
 use crate::domain::entities::types::ProjectId;
-use crate::domain::entities::{MemoryEntryId, ProjectSkillId, ProjectSkillLifecycleStatus};
-use crate::domain::repositories::ProjectSkillListOptions;
+use crate::domain::entities::ChatConversationId;
+use crate::domain::entities::{
+    ChatContextType, MemoryEntryId, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus,
+    TaskOutcomeStatus,
+};
+use crate::domain::repositories::{
+    ProjectSkillListOptions, SkillUsageListOptions, UpsertTaskOutcomeInput,
+};
 use crate::domain::services::{
-    DistillEligibleOutcomesInput, ProjectSkillDistillationOrigin, ProjectSkillDistillerService,
-    MemoryToProjectSkillPromotionService, ProjectSkillImportApplyInput, ProjectSkillImportCandidate,
-    ProjectSkillImportPreview, ProjectSkillImportPreviewInput, ProjectSkillImportPreviewRow,
-    ProjectSkillImportPreviewService, ProjectSkillReportOptions, ProjectSkillReportService,
-    ProjectSkillService, PromoteMemoryToProjectSkillInput,
+    new_empty_task_outcome, DistillEligibleOutcomesInput, MemoryToProjectSkillPromotionService,
+    ProjectSkillDistillationOrigin, ProjectSkillDistillerService, ProjectSkillImportApplyInput,
+    ProjectSkillImportCandidate, ProjectSkillImportPreview, ProjectSkillImportPreviewInput,
+    ProjectSkillImportPreviewRow, ProjectSkillImportPreviewService, ProjectSkillReportOptions,
+    ProjectSkillReportService, ProjectSkillService, PromoteMemoryToProjectSkillInput,
 };
 use crate::error::AppError;
 use crate::http_server::handlers::learned_skills_export::assert_project_id_scope;
@@ -63,6 +69,218 @@ pub async fn list_project_skills(
         .collect::<Vec<_>>();
     let count = skills.len();
     Ok(Json(ListProjectSkillsResponse { skills, count }))
+}
+
+pub async fn list_conversation_project_skills(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<ListConversationProjectSkillsRequest>,
+) -> Result<Json<ListConversationProjectSkillsResponse>, HttpError> {
+    let project_id = ProjectId::from_string(req.project_id);
+    assert_project_id_scope(&project_id, &scope)?;
+    let conversation_id = req.conversation_id.trim().to_string();
+    if conversation_id.is_empty() {
+        return Err(HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some("conversation_id is required".to_string()),
+        });
+    }
+
+    let skills = state
+        .app_state
+        .project_skill_repo
+        .list_by_project(
+            &project_id,
+            ProjectSkillListOptions {
+                include_archived: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|error| {
+            error!("failed to list project skills for conversation: {}", error);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to list project skills".to_string()),
+            }
+        })?;
+
+    let usage_events = state
+        .app_state
+        .skill_usage_event_repo
+        .list_by_project(&project_id, SkillUsageListOptions::default())
+        .await
+        .map_err(|error| {
+            error!("failed to list skill usage for conversation: {}", error);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to list skill usage events".to_string()),
+            }
+        })?;
+
+    let mut usage_counts = std::collections::HashMap::<ProjectSkillId, usize>::new();
+    for event in usage_events {
+        if event.conversation_id.as_deref() == Some(conversation_id.as_str()) {
+            *usage_counts.entry(event.project_skill_id).or_default() += 1;
+        }
+    }
+
+    let mut rows = skills
+        .into_iter()
+        .filter_map(|skill| {
+            let generated = project_skill_mentions_conversation(&skill, conversation_id.as_str());
+            let usage_count = usage_counts.get(&skill.id).copied().unwrap_or_default();
+            if !generated && usage_count == 0 {
+                return None;
+            }
+            Some(ConversationProjectSkillResponse {
+                skill: ProjectSkillResponse::from(skill),
+                generated_by_conversation: generated,
+                used_by_conversation: usage_count > 0,
+                usage_count,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    rows.sort_by(|left, right| {
+        right
+            .skill
+            .updated_at
+            .cmp(&left.skill.updated_at)
+            .then_with(|| left.skill.title.cmp(&right.skill.title))
+    });
+
+    let count = rows.len();
+    Ok(Json(ListConversationProjectSkillsResponse {
+        skills: rows,
+        count,
+    }))
+}
+
+pub async fn process_conversation_project_skills(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<ProcessConversationProjectSkillsRequest>,
+) -> Result<Json<ProcessConversationProjectSkillsResponse>, HttpError> {
+    let project_id = ProjectId::from_string(req.project_id);
+    assert_project_id_scope(&project_id, &scope)?;
+    let conversation_id = req.conversation_id.trim().to_string();
+    if conversation_id.is_empty() {
+        return Err(HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some("conversation_id is required".to_string()),
+        });
+    }
+
+    let conversation = state
+        .app_state
+        .chat_conversation_repo
+        .get_by_id(&ChatConversationId::from_string(conversation_id.clone()))
+        .await
+        .map_err(|error| {
+            error!("failed to get conversation for skill processing: {}", error);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to get conversation".to_string()),
+            }
+        })?;
+    let Some(conversation) = conversation else {
+        return Err(HttpError {
+            status: StatusCode::NOT_FOUND,
+            message: Some("conversation not found".to_string()),
+        });
+    };
+    if conversation.context_type != ChatContextType::Project
+        || conversation.context_id != project_id.as_str()
+    {
+        return Err(HttpError {
+            status: StatusCode::FORBIDDEN,
+            message: Some("conversation is outside project scope".to_string()),
+        });
+    }
+
+    let messages = state
+        .app_state
+        .chat_message_repo
+        .get_by_conversation(&conversation.id)
+        .await
+        .map_err(|error| {
+            error!(
+                "failed to list conversation messages for skill processing: {}",
+                error
+            );
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to list conversation messages".to_string()),
+            }
+        })?;
+
+    let message_count = messages.len();
+    if message_count == 0 {
+        return Ok(Json(ProcessConversationProjectSkillsResponse {
+            staged_skills: Vec::new(),
+            skipped_existing: 0,
+            message_count,
+        }));
+    }
+    let evidence = build_conversation_skill_evidence(&conversation_id, &messages);
+    let mut outcome = new_empty_task_outcome(
+        project_id.clone(),
+        "agent_conversation",
+        "conversation",
+        conversation_id.clone(),
+    );
+    outcome.conversation_id = Some(conversation_id);
+    outcome.outcome_class = Some("conversation_skill_candidate".to_string());
+    outcome.status = TaskOutcomeStatus::Eligible;
+    outcome.evidence_json = evidence;
+    if let Some(harness) = conversation.provider_harness {
+        outcome.provider_harness = Some(harness.to_string());
+    }
+    outcome.provider_session_id = conversation.provider_session_id;
+
+    state
+        .app_state
+        .task_outcome_repo
+        .upsert(UpsertTaskOutcomeInput { outcome })
+        .await
+        .map_err(|error| {
+            error!("failed to upsert conversation skill outcome: {}", error);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to record conversation skill outcome".to_string()),
+            }
+        })?;
+
+    let distiller = ProjectSkillDistillerService::new(
+        Arc::clone(&state.app_state.task_outcome_repo),
+        Arc::clone(&state.app_state.project_skill_repo),
+    );
+    let result = distiller
+        .distill_eligible_outcomes(DistillEligibleOutcomesInput {
+            project_id,
+            source: Some("agent_conversation".to_string()),
+            limit: 10,
+            origin: ProjectSkillDistillationOrigin::ManualCurator,
+        })
+        .await
+        .map_err(|error| {
+            error!("failed to process conversation project skills: {}", error);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to process conversation project skills".to_string()),
+            }
+        })?;
+
+    Ok(Json(ProcessConversationProjectSkillsResponse {
+        staged_skills: result
+            .staged_skills
+            .into_iter()
+            .map(ProjectSkillResponse::from)
+            .collect(),
+        skipped_existing: result.skipped_existing,
+        message_count,
+    }))
 }
 
 pub async fn get_project_skill(
@@ -355,6 +573,56 @@ pub async fn promote_memory_to_project_skill(
     }))
 }
 
+fn project_skill_mentions_conversation(skill: &ProjectSkill, conversation_id: &str) -> bool {
+    json_value_contains_string(&skill.provenance_json, conversation_id)
+}
+
+fn build_conversation_skill_evidence(
+    conversation_id: &str,
+    messages: &[crate::domain::entities::ChatMessage],
+) -> serde_json::Value {
+    let excerpts = messages
+        .iter()
+        .rev()
+        .filter(|message| !message.content.trim().is_empty())
+        .take(12)
+        .map(|message| {
+            serde_json::json!({
+                "role": message.role.to_string(),
+                "message_id": message.id.as_str(),
+                "content": truncate_text(message.content.trim(), 900),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "conversation_id": conversation_id,
+        "message_count": messages.len(),
+        "recent_messages": excerpts,
+    })
+}
+
+fn truncate_text(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut result = value.chars().take(max_chars).collect::<String>();
+    result.push_str("...");
+    result
+}
+
+fn json_value_contains_string(value: &serde_json::Value, needle: &str) -> bool {
+    match value {
+        serde_json::Value::String(value) => value == needle,
+        serde_json::Value::Array(items) => items
+            .iter()
+            .any(|item| json_value_contains_string(item, needle)),
+        serde_json::Value::Object(map) => map
+            .values()
+            .any(|item| json_value_contains_string(item, needle)),
+        _ => false,
+    }
+}
+
 fn import_candidate_from_request(
     candidate: PreviewProjectSkillImportCandidateRequest,
 ) -> ProjectSkillImportCandidate {
@@ -498,7 +766,8 @@ mod tests {
     use crate::application::{AppState, TeamService, TeamStateTracker};
     use crate::commands::ExecutionState;
     use crate::domain::entities::{
-        MemoryBucket, MemoryEntry, ProjectSkill, ProjectSkillLifecycleStatus, TaskOutcomeStatus,
+        ChatConversation, ChatMessage, MemoryBucket, MemoryEntry, ProjectSkill,
+        ProjectSkillLifecycleStatus, SkillUsageEvent, SkillUsageEventId, TaskOutcomeStatus,
     };
     use crate::domain::repositories::{ProjectSkillListOptions, UpsertTaskOutcomeInput};
     use crate::domain::services::{new_empty_task_outcome, new_skill_usage_event};
@@ -562,7 +831,10 @@ mod tests {
         }
     }
 
-    fn promote_memory_request(project_id: &str, memory_id: &str) -> PromoteMemoryToProjectSkillRequest {
+    fn promote_memory_request(
+        project_id: &str,
+        memory_id: &str,
+    ) -> PromoteMemoryToProjectSkillRequest {
         PromoteMemoryToProjectSkillRequest {
             project_id: project_id.to_string(),
             memory_id: memory_id.to_string(),
@@ -616,6 +888,168 @@ mod tests {
         .expect_err("cross-project approval should fail");
 
         assert_eq!(error.status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn list_conversation_project_skills_scopes_generated_and_used_skills() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-a".to_string());
+        let conversation_id = "conversation-a";
+
+        let mut generated = staged_skill(project_id.clone());
+        generated.title = "Generated conversation skill".to_string();
+        generated.provenance_json = json!({
+            "source": "memory_to_skill",
+            "conversation": {
+                "id": conversation_id
+            }
+        });
+        let generated_id = generated.id.clone();
+        app_state
+            .project_skill_repo
+            .create(generated)
+            .await
+            .unwrap();
+
+        let mut used = staged_skill(project_id.clone());
+        used.title = "Used conversation skill".to_string();
+        used.provenance_json = json!({ "source": "import" });
+        let used_id = used.id.clone();
+        app_state.project_skill_repo.create(used).await.unwrap();
+
+        let mut unrelated = staged_skill(project_id.clone());
+        unrelated.title = "Unrelated skill".to_string();
+        app_state
+            .project_skill_repo
+            .create(unrelated)
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now();
+        app_state
+            .skill_usage_event_repo
+            .record(SkillUsageEvent {
+                id: SkillUsageEventId::new(),
+                project_id: project_id.clone(),
+                project_skill_id: used_id.clone(),
+                conversation_id: Some(conversation_id.to_string()),
+                agent_run_id: Some("run-a".to_string()),
+                provider_harness: Some("codex".to_string()),
+                stage: Some("review".to_string()),
+                bucket: Some("review".to_string()),
+                injection_kind: "composer_directive".to_string(),
+                outcome_id: None,
+                metadata_json: json!({}),
+                created_at: now,
+            })
+            .await
+            .unwrap();
+
+        app_state
+            .skill_usage_event_repo
+            .record(SkillUsageEvent {
+                id: SkillUsageEventId::new(),
+                project_id: project_id.clone(),
+                project_skill_id: generated_id.clone(),
+                conversation_id: Some("other-conversation".to_string()),
+                agent_run_id: Some("run-b".to_string()),
+                provider_harness: Some("claude".to_string()),
+                stage: Some("review".to_string()),
+                bucket: Some("review".to_string()),
+                injection_kind: "composer_directive".to_string(),
+                outcome_id: None,
+                metadata_json: json!({}),
+                created_at: now,
+            })
+            .await
+            .unwrap();
+
+        let response = list_conversation_project_skills(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(ListConversationProjectSkillsRequest {
+                project_id: project_id.as_str().to_string(),
+                conversation_id: conversation_id.to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.0.count, 2);
+        let generated_row = response
+            .0
+            .skills
+            .iter()
+            .find(|row| row.skill.id == generated_id.as_str())
+            .expect("generated skill row");
+        assert!(generated_row.generated_by_conversation);
+        assert!(!generated_row.used_by_conversation);
+        assert_eq!(generated_row.usage_count, 0);
+
+        let used_row = response
+            .0
+            .skills
+            .iter()
+            .find(|row| row.skill.id == used_id.as_str())
+            .expect("used skill row");
+        assert!(!used_row.generated_by_conversation);
+        assert!(used_row.used_by_conversation);
+        assert_eq!(used_row.usage_count, 1);
+    }
+
+    #[tokio::test]
+    async fn process_conversation_project_skills_stages_from_existing_chat() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-process".to_string());
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.title = Some("Older bugfix chat".to_string());
+        let conversation_id = conversation.id.clone();
+        app_state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .unwrap();
+
+        let mut user_message = ChatMessage::user_in_project(
+            project_id.clone(),
+            "We keep missing the proposal rejection dependency rows.",
+        );
+        user_message.conversation_id = Some(conversation_id.clone());
+        app_state
+            .chat_message_repo
+            .create(user_message)
+            .await
+            .unwrap();
+
+        let response = process_conversation_project_skills(
+            State(test_state(Arc::clone(&app_state))),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(ProcessConversationProjectSkillsRequest {
+                project_id: project_id.as_str().to_string(),
+                conversation_id: conversation_id.as_str().to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.0.message_count, 1);
+        assert_eq!(response.0.staged_skills.len(), 1);
+        let staged = &response.0.staged_skills[0];
+        assert_eq!(staged.status, "staged");
+        assert_eq!(staged.project_id, project_id.as_str());
+
+        let scoped = list_conversation_project_skills(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(ListConversationProjectSkillsRequest {
+                project_id: project_id.as_str().to_string(),
+                conversation_id: conversation_id.as_str().to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(scoped.0.count, 1);
+        assert!(scoped.0.skills[0].generated_by_conversation);
     }
 
     #[tokio::test]
@@ -744,9 +1178,14 @@ mod tests {
             .upsert(UpsertTaskOutcomeInput { outcome })
             .await
             .unwrap();
-        let mut usage = new_skill_usage_event(project_id.clone(), skill_id.clone(), "compact_index");
+        let mut usage =
+            new_skill_usage_event(project_id.clone(), skill_id.clone(), "compact_index");
         usage.outcome_id = Some(outcome.id);
-        app_state.skill_usage_event_repo.record(usage).await.unwrap();
+        app_state
+            .skill_usage_event_repo
+            .record(usage)
+            .await
+            .unwrap();
 
         let response = list_project_skill_report_cards(
             State(test_state(app_state)),

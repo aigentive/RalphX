@@ -74,7 +74,9 @@ describe("AgentsChatHeader", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
-    window.localStorage.clear();
+    if (typeof window.localStorage.clear === "function") {
+      window.localStorage.clear();
+    }
     useChatStore.setState({ agentStatus: {}, isSending: {} });
   });
 
@@ -802,7 +804,7 @@ describe("AgentsChatHeader", () => {
     expect(screen.getByTestId("agents-workspace-status")).toBeInTheDocument();
   });
 
-  it("hides ideation artifact shortcuts for edit-mode conversations", () => {
+  it("shows only the skills artifact shortcut for edit-mode conversations", () => {
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "edit" })}
@@ -820,6 +822,8 @@ describe("AgentsChatHeader", () => {
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Tasks")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Skills")).toBeInTheDocument();
+    expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 
   it("shows ideation artifact shortcuts for ideation-mode conversations", () => {
@@ -866,7 +870,7 @@ describe("AgentsChatHeader", () => {
     expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 
-  it("hides plan-mode artifact controls until a plan exists", () => {
+  it("hides plan-mode ideation shortcuts until a plan exists", () => {
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "plan" })}
@@ -883,10 +887,11 @@ describe("AgentsChatHeader", () => {
 
     expect(screen.queryByLabelText("Plan")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Open artifacts")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Skills")).toBeInTheDocument();
+    expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 
-  it("hides ideation artifact shortcuts when no artifact tabs are available yet", () => {
+  it("hides ideation artifact shortcuts when no ideation tabs are available yet", () => {
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "ideation" })}
@@ -905,6 +910,7 @@ describe("AgentsChatHeader", () => {
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Tasks")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Skills")).toBeInTheDocument();
     expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 

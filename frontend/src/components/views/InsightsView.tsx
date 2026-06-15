@@ -16,7 +16,6 @@ import { useProjectStats } from "@/hooks/useProjectStats";
 import { useProjectChatUsageStats } from "@/hooks/useProjectChatUsageStats";
 import { useProjectTrends } from "@/hooks/useProjectTrends";
 import { DetailCard } from "@/components/tasks/detail-views/shared/DetailCard";
-import { ProjectSkillsCuratorPanel } from "@/components/project-skills/ProjectSkillsCuratorPanel";
 import type { ProjectStats, ProjectTrends, WeeklyDataPoint } from "@/types/project-stats";
 import {
   formatCSV,
@@ -436,9 +435,6 @@ function InsightsContent({
                 <UsageInsightsCard stats={usageStats} />
               </>
             )}
-
-            <SectionLabel>Learned Skills</SectionLabel>
-            <ProjectSkillsCuratorPanel projectId={projectId} />
 
             <SectionLabel>Trends</SectionLabel>
             {/* Trend charts */}
