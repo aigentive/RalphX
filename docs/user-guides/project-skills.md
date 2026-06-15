@@ -9,7 +9,7 @@ They are different from factual memory:
 | Memory | Facts and observations about this project or run | "This repo uses a custom merge validation script." |
 | Project skill | Reusable procedure for future agents | "Before approving merge output, run the custom validation script and inspect its failure class." |
 
-Use the **Skills** sidebar item to review staged skills, approve/reject them, inspect report cards, import skill manifests, promote memory, and export approved skills.
+Use the **Skills** sidebar item to review staged skills, approve/reject them, inspect report cards, import skill manifests, create draft skills from memory, and export approved skills.
 
 ## Enabling The Skills UI
 
@@ -108,9 +108,9 @@ git commit -m "docs: export RalphX project skills"
 
 If export wrote files once, your worktree is now dirty by design. Commit or remove those `.claude/skills` files before running export again.
 
-## Promote Memory
+## Create Skill From Memory
 
-**Promote memory** turns one existing memory row into a staged project skill candidate.
+**Create skill from memory** uses one existing memory row as provenance for a staged project skill candidate.
 
 It does not copy memory directly into runtime guidance. You must rewrite the useful fact into a reusable procedure. The original memory remains unchanged and becomes provenance on the staged skill.
 
@@ -126,7 +126,7 @@ It does not copy memory directly into runtime guidance. You must rewrite the use
 | Skill body | Yes | The reusable procedure agents should follow |
 | Predicted effect | Yes | Expected improvement from applying this skill |
 
-### Good Promotion Example
+### Good Memory-To-Skill Example
 
 Memory:
 
@@ -134,7 +134,7 @@ Memory:
 Merge validation failed twice because the project requires scripts/validate_sqlite_migrations.py after schema changes.
 ```
 
-Promoted skill:
+Draft skill:
 
 ```text
 Title: Validate SQLite migrations before merge
@@ -148,7 +148,7 @@ Body:
 Predicted effect: Reduces repeated merge validation failures on schema-changing tasks.
 ```
 
-### Bad Promotion Example
+### Bad Memory-To-Skill Example
 
 Do not promote raw facts as the skill body:
 
@@ -158,18 +158,18 @@ The repo had a migration failure on June 14.
 
 That belongs in memory. A skill must tell future agents what to do differently.
 
-### Promotion Troubleshooting
+### Memory-To-Skill Troubleshooting
 
 | Symptom | Meaning | Fix |
 |---|---|---|
-| Promote button is disabled | Required fields are empty | Fill Memory ID, compact guidance, body, and predicted effect |
+| Create draft skill button is disabled | Required fields are empty | Fill Memory ID, compact guidance, body, and predicted effect |
 | "memory entry not found" | The ID does not exist | Use a real memory ID from the current project |
 | Cross-project rejection | The memory belongs to another project | Promote only same-project memories |
 | Staged skill appears but agents do not use it | Staged skills are not injected | Approve the skill first |
 
-## Import Manifest
+## Import Skill Manifest
 
-Import accepts a JSON manifest and stages eligible rows after a backend preview.
+Import skill manifest accepts external JSON and stages eligible rows after a backend preview. It is for bringing in already-authored draft skills from another source, not for reading memory or scanning the repo.
 
 Minimum shape:
 
@@ -208,6 +208,6 @@ Preview is fail-closed: invalid rows stay invalid until fixed. Apply stages only
 | Pin | Keeps an approved skill prominent and export-eligible |
 | Archive | Hides a skill from active lists |
 | Export | Writes approved/pinned skills to `.claude/skills` on a clean review branch |
-| Promote memory | Creates a staged skill candidate from rewritten procedural guidance |
+| Create skill from memory | Creates a staged skill candidate from rewritten procedural guidance |
 
 Project skills are still conservative: reporting is descriptive, underpowered skills should not be treated as proven winners, and export remains opt-in.

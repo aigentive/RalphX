@@ -521,11 +521,12 @@ function ImportPromotionPanel({
       <Card className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
         <div className="grid gap-3">
           <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
-            Import
+            Import skill manifest
           </h3>
           <p className="text-xs text-[var(--text-secondary)]">
-            Paste a JSON manifest of reusable procedural skills. Preview is
-            read-only; Apply stages only rows that pass backend eligibility.
+            Bring in draft skills from an external JSON manifest. Preview checks
+            eligibility first; Apply adds valid rows to the Review Queue for
+            approval.
           </p>
           <Textarea
             aria-label="Project skill import manifest"
@@ -549,7 +550,7 @@ function ImportPromotionPanel({
               disabled={disabled || !canSubmitImport}
               onClick={onPreviewImport}
             >
-              Preview import
+              Preview manifest
             </Button>
             <Button
               type="button"
@@ -557,7 +558,7 @@ function ImportPromotionPanel({
               disabled={disabled || !canSubmitImport}
               onClick={onApplyImport}
             >
-              Apply import
+              Add to review queue
             </Button>
           </div>
         </div>
@@ -566,12 +567,12 @@ function ImportPromotionPanel({
       <Card className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
         <div className="grid gap-3">
           <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
-            Promote memory
+            Create skill from memory
           </h3>
           <p className="text-xs text-[var(--text-secondary)]">
-            Convert a factual memory into a staged procedural skill. The memory
-            stays unchanged; you must write the reusable guidance, body, and
-            predicted effect explicitly.
+            Use one saved factual memory as provenance for a new draft skill.
+            The memory stays unchanged; you rewrite the lesson as reusable
+            agent procedure before it enters the Review Queue.
           </p>
           <div className="grid gap-2 sm:grid-cols-2">
             <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
@@ -649,7 +650,7 @@ function ImportPromotionPanel({
               disabled={disabled || !canPromoteMemory}
               onClick={onPromoteMemory}
             >
-              Promote
+              Create draft skill
             </Button>
           </div>
         </div>
