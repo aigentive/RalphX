@@ -238,6 +238,7 @@ describe("ProjectSkillsCuratorPanel", () => {
   it("renders conservative report cards for approved skills", async () => {
     renderPanel();
 
+    fireEvent.click(await screen.findByRole("tab", { name: /reports/i }));
     expect(await screen.findByText("low sample")).toBeInTheDocument();
     expect(screen.getAllByText("Approved review convention").length).toBeGreaterThan(0);
     expect(screen.getByText("3 uses")).toBeInTheDocument();
@@ -249,9 +250,11 @@ describe("ProjectSkillsCuratorPanel", () => {
   it("previews and applies project skill imports", async () => {
     renderPanel();
 
-    await screen.findByText("Import skill manifest");
+    expect(screen.queryByText("Import draft skills")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("tab", { name: /advanced/i }));
+    await screen.findByText("Import draft skills");
     expect(
-      screen.getByText(/Apply adds valid rows to the Review Queue/i),
+      screen.getByText(/Preview validates each row first/i),
     ).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Project skill import manifest"), {
       target: {
@@ -295,9 +298,11 @@ describe("ProjectSkillsCuratorPanel", () => {
   it("promotes memory entries through the curator panel", async () => {
     renderPanel();
 
-    await screen.findByText("Create skill from memory");
+    expect(screen.queryByText("Draft from memory")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("tab", { name: /advanced/i }));
+    await screen.findByText("Draft from memory");
     expect(
-      screen.getByText(/rewrite the lesson as reusable agent procedure/i),
+      screen.getByText(/Use one saved memory only as provenance/i),
     ).toBeInTheDocument();
     expect(screen.getByText("Memory ID")).toBeInTheDocument();
     expect(screen.getByText("Compact guidance")).toBeInTheDocument();
@@ -402,6 +407,7 @@ describe("ProjectSkillsCuratorPanel", () => {
 
     renderPanel();
 
+    fireEvent.click(await screen.findByRole("tab", { name: /^approved$/i }));
     expect(
       (await screen.findAllByText("Approved review convention")).length,
     ).toBeGreaterThan(0);
@@ -430,6 +436,7 @@ describe("ProjectSkillsCuratorPanel", () => {
 
     renderPanel();
 
+    fireEvent.click(await screen.findByRole("tab", { name: /^approved$/i }));
     expect(await screen.findByText("Pinned review convention")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^unpin$/i }));
@@ -441,6 +448,7 @@ describe("ProjectSkillsCuratorPanel", () => {
   it("previews and applies approved skill export after opt-in", async () => {
     renderPanel();
 
+    fireEvent.click(await screen.findByRole("tab", { name: /^approved$/i }));
     expect(
       (await screen.findAllByText("Approved review convention")).length,
     ).toBeGreaterThan(0);
