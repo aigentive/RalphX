@@ -919,6 +919,80 @@ pub async fn archive_proposal_impl(
     Ok(session_id)
 }
 
+/// Reject proposal — fetch session, assert mutability, and mark status rejected in one transaction.
+///
+/// Rejection is distinct from archive/delete: dependency rows remain intact so downstream
+/// learning and review flows can still reason about rejected proposal context.
+pub async fn reject_proposal_impl(
+    state: &AppState,
+    proposal_id: TaskProposalId,
+) -> AppResult<IdeationSessionId> {
+    let pid = proposal_id.as_str().to_string();
+
+    let session_id = state
+        .db
+        .run_transaction(move |conn| {
+            let session_id_str: String = match conn.query_row(
+                "SELECT session_id FROM task_proposals WHERE id = ?1",
+                [&pid],
+                |row| row.get(0),
+            ) {
+                Ok(s) => s,
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    return Err(AppError::NotFound(format!("Proposal {} not found", pid)));
+                }
+                Err(e) => return Err(AppError::from(e)),
+            };
+
+            let session_id = IdeationSessionId::from_string(session_id_str);
+            let session = SessionRepo::get_by_id_sync(conn, session_id.as_str())?
+                .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
+            assert_session_mutable(&session)?;
+
+            {
+                let settings = get_settings_sync(conn)?;
+                let policy = resolve_effective_gate_policy(&settings, session.origin);
+                let parent_status = if session.plan_artifact_id.is_none()
+                    && session.inherited_plan_artifact_id.is_some()
+                {
+                    session
+                        .parent_session_id
+                        .as_ref()
+                        .and_then(|pid| {
+                            SessionRepo::get_by_id_sync(conn, pid.as_str())
+                                .ok()
+                                .flatten()
+                        })
+                        .map(|p| p.verification_status)
+                } else {
+                    None
+                };
+                check_proposal_verification_gate(
+                    &session,
+                    &policy,
+                    parent_status,
+                    ProposalOperation::Reject,
+                )
+                .map_err(AppError::from)?;
+            }
+
+            let proposal_id_typed = TaskProposalId::from_string(pid.clone());
+            ProposalRepo::reject_sync(conn, &proposal_id_typed)?;
+
+            Ok(session_id)
+        })
+        .await?;
+
+    if let Some(app_handle) = &state.app_handle {
+        let _ = app_handle.emit(
+            "proposal:rejected",
+            serde_json::json!({ "proposalId": proposal_id.as_str() }),
+        );
+    }
+
+    Ok(session_id)
+}
+
 /// Finalize proposals — synchronously apply all active proposals for a session.
 ///
 /// Called explicitly by the agent after all proposals and dependencies have been set.

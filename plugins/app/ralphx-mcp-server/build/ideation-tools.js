@@ -140,6 +140,20 @@ export const IDEATION_TOOLS = [
         },
     },
     {
+        name: "reject_task_proposal",
+        description: "Reject a task proposal without archiving it. Use when the user rejects a proposal but its dependency context should remain available for review and learning.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                proposal_id: {
+                    type: "string",
+                    description: "The proposal ID to reject",
+                },
+            },
+            required: ["proposal_id"],
+        },
+    },
+    {
         name: "update_session_title",
         description: "Update the title of an ideation session or an agent conversation. Used by ralphx-utility-session-namer to persist auto-generated titles. Provide exactly one of session_id or conversation_id.",
         inputSchema: {

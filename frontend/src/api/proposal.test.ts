@@ -4,6 +4,7 @@ import {
   createTaskProposal,
   updateTaskProposal,
   deleteTaskProposal,
+  rejectTaskProposal,
   reorderProposals,
   assessProposalPriority,
   assessAllPriorities,
@@ -214,6 +215,30 @@ describe("deleteTaskProposal", () => {
     mockInvoke.mockRejectedValue(new Error("Proposal not found"));
 
     await expect(deleteTaskProposal("nonexistent")).rejects.toThrow(
+      "Proposal not found"
+    );
+  });
+});
+
+describe("rejectTaskProposal", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+  });
+
+  it("should call reject_task_proposal with proposalId", async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await rejectTaskProposal("proposal-1");
+
+    expect(mockInvoke).toHaveBeenCalledWith("reject_task_proposal", {
+      id: "proposal-1",
+    });
+  });
+
+  it("should propagate errors", async () => {
+    mockInvoke.mockRejectedValue(new Error("Proposal not found"));
+
+    await expect(rejectTaskProposal("nonexistent")).rejects.toThrow(
       "Proposal not found"
     );
   });
@@ -522,6 +547,7 @@ describe("proposalApi namespace", () => {
     expect(proposalApi.createTaskProposal).toBe(createTaskProposal);
     expect(proposalApi.updateTaskProposal).toBe(updateTaskProposal);
     expect(proposalApi.deleteTaskProposal).toBe(deleteTaskProposal);
+    expect(proposalApi.rejectTaskProposal).toBe(rejectTaskProposal);
     expect(proposalApi.reorderProposals).toBe(reorderProposals);
     expect(proposalApi.assessProposalPriority).toBe(assessProposalPriority);
     expect(proposalApi.assessAllPriorities).toBe(assessAllPriorities);
@@ -531,7 +557,7 @@ describe("proposalApi namespace", () => {
     expect(proposalApi.applyProposalsToKanban).toBe(applyProposalsToKanban);
   });
 
-  it("should have 10 functions", () => {
-    expect(Object.keys(proposalApi)).toHaveLength(10);
+  it("should have 11 functions", () => {
+    expect(Object.keys(proposalApi)).toHaveLength(11);
   });
 });

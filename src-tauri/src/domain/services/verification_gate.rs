@@ -61,6 +61,7 @@ pub enum ProposalOperation {
     Create,
     Update,
     Delete,
+    Reject,
 }
 
 impl std::fmt::Display for ProposalOperation {
@@ -69,6 +70,7 @@ impl std::fmt::Display for ProposalOperation {
             ProposalOperation::Create => write!(f, "create"),
             ProposalOperation::Update => write!(f, "update"),
             ProposalOperation::Delete => write!(f, "delete"),
+            ProposalOperation::Reject => write!(f, "reject"),
         }
     }
 }
@@ -175,15 +177,15 @@ pub fn check_proposal_verification_gate(
         (ProposalOperation::Create, VerificationStatus::Skipped) => {
             Err(VerificationError::ProposalSkippedNotAllowed)
         }
-        // Skipped allows Update/Delete — existing proposals can still be modified
-        (ProposalOperation::Update | ProposalOperation::Delete, VerificationStatus::Skipped) => Ok(()),
+        // Skipped allows Update/Delete/Reject — existing proposals can still be modified
+        (ProposalOperation::Update | ProposalOperation::Delete | ProposalOperation::Reject, VerificationStatus::Skipped) => Ok(()),
 
         // Create blocks Unverified
         (ProposalOperation::Create, VerificationStatus::Unverified) => {
             Err(VerificationError::ProposalNotVerified)
         }
-        // Update/Delete allow Unverified (editing before review starts is fine)
-        (ProposalOperation::Update | ProposalOperation::Delete, VerificationStatus::Unverified) => {
+        // Update/Delete/Reject allow Unverified (editing before review starts is fine)
+        (ProposalOperation::Update | ProposalOperation::Delete | ProposalOperation::Reject, VerificationStatus::Unverified) => {
             Ok(())
         }
 
