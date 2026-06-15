@@ -207,6 +207,70 @@ describe("projectSkillsApi", () => {
     );
   });
 
+  it("lists conservative project skill report cards", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        cards: [
+          {
+            project_skill_id: "skill-1",
+            title: "Check merge validation",
+            bucket: "merge",
+            stage: "review",
+            pinned: false,
+            usage_count: 3,
+            linked_outcome_count: 2,
+            succeeded_outcome_count: 1,
+            failed_outcome_count: 1,
+            unknown_outcome_count: 0,
+            last_used_at: "2026-06-15T10:00:00Z",
+            age_days: 1,
+            aging_status: "active",
+            evidence_level: "insufficient_data",
+          },
+        ],
+        count: 1,
+      }),
+    );
+
+    await expect(
+      projectSkillsApi.listReportCards({
+        projectId: "project-1",
+        minLinkedOutcomes: 5,
+        staleAfterDays: 30,
+      }),
+    ).resolves.toEqual({
+      count: 1,
+      cards: [
+        {
+          projectSkillId: "skill-1",
+          title: "Check merge validation",
+          bucket: "merge",
+          stage: "review",
+          pinned: false,
+          usageCount: 3,
+          linkedOutcomeCount: 2,
+          succeededOutcomeCount: 1,
+          failedOutcomeCount: 1,
+          unknownOutcomeCount: 0,
+          lastUsedAt: "2026-06-15T10:00:00Z",
+          ageDays: 1,
+          agingStatus: "active",
+          evidenceLevel: "insufficient_data",
+        },
+      ],
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:3847/api/project_skills/report_cards",
+      expect.objectContaining({
+        body: JSON.stringify({
+          project_id: "project-1",
+          min_linked_outcomes: 5,
+          stale_after_days: 30,
+        }),
+      }),
+    );
+  });
+
   it("previews project skill export files", async () => {
     fetchMock.mockResolvedValue(jsonResponse(exportResponse()));
 

@@ -43,8 +43,9 @@ pub use index_rewriter::{IndexRewriter, RewriteResult};
 pub use learned_skill_substrate::{
     new_empty_task_outcome, new_skill_usage_event, DistillEligibleOutcomesInput,
     DistillEligibleOutcomesResult, OutcomeLedgerService, ProjectSkillDistillerService,
-    ProjectSkillDistillationOrigin, ProjectSkillService, SkillUsageService,
-    StageProjectSkillFromOutcomeInput,
+    ProjectSkillDistillationOrigin, ProjectSkillEvidenceLevel, ProjectSkillReportCard,
+    ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService,
+    SkillUsageService, StageProjectSkillFromOutcomeInput,
 };
 pub use verification_events::{
     build_verification_payload, build_verification_started_snapshot,

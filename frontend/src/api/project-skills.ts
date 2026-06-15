@@ -64,9 +64,32 @@ const ProjectSkillSettingsResponseSchema = z.object({
   export_enabled: z.boolean(),
 });
 
+const ProjectSkillReportCardResponseSchema = z.object({
+  project_skill_id: z.string(),
+  title: z.string(),
+  bucket: z.string(),
+  stage: z.string(),
+  pinned: z.boolean(),
+  usage_count: z.number(),
+  linked_outcome_count: z.number(),
+  succeeded_outcome_count: z.number(),
+  failed_outcome_count: z.number(),
+  unknown_outcome_count: z.number(),
+  last_used_at: z.string().nullable().optional(),
+  age_days: z.number(),
+  aging_status: z.enum(["active", "stale", "unused"]),
+  evidence_level: z.enum(["insufficient_data", "descriptive"]),
+});
+
+const ProjectSkillReportCardsResponseSchema = z.object({
+  cards: z.array(ProjectSkillReportCardResponseSchema),
+  count: z.number(),
+});
+
 type RawProjectSkill = z.infer<typeof ProjectSkillResponseSchema>;
 type RawProjectSkillExport = z.infer<typeof ProjectSkillExportResponseSchema>;
 type RawProjectSkillSettings = z.infer<typeof ProjectSkillSettingsResponseSchema>;
+type RawProjectSkillReportCard = z.infer<typeof ProjectSkillReportCardResponseSchema>;
 
 export type ProjectSkillStatus = z.infer<typeof ProjectSkillStatusSchema>;
 
@@ -130,6 +153,34 @@ export interface ProjectSkillSettings {
   exportEnabled: boolean;
 }
 
+export interface ProjectSkillReportCard {
+  projectSkillId: string;
+  title: string;
+  bucket: string;
+  stage: string;
+  pinned: boolean;
+  usageCount: number;
+  linkedOutcomeCount: number;
+  succeededOutcomeCount: number;
+  failedOutcomeCount: number;
+  unknownOutcomeCount: number;
+  lastUsedAt: string | null;
+  ageDays: number;
+  agingStatus: "active" | "stale" | "unused";
+  evidenceLevel: "insufficient_data" | "descriptive";
+}
+
+export interface ListProjectSkillReportCardsInput {
+  projectId: string;
+  minLinkedOutcomes?: number | null;
+  staleAfterDays?: number | null;
+}
+
+export interface ProjectSkillReportCardsResult {
+  cards: ProjectSkillReportCard[];
+  count: number;
+}
+
 function transformProjectSkill(raw: RawProjectSkill): ProjectSkill {
   return {
     id: raw.id,
@@ -173,6 +224,27 @@ function transformProjectSkillSettings(
   return {
     projectId: raw.project_id,
     exportEnabled: raw.export_enabled,
+  };
+}
+
+function transformProjectSkillReportCard(
+  raw: RawProjectSkillReportCard,
+): ProjectSkillReportCard {
+  return {
+    projectSkillId: raw.project_skill_id,
+    title: raw.title,
+    bucket: raw.bucket,
+    stage: raw.stage,
+    pinned: raw.pinned,
+    usageCount: raw.usage_count,
+    linkedOutcomeCount: raw.linked_outcome_count,
+    succeededOutcomeCount: raw.succeeded_outcome_count,
+    failedOutcomeCount: raw.failed_outcome_count,
+    unknownOutcomeCount: raw.unknown_outcome_count,
+    lastUsedAt: raw.last_used_at ?? null,
+    ageDays: raw.age_days,
+    agingStatus: raw.aging_status,
+    evidenceLevel: raw.evidence_level,
   };
 }
 
@@ -250,6 +322,21 @@ export const projectSkillsApi = {
     return {
       stagedSkills: parsed.staged_skills.map(transformProjectSkill),
       skippedExisting: parsed.skipped_existing,
+    };
+  },
+
+  async listReportCards(
+    input: ListProjectSkillReportCardsInput,
+  ): Promise<ProjectSkillReportCardsResult> {
+    const raw = await postJson<unknown>("project_skills/report_cards", {
+      project_id: input.projectId,
+      min_linked_outcomes: input.minLinkedOutcomes ?? null,
+      stale_after_days: input.staleAfterDays ?? null,
+    });
+    const parsed = ProjectSkillReportCardsResponseSchema.parse(raw);
+    return {
+      cards: parsed.cards.map(transformProjectSkillReportCard),
+      count: parsed.count,
     };
   },
 
