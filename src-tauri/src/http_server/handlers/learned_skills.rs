@@ -1,7 +1,7 @@
 use axum::{extract::State, http::StatusCode, Json};
 use chrono::Utc;
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1316,7 +1316,15 @@ async fn scan_project_skill_source_root(
     source_root: &str,
     source_sync_enabled: bool,
 ) -> AppResult<Vec<ProjectSkillImportCandidate>> {
-    let skills_root = project_root.join(source_root);
+    let canonical_project_root = tokio::fs::canonicalize(project_root)
+        .await
+        .map_err(|error| {
+            AppError::Infrastructure(format!(
+                "failed to canonicalize project root {}: {error}",
+                project_root.display()
+            ))
+        })?;
+    let skills_root = canonical_project_root.join(source_root);
     if !skills_root.exists() {
         return Ok(Vec::new());
     }
@@ -1331,13 +1339,29 @@ async fn scan_project_skill_source_root(
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Ok(Vec::new());
     }
+    let canonical_skills_root = tokio::fs::canonicalize(&skills_root)
+        .await
+        .map_err(|error| {
+            AppError::Infrastructure(format!(
+                "failed to canonicalize project skills directory {}: {error}",
+                skills_root.display()
+            ))
+        })?;
+    if !canonical_skills_root.starts_with(&canonical_project_root) {
+        return Err(AppError::Validation(format!(
+            "project skills directory {} escapes project root",
+            source_root
+        )));
+    }
 
-    let mut entries = tokio::fs::read_dir(&skills_root).await.map_err(|error| {
-        AppError::Infrastructure(format!(
-            "failed to read project skills directory {}: {error}",
-            skills_root.display()
-        ))
-    })?;
+    let mut entries = tokio::fs::read_dir(&canonical_skills_root)
+        .await
+        .map_err(|error| {
+            AppError::Infrastructure(format!(
+                "failed to read project skills directory {}: {error}",
+                canonical_skills_root.display()
+            ))
+        })?;
     let mut candidates = Vec::new();
     while let Some(entry) = entries.next_entry().await.map_err(|error| {
         AppError::Infrastructure(format!("failed to read project skill entry: {error}"))
@@ -1352,7 +1376,14 @@ async fn scan_project_skill_source_root(
         if !entry_metadata.is_dir() || entry_metadata.file_type().is_symlink() {
             continue;
         }
-        let skill_file = entry.path().join("SKILL.md");
+        let skill_file = contained_native_skill_file(
+            &canonical_project_root,
+            &canonical_skills_root,
+            &file_name,
+        )?;
+        // The file path is built from a canonicalized project-owned skill root,
+        // an allowlisted directory component, and the fixed SKILL.md leaf.
+        // codeql[rust/path-injection]
         let file_metadata = match tokio::fs::symlink_metadata(&skill_file).await {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -1366,6 +1397,8 @@ async fn scan_project_skill_source_root(
         if !file_metadata.is_file() || file_metadata.file_type().is_symlink() {
             continue;
         }
+        // The same validated path is reused after rejecting symlinks.
+        // codeql[rust/path-injection]
         let body_markdown = tokio::fs::read_to_string(&skill_file)
             .await
             .map_err(|error| {
@@ -1407,6 +1440,35 @@ async fn scan_project_skill_source_root(
         });
     }
     Ok(candidates)
+}
+
+fn contained_native_skill_file(
+    canonical_project_root: &Path,
+    canonical_skills_root: &Path,
+    file_name: &str,
+) -> AppResult<PathBuf> {
+    if !is_safe_native_skill_dir_name(file_name) {
+        return Err(AppError::Validation(
+            "project skill folder name contains unsafe characters".to_string(),
+        ));
+    }
+    if !canonical_skills_root.starts_with(canonical_project_root) {
+        return Err(AppError::Validation(
+            "project skills directory escapes project root".to_string(),
+        ));
+    }
+    let skill_file = canonical_skills_root.join(file_name).join("SKILL.md");
+    let Some(skill_parent) = skill_file.parent() else {
+        return Err(AppError::Validation(
+            "project skill file has no parent directory".to_string(),
+        ));
+    };
+    if !skill_parent.starts_with(canonical_skills_root) {
+        return Err(AppError::Validation(
+            "project skill file escapes project skills directory".to_string(),
+        ));
+    }
+    Ok(skill_file)
 }
 
 fn is_safe_native_skill_dir_name(value: &str) -> bool {
