@@ -18,12 +18,19 @@ vi.mock("@/components/project-skills/ProjectSkillsCuratorPanel", () => ({
   ),
 }));
 
+vi.mock("@/components/projects/ProjectSelector", () => ({
+  ProjectSelector: () => <button type="button">RalphX</button>,
+}));
+
 describe("SkillsView", () => {
   it("renders the project skills curator on the dedicated skills view", () => {
     render(<SkillsView />);
 
     expect(screen.getByTestId("skills-view")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Project Skills" })).toBeInTheDocument();
+    expect(screen.getByText("Project-scoped skills")).toBeInTheDocument();
+    expect(screen.getByText("Project")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "RalphX" })).toBeInTheDocument();
     expect(screen.getByTestId("project-skills-curator")).toHaveAttribute(
       "data-project",
       "proj-1",

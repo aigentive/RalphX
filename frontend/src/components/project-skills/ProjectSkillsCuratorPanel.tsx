@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
@@ -348,88 +349,125 @@ export function ProjectSkillsCuratorPanel({
           repeated procedural lessons and stages draft skills for human
           approval.
         </div>
-        <ProjectSkillsExportControls
-          disabled={isBusy || approvedSkills.length === 0}
-          exportEnabled={exportEnabled}
-          onExportEnabledChange={(enabled) =>
-            updateSettingsMutation.mutate(enabled)
-          }
-          onPreview={() => previewExportMutation.mutate()}
-          onApply={() => applyExportMutation.mutate()}
-        />
-        {approvedSkills.length === 0 ? (
-          <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs text-[var(--text-tertiary)]">
-            Approve or pin at least one skill before export controls can write
-            files.
-          </div>
-        ) : null}
       </div>
 
-      {exportPreview ? (
-        <ProjectSkillsExportSummary preview={exportPreview} />
-      ) : null}
+      <Tabs defaultValue="review" className="grid gap-4">
+        <TabsList className="h-auto justify-start rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-1">
+          <TabsTrigger value="review" className="text-xs">
+            Review queue
+          </TabsTrigger>
+          <TabsTrigger value="approved" className="text-xs">
+            Approved
+          </TabsTrigger>
+          <TabsTrigger value="reports" className="text-xs">
+            Reports
+          </TabsTrigger>
+          <TabsTrigger value="advanced" className="text-xs">
+            Advanced
+          </TabsTrigger>
+        </TabsList>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
-        <div className="grid gap-4">
-          {stagedQuery.isLoading || approvedQuery.isLoading ? (
-            <div className="grid gap-3">
-              <Skeleton className="h-28 w-full" />
-              <Skeleton className="h-28 w-full" />
-            </div>
+        <TabsContent value="review" className="mt-0 grid gap-4">
+          {stagedQuery.isLoading ? (
+            <Skeleton className="h-28 w-full" />
           ) : (
-            <>
-              <SkillSection
-                title="Review Queue"
-                description="Staged candidates must be approved before agents can use them."
-                emptyMessage="No staged learned skills."
-                skills={stagedSkills}
-                renderSkill={(skill) => (
-                  <ProjectSkillCandidateCard
-                    key={skill.id}
-                    skill={skill}
-                    disabled={isBusy}
-                    onApprove={() => approveMutation.mutate(skill.id)}
-                    onReject={() => rejectMutation.mutate(skill.id)}
-                    onArchive={() => archiveMutation.mutate(skill.id)}
-                  />
-                )}
-              />
-              <SkillSection
-                title="Approved Skills"
-                description="Approved skills are eligible for future injection and export."
-                emptyMessage="No approved learned skills."
-                skills={approvedSkills}
-                renderSkill={(skill) => (
-                  <ProjectSkillApprovedCard
-                    key={skill.id}
-                    skill={skill}
-                    disabled={isBusy}
-                    onPin={() => pinMutation.mutate(skill.id)}
-                    onUnpin={() => unpinMutation.mutate(skill.id)}
-                    onArchive={() => archiveMutation.mutate(skill.id)}
-                  />
-                )}
-              />
-              <ReportCardSection
-                loading={reportCardsQuery.isLoading}
-                cards={reportCards}
-              />
-            </>
+            <SkillSection
+              title="Review Queue"
+              description="Staged candidates must be approved before agents can use them."
+              emptyMessage="No staged learned skills."
+              skills={stagedSkills}
+              renderSkill={(skill) => (
+                <ProjectSkillCandidateCard
+                  key={skill.id}
+                  skill={skill}
+                  disabled={isBusy}
+                  onApprove={() => approveMutation.mutate(skill.id)}
+                  onReject={() => rejectMutation.mutate(skill.id)}
+                  onArchive={() => archiveMutation.mutate(skill.id)}
+                />
+              )}
+            />
           )}
-        </div>
+        </TabsContent>
 
-        <ImportPromotionPanel
-          disabled={isBusy}
-          importManifest={importManifest}
-          importPreview={importPreview}
-          memoryPromotion={memoryPromotion}
-          onImportManifestChange={setImportManifest}
-          onPreviewImport={() => previewImportMutation.mutate()}
-          onApplyImport={() => applyImportMutation.mutate()}
-          onMemoryPromotionChange={setMemoryPromotion}
-          onPromoteMemory={() => promoteMemoryMutation.mutate()}
-        />
-      </div>
+        <TabsContent value="approved" className="mt-0 grid gap-4">
+          <div className="grid gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold text-[var(--text-primary)]">
+                Export approved skills
+              </h2>
+              <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
+                Export is project-scoped and opt-in. It writes only approved or
+                pinned skills after preview.
+              </p>
+            </div>
+            <ProjectSkillsExportControls
+              disabled={isBusy || approvedSkills.length === 0}
+              exportEnabled={exportEnabled}
+              onExportEnabledChange={(enabled) =>
+                updateSettingsMutation.mutate(enabled)
+              }
+              onPreview={() => previewExportMutation.mutate()}
+              onApply={() => applyExportMutation.mutate()}
+            />
+            {approvedSkills.length === 0 ? (
+              <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs text-[var(--text-tertiary)]">
+                Approve or pin at least one skill before export controls can
+                write files.
+              </div>
+            ) : null}
+          </div>
+          {exportPreview ? (
+            <ProjectSkillsExportSummary preview={exportPreview} />
+          ) : null}
+          {approvedQuery.isLoading ? (
+            <Skeleton className="h-28 w-full" />
+          ) : (
+            <SkillSection
+              title="Approved Skills"
+              description="Approved skills are eligible for future injection and export."
+              emptyMessage="No approved learned skills."
+              skills={approvedSkills}
+              renderSkill={(skill) => (
+                <ProjectSkillApprovedCard
+                  key={skill.id}
+                  skill={skill}
+                  disabled={isBusy}
+                  onPin={() => pinMutation.mutate(skill.id)}
+                  onUnpin={() => unpinMutation.mutate(skill.id)}
+                  onArchive={() => archiveMutation.mutate(skill.id)}
+                />
+              )}
+            />
+          )}
+        </TabsContent>
+
+        <TabsContent value="reports" className="mt-0 grid gap-4">
+          <ReportCardSection
+            loading={reportCardsQuery.isLoading}
+            cards={reportCards}
+          />
+        </TabsContent>
+
+        <TabsContent value="advanced" className="mt-0 grid gap-4">
+          <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
+            Advanced intake is for controlled imports and one-off memory
+            promotions. New rows still land in the Review Queue and require
+            approval before agents can use them.
+          </div>
+          <ImportPromotionPanel
+            disabled={isBusy}
+            importManifest={importManifest}
+            importPreview={importPreview}
+            memoryPromotion={memoryPromotion}
+            onImportManifestChange={setImportManifest}
+            onPreviewImport={() => previewImportMutation.mutate()}
+            onApplyImport={() => applyImportMutation.mutate()}
+            onMemoryPromotionChange={setMemoryPromotion}
+            onPromoteMemory={() => promoteMemoryMutation.mutate()}
+          />
+        </TabsContent>
+      </Tabs>
 
       {error ? (
         <div
@@ -523,12 +561,12 @@ function ImportPromotionPanel({
       <Card className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
         <div className="grid gap-3">
           <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
-            Import skill manifest
+            Import draft skills
           </h3>
           <p className="text-xs text-[var(--text-secondary)]">
-            Bring in draft skills from an external JSON manifest. Preview checks
-            eligibility first; Apply adds valid rows to the Review Queue for
-            approval.
+            Paste a JSON manifest from another source. Preview validates each
+            row first; Add to review queue stages only eligible drafts for this
+            project.
           </p>
           <Textarea
             aria-label="Project skill import manifest"
@@ -569,12 +607,11 @@ function ImportPromotionPanel({
       <Card className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
         <div className="grid gap-3">
           <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
-            Create skill from memory
+            Draft from memory
           </h3>
           <p className="text-xs text-[var(--text-secondary)]">
-            Use one saved factual memory as provenance for a new draft skill.
-            The memory stays unchanged; you rewrite the lesson as reusable
-            agent procedure before it enters the Review Queue.
+            Use one saved memory only as provenance. The memory is not edited;
+            you write the reusable procedure and send it to the Review Queue.
           </p>
           <div className="grid gap-2 sm:grid-cols-2">
             <label className="grid gap-1 text-xs text-[var(--text-secondary)]">

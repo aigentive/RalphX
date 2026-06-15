@@ -1,4 +1,5 @@
 import { ProjectSkillsCuratorPanel } from "@/components/project-skills/ProjectSkillsCuratorPanel";
+import { ProjectSelector } from "@/components/projects/ProjectSelector";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 
 export function SkillsView() {
@@ -25,7 +26,7 @@ export function SkillsView() {
         <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[var(--border-subtle)] pb-5">
           <div className="min-w-0">
             <div className="text-xs font-medium uppercase text-[var(--text-tertiary)]">
-              {project.name}
+              Project-scoped skills
             </div>
             <h1
               className="mt-1 text-[1.375rem] font-semibold"
@@ -41,6 +42,16 @@ export function SkillsView() {
               Review learned procedures, approve what agents may reuse, and
               explicitly export selected skills to the target repository.
             </p>
+          </div>
+          <div className="grid gap-1">
+            <span className="text-xs font-medium text-[var(--text-tertiary)]">
+              Project
+            </span>
+            <ProjectSelector
+              onNewProject={() => undefined}
+              align="end"
+              className="max-w-[320px]"
+            />
           </div>
         </div>
 
