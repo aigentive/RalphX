@@ -16,6 +16,7 @@ use super::chat_service_types::{
     AgentErrorPayload, AgentMessageCreatedPayload, AgentQueueSentPayload, AgentRunStartedPayload,
 };
 use super::has_meaningful_output;
+use super::{ChatService, SendMessageOptions};
 use crate::application::question_state::QuestionState;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
@@ -28,7 +29,7 @@ use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatMessageRepository,
     ChatTimelineRepository, IdeationSessionRepository, TaskRepository,
 };
-use crate::domain::services::{MessageQueue, RunningAgentKey, RunningAgentRegistry};
+use crate::domain::services::{MessageQueue, QueuedMessage, RunningAgentKey, RunningAgentRegistry};
 use crate::utils::secret_redactor::redact;
 use tokio_util::sync::CancellationToken;
 
@@ -129,6 +130,44 @@ fn queued_persisted_metadata(
         object.insert("composer_artifact_references".to_string(), references);
     }
     Some(value.to_string())
+}
+
+pub(super) fn queued_message_requires_fresh_provider_session(
+    queued_msg: &crate::domain::services::QueuedMessage,
+    current_harness: AgentHarnessKind,
+) -> bool {
+    queued_msg.force_new_provider_session
+        || queued_msg
+            .harness_override
+            .is_some_and(|queued_harness| queued_harness != current_harness)
+}
+
+fn queued_created_at_override(queued_msg: &QueuedMessage) -> Option<chrono::DateTime<chrono::Utc>> {
+    queued_msg
+        .created_at_override
+        .as_deref()
+        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+        .map(|ts| ts.with_timezone(&chrono::Utc))
+}
+
+fn provider_switch_send_options_for_queued_message(
+    queued_msg: &QueuedMessage,
+    conversation_id: ChatConversationId,
+) -> SendMessageOptions {
+    SendMessageOptions {
+        metadata: queued_msg.metadata_override.clone(),
+        created_at: queued_created_at_override(queued_msg),
+        harness_override: queued_msg.harness_override,
+        model_override: queued_msg.model_override.clone(),
+        conversation_id_override: Some(conversation_id),
+        logical_effort_override: queued_msg.logical_effort_override,
+        composer_project_references: queued_msg.composer_project_references.clone(),
+        composer_integration_references: queued_msg.composer_integration_references.clone(),
+        composer_artifact_references: queued_msg.composer_artifact_references.clone(),
+        attachment_ids: queued_msg.attachment_ids.clone(),
+        force_new_provider_session: true,
+        ..Default::default()
+    }
 }
 
 async fn persist_hidden_resume_in_place_marker(
@@ -425,7 +464,6 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 }
             }
 
-            total_processed += 1;
             tracing::info!(
                 "[QUEUE] Processing queued message id={}, content_len={}",
                 queued_msg.id,
@@ -450,6 +488,96 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 &conversation_id,
             )
             .await;
+
+            if queued_message_requires_fresh_provider_session(&queued_msg, harness) {
+                let Some(ref handle) = app_handle else {
+                    message_queue.queue_front_existing(
+                        context_type,
+                        queue_context_id,
+                        queued_msg,
+                    );
+                    tracing::warn!(
+                        %context_type,
+                        context_id,
+                        queue_context_id,
+                        "[QUEUE] Provider switch queued message requires chat service replay but no app handle is available"
+                    );
+                    return QueueProcessingOutcome {
+                        total_processed,
+                        last_run_id,
+                    };
+                };
+
+                let app_state = handle.state::<AppState>();
+                let service = app_state.build_chat_service_for_runtime(
+                    execution_state.as_ref().map(Arc::clone),
+                    Some(handle.clone()),
+                );
+                let send_result = service
+                    .send_message(
+                        context_type,
+                        context_id,
+                        &queued_msg.content,
+                        provider_switch_send_options_for_queued_message(
+                            &queued_msg,
+                            conversation_id.clone(),
+                        ),
+                    )
+                    .await;
+
+                match send_result {
+                    Ok(result) => {
+                        total_processed += 1;
+                        if !result.agent_run_id.is_empty() {
+                            last_run_id = Some(result.agent_run_id.clone());
+                        }
+                        tracing::info!(
+                            %context_type,
+                            context_id,
+                            queue_context_id,
+                            queued_message_id = %queued_msg.id,
+                            agent_run_id = %result.agent_run_id,
+                            was_queued = result.was_queued,
+                            "[QUEUE] Replayed provider-switch queued message through chat service"
+                        );
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id,
+                        };
+                    }
+                    Err(error) => {
+                        let error_string = error.to_string();
+                        tracing::error!(
+                            %context_type,
+                            context_id,
+                            queue_context_id,
+                            queued_message_id = %queued_msg.id,
+                            error = %error_string,
+                            "[QUEUE] Failed to replay provider-switch queued message"
+                        );
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit(
+                                "agent:error",
+                                AgentErrorPayload {
+                                    conversation_id: Some(conversation_id.as_str().to_string()),
+                                    context_type: context_type.to_string(),
+                                    context_id: context_id.to_string(),
+                                    agent_run_id: None,
+                                    error: error_string,
+                                    stderr: None,
+                                },
+                            );
+                        }
+                        total_processed += 1;
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id,
+                        };
+                    }
+                }
+            }
+
+            total_processed += 1;
 
             // Emit run_started for the queued message (so frontend shows activity)
             let queued_run = build_queued_agent_run(
@@ -1033,7 +1161,12 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::services::{ComposerProjectReference, ComposerProjectReferenceKind};
+    use crate::domain::agents::LogicalEffort;
+    use crate::domain::entities::ChatAttachmentId;
+    use crate::domain::services::{
+        ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
+        ComposerProjectReferenceKind,
+    };
     use crate::infrastructure::agents::claude::agent_names;
 
     #[test]
@@ -1070,6 +1203,181 @@ mod tests {
 
         assert_eq!(value["raw_metadata"], "not-json");
         assert_eq!(value["composer_project_references"][0]["path"], "README.md");
+    }
+
+    #[test]
+    fn queued_message_requires_fresh_provider_session_on_harness_mismatch() {
+        let mut message = crate::domain::services::QueuedMessage::new("switch".to_string());
+        message.harness_override = Some(AgentHarnessKind::Codex);
+
+        assert!(queued_message_requires_fresh_provider_session(
+            &message,
+            AgentHarnessKind::Claude
+        ));
+        assert!(!queued_message_requires_fresh_provider_session(
+            &message,
+            AgentHarnessKind::Codex
+        ));
+    }
+
+    #[test]
+    fn queued_message_requires_fresh_provider_session_on_explicit_flag() {
+        let mut message = crate::domain::services::QueuedMessage::new("switch".to_string());
+        message.force_new_provider_session = true;
+
+        assert!(queued_message_requires_fresh_provider_session(
+            &message,
+            AgentHarnessKind::Claude
+        ));
+    }
+
+    #[test]
+    fn queued_created_at_override_parses_valid_timestamps_only() {
+        let mut message = crate::domain::services::QueuedMessage::new("timed".to_string());
+        message.created_at_override = Some("2026-06-12T12:00:00+02:00".to_string());
+
+        let parsed =
+            queued_created_at_override(&message).expect("valid timestamp should be parsed");
+        assert_eq!(parsed.to_rfc3339(), "2026-06-12T10:00:00+00:00");
+
+        message.created_at_override = Some("not-a-timestamp".to_string());
+        assert!(queued_created_at_override(&message).is_none());
+    }
+
+    #[test]
+    fn provider_switch_send_options_for_queued_message_preserve_payload() {
+        let conversation_id = ChatConversationId::new();
+        let attachment_id = ChatAttachmentId::new();
+        let mut message = crate::domain::services::QueuedMessage::new("switch".to_string());
+        message.metadata_override = Some(r#"{"source":"queue"}"#.to_string());
+        message.created_at_override = Some("2026-06-12T12:00:00Z".to_string());
+        message.harness_override = Some(AgentHarnessKind::Codex);
+        message.model_override = Some("gpt-5.5".to_string());
+        message.logical_effort_override = Some(LogicalEffort::High);
+        message.composer_project_references = vec![ComposerProjectReference {
+            path: "src/main.rs".to_string(),
+            kind: Some(ComposerProjectReferenceKind::File),
+        }];
+        message.composer_integration_references = vec![ComposerIntegrationReference {
+            provider: "atlassian".to_string(),
+            kind: "jira".to_string(),
+            id: "RX-42".to_string(),
+            key: Some("RX-42".to_string()),
+            title: Some("Fix queue replay".to_string()),
+            url: None,
+        }];
+        message.composer_artifact_references = vec![ComposerArtifactReference {
+            artifact_id: "artifact-1".to_string(),
+            kind: "plan".to_string(),
+            title: Some("Implementation Plan".to_string()),
+            session_id: Some("session-1".to_string()),
+            version: Some(1),
+            status: Some("approved".to_string()),
+        }];
+        message.attachment_ids = vec![attachment_id];
+
+        let options =
+            provider_switch_send_options_for_queued_message(&message, conversation_id.clone());
+
+        assert_eq!(options.metadata.as_deref(), Some(r#"{"source":"queue"}"#));
+        assert_eq!(
+            options
+                .created_at
+                .map(|timestamp| timestamp.to_rfc3339())
+                .as_deref(),
+            Some("2026-06-12T12:00:00+00:00")
+        );
+        assert_eq!(options.harness_override, Some(AgentHarnessKind::Codex));
+        assert_eq!(options.model_override.as_deref(), Some("gpt-5.5"));
+        assert_eq!(options.conversation_id_override, Some(conversation_id));
+        assert_eq!(options.logical_effort_override, Some(LogicalEffort::High));
+        assert_eq!(
+            options.composer_project_references,
+            message.composer_project_references
+        );
+        assert_eq!(
+            options.composer_integration_references,
+            message.composer_integration_references
+        );
+        assert_eq!(
+            options.composer_artifact_references,
+            message.composer_artifact_references
+        );
+        assert_eq!(options.attachment_ids, message.attachment_ids);
+        assert!(options.force_new_provider_session);
+    }
+
+    #[tokio::test]
+    async fn provider_switch_queue_without_app_handle_requeues_instead_of_resuming() {
+        let app_state = AppState::new_test();
+        let message_queue = Arc::clone(&app_state.message_queue);
+        let running_agent_registry = Arc::clone(&app_state.running_agent_registry);
+        let agent_run_repo = Arc::clone(&app_state.agent_run_repo);
+        let chat_message_repo = Arc::clone(&app_state.chat_message_repo);
+        let chat_attachment_repo = Arc::clone(&app_state.chat_attachment_repo);
+        let artifact_repo = Arc::clone(&app_state.artifact_repo);
+        let activity_event_repo = Arc::clone(&app_state.activity_event_repo);
+        let task_repo = Arc::clone(&app_state.task_repo);
+        let ideation_session_repo = Arc::clone(&app_state.ideation_session_repo);
+
+        message_queue.queue_with_runtime_overrides_and_project_references(
+            ChatContextType::Ideation,
+            "session-queued-switch",
+            "queued provider switch".to_string(),
+            None,
+            None,
+            Some(AgentHarnessKind::Codex),
+            Some("gpt-5.5".to_string()),
+            Some(crate::domain::agents::LogicalEffort::High),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let outcome = process_queued_messages::<tauri::test::MockRuntime>(
+            ChatContextType::Ideation,
+            AgentHarnessKind::Claude,
+            "session-queued-switch",
+            "session-queued-switch",
+            ChatConversationId::new(),
+            "claude-session-old",
+            &message_queue,
+            &running_agent_registry,
+            &agent_run_repo,
+            &chat_message_repo,
+            None,
+            &chat_attachment_repo,
+            &artifact_repo,
+            &activity_event_repo,
+            &task_repo,
+            &ideation_session_repo,
+            std::path::Path::new("/definitely/missing/ralphx-test-cli"),
+            std::path::Path::new("."),
+            std::path::Path::new("."),
+            None,
+            None,
+            None,
+            None,
+            false,
+            tokio_util::sync::CancellationToken::new(),
+            None,
+            None,
+            crate::application::chat_service::StreamingStateCache::new(),
+        )
+        .await;
+
+        assert_eq!(outcome.total_processed, 0);
+        let queued = message_queue.get_queued(ChatContextType::Ideation, "session-queued-switch");
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].harness_override, Some(AgentHarnessKind::Codex));
+        assert_eq!(queued[0].model_override.as_deref(), Some("gpt-5.5"));
+        assert_eq!(
+            queued[0].logical_effort_override,
+            Some(crate::domain::agents::LogicalEffort::High)
+        );
+        assert!(queued[0].force_new_provider_session);
     }
 
     #[test]

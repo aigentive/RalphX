@@ -8,7 +8,11 @@ import type {
   AgentConversationWorkspaceMode,
 } from "@/api/chat";
 import { invalidateConversationDataQueries } from "@/hooks/useChat";
-import type { AgentEffort, AgentRuntimeSelection } from "@/stores/agentSessionStore";
+import type {
+  AgentEffort,
+  AgentProvider,
+  AgentRuntimeSelection,
+} from "@/stores/agentSessionStore";
 import type { Project } from "@/types/project";
 import type { AgentModelRegistry } from "@/lib/agent-models";
 
@@ -17,6 +21,7 @@ import { resolveConversationAgentMode } from "./agentConversationMode";
 import {
   DEFAULT_AGENT_RUNTIME,
   defaultEffortForModel,
+  defaultModelForProvider,
   normalizeRuntimeSelection,
 } from "./agentOptions";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
@@ -74,6 +79,37 @@ export function useAgentsActiveComposerControls({
             }))
         : [],
     [activeProjectId, projects]
+  );
+
+  const handleActiveProviderChange = useCallback(
+    (
+      provider: AgentProvider,
+      providerSupportedEfforts?: readonly string[] | null,
+    ) => {
+      if (!selectedConversationId || !activeProjectId) {
+        return;
+      }
+      const modelId = defaultModelForProvider(provider, modelRegistry);
+      setRuntimeForConversation(
+        selectedConversationId,
+        activeProjectId,
+        normalizeRuntimeSelection(
+          {
+            provider,
+            modelId,
+            effort: defaultEffortForModel(provider, modelId, modelRegistry),
+          },
+          modelRegistry,
+          providerSupportedEfforts
+        )
+      );
+    },
+    [
+      activeProjectId,
+      modelRegistry,
+      selectedConversationId,
+      setRuntimeForConversation,
+    ]
   );
 
   const handleActiveModelChange = useCallback(
@@ -209,6 +245,7 @@ export function useAgentsActiveComposerControls({
     handleActiveConversationModeMenuOpen,
     handleActiveEffortChange,
     handleActiveModelChange,
+    handleActiveProviderChange,
     switchingConversationModeId,
   };
 }
