@@ -38,6 +38,11 @@ const ProjectSkillLifecycleResponseSchema = z.object({
   skill: ProjectSkillResponseSchema.nullable().optional(),
 });
 
+const DistillProjectSkillsResponseSchema = z.object({
+  staged_skills: z.array(ProjectSkillResponseSchema),
+  skipped_existing: z.number(),
+});
+
 type RawProjectSkill = z.infer<typeof ProjectSkillResponseSchema>;
 
 export type ProjectSkillStatus = z.infer<typeof ProjectSkillStatusSchema>;
@@ -68,6 +73,17 @@ export interface ListProjectSkillsInput {
   stage?: string | null;
   bucket?: string | null;
   scopePath?: string | null;
+}
+
+export interface DistillProjectSkillsInput {
+  projectId: string;
+  source?: string | null;
+  limit?: number | null;
+}
+
+export interface DistillProjectSkillsResult {
+  stagedSkills: ProjectSkill[];
+  skippedExisting: number;
 }
 
 function transformProjectSkill(raw: RawProjectSkill): ProjectSkill {
@@ -140,5 +156,18 @@ export const projectSkillsApi = {
 
   archive(projectSkillId: string): Promise<ProjectSkill | null> {
     return lifecycleAction("project_skills/archive", projectSkillId);
+  },
+
+  async distill(input: DistillProjectSkillsInput): Promise<DistillProjectSkillsResult> {
+    const raw = await postJson<unknown>("project_skills/distill", {
+      project_id: input.projectId,
+      ...(input.source ? { source: input.source } : {}),
+      ...(input.limit != null ? { limit: input.limit } : {}),
+    });
+    const parsed = DistillProjectSkillsResponseSchema.parse(raw);
+    return {
+      stagedSkills: parsed.staged_skills.map(transformProjectSkill),
+      skippedExisting: parsed.skipped_existing,
+    };
   },
 } as const;

@@ -123,6 +123,36 @@ describe("projectSkillsApi", () => {
     await expect(projectSkillsApi.reject("missing-skill")).resolves.toBeNull();
   });
 
+  it("distills eligible outcomes into staged skills", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        staged_skills: [projectSkill({ id: "skill-2", status: "staged" })],
+        skipped_existing: 1,
+      }),
+    );
+
+    await expect(
+      projectSkillsApi.distill({
+        projectId: "project-1",
+        source: "review",
+        limit: 5,
+      }),
+    ).resolves.toMatchObject({
+      stagedSkills: [{ id: "skill-2", status: "staged" }],
+      skippedExisting: 1,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:3847/api/project_skills/distill",
+      expect.objectContaining({
+        body: JSON.stringify({
+          project_id: "project-1",
+          source: "review",
+          limit: 5,
+        }),
+      }),
+    );
+  });
+
   it("throws HTTP failures", async () => {
     fetchMock.mockResolvedValue(jsonResponse({}, { status: 500, statusText: "Server Error" }));
 
