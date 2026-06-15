@@ -12,6 +12,8 @@ vi.mock("@/api/project-skills", () => ({
     approve: vi.fn(),
     reject: vi.fn(),
     archive: vi.fn(),
+    pin: vi.fn(),
+    unpin: vi.fn(),
     distill: vi.fn(),
   },
 }));
@@ -60,7 +62,20 @@ function renderPanel(projectId = "project-1") {
 describe("ProjectSkillsCuratorPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockedProjectSkillsApi.list.mockResolvedValue([stagedSkill()]);
+    mockedProjectSkillsApi.list.mockImplementation((input) =>
+      Promise.resolve(
+        input.status === "approved"
+          ? [
+              stagedSkill({
+                id: "approved-skill",
+                title: "Approved review convention",
+                compactGuidance: "Keep approved reviewer behavior reusable.",
+                status: "approved",
+              }),
+            ]
+          : [stagedSkill()],
+      ),
+    );
     mockedProjectSkillsApi.approve.mockResolvedValue(
       stagedSkill({ status: "approved" }),
     );
@@ -69,6 +84,12 @@ describe("ProjectSkillsCuratorPanel", () => {
     );
     mockedProjectSkillsApi.archive.mockResolvedValue(
       stagedSkill({ status: "archived", archived: true }),
+    );
+    mockedProjectSkillsApi.pin.mockResolvedValue(
+      stagedSkill({ id: "approved-skill", status: "approved", pinned: true }),
+    );
+    mockedProjectSkillsApi.unpin.mockResolvedValue(
+      stagedSkill({ id: "approved-skill", status: "approved", pinned: false }),
     );
     mockedProjectSkillsApi.distill.mockResolvedValue({
       stagedSkills: [stagedSkill({ id: "skill-2" })],
@@ -88,21 +109,30 @@ describe("ProjectSkillsCuratorPanel", () => {
     expect(
       screen.getByText("Prevents repeated validation loops."),
     ).toBeInTheDocument();
-    expect(screen.getByText("merge")).toBeInTheDocument();
+    expect(screen.getAllByText("merge").length).toBeGreaterThan(0);
     expect(screen.getByText("review")).toBeInTheDocument();
     expect(mockedProjectSkillsApi.list).toHaveBeenCalledWith({
       projectId: "project-1",
       status: "staged",
       includeArchived: false,
     });
+    expect(mockedProjectSkillsApi.list).toHaveBeenCalledWith({
+      projectId: "project-1",
+      status: "approved",
+      includeArchived: false,
+    });
   });
 
   it("distills eligible outcomes and refreshes staged skills", async () => {
-    mockedProjectSkillsApi.list
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        stagedSkill({ id: "skill-2", title: "Review PR evidence" }),
-      ]);
+    mockedProjectSkillsApi.list.mockImplementation((input) =>
+      Promise.resolve(
+        input.status === "approved"
+          ? []
+          : mockedProjectSkillsApi.distill.mock.calls.length > 0
+            ? [stagedSkill({ id: "skill-2", title: "Review PR evidence" })]
+            : [],
+      ),
+    );
 
     renderPanel();
 
@@ -134,9 +164,60 @@ describe("ProjectSkillsCuratorPanel", () => {
       expect(mockedProjectSkillsApi.reject).toHaveBeenCalledWith("skill-1");
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /archive/i }));
+    fireEvent.click(screen.getAllByRole("button", { name: /archive/i })[0]);
     await waitFor(() => {
       expect(mockedProjectSkillsApi.archive).toHaveBeenCalledWith("skill-1");
+    });
+  });
+
+  it("pins approved skills", async () => {
+    mockedProjectSkillsApi.list.mockImplementation((input) =>
+      Promise.resolve(
+        input.status === "approved"
+          ? [
+              stagedSkill({
+                id: "approved-skill",
+                title: "Approved review convention",
+                status: "approved",
+              }),
+            ]
+          : [],
+      ),
+    );
+
+    renderPanel();
+
+    expect(await screen.findByText("Approved review convention")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^pin$/i }));
+    await waitFor(() => {
+      expect(mockedProjectSkillsApi.pin).toHaveBeenCalledWith("approved-skill");
+    });
+  });
+
+  it("unpins approved skills", async () => {
+    mockedProjectSkillsApi.list.mockImplementation((input) =>
+      Promise.resolve(
+        input.status === "approved"
+          ? [
+              stagedSkill({
+                id: "approved-skill",
+                title: "Pinned review convention",
+                status: "approved",
+                pinned: true,
+              }),
+            ]
+          : [],
+      ),
+    );
+
+    renderPanel();
+
+    expect(await screen.findByText("Pinned review convention")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^unpin$/i }));
+    await waitFor(() => {
+      expect(mockedProjectSkillsApi.unpin).toHaveBeenCalledWith("approved-skill");
     });
   });
 

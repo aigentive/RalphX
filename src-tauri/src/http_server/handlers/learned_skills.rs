@@ -9,6 +9,7 @@ use crate::domain::repositories::ProjectSkillListOptions;
 use crate::domain::services::{
     DistillEligibleOutcomesInput, ProjectSkillDistillerService, ProjectSkillService,
 };
+use crate::error::AppError;
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
 use crate::http_server::types::HttpError;
 
@@ -130,6 +131,22 @@ pub async fn archive_project_skill(
     .await
 }
 
+pub async fn pin_project_skill(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<ProjectSkillLifecycleRequest>,
+) -> Result<Json<ProjectSkillLifecycleResponse>, HttpError> {
+    update_project_skill_pin(state, scope, req.project_skill_id, true).await
+}
+
+pub async fn unpin_project_skill(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<ProjectSkillLifecycleRequest>,
+) -> Result<Json<ProjectSkillLifecycleResponse>, HttpError> {
+    update_project_skill_pin(state, scope, req.project_skill_id, false).await
+}
+
 pub async fn distill_project_skills(
     State(state): State<HttpServerState>,
     scope: ProjectScope,
@@ -209,6 +226,56 @@ async fn update_project_skill_lifecycle(
         HttpError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: Some("failed to update project skill lifecycle".to_string()),
+        }
+    })?;
+
+    Ok(Json(ProjectSkillLifecycleResponse {
+        skill: updated.map(ProjectSkillResponse::from),
+    }))
+}
+
+async fn update_project_skill_pin(
+    state: HttpServerState,
+    scope: ProjectScope,
+    project_skill_id: String,
+    pinned: bool,
+) -> Result<Json<ProjectSkillLifecycleResponse>, HttpError> {
+    let skill_id = ProjectSkillId::from_string(project_skill_id);
+    let existing = state
+        .app_state
+        .project_skill_repo
+        .get_by_id(&skill_id)
+        .await
+        .map_err(|error| {
+            error!("failed to get project skill before pin update: {}", error);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to get project skill".to_string()),
+            }
+        })?;
+
+    let Some(existing) = existing else {
+        return Ok(Json(ProjectSkillLifecycleResponse { skill: None }));
+    };
+    existing.assert_project_scope(&scope)?;
+
+    let service = ProjectSkillService::new(Arc::clone(&state.app_state.project_skill_repo));
+    let updated = if pinned {
+        service.pin_skill(&skill_id).await
+    } else {
+        service.unpin_skill(&skill_id).await
+    }
+    .map_err(|error| match error {
+        AppError::Validation(message) => HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some(message),
+        },
+        other => {
+            error!("failed to update project skill pin state: {}", other);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to update project skill pin state".to_string()),
+            }
         }
     })?;
 
@@ -312,6 +379,65 @@ mod tests {
         .expect_err("cross-project approval should fail");
 
         assert_eq!(error.status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn pin_project_skill_handler_requires_approved_skill() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-pin".to_string());
+        let staged = staged_skill(project_id.clone());
+        let skill_id = staged.id.clone();
+        app_state.project_skill_repo.create(staged).await.unwrap();
+
+        let error = pin_project_skill(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![project_id])),
+            Json(ProjectSkillLifecycleRequest {
+                project_skill_id: skill_id.as_str().to_string(),
+            }),
+        )
+        .await
+        .expect_err("unapproved pin should fail");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn pin_project_skill_handler_updates_pin_state() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-pin".to_string());
+        let mut skill = staged_skill(project_id.clone());
+        skill.status = ProjectSkillLifecycleStatus::Approved;
+        let skill_id = skill.id.clone();
+        app_state.project_skill_repo.create(skill).await.unwrap();
+
+        let pinned = pin_project_skill(
+            State(test_state(Arc::clone(&app_state))),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(ProjectSkillLifecycleRequest {
+                project_skill_id: skill_id.as_str().to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .0
+        .skill
+        .expect("pinned skill");
+        assert!(pinned.pinned);
+
+        let unpinned = unpin_project_skill(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![project_id])),
+            Json(ProjectSkillLifecycleRequest {
+                project_skill_id: skill_id.as_str().to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .0
+        .skill
+        .expect("unpinned skill");
+        assert!(!unpinned.pinned);
     }
 
     #[tokio::test]

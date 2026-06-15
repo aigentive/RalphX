@@ -122,7 +122,12 @@ async function postJson<T>(endpoint: string, body: Record<string, unknown>): Pro
 }
 
 async function lifecycleAction(
-  endpoint: "project_skills/approve" | "project_skills/reject" | "project_skills/archive",
+  endpoint:
+    | "project_skills/approve"
+    | "project_skills/reject"
+    | "project_skills/archive"
+    | "project_skills/pin"
+    | "project_skills/unpin",
   projectSkillId: string,
 ): Promise<ProjectSkill | null> {
   const raw = await postJson<unknown>(endpoint, {
@@ -156,6 +161,14 @@ export const projectSkillsApi = {
 
   archive(projectSkillId: string): Promise<ProjectSkill | null> {
     return lifecycleAction("project_skills/archive", projectSkillId);
+  },
+
+  pin(projectSkillId: string): Promise<ProjectSkill | null> {
+    return lifecycleAction("project_skills/pin", projectSkillId);
+  },
+
+  unpin(projectSkillId: string): Promise<ProjectSkill | null> {
+    return lifecycleAction("project_skills/unpin", projectSkillId);
   },
 
   async distill(input: DistillProjectSkillsInput): Promise<DistillProjectSkillsResult> {

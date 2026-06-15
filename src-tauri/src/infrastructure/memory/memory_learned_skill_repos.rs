@@ -172,6 +172,20 @@ impl ProjectSkillRepository for MemoryProjectSkillRepository {
         row.updated_at = Utc::now();
         Ok(Some(row.clone()))
     }
+
+    async fn update_pinned(
+        &self,
+        id: &ProjectSkillId,
+        pinned: bool,
+    ) -> AppResult<Option<ProjectSkill>> {
+        let mut rows = self.rows.write().unwrap();
+        let Some(row) = rows.iter_mut().find(|row| row.id.as_str() == id.as_str()) else {
+            return Ok(None);
+        };
+        row.pinned = pinned;
+        row.updated_at = Utc::now();
+        Ok(Some(row.clone()))
+    }
 }
 
 #[derive(Default)]

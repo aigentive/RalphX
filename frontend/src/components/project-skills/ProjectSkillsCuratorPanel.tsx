@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, Check, RefreshCw, X } from "lucide-react";
+import { Archive, Check, Pin, PinOff, RefreshCw, X } from "lucide-react";
+import type { ReactNode } from "react";
 
 import { projectSkillsApi, type ProjectSkill } from "@/api/project-skills";
 import { Badge } from "@/components/ui/badge";
@@ -19,15 +20,22 @@ const stagedSkillsKey = (projectId: string) => [
   "staged",
 ] as const;
 
+const approvedSkillsKey = (projectId: string) => [
+  "project-skills",
+  projectId,
+  "approved",
+] as const;
+
 export function ProjectSkillsCuratorPanel({
   projectId,
   className,
 }: ProjectSkillsCuratorPanelProps) {
   const queryClient = useQueryClient();
-  const queryKey = stagedSkillsKey(projectId);
+  const stagedQueryKey = stagedSkillsKey(projectId);
+  const approvedQueryKey = approvedSkillsKey(projectId);
 
   const stagedQuery = useQuery({
-    queryKey,
+    queryKey: stagedQueryKey,
     queryFn: () =>
       projectSkillsApi.list({
         projectId,
@@ -36,40 +44,69 @@ export function ProjectSkillsCuratorPanel({
       }),
   });
 
-  const invalidateStaged = () => queryClient.invalidateQueries({ queryKey });
+  const approvedQuery = useQuery({
+    queryKey: approvedQueryKey,
+    queryFn: () =>
+      projectSkillsApi.list({
+        projectId,
+        status: "approved",
+        includeArchived: false,
+      }),
+  });
+
+  const invalidateSkills = () => {
+    queryClient.invalidateQueries({ queryKey: stagedQueryKey });
+    queryClient.invalidateQueries({ queryKey: approvedQueryKey });
+  };
 
   const distillMutation = useMutation({
     mutationFn: () => projectSkillsApi.distill({ projectId, limit: 10 }),
-    onSuccess: invalidateStaged,
+    onSuccess: invalidateSkills,
   });
 
   const approveMutation = useMutation({
     mutationFn: (skillId: string) => projectSkillsApi.approve(skillId),
-    onSuccess: invalidateStaged,
+    onSuccess: invalidateSkills,
   });
 
   const rejectMutation = useMutation({
     mutationFn: (skillId: string) => projectSkillsApi.reject(skillId),
-    onSuccess: invalidateStaged,
+    onSuccess: invalidateSkills,
   });
 
   const archiveMutation = useMutation({
     mutationFn: (skillId: string) => projectSkillsApi.archive(skillId),
-    onSuccess: invalidateStaged,
+    onSuccess: invalidateSkills,
   });
 
-  const skills = stagedQuery.data ?? [];
+  const pinMutation = useMutation({
+    mutationFn: (skillId: string) => projectSkillsApi.pin(skillId),
+    onSuccess: invalidateSkills,
+  });
+
+  const unpinMutation = useMutation({
+    mutationFn: (skillId: string) => projectSkillsApi.unpin(skillId),
+    onSuccess: invalidateSkills,
+  });
+
+  const stagedSkills = stagedQuery.data ?? [];
+  const approvedSkills = approvedQuery.data ?? [];
   const isBusy =
     distillMutation.isPending ||
     approveMutation.isPending ||
     rejectMutation.isPending ||
-    archiveMutation.isPending;
+    archiveMutation.isPending ||
+    pinMutation.isPending ||
+    unpinMutation.isPending;
   const error =
     stagedQuery.error ??
+    approvedQuery.error ??
     distillMutation.error ??
     approveMutation.error ??
     rejectMutation.error ??
-    archiveMutation.error;
+    archiveMutation.error ??
+    pinMutation.error ??
+    unpinMutation.error;
 
   return (
     <section
@@ -82,7 +119,7 @@ export function ProjectSkillsCuratorPanel({
             Learned skills
           </h2>
           <div className="mt-1 text-xs text-[var(--text-secondary)]">
-            {skills.length} staged
+            {stagedSkills.length} staged, {approvedSkills.length} approved
           </div>
         </div>
         <Button
@@ -107,30 +144,75 @@ export function ProjectSkillsCuratorPanel({
         </div>
       ) : null}
 
-      {stagedQuery.isLoading ? (
+      {stagedQuery.isLoading || approvedQuery.isLoading ? (
         <div className="grid gap-3">
           <Skeleton className="h-28 w-full" />
           <Skeleton className="h-28 w-full" />
-        </div>
-      ) : skills.length === 0 ? (
-        <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-6 text-sm text-[var(--text-secondary)]">
-          No staged learned skills.
         </div>
       ) : (
-        <div className="grid gap-3">
-          {skills.map((skill) => (
-            <ProjectSkillCandidateCard
-              key={skill.id}
-              skill={skill}
-              disabled={isBusy}
-              onApprove={() => approveMutation.mutate(skill.id)}
-              onReject={() => rejectMutation.mutate(skill.id)}
-              onArchive={() => archiveMutation.mutate(skill.id)}
-            />
-          ))}
+        <div className="grid gap-4">
+          <SkillSection
+            title="Staged"
+            emptyMessage="No staged learned skills."
+            skills={stagedSkills}
+            renderSkill={(skill) => (
+              <ProjectSkillCandidateCard
+                key={skill.id}
+                skill={skill}
+                disabled={isBusy}
+                onApprove={() => approveMutation.mutate(skill.id)}
+                onReject={() => rejectMutation.mutate(skill.id)}
+                onArchive={() => archiveMutation.mutate(skill.id)}
+              />
+            )}
+          />
+          <SkillSection
+            title="Approved"
+            emptyMessage="No approved learned skills."
+            skills={approvedSkills}
+            renderSkill={(skill) => (
+              <ProjectSkillApprovedCard
+                key={skill.id}
+                skill={skill}
+                disabled={isBusy}
+                onPin={() => pinMutation.mutate(skill.id)}
+                onUnpin={() => unpinMutation.mutate(skill.id)}
+                onArchive={() => archiveMutation.mutate(skill.id)}
+              />
+            )}
+          />
         </div>
       )}
     </section>
+  );
+}
+
+interface SkillSectionProps {
+  title: string;
+  emptyMessage: string;
+  skills: ProjectSkill[];
+  renderSkill: (skill: ProjectSkill) => ReactNode;
+}
+
+function SkillSection({
+  title,
+  emptyMessage,
+  skills,
+  renderSkill,
+}: SkillSectionProps) {
+  return (
+    <div className="grid gap-2">
+      <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
+        {title}
+      </h3>
+      {skills.length === 0 ? (
+        <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-6 text-sm text-[var(--text-secondary)]">
+          {emptyMessage}
+        </div>
+      ) : (
+        <div className="grid gap-3">{skills.map(renderSkill)}</div>
+      )}
+    </div>
   );
 }
 
@@ -140,6 +222,82 @@ interface ProjectSkillCandidateCardProps {
   onApprove: () => void;
   onReject: () => void;
   onArchive: () => void;
+}
+
+interface ProjectSkillApprovedCardProps {
+  skill: ProjectSkill;
+  disabled: boolean;
+  onPin: () => void;
+  onUnpin: () => void;
+  onArchive: () => void;
+}
+
+function ProjectSkillApprovedCard({
+  skill,
+  disabled,
+  onPin,
+  onUnpin,
+  onArchive,
+}: ProjectSkillApprovedCardProps) {
+  return (
+    <Card className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="truncate text-sm font-semibold text-[var(--text-primary)]">
+              {skill.title}
+            </h3>
+            <Badge variant="outline" className="text-xs">
+              {skill.bucket}
+            </Badge>
+            {skill.pinned ? (
+              <Badge variant="secondary" className="text-xs">
+                pinned
+              </Badge>
+            ) : null}
+          </div>
+          <p className="mt-2 line-clamp-2 text-sm text-[var(--text-secondary)]">
+            {skill.compactGuidance}
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          {skill.pinned ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onUnpin}
+              disabled={disabled}
+            >
+              <PinOff />
+              Unpin
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onPin}
+              disabled={disabled}
+            >
+              <Pin />
+              Pin
+            </Button>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={onArchive}
+            disabled={disabled}
+          >
+            <Archive />
+            Archive
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 function ProjectSkillCandidateCard({
