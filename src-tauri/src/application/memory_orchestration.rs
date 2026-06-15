@@ -3,6 +3,9 @@
 // Triggers background ralphx-memory-maintainer and ralphx-memory-capture agents
 // after agent run completion based on context type and project settings.
 
+use crate::application::app_state::ResolvedBackgroundAgentRuntime;
+use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
+use crate::domain::agents::{AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
     ChatContextType, ChatConversationId, MemoryActorType, MemoryEvent, ProjectId,
     ProjectMemorySettings,
@@ -12,6 +15,9 @@ use crate::infrastructure::agents::claude::build_spawnable_command_with_mcp_runt
 use crate::infrastructure::agents::mcp_runtime_context::McpRuntimeContext;
 use std::path::Path;
 use std::sync::Arc;
+
+const MEMORY_MAINTAINER_AGENT: &str = "ralphx:ralphx-memory-maintainer";
+const MEMORY_CAPTURE_AGENT: &str = "ralphx:ralphx-memory-capture";
 
 /// Memory category derived from chat context type
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,7 +145,7 @@ pub fn resolve_pipelines_with_reason(
 ///
 /// Failures are logged but do not block the primary user workflow.
 #[allow(clippy::too_many_arguments)]
-pub async fn trigger_memory_pipelines(
+pub(crate) async fn trigger_memory_pipelines(
     context_type: ChatContextType,
     context_id: &str,
     conversation_id: &ChatConversationId,
@@ -151,6 +157,7 @@ pub async fn trigger_memory_pipelines(
     settings: Option<ProjectMemorySettings>,
     memory_event_repo: Option<Arc<dyn MemoryEventRepository>>,
     project_memory_settings_repo: Option<Arc<dyn ProjectMemorySettingsRepository>>,
+    memory_agent_runtime: Option<ResolvedBackgroundAgentRuntime>,
 ) {
     tracing::debug!(
         %context_type,
@@ -221,6 +228,7 @@ pub async fn trigger_memory_pipelines(
         let plugin = plugin_dir.to_path_buf();
         let wd = working_directory.to_path_buf();
         let event_repo = memory_event_repo.clone();
+        let runtime = memory_agent_runtime.clone();
 
         log_memory_pipeline_spawn_requested(
             memory_event_repo.as_ref(),
@@ -235,7 +243,8 @@ pub async fn trigger_memory_pipelines(
 
         spawn_tasks.push(tokio::spawn(async move {
             if let Err(e) =
-                spawn_memory_maintainer(&conv_id, ctx, &ctx_id, &proj, &cli, &plugin, &wd).await
+                spawn_memory_maintainer(&conv_id, ctx, &ctx_id, &proj, &cli, &plugin, &wd, runtime)
+                    .await
             {
                 tracing::error!(
                     error = %e,
@@ -276,6 +285,7 @@ pub async fn trigger_memory_pipelines(
         let plugin = plugin_dir.to_path_buf();
         let wd = working_directory.to_path_buf();
         let event_repo = memory_event_repo.clone();
+        let runtime = memory_agent_runtime.clone();
 
         log_memory_pipeline_spawn_requested(
             memory_event_repo.as_ref(),
@@ -290,7 +300,8 @@ pub async fn trigger_memory_pipelines(
 
         spawn_tasks.push(tokio::spawn(async move {
             if let Err(e) =
-                spawn_memory_capture(&conv_id, ctx, &ctx_id, &proj, &cli, &plugin, &wd).await
+                spawn_memory_capture(&conv_id, ctx, &ctx_id, &proj, &cli, &plugin, &wd, runtime)
+                    .await
             {
                 tracing::error!(
                     error = %e,
@@ -461,6 +472,7 @@ async fn spawn_memory_maintainer(
     cli_path: &Path,
     plugin_dir: &Path,
     working_directory: &Path,
+    runtime: Option<ResolvedBackgroundAgentRuntime>,
 ) -> Result<(), String> {
     tracing::info!(
         conversation_id = conversation_id.as_str(),
@@ -481,6 +493,20 @@ async fn spawn_memory_maintainer(
         context_type,
         context_id
     );
+
+    if let Some(runtime) = runtime {
+        return spawn_memory_agent_with_runtime(
+            MemoryAgentKind::Maintainer,
+            runtime,
+            prompt,
+            conversation_id,
+            context_type,
+            context_id,
+            project_id,
+            working_directory,
+        )
+        .await;
+    }
 
     let runtime_context = memory_agent_runtime_context(
         conversation_id,
@@ -527,6 +553,7 @@ async fn spawn_memory_capture(
     cli_path: &Path,
     plugin_dir: &Path,
     working_directory: &Path,
+    runtime: Option<ResolvedBackgroundAgentRuntime>,
 ) -> Result<(), String> {
     tracing::info!(
         conversation_id = conversation_id.as_str(),
@@ -544,6 +571,20 @@ async fn spawn_memory_capture(
         "Capture learning from conversation_id='{}' in project_id='{}' (context: {}, {})",
         conv_id_str, proj_id_str, context_type, context_id
     );
+
+    if let Some(runtime) = runtime {
+        return spawn_memory_agent_with_runtime(
+            MemoryAgentKind::Capture,
+            runtime,
+            prompt,
+            conversation_id,
+            context_type,
+            context_id,
+            project_id,
+            working_directory,
+        )
+        .await;
+    }
 
     let runtime_context = memory_agent_runtime_context(
         conversation_id,
@@ -577,6 +618,112 @@ async fn spawn_memory_capture(
         .map_err(|e| format!("Failed to spawn ralphx-memory-capture: {}", e))?;
 
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum MemoryAgentKind {
+    Maintainer,
+    Capture,
+}
+
+impl MemoryAgentKind {
+    fn agent_name(self) -> &'static str {
+        match self {
+            Self::Maintainer => MEMORY_MAINTAINER_AGENT,
+            Self::Capture => MEMORY_CAPTURE_AGENT,
+        }
+    }
+
+    fn short_name(self) -> &'static str {
+        match self {
+            Self::Maintainer => "ralphx-memory-maintainer",
+            Self::Capture => "ralphx-memory-capture",
+        }
+    }
+}
+
+async fn spawn_memory_agent_with_runtime(
+    kind: MemoryAgentKind,
+    runtime: ResolvedBackgroundAgentRuntime,
+    prompt: String,
+    conversation_id: &ChatConversationId,
+    context_type: ChatContextType,
+    context_id: &str,
+    project_id: &ProjectId,
+    working_directory: &Path,
+) -> Result<(), String> {
+    let config = build_memory_agent_config(
+        kind,
+        &runtime,
+        prompt,
+        conversation_id,
+        context_type,
+        context_id,
+        project_id,
+        working_directory,
+    );
+    let client = Arc::clone(&runtime.client);
+    let handle = client
+        .spawn_agent(config)
+        .await
+        .map_err(|error| format!("Failed to spawn {}: {}", kind.short_name(), error))?;
+
+    tokio::spawn(async move {
+        if let Err(error) = client.wait_for_completion(&handle).await {
+            tracing::warn!(
+                agent = kind.short_name(),
+                error = %error,
+                "Memory agent failed after spawn"
+            );
+        }
+    });
+
+    Ok(())
+}
+
+fn build_memory_agent_config(
+    kind: MemoryAgentKind,
+    runtime: &ResolvedBackgroundAgentRuntime,
+    prompt: String,
+    conversation_id: &ChatConversationId,
+    context_type: ChatContextType,
+    context_id: &str,
+    project_id: &ProjectId,
+    working_directory: &Path,
+) -> AgentConfig {
+    let harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
+    let bootstrap = resolve_harness_agent_bootstrap(
+        harness,
+        kind.agent_name(),
+        working_directory.to_path_buf(),
+    );
+    let mut env = bootstrap.env;
+    env.insert(
+        "RALPHX_CONVERSATION_ID".to_string(),
+        conversation_id.as_str().to_string(),
+    );
+    env.insert("RALPHX_CONTEXT_TYPE".to_string(), context_type.to_string());
+    env.insert("RALPHX_CONTEXT_ID".to_string(), context_id.to_string());
+    env.insert(
+        "RALPHX_PROJECT_ID".to_string(),
+        project_id.as_str().to_string(),
+    );
+
+    AgentConfig {
+        role: AgentRole::Custom(bootstrap.agent_role),
+        prompt,
+        working_directory: bootstrap.working_directory,
+        plugin_dir: Some(bootstrap.plugin_dir),
+        agent: Some(bootstrap.agent_name),
+        model: runtime.model.clone(),
+        harness: runtime.harness,
+        logical_effort: runtime.logical_effort,
+        approval_policy: runtime.approval_policy.clone(),
+        sandbox_mode: runtime.sandbox_mode.clone(),
+        max_tokens: None,
+        timeout_secs: None,
+        env,
+    }
 }
 
 fn memory_agent_runtime_context(

@@ -7,8 +7,8 @@ use crate::domain::agents::{
     CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
 use crate::domain::entities::{
-    ChatConversation, ChatMessage, IdeationSession, InternalStatus, Priority, Project, ProjectId,
-    ProposalCategory, Task, TaskProposal,
+    AgentRun, ChatConversation, ChatMessage, IdeationSession, InternalStatus, Priority, Project,
+    ProjectId, ProposalCategory, Task, TaskProposal,
 };
 use crate::infrastructure::{MockAgenticClient, MockCallType};
 use futures::Stream;
@@ -674,6 +674,42 @@ async fn test_resolve_session_namer_runtime_uses_owning_conversation_harness_whe
 }
 
 #[tokio::test]
+async fn test_resolve_session_namer_runtime_uses_lowest_model_seen_in_conversation() {
+    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test()
+        .with_agent_client(default_mock)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+
+    let project = Project::new("Mixed Model Conversation".to_string(), "/tmp".to_string());
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+
+    let mut frontier_run = AgentRun::new(conversation.id.clone());
+    frontier_run.harness = Some(AgentHarnessKind::Codex);
+    frontier_run.logical_model = Some("gpt-5.5".to_string());
+    state.agent_run_repo.create(frontier_run).await.unwrap();
+
+    let mut lower_run = AgentRun::new(conversation.id.clone());
+    lower_run.harness = Some(AgentHarnessKind::Codex);
+    lower_run.logical_model = Some("gpt-5.4".to_string());
+    state.agent_run_repo.create(lower_run).await.unwrap();
+
+    let runtime = state
+        .resolve_session_namer_runtime_for_conversation(&conversation, Some(project.id.as_str()))
+        .await
+        .expect("session namer should resolve from the owning conversation harness");
+
+    assert!(
+        Arc::ptr_eq(&runtime.client, &codex_mock),
+        "session namer should keep the triggering conversation provider"
+    );
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
+}
+
+#[tokio::test]
 async fn test_resolve_session_namer_runtime_for_session_prefers_active_conversation_harness() {
     let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
@@ -767,6 +803,45 @@ async fn test_resolve_pr_describer_runtime_uses_owning_conversation_harness_when
     assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
     assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
     assert_eq!(runtime.sandbox_mode.as_deref(), Some("danger-full-access"));
+}
+
+#[tokio::test]
+async fn test_resolve_memory_agent_runtime_uses_lowest_model_seen_in_conversation() {
+    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test()
+        .with_agent_client(default_mock)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+
+    let project = Project::new(
+        "Memory Mixed Model Conversation".to_string(),
+        "/tmp".to_string(),
+    );
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+
+    let mut frontier_run = AgentRun::new(conversation.id.clone());
+    frontier_run.harness = Some(AgentHarnessKind::Codex);
+    frontier_run.logical_model = Some("gpt-5.5".to_string());
+    state.agent_run_repo.create(frontier_run).await.unwrap();
+
+    let mut mini_run = AgentRun::new(conversation.id.clone());
+    mini_run.harness = Some(AgentHarnessKind::Codex);
+    mini_run.logical_model = Some("gpt-5.4-mini".to_string());
+    state.agent_run_repo.create(mini_run).await.unwrap();
+
+    let runtime = state
+        .resolve_memory_agent_runtime_for_conversation(&conversation, Some(project.id.as_str()))
+        .await
+        .expect("memory agent should resolve from the owning conversation harness");
+
+    assert!(
+        Arc::ptr_eq(&runtime.client, &codex_mock),
+        "memory agents should keep the triggering conversation provider"
+    );
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
 }
 
 #[tokio::test]
