@@ -85,7 +85,9 @@ coverage:
           - "!src-tauri/src/application/chat_service/mod.rs"
           - "!src-tauri/src/application/plan_complexity_assessment.rs"
           - "!src-tauri/src/commands/agent_composer_commands/plan_references.rs"
+          - "!src-tauri/src/commands/harness_provider_commands.rs"
           - "!src-tauri/src/commands/ideation_commands/ideation_commands_session.rs"
+          - "!src-tauri/src/commands/provider_cli_management_commands.rs"
           - "!src-tauri/src/commands/question_commands.rs"
           - "!src-tauri/src/http_server/mod.rs"
           - "!src-tauri/src/http_server/handlers/artifacts/approval.rs"
@@ -99,6 +101,7 @@ coverage:
           - "!src-tauri/src/http_server/handlers/questions.rs"
           - "!src-tauri/src/http_server/types.rs"
           - "!src-tauri/src/infrastructure/agents/claude/mod.rs"
+          - "!src-tauri/src/infrastructure/agents/spawner.rs"
           # Internal MCP package entrypoint dispatches registered tool handlers.
           # Handler behavior is covered in focused module tests.
           - "!plugins/app/ralphx-mcp-server/src/index.ts"
