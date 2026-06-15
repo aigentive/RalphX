@@ -108,7 +108,7 @@ export function shouldShowAgentWorkspacePublishSurface(
   }
 
   if (workspace.mode === "edit") {
-    return !workspace.linkedIdeationSessionId && !workspace.linkedPlanBranchId;
+    return true;
   }
 
   if (workspace.mode === "ideation") {
