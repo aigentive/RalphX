@@ -266,18 +266,49 @@ impl ProjectSkillDistillerService {
                 skipped_existing += 1;
                 continue;
             }
-            let candidate = build_distilled_skill_candidate(&outcome);
-            staged_skills.push(
-                self.skill_service
-                    .stage_skill_from_outcome(candidate)
-                    .await?,
-            );
+            if let Some(staged) = self.stage_eligible_outcome_candidate(&outcome).await? {
+                staged_skills.push(staged);
+            } else {
+                skipped_existing += 1;
+            }
         }
 
         Ok(DistillEligibleOutcomesResult {
             staged_skills,
             skipped_existing,
         })
+    }
+
+    pub async fn stage_eligible_outcome_candidate(
+        &self,
+        outcome: &TaskOutcome,
+    ) -> AppResult<Option<ProjectSkill>> {
+        if outcome.status != TaskOutcomeStatus::Eligible {
+            return Ok(None);
+        }
+        let existing_skills = self
+            .skill_service
+            .list_project_skills(
+                &outcome.project_id,
+                ProjectSkillListOptions {
+                    include_archived: true,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let already_staged = existing_skills.iter().any(|skill| {
+            skill.provenance_json.get("outcome_id").and_then(Value::as_str)
+                == Some(outcome.id.as_str())
+        });
+        if already_staged {
+            return Ok(None);
+        }
+
+        let candidate = build_distilled_skill_candidate(outcome);
+        self.skill_service
+            .stage_skill_from_outcome(candidate)
+            .await
+            .map(Some)
     }
 }
 
@@ -768,6 +799,37 @@ mod tests {
 
         assert!(result.staged_skills.is_empty());
         assert_eq!(result.skipped_existing, 1);
+    }
+
+    #[tokio::test]
+    async fn project_skill_distiller_stages_single_eligible_outcome_once() {
+        let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
+        let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let mut outcome =
+            new_empty_task_outcome(project_id.clone(), "verification", "gap_recurrence", "gap-1");
+        outcome.status = TaskOutcomeStatus::Eligible;
+        outcome.outcome_class = Some("verification_gap_recurring".to_string());
+
+        let distiller = ProjectSkillDistillerService::new(outcome_repo, skill_repo);
+        let staged = distiller
+            .stage_eligible_outcome_candidate(&outcome)
+            .await
+            .unwrap()
+            .expect("eligible outcome should stage a candidate");
+
+        assert_eq!(staged.project_id, project_id);
+        assert_eq!(staged.status, ProjectSkillLifecycleStatus::Staged);
+        assert_eq!(
+            staged.provenance_json["outcome_id"].as_str(),
+            Some(outcome.id.as_str())
+        );
+
+        let duplicate = distiller
+            .stage_eligible_outcome_candidate(&outcome)
+            .await
+            .unwrap();
+        assert!(duplicate.is_none());
     }
 
     #[tokio::test]

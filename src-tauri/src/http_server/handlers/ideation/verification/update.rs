@@ -9,7 +9,9 @@ async fn record_verification_gap_recurrence_outcomes(
     use crate::domain::services::learned_skill_adapters::{
         verification_gap_recurrence_candidates, VerificationGapRecurrenceGate,
     };
-    use crate::domain::services::{new_empty_task_outcome, OutcomeLedgerService};
+    use crate::domain::services::{
+        new_empty_task_outcome, OutcomeLedgerService, ProjectSkillDistillerService,
+    };
 
     let report = verification_gap_recurrence_candidates(
         &run_snapshot.rounds,
@@ -48,12 +50,31 @@ async fn record_verification_gap_recurrence_outcomes(
             "descriptions": recurring.descriptions.into_iter().take(5).collect::<Vec<_>>(),
         });
 
-        if let Err(error) = service.record_outcome(outcome).await {
-            tracing::warn!(
-                session_id,
-                error = %error,
-                "Failed to record recurring verification gap outcome"
-            );
+        match service.record_outcome(outcome).await {
+            Ok(recorded_outcome) => {
+                let distiller = ProjectSkillDistillerService::new(
+                    Arc::clone(&state.app_state.task_outcome_repo),
+                    Arc::clone(&state.app_state.project_skill_repo),
+                );
+                if let Err(error) = distiller
+                    .stage_eligible_outcome_candidate(&recorded_outcome)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id,
+                        outcome_id = %recorded_outcome.id.as_str(),
+                        error = %error,
+                        "Failed to stage learned skill from recurring verification gap outcome"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id,
+                    error = %error,
+                    "Failed to record recurring verification gap outcome"
+                );
+            }
         }
     }
 }
