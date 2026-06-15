@@ -19,6 +19,7 @@ vi.mock("@/api/project-skills", () => ({
     getSettings: vi.fn(),
     updateSettings: vi.fn(),
     distill: vi.fn(),
+    listReportCards: vi.fn(),
   },
 }));
 
@@ -137,6 +138,27 @@ describe("ProjectSkillsCuratorPanel", () => {
       stagedSkills: [stagedSkill({ id: "skill-2" })],
       skippedExisting: 0,
     });
+    mockedProjectSkillsApi.listReportCards.mockResolvedValue({
+      count: 1,
+      cards: [
+        {
+          projectSkillId: "approved-skill",
+          title: "Approved review convention",
+          bucket: "review",
+          stage: "review",
+          pinned: false,
+          usageCount: 3,
+          linkedOutcomeCount: 2,
+          succeededOutcomeCount: 1,
+          failedOutcomeCount: 1,
+          unknownOutcomeCount: 0,
+          lastUsedAt: "2026-06-15T10:00:00Z",
+          ageDays: 1,
+          agingStatus: "active",
+          evidenceLevel: "insufficient_data",
+        },
+      ],
+    });
   });
 
   it("renders staged learned skills with review metadata", async () => {
@@ -152,7 +174,7 @@ describe("ProjectSkillsCuratorPanel", () => {
       screen.getByText("Prevents repeated validation loops."),
     ).toBeInTheDocument();
     expect(screen.getAllByText("merge").length).toBeGreaterThan(0);
-    expect(screen.getByText("review")).toBeInTheDocument();
+    expect(screen.getAllByText("review").length).toBeGreaterThan(0);
     expect(mockedProjectSkillsApi.list).toHaveBeenCalledWith({
       projectId: "project-1",
       status: "staged",
@@ -163,6 +185,23 @@ describe("ProjectSkillsCuratorPanel", () => {
       status: "approved",
       includeArchived: false,
     });
+    expect(mockedProjectSkillsApi.listReportCards).toHaveBeenCalledWith({
+      projectId: "project-1",
+      minLinkedOutcomes: 5,
+      staleAfterDays: 30,
+    });
+  });
+
+  it("renders conservative report cards for approved skills", async () => {
+    renderPanel();
+
+    expect(await screen.findByText("Report cards")).toBeInTheDocument();
+    expect(screen.getAllByText("Approved review convention").length).toBeGreaterThan(0);
+    expect(screen.getByText("low sample")).toBeInTheDocument();
+    expect(screen.getByText("3 uses")).toBeInTheDocument();
+    expect(screen.getByText("2 linked outcomes")).toBeInTheDocument();
+    expect(screen.getByText("1 succeeded")).toBeInTheDocument();
+    expect(screen.getByText("1 failed")).toBeInTheDocument();
   });
 
   it("distills eligible outcomes and refreshes staged skills", async () => {
@@ -229,7 +268,9 @@ describe("ProjectSkillsCuratorPanel", () => {
 
     renderPanel();
 
-    expect(await screen.findByText("Approved review convention")).toBeInTheDocument();
+    expect(
+      (await screen.findAllByText("Approved review convention")).length,
+    ).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: /^pin$/i }));
     await waitFor(() => {
@@ -266,7 +307,9 @@ describe("ProjectSkillsCuratorPanel", () => {
   it("previews and applies approved skill export after opt-in", async () => {
     renderPanel();
 
-    expect(await screen.findByText("Approved review convention")).toBeInTheDocument();
+    expect(
+      (await screen.findAllByText("Approved review convention")).length,
+    ).toBeGreaterThan(0);
     const exportButton = screen.getByRole("button", { name: /^export$/i });
     expect(exportButton).toBeDisabled();
 

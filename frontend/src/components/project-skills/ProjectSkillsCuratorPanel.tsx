@@ -7,6 +7,7 @@ import {
   projectSkillsApi,
   type ProjectSkill,
   type ProjectSkillExportResult,
+  type ProjectSkillReportCard,
 } from "@/api/project-skills";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,9 @@ const approvedSkillsKey = (projectId: string) =>
 const settingsKey = (projectId: string) =>
   ["project-skills", projectId, "settings"] as const;
 
+const reportCardsKey = (projectId: string) =>
+  ["project-skills", projectId, "report-cards"] as const;
+
 export function ProjectSkillsCuratorPanel({
   projectId,
   className,
@@ -43,6 +47,7 @@ export function ProjectSkillsCuratorPanel({
   const stagedQueryKey = stagedSkillsKey(projectId);
   const approvedQueryKey = approvedSkillsKey(projectId);
   const projectSkillSettingsKey = settingsKey(projectId);
+  const projectSkillReportCardsKey = reportCardsKey(projectId);
 
   const stagedQuery = useQuery({
     queryKey: stagedQueryKey,
@@ -69,9 +74,20 @@ export function ProjectSkillsCuratorPanel({
     queryFn: () => projectSkillsApi.getSettings(projectId),
   });
 
+  const reportCardsQuery = useQuery({
+    queryKey: projectSkillReportCardsKey,
+    queryFn: () =>
+      projectSkillsApi.listReportCards({
+        projectId,
+        minLinkedOutcomes: 5,
+        staleAfterDays: 30,
+      }),
+  });
+
   const invalidateSkills = () => {
     queryClient.invalidateQueries({ queryKey: stagedQueryKey });
     queryClient.invalidateQueries({ queryKey: approvedQueryKey });
+    queryClient.invalidateQueries({ queryKey: projectSkillReportCardsKey });
   };
 
   const distillMutation = useMutation({
@@ -124,6 +140,7 @@ export function ProjectSkillsCuratorPanel({
 
   const stagedSkills = stagedQuery.data ?? [];
   const approvedSkills = approvedQuery.data ?? [];
+  const reportCards = reportCardsQuery.data?.cards ?? [];
   const isBusy =
     distillMutation.isPending ||
     approveMutation.isPending ||
@@ -138,6 +155,7 @@ export function ProjectSkillsCuratorPanel({
     stagedQuery.error ??
     approvedQuery.error ??
     settingsQuery.error ??
+    reportCardsQuery.error ??
     distillMutation.error ??
     approveMutation.error ??
     rejectMutation.error ??
@@ -237,9 +255,85 @@ export function ProjectSkillsCuratorPanel({
               />
             )}
           />
+          <ReportCardSection
+            loading={reportCardsQuery.isLoading}
+            cards={reportCards}
+          />
         </div>
       )}
     </section>
+  );
+}
+
+function ReportCardSection({
+  loading,
+  cards,
+}: {
+  loading: boolean;
+  cards: ProjectSkillReportCard[];
+}) {
+  return (
+    <div className="grid gap-2">
+      <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
+        Report cards
+      </h3>
+      {loading ? (
+        <Skeleton className="h-20 w-full" />
+      ) : cards.length === 0 ? (
+        <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-6 text-sm text-[var(--text-secondary)]">
+          No report cards yet.
+        </div>
+      ) : (
+        <div className="grid gap-3">
+          {cards.map((card) => (
+            <ProjectSkillReportCardRow key={card.projectSkillId} card={card} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectSkillReportCardRow({
+  card,
+}: {
+  card: ProjectSkillReportCard;
+}) {
+  const evidenceLabel =
+    card.evidenceLevel === "descriptive" ? "descriptive" : "low sample";
+
+  return (
+    <Card className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="truncate text-sm font-semibold text-[var(--text-primary)]">
+              {card.title}
+            </h3>
+            <Badge variant="outline" className="text-xs">
+              {card.bucket}
+            </Badge>
+            <Badge variant="secondary" className="text-xs">
+              {evidenceLabel}
+            </Badge>
+            {card.agingStatus !== "active" ? (
+              <Badge variant="outline" className="text-xs">
+                {card.agingStatus}
+              </Badge>
+            ) : null}
+          </div>
+          <div className="mt-2 grid gap-1 text-xs text-[var(--text-secondary)] sm:grid-cols-2">
+            <span>{card.usageCount} uses</span>
+            <span>{card.linkedOutcomeCount} linked outcomes</span>
+            <span>{card.succeededOutcomeCount} succeeded</span>
+            <span>{card.failedOutcomeCount} failed</span>
+          </div>
+        </div>
+        <div className="text-right text-xs text-[var(--text-tertiary)]">
+          {card.lastUsedAt ? `${card.ageDays}d since use` : "not used"}
+        </div>
+      </div>
+    </Card>
   );
 }
 
