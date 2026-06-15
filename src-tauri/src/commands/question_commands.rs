@@ -19,7 +19,7 @@ use crate::domain::entities::{
 use crate::domain::services::learned_skill_adapters::{
     capture_plan_mode_verdict, PlanModeVerdict, PlanModeVerdictCaptureInput, PlanModeVerdictOutcome,
 };
-use crate::domain::services::OutcomeLedgerService;
+use crate::domain::services::{OutcomeLedgerService, ProjectSkillDistillerService};
 use crate::AppState;
 
 pub(crate) const PLAN_MODE_PROPOSAL_KIND: &str = "plan_mode_proposal";
@@ -195,12 +195,31 @@ async fn capture_accepted_plan_mode_proposal_outcome(
 
     if let Some(task_outcome) = task_outcome_from_plan_mode_verdict(&outcome) {
         let service = OutcomeLedgerService::new(Arc::clone(&state.task_outcome_repo));
-        if let Err(error) = service.record_outcome(task_outcome).await {
-            tracing::warn!(
-                conversation_id = %conversation_id,
-                error = %error,
-                "Failed to persist accepted Plan-mode proposal outcome"
-            );
+        match service.record_outcome(task_outcome).await {
+            Ok(recorded_outcome) => {
+                let distiller = ProjectSkillDistillerService::new(
+                    Arc::clone(&state.task_outcome_repo),
+                    Arc::clone(&state.project_skill_repo),
+                );
+                if let Err(error) = distiller
+                    .stage_eligible_outcome_candidate(&recorded_outcome)
+                    .await
+                {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        outcome_id = %recorded_outcome.id.as_str(),
+                        error = %error,
+                        "Failed to stage learned skill from accepted Plan-mode proposal outcome"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %conversation_id,
+                    error = %error,
+                    "Failed to persist accepted Plan-mode proposal outcome"
+                );
+            }
         }
     }
 

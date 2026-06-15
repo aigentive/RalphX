@@ -13,7 +13,7 @@ use ralphx_lib::domain::entities::{
     ProjectId, TaskOutcomeStatus, VerificationGap, VerificationRoundSnapshot,
     VerificationRunSnapshot,
 };
-use ralphx_lib::domain::repositories::TaskOutcomeListOptions;
+use ralphx_lib::domain::repositories::{ProjectSkillListOptions, TaskOutcomeListOptions};
 use ralphx_lib::domain::services::RunningAgentKey;
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::project_scope::ProjectScope;
@@ -912,6 +912,24 @@ async fn test_post_verification_status_records_recurring_gap_outcome() {
     assert_eq!(outcome.verification_id.as_deref(), Some(session_id_str.as_str()));
     assert_eq!(outcome.evidence_json["occurrences"].as_u64(), Some(2));
     assert_eq!(outcome.evidence_json["distinct_rounds"].as_u64(), Some(2));
+
+    let skills = state
+        .app_state
+        .project_skill_repo
+        .list_by_project(&project_id, ProjectSkillListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(skills.len(), 1);
+    let skill = &skills[0];
+    assert_eq!(skill.status.to_string(), "staged");
+    assert_eq!(
+        skill.provenance_json["outcome_id"].as_str(),
+        Some(outcome.id.as_str())
+    );
+    assert_eq!(
+        skill.provenance_json["outcome_source"].as_str(),
+        Some("verification")
+    );
 }
 
 #[tokio::test]
