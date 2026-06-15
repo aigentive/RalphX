@@ -45,6 +45,11 @@ pub struct ProjectSkillService {
     repo: Arc<dyn ProjectSkillRepository>,
 }
 
+pub struct ProjectSkillDistillerService {
+    outcome_repo: Arc<dyn TaskOutcomeRepository>,
+    skill_service: ProjectSkillService,
+}
+
 pub struct StageProjectSkillFromOutcomeInput {
     pub outcome: TaskOutcome,
     pub title: String,
@@ -55,6 +60,18 @@ pub struct StageProjectSkillFromOutcomeInput {
     pub body_markdown: String,
     pub predicted_effect: String,
     pub additional_provenance: Value,
+}
+
+pub struct DistillEligibleOutcomesInput {
+    pub project_id: ProjectId,
+    pub source: Option<String>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct DistillEligibleOutcomesResult {
+    pub staged_skills: Vec<ProjectSkill>,
+    pub skipped_existing: usize,
 }
 
 impl ProjectSkillService {
@@ -192,6 +209,78 @@ impl ProjectSkillService {
     }
 }
 
+impl ProjectSkillDistillerService {
+    pub fn new(
+        outcome_repo: Arc<dyn TaskOutcomeRepository>,
+        project_skill_repo: Arc<dyn ProjectSkillRepository>,
+    ) -> Self {
+        Self {
+            outcome_repo,
+            skill_service: ProjectSkillService::new(project_skill_repo),
+        }
+    }
+
+    pub async fn distill_eligible_outcomes(
+        &self,
+        input: DistillEligibleOutcomesInput,
+    ) -> AppResult<DistillEligibleOutcomesResult> {
+        let outcomes = self
+            .outcome_repo
+            .list_by_project(
+                &input.project_id,
+                TaskOutcomeListOptions {
+                    source: input.source,
+                    status: Some(TaskOutcomeStatus::Eligible),
+                },
+            )
+            .await?;
+        let existing_skills = self
+            .skill_service
+            .list_project_skills(
+                &input.project_id,
+                ProjectSkillListOptions {
+                    include_archived: true,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let existing_outcome_ids = existing_skills
+            .iter()
+            .filter_map(|skill| {
+                skill
+                    .provenance_json
+                    .get("outcome_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect::<BTreeSet<_>>();
+
+        let mut staged_skills = Vec::new();
+        let mut skipped_existing = 0;
+        let limit = input.limit.max(1);
+        for outcome in outcomes {
+            if staged_skills.len() >= limit {
+                break;
+            }
+            if existing_outcome_ids.contains(outcome.id.as_str()) {
+                skipped_existing += 1;
+                continue;
+            }
+            let candidate = build_distilled_skill_candidate(&outcome);
+            staged_skills.push(
+                self.skill_service
+                    .stage_skill_from_outcome(candidate)
+                    .await?,
+            );
+        }
+
+        Ok(DistillEligibleOutcomesResult {
+            staged_skills,
+            skipped_existing,
+        })
+    }
+}
+
 pub struct SkillUsageService {
     repo: Arc<dyn SkillUsageEventRepository>,
 }
@@ -280,6 +369,85 @@ fn validate_non_empty(label: &str, value: &str) -> AppResult<()> {
     Ok(())
 }
 
+fn build_distilled_skill_candidate(outcome: &TaskOutcome) -> StageProjectSkillFromOutcomeInput {
+    let outcome_class = outcome.outcome_class.as_deref().unwrap_or("unknown_outcome");
+    let readable_class = humanize_identifier(outcome_class);
+    let bucket = bucket_for_outcome_source(&outcome.source).to_string();
+    let stage = stage_for_outcome_source(&outcome.source).to_string();
+    let evidence_summary = serde_json::to_string(&outcome.evidence_json)
+        .unwrap_or_else(|_| "{}".to_string());
+    let evidence_summary = truncate_for_skill_body(&evidence_summary, 1200);
+
+    StageProjectSkillFromOutcomeInput {
+        outcome: outcome.clone(),
+        title: format!("Avoid repeat {readable_class}"),
+        bucket,
+        stage,
+        scope_paths: scope_paths_from_outcome(outcome),
+        compact_guidance: format!(
+            "Before similar work, check prior {readable_class} evidence and avoid repeating the same failure pattern."
+        ),
+        body_markdown: format!(
+            "## Learned candidate\n\nPrior outcome `{}` from `{}` was marked eligible for review.\n\nEvidence summary:\n\n```json\n{}\n```",
+            outcome_class,
+            outcome.source,
+            evidence_summary
+        ),
+        predicted_effect: format!(
+            "Reduces repeat {readable_class} outcomes by surfacing the prior evidence before similar work."
+        ),
+        additional_provenance: serde_json::json!({
+            "distiller": "deterministic_eligible_outcome_v1",
+        }),
+    }
+}
+
+fn bucket_for_outcome_source(source: &str) -> &'static str {
+    match source {
+        "review" | "github_pr_review" => "review",
+        "merge" | "merge_validation" => "merge",
+        "verification" | "plan_mode" => "planning",
+        "agent_session" | "task_pipeline" => "execution",
+        _ => "execution",
+    }
+}
+
+fn stage_for_outcome_source(source: &str) -> &'static str {
+    match source {
+        "review" | "github_pr_review" => "review",
+        "merge" | "merge_validation" => "merge",
+        "verification" | "plan_mode" => "planning",
+        _ => "execution",
+    }
+}
+
+fn scope_paths_from_outcome(outcome: &TaskOutcome) -> Vec<String> {
+    outcome
+        .evidence_json
+        .get("scope_paths")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn humanize_identifier(value: &str) -> String {
+    value.replace(['_', '-'], " ")
+}
+
+fn truncate_for_skill_body(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
 fn extract_project_skill_directives(text: &str) -> Vec<String> {
     let mut skill_ids = BTreeSet::new();
     for line in text.lines() {
@@ -343,16 +511,20 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        new_empty_task_outcome, new_skill_usage_event, ProjectSkillService, SkillUsageService,
+        new_empty_task_outcome, new_skill_usage_event, DistillEligibleOutcomesInput,
+        ProjectSkillDistillerService, ProjectSkillService, SkillUsageService,
         StageProjectSkillFromOutcomeInput,
     };
     use crate::domain::entities::types::ProjectId;
     use crate::domain::entities::{
         ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, TaskOutcomeStatus,
     };
-    use crate::domain::repositories::{ProjectSkillListOptions, SkillUsageListOptions};
+    use crate::domain::repositories::{
+        ProjectSkillListOptions, ProjectSkillRepository, SkillUsageListOptions,
+        TaskOutcomeRepository,
+    };
     use crate::infrastructure::memory::{
-        MemoryProjectSkillRepository, MemorySkillUsageEventRepository,
+        MemoryProjectSkillRepository, MemorySkillUsageEventRepository, MemoryTaskOutcomeRepository,
     };
 
     fn staged_skill(project_id: ProjectId) -> ProjectSkill {
@@ -502,6 +674,100 @@ mod tests {
             staged.provenance_json["additional"]["distiller"].as_str(),
             Some("service-test")
         );
+    }
+
+    #[tokio::test]
+    async fn project_skill_distiller_stages_eligible_outcomes() {
+        let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
+        let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let mut outcome =
+            new_empty_task_outcome(project_id.clone(), "github_pr_review", "github_review", "r1");
+        outcome.status = TaskOutcomeStatus::Eligible;
+        outcome.outcome_class = Some("github_pr_changes_requested".to_string());
+        outcome.evidence_json = json!({
+            "scope_paths": ["src-tauri"],
+            "comment_count": 2,
+        });
+        outcome_repo
+            .upsert(crate::domain::repositories::UpsertTaskOutcomeInput {
+                outcome: outcome.clone(),
+            })
+            .await
+            .unwrap();
+
+        let distiller = ProjectSkillDistillerService::new(outcome_repo, skill_repo);
+        let result = distiller
+            .distill_eligible_outcomes(DistillEligibleOutcomesInput {
+                project_id,
+                source: None,
+                limit: 10,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.staged_skills.len(), 1);
+        assert_eq!(result.skipped_existing, 0);
+        let staged = &result.staged_skills[0];
+        assert_eq!(staged.status, ProjectSkillLifecycleStatus::Staged);
+        assert_eq!(staged.bucket, "review");
+        assert_eq!(staged.stage, "review");
+        assert_eq!(staged.scope_paths, vec!["src-tauri".to_string()]);
+        assert_eq!(
+            staged.provenance_json["outcome_id"].as_str(),
+            Some(outcome.id.as_str())
+        );
+        assert!(staged
+            .predicted_effect
+            .as_deref()
+            .unwrap_or_default()
+            .contains("github pr changes requested"));
+    }
+
+    #[tokio::test]
+    async fn project_skill_distiller_skips_existing_outcome_provenance() {
+        let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
+        let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+        let skill_service =
+            ProjectSkillService::new(Arc::clone(&skill_repo) as Arc<dyn ProjectSkillRepository>);
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let mut outcome =
+            new_empty_task_outcome(project_id.clone(), "merge_validation", "task", "task-1");
+        outcome.status = TaskOutcomeStatus::Eligible;
+        outcome.outcome_class = Some("merge_validation_failed".to_string());
+        outcome_repo
+            .upsert(crate::domain::repositories::UpsertTaskOutcomeInput {
+                outcome: outcome.clone(),
+            })
+            .await
+            .unwrap();
+        skill_service
+            .stage_skill_from_outcome(StageProjectSkillFromOutcomeInput {
+                outcome: outcome.clone(),
+                title: "Existing candidate".to_string(),
+                bucket: "merge".to_string(),
+                stage: "merge".to_string(),
+                scope_paths: Vec::new(),
+                compact_guidance: "Existing guidance".to_string(),
+                body_markdown: "Existing body".to_string(),
+                predicted_effect: "Existing effect".to_string(),
+                additional_provenance: json!({ "test": true }),
+            })
+            .await
+            .unwrap();
+
+        let distiller = ProjectSkillDistillerService::new(outcome_repo, skill_repo);
+        let result = distiller
+            .distill_eligible_outcomes(DistillEligibleOutcomesInput {
+                project_id,
+                source: None,
+                limit: 10,
+            })
+            .await
+            .unwrap();
+
+        assert!(result.staged_skills.is_empty());
+        assert_eq!(result.skipped_existing, 1);
     }
 
     #[tokio::test]
