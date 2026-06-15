@@ -11935,6 +11935,65 @@ mod tests {
     }
 
     #[test]
+    fn preview_tool_payloads_preserves_parseable_mcp_artifact_preview() {
+        let artifact_content = "Detailed artifact line.\n".repeat(600);
+        let artifact = json!({
+            "id": "artifact-preview-1",
+            "title": "Previewable Artifact",
+            "artifact_type": "design_doc",
+            "content": artifact_content,
+            "version": 3
+        });
+        let tool_calls = json!([{
+            "id": "tool-artifact-1",
+            "name": "mcp__ralphx__get_artifact",
+            "arguments": { "artifact_id": "artifact-preview-1" },
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&artifact).expect("artifact json")
+                }]
+            }
+        }]);
+
+        let (tool_calls, _) = preview_tool_payloads_for_message(
+            "conversation-1",
+            "message-1",
+            Some(tool_calls),
+            None,
+        );
+        let tool_calls = tool_calls.expect("previewed tool calls");
+        let tool = &tool_calls.as_array().expect("tool call array")[0];
+        let preview_text = tool["result"]["content"][0]["text"]
+            .as_str()
+            .expect("mcp text content preview");
+        let parsed_preview: serde_json::Value =
+            serde_json::from_str(preview_text).expect("preview text remains valid JSON");
+
+        assert_eq!(tool["result_preview_truncated"], true);
+        assert_eq!(parsed_preview["title"], "Previewable Artifact");
+        assert_eq!(parsed_preview["artifact_type"], "design_doc");
+        assert_eq!(parsed_preview["version"], 3);
+        assert!(
+            parsed_preview["content"]
+                .as_str()
+                .expect("content preview string")
+                .len()
+                < artifact_content.len(),
+            "artifact content should stay bounded in the paginated preview"
+        );
+        assert_eq!(
+            tool["detail_ref"],
+            json!({
+                "conversation_id": "conversation-1",
+                "message_id": "message-1",
+                "tool_call_id": "tool-artifact-1",
+                "content_block_index": null
+            })
+        );
+    }
+
+    #[test]
     fn preview_tool_payloads_replaces_edit_arguments_with_first_diff_hunk() {
         let old_content = [
             "line 1", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7", "line 8",

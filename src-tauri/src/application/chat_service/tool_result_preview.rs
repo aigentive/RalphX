@@ -165,6 +165,17 @@ fn array_child_path(parent: &str, index: usize) -> String {
 }
 
 fn preview_string_leaf(value: &str, path: &str) -> Option<StructuredToolResultPreview> {
+    if let Ok(parsed_json) = serde_json::from_str::<JsonValue>(value) {
+        if let Some(preview) = preview_value(&parsed_json, path) {
+            if let Ok(text) = serde_json::to_string(&preview.value) {
+                return Some(StructuredToolResultPreview {
+                    value: JsonValue::String(text),
+                    paths: preview.paths,
+                });
+            }
+        }
+    }
+
     let preview = truncate_preview_text(value)?;
     Some(StructuredToolResultPreview {
         value: JsonValue::String(preview.text),
