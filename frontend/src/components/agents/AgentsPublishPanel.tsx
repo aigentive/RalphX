@@ -525,6 +525,8 @@ export function AgentPublishPanel({
   const eventPipelineStatus = isPublishingThisWorkspace
     ? pipelineStatusFromPublicationEvent(latestActivePublishEvent)
     : null;
+  const localPublishFallbackStatus =
+    localPublishStartedAtMs !== null && !eventPipelineStatus ? "checking" : null;
   const workspacePipelineStatus =
     isPublishingThisWorkspace &&
     !PUBLISH_PIPELINE_EVENT_STEPS.has(workspace.publicationPushStatus ?? "")
@@ -532,7 +534,7 @@ export function AgentPublishPanel({
       : workspace.publicationPushStatus;
   const pipelineStatus = isUpdatingFromBase
     ? "refreshing"
-    : eventPipelineStatus ?? workspacePipelineStatus;
+    : eventPipelineStatus ?? localPublishFallbackStatus ?? workspacePipelineStatus;
   const baseActionLabel =
     freshness?.effectiveBaseDisplayName ??
     freshness?.effectiveBaseRef ??
