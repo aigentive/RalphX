@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
@@ -91,6 +92,9 @@ impl ProjectSkillExportService {
             .await?
             .ok_or_else(|| AppError::NotFound(format!("project {} not found", project_id)))?;
         let target = ExportTarget::resolve(&project.working_directory)?;
+        if apply {
+            target.validate_review_branch()?;
+        }
         let skills = self
             .project_skill_repo
             .list_by_project(
@@ -207,6 +211,80 @@ impl ExportTarget {
             &self.root,
             "project skill export skills directory",
         )
+    }
+
+    fn validate_review_branch(&self) -> AppResult<()> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&self.project_root)
+            .arg("rev-parse")
+            .arg("--show-toplevel")
+            .output()
+            .map_err(|error| {
+                AppError::Infrastructure(format!(
+                    "Failed to inspect project skill export git repository {}: {error}",
+                    self.project_root.display()
+                ))
+            })?;
+        if !output.status.success() {
+            return Err(AppError::Validation(
+                "project skill export apply requires a git repository review branch".to_string(),
+            ));
+        }
+
+        let branch_output = Command::new("git")
+            .arg("-C")
+            .arg(&self.project_root)
+            .arg("symbolic-ref")
+            .arg("--short")
+            .arg("HEAD")
+            .output()
+            .map_err(|error| {
+                AppError::Infrastructure(format!(
+                    "Failed to inspect project skill export git branch {}: {error}",
+                    self.project_root.display()
+                ))
+            })?;
+        if !branch_output.status.success() {
+            return Err(AppError::Validation(
+                "project skill export apply requires a named review branch".to_string(),
+            ));
+        }
+        let branch = String::from_utf8_lossy(&branch_output.stdout)
+            .trim()
+            .to_string();
+        if matches!(branch.as_str(), "main" | "master" | "trunk") {
+            return Err(AppError::Validation(format!(
+                "project skill export apply refuses to write directly on protected branch {branch}; create a review branch first"
+            )));
+        }
+
+        let status_output = Command::new("git")
+            .arg("-C")
+            .arg(&self.project_root)
+            .arg("status")
+            .arg("--porcelain")
+            .arg("--untracked-files=all")
+            .output()
+            .map_err(|error| {
+                AppError::Infrastructure(format!(
+                    "Failed to inspect project skill export worktree status {}: {error}",
+                    self.project_root.display()
+                ))
+            })?;
+        if !status_output.status.success() {
+            return Err(AppError::Validation(
+                "project skill export apply could not inspect git worktree status".to_string(),
+            ));
+        }
+        if !status_output.stdout.is_empty() {
+            return Err(AppError::Validation(
+                "project skill export apply requires a clean review branch before writing"
+                    .to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     fn file_path(&self, relative_path: &Path) -> AppResult<PathBuf> {
