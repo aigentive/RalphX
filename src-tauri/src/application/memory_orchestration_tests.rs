@@ -222,6 +222,7 @@ fn test_build_memory_agent_config_uses_resolved_provider_model_and_env() {
         client,
         harness: Some(AgentHarnessKind::Codex),
         model: Some("gpt-5.4".to_string()),
+        cli_path_override: None,
         logical_effort: Some(LogicalEffort::Medium),
         approval_policy: Some("never".to_string()),
         sandbox_mode: Some("danger-full-access".to_string()),
