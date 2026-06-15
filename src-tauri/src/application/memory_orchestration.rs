@@ -241,6 +241,17 @@ pub(crate) async fn trigger_memory_pipelines(
         )
         .await;
 
+        log_memory_pipeline_spawn_requested(
+            memory_event_repo.as_ref(),
+            proj_id,
+            conversation_id,
+            context_type,
+            context_id,
+            "ralphx-memory-maintainer",
+            MemoryActorType::MemoryMaintainer,
+        )
+        .await;
+
         spawn_tasks.push(tokio::spawn(async move {
             if let Err(e) =
                 spawn_memory_maintainer(&conv_id, ctx, &ctx_id, &proj, &cli, &plugin, &wd, runtime)
@@ -286,6 +297,17 @@ pub(crate) async fn trigger_memory_pipelines(
         let wd = working_directory.to_path_buf();
         let event_repo = memory_event_repo.clone();
         let runtime = memory_agent_runtime.clone();
+
+        log_memory_pipeline_spawn_requested(
+            memory_event_repo.as_ref(),
+            proj_id,
+            conversation_id,
+            context_type,
+            context_id,
+            "ralphx-memory-capture",
+            MemoryActorType::MemoryCapture,
+        )
+        .await;
 
         log_memory_pipeline_spawn_requested(
             memory_event_repo.as_ref(),
