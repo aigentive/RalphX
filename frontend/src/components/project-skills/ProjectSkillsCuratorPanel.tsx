@@ -25,14 +25,18 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 import {
@@ -307,129 +311,119 @@ export function ProjectSkillsCuratorPanel({
         />
       </div>
 
-      <div className="grid gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-[var(--text-primary)]">
-              Skill Operations
-            </h2>
-            <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
-              Find reusable procedures from completed task, conversation, and
-              agent workspace outcomes, then review them before agents can use
-              them. Export remains opt-in.
-            </p>
-          </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => distillMutation.mutate()}
-                disabled={isBusy}
-              >
-                <RefreshCw
-                  className={cn(distillMutation.isPending && "animate-spin")}
-                />
-                Find candidates
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-[280px] leading-5">
-              Scans recorded outcomes from completed work, proposes reusable
-              skill candidates, and leaves them in the review queue. It does
-              not approve or inject skills automatically.
-            </TooltipContent>
-          </Tooltip>
-        </div>
-        <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-          <span className="font-medium text-[var(--text-primary)]">
-            What Find candidates does:
-          </span>{" "}
-          scans stored task, conversation, and agent workspace outcomes for
-          repeated procedural lessons and stages draft skills for human
-          approval.
-        </div>
-        <ProjectSkillsExportControls
-          disabled={isBusy || approvedSkills.length === 0}
-          exportEnabled={exportEnabled}
-          onExportEnabledChange={(enabled) =>
-            updateSettingsMutation.mutate(enabled)
-          }
-          onPreview={() => previewExportMutation.mutate()}
-          onApply={() => applyExportMutation.mutate()}
-        />
-        {approvedSkills.length === 0 ? (
-          <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs text-[var(--text-tertiary)]">
-            Approve or pin at least one skill before export controls can write
-            files.
-          </div>
-        ) : null}
-      </div>
-
-      {exportPreview ? (
-        <ProjectSkillsExportSummary preview={exportPreview} />
-      ) : null}
-
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
-        <div className="grid gap-4">
-          {stagedQuery.isLoading || approvedQuery.isLoading ? (
-            <div className="grid gap-3">
-              <Skeleton className="h-28 w-full" />
-              <Skeleton className="h-28 w-full" />
-            </div>
-          ) : (
-            <>
-              <SkillSection
-                title="Review Queue"
-                description="Staged candidates must be approved before agents can use them."
-                emptyMessage="No staged learned skills."
-                skills={stagedSkills}
-                renderSkill={(skill) => (
-                  <ProjectSkillCandidateCard
-                    key={skill.id}
-                    skill={skill}
-                    disabled={isBusy}
-                    onApprove={() => approveMutation.mutate(skill.id)}
-                    onReject={() => rejectMutation.mutate(skill.id)}
-                    onArchive={() => archiveMutation.mutate(skill.id)}
-                  />
-                )}
-              />
-              <SkillSection
-                title="Approved Skills"
-                description="Approved skills are eligible for future injection and export."
-                emptyMessage="No approved learned skills."
-                skills={approvedSkills}
-                renderSkill={(skill) => (
-                  <ProjectSkillApprovedCard
-                    key={skill.id}
-                    skill={skill}
-                    disabled={isBusy}
-                    onPin={() => pinMutation.mutate(skill.id)}
-                    onUnpin={() => unpinMutation.mutate(skill.id)}
-                    onArchive={() => archiveMutation.mutate(skill.id)}
-                  />
-                )}
-              />
-              <ReportCardSection
-                loading={reportCardsQuery.isLoading}
-                cards={reportCards}
-              />
-            </>
-          )}
-        </div>
-
-        <ImportPromotionPanel
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <CandidateDiscoveryDialog
           disabled={isBusy}
-          importManifest={importManifest}
-          importPreview={importPreview}
-          memoryPromotion={memoryPromotion}
-          onImportManifestChange={setImportManifest}
-          onPreviewImport={() => previewImportMutation.mutate()}
-          onApplyImport={() => applyImportMutation.mutate()}
-          onMemoryPromotionChange={setMemoryPromotion}
-          onPromoteMemory={() => promoteMemoryMutation.mutate()}
+          pending={distillMutation.isPending}
+          onFindCandidates={() => distillMutation.mutate()}
         />
       </div>
+
+      <Tabs defaultValue="review" className="grid gap-4">
+        <TabsList className="h-auto justify-start rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-1">
+          <TabsTrigger value="review" className="text-xs">
+            Review queue
+          </TabsTrigger>
+          <TabsTrigger value="approved" className="text-xs">
+            Approved
+          </TabsTrigger>
+          <TabsTrigger value="reports" className="text-xs">
+            Reports
+          </TabsTrigger>
+          <TabsTrigger value="advanced" className="text-xs">
+            Advanced
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="review" className="mt-0 grid gap-4">
+          {stagedQuery.isLoading ? (
+            <Skeleton className="h-28 w-full" />
+          ) : (
+            <SkillSection
+              title="Review Queue"
+              description="Staged candidates must be approved before agents can use them."
+              emptyMessage="No staged learned skills."
+              skills={stagedSkills}
+              renderSkill={(skill) => (
+                <ProjectSkillCandidateCard
+                  key={skill.id}
+                  skill={skill}
+                  disabled={isBusy}
+                  onApprove={() => approveMutation.mutate(skill.id)}
+                  onReject={() => rejectMutation.mutate(skill.id)}
+                  onArchive={() => archiveMutation.mutate(skill.id)}
+                />
+              )}
+            />
+          )}
+        </TabsContent>
+
+        <TabsContent value="approved" className="mt-0 grid gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3">
+            <p className="text-xs leading-5 text-[var(--text-secondary)]">
+              Approved skills are available to agents for this project. Export
+              is optional and opens in a separate review dialog.
+            </p>
+            <ProjectSkillsExportDialog
+              disabled={isBusy}
+              exportEnabled={exportEnabled}
+              exportPreview={exportPreview}
+              approvedCount={approvedSkills.length}
+              onExportEnabledChange={(enabled) =>
+                updateSettingsMutation.mutate(enabled)
+              }
+              onPreview={() => previewExportMutation.mutate()}
+              onApply={() => applyExportMutation.mutate()}
+            />
+          </div>
+          {approvedQuery.isLoading ? (
+            <Skeleton className="h-28 w-full" />
+          ) : (
+            <SkillSection
+              title="Approved Skills"
+              description="Approved skills are eligible for future injection and export."
+              emptyMessage="No approved learned skills."
+              skills={approvedSkills}
+              renderSkill={(skill) => (
+                <ProjectSkillApprovedCard
+                  key={skill.id}
+                  skill={skill}
+                  disabled={isBusy}
+                  onPin={() => pinMutation.mutate(skill.id)}
+                  onUnpin={() => unpinMutation.mutate(skill.id)}
+                  onArchive={() => archiveMutation.mutate(skill.id)}
+                />
+              )}
+            />
+          )}
+        </TabsContent>
+
+        <TabsContent value="reports" className="mt-0 grid gap-4">
+          <ReportCardSection
+            loading={reportCardsQuery.isLoading}
+            cards={reportCards}
+          />
+        </TabsContent>
+
+        <TabsContent value="advanced" className="mt-0 grid gap-4">
+          <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
+            Advanced intake is for controlled imports and one-off memory
+            promotions. New rows still land in the Review Queue and require
+            approval before agents can use them.
+          </div>
+          <ImportPromotionPanel
+            disabled={isBusy}
+            importManifest={importManifest}
+            importPreview={importPreview}
+            memoryPromotion={memoryPromotion}
+            onImportManifestChange={setImportManifest}
+            onPreviewImport={() => previewImportMutation.mutate()}
+            onApplyImport={() => applyImportMutation.mutate()}
+            onMemoryPromotionChange={setMemoryPromotion}
+            onPromoteMemory={() => promoteMemoryMutation.mutate()}
+          />
+        </TabsContent>
+      </Tabs>
 
       {error ? (
         <div
@@ -440,6 +434,114 @@ export function ProjectSkillsCuratorPanel({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function CandidateDiscoveryDialog({
+  disabled,
+  pending,
+  onFindCandidates,
+}: {
+  disabled: boolean;
+  pending: boolean;
+  onFindCandidates: () => void;
+}) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button type="button" size="sm" disabled={disabled}>
+          <RefreshCw className={cn(pending && "animate-spin")} />
+          Find candidates...
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-[560px]">
+        <DialogHeader>
+          <div>
+            <DialogTitle>Find skill candidates</DialogTitle>
+            <DialogDescription className="mt-1 leading-5">
+              Scan stored task, conversation, and agent workspace outcomes for
+              reusable procedures. Matching lessons are staged in the Review
+              Queue; nothing is approved or injected automatically.
+            </DialogDescription>
+          </div>
+        </DialogHeader>
+        <div className="grid gap-4 px-6 py-5">
+          <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
+            The current run checks up to 10 eligible outcomes for this project
+            and skips duplicates already represented by an existing skill.
+          </div>
+          <div className="flex justify-end">
+            <Button type="button" onClick={onFindCandidates} disabled={disabled}>
+              <RefreshCw className={cn(pending && "animate-spin")} />
+              Find candidates
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ProjectSkillsExportDialog({
+  disabled,
+  exportEnabled,
+  exportPreview,
+  approvedCount,
+  onExportEnabledChange,
+  onPreview,
+  onApply,
+}: {
+  disabled: boolean;
+  exportEnabled: boolean;
+  exportPreview: ProjectSkillExportResult | null;
+  approvedCount: number;
+  onExportEnabledChange: (enabled: boolean) => void;
+  onPreview: () => void;
+  onApply: () => void;
+}) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={disabled}
+        >
+          <FileDown />
+          Export...
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-[640px]">
+        <DialogHeader>
+          <div>
+            <DialogTitle>Export approved skills</DialogTitle>
+            <DialogDescription className="mt-1 leading-5">
+              Export is project-scoped and opt-in. It writes only approved or
+              pinned skills after preview.
+            </DialogDescription>
+          </div>
+        </DialogHeader>
+        <div className="grid gap-4 px-6 py-5">
+          {approvedCount === 0 ? (
+            <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs text-[var(--text-tertiary)]">
+              Approve or pin at least one skill before export controls can
+              write files.
+            </div>
+          ) : null}
+          <ProjectSkillsExportControls
+            disabled={disabled || approvedCount === 0}
+            exportEnabled={exportEnabled}
+            onExportEnabledChange={onExportEnabledChange}
+            onPreview={onPreview}
+            onApply={onApply}
+          />
+          {exportPreview ? (
+            <ProjectSkillsExportSummary preview={exportPreview} />
+          ) : null}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -523,12 +625,12 @@ function ImportPromotionPanel({
       <Card className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
         <div className="grid gap-3">
           <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
-            Import skill manifest
+            Import draft skills
           </h3>
           <p className="text-xs text-[var(--text-secondary)]">
-            Bring in draft skills from an external JSON manifest. Preview checks
-            eligibility first; Apply adds valid rows to the Review Queue for
-            approval.
+            Paste a JSON manifest from another source. Preview validates each
+            row first; Add to review queue stages only eligible drafts for this
+            project.
           </p>
           <Textarea
             aria-label="Project skill import manifest"
@@ -569,12 +671,11 @@ function ImportPromotionPanel({
       <Card className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
         <div className="grid gap-3">
           <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
-            Create skill from memory
+            Draft from memory
           </h3>
           <p className="text-xs text-[var(--text-secondary)]">
-            Use one saved factual memory as provenance for a new draft skill.
-            The memory stays unchanged; you rewrite the lesson as reusable
-            agent procedure before it enters the Review Queue.
+            Use one saved memory only as provenance. The memory is not edited;
+            you write the reusable procedure and send it to the Review Queue.
           </p>
           <div className="grid gap-2 sm:grid-cols-2">
             <label className="grid gap-1 text-xs text-[var(--text-secondary)]">

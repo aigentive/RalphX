@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { projectSkillsApi, type ProjectSkill } from "@/api/project-skills";
-import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { ProjectSkillsCuratorPanel } from "./ProjectSkillsCuratorPanel";
 
@@ -61,9 +61,7 @@ function renderPanel(projectId = "project-1") {
 
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <ProjectSkillsCuratorPanel projectId={projectId} />
-      </TooltipProvider>
+      <ProjectSkillsCuratorPanel projectId={projectId} />
     </QueryClientProvider>,
   );
 
@@ -237,7 +235,9 @@ describe("ProjectSkillsCuratorPanel", () => {
 
   it("renders conservative report cards for approved skills", async () => {
     renderPanel();
+    const user = userEvent.setup();
 
+    await user.click(await screen.findByRole("tab", { name: /reports/i }));
     expect(await screen.findByText("low sample")).toBeInTheDocument();
     expect(screen.getAllByText("Approved review convention").length).toBeGreaterThan(0);
     expect(screen.getByText("3 uses")).toBeInTheDocument();
@@ -248,10 +248,13 @@ describe("ProjectSkillsCuratorPanel", () => {
 
   it("previews and applies project skill imports", async () => {
     renderPanel();
+    const user = userEvent.setup();
 
-    await screen.findByText("Import skill manifest");
+    expect(screen.queryByText("Import draft skills")).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("tab", { name: /advanced/i }));
+    await screen.findByText("Import draft skills");
     expect(
-      screen.getByText(/Apply adds valid rows to the Review Queue/i),
+      screen.getByText(/Preview validates each row first/i),
     ).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Project skill import manifest"), {
       target: {
@@ -294,10 +297,13 @@ describe("ProjectSkillsCuratorPanel", () => {
 
   it("promotes memory entries through the curator panel", async () => {
     renderPanel();
+    const user = userEvent.setup();
 
-    await screen.findByText("Create skill from memory");
+    expect(screen.queryByText("Draft from memory")).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("tab", { name: /advanced/i }));
+    await screen.findByText("Draft from memory");
     expect(
-      screen.getByText(/rewrite the lesson as reusable agent procedure/i),
+      screen.getByText(/Use one saved memory only as provenance/i),
     ).toBeInTheDocument();
     expect(screen.getByText("Memory ID")).toBeInTheDocument();
     expect(screen.getByText("Compact guidance")).toBeInTheDocument();
@@ -335,6 +341,7 @@ describe("ProjectSkillsCuratorPanel", () => {
   });
 
   it("distills eligible outcomes and refreshes staged skills", async () => {
+    const user = userEvent.setup();
     mockedProjectSkillsApi.list.mockImplementation((input) =>
       Promise.resolve(
         input.status === "approved"
@@ -350,10 +357,18 @@ describe("ProjectSkillsCuratorPanel", () => {
     expect(await screen.findByText("No staged learned skills.")).toBeInTheDocument();
 
     expect(
-      screen.getByText(/scans stored task, conversation, and agent workspace outcomes/i),
+      screen.queryByText(/Scan stored task, conversation, and agent workspace outcomes/i),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /find candidates\.\.\./i }));
+    expect(
+      await screen.findByRole("dialog", { name: /find skill candidates/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Scan stored task, conversation, and agent workspace outcomes/i),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /find candidates/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^find candidates$/i }));
 
     await waitFor(() => {
       expect(mockedProjectSkillsApi.distill).toHaveBeenCalledWith({
@@ -401,7 +416,9 @@ describe("ProjectSkillsCuratorPanel", () => {
     );
 
     renderPanel();
+    const user = userEvent.setup();
 
+    await user.click(await screen.findByRole("tab", { name: /^approved$/i }));
     expect(
       (await screen.findAllByText("Approved review convention")).length,
     ).toBeGreaterThan(0);
@@ -429,7 +446,9 @@ describe("ProjectSkillsCuratorPanel", () => {
     );
 
     renderPanel();
+    const user = userEvent.setup();
 
+    await user.click(await screen.findByRole("tab", { name: /^approved$/i }));
     expect(await screen.findByText("Pinned review convention")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^unpin$/i }));
@@ -440,10 +459,17 @@ describe("ProjectSkillsCuratorPanel", () => {
 
   it("previews and applies approved skill export after opt-in", async () => {
     renderPanel();
+    const user = userEvent.setup();
 
+    await user.click(await screen.findByRole("tab", { name: /^approved$/i }));
     expect(
       (await screen.findAllByText("Approved review convention")).length,
     ).toBeGreaterThan(0);
+    expect(screen.queryByText(/Apply requires a clean git worktree/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /export\.\.\./i }));
+    expect(
+      await screen.findByRole("dialog", { name: /export approved skills/i }),
+    ).toBeInTheDocument();
     const exportButton = screen.getByRole("button", { name: /^export$/i });
     expect(exportButton).toBeDisabled();
 
