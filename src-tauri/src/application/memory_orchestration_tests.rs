@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::agents::LogicalEffort;
 use crate::domain::repositories::MemoryEventRepository;
 use crate::infrastructure::memory::{
     InMemoryMemoryEventRepository, MemoryProjectMemorySettingsRepository,
@@ -103,6 +104,7 @@ async fn test_trigger_memory_pipelines_no_project_id() {
         None,
         None,
         None,
+        None,
     )
     .await;
     // Test passes if no panic
@@ -126,6 +128,7 @@ async fn test_trigger_memory_pipelines_recursion_guard_maintainer() {
         &cli_path,
         &plugin_dir,
         &wd,
+        None,
         None,
         None,
         None,
@@ -155,6 +158,7 @@ async fn test_trigger_memory_pipelines_recursion_guard_capture() {
         None,
         None,
         None,
+        None,
     )
     .await;
     // Test passes if no spawn happens
@@ -176,6 +180,7 @@ async fn test_spawn_memory_maintainer_fails_in_test_env() {
         &cli_path,
         &plugin_dir,
         &wd,
+        None,
     )
     .await;
 
@@ -199,11 +204,55 @@ async fn test_spawn_memory_capture_fails_in_test_env() {
         &cli_path,
         &plugin_dir,
         &wd,
+        None,
     )
     .await;
 
     // In test environment, build_spawnable_command returns Err due to ensure_claude_spawn_allowed()
     assert!(result.is_err());
+}
+
+#[test]
+fn test_build_memory_agent_config_uses_resolved_provider_model_and_env() {
+    let project_id = ProjectId::from_string("proj-runtime".to_string());
+    let conv_id = ChatConversationId::from_string("conv-runtime".to_string());
+    let client: Arc<dyn crate::domain::agents::AgenticClient> =
+        Arc::new(crate::infrastructure::MockAgenticClient::new());
+    let runtime = ResolvedBackgroundAgentRuntime {
+        client,
+        harness: Some(AgentHarnessKind::Codex),
+        model: Some("gpt-5.4".to_string()),
+        logical_effort: Some(LogicalEffort::Medium),
+        approval_policy: Some("never".to_string()),
+        sandbox_mode: Some("danger-full-access".to_string()),
+    };
+
+    let config = build_memory_agent_config(
+        MemoryAgentKind::Capture,
+        &runtime,
+        "Capture learning".to_string(),
+        &conv_id,
+        ChatContextType::TaskExecution,
+        "task-123",
+        &project_id,
+        PathBuf::from("/tmp/project").as_path(),
+    );
+    let conv_id_str = conv_id.as_str();
+
+    assert_eq!(config.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(config.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(config.logical_effort, Some(LogicalEffort::Medium));
+    assert_eq!(config.approval_policy.as_deref(), Some("never"));
+    assert_eq!(config.sandbox_mode.as_deref(), Some("danger-full-access"));
+    assert_eq!(config.agent.as_deref(), Some(MEMORY_CAPTURE_AGENT));
+    assert_eq!(
+        config.env.get("RALPHX_CONVERSATION_ID").map(String::as_str),
+        Some(conv_id_str.as_str())
+    );
+    assert_eq!(
+        config.env.get("RALPHX_PROJECT_ID").map(String::as_str),
+        Some(project_id.as_str())
+    );
 }
 
 #[test]
@@ -285,6 +334,7 @@ async fn test_trigger_memory_pipelines_uses_repository_settings_and_logs_disable
         None,
         Some(event_repo.clone()),
         Some(settings_repo),
+        None,
     )
     .await;
 
@@ -323,6 +373,7 @@ async fn test_trigger_memory_pipelines_logs_enabled_capture_spawn_request() {
             capture_categories: vec!["planning".to_string()],
         }),
         Some(event_repo.clone()),
+        None,
         None,
     )
     .await;

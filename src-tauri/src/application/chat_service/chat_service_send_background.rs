@@ -139,6 +139,57 @@ pub(super) fn should_process_stream_queue(
         && !(silent_interactive_exit && cancellation_requested)
 }
 
+async fn resolve_memory_agent_runtime_for_background<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    conversation: Option<&ChatConversation>,
+    conversation_repo: Arc<dyn ChatConversationRepository>,
+    conversation_id: &ChatConversationId,
+    project_id: Option<&str>,
+) -> Option<crate::application::app_state::ResolvedBackgroundAgentRuntime> {
+    let app_state =
+        app_handle.and_then(|handle| handle.try_state::<crate::application::AppState>())?;
+    let owned_conversation;
+    let conversation = match conversation {
+        Some(conversation) => conversation,
+        None => {
+            owned_conversation = match conversation_repo.get_by_id(conversation_id).await {
+                Ok(Some(conversation)) => conversation,
+                Ok(None) => {
+                    tracing::debug!(
+                        conversation_id = conversation_id.as_str(),
+                        "memory pipeline runtime resolver skipped missing conversation"
+                    );
+                    return None;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = conversation_id.as_str(),
+                        error = %error,
+                        "memory pipeline runtime resolver failed to load conversation"
+                    );
+                    return None;
+                }
+            };
+            &owned_conversation
+        }
+    };
+
+    match app_state
+        .resolve_memory_agent_runtime_for_conversation(conversation, project_id)
+        .await
+    {
+        Ok(runtime) => Some(runtime),
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "memory pipeline runtime resolver fell back to legacy memory agent launch"
+            );
+            None
+        }
+    }
+}
+
 const AGENT_TASK_LEDGER_SUBSTANTIAL_TOOL_CALL_COUNT: usize = 3;
 const AGENT_TASK_LEDGER_TOOL_NAMES: &[&str] = &[
     "create_agent_task",
@@ -773,6 +824,14 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
         )
         .await;
         let resolved_project_id_typed = resolved_project_id.as_ref().map(|s| crate::domain::entities::ProjectId::from_string(s.clone()));
+        let memory_agent_runtime = resolve_memory_agent_runtime_for_background(
+            app_handle.as_ref(),
+            conversation.as_ref(),
+            Arc::clone(&conversation_repo),
+            &conversation_id,
+            resolved_project_id.as_deref(),
+        )
+        .await;
 
         // Create key for unregistering
         let registry_key = RunningAgentKey::new(context_type.to_string(), &runtime_context_id);
@@ -1421,6 +1480,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         None,
                         Some(Arc::clone(&memory_event_repo)),
                         Some(Arc::clone(&project_memory_settings_repo)),
+                        memory_agent_runtime.clone(),
                     )
                     .await;
                 } else {
@@ -1524,6 +1584,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         None,
                         Some(Arc::clone(&memory_event_repo)),
                         Some(Arc::clone(&project_memory_settings_repo)),
+                        memory_agent_runtime.clone(),
                     )
                     .await;
                 } else {

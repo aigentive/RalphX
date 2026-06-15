@@ -114,6 +114,7 @@ use crate::infrastructure::sqlite::{
 use crate::infrastructure::GhCliGithubService;
 use crate::infrastructure::HyperAtlassianApiClient;
 
+#[derive(Clone)]
 pub(crate) struct ResolvedBackgroundAgentRuntime {
     pub client: Arc<dyn AgenticClient>,
     pub harness: Option<AgentHarnessKind>,
@@ -362,6 +363,57 @@ impl AppState {
         }
     }
 
+    async fn lock_utility_agent_runtime_model_for_conversation(
+        &self,
+        runtime: ResolvedBackgroundAgentRuntime,
+        conversation: &ChatConversation,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        let harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
+        let model = self
+            .lowest_recorded_model_for_conversation(conversation, harness)
+            .await?
+            .unwrap_or_else(|| lightweight_model_for_provider(harness).to_string());
+        Ok(ResolvedBackgroundAgentRuntime {
+            model: Some(model),
+            logical_effort: Some(LogicalEffort::Medium),
+            ..runtime
+        })
+    }
+
+    async fn lowest_recorded_model_for_conversation(
+        &self,
+        conversation: &ChatConversation,
+        harness: AgentHarnessKind,
+    ) -> AppResult<Option<String>> {
+        let mut models = Vec::new();
+
+        for run in self
+            .agent_run_repo
+            .get_by_conversation(&conversation.id)
+            .await?
+        {
+            if run.harness == Some(harness) {
+                collect_runtime_model_candidate(&mut models, run.logical_model.as_deref());
+                collect_runtime_model_candidate(&mut models, run.effective_model_id.as_deref());
+            }
+        }
+
+        for message in self
+            .chat_message_repo
+            .get_by_conversation(&conversation.id)
+            .await?
+        {
+            if message.provider_harness == Some(harness) {
+                collect_runtime_model_candidate(&mut models, message.logical_model.as_deref());
+                collect_runtime_model_candidate(&mut models, message.effective_model_id.as_deref());
+            }
+        }
+
+        Ok(models
+            .into_iter()
+            .min_by_key(|model| runtime_model_tier(harness, model)))
+    }
+
     async fn resolve_background_agent_runtime_for_harness(
         &self,
         harness: AgentHarnessKind,
@@ -596,7 +648,9 @@ impl AppState {
                     "session namer owning conversation",
                 )
                 .await?;
-            return Ok(Self::lock_utility_agent_runtime_model(runtime));
+            return self
+                .lock_utility_agent_runtime_model_for_conversation(runtime, conversation)
+                .await;
         }
 
         self.resolve_session_namer_runtime_for_project(project_id)
@@ -614,7 +668,9 @@ impl AppState {
                     "PR describer owning conversation",
                 )
                 .await?;
-            return Ok(Self::lock_utility_agent_runtime_model(runtime));
+            return self
+                .lock_utility_agent_runtime_model_for_conversation(runtime, conversation)
+                .await;
         }
 
         let default_provider = crate::application::resolve_enabled_default_provider(
@@ -630,6 +686,27 @@ impl AppState {
             )
             .await?;
         Ok(Self::lock_utility_agent_runtime_model(runtime))
+    }
+
+    pub(crate) async fn resolve_memory_agent_runtime_for_conversation(
+        &self,
+        conversation: &ChatConversation,
+        project_id: Option<&str>,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        if let Some(harness) = conversation.provider_harness {
+            let runtime = self
+                .resolve_background_agent_runtime_for_harness(
+                    harness,
+                    "memory pipeline owning conversation",
+                )
+                .await?;
+            return self
+                .lock_utility_agent_runtime_model_for_conversation(runtime, conversation)
+                .await;
+        }
+
+        self.resolve_session_namer_runtime_for_project(project_id)
+            .await
     }
 
     pub(crate) async fn resolve_plan_complexity_runtime_for_session(
@@ -1480,6 +1557,42 @@ impl AppState {
     pub fn resume_validator(&self) -> ResumeValidator {
         ResumeValidator::new(Arc::clone(&self.running_agent_registry))
             .with_interactive_process_registry(Arc::clone(&self.interactive_process_registry))
+    }
+}
+
+fn collect_runtime_model_candidate(models: &mut Vec<String>, model: Option<&str>) {
+    if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+        models.push(model.to_string());
+    }
+}
+
+fn runtime_model_tier(harness: AgentHarnessKind, model: &str) -> u8 {
+    let model = model.to_ascii_lowercase();
+    match harness {
+        AgentHarnessKind::Claude => {
+            if model.contains("haiku") {
+                10
+            } else if model.contains("sonnet") {
+                20
+            } else if model.contains("opus") {
+                30
+            } else {
+                100
+            }
+        }
+        AgentHarnessKind::Codex => {
+            if model.contains("codex-spark") || model.contains("gpt-5.3") {
+                5
+            } else if model.contains("mini") {
+                10
+            } else if model.contains("gpt-5.4") {
+                20
+            } else if model.contains("gpt-5.5") {
+                30
+            } else {
+                100
+            }
+        }
     }
 }
 
