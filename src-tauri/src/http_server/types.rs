@@ -1366,6 +1366,19 @@ pub struct ProjectSkillLifecycleResponse {
     pub skill: Option<ProjectSkillResponse>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct DistillProjectSkillsRequest {
+    pub project_id: String,
+    pub source: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DistillProjectSkillsResponse {
+    pub staged_skills: Vec<ProjectSkillResponse>,
+    pub skipped_existing: usize,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RefreshMemoryRuleIndexRequest {
     pub project_id: String,

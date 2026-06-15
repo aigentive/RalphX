@@ -6,7 +6,9 @@ use super::*;
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{ProjectSkillId, ProjectSkillLifecycleStatus};
 use crate::domain::repositories::ProjectSkillListOptions;
-use crate::domain::services::ProjectSkillService;
+use crate::domain::services::{
+    DistillEligibleOutcomesInput, ProjectSkillDistillerService, ProjectSkillService,
+};
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
 use crate::http_server::types::HttpError;
 
@@ -128,6 +130,43 @@ pub async fn archive_project_skill(
     .await
 }
 
+pub async fn distill_project_skills(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<DistillProjectSkillsRequest>,
+) -> Result<Json<DistillProjectSkillsResponse>, HttpError> {
+    let project_id = ProjectId::from_string(req.project_id);
+    assert_project_id_scope(&project_id, &scope)?;
+
+    let distiller = ProjectSkillDistillerService::new(
+        Arc::clone(&state.app_state.task_outcome_repo),
+        Arc::clone(&state.app_state.project_skill_repo),
+    );
+    let result = distiller
+        .distill_eligible_outcomes(DistillEligibleOutcomesInput {
+            project_id,
+            source: req.source,
+            limit: req.limit.unwrap_or(25),
+        })
+        .await
+        .map_err(|error| {
+            error!("failed to distill project skills: {}", error);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to distill project skills".to_string()),
+            }
+        })?;
+
+    Ok(Json(DistillProjectSkillsResponse {
+        staged_skills: result
+            .staged_skills
+            .into_iter()
+            .map(ProjectSkillResponse::from)
+            .collect(),
+        skipped_existing: result.skipped_existing,
+    }))
+}
+
 async fn update_project_skill_lifecycle(
     state: HttpServerState,
     scope: ProjectScope,
@@ -195,7 +234,9 @@ mod tests {
     use super::*;
     use crate::application::{AppState, TeamService, TeamStateTracker};
     use crate::commands::ExecutionState;
-    use crate::domain::entities::{ProjectSkill, ProjectSkillLifecycleStatus};
+    use crate::domain::entities::{ProjectSkill, ProjectSkillLifecycleStatus, TaskOutcomeStatus};
+    use crate::domain::repositories::UpsertTaskOutcomeInput;
+    use crate::domain::services::new_empty_task_outcome;
 
     fn test_state(app_state: Arc<AppState>) -> HttpServerState {
         let tracker = TeamStateTracker::new();
@@ -269,6 +310,56 @@ mod tests {
         )
         .await
         .expect_err("cross-project approval should fail");
+
+        assert_eq!(error.status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn distill_project_skills_stages_eligible_outcomes() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-distill".to_string());
+        let mut outcome =
+            new_empty_task_outcome(project_id.clone(), "review", "review_note", "review-1");
+        outcome.status = TaskOutcomeStatus::Eligible;
+        outcome.outcome_class = Some("review_changes_requested".to_string());
+        app_state
+            .task_outcome_repo
+            .upsert(UpsertTaskOutcomeInput { outcome })
+            .await
+            .unwrap();
+
+        let response = distill_project_skills(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![project_id])),
+            Json(DistillProjectSkillsRequest {
+                project_id: "project-distill".to_string(),
+                source: Some("review".to_string()),
+                limit: Some(5),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.0.staged_skills.len(), 1);
+        assert_eq!(response.0.staged_skills[0].status, "staged");
+        assert_eq!(response.0.staged_skills[0].bucket, "review");
+        assert_eq!(response.0.skipped_existing, 0);
+    }
+
+    #[tokio::test]
+    async fn distill_project_skills_rejects_cross_project_scope() {
+        let app_state = Arc::new(AppState::new_test());
+        let error = distill_project_skills(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![ProjectId::from_string("project-b".to_string())])),
+            Json(DistillProjectSkillsRequest {
+                project_id: "project-a".to_string(),
+                source: None,
+                limit: None,
+            }),
+        )
+        .await
+        .expect_err("cross-project distill should fail");
 
         assert_eq!(error.status, StatusCode::FORBIDDEN);
     }
