@@ -21,6 +21,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   integrations: () => import("./AtlassianIntegrationSettingsPanel"),
   "api-keys": () => import("./ApiKeysSection"),
   "external-mcp": () => import("./ExternalMcpSettingsPanel"),
+  "app-preferences": () => import("./AppPreferencesSection"),
   accessibility: () => import("./AccessibilitySection"),
 };
 

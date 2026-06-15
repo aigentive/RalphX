@@ -9,14 +9,29 @@ export function readPreferredWorkspaceOpenTargetId(): string | null {
   if (typeof window === "undefined") {
     return null;
   }
-  return window.localStorage.getItem(PREFERRED_WORKSPACE_OPEN_TARGET_KEY);
+  try {
+    const storage = window.localStorage;
+    if (!storage || typeof storage.getItem !== "function") {
+      return null;
+    }
+    return storage.getItem(PREFERRED_WORKSPACE_OPEN_TARGET_KEY);
+  } catch {
+    return null;
+  }
 }
 
 export function writePreferredWorkspaceOpenTargetId(targetId: string): void {
   if (typeof window === "undefined") {
     return;
   }
-  window.localStorage.setItem(PREFERRED_WORKSPACE_OPEN_TARGET_KEY, targetId);
+  try {
+    const storage = window.localStorage;
+    if (storage && typeof storage.setItem === "function") {
+      storage.setItem(PREFERRED_WORKSPACE_OPEN_TARGET_KEY, targetId);
+    }
+  } catch {
+    // Preference persistence is best-effort.
+  }
   window.dispatchEvent(
     new CustomEvent(PREFERRED_WORKSPACE_OPEN_TARGET_EVENT, {
       detail: { targetId },

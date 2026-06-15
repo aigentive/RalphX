@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useProjectStats } from "@/hooks/useProjectStats";
 import { useProjectStore } from "@/stores/projectStore";
+import { useSkillsEnabled } from "@/stores/skillsSettingsStore";
 import { ALL_NAV_ITEMS } from "./nav-items";
 import { BrandMark } from "./BrandMark";
 import type { ViewType } from "@/types/chat";
@@ -100,11 +101,16 @@ export function LeftNavRail({
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const { data: stats } = useProjectStats(activeProjectId ?? undefined);
   const { data: featureFlags } = useFeatureFlags();
+  const [skillsEnabled] = useSkillsEnabled();
 
   const taskCount = stats?.taskCount ?? 0;
   const visibleItems = hideViews
     ? []
-    : ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags, taskCount));
+    : ALL_NAV_ITEMS.filter(
+        (item) =>
+          item.visible(featureFlags, taskCount) &&
+          (item.view !== "skills" || skillsEnabled),
+      );
 
   return (
     <aside

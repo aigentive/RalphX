@@ -1,8 +1,12 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { chatApi, type ConversationStatsResponse } from "@/api/chat";
 import { useChatStore } from "@/stores/chatStore";
+import {
+  resetSkillsEnabledForTests,
+  setSkillsEnabled,
+} from "@/stores/skillsSettingsStore";
 import { toast } from "sonner";
 import { AgentsChatFocusBar, AgentsChatHeader } from "./AgentsChatHeader";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
@@ -71,12 +75,17 @@ function conversationStats(
 }
 
 describe("AgentsChatHeader", () => {
+  beforeEach(() => {
+    resetSkillsEnabledForTests(true);
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     if (typeof window.localStorage.clear === "function") {
       window.localStorage.clear();
     }
+    resetSkillsEnabledForTests(true);
     useChatStore.setState({ agentStatus: {}, isSending: {} });
   });
 
@@ -880,6 +889,27 @@ describe("AgentsChatHeader", () => {
     expect(onSelectArtifact).toHaveBeenCalledWith("plan");
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Skills")).not.toBeInTheDocument();
+  });
+
+  it("hides the skills artifact shortcut when the Skills surface is disabled", () => {
+    setSkillsEnabled(false);
+
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ agentMode: "edit" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByLabelText("Skills")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Open artifacts")).not.toBeInTheDocument();
   });
 
   it("shows ideation artifact shortcuts for ideation-mode conversations", () => {

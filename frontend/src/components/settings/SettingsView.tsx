@@ -17,6 +17,7 @@ import { IdeationModelSection } from "./IdeationModelSection";
 import { RepositorySettingsSection } from "./RepositorySettingsSection";
 import { ProjectAnalysisSection } from "./ProjectAnalysisSection";
 import { ApiKeysSection } from "./ApiKeysSection";
+import { AppPreferencesSection } from "./AppPreferencesSection";
 import {
   SettingsSkeleton,
   ErrorBanner,
@@ -107,6 +108,7 @@ export function SettingsView({
       <IdeationEffortSection />
       <IdeationModelSection />
       <ApiKeysSection />
+      <AppPreferencesSection />
     </div>
   );
 }
