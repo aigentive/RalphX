@@ -5,6 +5,8 @@ import { useState } from "react";
 
 import {
   projectSkillsApi,
+  type ProjectSkillImportCandidate,
+  type ProjectSkillImportPreviewResult,
   type ProjectSkill,
   type ProjectSkillExportResult,
   type ProjectSkillReportCard,
@@ -12,7 +14,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 import {
@@ -37,6 +41,16 @@ const settingsKey = (projectId: string) =>
 const reportCardsKey = (projectId: string) =>
   ["project-skills", projectId, "report-cards"] as const;
 
+interface MemoryPromotionFormState {
+  memoryId: string;
+  title: string;
+  bucket: string;
+  stage: string;
+  compactGuidance: string;
+  bodyMarkdown: string;
+  predictedEffect: string;
+}
+
 export function ProjectSkillsCuratorPanel({
   projectId,
   className,
@@ -44,6 +58,19 @@ export function ProjectSkillsCuratorPanel({
   const queryClient = useQueryClient();
   const [exportPreview, setExportPreview] =
     useState<ProjectSkillExportResult | null>(null);
+  const [importManifest, setImportManifest] = useState("");
+  const [importPreview, setImportPreview] =
+    useState<ProjectSkillImportPreviewResult | null>(null);
+  const [memoryPromotion, setMemoryPromotion] = useState({
+    memoryId: "",
+    title: "",
+    bucket: "review",
+    stage: "review",
+    compactGuidance: "",
+    bodyMarkdown: "",
+    predictedEffect: "",
+  });
+  const [localError, setLocalError] = useState<string | null>(null);
   const stagedQueryKey = stagedSkillsKey(projectId);
   const approvedQueryKey = approvedSkillsKey(projectId);
   const projectSkillSettingsKey = settingsKey(projectId);
@@ -138,6 +165,60 @@ export function ProjectSkillsCuratorPanel({
     onSuccess: setExportPreview,
   });
 
+  const previewImportMutation = useMutation({
+    mutationFn: () =>
+      projectSkillsApi.previewImport({
+        projectId,
+        candidates: parseImportManifest(importManifest),
+      }),
+    onMutate: () => setLocalError(null),
+    onSuccess: setImportPreview,
+    onError: (error) => setLocalError(error.message),
+  });
+
+  const applyImportMutation = useMutation({
+    mutationFn: () =>
+      projectSkillsApi.applyImport({
+        projectId,
+        confirmImport: true,
+        candidates: parseImportManifest(importManifest),
+      }),
+    onMutate: () => setLocalError(null),
+    onSuccess: (result) => {
+      setImportPreview(result.preview);
+      invalidateSkills();
+    },
+    onError: (error) => setLocalError(error.message),
+  });
+
+  const promoteMemoryMutation = useMutation({
+    mutationFn: () =>
+      projectSkillsApi.promoteMemory({
+        projectId,
+        memoryId: memoryPromotion.memoryId.trim(),
+        title: memoryPromotion.title.trim() || null,
+        bucket: memoryPromotion.bucket.trim(),
+        stage: memoryPromotion.stage.trim(),
+        compactGuidance: memoryPromotion.compactGuidance,
+        bodyMarkdown: memoryPromotion.bodyMarkdown,
+        predictedEffect: memoryPromotion.predictedEffect,
+      }),
+    onMutate: () => setLocalError(null),
+    onSuccess: () => {
+      invalidateSkills();
+      setMemoryPromotion({
+        memoryId: "",
+        title: "",
+        bucket: "review",
+        stage: "review",
+        compactGuidance: "",
+        bodyMarkdown: "",
+        predictedEffect: "",
+      });
+    },
+    onError: (error) => setLocalError(error.message),
+  });
+
   const stagedSkills = stagedQuery.data ?? [];
   const approvedSkills = approvedQuery.data ?? [];
   const reportCards = reportCardsQuery.data?.cards ?? [];
@@ -150,21 +231,29 @@ export function ProjectSkillsCuratorPanel({
     unpinMutation.isPending ||
     updateSettingsMutation.isPending ||
     previewExportMutation.isPending ||
-    applyExportMutation.isPending;
+    applyExportMutation.isPending ||
+    previewImportMutation.isPending ||
+    applyImportMutation.isPending ||
+    promoteMemoryMutation.isPending;
   const error =
-    stagedQuery.error ??
-    approvedQuery.error ??
-    settingsQuery.error ??
-    reportCardsQuery.error ??
-    distillMutation.error ??
-    approveMutation.error ??
-    rejectMutation.error ??
-    archiveMutation.error ??
-    pinMutation.error ??
-    unpinMutation.error ??
-    updateSettingsMutation.error ??
-    previewExportMutation.error ??
-    applyExportMutation.error;
+    localError != null
+      ? new Error(localError)
+      : stagedQuery.error ??
+        approvedQuery.error ??
+        settingsQuery.error ??
+        reportCardsQuery.error ??
+        distillMutation.error ??
+        approveMutation.error ??
+        rejectMutation.error ??
+        archiveMutation.error ??
+        pinMutation.error ??
+        unpinMutation.error ??
+        updateSettingsMutation.error ??
+        previewExportMutation.error ??
+        applyExportMutation.error ??
+        previewImportMutation.error ??
+        applyImportMutation.error ??
+        promoteMemoryMutation.error;
   const exportEnabled = settingsQuery.data?.exportEnabled ?? false;
 
   return (
@@ -218,6 +307,18 @@ export function ProjectSkillsCuratorPanel({
         <ProjectSkillsExportSummary preview={exportPreview} />
       ) : null}
 
+      <ImportPromotionPanel
+        disabled={isBusy}
+        importManifest={importManifest}
+        importPreview={importPreview}
+        memoryPromotion={memoryPromotion}
+        onImportManifestChange={setImportManifest}
+        onPreviewImport={() => previewImportMutation.mutate()}
+        onApplyImport={() => applyImportMutation.mutate()}
+        onMemoryPromotionChange={setMemoryPromotion}
+        onPromoteMemory={() => promoteMemoryMutation.mutate()}
+      />
+
       {stagedQuery.isLoading || approvedQuery.isLoading ? (
         <div className="grid gap-3">
           <Skeleton className="h-28 w-full" />
@@ -262,6 +363,153 @@ export function ProjectSkillsCuratorPanel({
         </div>
       )}
     </section>
+  );
+}
+
+function parseImportManifest(value: string): ProjectSkillImportCandidate[] {
+  const parsed = JSON.parse(value);
+  const candidates = Array.isArray(parsed) ? parsed : parsed?.candidates;
+  if (!Array.isArray(candidates)) {
+    throw new Error("Import manifest must contain candidates.");
+  }
+  return candidates as ProjectSkillImportCandidate[];
+}
+
+function ImportPromotionPanel({
+  disabled,
+  importManifest,
+  importPreview,
+  memoryPromotion,
+  onImportManifestChange,
+  onPreviewImport,
+  onApplyImport,
+  onMemoryPromotionChange,
+  onPromoteMemory,
+}: {
+  disabled: boolean;
+  importManifest: string;
+  importPreview: ProjectSkillImportPreviewResult | null;
+  memoryPromotion: MemoryPromotionFormState;
+  onImportManifestChange: (value: string) => void;
+  onPreviewImport: () => void;
+  onApplyImport: () => void;
+  onMemoryPromotionChange: (value: MemoryPromotionFormState) => void;
+  onPromoteMemory: () => void;
+}) {
+  const canSubmitImport = importManifest.trim().length > 0;
+  const canPromoteMemory =
+    memoryPromotion.memoryId.trim().length > 0 &&
+    memoryPromotion.compactGuidance.trim().length > 0 &&
+    memoryPromotion.bodyMarkdown.trim().length > 0 &&
+    memoryPromotion.predictedEffect.trim().length > 0;
+
+  const updatePromotion = (
+    patch: Partial<MemoryPromotionFormState>,
+  ): void => {
+    onMemoryPromotionChange({ ...memoryPromotion, ...patch });
+  };
+
+  return (
+    <div className="grid gap-3 md:grid-cols-2">
+      <Card className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
+        <div className="grid gap-3">
+          <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
+            Import
+          </h3>
+          <Textarea
+            aria-label="Project skill import manifest"
+            className="min-h-32 text-xs"
+            value={importManifest}
+            onChange={(event) => onImportManifestChange(event.target.value)}
+          />
+          {importPreview ? (
+            <div className="flex flex-wrap gap-2 text-xs text-[var(--text-secondary)]">
+              <Badge variant="secondary">{importPreview.eligibleCount} eligible</Badge>
+              <Badge variant="outline">{importPreview.invalidCount} invalid</Badge>
+              <Badge variant="outline">{importPreview.duplicateCount} duplicate</Badge>
+            </div>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={disabled || !canSubmitImport}
+              onClick={onPreviewImport}
+            >
+              Preview import
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={disabled || !canSubmitImport}
+              onClick={onApplyImport}
+            >
+              Apply import
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      <Card className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
+        <div className="grid gap-3">
+          <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
+            Promote memory
+          </h3>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <Input
+              aria-label="Memory id"
+              value={memoryPromotion.memoryId}
+              onChange={(event) => updatePromotion({ memoryId: event.target.value })}
+            />
+            <Input
+              aria-label="Promoted skill title"
+              value={memoryPromotion.title}
+              onChange={(event) => updatePromotion({ title: event.target.value })}
+            />
+            <Input
+              aria-label="Promoted skill bucket"
+              value={memoryPromotion.bucket}
+              onChange={(event) => updatePromotion({ bucket: event.target.value })}
+            />
+            <Input
+              aria-label="Promoted skill stage"
+              value={memoryPromotion.stage}
+              onChange={(event) => updatePromotion({ stage: event.target.value })}
+            />
+          </div>
+          <Textarea
+            aria-label="Promoted skill guidance"
+            className="min-h-20 text-xs"
+            value={memoryPromotion.compactGuidance}
+            onChange={(event) =>
+              updatePromotion({ compactGuidance: event.target.value })
+            }
+          />
+          <Textarea
+            aria-label="Promoted skill body"
+            className="min-h-24 text-xs"
+            value={memoryPromotion.bodyMarkdown}
+            onChange={(event) => updatePromotion({ bodyMarkdown: event.target.value })}
+          />
+          <Input
+            aria-label="Promoted skill predicted effect"
+            value={memoryPromotion.predictedEffect}
+            onChange={(event) => updatePromotion({ predictedEffect: event.target.value })}
+          />
+          <div>
+            <Button
+              type="button"
+              size="sm"
+              disabled={disabled || !canPromoteMemory}
+              onClick={onPromoteMemory}
+            >
+              Promote
+            </Button>
+          </div>
+        </div>
+      </Card>
+    </div>
   );
 }
 

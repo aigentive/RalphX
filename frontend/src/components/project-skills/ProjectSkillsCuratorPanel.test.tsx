@@ -20,6 +20,9 @@ vi.mock("@/api/project-skills", () => ({
     updateSettings: vi.fn(),
     distill: vi.fn(),
     listReportCards: vi.fn(),
+    previewImport: vi.fn(),
+    applyImport: vi.fn(),
+    promoteMemory: vi.fn(),
   },
 }));
 
@@ -159,6 +162,43 @@ describe("ProjectSkillsCuratorPanel", () => {
         },
       ],
     });
+    mockedProjectSkillsApi.previewImport.mockResolvedValue({
+      rows: [
+        {
+          index: 0,
+          externalId: "manifest-skill-1",
+          title: "Imported review convention",
+          decision: "eligible",
+          reasons: [],
+          duplicateProjectSkillId: null,
+        },
+      ],
+      eligibleCount: 1,
+      invalidCount: 0,
+      duplicateCount: 0,
+    });
+    mockedProjectSkillsApi.applyImport.mockResolvedValue({
+      preview: {
+        rows: [
+          {
+            index: 0,
+            externalId: "manifest-skill-1",
+            title: "Imported review convention",
+            decision: "eligible",
+            reasons: [],
+            duplicateProjectSkillId: null,
+          },
+        ],
+        eligibleCount: 1,
+        invalidCount: 0,
+        duplicateCount: 0,
+      },
+      importedSkills: [stagedSkill({ id: "imported-skill" })],
+      importedCount: 1,
+    });
+    mockedProjectSkillsApi.promoteMemory.mockResolvedValue(
+      stagedSkill({ id: "promoted-skill", title: "Promoted review procedure" }),
+    );
   });
 
   it("renders staged learned skills with review metadata", async () => {
@@ -202,6 +242,84 @@ describe("ProjectSkillsCuratorPanel", () => {
     expect(screen.getByText("2 linked outcomes")).toBeInTheDocument();
     expect(screen.getByText("1 succeeded")).toBeInTheDocument();
     expect(screen.getByText("1 failed")).toBeInTheDocument();
+  });
+
+  it("previews and applies project skill imports", async () => {
+    renderPanel();
+
+    await screen.findByText("Import");
+    fireEvent.change(screen.getByLabelText("Project skill import manifest"), {
+      target: {
+        value: JSON.stringify({
+          candidates: [
+            {
+              externalId: "manifest-skill-1",
+              title: "Imported review convention",
+              bucket: "review",
+              stage: "review",
+              compactGuidance: "Check imported review convention.",
+              bodyMarkdown: "Detailed guidance",
+              predictedEffect: "Reduces review misses.",
+              provenance: { source: "manifest" },
+              sourceSnapshot: { kind: "project_skill_manifest" },
+            },
+          ],
+        }),
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /preview import/i }));
+    await waitFor(() => {
+      expect(mockedProjectSkillsApi.previewImport).toHaveBeenCalledWith(
+        expect.objectContaining({ projectId: "project-1" }),
+      );
+    });
+    expect(await screen.findByText("1 eligible")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /apply import/i }));
+    await waitFor(() => {
+      expect(mockedProjectSkillsApi.applyImport).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          confirmImport: true,
+        }),
+      );
+    });
+  });
+
+  it("promotes memory entries through the curator panel", async () => {
+    renderPanel();
+
+    await screen.findByText("Promote memory");
+    fireEvent.change(screen.getByLabelText("Memory id"), {
+      target: { value: "memory-1" },
+    });
+    fireEvent.change(screen.getByLabelText("Promoted skill title"), {
+      target: { value: "Promoted review procedure" },
+    });
+    fireEvent.change(screen.getByLabelText("Promoted skill guidance"), {
+      target: { value: "Turn the memory into a review checklist." },
+    });
+    fireEvent.change(screen.getByLabelText("Promoted skill body"), {
+      target: { value: "## Procedure\n\nApply the checklist." },
+    });
+    fireEvent.change(screen.getByLabelText("Promoted skill predicted effect"), {
+      target: { value: "Reduces review misses." },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^promote$/i }));
+    await waitFor(() => {
+      expect(mockedProjectSkillsApi.promoteMemory).toHaveBeenCalledWith({
+        projectId: "project-1",
+        memoryId: "memory-1",
+        title: "Promoted review procedure",
+        bucket: "review",
+        stage: "review",
+        compactGuidance: "Turn the memory into a review checklist.",
+        bodyMarkdown: "## Procedure\n\nApply the checklist.",
+        predictedEffect: "Reduces review misses.",
+      });
+    });
   });
 
   it("distills eligible outcomes and refreshes staged skills", async () => {
