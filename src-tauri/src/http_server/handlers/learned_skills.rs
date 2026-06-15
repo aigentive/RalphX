@@ -8,7 +8,8 @@ use crate::domain::entities::{ProjectSkillId, ProjectSkillLifecycleStatus};
 use crate::domain::repositories::ProjectSkillListOptions;
 use crate::domain::services::{
     DistillEligibleOutcomesInput, ProjectSkillDistillationOrigin, ProjectSkillDistillerService,
-    ProjectSkillImportCandidate, ProjectSkillImportPreviewInput, ProjectSkillImportPreviewService,
+    ProjectSkillImportApplyInput, ProjectSkillImportCandidate, ProjectSkillImportPreview,
+    ProjectSkillImportPreviewInput, ProjectSkillImportPreviewRow, ProjectSkillImportPreviewService,
     ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService,
 };
 use crate::error::AppError;
@@ -242,18 +243,7 @@ pub async fn preview_project_skill_import(
             candidates: req
                 .candidates
                 .into_iter()
-                .map(|candidate| ProjectSkillImportCandidate {
-                    external_id: candidate.external_id,
-                    title: candidate.title,
-                    bucket: candidate.bucket,
-                    stage: candidate.stage,
-                    scope_paths: candidate.scope_paths,
-                    compact_guidance: candidate.compact_guidance,
-                    body_markdown: candidate.body_markdown,
-                    predicted_effect: candidate.predicted_effect,
-                    provenance_json: candidate.provenance_json,
-                    source_snapshot_json: candidate.source_snapshot_json,
-                })
+                .map(import_candidate_from_request)
                 .collect(),
         })
         .await
@@ -266,15 +256,93 @@ pub async fn preview_project_skill_import(
         })?;
 
     Ok(Json(PreviewProjectSkillImportResponse {
-        rows: preview
-            .rows
-            .into_iter()
-            .map(ProjectSkillImportPreviewRowResponse::from)
-            .collect(),
+        rows: preview_response_rows(preview.rows),
         eligible_count: preview.eligible_count,
         invalid_count: preview.invalid_count,
         duplicate_count: preview.duplicate_count,
     }))
+}
+
+pub async fn apply_project_skill_import(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<ApplyProjectSkillImportRequest>,
+) -> Result<Json<ApplyProjectSkillImportResponse>, HttpError> {
+    let project_id = ProjectId::from_string(req.project_id);
+    assert_project_id_scope(&project_id, &scope)?;
+
+    let service =
+        ProjectSkillImportPreviewService::new(Arc::clone(&state.app_state.project_skill_repo));
+    let result = service
+        .apply_import(ProjectSkillImportApplyInput {
+            project_id,
+            candidates: req
+                .candidates
+                .into_iter()
+                .map(import_candidate_from_request)
+                .collect(),
+            confirm_import: req.confirm_import,
+        })
+        .await
+        .map_err(|error| match error {
+            AppError::Validation(message) => HttpError {
+                status: StatusCode::BAD_REQUEST,
+                message: Some(message),
+            },
+            other => {
+                error!("failed to apply project skill import: {}", other);
+                HttpError {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: Some("failed to apply project skill import".to_string()),
+                }
+            }
+        })?;
+    let imported_skills = result
+        .imported_skills
+        .into_iter()
+        .map(ProjectSkillResponse::from)
+        .collect::<Vec<_>>();
+    let imported_count = imported_skills.len();
+
+    Ok(Json(ApplyProjectSkillImportResponse {
+        preview: preview_response(result.preview),
+        imported_skills,
+        imported_count,
+    }))
+}
+
+fn import_candidate_from_request(
+    candidate: PreviewProjectSkillImportCandidateRequest,
+) -> ProjectSkillImportCandidate {
+    ProjectSkillImportCandidate {
+        external_id: candidate.external_id,
+        title: candidate.title,
+        bucket: candidate.bucket,
+        stage: candidate.stage,
+        scope_paths: candidate.scope_paths,
+        compact_guidance: candidate.compact_guidance,
+        body_markdown: candidate.body_markdown,
+        predicted_effect: candidate.predicted_effect,
+        provenance_json: candidate.provenance_json,
+        source_snapshot_json: candidate.source_snapshot_json,
+    }
+}
+
+fn preview_response(preview: ProjectSkillImportPreview) -> PreviewProjectSkillImportResponse {
+    PreviewProjectSkillImportResponse {
+        rows: preview_response_rows(preview.rows),
+        eligible_count: preview.eligible_count,
+        invalid_count: preview.invalid_count,
+        duplicate_count: preview.duplicate_count,
+    }
+}
+
+fn preview_response_rows(
+    rows: Vec<ProjectSkillImportPreviewRow>,
+) -> Vec<ProjectSkillImportPreviewRowResponse> {
+    rows.into_iter()
+        .map(ProjectSkillImportPreviewRowResponse::from)
+        .collect()
 }
 
 async fn update_project_skill_lifecycle(
@@ -386,7 +454,7 @@ mod tests {
     use crate::application::{AppState, TeamService, TeamStateTracker};
     use crate::commands::ExecutionState;
     use crate::domain::entities::{ProjectSkill, ProjectSkillLifecycleStatus, TaskOutcomeStatus};
-    use crate::domain::repositories::UpsertTaskOutcomeInput;
+    use crate::domain::repositories::{ProjectSkillListOptions, UpsertTaskOutcomeInput};
     use crate::domain::services::{new_empty_task_outcome, new_skill_usage_event};
     use serde_json::json;
 
@@ -682,5 +750,61 @@ mod tests {
         .expect_err("cross-project import preview should fail");
 
         assert_eq!(error.status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn apply_project_skill_import_requires_confirmation() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-import".to_string());
+
+        let error = apply_project_skill_import(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![project_id])),
+            Json(ApplyProjectSkillImportRequest {
+                project_id: "project-import".to_string(),
+                candidates: import_preview_request("project-import").candidates,
+                confirm_import: false,
+            }),
+        )
+        .await
+        .expect_err("unconfirmed import should fail");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn apply_project_skill_import_stages_eligible_rows() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-import".to_string());
+
+        let response = apply_project_skill_import(
+            State(test_state(Arc::clone(&app_state))),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(ApplyProjectSkillImportRequest {
+                project_id: "project-import".to_string(),
+                candidates: import_preview_request("project-import").candidates,
+                confirm_import: true,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.0.imported_count, 1);
+        assert_eq!(response.0.preview.eligible_count, 1);
+        assert_eq!(response.0.imported_skills[0].status, "staged");
+
+        let written = app_state
+            .project_skill_repo
+            .list_by_project(&project_id, ProjectSkillListOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(written.len(), 1);
+        assert_eq!(
+            written[0]
+                .provenance_json
+                .get("source")
+                .and_then(serde_json::Value::as_str),
+            Some("project_skill_import")
+        );
     }
 }

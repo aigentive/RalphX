@@ -102,6 +102,12 @@ const ProjectSkillImportPreviewResponseSchema = z.object({
   duplicate_count: z.number(),
 });
 
+const ProjectSkillImportApplyResponseSchema = z.object({
+  preview: ProjectSkillImportPreviewResponseSchema,
+  imported_skills: z.array(ProjectSkillResponseSchema),
+  imported_count: z.number(),
+});
+
 type RawProjectSkill = z.infer<typeof ProjectSkillResponseSchema>;
 type RawProjectSkillExport = z.infer<typeof ProjectSkillExportResponseSchema>;
 type RawProjectSkillSettings = z.infer<typeof ProjectSkillSettingsResponseSchema>;
@@ -234,6 +240,16 @@ export interface ProjectSkillImportPreviewResult {
   duplicateCount: number;
 }
 
+export interface ApplyProjectSkillImportInput extends PreviewProjectSkillImportInput {
+  confirmImport: boolean;
+}
+
+export interface ProjectSkillImportApplyResult {
+  preview: ProjectSkillImportPreviewResult;
+  importedSkills: ProjectSkill[];
+  importedCount: number;
+}
+
 function transformProjectSkill(raw: RawProjectSkill): ProjectSkill {
   return {
     id: raw.id,
@@ -311,6 +327,17 @@ function transformProjectSkillImportPreviewRow(
     decision: raw.decision,
     reasons: raw.reasons,
     duplicateProjectSkillId: raw.duplicate_project_skill_id ?? null,
+  };
+}
+
+function transformProjectSkillImportPreview(
+  raw: z.infer<typeof ProjectSkillImportPreviewResponseSchema>,
+): ProjectSkillImportPreviewResult {
+  return {
+    rows: raw.rows.map(transformProjectSkillImportPreviewRow),
+    eligibleCount: raw.eligible_count,
+    invalidCount: raw.invalid_count,
+    duplicateCount: raw.duplicate_count,
   };
 }
 
@@ -425,11 +452,33 @@ export const projectSkillsApi = {
       })),
     });
     const parsed = ProjectSkillImportPreviewResponseSchema.parse(raw);
+    return transformProjectSkillImportPreview(parsed);
+  },
+
+  async applyImport(
+    input: ApplyProjectSkillImportInput,
+  ): Promise<ProjectSkillImportApplyResult> {
+    const raw = await postJson<unknown>("project_skills/import/apply", {
+      project_id: input.projectId,
+      candidates: input.candidates.map((candidate) => ({
+        external_id: candidate.externalId ?? null,
+        title: candidate.title,
+        bucket: candidate.bucket,
+        stage: candidate.stage,
+        scope_paths: candidate.scopePaths ?? [],
+        compact_guidance: candidate.compactGuidance,
+        body_markdown: candidate.bodyMarkdown,
+        predicted_effect: candidate.predictedEffect,
+        provenance_json: candidate.provenance,
+        source_snapshot_json: candidate.sourceSnapshot,
+      })),
+      confirm_import: input.confirmImport,
+    });
+    const parsed = ProjectSkillImportApplyResponseSchema.parse(raw);
     return {
-      rows: parsed.rows.map(transformProjectSkillImportPreviewRow),
-      eligibleCount: parsed.eligible_count,
-      invalidCount: parsed.invalid_count,
-      duplicateCount: parsed.duplicate_count,
+      preview: transformProjectSkillImportPreview(parsed.preview),
+      importedSkills: parsed.imported_skills.map(transformProjectSkill),
+      importedCount: parsed.imported_count,
     };
   },
 

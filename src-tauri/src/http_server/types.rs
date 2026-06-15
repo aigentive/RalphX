@@ -1465,6 +1465,15 @@ pub struct PreviewProjectSkillImportRequest {
     pub candidates: Vec<PreviewProjectSkillImportCandidateRequest>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplyProjectSkillImportRequest {
+    pub project_id: String,
+    #[serde(default)]
+    pub candidates: Vec<PreviewProjectSkillImportCandidateRequest>,
+    #[serde(default)]
+    pub confirm_import: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectSkillImportPreviewRowResponse {
     pub index: usize,
@@ -1501,6 +1510,13 @@ pub struct PreviewProjectSkillImportResponse {
     pub eligible_count: usize,
     pub invalid_count: usize,
     pub duplicate_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApplyProjectSkillImportResponse {
+    pub preview: PreviewProjectSkillImportResponse,
+    pub imported_skills: Vec<ProjectSkillResponse>,
+    pub imported_count: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
