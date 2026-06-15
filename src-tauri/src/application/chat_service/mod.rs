@@ -419,6 +419,26 @@ fn interactive_run_started_provider_session(
     (harness, provider_session_id)
 }
 
+fn provider_harness_switch_requires_fresh_session(
+    requested_harness: Option<AgentHarnessKind>,
+    conversation: Option<&ChatConversation>,
+    process_metadata: Option<&InteractiveProcessMetadata>,
+) -> bool {
+    let Some(requested_harness) = requested_harness else {
+        return false;
+    };
+
+    let current_harness = process_metadata
+        .and_then(|metadata| metadata.harness)
+        .or_else(|| {
+            conversation
+                .and_then(|conversation| conversation.provider_session_ref())
+                .map(|session_ref| session_ref.harness)
+        });
+
+    current_harness.is_some_and(|current_harness| current_harness != requested_harness)
+}
+
 fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> &'static str {
     match mode {
         AgentConversationWorkspaceMode::Chat => AGENT_GENERAL_EXPLORER,
@@ -644,8 +664,8 @@ pub struct SendMessageOptions {
     pub metadata: Option<String>,
     /// Optional timestamp override for the user message. If None, uses Utc::now().
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// Optional provider harness override for relaunch/recovery flows that must preserve an
-    /// existing provider session's runtime instead of re-resolving only from current lane config.
+    /// Optional provider harness selected for this send. A mismatch with the current
+    /// conversation or interactive process provider starts a fresh provider-native session.
     pub harness_override: Option<AgentHarnessKind>,
     /// Optional explicit canonical agent override for this send.
     pub agent_name_override: Option<String>,
@@ -1015,13 +1035,16 @@ impl<R: Runtime> AppChatService<R> {
     ) -> QueuedMessage {
         let queued = self
             .message_queue
-            .queue_with_overrides_and_project_references(
+            .queue_with_runtime_overrides_and_project_references(
                 context_type,
                 context_id,
                 message.to_string(),
                 options.metadata.clone(),
                 options.created_at.map(|ts| ts.to_rfc3339()),
                 options.harness_override,
+                options.model_override.clone(),
+                options.logical_effort_override,
+                options.force_new_provider_session,
                 options.composer_project_references.clone(),
                 options.composer_integration_references.clone(),
                 options.composer_artifact_references.clone(),
@@ -1347,6 +1370,45 @@ impl<R: Runtime> AppChatService<R> {
             "Cleaned inactive running-agent registry entry before chat send"
         );
         true
+    }
+
+    async fn active_provider_switch_blocking_run(
+        &self,
+        registry_key: &RunningAgentKey,
+        context_type: ChatContextType,
+        context_id: &str,
+        runtime_context_id: &str,
+    ) -> Result<Option<RunningAgentInfo>, ChatServiceError> {
+        let Some(existing) = self.running_agent_registry.get(registry_key).await else {
+            return Ok(None);
+        };
+
+        let run = self
+            .agent_run_repo
+            .get_by_id(&AgentRunId::from_string(&existing.agent_run_id))
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+        let run_status = run.as_ref().map(|run| run.status);
+
+        if registry_entry_blocks_send_because_run_inactive(
+            &existing,
+            run_status,
+            chrono::Utc::now(),
+            RegistryCleanupCaller::SendGate,
+        ) {
+            return Ok(None);
+        }
+
+        tracing::info!(
+            %context_type,
+            context_id,
+            runtime_context_id,
+            existing_pid = existing.pid,
+            existing_run_id = %existing.agent_run_id,
+            run_status = ?run_status,
+            "Provider switch requested while the current interactive run is still active; queuing for next turn"
+        );
+        Ok(Some(existing))
     }
 
     async fn count_active_ideation_slots(&self) -> Result<u32, ChatServiceError> {
@@ -2564,19 +2626,98 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             InteractiveProcessKey::new(context_type.to_string(), &runtime_context_id);
         let ipr_ref = self.ipr();
         let has_ipr_entry = ipr_ref.has_process(&interactive_key).await;
+        let interactive_process_metadata = if has_ipr_entry {
+            ipr_ref.get_metadata(&interactive_key).await
+        } else {
+            None
+        };
+        let mut provider_switch_requires_fresh_session =
+            provider_harness_switch_requires_fresh_session(
+                options.harness_override,
+                None,
+                interactive_process_metadata.as_ref(),
+            );
+        if has_ipr_entry
+            && !provider_switch_requires_fresh_session
+            && options.harness_override.is_some()
+            && interactive_process_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.harness)
+                .is_none()
+        {
+            let existing_conv = match options.conversation_id_override.as_ref() {
+                Some(conversation_id) => self
+                    .conversation_repo
+                    .get_by_id(conversation_id)
+                    .await
+                    .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
+                None => self
+                    .conversation_repo
+                    .get_active_for_context(context_type, context_id)
+                    .await
+                    .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
+            };
+            provider_switch_requires_fresh_session =
+                provider_harness_switch_requires_fresh_session(
+                    options.harness_override,
+                    existing_conv.as_ref(),
+                    None,
+                );
+        }
+        let force_new_provider_session =
+            options.force_new_provider_session || provider_switch_requires_fresh_session;
         tracing::info!(
             %context_type,
             context_id,
             runtime_context_id = %runtime_context_id,
             gate = "GATE_1_IPR",
             has_ipr_entry,
+            force_new_provider_session,
+            provider_switch_requires_fresh_session,
             "[GATE_TRACE] Gate 1 (IPR lookup)"
         );
         if !has_ipr_entry {
             // Diagnostic: dump all registered IPR keys when lookup fails
             ipr_ref.log_registered_keys("GATE_1_MISS").await;
         }
-        if has_ipr_entry && options.force_new_provider_session {
+        if has_ipr_entry && provider_switch_requires_fresh_session {
+            if let Some(existing) = self
+                .active_provider_switch_blocking_run(
+                    &RunningAgentKey::new(context_type.to_string(), &runtime_context_id),
+                    context_type,
+                    context_id,
+                    &runtime_context_id,
+                )
+                .await?
+            {
+                let mut queued_options = options.clone();
+                queued_options.force_new_provider_session = true;
+                let queued = self.enqueue_pending_send(
+                    context_type,
+                    &runtime_context_id,
+                    message,
+                    &queued_options,
+                    Some(existing.conversation_id.clone()),
+                );
+                tracing::info!(
+                    %context_type,
+                    context_id,
+                    runtime_context_id = %runtime_context_id,
+                    queued_message_id = %queued.id,
+                    existing_run_id = %existing.agent_run_id,
+                    "chat_service.send_message: active provider switch queued for next turn"
+                );
+                return Ok(SendResult {
+                    conversation_id: existing.conversation_id.clone(),
+                    agent_run_id: existing.agent_run_id.clone(),
+                    is_new_conversation: false,
+                    was_queued: true,
+                    queued_message_id: Some(queued.id),
+                    queued_as_pending: false,
+                });
+            }
+        }
+        if has_ipr_entry && force_new_provider_session {
             ipr_ref.remove(&interactive_key).await;
             tracing::info!(
                 %context_type,
@@ -2585,7 +2726,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 "chat_service.send_message: skipped existing interactive process for fresh provider session"
             );
         }
-        if has_ipr_entry && !options.force_new_provider_session {
+        if has_ipr_entry && !force_new_provider_session {
             tracing::info!(
                 %context_type,
                 context_id,
@@ -2763,11 +2904,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             "Failed to mark interactive continuation run active"
                         );
                     }
-                    let process_metadata = ipr_ref.get_metadata(&interactive_key).await;
                     let (provider_harness, provider_session_id) =
                         interactive_run_started_provider_session(
                             &conversation,
-                            process_metadata.as_ref(),
+                            interactive_process_metadata.as_ref(),
                         );
                     self.emit_event(
                         "agent:run_started",
@@ -3535,7 +3675,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 "Disabling team mode because the selected harness does not support it"
             );
         }
-        let stored_provider_session = if options.force_new_provider_session {
+        let stored_provider_session = if force_new_provider_session {
             None
         } else {
             conversation.provider_session_ref().filter(|session_ref| {
@@ -4169,6 +4309,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             metadata: queued_msg.metadata_override.clone(),
             created_at,
             harness_override: queued_msg.harness_override,
+            model_override: queued_msg.model_override.clone(),
+            logical_effort_override: queued_msg.logical_effort_override,
+            force_new_provider_session: queued_msg.force_new_provider_session,
             conversation_id_override,
             composer_project_references: queued_msg.composer_project_references.clone(),
             composer_integration_references: queued_msg.composer_integration_references.clone(),
@@ -4783,12 +4926,14 @@ mod stale_registry_gate_tests {
 #[cfg(test)]
 mod agent_workspace_send_tests {
     use super::{ChatService, SendMessageOptions, AGENT_ERROR_PREFIX};
-    use crate::application::interactive_process_registry::InteractiveProcessKey;
+    use crate::application::interactive_process_registry::{
+        InteractiveProcessKey, InteractiveProcessMetadata,
+    };
     use crate::application::AppState;
     use crate::commands::ExecutionState;
-    use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
+    use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
     use crate::domain::entities::{
-        AgentConversationWorkspaceMode, AgentRunStatus, ChatContextType, ChatConversation,
+        AgentConversationWorkspaceMode, AgentRun, AgentRunStatus, ChatContextType, ChatConversation,
         ChatAttachment, ChatAttachmentId, MessageRole, Project, ProjectId, TaskId,
     };
     use crate::domain::services::{
@@ -4912,6 +5057,116 @@ mod agent_workspace_send_tests {
             result.agent_run_id, "run-original-process",
             "Gate 1 sends must not invent a run id that terminal events cannot match"
         );
+    }
+
+    #[tokio::test]
+    async fn provider_switch_queues_active_old_provider_interactive_process() {
+        let state = AppState::new_test();
+        let context_id = "task-provider-switch-active";
+        let mut conversation = ChatConversation::new_task(TaskId::from_string(
+            context_id.to_string(),
+        ));
+        conversation.set_provider_session_ref(ProviderSessionRef {
+            harness: AgentHarnessKind::Claude,
+            provider_session_id: "claude-session-active".to_string(),
+        });
+        let conversation_id = conversation.id.as_str().to_string();
+        let run = AgentRun::new(conversation.id);
+        let run_id = run.id.as_str().to_string();
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+        state
+            .agent_run_repo
+            .create(run)
+            .await
+            .expect("active run should persist");
+
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("cat should spawn for provider switch guard test");
+        let stdin = child.stdin.take().expect("cat stdin should be piped");
+        let interactive_key = InteractiveProcessKey::new("task", context_id);
+        state
+            .interactive_process_registry
+            .register_with_metadata(
+                interactive_key.clone(),
+                stdin,
+                InteractiveProcessMetadata {
+                    harness: Some(AgentHarnessKind::Claude),
+                    provider_session_id: Some("claude-session-active".to_string()),
+                },
+            )
+            .await;
+        let running_key = RunningAgentKey::new("task", context_id);
+        state
+            .running_agent_registry
+            .register(
+                running_key.clone(),
+                0,
+                conversation_id.clone(),
+                run_id.clone(),
+                None,
+                None,
+            )
+            .await;
+
+        let service =
+            state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+        let result = service
+            .send_message(
+                ChatContextType::Task,
+                context_id,
+                "switch to codex",
+                SendMessageOptions {
+                    harness_override: Some(AgentHarnessKind::Codex),
+                    model_override: Some("gpt-5.5".to_string()),
+                    logical_effort_override: Some(LogicalEffort::High),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("active provider switch should queue before stdin reuse");
+
+        assert!(result.was_queued);
+        assert_eq!(result.conversation_id, conversation_id);
+        assert_eq!(result.agent_run_id, run_id);
+        let queued_message_id = result
+            .queued_message_id
+            .as_deref()
+            .expect("active provider switch should return the queued message id");
+        assert!(
+            state
+                .interactive_process_registry
+                .has_process(&interactive_key)
+                .await,
+            "active provider switch must not detach the old process before it finishes"
+        );
+        assert!(
+            state.running_agent_registry.is_running(&running_key).await,
+            "active provider switch must leave the current running slot intact"
+        );
+        let queued = state
+            .message_queue
+            .get_queued(ChatContextType::Task, context_id);
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].id, queued_message_id);
+        assert_eq!(queued[0].content, "switch to codex");
+        assert_eq!(queued[0].harness_override, Some(AgentHarnessKind::Codex));
+        assert_eq!(queued[0].model_override.as_deref(), Some("gpt-5.5"));
+        assert_eq!(queued[0].logical_effort_override, Some(LogicalEffort::High));
+        assert!(queued[0].force_new_provider_session);
+
+        state
+            .interactive_process_registry
+            .remove(&interactive_key)
+            .await;
+        let _ = child.kill().await;
     }
 
     #[tokio::test]

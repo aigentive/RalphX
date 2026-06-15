@@ -258,6 +258,9 @@ impl ChatService for MockChatService {
             SendMessageOptions {
                 metadata: queued_msg.metadata_override.clone(),
                 harness_override: queued_msg.harness_override,
+                model_override: queued_msg.model_override.clone(),
+                logical_effort_override: queued_msg.logical_effort_override,
+                force_new_provider_session: queued_msg.force_new_provider_session,
                 composer_project_references: queued_msg.composer_project_references.clone(),
                 composer_integration_references: queued_msg.composer_integration_references.clone(),
                 attachment_ids: queued_msg.attachment_ids.clone(),

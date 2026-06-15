@@ -623,6 +623,7 @@ export function useAgentsViewController({
     handleActiveConversationModeMenuOpen,
     handleActiveEffortChange,
     handleActiveModelChange,
+    handleActiveProviderChange,
     switchingConversationModeId,
   } = useAgentsActiveComposerControls({
     activeConversation,
@@ -682,6 +683,7 @@ export function useAgentsViewController({
       onActiveConversationModeMenuOpen: handleActiveConversationModeMenuOpen,
       onActiveEffortChange: handleActiveEffortChange,
       onActiveModelChange: handleActiveModelChange,
+      onActiveProviderChange: handleActiveProviderChange,
       onAgentUserMessageSent: handleAgentUserMessageSent,
       onConversationModeSwitched: handleConversationModeSwitched,
       onCreateProject,

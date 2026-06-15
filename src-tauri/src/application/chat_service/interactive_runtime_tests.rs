@@ -1,8 +1,8 @@
 use super::{
     conversation_spawn_harness_override, edit_mode_plan_handoff_runtime_message, get_agent_name,
     interactive_run_started_provider_session, plan_mode_runtime_message,
-    resolve_agent_name_for_send, should_inherit_parent_harness_for_fresh_spawn,
-    spawn_settings_require_task_metadata,
+    provider_harness_switch_requires_fresh_session, resolve_agent_name_for_send,
+    should_inherit_parent_harness_for_fresh_spawn, spawn_settings_require_task_metadata,
 };
 use crate::application::interactive_process_registry::InteractiveProcessMetadata;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
@@ -46,6 +46,74 @@ fn interactive_run_started_provider_session_falls_back_to_conversation_session_r
 
     assert_eq!(harness, AgentHarnessKind::Claude);
     assert_eq!(provider_session_id.as_deref(), Some("claude-session-123"));
+}
+
+#[test]
+fn provider_harness_switch_requires_fresh_session_for_process_harness_mismatch() {
+    let requires_fresh = provider_harness_switch_requires_fresh_session(
+        Some(AgentHarnessKind::Codex),
+        None,
+        Some(&InteractiveProcessMetadata {
+            harness: Some(AgentHarnessKind::Claude),
+            provider_session_id: Some("claude-session-123".to_string()),
+        }),
+    );
+
+    assert!(requires_fresh);
+}
+
+#[test]
+fn provider_harness_switch_uses_conversation_when_process_harness_missing() {
+    let mut conversation =
+        ChatConversation::new_task_execution(TaskId::from_string("task-2".to_string()));
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "claude-session-123".to_string(),
+    });
+
+    let requires_fresh = provider_harness_switch_requires_fresh_session(
+        Some(AgentHarnessKind::Codex),
+        Some(&conversation),
+        Some(&InteractiveProcessMetadata {
+            harness: None,
+            provider_session_id: Some("legacy-session-123".to_string()),
+        }),
+    );
+
+    assert!(requires_fresh);
+}
+
+#[test]
+fn provider_harness_switch_keeps_same_provider_session() {
+    let mut conversation =
+        ChatConversation::new_task_execution(TaskId::from_string("task-3".to_string()));
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Codex,
+        provider_session_id: "codex-session-123".to_string(),
+    });
+
+    let requires_fresh = provider_harness_switch_requires_fresh_session(
+        Some(AgentHarnessKind::Codex),
+        Some(&conversation),
+        None,
+    );
+
+    assert!(!requires_fresh);
+}
+
+#[test]
+fn provider_harness_switch_requires_explicit_requested_provider() {
+    let mut conversation =
+        ChatConversation::new_task_execution(TaskId::from_string("task-4".to_string()));
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "claude-session-123".to_string(),
+    });
+
+    let requires_fresh =
+        provider_harness_switch_requires_fresh_session(None, Some(&conversation), None);
+
+    assert!(!requires_fresh);
 }
 
 #[test]

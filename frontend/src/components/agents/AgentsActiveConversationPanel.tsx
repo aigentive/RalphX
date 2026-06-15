@@ -362,6 +362,10 @@ interface AgentsActiveConversationPanelProps {
     modelId: string,
     providerSupportedEfforts?: readonly string[] | null
   ) => void;
+  onActiveProviderChange: (
+    provider: AgentProvider,
+    providerSupportedEfforts?: readonly string[] | null
+  ) => void;
   onAgentUserMessageSent: (event: {
     content: string;
     result: { conversationId: string };
@@ -409,6 +413,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onActiveConversationModeMenuOpen,
   onActiveEffortChange,
   onActiveModelChange,
+  onActiveProviderChange,
   onAgentUserMessageSent,
   onConversationModeSwitched,
   onFocusIdeationSession,
@@ -1535,12 +1540,19 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         return {
                           provider: {
                             value: normalizedActiveRuntime.provider,
-                            onValueChange: () => undefined,
+                            onValueChange: (provider) =>
+                              onActiveProviderChange(
+                                provider,
+                                supportedEffortsForProvider(
+                                  providerOptions,
+                                  provider,
+                                ),
+                              ),
                             options:
                               providerOptions.length > 0
                                 ? providerOptions
                                 : AGENT_PROVIDER_OPTIONS,
-                            disabled: true,
+                            disabled: !providerSettingsReady,
                             footerAction: (
                               <AgentProviderSettingsButton
                                 onClick={openProviderSettings}

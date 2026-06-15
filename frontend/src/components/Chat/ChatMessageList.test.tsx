@@ -5263,6 +5263,60 @@ describe("ChatMessageList - Failed run banner edge cases", () => {
 });
 
 describe("ChatMessageList - Assistant sender grouping", () => {
+  it("uses per-message provider attribution instead of the current conversation fallback", () => {
+    const messages: ChatMessageData[] = [
+      {
+        id: "assistant-legacy",
+        role: "assistant",
+        content: "Legacy assistant item without saved provider metadata.",
+        createdAt: new Date(2026, 0, 1, 12, 0).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+      },
+      {
+        id: "assistant-claude",
+        role: "assistant",
+        content: "Claude assistant item.",
+        createdAt: new Date(2026, 0, 1, 12, 1).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+        providerHarness: "claude",
+      },
+      {
+        id: "assistant-codex",
+        role: "assistant",
+        content: "Codex assistant item.",
+        createdAt: new Date(2026, 0, 1, 12, 2).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+        providerHarness: "codex",
+      },
+    ];
+
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={messages}
+        providerHarness="codex"
+        providerSessionId="current-codex-session"
+      />
+    );
+
+    const legacyRow = screen
+      .getByText("Legacy assistant item without saved provider metadata.")
+      .closest('[data-chat-message-item="true"]');
+    const claudeRow = screen
+      .getByText("Claude assistant item.")
+      .closest('[data-chat-message-item="true"]');
+    const codexRow = screen
+      .getByText("Codex assistant item.")
+      .closest('[data-chat-message-item="true"]');
+
+    expect(legacyRow?.querySelector('[data-testid="message-provider-badge"]')).not.toBeInTheDocument();
+    expect(claudeRow?.querySelector('[data-testid="message-provider-badge"]')).toHaveTextContent("Claude");
+    expect(codexRow?.querySelector('[data-testid="message-provider-badge"]')).toHaveTextContent("Codex");
+  });
+
   it("hides repeated assistant sender chrome but preserves the gutter for adjacent finalized messages", () => {
     const messages: ChatMessageData[] = [
       {
