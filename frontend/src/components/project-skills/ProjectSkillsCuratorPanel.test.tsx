@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { projectSkillsApi, type ProjectSkill } from "@/api/project-skills";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { ProjectSkillsCuratorPanel } from "./ProjectSkillsCuratorPanel";
 
@@ -60,7 +61,9 @@ function renderPanel(projectId = "project-1") {
 
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <ProjectSkillsCuratorPanel projectId={projectId} />
+      <TooltipProvider>
+        <ProjectSkillsCuratorPanel projectId={projectId} />
+      </TooltipProvider>
     </QueryClientProvider>,
   );
 
@@ -235,9 +238,8 @@ describe("ProjectSkillsCuratorPanel", () => {
   it("renders conservative report cards for approved skills", async () => {
     renderPanel();
 
-    expect(await screen.findByText("Report cards")).toBeInTheDocument();
+    expect(await screen.findByText("low sample")).toBeInTheDocument();
     expect(screen.getAllByText("Approved review convention").length).toBeGreaterThan(0);
-    expect(screen.getByText("low sample")).toBeInTheDocument();
     expect(screen.getByText("3 uses")).toBeInTheDocument();
     expect(screen.getByText("2 linked outcomes")).toBeInTheDocument();
     expect(screen.getByText("1 succeeded")).toBeInTheDocument();
@@ -347,7 +349,11 @@ describe("ProjectSkillsCuratorPanel", () => {
 
     expect(await screen.findByText("No staged learned skills.")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /distill/i }));
+    expect(
+      screen.getByText(/scans stored task\/conversation outcomes/i),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /find candidates/i }));
 
     await waitFor(() => {
       expect(mockedProjectSkillsApi.distill).toHaveBeenCalledWith({
@@ -484,6 +490,6 @@ describe("ProjectSkillsCuratorPanel", () => {
     renderPanel();
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Scope rejected");
-    expect(screen.getByRole("button", { name: /distill/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /find candidates/i })).toBeEnabled();
   });
 });

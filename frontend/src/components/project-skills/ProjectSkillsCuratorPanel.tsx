@@ -1,5 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, Check, Pin, PinOff, RefreshCw, X } from "lucide-react";
+import {
+  Archive,
+  Check,
+  ClipboardList,
+  FileDown,
+  Pin,
+  PinOff,
+  RefreshCw,
+  ShieldCheck,
+  Sparkles,
+  X,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { useState } from "react";
 
@@ -17,6 +28,11 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 import {
@@ -255,43 +271,162 @@ export function ProjectSkillsCuratorPanel({
         applyImportMutation.error ??
         promoteMemoryMutation.error;
   const exportEnabled = settingsQuery.data?.exportEnabled ?? false;
+  const stagedCount = stagedSkills.length;
+  const approvedCount = approvedSkills.length;
+  const reportCardCount = reportCards.length;
 
   return (
     <section
-      className={cn("flex min-h-0 flex-col gap-3", className)}
+      className={cn("flex min-h-0 flex-col gap-5", className)}
       aria-label="Learned skills"
     >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-[var(--text-primary)]">
-            Learned skills
-          </h2>
-          <div className="mt-1 text-xs text-[var(--text-secondary)]">
-            {stagedSkills.length} staged, {approvedSkills.length} approved
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <SkillMetricTile
+          icon={ClipboardList}
+          label="Review queue"
+          value={stagedCount}
+          detail={stagedCount === 1 ? "candidate waiting" : "candidates waiting"}
+        />
+        <SkillMetricTile
+          icon={ShieldCheck}
+          label="Approved"
+          value={approvedCount}
+          detail={approvedCount === 1 ? "skill available" : "skills available"}
+        />
+        <SkillMetricTile
+          icon={Sparkles}
+          label="Report cards"
+          value={reportCardCount}
+          detail="descriptive usage evidence"
+        />
+        <SkillMetricTile
+          icon={FileDown}
+          label="Export"
+          value={exportEnabled ? "On" : "Off"}
+          detail={exportEnabled ? "review branch required" : "explicit opt-in"}
+        />
+      </div>
+
+      <div className="grid gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-[var(--text-primary)]">
+              Skill Operations
+            </h2>
+            <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
+              Find reusable procedures from completed run outcomes, then review
+              them before agents can use them. Export remains opt-in.
+            </p>
           </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => distillMutation.mutate()}
+                disabled={isBusy}
+              >
+                <RefreshCw
+                  className={cn(distillMutation.isPending && "animate-spin")}
+                />
+                Find candidates
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[280px] leading-5">
+              Scans recorded outcomes from completed work, proposes reusable
+              skill candidates, and leaves them in the review queue. It does
+              not approve or inject skills automatically.
+            </TooltipContent>
+          </Tooltip>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <ProjectSkillsExportControls
-            disabled={isBusy || approvedSkills.length === 0}
-            exportEnabled={exportEnabled}
-            onExportEnabledChange={(enabled) =>
-              updateSettingsMutation.mutate(enabled)
-            }
-            onPreview={() => previewExportMutation.mutate()}
-            onApply={() => applyExportMutation.mutate()}
-          />
-          <Button
-            type="button"
-            size="sm"
-            onClick={() => distillMutation.mutate()}
-            disabled={isBusy}
-          >
-            <RefreshCw
-              className={cn(distillMutation.isPending && "animate-spin")}
-            />
-            Distill
-          </Button>
+        <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
+          <span className="font-medium text-[var(--text-primary)]">
+            What Find candidates does:
+          </span>{" "}
+          scans stored task/conversation outcomes for repeated procedural
+          lessons and stages draft skills for human approval.
         </div>
+        <ProjectSkillsExportControls
+          disabled={isBusy || approvedSkills.length === 0}
+          exportEnabled={exportEnabled}
+          onExportEnabledChange={(enabled) =>
+            updateSettingsMutation.mutate(enabled)
+          }
+          onPreview={() => previewExportMutation.mutate()}
+          onApply={() => applyExportMutation.mutate()}
+        />
+        {approvedSkills.length === 0 ? (
+          <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs text-[var(--text-tertiary)]">
+            Approve or pin at least one skill before export controls can write
+            files.
+          </div>
+        ) : null}
+      </div>
+
+      {exportPreview ? (
+        <ProjectSkillsExportSummary preview={exportPreview} />
+      ) : null}
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
+        <div className="grid gap-4">
+          {stagedQuery.isLoading || approvedQuery.isLoading ? (
+            <div className="grid gap-3">
+              <Skeleton className="h-28 w-full" />
+              <Skeleton className="h-28 w-full" />
+            </div>
+          ) : (
+            <>
+              <SkillSection
+                title="Review Queue"
+                description="Staged candidates must be approved before agents can use them."
+                emptyMessage="No staged learned skills."
+                skills={stagedSkills}
+                renderSkill={(skill) => (
+                  <ProjectSkillCandidateCard
+                    key={skill.id}
+                    skill={skill}
+                    disabled={isBusy}
+                    onApprove={() => approveMutation.mutate(skill.id)}
+                    onReject={() => rejectMutation.mutate(skill.id)}
+                    onArchive={() => archiveMutation.mutate(skill.id)}
+                  />
+                )}
+              />
+              <SkillSection
+                title="Approved Skills"
+                description="Approved skills are eligible for future injection and export."
+                emptyMessage="No approved learned skills."
+                skills={approvedSkills}
+                renderSkill={(skill) => (
+                  <ProjectSkillApprovedCard
+                    key={skill.id}
+                    skill={skill}
+                    disabled={isBusy}
+                    onPin={() => pinMutation.mutate(skill.id)}
+                    onUnpin={() => unpinMutation.mutate(skill.id)}
+                    onArchive={() => archiveMutation.mutate(skill.id)}
+                  />
+                )}
+              />
+              <ReportCardSection
+                loading={reportCardsQuery.isLoading}
+                cards={reportCards}
+              />
+            </>
+          )}
+        </div>
+
+        <ImportPromotionPanel
+          disabled={isBusy}
+          importManifest={importManifest}
+          importPreview={importPreview}
+          memoryPromotion={memoryPromotion}
+          onImportManifestChange={setImportManifest}
+          onPreviewImport={() => previewImportMutation.mutate()}
+          onApplyImport={() => applyImportMutation.mutate()}
+          onMemoryPromotionChange={setMemoryPromotion}
+          onPromoteMemory={() => promoteMemoryMutation.mutate()}
+        />
       </div>
 
       {error ? (
@@ -302,70 +437,42 @@ export function ProjectSkillsCuratorPanel({
           {error.message}
         </div>
       ) : null}
-
-      {exportPreview ? (
-        <ProjectSkillsExportSummary preview={exportPreview} />
-      ) : null}
-
-      <ImportPromotionPanel
-        disabled={isBusy}
-        importManifest={importManifest}
-        importPreview={importPreview}
-        memoryPromotion={memoryPromotion}
-        onImportManifestChange={setImportManifest}
-        onPreviewImport={() => previewImportMutation.mutate()}
-        onApplyImport={() => applyImportMutation.mutate()}
-        onMemoryPromotionChange={setMemoryPromotion}
-        onPromoteMemory={() => promoteMemoryMutation.mutate()}
-      />
-
-      {stagedQuery.isLoading || approvedQuery.isLoading ? (
-        <div className="grid gap-3">
-          <Skeleton className="h-28 w-full" />
-          <Skeleton className="h-28 w-full" />
-        </div>
-      ) : (
-        <div className="grid gap-4">
-          <SkillSection
-            title="Staged"
-            emptyMessage="No staged learned skills."
-            skills={stagedSkills}
-            renderSkill={(skill) => (
-              <ProjectSkillCandidateCard
-                key={skill.id}
-                skill={skill}
-                disabled={isBusy}
-                onApprove={() => approveMutation.mutate(skill.id)}
-                onReject={() => rejectMutation.mutate(skill.id)}
-                onArchive={() => archiveMutation.mutate(skill.id)}
-              />
-            )}
-          />
-          <SkillSection
-            title="Approved"
-            emptyMessage="No approved learned skills."
-            skills={approvedSkills}
-            renderSkill={(skill) => (
-              <ProjectSkillApprovedCard
-                key={skill.id}
-                skill={skill}
-                disabled={isBusy}
-                onPin={() => pinMutation.mutate(skill.id)}
-                onUnpin={() => unpinMutation.mutate(skill.id)}
-                onArchive={() => archiveMutation.mutate(skill.id)}
-              />
-            )}
-          />
-          <ReportCardSection
-            loading={reportCardsQuery.isLoading}
-            cards={reportCards}
-          />
-        </div>
-      )}
     </section>
   );
 }
 
+function SkillMetricTile({
+  icon: Icon,
+  label,
+  value,
+  detail,
+}: {
+  icon: typeof ClipboardList;
+  label: string;
+  value: number | string;
+  detail: string;
+}) {
+  return (
+    <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs font-medium uppercase text-[var(--text-tertiary)]">
+            {label}
+          </div>
+          <div className="mt-2 text-2xl font-semibold leading-none text-[var(--text-primary)]">
+            {value}
+          </div>
+          <div className="mt-2 text-xs text-[var(--text-secondary)]">
+            {detail}
+          </div>
+        </div>
+        <div className="grid h-8 w-8 place-items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] text-[var(--text-secondary)]">
+          <Icon className="h-4 w-4" />
+        </div>
+      </div>
+    </div>
+  );
+}
 function parseImportManifest(value: string): ProjectSkillImportCandidate[] {
   const parsed = JSON.parse(value);
   const candidates = Array.isArray(parsed) ? parsed : parsed?.candidates;
@@ -625,6 +732,7 @@ function ProjectSkillReportCardRow({
 
 interface SkillSectionProps {
   title: string;
+  description: string;
   emptyMessage: string;
   skills: ProjectSkill[];
   renderSkill: (skill: ProjectSkill) => ReactNode;
@@ -632,15 +740,26 @@ interface SkillSectionProps {
 
 function SkillSection({
   title,
+  description,
   emptyMessage,
   skills,
   renderSkill,
 }: SkillSectionProps) {
   return (
     <div className="grid gap-2">
-      <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
-        {title}
-      </h3>
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
+            {title}
+          </h3>
+          <p className="mt-1 text-xs text-[var(--text-secondary)]">
+            {description}
+          </p>
+        </div>
+        <Badge variant="outline" className="text-xs">
+          {skills.length}
+        </Badge>
+      </div>
       {skills.length === 0 ? (
         <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-6 text-sm text-[var(--text-secondary)]">
           {emptyMessage}

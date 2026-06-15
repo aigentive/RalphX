@@ -23,7 +23,7 @@ describe("SkillsView", () => {
     render(<SkillsView />);
 
     expect(screen.getByTestId("skills-view")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Skills" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Project Skills" })).toBeInTheDocument();
     expect(screen.getByTestId("project-skills-curator")).toHaveAttribute(
       "data-project",
       "proj-1",
