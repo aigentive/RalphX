@@ -739,6 +739,7 @@ fn build_memory_agent_config(
         agent: Some(bootstrap.agent_name),
         model: runtime.model.clone(),
         harness: runtime.harness,
+        cli_path_override: runtime.cli_path_override.clone(),
         logical_effort: runtime.logical_effort,
         approval_policy: runtime.approval_policy.clone(),
         sandbox_mode: runtime.sandbox_mode.clone(),
