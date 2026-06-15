@@ -86,10 +86,29 @@ const ProjectSkillReportCardsResponseSchema = z.object({
   count: z.number(),
 });
 
+const ProjectSkillImportPreviewRowResponseSchema = z.object({
+  index: z.number(),
+  external_id: z.string().nullable().optional(),
+  title: z.string(),
+  decision: z.enum(["eligible", "invalid", "duplicate"]),
+  reasons: z.array(z.string()),
+  duplicate_project_skill_id: z.string().nullable().optional(),
+});
+
+const ProjectSkillImportPreviewResponseSchema = z.object({
+  rows: z.array(ProjectSkillImportPreviewRowResponseSchema),
+  eligible_count: z.number(),
+  invalid_count: z.number(),
+  duplicate_count: z.number(),
+});
+
 type RawProjectSkill = z.infer<typeof ProjectSkillResponseSchema>;
 type RawProjectSkillExport = z.infer<typeof ProjectSkillExportResponseSchema>;
 type RawProjectSkillSettings = z.infer<typeof ProjectSkillSettingsResponseSchema>;
 type RawProjectSkillReportCard = z.infer<typeof ProjectSkillReportCardResponseSchema>;
+type RawProjectSkillImportPreviewRow = z.infer<
+  typeof ProjectSkillImportPreviewRowResponseSchema
+>;
 
 export type ProjectSkillStatus = z.infer<typeof ProjectSkillStatusSchema>;
 
@@ -181,6 +200,40 @@ export interface ProjectSkillReportCardsResult {
   count: number;
 }
 
+export interface ProjectSkillImportCandidate {
+  externalId?: string | null;
+  title: string;
+  bucket: string;
+  stage: string;
+  scopePaths?: string[];
+  compactGuidance: string;
+  bodyMarkdown: string;
+  predictedEffect: string;
+  provenance: unknown;
+  sourceSnapshot: unknown;
+}
+
+export interface PreviewProjectSkillImportInput {
+  projectId: string;
+  candidates: ProjectSkillImportCandidate[];
+}
+
+export interface ProjectSkillImportPreviewRow {
+  index: number;
+  externalId: string | null;
+  title: string;
+  decision: "eligible" | "invalid" | "duplicate";
+  reasons: string[];
+  duplicateProjectSkillId: string | null;
+}
+
+export interface ProjectSkillImportPreviewResult {
+  rows: ProjectSkillImportPreviewRow[];
+  eligibleCount: number;
+  invalidCount: number;
+  duplicateCount: number;
+}
+
 function transformProjectSkill(raw: RawProjectSkill): ProjectSkill {
   return {
     id: raw.id,
@@ -245,6 +298,19 @@ function transformProjectSkillReportCard(
     ageDays: raw.age_days,
     agingStatus: raw.aging_status,
     evidenceLevel: raw.evidence_level,
+  };
+}
+
+function transformProjectSkillImportPreviewRow(
+  raw: RawProjectSkillImportPreviewRow,
+): ProjectSkillImportPreviewRow {
+  return {
+    index: raw.index,
+    externalId: raw.external_id ?? null,
+    title: raw.title,
+    decision: raw.decision,
+    reasons: raw.reasons,
+    duplicateProjectSkillId: raw.duplicate_project_skill_id ?? null,
   };
 }
 
@@ -337,6 +403,33 @@ export const projectSkillsApi = {
     return {
       cards: parsed.cards.map(transformProjectSkillReportCard),
       count: parsed.count,
+    };
+  },
+
+  async previewImport(
+    input: PreviewProjectSkillImportInput,
+  ): Promise<ProjectSkillImportPreviewResult> {
+    const raw = await postJson<unknown>("project_skills/import/preview", {
+      project_id: input.projectId,
+      candidates: input.candidates.map((candidate) => ({
+        external_id: candidate.externalId ?? null,
+        title: candidate.title,
+        bucket: candidate.bucket,
+        stage: candidate.stage,
+        scope_paths: candidate.scopePaths ?? [],
+        compact_guidance: candidate.compactGuidance,
+        body_markdown: candidate.bodyMarkdown,
+        predicted_effect: candidate.predictedEffect,
+        provenance_json: candidate.provenance,
+        source_snapshot_json: candidate.sourceSnapshot,
+      })),
+    });
+    const parsed = ProjectSkillImportPreviewResponseSchema.parse(raw);
+    return {
+      rows: parsed.rows.map(transformProjectSkillImportPreviewRow),
+      eligibleCount: parsed.eligible_count,
+      invalidCount: parsed.invalid_count,
+      duplicateCount: parsed.duplicate_count,
     };
   },
 
