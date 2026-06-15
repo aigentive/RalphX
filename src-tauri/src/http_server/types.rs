@@ -1520,6 +1520,23 @@ pub struct ApplyProjectSkillImportResponse {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct PromoteMemoryToProjectSkillRequest {
+    pub project_id: String,
+    pub memory_id: String,
+    pub title: Option<String>,
+    pub bucket: String,
+    pub stage: String,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PromoteMemoryToProjectSkillResponse {
+    pub skill: ProjectSkillResponse,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct PreviewProjectSkillExportRequest {
     pub project_id: String,
 }

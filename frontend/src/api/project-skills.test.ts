@@ -427,6 +427,51 @@ describe("projectSkillsApi", () => {
     );
   });
 
+  it("promotes memory to a staged project skill", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        skill: projectSkill({
+          id: "promoted-skill",
+          title: "Promoted review procedure",
+          status: "staged",
+        }),
+      }),
+    );
+
+    await expect(
+      projectSkillsApi.promoteMemory({
+        projectId: "project-1",
+        memoryId: "memory-1",
+        title: "Promoted review procedure",
+        bucket: "review",
+        stage: "review",
+        compactGuidance: "Turn the memory into a repeatable review check.",
+        bodyMarkdown: "## Procedure\n\nApply the memory as a checklist item.",
+        predictedEffect: "Reduces repeated review misses.",
+      }),
+    ).resolves.toMatchObject({
+      id: "promoted-skill",
+      title: "Promoted review procedure",
+      status: "staged",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:3847/api/project_skills/promote_memory",
+      expect.objectContaining({
+        body: JSON.stringify({
+          project_id: "project-1",
+          memory_id: "memory-1",
+          title: "Promoted review procedure",
+          bucket: "review",
+          stage: "review",
+          compact_guidance: "Turn the memory into a repeatable review check.",
+          body_markdown: "## Procedure\n\nApply the memory as a checklist item.",
+          predicted_effect: "Reduces repeated review misses.",
+        }),
+      }),
+    );
+  });
+
   it("previews project skill export files", async () => {
     fetchMock.mockResolvedValue(jsonResponse(exportResponse()));
 

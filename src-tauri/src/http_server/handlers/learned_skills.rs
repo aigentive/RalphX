@@ -4,13 +4,14 @@ use tracing::error;
 
 use super::*;
 use crate::domain::entities::types::ProjectId;
-use crate::domain::entities::{ProjectSkillId, ProjectSkillLifecycleStatus};
+use crate::domain::entities::{MemoryEntryId, ProjectSkillId, ProjectSkillLifecycleStatus};
 use crate::domain::repositories::ProjectSkillListOptions;
 use crate::domain::services::{
     DistillEligibleOutcomesInput, ProjectSkillDistillationOrigin, ProjectSkillDistillerService,
-    ProjectSkillImportApplyInput, ProjectSkillImportCandidate, ProjectSkillImportPreview,
-    ProjectSkillImportPreviewInput, ProjectSkillImportPreviewRow, ProjectSkillImportPreviewService,
-    ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService,
+    MemoryToProjectSkillPromotionService, ProjectSkillImportApplyInput, ProjectSkillImportCandidate,
+    ProjectSkillImportPreview, ProjectSkillImportPreviewInput, ProjectSkillImportPreviewRow,
+    ProjectSkillImportPreviewService, ProjectSkillReportOptions, ProjectSkillReportService,
+    ProjectSkillService, PromoteMemoryToProjectSkillInput,
 };
 use crate::error::AppError;
 use crate::http_server::handlers::learned_skills_export::assert_project_id_scope;
@@ -311,6 +312,49 @@ pub async fn apply_project_skill_import(
     }))
 }
 
+pub async fn promote_memory_to_project_skill(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<PromoteMemoryToProjectSkillRequest>,
+) -> Result<Json<PromoteMemoryToProjectSkillResponse>, HttpError> {
+    let project_id = ProjectId::from_string(req.project_id);
+    assert_project_id_scope(&project_id, &scope)?;
+
+    let service = MemoryToProjectSkillPromotionService::new(
+        Arc::clone(&state.app_state.memory_entry_repo),
+        Arc::clone(&state.app_state.project_skill_repo),
+    );
+    let result = service
+        .promote_memory(PromoteMemoryToProjectSkillInput {
+            project_id,
+            memory_id: MemoryEntryId::from_string(req.memory_id),
+            title: req.title,
+            bucket: req.bucket,
+            stage: req.stage,
+            compact_guidance: req.compact_guidance,
+            body_markdown: req.body_markdown,
+            predicted_effect: req.predicted_effect,
+        })
+        .await
+        .map_err(|error| match error {
+            AppError::Validation(message) => HttpError {
+                status: StatusCode::BAD_REQUEST,
+                message: Some(message),
+            },
+            other => {
+                error!("failed to promote memory to project skill: {}", other);
+                HttpError {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: Some("failed to promote memory to project skill".to_string()),
+                }
+            }
+        })?;
+
+    Ok(Json(PromoteMemoryToProjectSkillResponse {
+        skill: ProjectSkillResponse::from(result.skill),
+    }))
+}
+
 fn import_candidate_from_request(
     candidate: PreviewProjectSkillImportCandidateRequest,
 ) -> ProjectSkillImportCandidate {
@@ -453,7 +497,9 @@ mod tests {
     use super::*;
     use crate::application::{AppState, TeamService, TeamStateTracker};
     use crate::commands::ExecutionState;
-    use crate::domain::entities::{ProjectSkill, ProjectSkillLifecycleStatus, TaskOutcomeStatus};
+    use crate::domain::entities::{
+        MemoryBucket, MemoryEntry, ProjectSkill, ProjectSkillLifecycleStatus, TaskOutcomeStatus,
+    };
     use crate::domain::repositories::{ProjectSkillListOptions, UpsertTaskOutcomeInput};
     use crate::domain::services::{new_empty_task_outcome, new_skill_usage_event};
     use serde_json::json;
@@ -513,6 +559,20 @@ mod tests {
                     "captured_at": "2026-06-15T00:00:00Z"
                 }),
             }],
+        }
+    }
+
+    fn promote_memory_request(project_id: &str, memory_id: &str) -> PromoteMemoryToProjectSkillRequest {
+        PromoteMemoryToProjectSkillRequest {
+            project_id: project_id.to_string(),
+            memory_id: memory_id.to_string(),
+            title: Some("Promoted review procedure".to_string()),
+            bucket: "review".to_string(),
+            stage: "review".to_string(),
+            compact_guidance: "Turn the memory into a repeatable review check.".to_string(),
+            body_markdown: "## Procedure\n\nApply the remembered fact as a review checklist item."
+                .to_string(),
+            predicted_effect: "Reduces repeated review misses.".to_string(),
         }
     }
 
@@ -806,5 +866,62 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("project_skill_import")
         );
+    }
+
+    #[tokio::test]
+    async fn promote_memory_to_project_skill_stages_skill() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-memory".to_string());
+        let memory = MemoryEntry::new(
+            project_id.clone(),
+            MemoryBucket::OperationalPlaybooks,
+            "Review memory".to_string(),
+            "Remember this review fact.".to_string(),
+            "Factual memory details.".to_string(),
+            vec!["src-tauri".to_string()],
+            "memory-hash".to_string(),
+        );
+        let memory = app_state.memory_entry_repo.create(memory).await.unwrap();
+
+        let response = promote_memory_to_project_skill(
+            State(test_state(Arc::clone(&app_state))),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(promote_memory_request("project-memory", memory.id.as_str())),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.0.skill.status, "staged");
+        assert_eq!(response.0.skill.scope_paths, vec!["src-tauri".to_string()]);
+        assert_eq!(
+            response
+                .0
+                .skill
+                .provenance_json
+                .get("source")
+                .and_then(serde_json::Value::as_str),
+            Some("memory_to_project_skill_promotion")
+        );
+
+        let written = app_state
+            .project_skill_repo
+            .list_by_project(&project_id, ProjectSkillListOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(written.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn promote_memory_to_project_skill_rejects_cross_project_scope() {
+        let app_state = Arc::new(AppState::new_test());
+        let error = promote_memory_to_project_skill(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![ProjectId::from_string("project-b".to_string())])),
+            Json(promote_memory_request("project-a", "memory-1")),
+        )
+        .await
+        .expect_err("cross-project promotion should fail");
+
+        assert_eq!(error.status, StatusCode::FORBIDDEN);
     }
 }
