@@ -314,8 +314,9 @@ export function ProjectSkillsCuratorPanel({
               Skill Operations
             </h2>
             <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
-              Find reusable procedures from completed run outcomes, then review
-              them before agents can use them. Export remains opt-in.
+              Find reusable procedures from completed task, conversation, and
+              agent workspace outcomes, then review them before agents can use
+              them. Export remains opt-in.
             </p>
           </div>
           <Tooltip>
@@ -343,8 +344,9 @@ export function ProjectSkillsCuratorPanel({
           <span className="font-medium text-[var(--text-primary)]">
             What Find candidates does:
           </span>{" "}
-          scans stored task/conversation outcomes for repeated procedural
-          lessons and stages draft skills for human approval.
+          scans stored task, conversation, and agent workspace outcomes for
+          repeated procedural lessons and stages draft skills for human
+          approval.
         </div>
         <ProjectSkillsExportControls
           disabled={isBusy || approvedSkills.length === 0}

@@ -19,7 +19,7 @@ use crate::domain::repositories::{AgentConversationWorkspaceRepository, ProjectR
 use crate::domain::services::{GithubServiceTrait, PrBranchMatch, PrStatus};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryPlanBranchRepository, MemoryProjectRepository,
+    MemoryPlanBranchRepository, MemoryProjectRepository, MemoryTaskOutcomeRepository,
 };
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -86,6 +86,7 @@ async fn deps_with_workspace(
             pr_poller_registry: None,
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
             app_handle: None,
         },
         workspace_repo,
@@ -428,6 +429,7 @@ async fn reconciliation_skips_missing_workspace_project_and_disabled_projects() 
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+        task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
         app_handle: None,
     };
     assert_eq!(
@@ -585,6 +587,7 @@ async fn startup_reconciliation_processes_candidates_and_skips_blocked_projects(
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+        task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
         app_handle: None,
     };
 
@@ -627,6 +630,7 @@ async fn startup_reconciliation_marks_linked_failed_pr_terminal() {
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+        task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
         app_handle: None,
     };
 

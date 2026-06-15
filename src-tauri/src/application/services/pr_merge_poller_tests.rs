@@ -36,7 +36,7 @@ use crate::domain::services::GithubServiceTrait;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryPlanBranchRepository,
+    MemoryPlanBranchRepository, MemoryTaskOutcomeRepository,
 };
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -1074,6 +1074,7 @@ async fn agent_workspace_review_feedback_uses_pr_fixer_when_autofix_enabled() {
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -1506,6 +1507,7 @@ async fn agent_workspace_closed_pr_polling_removes_worktree_but_keeps_branch() {
         repo.path().to_path_buf(),
         Arc::clone(&workspace_repo),
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::new(MockChatService::new()),
     );
     tokio::time::timeout(Duration::from_secs(20), async {

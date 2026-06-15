@@ -350,7 +350,7 @@ describe("ProjectSkillsCuratorPanel", () => {
     expect(await screen.findByText("No staged learned skills.")).toBeInTheDocument();
 
     expect(
-      screen.getByText(/scans stored task\/conversation outcomes/i),
+      screen.getByText(/scans stored task, conversation, and agent workspace outcomes/i),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /find candidates/i }));

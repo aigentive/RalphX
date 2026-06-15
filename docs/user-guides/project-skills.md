@@ -1,6 +1,6 @@
 # Project Skills
 
-Project skills are reusable, project-scoped procedures that RalphX can learn from outcomes, import from a manifest, promote from memory, approve, inject into future agents, and optionally export to the target repository.
+Project skills are reusable, project-scoped procedures that RalphX can learn from task, conversation, and agent workspace outcomes, import from a manifest, create from memory, approve, inject into future agents, and optionally export to the target repository.
 
 They are different from factual memory:
 
@@ -29,7 +29,7 @@ When disabled:
 
 1. Let agents run normally.
 2. Open **Skills**.
-3. Click **Distill** to stage eligible learned skills from recorded outcomes.
+3. Click **Find candidates** to stage eligible learned skills from recorded task, conversation, and agent workspace outcomes.
 4. Review staged skills.
 5. Click **Approve** for skills you want agents to use.
 6. Optionally **Pin** important approved skills.
@@ -202,7 +202,7 @@ Preview is fail-closed: invalid rows stay invalid until fixed. Apply stages only
 
 | Action | Result |
 |---|---|
-| Distill | Creates staged candidates from eligible outcomes |
+| Find candidates | Creates staged candidates from eligible task, conversation, and agent workspace outcomes |
 | Approve | Makes a staged skill available for future use |
 | Reject | Keeps provenance but prevents use |
 | Pin | Keeps an approved skill prominent and export-eligible |

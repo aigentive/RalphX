@@ -96,8 +96,9 @@ use crate::domain::entities::{
 };
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
-    AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerIntegrationReference,
-    ComposerProjectReference, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
+    AgentWorkspaceOutcomeAdapter, AgentWorkspacePrPublisher, ComposerArtifactReference,
+    ComposerIntegrationReference, ComposerProjectReference, QueuedMessage, RunningAgentKey,
+    RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -917,6 +918,7 @@ fn schedule_external_pr_reconciliation_for_workspace(
             pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
             chat_service: Some(chat_service),
             agent_run_repo: Arc::clone(&state.agent_run_repo),
+            task_outcome_repo: Arc::clone(&state.task_outcome_repo),
             app_handle: state.app_handle.clone(),
         },
         workspace.conversation_id.clone(),
@@ -946,6 +948,7 @@ fn schedule_pr_supervision_recovery_for_workspace(
             pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
             chat_service: Some(chat_service),
             agent_run_repo: Arc::clone(&state.agent_run_repo),
+            task_outcome_repo: Arc::clone(&state.task_outcome_repo),
             app_handle: state.app_handle.clone(),
         },
         workspace.conversation_id.clone(),
@@ -4345,7 +4348,8 @@ pub async fn reconcile_agent_conversation_workspace_publication(
         AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
         true,
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 /// List workspace metadata for project-backed agent conversations.
@@ -5935,7 +5939,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         )
         .await
         .map_err(|e| e.to_string())?;
-    append_agent_workspace_publication_event(
+    let publish_event = append_agent_workspace_publication_event(
         state,
         &workspace.conversation_id,
         "published",
@@ -5952,6 +5956,22 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .await
         .map_err(|e| e.to_string())?
         .unwrap_or(workspace);
+    let outcome_adapter = AgentWorkspaceOutcomeAdapter::new(Arc::clone(&state.task_outcome_repo));
+    if let Err(error) = outcome_adapter
+        .record_publish_succeeded(
+            &refreshed,
+            Some(&publish_event),
+            "Draft pull request is ready",
+        )
+        .await
+    {
+        tracing::warn!(
+            conversation_id = %refreshed.conversation_id,
+            pr_number = outcome.pr_number,
+            error = %error,
+            "Failed to record direct agent workspace publish outcome"
+        );
+    }
 
     if refreshed.auto_publish_enabled && refreshed.pr_auto_merge_desired {
         match sync_agent_workspace_auto_merge_preference_for_workspace(
@@ -6010,6 +6030,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         worktree_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.task_outcome_repo),
         review_chat_service,
     );
 
@@ -6058,7 +6079,8 @@ async fn mark_agent_workspace_publish_status(
         publication_event_summary_for_push_status(push_status),
         None,
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 async fn mark_agent_workspace_publish_description_failure(
@@ -6639,17 +6661,19 @@ async fn append_agent_workspace_publication_event(
     status: &str,
     summary: &str,
     classification: Option<String>,
-) -> crate::error::AppResult<()> {
+) -> crate::error::AppResult<AgentConversationWorkspacePublicationEvent> {
+    let event = AgentConversationWorkspacePublicationEvent::new(
+        *conversation_id,
+        step,
+        status,
+        summary,
+        classification,
+    );
     state
         .agent_conversation_workspace_repo
-        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-            *conversation_id,
-            step,
-            status,
-            summary,
-            classification,
-        ))
-        .await
+        .append_publication_event(event.clone())
+        .await?;
+    Ok(event)
 }
 
 fn publication_event_status_for_push_status(push_status: &str) -> &'static str {

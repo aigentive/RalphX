@@ -19,6 +19,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ProjectRepository,
+    TaskOutcomeRepository,
 };
 use crate::domain::services::{GithubServiceTrait, PrStatus, PrSyncState};
 use crate::error::AppResult;
@@ -58,6 +59,7 @@ pub(crate) struct AgentWorkspacePrSupervisionRecoveryDeps {
     pub pr_poller_registry: Option<Arc<PrPollerRegistry>>,
     pub chat_service: Option<Arc<dyn ChatService>>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
+    pub task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     pub app_handle: Option<AppHandle>,
 }
 
@@ -147,6 +149,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         workspace = recover_stale_publish_repair_for_workspace_and_reload(
             Arc::clone(&deps.workspace_repo),
             Arc::clone(&deps.agent_run_repo),
+            Arc::clone(&deps.task_outcome_repo),
             workspace,
         )
         .await?;
@@ -298,6 +301,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             worktree_path,
             Arc::clone(&deps.workspace_repo),
             Arc::clone(&deps.agent_run_repo),
+            Arc::clone(&deps.task_outcome_repo),
             Arc::clone(chat_service),
         );
     }

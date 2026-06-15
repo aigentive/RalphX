@@ -3,6 +3,7 @@
 // Services coordinate repositories and entities to implement
 // use cases and business rules.
 
+pub mod agent_workspace_outcomes;
 pub mod api_key_service;
 pub mod artifact_flow_service;
 pub mod artifact_service;
@@ -31,6 +32,10 @@ pub mod work_item_title;
 pub mod workflow_service;
 pub mod worktree_guard;
 
+pub use agent_workspace_outcomes::{
+    is_direct_edit_workspace, AgentWorkspaceOutcomeAdapter, AGENT_WORKSPACE_OUTCOME_SOURCE,
+    AGENT_WORKSPACE_PR_OUTCOME_SOURCE, GITHUB_PR_REVIEW_OUTCOME_SOURCE,
+};
 pub use artifact_flow_service::{ArtifactFlowService, FlowExecutionResult, StepExecutionResult};
 pub use artifact_service::ArtifactService;
 pub use bucket_classifier::BucketClassifier;

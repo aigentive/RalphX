@@ -1218,6 +1218,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &message_queue,
                     &running_agent_registry,
                     &memory_event_repo,
+                    &agent_conversation_workspace_repo,
                     &plan_branch_repo,
                     &task_step_repo,
                     &execution_settings_repo,
