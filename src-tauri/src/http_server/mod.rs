@@ -294,6 +294,10 @@ pub async fn start_http_server(
             post(apply_project_skill_import),
         )
         .route(
+            "/api/project_skills/import/project_directory/apply",
+            post(apply_project_skill_directory_import),
+        )
+        .route(
             "/api/project_skills/promote_memory",
             post(promote_memory_to_project_skill),
         )

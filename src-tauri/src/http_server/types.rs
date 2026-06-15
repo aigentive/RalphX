@@ -1420,6 +1420,7 @@ pub struct DistillProjectSkillsRequest {
     pub source: Option<String>,
     pub limit: Option<usize>,
     pub include_git_history: Option<bool>,
+    pub include_github_pr_history: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1428,6 +1429,7 @@ pub struct DistillProjectSkillsResponse {
     pub skipped_existing: usize,
     pub ingested_outcomes: usize,
     pub scanned_git_commits: usize,
+    pub scanned_github_prs: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1565,6 +1567,12 @@ pub struct ApplyProjectSkillImportResponse {
     pub preview: PreviewProjectSkillImportResponse,
     pub imported_skills: Vec<ProjectSkillResponse>,
     pub imported_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProjectSkillDirectoryImportRequest {
+    pub project_id: String,
+    pub confirm_import: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

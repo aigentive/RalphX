@@ -1,4 +1,5 @@
 use axum::{extract::State, http::StatusCode, Json};
+use serde::Deserialize;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -29,16 +30,19 @@ use crate::error::{AppError, AppResult};
 use crate::http_server::handlers::learned_skills_export::assert_project_id_scope;
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
 use crate::http_server::types::HttpError;
-use crate::infrastructure::tool_paths::resolve_git_cli_path;
+use crate::infrastructure::tool_paths::{resolve_gh_cli_path, resolve_git_cli_path};
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
 const GIT_HISTORY_SCAN_LIMIT: usize = 50;
 const GIT_HISTORY_DISTILL_SOURCE: &str = "git_commit_history";
+const GITHUB_PR_HISTORY_SCAN_LIMIT: usize = 25;
+const GITHUB_PR_DISTILL_SOURCE: &str = "github_pr_history";
 
 #[derive(Debug, Clone, Copy, Default)]
 struct GitHistoryIngestSummary {
     ingested_outcomes: usize,
     scanned_git_commits: usize,
+    scanned_github_prs: usize,
 }
 
 pub async fn list_project_skills(
@@ -457,6 +461,11 @@ pub async fn distill_project_skills(
             .as_deref()
             .map_or(true, |source| source == GIT_HISTORY_DISTILL_SOURCE)
     });
+    let include_github_pr_history = req.include_github_pr_history.unwrap_or_else(|| {
+        requested_source
+            .as_deref()
+            .map_or(true, |source| source == GITHUB_PR_DISTILL_SOURCE)
+    });
 
     let distiller = ProjectSkillDistillerService::new(
         Arc::clone(&state.app_state.task_outcome_repo),
@@ -479,12 +488,14 @@ pub async fn distill_project_skills(
         })?;
     let mut ingested_outcomes = 0;
     let mut scanned_git_commits = 0;
+    let mut scanned_github_prs = 0;
 
     if result.staged_skills.is_empty() && include_git_history {
         match ingest_recent_git_history_outcomes(&state, &project_id).await {
             Ok(summary) if summary.ingested_outcomes > 0 => {
                 ingested_outcomes = summary.ingested_outcomes;
                 scanned_git_commits = summary.scanned_git_commits;
+                scanned_github_prs = summary.scanned_github_prs;
                 result = distiller
                     .distill_eligible_outcomes(DistillEligibleOutcomesInput {
                         project_id: project_id.clone(),
@@ -503,9 +514,47 @@ pub async fn distill_project_skills(
             }
             Ok(summary) => {
                 scanned_git_commits = summary.scanned_git_commits;
+                scanned_github_prs = summary.scanned_github_prs;
             }
             Err(error) => {
-                error!("failed to ingest git history for skill candidates: {}", error);
+                error!(
+                    "failed to ingest git history for skill candidates: {}",
+                    error
+                );
+            }
+        }
+    }
+    if result.staged_skills.is_empty() && include_github_pr_history {
+        match ingest_recent_github_pr_outcomes(&state, &project_id).await {
+            Ok(summary) if summary.ingested_outcomes > 0 => {
+                ingested_outcomes += summary.ingested_outcomes;
+                scanned_git_commits += summary.scanned_git_commits;
+                scanned_github_prs += summary.scanned_github_prs;
+                result = distiller
+                    .distill_eligible_outcomes(DistillEligibleOutcomesInput {
+                        project_id: project_id.clone(),
+                        source: Some(GITHUB_PR_DISTILL_SOURCE.to_string()),
+                        limit,
+                        origin: ProjectSkillDistillationOrigin::ManualCurator,
+                    })
+                    .await
+                    .map_err(|error| {
+                        error!("failed to distill GitHub PR project skills: {}", error);
+                        HttpError {
+                            status: StatusCode::INTERNAL_SERVER_ERROR,
+                            message: Some("failed to distill project skills".to_string()),
+                        }
+                    })?;
+            }
+            Ok(summary) => {
+                scanned_git_commits += summary.scanned_git_commits;
+                scanned_github_prs += summary.scanned_github_prs;
+            }
+            Err(error) => {
+                error!(
+                    "failed to ingest GitHub PR history for skill candidates: {}",
+                    error
+                );
             }
         }
     }
@@ -519,6 +568,7 @@ pub async fn distill_project_skills(
         skipped_existing: result.skipped_existing,
         ingested_outcomes,
         scanned_git_commits,
+        scanned_github_prs,
     }))
 }
 
@@ -607,6 +657,68 @@ async fn ingest_recent_git_history_outcomes(
     Ok(GitHistoryIngestSummary {
         ingested_outcomes,
         scanned_git_commits,
+        scanned_github_prs: 0,
+    })
+}
+
+async fn ingest_recent_github_pr_outcomes(
+    state: &HttpServerState,
+    project_id: &ProjectId,
+) -> AppResult<GitHistoryIngestSummary> {
+    let project = state
+        .app_state
+        .project_repo
+        .get_by_id(project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {} not found", project_id)))?;
+    let working_dir =
+        validate_absolute_non_root_path(Path::new(&project.working_directory), "project root")?;
+    if !working_dir.is_dir() {
+        return Ok(GitHistoryIngestSummary::default());
+    }
+
+    let pull_requests =
+        read_recent_github_pull_requests(&working_dir, GITHUB_PR_HISTORY_SCAN_LIMIT).await?;
+    let scanned_github_prs = pull_requests.len();
+    let mut ingested_outcomes = 0;
+    for pull_request in pull_requests {
+        let mut outcome = new_empty_task_outcome(
+            project_id.clone(),
+            GITHUB_PR_DISTILL_SOURCE,
+            "pull_request",
+            pull_request.number.to_string(),
+        );
+        outcome.status = match pull_request.state.as_deref() {
+            Some("MERGED") => TaskOutcomeStatus::Succeeded,
+            Some("CLOSED") => TaskOutcomeStatus::Eligible,
+            _ => TaskOutcomeStatus::Eligible,
+        };
+        outcome.outcome_class = Some("github_pr_history".to_string());
+        outcome.evidence_json = serde_json::json!({
+            "source": "gh_pr_list",
+            "number": pull_request.number,
+            "title": pull_request.title,
+            "state": pull_request.state,
+            "url": pull_request.url,
+            "merged_at": pull_request.merged_at,
+            "closed_at": pull_request.closed_at,
+            "updated_at": pull_request.updated_at,
+            "head_ref_name": pull_request.head_ref_name,
+            "base_ref_name": pull_request.base_ref_name,
+            "scan_limit": GITHUB_PR_HISTORY_SCAN_LIMIT,
+        });
+        state
+            .app_state
+            .task_outcome_repo
+            .upsert(UpsertTaskOutcomeInput { outcome })
+            .await?;
+        ingested_outcomes += 1;
+    }
+
+    Ok(GitHistoryIngestSummary {
+        ingested_outcomes,
+        scanned_git_commits: 0,
+        scanned_github_prs,
     })
 }
 
@@ -616,6 +728,68 @@ struct GitCommitSummary {
     authored_at: String,
     author_name: String,
     subject: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct GithubPrSummary {
+    number: i64,
+    title: String,
+    state: Option<String>,
+    url: Option<String>,
+    merged_at: Option<String>,
+    closed_at: Option<String>,
+    updated_at: Option<String>,
+    head_ref_name: Option<String>,
+    base_ref_name: Option<String>,
+}
+
+async fn read_recent_github_pull_requests(
+    working_dir: &Path,
+    limit: usize,
+) -> AppResult<Vec<GithubPrSummary>> {
+    let output = timeout(Duration::from_secs(10), async {
+        let child = Command::new(resolve_gh_cli_path())
+            .arg("pr")
+            .arg("list")
+            .arg("--state")
+            .arg("all")
+            .arg("--limit")
+            .arg(limit.max(1).to_string())
+            .arg("--json")
+            .arg("number,title,state,mergedAt,closedAt,updatedAt,headRefName,baseRefName,url")
+            .current_dir(working_dir)
+            .env("GH_NO_UPDATE_NOTIFIER", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| {
+                AppError::Infrastructure(format!("failed to start gh pr list: {error}"))
+            })?;
+        child.wait_with_output().await.map_err(|error| {
+            AppError::Infrastructure(format!("failed to read gh pr list output: {error}"))
+        })
+    })
+    .await
+    .map_err(|_| AppError::Infrastructure("timed out reading GitHub PR history".to_string()))??;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    parse_github_pr_summaries(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_github_pr_summaries(output: &str) -> AppResult<Vec<GithubPrSummary>> {
+    let mut pull_requests =
+        serde_json::from_str::<Vec<GithubPrSummary>>(output).map_err(|error| {
+            AppError::Infrastructure(format!("failed to parse gh PR history: {error}"))
+        })?;
+    pull_requests
+        .retain(|pull_request| pull_request.number > 0 && !pull_request.title.trim().is_empty());
+    Ok(pull_requests)
 }
 
 async fn read_recent_git_commits(
@@ -764,6 +938,211 @@ pub async fn apply_project_skill_import(
         imported_skills,
         imported_count,
     }))
+}
+
+pub async fn apply_project_skill_directory_import(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<ProjectSkillDirectoryImportRequest>,
+) -> Result<Json<ApplyProjectSkillImportResponse>, HttpError> {
+    let project_id = ProjectId::from_string(req.project_id);
+    assert_project_id_scope(&project_id, &scope)?;
+    if !req.confirm_import {
+        return Err(HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some(
+                "project skill directory import requires confirm_import=true".to_string(),
+            ),
+        });
+    }
+
+    let candidates = scan_project_native_skills(&state, &project_id)
+        .await
+        .map_err(|error| {
+            error!("failed to scan project .claude/skills: {}", error);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to scan project skills".to_string()),
+            }
+        })?;
+    let service =
+        ProjectSkillImportPreviewService::new(Arc::clone(&state.app_state.project_skill_repo));
+    let result = service
+        .apply_import(ProjectSkillImportApplyInput {
+            project_id,
+            candidates,
+            confirm_import: true,
+        })
+        .await
+        .map_err(|error| match error {
+            AppError::Validation(message) => HttpError {
+                status: StatusCode::BAD_REQUEST,
+                message: Some(message),
+            },
+            other => {
+                error!("failed to import project .claude/skills: {}", other);
+                HttpError {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: Some("failed to import project skills".to_string()),
+                }
+            }
+        })?;
+    let imported_skills = result
+        .imported_skills
+        .into_iter()
+        .map(ProjectSkillResponse::from)
+        .collect::<Vec<_>>();
+    let imported_count = imported_skills.len();
+
+    Ok(Json(ApplyProjectSkillImportResponse {
+        preview: preview_response(result.preview),
+        imported_skills,
+        imported_count,
+    }))
+}
+
+async fn scan_project_native_skills(
+    state: &HttpServerState,
+    project_id: &ProjectId,
+) -> AppResult<Vec<ProjectSkillImportCandidate>> {
+    let project = state
+        .app_state
+        .project_repo
+        .get_by_id(project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {} not found", project_id)))?;
+    let project_root =
+        validate_absolute_non_root_path(Path::new(&project.working_directory), "project root")?;
+    let skills_root = project_root.join(".claude").join("skills");
+    if !skills_root.exists() {
+        return Ok(Vec::new());
+    }
+    let metadata = tokio::fs::symlink_metadata(&skills_root)
+        .await
+        .map_err(|error| {
+            AppError::Infrastructure(format!(
+                "failed to inspect project skills directory {}: {error}",
+                skills_root.display()
+            ))
+        })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut entries = tokio::fs::read_dir(&skills_root).await.map_err(|error| {
+        AppError::Infrastructure(format!(
+            "failed to read project skills directory {}: {error}",
+            skills_root.display()
+        ))
+    })?;
+    let mut candidates = Vec::new();
+    while let Some(entry) = entries.next_entry().await.map_err(|error| {
+        AppError::Infrastructure(format!("failed to read project skill entry: {error}"))
+    })? {
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if !is_safe_native_skill_dir_name(&file_name) {
+            continue;
+        }
+        let entry_metadata = entry.metadata().await.map_err(|error| {
+            AppError::Infrastructure(format!("failed to inspect project skill entry: {error}"))
+        })?;
+        if !entry_metadata.is_dir() || entry_metadata.file_type().is_symlink() {
+            continue;
+        }
+        let skill_file = entry.path().join("SKILL.md");
+        let file_metadata = match tokio::fs::symlink_metadata(&skill_file).await {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(AppError::Infrastructure(format!(
+                    "failed to inspect project skill file {}: {error}",
+                    skill_file.display()
+                )));
+            }
+        };
+        if !file_metadata.is_file() || file_metadata.file_type().is_symlink() {
+            continue;
+        }
+        let body_markdown = tokio::fs::read_to_string(&skill_file)
+            .await
+            .map_err(|error| {
+                AppError::Infrastructure(format!(
+                    "failed to read project skill file {}: {error}",
+                    skill_file.display()
+                ))
+            })?;
+        let title =
+            native_skill_title(&body_markdown).unwrap_or_else(|| humanize_skill_dir(&file_name));
+        let compact_guidance = native_skill_compact_guidance(&body_markdown).unwrap_or_else(|| {
+            format!(
+                "Use the `{}` project skill when its procedure applies.",
+                title
+            )
+        });
+        let relative_path = format!(".claude/skills/{file_name}/SKILL.md");
+        candidates.push(ProjectSkillImportCandidate {
+            external_id: Some(relative_path.clone()),
+            title,
+            bucket: "execution".to_string(),
+            stage: "execution".to_string(),
+            scope_paths: Vec::new(),
+            compact_guidance,
+            body_markdown,
+            predicted_effect: "Makes an existing target-repository skill available for RalphX review, approval, and future injection.".to_string(),
+            provenance_json: serde_json::json!({
+                "source": "target_project_claude_skill",
+                "relative_path": relative_path,
+            }),
+            source_snapshot_json: serde_json::json!({
+                "kind": "target_project_claude_skill",
+                "relative_path": relative_path,
+            }),
+        });
+    }
+
+    Ok(candidates)
+}
+
+fn is_safe_native_skill_dir_name(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('.')
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn native_skill_title(markdown: &str) -> Option<String> {
+    markdown
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("# ").map(str::trim))
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+fn native_skill_compact_guidance(markdown: &str) -> Option<String> {
+    markdown
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| !line.starts_with('#') && !line.starts_with("---"))
+        .find(|line| line.chars().count() >= 24)
+        .map(|line| truncate_text(line, 220))
+}
+
+fn humanize_skill_dir(value: &str) -> String {
+    value
+        .replace(['-', '_'], " ")
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub async fn promote_memory_to_project_skill(
@@ -1407,6 +1786,7 @@ mod tests {
                 source: Some("review".to_string()),
                 limit: Some(5),
                 include_git_history: Some(false),
+                include_github_pr_history: Some(false),
             }),
         )
         .await
@@ -1418,6 +1798,7 @@ mod tests {
         assert_eq!(response.0.skipped_existing, 0);
         assert_eq!(response.0.ingested_outcomes, 0);
         assert_eq!(response.0.scanned_git_commits, 0);
+        assert_eq!(response.0.scanned_github_prs, 0);
     }
 
     #[test]
@@ -1432,6 +1813,19 @@ mod tests {
         assert_eq!(parsed[1].author_name, "Ada");
     }
 
+    #[test]
+    fn parse_github_pr_summaries_parses_cli_json() {
+        let parsed = parse_github_pr_summaries(
+            r#"[{"number":42,"title":"Fix learned skill export","state":"MERGED","url":"https://github.com/aigentive/ralphx.app/pull/42","mergedAt":"2026-06-15T10:00:00Z","closedAt":null,"updatedAt":"2026-06-15T10:30:00Z","headRefName":"feature/skills","baseRefName":"main"},{"number":0,"title":"Ignored","state":"OPEN"}]"#,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].number, 42);
+        assert_eq!(parsed[0].state.as_deref(), Some("MERGED"));
+        assert_eq!(parsed[0].head_ref_name.as_deref(), Some("feature/skills"));
+    }
+
     #[tokio::test]
     async fn distill_project_skills_rejects_cross_project_scope() {
         let app_state = Arc::new(AppState::new_test());
@@ -1443,6 +1837,7 @@ mod tests {
                 source: None,
                 limit: None,
                 include_git_history: None,
+                include_github_pr_history: None,
             }),
         )
         .await

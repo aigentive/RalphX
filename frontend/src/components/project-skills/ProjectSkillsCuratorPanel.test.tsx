@@ -24,6 +24,7 @@ vi.mock("@/api/project-skills", () => ({
     listReportCards: vi.fn(),
     previewImport: vi.fn(),
     applyImport: vi.fn(),
+    applyProjectDirectoryImport: vi.fn(),
     promoteMemory: vi.fn(),
   },
 }));
@@ -147,6 +148,7 @@ describe("ProjectSkillsCuratorPanel", () => {
       skippedExisting: 0,
       ingestedOutcomes: 0,
       scannedGitCommits: 0,
+      scannedGithubPrs: 0,
     });
     mockedProjectSkillsApi.listReportCards.mockResolvedValue({
       count: 1,
@@ -201,6 +203,16 @@ describe("ProjectSkillsCuratorPanel", () => {
         duplicateCount: 0,
       },
       importedSkills: [stagedSkill({ id: "imported-skill" })],
+      importedCount: 1,
+    });
+    mockedProjectSkillsApi.applyProjectDirectoryImport.mockResolvedValue({
+      preview: {
+        rows: [],
+        eligibleCount: 1,
+        invalidCount: 0,
+        duplicateCount: 0,
+      },
+      importedSkills: [stagedSkill({ id: "native-skill" })],
       importedCount: 1,
     });
     mockedProjectSkillsApi.promoteMemory.mockResolvedValue(
@@ -301,6 +313,21 @@ describe("ProjectSkillsCuratorPanel", () => {
     });
   });
 
+  it("loads existing project .claude skills into the review queue", async () => {
+    renderPanel();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("tab", { name: /advanced/i }));
+    fireEvent.click(screen.getByRole("button", { name: /load \.claude\/skills/i }));
+
+    await waitFor(() => {
+      expect(mockedProjectSkillsApi.applyProjectDirectoryImport).toHaveBeenCalledWith(
+        "project-1",
+      );
+    });
+    expect(await screen.findByText("1 loaded")).toBeInTheDocument();
+  });
+
   it("promotes memory entries through the curator panel", async () => {
     renderPanel();
     const user = userEvent.setup();
@@ -380,8 +407,9 @@ describe("ProjectSkillsCuratorPanel", () => {
       expect(mockedProjectSkillsApi.distill).toHaveBeenCalledWith({
         projectId: "project-1",
         limit: 10,
-        source: undefined,
+        source: null,
         includeGitHistory: true,
+        includeGithubPrHistory: true,
       });
     });
     expect(await screen.findByText(/Staged 1 candidate/i)).toBeInTheDocument();
@@ -402,6 +430,26 @@ describe("ProjectSkillsCuratorPanel", () => {
         limit: 10,
         source: "git_commit_history",
         includeGitHistory: true,
+        includeGithubPrHistory: false,
+      });
+    });
+  });
+
+  it("can scan GitHub PRs explicitly for candidates", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole("button", { name: /find candidates\.\.\./i }));
+    await user.click(screen.getByRole("button", { name: /github prs/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^find candidates$/i }));
+
+    await waitFor(() => {
+      expect(mockedProjectSkillsApi.distill).toHaveBeenCalledWith({
+        projectId: "project-1",
+        limit: 10,
+        source: "github_pr_history",
+        includeGitHistory: false,
+        includeGithubPrHistory: true,
       });
     });
   });

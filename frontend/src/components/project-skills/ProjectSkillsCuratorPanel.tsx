@@ -75,7 +75,7 @@ interface MemoryPromotionFormState {
   predictedEffect: string;
 }
 
-type CandidateSourceMode = "auto" | "stored" | "commits";
+type CandidateSourceMode = "auto" | "stored" | "commits" | "prs";
 
 export function ProjectSkillsCuratorPanel({
   projectId,
@@ -91,6 +91,8 @@ export function ProjectSkillsCuratorPanel({
     useState<DistillProjectSkillsResult | null>(null);
   const [importManifest, setImportManifest] = useState("");
   const [importPreview, setImportPreview] =
+    useState<ProjectSkillImportPreviewResult | null>(null);
+  const [projectDirectoryImport, setProjectDirectoryImport] =
     useState<ProjectSkillImportPreviewResult | null>(null);
   const [memoryPromotion, setMemoryPromotion] = useState({
     memoryId: "",
@@ -154,8 +156,15 @@ export function ProjectSkillsCuratorPanel({
         projectId,
         limit: 10,
         source:
-          candidateSourceMode === "commits" ? "git_commit_history" : undefined,
-        includeGitHistory: candidateSourceMode !== "stored",
+          candidateSourceMode === "commits"
+            ? "git_commit_history"
+            : candidateSourceMode === "prs"
+              ? "github_pr_history"
+              : null,
+        includeGitHistory:
+          candidateSourceMode === "auto" || candidateSourceMode === "commits",
+        includeGithubPrHistory:
+          candidateSourceMode === "auto" || candidateSourceMode === "prs",
       }),
     onMutate: () => setCandidateResult(null),
     onSuccess: (result) => {
@@ -238,6 +247,14 @@ export function ProjectSkillsCuratorPanel({
     onError: (error) => setLocalError(error.message),
   });
 
+  const applyProjectDirectoryImportMutation = useMutation({
+    mutationFn: () => projectSkillsApi.applyProjectDirectoryImport(projectId),
+    onSuccess: (result) => {
+      setProjectDirectoryImport(result.preview);
+      invalidateSkills();
+    },
+  });
+
   const promoteMemoryMutation = useMutation({
     mutationFn: () =>
       projectSkillsApi.promoteMemory({
@@ -282,6 +299,7 @@ export function ProjectSkillsCuratorPanel({
     applyExportMutation.isPending ||
     previewImportMutation.isPending ||
     applyImportMutation.isPending ||
+    applyProjectDirectoryImportMutation.isPending ||
     promoteMemoryMutation.isPending;
   const error =
     localError != null
@@ -302,6 +320,7 @@ export function ProjectSkillsCuratorPanel({
         applyExportMutation.error ??
         previewImportMutation.error ??
         applyImportMutation.error ??
+        applyProjectDirectoryImportMutation.error ??
         promoteMemoryMutation.error;
   const exportEnabled = settingsQuery.data?.exportEnabled ?? false;
   const stagedCount = stagedSkills.length;
@@ -465,10 +484,14 @@ export function ProjectSkillsCuratorPanel({
             disabled={isBusy}
             importManifest={importManifest}
             importPreview={importPreview}
+            projectDirectoryImport={projectDirectoryImport}
             memoryPromotion={memoryPromotion}
             onImportManifestChange={setImportManifest}
             onPreviewImport={() => previewImportMutation.mutate()}
             onApplyImport={() => applyImportMutation.mutate()}
+            onApplyProjectDirectoryImport={() =>
+              applyProjectDirectoryImportMutation.mutate()
+            }
             onMemoryPromotionChange={setMemoryPromotion}
             onPromoteMemory={() => promoteMemoryMutation.mutate()}
           />
@@ -511,9 +534,11 @@ function CandidateDiscoveryDialog({
   const sourceDescription =
     sourceMode === "commits"
       ? "Scans the latest 50 non-merge commits and stages up to 10 commit-pattern drafts."
+      : sourceMode === "prs"
+        ? "Scans recent GitHub pull requests with `gh pr list` and stages up to 10 PR-pattern drafts."
       : sourceMode === "stored"
         ? "Scans only RalphX-recorded task, conversation, PR, review, and workspace outcomes."
-        : "Scans stored RalphX outcomes first, then falls back to recent git commits when no candidates exist.";
+        : "Scans stored RalphX outcomes first, then falls back to recent commits and GitHub PRs when no candidates exist.";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -549,6 +574,7 @@ function CandidateDiscoveryDialog({
                 { id: "auto" as const, label: "Auto" },
                 { id: "stored" as const, label: "Stored outcomes" },
                 { id: "commits" as const, label: "Recent commits" },
+                { id: "prs" as const, label: "GitHub PRs" },
               ].map((option) => (
                 <Button
                   key={option.id}
@@ -585,6 +611,13 @@ function CandidateDiscoveryDialog({
                   {result.scannedGitCommits === 1 ? "" : "s"} and recorded{" "}
                   {result.ingestedOutcomes} reusable outcome
                   {result.ingestedOutcomes === 1 ? "" : "s"}.
+                </>
+              ) : null}
+              {result.scannedGithubPrs > 0 ? (
+                <>
+                  {" "}
+                  GitHub PR fallback scanned {result.scannedGithubPrs} pull
+                  request{result.scannedGithubPrs === 1 ? "" : "s"}.
                 </>
               ) : null}
             </div>
@@ -880,20 +913,24 @@ function ImportPromotionPanel({
   disabled,
   importManifest,
   importPreview,
+  projectDirectoryImport,
   memoryPromotion,
   onImportManifestChange,
   onPreviewImport,
   onApplyImport,
+  onApplyProjectDirectoryImport,
   onMemoryPromotionChange,
   onPromoteMemory,
 }: {
   disabled: boolean;
   importManifest: string;
   importPreview: ProjectSkillImportPreviewResult | null;
+  projectDirectoryImport: ProjectSkillImportPreviewResult | null;
   memoryPromotion: MemoryPromotionFormState;
   onImportManifestChange: (value: string) => void;
   onPreviewImport: () => void;
   onApplyImport: () => void;
+  onApplyProjectDirectoryImport: () => void;
   onMemoryPromotionChange: (value: MemoryPromotionFormState) => void;
   onPromoteMemory: () => void;
 }) {
@@ -922,6 +959,42 @@ function ImportPromotionPanel({
             row first; Add to review queue stages only eligible drafts for this
             project.
           </p>
+          <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] p-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-medium text-[var(--text-primary)]">
+                  Existing project skills
+                </div>
+                <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
+                  Load `.claude/skills/*/SKILL.md` from this project into the
+                  Review Queue. Imported rows still need approval.
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={disabled}
+                onClick={onApplyProjectDirectoryImport}
+              >
+                <FileDown />
+                Load .claude/skills
+              </Button>
+            </div>
+            {projectDirectoryImport ? (
+              <div className="mt-3 flex flex-wrap gap-2 text-xs text-[var(--text-secondary)]">
+                <Badge variant="secondary">
+                  {projectDirectoryImport.eligibleCount} loaded
+                </Badge>
+                <Badge variant="outline">
+                  {projectDirectoryImport.duplicateCount} duplicate
+                </Badge>
+                <Badge variant="outline">
+                  {projectDirectoryImport.invalidCount} invalid
+                </Badge>
+              </div>
+            ) : null}
+          </div>
           <Textarea
             aria-label="Project skill import manifest"
             placeholder='{"candidates":[{"title":"...","bucket":"review","stage":"review","compactGuidance":"...","bodyMarkdown":"...","predictedEffect":"...","provenance":{},"sourceSnapshot":{}}]}'

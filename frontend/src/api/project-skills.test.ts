@@ -257,6 +257,7 @@ describe("projectSkillsApi", () => {
         skipped_existing: 1,
         ingested_outcomes: 3,
         scanned_git_commits: 8,
+        scanned_github_prs: 4,
       }),
     );
 
@@ -266,12 +267,14 @@ describe("projectSkillsApi", () => {
         source: "review",
         limit: 5,
         includeGitHistory: false,
+        includeGithubPrHistory: true,
       }),
     ).resolves.toMatchObject({
       stagedSkills: [{ id: "skill-2", status: "staged" }],
       skippedExisting: 1,
       ingestedOutcomes: 3,
       scannedGitCommits: 8,
+      scannedGithubPrs: 4,
     });
     expect(fetchMock).toHaveBeenCalledWith(
       "http://localhost:3847/api/project_skills/distill",
@@ -281,6 +284,7 @@ describe("projectSkillsApi", () => {
           source: "review",
           limit: 5,
           include_git_history: false,
+          include_github_pr_history: true,
         }),
       }),
     );
@@ -544,6 +548,45 @@ describe("projectSkillsApi", () => {
               source_snapshot_json: { kind: "project_skill_manifest" },
             },
           ],
+          confirm_import: true,
+        }),
+      }),
+    );
+  });
+
+  it("imports existing target project .claude skills", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        preview: {
+          rows: [],
+          eligible_count: 1,
+          invalid_count: 0,
+          duplicate_count: 0,
+        },
+        imported_skills: [
+          projectSkill({
+            id: "native-skill",
+            title: "Existing project skill",
+            status: "staged",
+          }),
+        ],
+        imported_count: 1,
+      }),
+    );
+
+    await expect(
+      projectSkillsApi.applyProjectDirectoryImport("project-1"),
+    ).resolves.toMatchObject({
+      importedCount: 1,
+      importedSkills: [{ id: "native-skill", status: "staged" }],
+      preview: { eligibleCount: 1 },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:3847/api/project_skills/import/project_directory/apply",
+      expect.objectContaining({
+        body: JSON.stringify({
+          project_id: "project-1",
           confirm_import: true,
         }),
       }),

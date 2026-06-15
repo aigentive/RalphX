@@ -61,6 +61,7 @@ const DistillProjectSkillsResponseSchema = z.object({
   skipped_existing: z.number(),
   ingested_outcomes: z.number().optional().default(0),
   scanned_git_commits: z.number().optional().default(0),
+  scanned_github_prs: z.number().optional().default(0),
 });
 
 const ProjectSkillExportFileResponseSchema = z.object({
@@ -196,6 +197,7 @@ export interface DistillProjectSkillsInput {
   source?: string | null;
   limit?: number | null;
   includeGitHistory?: boolean | null;
+  includeGithubPrHistory?: boolean | null;
 }
 
 export interface DistillProjectSkillsResult {
@@ -203,6 +205,7 @@ export interface DistillProjectSkillsResult {
   skippedExisting: number;
   ingestedOutcomes: number;
   scannedGitCommits: number;
+  scannedGithubPrs: number;
 }
 
 export interface ProjectSkillExportFile {
@@ -520,6 +523,9 @@ export const projectSkillsApi = {
       ...(input.includeGitHistory != null
         ? { include_git_history: input.includeGitHistory }
         : {}),
+      ...(input.includeGithubPrHistory != null
+        ? { include_github_pr_history: input.includeGithubPrHistory }
+        : {}),
     });
     const parsed = DistillProjectSkillsResponseSchema.parse(raw);
     return {
@@ -527,6 +533,7 @@ export const projectSkillsApi = {
       skippedExisting: parsed.skipped_existing,
       ingestedOutcomes: parsed.ingested_outcomes,
       scannedGitCommits: parsed.scanned_git_commits,
+      scannedGithubPrs: parsed.scanned_github_prs,
     };
   },
 
@@ -601,6 +608,24 @@ export const projectSkillsApi = {
       })),
       confirm_import: input.confirmImport,
     });
+    const parsed = ProjectSkillImportApplyResponseSchema.parse(raw);
+    return {
+      preview: transformProjectSkillImportPreview(parsed.preview),
+      importedSkills: parsed.imported_skills.map(transformProjectSkill),
+      importedCount: parsed.imported_count,
+    };
+  },
+
+  async applyProjectDirectoryImport(
+    projectId: string,
+  ): Promise<ProjectSkillImportApplyResult> {
+    const raw = await postJson<unknown>(
+      "project_skills/import/project_directory/apply",
+      {
+        project_id: projectId,
+        confirm_import: true,
+      },
+    );
     const parsed = ProjectSkillImportApplyResponseSchema.parse(raw);
     return {
       preview: transformProjectSkillImportPreview(parsed.preview),
