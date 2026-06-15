@@ -277,6 +277,10 @@ pub async fn start_http_server(
             post(list_project_skill_report_cards),
         )
         .route(
+            "/api/project_skills/import/preview",
+            post(preview_project_skill_import),
+        )
+        .route(
             "/api/project_skills/settings/get",
             post(get_project_skill_settings),
         )

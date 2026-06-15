@@ -8,6 +8,7 @@ use crate::domain::entities::{ProjectSkillId, ProjectSkillLifecycleStatus};
 use crate::domain::repositories::ProjectSkillListOptions;
 use crate::domain::services::{
     DistillEligibleOutcomesInput, ProjectSkillDistillationOrigin, ProjectSkillDistillerService,
+    ProjectSkillImportCandidate, ProjectSkillImportPreviewInput, ProjectSkillImportPreviewService,
     ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService,
 };
 use crate::error::AppError;
@@ -225,6 +226,57 @@ pub async fn list_project_skill_report_cards(
     Ok(Json(ListProjectSkillReportCardsResponse { cards, count }))
 }
 
+pub async fn preview_project_skill_import(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<PreviewProjectSkillImportRequest>,
+) -> Result<Json<PreviewProjectSkillImportResponse>, HttpError> {
+    let project_id = ProjectId::from_string(req.project_id);
+    assert_project_id_scope(&project_id, &scope)?;
+
+    let service =
+        ProjectSkillImportPreviewService::new(Arc::clone(&state.app_state.project_skill_repo));
+    let preview = service
+        .preview_import(ProjectSkillImportPreviewInput {
+            project_id,
+            candidates: req
+                .candidates
+                .into_iter()
+                .map(|candidate| ProjectSkillImportCandidate {
+                    external_id: candidate.external_id,
+                    title: candidate.title,
+                    bucket: candidate.bucket,
+                    stage: candidate.stage,
+                    scope_paths: candidate.scope_paths,
+                    compact_guidance: candidate.compact_guidance,
+                    body_markdown: candidate.body_markdown,
+                    predicted_effect: candidate.predicted_effect,
+                    provenance_json: candidate.provenance_json,
+                    source_snapshot_json: candidate.source_snapshot_json,
+                })
+                .collect(),
+        })
+        .await
+        .map_err(|error| {
+            error!("failed to preview project skill import: {}", error);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to preview project skill import".to_string()),
+            }
+        })?;
+
+    Ok(Json(PreviewProjectSkillImportResponse {
+        rows: preview
+            .rows
+            .into_iter()
+            .map(ProjectSkillImportPreviewRowResponse::from)
+            .collect(),
+        eligible_count: preview.eligible_count,
+        invalid_count: preview.invalid_count,
+        duplicate_count: preview.duplicate_count,
+    }))
+}
+
 async fn update_project_skill_lifecycle(
     state: HttpServerState,
     scope: ProjectScope,
@@ -336,6 +388,7 @@ mod tests {
     use crate::domain::entities::{ProjectSkill, ProjectSkillLifecycleStatus, TaskOutcomeStatus};
     use crate::domain::repositories::UpsertTaskOutcomeInput;
     use crate::domain::services::{new_empty_task_outcome, new_skill_usage_event};
+    use serde_json::json;
 
     fn test_state(app_state: Arc<AppState>) -> HttpServerState {
         let tracker = TeamStateTracker::new();
@@ -368,6 +421,30 @@ mod tests {
             companion_of_skill_id: None,
             created_at: now,
             updated_at: now,
+        }
+    }
+
+    fn import_preview_request(project_id: &str) -> PreviewProjectSkillImportRequest {
+        PreviewProjectSkillImportRequest {
+            project_id: project_id.to_string(),
+            candidates: vec![PreviewProjectSkillImportCandidateRequest {
+                external_id: Some("manifest-skill-1".to_string()),
+                title: "Check review branch before export".to_string(),
+                bucket: "review".to_string(),
+                stage: "review".to_string(),
+                scope_paths: vec!["src-tauri/src/domain".to_string()],
+                compact_guidance: "Preview branch state before exporting skills.".to_string(),
+                body_markdown: "Detailed guidance".to_string(),
+                predicted_effect: "Prevents direct writes from unsafe branches.".to_string(),
+                provenance_json: json!({
+                    "source": "import_manifest",
+                    "source_ref": "manifest-skill-1"
+                }),
+                source_snapshot_json: json!({
+                    "kind": "project_skill_manifest",
+                    "captured_at": "2026-06-15T00:00:00Z"
+                }),
+            }],
         }
     }
 
@@ -562,5 +639,48 @@ mod tests {
         assert_eq!(card.linked_outcome_count, 1);
         assert_eq!(card.succeeded_outcome_count, 1);
         assert_eq!(card.evidence_level, "insufficient_data");
+    }
+
+    #[tokio::test]
+    async fn preview_project_skill_import_returns_fail_closed_decisions() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-import".to_string());
+        let mut request = import_preview_request("project-import");
+        request.candidates[0].source_snapshot_json = json!(null);
+        request.candidates[0].scope_paths = vec!["../outside".to_string()];
+
+        let response = preview_project_skill_import(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![project_id])),
+            Json(request),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.0.eligible_count, 0);
+        assert_eq!(response.0.invalid_count, 1);
+        assert_eq!(response.0.rows[0].decision, "invalid");
+        assert!(response.0.rows[0]
+            .reasons
+            .iter()
+            .any(|reason| reason == "source snapshot is required before import"));
+        assert!(response.0.rows[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.starts_with("invalid scope path")));
+    }
+
+    #[tokio::test]
+    async fn preview_project_skill_import_rejects_cross_project_scope() {
+        let app_state = Arc::new(AppState::new_test());
+        let error = preview_project_skill_import(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![ProjectId::from_string("project-b".to_string())])),
+            Json(import_preview_request("project-a")),
+        )
+        .await
+        .expect_err("cross-project import preview should fail");
+
+        assert_eq!(error.status, StatusCode::FORBIDDEN);
     }
 }

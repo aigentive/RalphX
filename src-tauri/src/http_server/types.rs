@@ -12,7 +12,9 @@ use crate::domain::entities::{
     AgentTaskState, Artifact, ArtifactContent, AuditLogEntry, MemoryEntry, ProjectSkill,
     StepProgressSummary, TaskProposal, TaskStep,
 };
-use crate::domain::services::ProjectSkillReportCard;
+use crate::domain::services::{
+    ProjectSkillImportDecision, ProjectSkillImportPreviewRow, ProjectSkillReportCard,
+};
 use crate::http_server::delegation::DelegationService;
 use crate::http_server::handlers::artifacts::EditError;
 
@@ -1437,6 +1439,68 @@ impl From<ProjectSkillReportCard> for ProjectSkillReportCardResponse {
 pub struct ListProjectSkillReportCardsResponse {
     pub cards: Vec<ProjectSkillReportCardResponse>,
     pub count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PreviewProjectSkillImportCandidateRequest {
+    pub external_id: Option<String>,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    #[serde(default)]
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+    #[serde(default)]
+    pub provenance_json: Value,
+    #[serde(default)]
+    pub source_snapshot_json: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PreviewProjectSkillImportRequest {
+    pub project_id: String,
+    #[serde(default)]
+    pub candidates: Vec<PreviewProjectSkillImportCandidateRequest>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillImportPreviewRowResponse {
+    pub index: usize,
+    pub external_id: Option<String>,
+    pub title: String,
+    pub decision: String,
+    pub reasons: Vec<String>,
+    pub duplicate_project_skill_id: Option<String>,
+}
+
+impl From<ProjectSkillImportPreviewRow> for ProjectSkillImportPreviewRowResponse {
+    fn from(row: ProjectSkillImportPreviewRow) -> Self {
+        Self {
+            index: row.index,
+            external_id: row.external_id,
+            title: row.title,
+            decision: match row.decision {
+                ProjectSkillImportDecision::Eligible => "eligible",
+                ProjectSkillImportDecision::Invalid => "invalid",
+                ProjectSkillImportDecision::Duplicate => "duplicate",
+            }
+            .to_string(),
+            reasons: row.reasons,
+            duplicate_project_skill_id: row
+                .duplicate_project_skill_id
+                .map(|id| id.as_str().to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PreviewProjectSkillImportResponse {
+    pub rows: Vec<ProjectSkillImportPreviewRowResponse>,
+    pub eligible_count: usize,
+    pub invalid_count: usize,
+    pub duplicate_count: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]

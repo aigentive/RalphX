@@ -271,6 +271,83 @@ describe("projectSkillsApi", () => {
     );
   });
 
+  it("previews project skill imports with fail-closed scanner decisions", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        rows: [
+          {
+            index: 0,
+            external_id: "manifest-skill-1",
+            title: "Check imported guidance",
+            decision: "invalid",
+            reasons: ["source snapshot is required before import"],
+            duplicate_project_skill_id: null,
+          },
+        ],
+        eligible_count: 0,
+        invalid_count: 1,
+        duplicate_count: 0,
+      }),
+    );
+
+    await expect(
+      projectSkillsApi.previewImport({
+        projectId: "project-1",
+        candidates: [
+          {
+            externalId: "manifest-skill-1",
+            title: "Check imported guidance",
+            bucket: "review",
+            stage: "review",
+            scopePaths: ["src-tauri"],
+            compactGuidance: "Check imported guidance before reviews.",
+            bodyMarkdown: "Detailed guidance",
+            predictedEffect: "Reduces repeated review misses.",
+            provenance: { source: "manifest" },
+            sourceSnapshot: null,
+          },
+        ],
+      }),
+    ).resolves.toEqual({
+      rows: [
+        {
+          index: 0,
+          externalId: "manifest-skill-1",
+          title: "Check imported guidance",
+          decision: "invalid",
+          reasons: ["source snapshot is required before import"],
+          duplicateProjectSkillId: null,
+        },
+      ],
+      eligibleCount: 0,
+      invalidCount: 1,
+      duplicateCount: 0,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:3847/api/project_skills/import/preview",
+      expect.objectContaining({
+        body: JSON.stringify({
+          project_id: "project-1",
+          candidates: [
+            {
+              external_id: "manifest-skill-1",
+              title: "Check imported guidance",
+              bucket: "review",
+              stage: "review",
+              scope_paths: ["src-tauri"],
+              compact_guidance: "Check imported guidance before reviews.",
+              body_markdown: "Detailed guidance",
+              predicted_effect: "Reduces repeated review misses.",
+              provenance_json: { source: "manifest" },
+              source_snapshot_json: null,
+            },
+          ],
+        }),
+      }),
+    );
+  });
+
   it("previews project skill export files", async () => {
     fetchMock.mockResolvedValue(jsonResponse(exportResponse()));
 

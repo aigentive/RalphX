@@ -385,6 +385,55 @@ pub struct ProjectSkillReportService {
     outcome_repo: Arc<dyn TaskOutcomeRepository>,
 }
 
+pub struct ProjectSkillImportPreviewService {
+    skill_repo: Arc<dyn ProjectSkillRepository>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSkillImportCandidate {
+    pub external_id: Option<String>,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+    pub provenance_json: Value,
+    pub source_snapshot_json: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSkillImportPreviewInput {
+    pub project_id: ProjectId,
+    pub candidates: Vec<ProjectSkillImportCandidate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectSkillImportDecision {
+    Eligible,
+    Invalid,
+    Duplicate,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSkillImportPreviewRow {
+    pub index: usize,
+    pub external_id: Option<String>,
+    pub title: String,
+    pub decision: ProjectSkillImportDecision,
+    pub reasons: Vec<String>,
+    pub duplicate_project_skill_id: Option<ProjectSkillId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSkillImportPreview {
+    pub rows: Vec<ProjectSkillImportPreviewRow>,
+    pub eligible_count: usize,
+    pub invalid_count: usize,
+    pub duplicate_count: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectSkillReportOptions {
     pub min_linked_outcomes: usize,
@@ -553,6 +602,77 @@ impl ProjectSkillReportService {
     }
 }
 
+impl ProjectSkillImportPreviewService {
+    pub fn new(skill_repo: Arc<dyn ProjectSkillRepository>) -> Self {
+        Self { skill_repo }
+    }
+
+    pub async fn preview_import(
+        &self,
+        input: ProjectSkillImportPreviewInput,
+    ) -> AppResult<ProjectSkillImportPreview> {
+        let existing_skills = self
+            .skill_repo
+            .list_by_project(
+                &input.project_id,
+                ProjectSkillListOptions {
+                    include_archived: true,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let existing_keys = existing_skills
+            .iter()
+            .map(|skill| (project_skill_import_key(skill), skill.id.clone()))
+            .collect::<BTreeMap<_, _>>();
+
+        let mut seen_keys = BTreeSet::new();
+        let mut rows = Vec::with_capacity(input.candidates.len());
+        let mut eligible_count = 0;
+        let mut invalid_count = 0;
+        let mut duplicate_count = 0;
+
+        for (index, candidate) in input.candidates.into_iter().enumerate() {
+            let mut reasons = validate_import_candidate(&candidate);
+            let key = candidate_import_key(&candidate);
+            let duplicate_project_skill_id = existing_keys.get(&key).cloned();
+            if duplicate_project_skill_id.is_some() {
+                reasons.push("matching project skill already exists".to_string());
+            }
+            if !seen_keys.insert(key) {
+                reasons.push("duplicate candidate in import manifest".to_string());
+            }
+
+            let decision = if duplicate_project_skill_id.is_some() {
+                duplicate_count += 1;
+                ProjectSkillImportDecision::Duplicate
+            } else if reasons.is_empty() {
+                eligible_count += 1;
+                ProjectSkillImportDecision::Eligible
+            } else {
+                invalid_count += 1;
+                ProjectSkillImportDecision::Invalid
+            };
+
+            rows.push(ProjectSkillImportPreviewRow {
+                index,
+                external_id: candidate.external_id,
+                title: candidate.title,
+                decision,
+                reasons,
+                duplicate_project_skill_id,
+            });
+        }
+
+        Ok(ProjectSkillImportPreview {
+            rows,
+            eligible_count,
+            invalid_count,
+            duplicate_count,
+        })
+    }
+}
+
 impl SkillUsageService {
     pub fn new(repo: Arc<dyn SkillUsageEventRepository>) -> Self {
         Self { repo }
@@ -628,6 +748,79 @@ fn validate_project_skill(skill: &ProjectSkill) -> AppResult<()> {
     validate_non_empty("project skill bucket", &skill.bucket)?;
     validate_non_empty("project skill stage", &skill.stage)?;
     validate_non_empty("project skill compact_guidance", &skill.compact_guidance)
+}
+
+fn validate_import_candidate(candidate: &ProjectSkillImportCandidate) -> Vec<String> {
+    let mut reasons = Vec::new();
+    for (label, value) in [
+        ("title", candidate.title.as_str()),
+        ("bucket", candidate.bucket.as_str()),
+        ("stage", candidate.stage.as_str()),
+        ("compact_guidance", candidate.compact_guidance.as_str()),
+        ("body_markdown", candidate.body_markdown.as_str()),
+        ("predicted_effect", candidate.predicted_effect.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            reasons.push(format!("{label} is required"));
+        }
+    }
+
+    if !candidate.provenance_json.is_object()
+        || candidate
+            .provenance_json
+            .as_object()
+            .map(|object| object.is_empty())
+            .unwrap_or(true)
+    {
+        reasons.push("provenance is required".to_string());
+    }
+
+    if !candidate.source_snapshot_json.is_object()
+        || candidate
+            .source_snapshot_json
+            .as_object()
+            .map(|object| object.is_empty())
+            .unwrap_or(true)
+    {
+        reasons.push("source snapshot is required before import".to_string());
+    }
+
+    for path in &candidate.scope_paths {
+        if !is_safe_import_scope_path(path) {
+            reasons.push(format!("invalid scope path: {path}"));
+        }
+    }
+
+    reasons
+}
+
+fn project_skill_import_key(skill: &ProjectSkill) -> String {
+    normalized_import_key(&skill.title, &skill.bucket, &skill.stage)
+}
+
+fn candidate_import_key(candidate: &ProjectSkillImportCandidate) -> String {
+    normalized_import_key(&candidate.title, &candidate.bucket, &candidate.stage)
+}
+
+fn normalized_import_key(title: &str, bucket: &str, stage: &str) -> String {
+    format!(
+        "{}\n{}\n{}",
+        title.trim().to_lowercase(),
+        bucket.trim().to_lowercase(),
+        stage.trim().to_lowercase()
+    )
+}
+
+fn is_safe_import_scope_path(path: &str) -> bool {
+    let path = path.trim();
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.starts_with('~')
+        && !path.contains('\\')
+        && !path.contains('\0')
+        && path
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
 fn validate_non_empty(label: &str, value: &str) -> AppResult<()> {
@@ -789,8 +982,10 @@ mod tests {
     use super::{
         new_empty_task_outcome, new_skill_usage_event, DistillEligibleOutcomesInput,
         ProjectSkillAgingStatus, ProjectSkillDistillationOrigin, ProjectSkillDistillerService,
-        ProjectSkillEvidenceLevel, ProjectSkillReportOptions, ProjectSkillReportService,
-        ProjectSkillService, SkillUsageService, StageProjectSkillFromOutcomeInput,
+        ProjectSkillEvidenceLevel, ProjectSkillImportCandidate, ProjectSkillImportDecision,
+        ProjectSkillImportPreviewInput, ProjectSkillImportPreviewService, ProjectSkillReportOptions,
+        ProjectSkillReportService, ProjectSkillService, SkillUsageService,
+        StageProjectSkillFromOutcomeInput,
     };
     use crate::domain::entities::types::ProjectId;
     use crate::domain::entities::{
@@ -824,6 +1019,29 @@ mod tests {
             companion_of_skill_id: None,
             created_at: now,
             updated_at: now,
+        }
+    }
+
+    fn import_candidate() -> ProjectSkillImportCandidate {
+        ProjectSkillImportCandidate {
+            external_id: Some("manifest-skill-1".to_string()),
+            title: "Keep learned skills repository-backed".to_string(),
+            bucket: "execution".to_string(),
+            stage: "execution".to_string(),
+            scope_paths: vec!["src-tauri/src/domain/services".to_string()],
+            compact_guidance: "Read approved learned skills from the project skill service."
+                .to_string(),
+            body_markdown: "Detailed guidance".to_string(),
+            predicted_effect: "Avoids adapter-only injection.".to_string(),
+            provenance_json: json!({
+                "source": "external_manifest",
+                "source_ref": "manifest-skill-1"
+            }),
+            source_snapshot_json: json!({
+                "kind": "project_skill_manifest",
+                "captured_at": "2026-06-15T00:00:00Z",
+                "sha256": "test-snapshot"
+            }),
         }
     }
 
@@ -897,6 +1115,100 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(usage.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn project_skill_import_preview_marks_valid_rows_eligible_without_writing() {
+        let repo = Arc::new(MemoryProjectSkillRepository::new());
+        let service = ProjectSkillImportPreviewService::new(repo.clone());
+        let project_id = ProjectId::from_string("project-import".to_string());
+
+        let preview = service
+            .preview_import(ProjectSkillImportPreviewInput {
+                project_id: project_id.clone(),
+                candidates: vec![import_candidate()],
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(preview.eligible_count, 1);
+        assert_eq!(preview.invalid_count, 0);
+        assert_eq!(preview.duplicate_count, 0);
+        assert_eq!(preview.rows[0].decision, ProjectSkillImportDecision::Eligible);
+        let written = repo
+            .list_by_project(&project_id, ProjectSkillListOptions::default())
+            .await
+            .unwrap();
+        assert!(written.is_empty(), "preview must not write imported skills");
+    }
+
+    #[tokio::test]
+    async fn project_skill_import_preview_fails_closed_for_invalid_manifest_and_paths() {
+        let repo = Arc::new(MemoryProjectSkillRepository::new());
+        let service = ProjectSkillImportPreviewService::new(repo);
+        let project_id = ProjectId::from_string("project-import".to_string());
+        let mut candidate = import_candidate();
+        candidate.predicted_effect = " ".to_string();
+        candidate.provenance_json = json!({});
+        candidate.source_snapshot_json = json!(null);
+        candidate.scope_paths = vec![
+            "../outside".to_string(),
+            "/absolute/path".to_string(),
+            "src//bad".to_string(),
+        ];
+
+        let preview = service
+            .preview_import(ProjectSkillImportPreviewInput {
+                project_id,
+                candidates: vec![candidate],
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(preview.eligible_count, 0);
+        assert_eq!(preview.invalid_count, 1);
+        assert_eq!(preview.rows[0].decision, ProjectSkillImportDecision::Invalid);
+        assert!(preview.rows[0]
+            .reasons
+            .iter()
+            .any(|reason| reason == "predicted_effect is required"));
+        assert!(preview.rows[0]
+            .reasons
+            .iter()
+            .any(|reason| reason == "provenance is required"));
+        assert!(preview.rows[0]
+            .reasons
+            .iter()
+            .any(|reason| reason == "source snapshot is required before import"));
+        assert!(preview.rows[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.starts_with("invalid scope path: ../outside")));
+    }
+
+    #[tokio::test]
+    async fn project_skill_import_preview_detects_existing_duplicates() {
+        let repo = Arc::new(MemoryProjectSkillRepository::new());
+        let project_id = ProjectId::from_string("project-import".to_string());
+        let existing = repo.create(staged_skill(project_id.clone())).await.unwrap();
+        let service = ProjectSkillImportPreviewService::new(repo);
+
+        let preview = service
+            .preview_import(ProjectSkillImportPreviewInput {
+                project_id,
+                candidates: vec![import_candidate()],
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(preview.eligible_count, 0);
+        assert_eq!(preview.duplicate_count, 1);
+        assert_eq!(preview.rows[0].decision, ProjectSkillImportDecision::Duplicate);
+        assert_eq!(preview.rows[0].duplicate_project_skill_id, Some(existing.id));
+        assert!(preview.rows[0]
+            .reasons
+            .iter()
+            .any(|reason| reason == "matching project skill already exists"));
     }
 
     #[tokio::test]
