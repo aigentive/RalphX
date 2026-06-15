@@ -1,7 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::entities::{IdeationSession, InternalStatus, StepProgressSummary, Task};
+use crate::entities::{
+    ChatConversation, IdeationSession, InternalStatus, StepProgressSummary, Task,
+};
 use crate::repositories::StatusTransition;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,13 +27,48 @@ pub struct RunningIdeationSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunningWorkspaceSession {
+    pub conversation_id: String,
+    pub project_id: String,
+    pub title: String,
+    pub elapsed_seconds: Option<i64>,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionLaneUsage {
+    pub lane: String,
+    pub active: u32,
+    pub idle: u32,
+    pub waiting: u32,
+    pub max: u32,
+    pub borrowed: u32,
+    pub priority_rank: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionCapacitySummary {
+    pub total_active: u32,
+    pub global_max_concurrent: u32,
+    pub borrowing_enabled: bool,
+    pub priority: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunningProcessesResponse {
     pub processes: Vec<RunningProcess>,
     pub ideation_sessions: Vec<RunningIdeationSession>,
+    pub workspace_sessions: Vec<RunningWorkspaceSession>,
+    pub lanes: Vec<ExecutionLaneUsage>,
+    pub capacity: ExecutionCapacitySummary,
 }
 
 pub fn ideation_session_title(title: Option<&str>) -> String {
     title.unwrap_or("Untitled Session").to_string()
+}
+
+pub fn workspace_session_title(title: Option<&str>) -> String {
+    title.unwrap_or("Untitled Workspace").to_string()
 }
 
 pub fn elapsed_seconds_since(timestamp: DateTime<Utc>, now: DateTime<Utc>) -> i64 {
@@ -62,6 +99,21 @@ pub fn build_running_ideation_session(
         elapsed_seconds: Some(elapsed_seconds_since(session.created_at, now)),
         team_mode: session.team_mode.clone(),
         is_generating,
+    }
+}
+
+pub fn build_running_workspace_session(
+    conversation: &ChatConversation,
+    started_at: DateTime<Utc>,
+    model: Option<String>,
+    now: DateTime<Utc>,
+) -> RunningWorkspaceSession {
+    RunningWorkspaceSession {
+        conversation_id: conversation.id.as_str().to_string(),
+        project_id: conversation.context_id.clone(),
+        title: workspace_session_title(conversation.title.as_deref()),
+        elapsed_seconds: Some(elapsed_seconds_since(started_at, now)),
+        model,
     }
 }
 

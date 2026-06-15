@@ -381,6 +381,9 @@ mod v20260523145711_plan_complexity_assessments_tests;
 mod v20260523152748_agent_task_list_slices;
 #[cfg(test)]
 mod v20260523152748_agent_task_list_slices_tests;
+mod v20260524170000_execution_workspace_capacity;
+#[cfg(test)]
+mod v20260524170000_execution_workspace_capacity_tests;
 mod v20260527033000_agent_workspace_auto_publish;
 #[cfg(test)]
 mod v20260527033000_agent_workspace_auto_publish_tests;
@@ -1084,6 +1087,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260523152748,
         name: "agent_task_list_slices",
         migrate: v20260523152748_agent_task_list_slices::migrate,
+    },
+    Migration {
+        version: 20260524170000,
+        name: "execution_workspace_capacity",
+        migrate: v20260524170000_execution_workspace_capacity::migrate,
     },
     Migration {
         version: 20260527033000,

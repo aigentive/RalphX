@@ -22,7 +22,13 @@ import {
 import { cn } from "@/lib/utils";
 import { useTeamModeAvailability } from "@/hooks/useTeamModeAvailability";
 import { RunningProcessPopover } from "./RunningProcessPopover";
-import type { RunningProcess, RunningIdeationSession } from "@/api/running-processes";
+import type {
+  ExecutionCapacitySummary,
+  ExecutionLaneUsage,
+  RunningProcess,
+  RunningIdeationSession,
+  RunningWorkspaceSession,
+} from "@/api/running-processes";
 import { MergePipelinePopover } from "./MergePipelinePopover";
 import type { MergePipelineResponse } from "@/api/merge-pipeline";
 import { QueuedTasksPopover } from "./QueuedTasksPopover";
@@ -77,6 +83,12 @@ interface ExecutionControlBarProps {
   runningProcesses?: RunningProcess[];
   /** List of running ideation sessions (for popover) */
   ideationSessions?: RunningIdeationSession[];
+  /** List of running workspace conversations (for popover) */
+  workspaceSessions?: RunningWorkspaceSession[];
+  /** Lane-level capacity usage */
+  lanes?: ExecutionLaneUsage[];
+  /** Capacity summary for all lanes */
+  capacity?: ExecutionCapacitySummary | null;
   /** Called when pause button clicked for a specific process */
   onPauseProcess?: (taskId: string) => void;
   /** Called when stop button clicked for a specific process */
@@ -154,6 +166,9 @@ export function ExecutionControlBar({
   onStop,
   runningProcesses = [],
   ideationSessions = [],
+  workspaceSessions = [],
+  lanes = [],
+  capacity = null,
   onPauseProcess = () => {},
   onStopProcess = () => {},
   onOpenSettings = () => {},
@@ -163,14 +178,28 @@ export function ExecutionControlBar({
     ideationTeamModeAvailable,
     executionTeamModeAvailable,
   } = useTeamModeAvailability(projectId);
-  const canStop = runningCount > 0 && !isLoading;
+  const laneByName = new Map(lanes.map((lane) => [lane.lane, lane]));
+  const workspaceLane = laneByName.get("workspaces");
+  const taskLane = laneByName.get("tasks");
+  const ideationLane = laneByName.get("ideation");
+  const hasLaneUsage = lanes.length > 0;
+  const displayRunningCount = capacity?.totalActive ?? runningCount;
+  const displayMaxConcurrent = capacity?.globalMaxConcurrent ?? maxConcurrent;
+  const workspaceActive = workspaceLane?.active ?? workspaceSessions.length;
+  const workspaceMax = workspaceLane?.max ?? 10;
+  const taskActive = taskLane?.active ?? runningCount;
+  const taskMax = taskLane?.max ?? maxConcurrent;
+  const displayedIdeationActive = ideationLane?.active ?? ideationActive;
+  const displayedIdeationMax = ideationLane?.max ?? ideationMax;
+  const displayedIdeationWaiting = ideationLane?.waiting ?? ideationWaiting;
+  const canStop = displayRunningCount > 0 && !isLoading;
   const isStopped = haltMode === "stopped";
   const canPauseToggle = !isLoading;
-  const statusColor = getStatusColor(runningCount, isPaused, haltMode);
-  const statusState = isStopped ? "stopped" : getStatusState(runningCount, isPaused);
-  const isRunning = runningCount > 0 && !isPaused;
+  const statusColor = getStatusColor(displayRunningCount, isPaused, haltMode);
+  const statusState = isStopped ? "stopped" : getStatusState(displayRunningCount, isPaused);
+  const isRunning = displayRunningCount > 0 && !isPaused;
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<"execution" | "ideation">("execution");
+  const [activeTab, setActiveTab] = useState<"running" | "workspaces" | "execution" | "ideation">("execution");
 
   // Responsive breakpoint tracking
   const [breakpoint, setBreakpoint] = useState<"wide" | "medium" | "narrow">("wide");
@@ -194,6 +223,8 @@ export function ExecutionControlBar({
 
   // Label formatting based on breakpoint
   const runningLabel = breakpoint === "wide" ? "Running: " : breakpoint === "medium" ? "R: " : "";
+  const workspacesLabel = breakpoint === "wide" ? "Workspaces: " : breakpoint === "medium" ? "W: " : "";
+  const tasksLabel = breakpoint === "wide" ? "Tasks: " : breakpoint === "medium" ? "T: " : "";
   const queuedLabel = breakpoint === "wide" ? "Queued: " : breakpoint === "medium" ? "Q: " : "";
   const queuedMessageLabel =
     breakpoint === "wide" ? "Msgs: " : breakpoint === "medium" ? "Msg: " : "";
@@ -206,7 +237,7 @@ export function ExecutionControlBar({
   const showMergeWorkCount = mergingCount > 0;
 
   // Only show ideation indicator when max > 0
-  const showIdeation = ideationMax > 0;
+  const showIdeation = displayedIdeationMax > 0;
 
   return (
     <TooltipProvider>
@@ -223,7 +254,7 @@ export function ExecutionControlBar({
         <div
           data-testid="execution-control-bar"
           data-paused={isPaused ? "true" : "false"}
-          data-running={runningCount}
+          data-running={displayRunningCount}
           data-loading={isLoading ? "true" : undefined}
           data-status={statusState}
           role="region"
@@ -241,7 +272,7 @@ export function ExecutionControlBar({
         {/* Status Section (Left) */}
         <div
           className="flex items-center gap-5"
-          aria-label={`${runningCount} tasks running out of ${maxConcurrent}, ${queuedCount} queued tasks, ${queuedMessageCount} queued messages, ${pausedCount} paused, ${mergingCount} merge tasks, ${attentionCount} escalated merge tasks`}
+          aria-label={`${displayRunningCount} agents running out of ${displayMaxConcurrent}, ${workspaceActive} workspace agents, ${taskActive} task agents, ${queuedCount} queued tasks, ${queuedMessageCount} queued messages, ${pausedCount} paused, ${mergingCount} merge tasks, ${attentionCount} escalated merge tasks`}
         >
           {/* Animated Status Indicator (anchor for all popovers) */}
           <div
@@ -258,9 +289,12 @@ export function ExecutionControlBar({
             <RunningProcessPopover
               processes={runningProcesses}
               ideationSessions={ideationSessions}
-              runningCount={runningCount}
-              maxConcurrent={maxConcurrent}
-              ideationMax={ideationMax}
+              workspaceSessions={workspaceSessions}
+              lanes={lanes}
+              capacity={capacity}
+              runningCount={displayRunningCount}
+              maxConcurrent={taskMax}
+              ideationMax={displayedIdeationMax}
               open={isPopoverOpen}
               onOpenChange={setIsPopoverOpen}
               onPauseProcess={onPauseProcess}
@@ -276,19 +310,19 @@ export function ExecutionControlBar({
               <button
                 data-testid="running-count"
                 className="inline-flex cursor-pointer items-center gap-1 transition-opacity hover:opacity-80"
-                style={{ color: runningCount > 0 ? STATUS_COLORS.running : "var(--text-muted)" }}
-                onClick={() => { setActiveTab("execution"); setIsPopoverOpen(true); }}
+                style={{ color: displayRunningCount > 0 ? STATUS_COLORS.running : "var(--text-muted)" }}
+                onClick={() => { setActiveTab(hasLaneUsage ? "running" : "execution"); setIsPopoverOpen(true); }}
               >
                 <span>{runningLabel}</span>
                 <span
                   style={{
-                    color: runningCount > 0 ? STATUS_COLORS.running : "var(--text-primary)",
+                      color: displayRunningCount > 0 ? STATUS_COLORS.running : "var(--text-primary)",
                     fontFamily:
                       "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
                     fontWeight: 500,
                   }}
                 >
-                  {runningCount}/{maxConcurrent}
+                  {displayRunningCount}/{displayMaxConcurrent}
                 </span>
               </button>
             </RunningProcessPopover>
@@ -301,13 +335,13 @@ export function ExecutionControlBar({
                       Concurrent Execution
                     </strong>
                     <p style={{ color: "var(--text-secondary)" }}>
-                      Tasks running in parallel. Currently limited to{" "}
-                      <strong>{maxConcurrent}</strong> per project, 20 globally.
+                      Active agents across capacity lanes. Current global limit is{" "}
+                      <strong>{displayMaxConcurrent}</strong>.
                     </p>
                   </div>
                   <div>
                     <p style={{ color: "var(--text-secondary)" }}>
-                      Includes: executing, reviewing, re-executing, QA, and merging agents.
+                      Priority: Workspaces, then Tasks, then Ideation.
                     </p>
                   </div>
                   <div className="pt-1 border-t" style={{ borderColor: "var(--overlay-weak)" }}>
@@ -319,6 +353,52 @@ export function ExecutionControlBar({
               }
             />
           </div>
+
+          {hasLaneUsage && (
+            <>
+              <StatusSeparator />
+              <button
+                data-testid="workspace-count"
+                className="inline-flex cursor-pointer items-center gap-1 transition-opacity hover:opacity-80"
+                style={{ color: "var(--text-muted)" }}
+                onClick={() => { setActiveTab("workspaces"); setIsPopoverOpen(true); }}
+                aria-label={`Workspaces: ${workspaceActive} active, ${workspaceMax} max`}
+              >
+                <span>{workspacesLabel}</span>
+                <span
+                  style={{
+                    color: workspaceActive > 0 ? "var(--accent-primary)" : "var(--text-primary)",
+                    fontFamily:
+                      "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+                    fontWeight: 500,
+                  }}
+                >
+                  {workspaceActive}/{workspaceMax}
+                </span>
+              </button>
+
+              <StatusSeparator />
+              <button
+                data-testid="task-lane-count"
+                className="inline-flex cursor-pointer items-center gap-1 transition-opacity hover:opacity-80"
+                style={{ color: "var(--text-muted)" }}
+                onClick={() => { setActiveTab("execution"); setIsPopoverOpen(true); }}
+                aria-label={`Tasks: ${taskActive} active, ${taskMax} max`}
+              >
+                <span>{tasksLabel}</span>
+                <span
+                  style={{
+                    color: taskActive > 0 ? STATUS_COLORS.running : "var(--text-primary)",
+                    fontFamily:
+                      "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+                    fontWeight: 500,
+                  }}
+                >
+                  {taskActive}/{taskMax}
+                </span>
+              </button>
+            </>
+          )}
 
           {/* Separator */}
           <StatusSeparator />
@@ -421,21 +501,21 @@ export function ExecutionControlBar({
                   className="inline-flex cursor-pointer items-center gap-1 transition-opacity hover:opacity-80"
                   style={{ color: "var(--text-muted)" }}
                   onClick={() => { setActiveTab("ideation"); setIsPopoverOpen(true); }}
-                  aria-label={`Ideation: ${ideationActive} active, ${ideationMax} max`}
+                  aria-label={`Ideation: ${displayedIdeationActive} active, ${displayedIdeationMax} max`}
                 >
                   <span>{ideationLabel}</span>
                   <span
                     style={{
-                      color: ideationActive > 0 ? "var(--accent-primary)" : "var(--text-primary)",
+                      color: displayedIdeationActive > 0 ? "var(--accent-primary)" : "var(--text-primary)",
                       fontFamily:
                         "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
                       fontWeight: 500,
                     }}
                   >
-                    {ideationActive}/{ideationMax}
+                    {displayedIdeationActive}/{displayedIdeationMax}
                   </span>
                 </button>
-                {ideationWaiting > 0 && (
+                {displayedIdeationWaiting > 0 && (
                   <span
                     data-testid="ideation-waiting-badge"
                     className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.6875rem] font-medium"
@@ -446,9 +526,9 @@ export function ExecutionControlBar({
                       borderStyle: "solid",
                       borderWidth: "1px",
                     }}
-                    title={`${ideationWaiting} ideation session${ideationWaiting === 1 ? "" : "s"} waiting for capacity`}
+                    title={`${displayedIdeationWaiting} ideation session${displayedIdeationWaiting === 1 ? "" : "s"} waiting for capacity`}
                   >
-                    +{ideationWaiting}
+                    +{displayedIdeationWaiting}
                   </span>
                 )}
               </div>
@@ -495,7 +575,7 @@ export function ExecutionControlBar({
                   active={mergePipelineData.active}
                   waiting={mergePipelineData.waiting}
                   needsAttention={mergePipelineData.needsAttention}
-                  runningCount={runningCount}
+                  runningCount={displayRunningCount}
                   alignOffset={POPOVER_ALIGN_TO_SEPARATOR_DOT}
                 >
                   <button

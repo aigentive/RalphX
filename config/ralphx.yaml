@@ -48,6 +48,7 @@ execution_defaults:
     agent_workspace_pr_auto_merge_default: false
   global:
     global_max_concurrent: 20
+    workspace_max_concurrent: 10
     global_ideation_max: 10
     allow_ideation_borrow_idle_execution: false
 

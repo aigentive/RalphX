@@ -606,6 +606,7 @@ execution_defaults:
     agent_workspace_pr_auto_merge_default: true
   global:
     global_max_concurrent: 28
+    workspace_max_concurrent: 9
     global_ideation_max: 5
     allow_ideation_borrow_idle_execution: true
 "#;
@@ -624,6 +625,7 @@ execution_defaults:
         .project
         .agent_workspace_pr_auto_merge_default);
     assert_eq!(parsed.execution_defaults.global.global_max_concurrent, 28);
+    assert_eq!(parsed.execution_defaults.global.workspace_max_concurrent, 9);
     assert_eq!(parsed.execution_defaults.global.global_ideation_max, 5);
     assert!(
         parsed

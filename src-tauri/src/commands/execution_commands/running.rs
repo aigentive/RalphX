@@ -1,7 +1,8 @@
 use super::*;
 use crate::domain::execution::context_matches_running_status;
 pub use crate::domain::execution::{
-    RunningIdeationSession, RunningProcess, RunningProcessesResponse,
+    ExecutionCapacitySummary, ExecutionLaneUsage, RunningIdeationSession, RunningProcess,
+    RunningProcessesResponse, RunningWorkspaceSession, DEFAULT_WORKSPACE_MAX_CONCURRENT,
 };
 
 #[doc(hidden)]

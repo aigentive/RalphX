@@ -247,6 +247,7 @@ pub async fn set_active_project(
                 "runningCount": execution_state.running_count(),
                 "maxConcurrent": execution_state.max_concurrent(),
                 "globalMaxConcurrent": execution_state.global_max_concurrent(),
+                "workspaceMaxConcurrent": execution_state.workspace_max_concurrent(),
                 "reason": "active_project_changed",
                 "projectId": project_id.as_ref().map(|p| p.as_str()),
                 "timestamp": chrono::Utc::now().to_rfc3339(),
@@ -302,6 +303,7 @@ pub async fn update_global_execution_settings(
 
     let settings = GlobalExecutionSettings {
         global_max_concurrent: input.global_max_concurrent,
+        workspace_max_concurrent: input.workspace_max_concurrent,
         global_ideation_max: input.global_ideation_max,
         allow_ideation_borrow_idle_execution: input.allow_ideation_borrow_idle_execution,
     };
@@ -314,6 +316,7 @@ pub async fn update_global_execution_settings(
 
     // Sync in-memory global cap
     execution_state.set_global_max_concurrent(updated.global_max_concurrent);
+    execution_state.set_workspace_max_concurrent(updated.workspace_max_concurrent);
     execution_state.set_global_ideation_max(updated.global_ideation_max);
     execution_state
         .set_allow_ideation_borrow_idle_execution(updated.allow_ideation_borrow_idle_execution);
@@ -336,6 +339,7 @@ pub async fn update_global_execution_settings(
             "settings:global_execution:updated",
             serde_json::json!({
                 "global_max_concurrent": updated.global_max_concurrent,
+                "workspace_max_concurrent": updated.workspace_max_concurrent,
                 "global_ideation_max": updated.global_ideation_max,
                 "allow_ideation_borrow_idle_execution": updated.allow_ideation_borrow_idle_execution,
                 "timestamp": chrono::Utc::now().to_rfc3339(),

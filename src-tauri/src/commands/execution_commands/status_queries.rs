@@ -205,25 +205,62 @@ pub async fn get_running_processes(
     execution_state: State<'_, Arc<ExecutionState>>,
     state: State<'_, AppState>,
 ) -> Result<RunningProcessesResponse, String> {
-    let effective_project_id = match project_id {
-        Some(id) => Some(ProjectId::from_string(id)),
-        None => active_project_state.get().await,
-    };
+    let (effective_project_id, project_max_concurrent) = sync_quota_from_project(
+        project_id.map(ProjectId::from_string),
+        &active_project_state,
+        &execution_state,
+        &state,
+    )
+    .await?;
 
     // Keep the registry clean so process rows reflect truly running agents.
     prune_stale_execution_registry_entries(&state, &execution_state).await;
 
     let mut processes = Vec::new();
     let mut ideation_sessions = Vec::new();
+    let mut workspace_sessions = Vec::new();
     let mut seen_task_ids = std::collections::HashSet::new();
     let mut seen_session_ids = std::collections::HashSet::new();
+    let mut seen_conversation_ids = std::collections::HashSet::new();
     let registry_entries = state.running_agent_registry.list_all().await;
+    let now = chrono::Utc::now();
 
-    for (key, _) in registry_entries {
+    for (key, info) in registry_entries {
         let context_type = match ChatContextType::from_str(&key.context_type) {
             Ok(value) => value,
             Err(_) => continue,
         };
+
+        if context_type == ChatContextType::Project {
+            let conversation_id_str = key.context_id.clone();
+            if !seen_conversation_ids.insert(conversation_id_str.clone()) {
+                continue;
+            }
+            let conversation_id = ChatConversationId::from_string(conversation_id_str);
+            let conversation = match state
+                .chat_conversation_repo
+                .get_by_id(&conversation_id)
+                .await
+            {
+                Ok(Some(conversation)) => conversation,
+                _ => continue,
+            };
+            if conversation.context_type != ChatContextType::Project {
+                continue;
+            }
+            if let Some(pid) = &effective_project_id {
+                if conversation.context_id != pid.as_str() {
+                    continue;
+                }
+            }
+            workspace_sessions.push(build_running_workspace_session(
+                &conversation,
+                info.started_at,
+                info.model.clone(),
+                now,
+            ));
+            continue;
+        }
 
         // Collect ideation sessions separately
         if context_type == ChatContextType::Ideation {
@@ -315,8 +352,131 @@ pub async fn get_running_processes(
         ));
     }
 
+    let queued_ready_tasks =
+        count_ready_tasks_for_lane(effective_project_id.as_ref(), &state).await?;
+    let task_queued_messages = count_queued_messages_for_context_types(
+        &[
+            ChatContextType::TaskExecution,
+            ChatContextType::Review,
+            ChatContextType::Merge,
+        ],
+        effective_project_id.as_ref(),
+        &state,
+    )
+    .await?;
+    let workspace_waiting = count_queued_messages_for_context_types(
+        &[ChatContextType::Project],
+        effective_project_id.as_ref(),
+        &state,
+    )
+    .await?;
+    let ideation_queued_messages = count_queued_messages_for_context_types(
+        &[ChatContextType::Ideation],
+        effective_project_id.as_ref(),
+        &state,
+    )
+    .await?;
+    let pending_ideation_sessions = match &effective_project_id {
+        Some(pid) => state
+            .ideation_session_repo
+            .count_pending_sessions_for_project(pid)
+            .await
+            .unwrap_or(0),
+        None => 0,
+    };
+    let ideation_waiting = pending_ideation_sessions + ideation_queued_messages;
+
+    let workspace_active = workspace_sessions.len() as u32;
+    let workspace_max = execution_state.workspace_max_concurrent();
+    let task_active = processes.len() as u32;
+    let ideation_active = ideation_sessions
+        .iter()
+        .filter(|session| session.is_generating)
+        .count() as u32;
+    let ideation_idle = (ideation_sessions.len() as u32).saturating_sub(ideation_active);
+
+    let lanes = vec![
+        ExecutionLaneUsage {
+            lane: "workspaces".to_string(),
+            active: workspace_active,
+            idle: 0,
+            waiting: workspace_waiting,
+            max: workspace_max,
+            borrowed: workspace_active.saturating_sub(workspace_max),
+            priority_rank: 1,
+        },
+        ExecutionLaneUsage {
+            lane: "tasks".to_string(),
+            active: task_active,
+            idle: 0,
+            waiting: queued_ready_tasks + task_queued_messages,
+            max: project_max_concurrent,
+            borrowed: task_active.saturating_sub(project_max_concurrent),
+            priority_rank: 2,
+        },
+        ExecutionLaneUsage {
+            lane: "ideation".to_string(),
+            active: ideation_active,
+            idle: ideation_idle,
+            waiting: ideation_waiting,
+            max: execution_state.project_ideation_max(),
+            borrowed: ideation_active.saturating_sub(execution_state.project_ideation_max()),
+            priority_rank: 3,
+        },
+    ];
+
+    let capacity = ExecutionCapacitySummary {
+        total_active: workspace_active + task_active + ideation_active,
+        global_max_concurrent: execution_state.global_max_concurrent(),
+        borrowing_enabled: execution_state.allow_ideation_borrow_idle_execution(),
+        priority: vec![
+            "workspaces".to_string(),
+            "tasks".to_string(),
+            "ideation".to_string(),
+        ],
+    };
+
     Ok(RunningProcessesResponse {
         processes,
         ideation_sessions,
+        workspace_sessions,
+        lanes,
+        capacity,
     })
+}
+
+async fn count_ready_tasks_for_lane(
+    project_filter: Option<&ProjectId>,
+    app_state: &AppState,
+) -> Result<u32, String> {
+    if let Some(pid) = project_filter {
+        let tasks = app_state
+            .task_repo
+            .get_by_project(pid)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(tasks
+            .iter()
+            .filter(|task| task.internal_status == InternalStatus::Ready)
+            .count() as u32);
+    }
+
+    let projects = app_state
+        .project_repo
+        .get_all()
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut count = 0u32;
+    for project in projects {
+        let tasks = app_state
+            .task_repo
+            .get_by_project(&project.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        count += tasks
+            .iter()
+            .filter(|task| task.internal_status == InternalStatus::Ready)
+            .count() as u32;
+    }
+    Ok(count)
 }

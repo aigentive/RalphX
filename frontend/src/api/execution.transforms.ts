@@ -100,6 +100,7 @@ export function transformGlobalExecutionSettings(
 ): GlobalExecutionSettingsResponse {
   return {
     globalMaxConcurrent: raw.global_max_concurrent,
+    workspaceMaxConcurrent: raw.workspace_max_concurrent,
     globalIdeationMax: raw.global_ideation_max,
     allowIdeationBorrowIdleExecution: raw.allow_ideation_borrow_idle_execution,
   };
@@ -113,11 +114,13 @@ export function transformGlobalExecutionSettingsInput(
   input: UpdateGlobalExecutionSettingsInput
 ): {
   global_max_concurrent: number;
+  workspace_max_concurrent: number;
   global_ideation_max: number;
   allow_ideation_borrow_idle_execution: boolean;
 } {
   return {
     global_max_concurrent: input.globalMaxConcurrent,
+    workspace_max_concurrent: input.workspaceMaxConcurrent,
     global_ideation_max: input.globalIdeationMax,
     allow_ideation_borrow_idle_execution: input.allowIdeationBorrowIdleExecution,
   };

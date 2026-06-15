@@ -21,7 +21,7 @@ fn test_migration_adds_project_ideation_max_to_execution_settings() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(value, 2);
+    assert_eq!(value, 5);
 }
 
 #[test]
@@ -48,6 +48,6 @@ fn test_migration_adds_global_ideation_allocation_columns() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(values.0, 4);
+    assert_eq!(values.0, 10);
     assert_eq!(values.1, 0);
 }

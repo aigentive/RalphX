@@ -538,6 +538,7 @@ fn test_update_execution_settings_input_deserialization() {
 fn test_global_execution_settings_response_serialization() {
     let response = GlobalExecutionSettingsResponse {
         global_max_concurrent: 20,
+        workspace_max_concurrent: 10,
         global_ideation_max: 4,
         allow_ideation_borrow_idle_execution: true,
     };
@@ -545,6 +546,7 @@ fn test_global_execution_settings_response_serialization() {
     let json = serde_json::to_string(&response).unwrap();
 
     assert!(json.contains("\"global_max_concurrent\":20"));
+    assert!(json.contains("\"workspace_max_concurrent\":10"));
     assert!(json.contains("\"global_ideation_max\":4"));
     assert!(json.contains("\"allow_ideation_borrow_idle_execution\":true"));
 }
@@ -553,6 +555,7 @@ fn test_global_execution_settings_response_serialization() {
 fn test_global_execution_settings_response_from_domain() {
     let settings = crate::domain::execution::GlobalExecutionSettings {
         global_max_concurrent: 18,
+        workspace_max_concurrent: 7,
         global_ideation_max: 3,
         allow_ideation_borrow_idle_execution: false,
     };
@@ -560,18 +563,20 @@ fn test_global_execution_settings_response_from_domain() {
     let response = GlobalExecutionSettingsResponse::from(settings);
 
     assert_eq!(response.global_max_concurrent, 18);
+    assert_eq!(response.workspace_max_concurrent, 7);
     assert_eq!(response.global_ideation_max, 3);
     assert!(!response.allow_ideation_borrow_idle_execution);
 }
 
 #[test]
 fn test_update_global_execution_settings_input_deserialization() {
-    let json = r#"{"global_max_concurrent":22,"global_ideation_max":5,"allow_ideation_borrow_idle_execution":true}"#;
+    let json = r#"{"global_max_concurrent":22,"workspace_max_concurrent":10,"global_ideation_max":5,"allow_ideation_borrow_idle_execution":true}"#;
 
     let input: UpdateGlobalExecutionSettingsInput =
         serde_json::from_str(json).expect("Failed to deserialize global input");
 
     assert_eq!(input.global_max_concurrent, 22);
+    assert_eq!(input.workspace_max_concurrent, 10);
     assert_eq!(input.global_ideation_max, 5);
     assert!(input.allow_ideation_borrow_idle_execution);
 }

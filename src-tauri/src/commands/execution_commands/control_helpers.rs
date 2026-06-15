@@ -230,6 +230,27 @@ pub(super) async fn count_slot_consuming_queued_messages(
     Ok(count)
 }
 
+pub(super) async fn count_queued_messages_for_context_types(
+    context_types: &[ChatContextType],
+    project_filter: Option<&ProjectId>,
+    app_state: &AppState,
+) -> Result<u32, String> {
+    let mut count = 0u32;
+    for key in app_state.message_queue.list_keys() {
+        if !context_types
+            .iter()
+            .any(|context_type| *context_type == key.context_type)
+        {
+            continue;
+        }
+        if !queue_key_matches_project(&key, project_filter, app_state).await? {
+            continue;
+        }
+        count += app_state.message_queue.get_queued_with_key(&key).len() as u32;
+    }
+    Ok(count)
+}
+
 #[doc(hidden)]
 pub async fn count_active_ideation_slots(
     app_state: &AppState,
@@ -394,25 +415,28 @@ pub(super) async fn has_runnable_execution_waiting(
     }
 
     for key in app_state.message_queue.list_keys() {
-        if !matches!(
-            key.context_type,
-            ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge
-        ) {
-            continue;
-        }
+        match key.context_type {
+            ChatContextType::Project => {
+                if queue_key_matches_project(&key, project_filter, app_state).await? {
+                    return Ok(true);
+                }
+            }
+            ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge => {
+                let task_id = TaskId::from_string(key.context_id.clone());
+                let Some(task) = app_state
+                    .task_repo
+                    .get_by_id(&task_id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                else {
+                    continue;
+                };
 
-        let task_id = TaskId::from_string(key.context_id.clone());
-        let Some(task) = app_state
-            .task_repo
-            .get_by_id(&task_id)
-            .await
-            .map_err(|e| e.to_string())?
-        else {
-            continue;
-        };
-
-        if project_filter.is_none_or(|project_id| task.project_id == *project_id) {
-            return Ok(true);
+                if project_filter.is_none_or(|project_id| task.project_id == *project_id) {
+                    return Ok(true);
+                }
+            }
+            _ => {}
         }
     }
 

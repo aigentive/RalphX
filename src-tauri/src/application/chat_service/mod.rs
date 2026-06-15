@@ -1520,25 +1520,50 @@ impl<R: Runtime> AppChatService<R> {
         }
 
         for key in self.message_queue.list_keys() {
-            if !matches!(
-                key.context_type,
-                ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge
-            ) {
-                continue;
-            }
+            match key.context_type {
+                ChatContextType::Project => {
+                    if project_filter.is_none() {
+                        return Ok(true);
+                    }
 
-            let task_id = TaskId::from_string(key.context_id.clone());
-            let Some(task) = self
-                .task_repo
-                .get_by_id(&task_id)
-                .await
-                .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?
-            else {
-                continue;
-            };
+                    let project_id = ProjectId::from_string(key.context_id.clone());
+                    if project_filter.is_some_and(|filter| project_id == *filter) {
+                        return Ok(true);
+                    }
 
-            if project_filter.is_none_or(|project_id| task.project_id == *project_id) {
-                return Ok(true);
+                    let conversation_id = ChatConversationId::from_string(key.context_id.clone());
+                    let Some(conversation) = self
+                        .conversation_repo
+                        .get_by_id(&conversation_id)
+                        .await
+                        .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?
+                    else {
+                        continue;
+                    };
+
+                    if conversation.context_type == ChatContextType::Project
+                        && project_filter
+                            .is_some_and(|filter| conversation.context_id == filter.as_str())
+                    {
+                        return Ok(true);
+                    }
+                }
+                ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge => {
+                    let task_id = TaskId::from_string(key.context_id.clone());
+                    let Some(task) = self
+                        .task_repo
+                        .get_by_id(&task_id)
+                        .await
+                        .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?
+                    else {
+                        continue;
+                    };
+
+                    if project_filter.is_none_or(|project_id| task.project_id == *project_id) {
+                        return Ok(true);
+                    }
+                }
+                _ => {}
             }
         }
 

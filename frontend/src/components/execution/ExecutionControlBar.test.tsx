@@ -500,6 +500,52 @@ describe("ExecutionControlBar", () => {
       renderBar({ ideationActive: 0, ideationMax: 4, ideationWaiting: 0 });
       expect(screen.getByTestId("ideation-count")).toHaveTextContent(/0\/4/);
     });
+
+    it("shows workspace and task lane counters when lane data is present", () => {
+      renderBar({
+        runningCount: 2,
+        maxConcurrent: 8,
+        workspaceSessions: [
+          {
+            conversationId: "conversation-1",
+            projectId: "project-1",
+            title: "Workspace",
+            elapsedSeconds: 30,
+            model: "gpt-5.5",
+          },
+        ],
+        lanes: [
+          {
+            lane: "workspaces",
+            active: 1,
+            idle: 0,
+            waiting: 0,
+            max: 10,
+            borrowed: 0,
+            priorityRank: 1,
+          },
+          {
+            lane: "tasks",
+            active: 2,
+            idle: 0,
+            waiting: 0,
+            max: 8,
+            borrowed: 0,
+            priorityRank: 2,
+          },
+        ],
+        capacity: {
+          totalActive: 3,
+          globalMaxConcurrent: 20,
+          borrowingEnabled: false,
+          priority: ["workspaces", "tasks", "ideation"],
+        },
+      });
+
+      expect(screen.getByTestId("running-count")).toHaveTextContent(/3\/20/);
+      expect(screen.getByTestId("workspace-count")).toHaveTextContent(/1\/10/);
+      expect(screen.getByTestId("task-lane-count")).toHaveTextContent(/2\/8/);
+    });
   });
 
   describe("tab selection", () => {
@@ -516,6 +562,32 @@ describe("ExecutionControlBar", () => {
       fireEvent.click(screen.getByTestId("ideation-count"));
       const popover = screen.getByTestId("mock-running-popover");
       expect(popover).toHaveAttribute("data-initial-tab", "ideation");
+      expect(popover).toHaveAttribute("data-open", "true");
+    });
+
+    it("clicking workspace-count button passes initialTab='workspaces' to RunningProcessPopover", () => {
+      renderBar({
+        lanes: [
+          {
+            lane: "workspaces",
+            active: 1,
+            idle: 0,
+            waiting: 0,
+            max: 10,
+            borrowed: 0,
+            priorityRank: 1,
+          },
+        ],
+        capacity: {
+          totalActive: 1,
+          globalMaxConcurrent: 20,
+          borrowingEnabled: false,
+          priority: ["workspaces", "tasks", "ideation"],
+        },
+      });
+      fireEvent.click(screen.getByTestId("workspace-count"));
+      const popover = screen.getByTestId("mock-running-popover");
+      expect(popover).toHaveAttribute("data-initial-tab", "workspaces");
       expect(popover).toHaveAttribute("data-open", "true");
     });
 
