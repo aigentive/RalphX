@@ -50,13 +50,15 @@ async fn record_review_decision_outcome(
     );
     task_outcome.task_id = Some(task.id.as_str().to_string());
     task_outcome.review_id = Some(review_note_id.as_str().to_string());
-    task_outcome.outcome_class = Some(match outcome {
-        ReviewToolOutcome::Approved => "review_approved",
-        ReviewToolOutcome::ApprovedNoChanges => "review_approved_no_changes",
-        ReviewToolOutcome::NeedsChanges => "review_changes_requested",
-        ReviewToolOutcome::Escalate => "review_escalated",
-    }
-    .to_string());
+    task_outcome.outcome_class = Some(
+        match outcome {
+            ReviewToolOutcome::Approved => "review_approved",
+            ReviewToolOutcome::ApprovedNoChanges => "review_approved_no_changes",
+            ReviewToolOutcome::NeedsChanges => "review_changes_requested",
+            ReviewToolOutcome::Escalate => "review_escalated",
+        }
+        .to_string(),
+    );
     task_outcome.status = match outcome {
         ReviewToolOutcome::Approved | ReviewToolOutcome::ApprovedNoChanges => {
             crate::domain::entities::TaskOutcomeStatus::Succeeded
