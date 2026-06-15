@@ -8,7 +8,7 @@ use crate::domain::entities::{ProjectSkillId, ProjectSkillLifecycleStatus};
 use crate::domain::repositories::ProjectSkillListOptions;
 use crate::domain::services::{
     DistillEligibleOutcomesInput, ProjectSkillDistillationOrigin, ProjectSkillDistillerService,
-    ProjectSkillService,
+    ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService,
 };
 use crate::error::AppError;
 use crate::http_server::handlers::learned_skills_export::assert_project_id_scope;
@@ -187,6 +187,44 @@ pub async fn distill_project_skills(
     }))
 }
 
+pub async fn list_project_skill_report_cards(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<ListProjectSkillReportCardsRequest>,
+) -> Result<Json<ListProjectSkillReportCardsResponse>, HttpError> {
+    let project_id = ProjectId::from_string(req.project_id);
+    assert_project_id_scope(&project_id, &scope)?;
+
+    let service = ProjectSkillReportService::new(
+        Arc::clone(&state.app_state.project_skill_repo),
+        Arc::clone(&state.app_state.skill_usage_event_repo),
+        Arc::clone(&state.app_state.task_outcome_repo),
+    );
+    let cards = service
+        .list_report_cards(
+            &project_id,
+            ProjectSkillReportOptions {
+                min_linked_outcomes: req.min_linked_outcomes.unwrap_or(5),
+                stale_after_days: req.stale_after_days.unwrap_or(30),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|error| {
+            error!("failed to list project skill report cards: {}", error);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to list project skill report cards".to_string()),
+            }
+        })?
+        .into_iter()
+        .map(ProjectSkillReportCardResponse::from)
+        .collect::<Vec<_>>();
+    let count = cards.len();
+
+    Ok(Json(ListProjectSkillReportCardsResponse { cards, count }))
+}
+
 async fn update_project_skill_lifecycle(
     state: HttpServerState,
     scope: ProjectScope,
@@ -297,7 +335,7 @@ mod tests {
     use crate::commands::ExecutionState;
     use crate::domain::entities::{ProjectSkill, ProjectSkillLifecycleStatus, TaskOutcomeStatus};
     use crate::domain::repositories::UpsertTaskOutcomeInput;
-    use crate::domain::services::new_empty_task_outcome;
+    use crate::domain::services::{new_empty_task_outcome, new_skill_usage_event};
 
     fn test_state(app_state: Arc<AppState>) -> HttpServerState {
         let tracker = TeamStateTracker::new();
@@ -482,5 +520,47 @@ mod tests {
         .expect_err("cross-project distill should fail");
 
         assert_eq!(error.status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn list_project_skill_report_cards_returns_descriptive_counts() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-report".to_string());
+        let mut skill = staged_skill(project_id.clone());
+        skill.status = ProjectSkillLifecycleStatus::Approved;
+        let skill_id = skill.id.clone();
+        app_state.project_skill_repo.create(skill).await.unwrap();
+
+        let mut outcome =
+            new_empty_task_outcome(project_id.clone(), "review", "review_note", "review-1");
+        outcome.status = TaskOutcomeStatus::Succeeded;
+        let outcome = app_state
+            .task_outcome_repo
+            .upsert(UpsertTaskOutcomeInput { outcome })
+            .await
+            .unwrap();
+        let mut usage = new_skill_usage_event(project_id.clone(), skill_id.clone(), "compact_index");
+        usage.outcome_id = Some(outcome.id);
+        app_state.skill_usage_event_repo.record(usage).await.unwrap();
+
+        let response = list_project_skill_report_cards(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![project_id])),
+            Json(ListProjectSkillReportCardsRequest {
+                project_id: "project-report".to_string(),
+                min_linked_outcomes: Some(2),
+                stale_after_days: Some(30),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.0.count, 1);
+        let card = &response.0.cards[0];
+        assert_eq!(card.project_skill_id, skill_id.as_str());
+        assert_eq!(card.usage_count, 1);
+        assert_eq!(card.linked_outcome_count, 1);
+        assert_eq!(card.succeeded_outcome_count, 1);
+        assert_eq!(card.evidence_level, "insufficient_data");
     }
 }

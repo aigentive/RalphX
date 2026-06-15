@@ -1,7 +1,7 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use crate::domain::entities::types::ProjectId;
@@ -379,6 +379,180 @@ pub struct SkillUsageService {
     repo: Arc<dyn SkillUsageEventRepository>,
 }
 
+pub struct ProjectSkillReportService {
+    skill_repo: Arc<dyn ProjectSkillRepository>,
+    usage_repo: Arc<dyn SkillUsageEventRepository>,
+    outcome_repo: Arc<dyn TaskOutcomeRepository>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSkillReportOptions {
+    pub min_linked_outcomes: usize,
+    pub stale_after_days: i64,
+    pub now: DateTime<Utc>,
+}
+
+impl Default for ProjectSkillReportOptions {
+    fn default() -> Self {
+        Self {
+            min_linked_outcomes: 5,
+            stale_after_days: 30,
+            now: Utc::now(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectSkillAgingStatus {
+    Active,
+    Stale,
+    Unused,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectSkillEvidenceLevel {
+    InsufficientData,
+    Descriptive,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSkillReportCard {
+    pub project_skill_id: ProjectSkillId,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub pinned: bool,
+    pub usage_count: usize,
+    pub linked_outcome_count: usize,
+    pub succeeded_outcome_count: usize,
+    pub failed_outcome_count: usize,
+    pub unknown_outcome_count: usize,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub age_days: i64,
+    pub aging_status: ProjectSkillAgingStatus,
+    pub evidence_level: ProjectSkillEvidenceLevel,
+}
+
+impl ProjectSkillReportService {
+    pub fn new(
+        skill_repo: Arc<dyn ProjectSkillRepository>,
+        usage_repo: Arc<dyn SkillUsageEventRepository>,
+        outcome_repo: Arc<dyn TaskOutcomeRepository>,
+    ) -> Self {
+        Self {
+            skill_repo,
+            usage_repo,
+            outcome_repo,
+        }
+    }
+
+    pub async fn list_report_cards(
+        &self,
+        project_id: &ProjectId,
+        options: ProjectSkillReportOptions,
+    ) -> AppResult<Vec<ProjectSkillReportCard>> {
+        let skills = self
+            .skill_repo
+            .list_by_project(
+                project_id,
+                ProjectSkillListOptions {
+                    status: Some(ProjectSkillLifecycleStatus::Approved),
+                    include_archived: false,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let outcomes = self
+            .outcome_repo
+            .list_by_project(project_id, TaskOutcomeListOptions::default())
+            .await?
+            .into_iter()
+            .map(|outcome| (outcome.id.as_str().to_string(), outcome))
+            .collect::<BTreeMap<_, _>>();
+
+        let mut cards = Vec::with_capacity(skills.len());
+        for skill in skills {
+            let usage = self
+                .usage_repo
+                .list_by_project(
+                    project_id,
+                    SkillUsageListOptions {
+                        project_skill_id: Some(skill.id.clone()),
+                        agent_run_id: None,
+                    },
+                )
+                .await?;
+            let mut linked_outcome_count = 0;
+            let mut succeeded_outcome_count = 0;
+            let mut failed_outcome_count = 0;
+            let mut unknown_outcome_count = 0;
+            for event in &usage {
+                let Some(outcome_id) = event.outcome_id.as_ref() else {
+                    continue;
+                };
+                let Some(outcome) = outcomes.get(outcome_id.as_str()) else {
+                    unknown_outcome_count += 1;
+                    continue;
+                };
+                linked_outcome_count += 1;
+                match outcome.status {
+                    TaskOutcomeStatus::Succeeded => succeeded_outcome_count += 1,
+                    TaskOutcomeStatus::Failed => failed_outcome_count += 1,
+                    _ => unknown_outcome_count += 1,
+                }
+            }
+
+            let last_used_at = usage.iter().map(|event| event.created_at).max();
+            let age_start = last_used_at.unwrap_or(skill.created_at);
+            let age_days = options
+                .now
+                .signed_duration_since(age_start)
+                .num_days()
+                .max(0);
+            let aging_status = if skill.pinned {
+                ProjectSkillAgingStatus::Active
+            } else if usage.is_empty() && age_days >= options.stale_after_days {
+                ProjectSkillAgingStatus::Unused
+            } else if age_days >= options.stale_after_days {
+                ProjectSkillAgingStatus::Stale
+            } else {
+                ProjectSkillAgingStatus::Active
+            };
+            let evidence_level = if linked_outcome_count >= options.min_linked_outcomes {
+                ProjectSkillEvidenceLevel::Descriptive
+            } else {
+                ProjectSkillEvidenceLevel::InsufficientData
+            };
+
+            cards.push(ProjectSkillReportCard {
+                project_skill_id: skill.id,
+                title: skill.title,
+                bucket: skill.bucket,
+                stage: skill.stage,
+                pinned: skill.pinned,
+                usage_count: usage.len(),
+                linked_outcome_count,
+                succeeded_outcome_count,
+                failed_outcome_count,
+                unknown_outcome_count,
+                last_used_at,
+                age_days,
+                aging_status,
+                evidence_level,
+            });
+        }
+
+        cards.sort_by(|left, right| {
+            right
+                .usage_count
+                .cmp(&left.usage_count)
+                .then_with(|| right.last_used_at.cmp(&left.last_used_at))
+                .then_with(|| left.title.cmp(&right.title))
+        });
+        Ok(cards)
+    }
+}
+
 impl SkillUsageService {
     pub fn new(repo: Arc<dyn SkillUsageEventRepository>) -> Self {
         Self { repo }
@@ -609,13 +783,14 @@ fn provenance_refs_from_json(value: &Value) -> Vec<String> {
 mod tests {
     use std::sync::Arc;
 
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
     use serde_json::json;
 
     use super::{
         new_empty_task_outcome, new_skill_usage_event, DistillEligibleOutcomesInput,
-        ProjectSkillDistillationOrigin, ProjectSkillDistillerService, ProjectSkillService,
-        SkillUsageService, StageProjectSkillFromOutcomeInput,
+        ProjectSkillAgingStatus, ProjectSkillDistillationOrigin, ProjectSkillDistillerService,
+        ProjectSkillEvidenceLevel, ProjectSkillReportOptions, ProjectSkillReportService,
+        ProjectSkillService, SkillUsageService, StageProjectSkillFromOutcomeInput,
     };
     use crate::domain::entities::types::ProjectId;
     use crate::domain::entities::{
@@ -623,7 +798,7 @@ mod tests {
     };
     use crate::domain::repositories::{
         ProjectSkillListOptions, ProjectSkillRepository, SkillUsageListOptions,
-        TaskOutcomeRepository,
+        SkillUsageEventRepository, TaskOutcomeRepository, UpsertTaskOutcomeInput,
     };
     use crate::infrastructure::memory::{
         MemoryProjectSkillRepository, MemorySkillUsageEventRepository, MemoryTaskOutcomeRepository,
@@ -722,6 +897,121 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(usage.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn project_skill_report_cards_are_descriptive_until_min_n_is_met() {
+        let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+        let usage_repo = Arc::new(MemorySkillUsageEventRepository::new());
+        let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let now = Utc::now();
+        let mut skill = staged_skill(project_id.clone());
+        skill.status = ProjectSkillLifecycleStatus::Approved;
+        skill.created_at = now - Duration::days(10);
+        let skill = skill_repo.create(skill).await.unwrap();
+
+        let mut success =
+            new_empty_task_outcome(project_id.clone(), "review", "review_note", "review-1");
+        success.status = TaskOutcomeStatus::Succeeded;
+        outcome_repo
+            .upsert(UpsertTaskOutcomeInput {
+                outcome: success.clone(),
+            })
+            .await
+            .unwrap();
+        let mut failure =
+            new_empty_task_outcome(project_id.clone(), "review", "review_note", "review-2");
+        failure.status = TaskOutcomeStatus::Failed;
+        outcome_repo
+            .upsert(UpsertTaskOutcomeInput {
+                outcome: failure.clone(),
+            })
+            .await
+            .unwrap();
+
+        for (index, outcome_id) in [
+            Some(success.id.clone()),
+            Some(failure.id.clone()),
+            None,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut event =
+                new_skill_usage_event(project_id.clone(), skill.id.clone(), "compact_index");
+            event.outcome_id = outcome_id;
+            event.created_at = now - Duration::days(index as i64);
+            usage_repo.record(event).await.unwrap();
+        }
+
+        let service = ProjectSkillReportService::new(skill_repo, usage_repo, outcome_repo);
+        let cards = service
+            .list_report_cards(
+                &project_id,
+                ProjectSkillReportOptions {
+                    min_linked_outcomes: 3,
+                    stale_after_days: 30,
+                    now,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(cards.len(), 1);
+        let card = &cards[0];
+        assert_eq!(card.usage_count, 3);
+        assert_eq!(card.linked_outcome_count, 2);
+        assert_eq!(card.succeeded_outcome_count, 1);
+        assert_eq!(card.failed_outcome_count, 1);
+        assert_eq!(card.evidence_level, ProjectSkillEvidenceLevel::InsufficientData);
+        assert_eq!(card.aging_status, ProjectSkillAgingStatus::Active);
+    }
+
+    #[tokio::test]
+    async fn project_skill_report_cards_mark_unused_but_exempt_pinned_skills() {
+        let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+        let usage_repo = Arc::new(MemorySkillUsageEventRepository::new());
+        let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let now = Utc::now();
+
+        let mut unused = staged_skill(project_id.clone());
+        unused.title = "Unused approved skill".to_string();
+        unused.status = ProjectSkillLifecycleStatus::Approved;
+        unused.created_at = now - Duration::days(45);
+        skill_repo.create(unused).await.unwrap();
+
+        let mut pinned = staged_skill(project_id.clone());
+        pinned.title = "Pinned approved skill".to_string();
+        pinned.status = ProjectSkillLifecycleStatus::Approved;
+        pinned.pinned = true;
+        pinned.created_at = now - Duration::days(45);
+        skill_repo.create(pinned).await.unwrap();
+
+        let service = ProjectSkillReportService::new(skill_repo, usage_repo, outcome_repo);
+        let cards = service
+            .list_report_cards(
+                &project_id,
+                ProjectSkillReportOptions {
+                    min_linked_outcomes: 1,
+                    stale_after_days: 30,
+                    now,
+                },
+            )
+            .await
+            .unwrap();
+
+        let unused = cards
+            .iter()
+            .find(|card| card.title == "Unused approved skill")
+            .unwrap();
+        assert_eq!(unused.aging_status, ProjectSkillAgingStatus::Unused);
+        let pinned = cards
+            .iter()
+            .find(|card| card.title == "Pinned approved skill")
+            .unwrap();
+        assert_eq!(pinned.aging_status, ProjectSkillAgingStatus::Active);
     }
 
     #[tokio::test]

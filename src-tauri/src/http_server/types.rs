@@ -12,6 +12,7 @@ use crate::domain::entities::{
     AgentTaskState, Artifact, ArtifactContent, AuditLogEntry, MemoryEntry, ProjectSkill,
     StepProgressSummary, TaskProposal, TaskStep,
 };
+use crate::domain::services::ProjectSkillReportCard;
 use crate::http_server::delegation::DelegationService;
 use crate::http_server::handlers::artifacts::EditError;
 
@@ -1377,6 +1378,65 @@ pub struct DistillProjectSkillsRequest {
 pub struct DistillProjectSkillsResponse {
     pub staged_skills: Vec<ProjectSkillResponse>,
     pub skipped_existing: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListProjectSkillReportCardsRequest {
+    pub project_id: String,
+    pub min_linked_outcomes: Option<usize>,
+    pub stale_after_days: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillReportCardResponse {
+    pub project_skill_id: String,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub pinned: bool,
+    pub usage_count: usize,
+    pub linked_outcome_count: usize,
+    pub succeeded_outcome_count: usize,
+    pub failed_outcome_count: usize,
+    pub unknown_outcome_count: usize,
+    pub last_used_at: Option<String>,
+    pub age_days: i64,
+    pub aging_status: String,
+    pub evidence_level: String,
+}
+
+impl From<ProjectSkillReportCard> for ProjectSkillReportCardResponse {
+    fn from(card: ProjectSkillReportCard) -> Self {
+        Self {
+            project_skill_id: card.project_skill_id.as_str().to_string(),
+            title: card.title,
+            bucket: card.bucket,
+            stage: card.stage,
+            pinned: card.pinned,
+            usage_count: card.usage_count,
+            linked_outcome_count: card.linked_outcome_count,
+            succeeded_outcome_count: card.succeeded_outcome_count,
+            failed_outcome_count: card.failed_outcome_count,
+            unknown_outcome_count: card.unknown_outcome_count,
+            last_used_at: card.last_used_at.map(|value| value.to_rfc3339()),
+            age_days: card.age_days,
+            aging_status: format!("{:?}", card.aging_status).to_ascii_lowercase(),
+            evidence_level: match card.evidence_level {
+                crate::domain::services::ProjectSkillEvidenceLevel::InsufficientData => {
+                    "insufficient_data".to_string()
+                }
+                crate::domain::services::ProjectSkillEvidenceLevel::Descriptive => {
+                    "descriptive".to_string()
+                }
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ListProjectSkillReportCardsResponse {
+    pub cards: Vec<ProjectSkillReportCardResponse>,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
