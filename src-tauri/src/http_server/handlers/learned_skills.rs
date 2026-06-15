@@ -1950,6 +1950,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn contained_native_skill_file_accepts_safe_folder_name() {
+        let project_root = Path::new("/workspace/project");
+        let skills_root = Path::new("/workspace/project/.claude/skills");
+
+        let skill_file =
+            contained_native_skill_file(project_root, skills_root, "review-flow").unwrap();
+
+        assert_eq!(
+            skill_file,
+            PathBuf::from("/workspace/project/.claude/skills/review-flow/SKILL.md")
+        );
+    }
+
+    #[test]
+    fn contained_native_skill_file_rejects_unsafe_folder_name() {
+        let project_root = Path::new("/workspace/project");
+        let skills_root = Path::new("/workspace/project/.claude/skills");
+
+        let error =
+            contained_native_skill_file(project_root, skills_root, "../review-flow").unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("project skill folder name contains unsafe characters"));
+    }
+
+    #[test]
+    fn contained_native_skill_file_rejects_source_root_escape() {
+        let project_root = Path::new("/workspace/project");
+        let skills_root = Path::new("/workspace/other/.claude/skills");
+
+        let error =
+            contained_native_skill_file(project_root, skills_root, "review-flow").unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("project skills directory escapes project root"));
+    }
+
     fn promote_memory_request(
         project_id: &str,
         memory_id: &str,
