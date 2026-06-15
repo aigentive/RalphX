@@ -1210,7 +1210,7 @@ function AgentHarnessSection({
   const {
     settings: providerSettings,
     isPlaceholderData: isProviderPlaceholderData,
-  } = useHarnessProviders();
+  } = useHarnessProviders({ refreshRuntime: true });
   const defaultProvider =
     providerSettings.providers.find(
       (provider) =>

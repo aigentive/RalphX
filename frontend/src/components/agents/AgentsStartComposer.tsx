@@ -156,7 +156,7 @@ export function AgentsStartComposer({
     providers: configuredProviders,
     isLoading: isLoadingProviderSettings,
     isPlaceholderData: isPlaceholderProviderSettings,
-  } = useHarnessProviders();
+  } = useHarnessProviders({ refreshRuntime: true });
   const lastBranchBaseSelectionByProjectId = useAgentSessionStore(
     (s) => s.lastBranchBaseSelectionByProjectId
   );

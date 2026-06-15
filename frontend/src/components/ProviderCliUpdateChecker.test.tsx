@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { providerCliManagementApi } from "@/api/provider-cli-management";
+import { useUiStore } from "@/stores/uiStore";
 
 import { ProviderCliUpdateChecker } from "./ProviderCliUpdateChecker";
 
@@ -52,6 +53,7 @@ describe("ProviderCliUpdateChecker", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    useUiStore.setState({ activeModal: null, modalContext: undefined });
     vi.mocked(providerCliManagementApi.status).mockResolvedValue({
       providers: [
         {
@@ -185,5 +187,52 @@ describe("ProviderCliUpdateChecker", () => {
       "Managed CLI tools are up to date.",
       expect.objectContaining({ id: "provider-cli-auto-update" }),
     );
+  });
+
+  it("shows a non-mutating startup toast for user-managed outdated CLIs", async () => {
+    vi.mocked(providerCliManagementApi.status).mockResolvedValue({
+      providers: [
+        {
+          provider: "claude",
+          cliManagementMode: "user_managed",
+          autoUpdateEnabled: false,
+          supported: true,
+          installed: true,
+          binaryPath: "/Users/example/.local/bin/claude",
+          currentVersion: "2.1.170",
+          latestVersion: "2.1.175",
+          updateAvailable: true,
+          action: "none",
+          status:
+            "claude CLI 2.1.170 is user-managed; 2.1.175 is available. RX will not update it unless management is enabled.",
+          error: null,
+        },
+      ],
+    });
+
+    renderChecker();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+
+    expect(mocks.toast).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: "provider-cli-update:claude" }),
+    );
+
+    renderToast();
+    expect(screen.getByText("Claude CLI update available")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "claude CLI 2.1.170 is user-managed; 2.1.175 is available. RX will not update it unless management is enabled.",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("provider-cli-open-settings-button"));
+
+    expect(providerCliManagementApi.installOrUpdate).not.toHaveBeenCalled();
+    expect(useUiStore.getState().activeModal).toBe("settings");
+    expect(useUiStore.getState().modalContext).toEqual({ section: "providers" });
   });
 });

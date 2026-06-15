@@ -9,6 +9,7 @@ import {
 } from "@/api/provider-cli-management";
 import { harnessProviderKeys } from "@/hooks/useHarnessProviders";
 import { providerCliManagementKeys } from "@/hooks/useProviderCliManagement";
+import { useUiStore } from "@/stores/uiStore";
 
 const STARTUP_PROVIDER_CLI_CHECK_DELAY_MS = 7_000;
 const PROVIDER_LABELS: Record<string, string> = {
@@ -28,12 +29,21 @@ function isActionableManagedStatus(status: ManagedProviderCliStatusResponse) {
   );
 }
 
+function isUserManagedOutdatedStatus(status: ManagedProviderCliStatusResponse) {
+  return (
+    status.cliManagementMode === "user_managed" &&
+    status.supported &&
+    status.updateAvailable
+  );
+}
+
 function providerCliToastId(provider: string) {
   return `provider-cli-update:${provider}`;
 }
 
 export function ProviderCliUpdateChecker() {
   const queryClient = useQueryClient();
+  const openModal = useUiStore((state) => state.openModal);
   const notifiedKeys = useRef(new Set<string>());
 
   useEffect(() => {
@@ -78,6 +88,14 @@ export function ProviderCliUpdateChecker() {
 
       const label = providerLabel(status.provider);
       const isInstall = status.action === "install";
+      const isUserManaged = status.cliManagementMode === "user_managed";
+      const primaryLabel = isUserManaged ? "Open Settings" : isInstall ? "Install" : "Update";
+      const onPrimaryAction = isUserManaged
+        ? () => {
+            openModal("settings", { section: "providers" });
+            toast.dismiss(providerCliToastId(status.provider));
+          }
+        : () => void installOrUpdate(status);
       toast(
         <div className="flex flex-col gap-2" data-testid="provider-cli-update-toast">
           <div className="flex items-center gap-2">
@@ -105,11 +123,15 @@ export function ProviderCliUpdateChecker() {
           <div className="mt-1 flex gap-2">
             <button
               type="button"
-              data-testid="provider-cli-update-now-button"
+              data-testid={
+                isUserManaged
+                  ? "provider-cli-open-settings-button"
+                  : "provider-cli-update-now-button"
+              }
               className="git-auth-startup-toast-action inline-flex h-7 items-center rounded-[6px] px-3 text-xs font-semibold"
-              onClick={() => void installOrUpdate(status)}
+              onClick={onPrimaryAction}
             >
-              {isInstall ? "Install" : "Update"}
+              {primaryLabel}
             </button>
             <button
               type="button"
@@ -157,11 +179,14 @@ export function ProviderCliUpdateChecker() {
               description: error instanceof Error ? error.message : undefined,
             });
           }
-          return;
         }
 
         statuses.providers
-          .filter((status) => isActionableManagedStatus(status) && !status.autoUpdateEnabled)
+          .filter(
+            (status) =>
+              (isActionableManagedStatus(status) && !status.autoUpdateEnabled) ||
+              isUserManagedOutdatedStatus(status),
+          )
           .forEach(showManualToast);
       } catch (error) {
         console.debug("Provider CLI update check failed:", error);
@@ -176,7 +201,7 @@ export function ProviderCliUpdateChecker() {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [queryClient]);
+  }, [openModal, queryClient]);
 
   return null;
 }

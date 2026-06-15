@@ -195,6 +195,8 @@ mod chat_service_output_tests;
 #[cfg(test)]
 mod git_artifact_cleanup_tests;
 #[cfg(test)]
+mod harness_runtime_registry_tests;
+#[cfg(test)]
 mod ideation_harness_availability_tests;
 #[cfg(test)]
 mod orphan_worktree_cleanup_tests;

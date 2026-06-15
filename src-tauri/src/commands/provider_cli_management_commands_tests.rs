@@ -89,7 +89,7 @@ fn codex_rx_managed_stale_cli_suggests_update() {
 }
 
 #[test]
-fn codex_user_managed_policy_suppresses_managed_actions() {
+fn codex_user_managed_stale_cli_reports_update_without_managed_action() {
     let status = managed_cli_status_response(
         codex_settings(AgentProviderCliManagementMode::UserManaged),
         codex_observation(true, Some("0.136.0"), Some("0.137.0")),
@@ -99,6 +99,9 @@ fn codex_user_managed_policy_suppresses_managed_actions() {
     assert_eq!(status.action, "none");
     assert!(status.update_available);
     assert!(status.status.contains("user-managed"));
+    assert!(status.status.contains("0.136.0"));
+    assert!(status.status.contains("0.137.0"));
+    assert!(status.status.contains("unless management is enabled"));
 }
 
 #[test]
@@ -141,6 +144,22 @@ fn claude_rx_managed_stale_native_cli_suggests_update() {
     assert!(status.update_available);
     assert!(status.status.contains("2.1.170"));
     assert!(status.status.contains("2.1.175"));
+}
+
+#[test]
+fn claude_user_managed_stale_cli_reports_update_without_managed_action() {
+    let status = managed_cli_status_response(
+        claude_settings(AgentProviderCliManagementMode::UserManaged),
+        claude_observation(true, Some("2.1.170"), Some("2.1.175")),
+        false,
+    );
+
+    assert_eq!(status.action, "none");
+    assert!(status.update_available);
+    assert!(status.status.contains("user-managed"));
+    assert!(status.status.contains("2.1.170"));
+    assert!(status.status.contains("2.1.175"));
+    assert!(status.status.contains("unless management is enabled"));
 }
 
 #[tokio::test]

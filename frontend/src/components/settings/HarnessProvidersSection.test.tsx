@@ -110,13 +110,14 @@ const managedCliStatuses = {
       cliManagementMode: "user_managed" as const,
       autoUpdateEnabled: false,
       supported: true,
-      installed: false,
+      installed: true,
       binaryPath: "/Users/example/.local/bin/claude",
-      currentVersion: null,
-      latestVersion: "1.0.128",
-      updateAvailable: false,
-      action: "install" as const,
-      status: "RX-managed Claude is not installed.",
+      currentVersion: "2.1.170",
+      latestVersion: "2.1.175",
+      updateAvailable: true,
+      action: "none" as const,
+      status:
+        "claude CLI 2.1.170 is user-managed; 2.1.175 is available. RX will not update it unless management is enabled.",
       error: null,
     },
   ],
@@ -286,6 +287,17 @@ describe("HarnessProvidersSection", () => {
     expect(
       within(claudeCard).getByLabelText("Update automatically"),
     ).toBeDisabled();
+    expect(
+      within(claudeCard).getByText("CLI update available"),
+    ).toBeInTheDocument();
+    expect(
+      within(claudeCard).getByText(
+        "claude CLI 2.1.170 is user-managed; 2.1.175 is available. RX will not update it unless management is enabled.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(claudeCard).queryByRole("button", { name: "Update Claude" }),
+    ).toBeNull();
     expect(within(claudeCard).queryByText("Default Model")).toBeNull();
     expect(within(claudeCard).queryByText("Default Effort")).toBeNull();
     expect(
@@ -387,6 +399,39 @@ describe("HarnessProvidersSection", () => {
       ],
     };
     mockProviders(nextSettings);
+    mockProviderCliManagement({
+      statuses: {
+        providers: [
+          managedCliStatuses.providers[0]!,
+          {
+            ...managedCliStatuses.providers[1]!,
+            cliManagementMode: "rx_managed",
+            installed: false,
+            currentVersion: null,
+            latestVersion: "2.1.175",
+            updateAvailable: false,
+            action: "install",
+            status: "RX-managed Claude is not installed.",
+          },
+        ],
+      },
+      statusByProvider: new Map([
+        ["codex", managedCliStatuses.providers[0]!],
+        [
+          "claude",
+          {
+            ...managedCliStatuses.providers[1]!,
+            cliManagementMode: "rx_managed",
+            installed: false,
+            currentVersion: null,
+            latestVersion: "2.1.175",
+            updateAvailable: false,
+            action: "install",
+            status: "RX-managed Claude is not installed.",
+          },
+        ],
+      ]),
+    } as Partial<ReturnType<typeof useProviderCliManagement>>);
 
     render(<HarnessProvidersSection />);
 

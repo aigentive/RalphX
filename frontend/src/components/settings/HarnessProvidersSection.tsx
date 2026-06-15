@@ -158,8 +158,12 @@ function ProviderManagedCliStatus({
   onInstallOrUpdate: () => void;
 }) {
   const label = providerLabel(provider.provider);
+  const isUserManagedNotice =
+    status?.cliManagementMode === USER_MANAGED_CLI_MODE;
   const canRunAction =
-    status?.supported && (status.action === "install" || status.action === "update");
+    !isUserManagedNotice &&
+    status?.supported &&
+    (status.action === "install" || status.action === "update");
   const actionLabel =
     status?.action === "install"
       ? `Install ${label}`
@@ -172,7 +176,7 @@ function ProviderManagedCliStatus({
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
         <div className="min-w-0 space-y-1">
           <div className="text-xs font-medium text-[var(--text-primary)]">
-            RX-managed CLI
+            {isUserManagedNotice ? "CLI update available" : "RX-managed CLI"}
           </div>
           <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
             {isLoading && !status ? "Checking managed CLI status." : status?.status}
@@ -564,7 +568,7 @@ export function HarnessProvidersSection() {
                     </div>
                   </div>
 
-                  {isRxManagedCli && (
+                  {(isRxManagedCli || managedCliStatus?.updateAvailable) && (
                     <ProviderManagedCliStatus
                       provider={provider}
                       status={managedCliStatus}

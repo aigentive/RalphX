@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::application::{
-    harness_runtime_registry::{refresh_harness_runtime_probe, HarnessRuntimeProbe},
-    probe_supported_harnesses, AppState, AGENT_LANES,
+    harness_runtime_registry::{
+        refresh_harness_runtime_probe, refresh_supported_harnesses, HarnessRuntimeProbe,
+    },
+    AppState, AGENT_LANES,
 };
 use crate::domain::agents::{
     generic_harness_lane_defaults, AgentHarnessKind, AgentLaneSettings,
@@ -352,7 +354,7 @@ async fn read_provider_settings(
         .await
         .map_err(|err| err.to_string())?;
     let mut probes = if refresh_runtime {
-        probe_supported_harnesses()
+        refresh_supported_harnesses()
     } else {
         snapshot_probes_from_provider_settings(&stored)
     };

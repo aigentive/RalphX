@@ -446,7 +446,7 @@ function ProjectModelSubsection({
 
 export function IdeationModelSection() {
   const activeProject = useProjectStore(selectActiveProject);
-  const { providers } = useHarnessProviders();
+  const { providers } = useHarnessProviders({ refreshRuntime: true });
   const modelOptions = modelOptionsForFableAvailability(
     claudeSupportsFable(providers),
   );

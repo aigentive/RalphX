@@ -441,7 +441,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     providers: configuredProviders,
     isLoading: isLoadingProviderSettings,
     isPlaceholderData: isPlaceholderProviderSettings,
-  } = useHarnessProviders();
+  } = useHarnessProviders({ refreshRuntime: true });
   const providerSettingsReady =
     !isLoadingProviderSettings && !isPlaceholderProviderSettings;
   const providerOptions = useMemo(

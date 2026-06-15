@@ -570,6 +570,11 @@ fn clear_harness_runtime_caches_for_harness(harness: AgentHarnessKind) {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn clear_harness_runtime_caches_for_tests(harness: AgentHarnessKind) {
+    clear_harness_runtime_caches_for_harness(harness);
+}
+
 pub(crate) fn probe_default_harness() -> HarnessRuntimeProbe {
     probe_harness(DEFAULT_AGENT_HARNESS)
 }
@@ -902,6 +907,17 @@ fn external_mcp_entry_for_plugin_dir(plugin_dir: &Path) -> PathBuf {
 }
 
 pub(crate) fn probe_supported_harnesses() -> HashMap<AgentHarnessKind, HarnessRuntimeProbe> {
+    probe_standard_harnesses_with(probe_harness, "probe")
+}
+
+pub(crate) fn refresh_supported_harnesses() -> HashMap<AgentHarnessKind, HarnessRuntimeProbe> {
+    probe_standard_harnesses_with(refresh_harness_runtime_probe, "refresh")
+}
+
+fn probe_standard_harnesses_with(
+    probe_fn: fn(AgentHarnessKind) -> HarnessRuntimeProbe,
+    operation: &'static str,
+) -> HashMap<AgentHarnessKind, HarnessRuntimeProbe> {
     let started = Instant::now();
     let harnesses = standard_harness_runtime_adapters()
         .into_keys()
@@ -911,7 +927,7 @@ pub(crate) fn probe_supported_harnesses() -> HashMap<AgentHarnessKind, HarnessRu
     std::thread::scope(|scope| {
         let handles = harnesses
             .into_iter()
-            .map(|harness| (harness, scope.spawn(move || probe_harness(harness))))
+            .map(|harness| (harness, scope.spawn(move || probe_fn(harness))))
             .collect::<Vec<_>>();
 
         for (harness, handle) in handles {
@@ -932,7 +948,8 @@ pub(crate) fn probe_supported_harnesses() -> HashMap<AgentHarnessKind, HarnessRu
     tracing::info!(
         harnesses = probes.len(),
         elapsed_ms = started.elapsed().as_millis() as u64,
-        "Harness runtime probe batch completed"
+        operation,
+        "Harness runtime batch completed"
     );
     probes
 }

@@ -23,8 +23,8 @@ use crate::domain::agents::{
 use crate::domain::entities::{AgentRunId, ChatConversationId};
 use crate::infrastructure::agents::claude::parse_claude_version;
 use crate::infrastructure::tool_paths::{
-    agent_subprocess_env_path, claude_native_cli_path, find_claude_native_cli_path,
-    resolve_shell_cli_path,
+    agent_subprocess_env_path, claude_native_cli_path, find_claude_cli_path,
+    find_claude_native_cli_path, find_codex_cli_path, resolve_shell_cli_path,
 };
 use crate::utils::runtime_log_paths::{
     managed_codex_bin_dir, managed_codex_binary_path, managed_codex_home_dir,
@@ -179,6 +179,16 @@ fn managed_cli_status_text(
         return format!("RX-managed {provider} installs are unavailable.");
     }
     if settings.cli_management_mode != AgentProviderCliManagementMode::RxManaged {
+        if managed_cli_update_available(observation) {
+            let current = observation.current_version.as_deref().unwrap_or("unknown");
+            let latest = observation.latest_version.as_deref().unwrap_or("latest");
+            return format!(
+                "{provider} CLI {current} is user-managed; {latest} is available. RX will not update it unless management is enabled."
+            );
+        }
+        if let Some(version) = observation.current_version.as_deref() {
+            return format!("{provider} CLI {version} is user-managed. RX will not update it.");
+        }
         return format!("{provider} CLI is user-managed. RX will not install or update it.");
     }
     if provider_active {
@@ -277,6 +287,50 @@ async fn managed_codex_observation(include_latest_version: bool) -> ManagedProvi
     }
 }
 
+async fn user_managed_codex_observation(
+    include_latest_version: bool,
+) -> ManagedProviderCliObservation {
+    let Some(binary_path) = find_codex_cli_path() else {
+        return ManagedProviderCliObservation {
+            supported: true,
+            installed: false,
+            binary_path: None,
+            current_version: None,
+            latest_version: None,
+            error: None,
+        };
+    };
+
+    let current_version = match probe_cli_version(&binary_path).await {
+        Ok(output) => parse_codex_version(&output).or_else(|| Some(output.trim().to_string())),
+        Err(error) => {
+            return ManagedProviderCliObservation {
+                supported: true,
+                installed: true,
+                binary_path: Some(binary_path),
+                current_version: None,
+                latest_version: None,
+                error: Some(error),
+            }
+        }
+    };
+
+    let latest_version = if include_latest_version {
+        fetch_latest_codex_version().await.ok()
+    } else {
+        None
+    };
+
+    ManagedProviderCliObservation {
+        supported: true,
+        installed: true,
+        binary_path: Some(binary_path),
+        current_version,
+        latest_version,
+        error: None,
+    }
+}
+
 async fn managed_claude_observation(include_latest_version: bool) -> ManagedProviderCliObservation {
     if !cfg!(any(target_os = "macos", target_os = "linux")) {
         return ManagedProviderCliObservation {
@@ -338,25 +392,67 @@ async fn managed_claude_observation(include_latest_version: bool) -> ManagedProv
     }
 }
 
+async fn user_managed_claude_observation(
+    include_latest_version: bool,
+) -> ManagedProviderCliObservation {
+    let Some(binary_path) = find_claude_cli_path() else {
+        return ManagedProviderCliObservation {
+            supported: true,
+            installed: false,
+            binary_path: None,
+            current_version: None,
+            latest_version: None,
+            error: None,
+        };
+    };
+
+    let current_version = match probe_cli_version(&binary_path).await {
+        Ok(output) => parse_claude_version(&output).or_else(|| Some(output.trim().to_string())),
+        Err(error) => {
+            return ManagedProviderCliObservation {
+                supported: true,
+                installed: true,
+                binary_path: Some(binary_path),
+                current_version: None,
+                latest_version: None,
+                error: Some(error),
+            }
+        }
+    };
+
+    let latest_version = if include_latest_version {
+        fetch_latest_claude_version().await.ok()
+    } else {
+        None
+    };
+
+    ManagedProviderCliObservation {
+        supported: true,
+        installed: true,
+        binary_path: Some(binary_path),
+        current_version,
+        latest_version,
+        error: None,
+    }
+}
+
 async fn managed_provider_cli_status_for_settings(
     state: &AppState,
     settings: AgentProviderSettings,
     include_latest_version: bool,
 ) -> Result<ManagedProviderCliStatusResponse, String> {
-    let observation = match settings.provider {
-        AgentHarnessKind::Codex => {
-            managed_codex_observation(
-                include_latest_version
-                    && settings.cli_management_mode == AgentProviderCliManagementMode::RxManaged,
-            )
-            .await
+    let observation = match (settings.provider, settings.cli_management_mode) {
+        (AgentHarnessKind::Codex, AgentProviderCliManagementMode::RxManaged) => {
+            managed_codex_observation(include_latest_version).await
         }
-        AgentHarnessKind::Claude => {
-            managed_claude_observation(
-                include_latest_version
-                    && settings.cli_management_mode == AgentProviderCliManagementMode::RxManaged,
-            )
-            .await
+        (AgentHarnessKind::Codex, AgentProviderCliManagementMode::UserManaged) => {
+            user_managed_codex_observation(include_latest_version).await
+        }
+        (AgentHarnessKind::Claude, AgentProviderCliManagementMode::RxManaged) => {
+            managed_claude_observation(include_latest_version).await
+        }
+        (AgentHarnessKind::Claude, AgentProviderCliManagementMode::UserManaged) => {
+            user_managed_claude_observation(include_latest_version).await
         }
     };
     let provider_active = managed_provider_has_active_runtime(state, settings.provider).await?;
