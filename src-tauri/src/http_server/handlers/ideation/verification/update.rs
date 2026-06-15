@@ -10,7 +10,8 @@ async fn record_verification_gap_recurrence_outcomes(
         verification_gap_recurrence_candidates, VerificationGapRecurrenceGate,
     };
     use crate::domain::services::{
-        new_empty_task_outcome, OutcomeLedgerService, ProjectSkillDistillerService,
+        new_empty_task_outcome, OutcomeLedgerService, ProjectSkillDistillationOrigin,
+        ProjectSkillDistillerService,
     };
 
     let report = verification_gap_recurrence_candidates(
@@ -57,7 +58,10 @@ async fn record_verification_gap_recurrence_outcomes(
                     Arc::clone(&state.app_state.project_skill_repo),
                 );
                 if let Err(error) = distiller
-                    .stage_eligible_outcome_candidate(&recorded_outcome)
+                    .stage_eligible_outcome_candidate_with_origin(
+                        &recorded_outcome,
+                        ProjectSkillDistillationOrigin::VerificationObserver,
+                    )
                     .await
                 {
                     tracing::warn!(
@@ -656,8 +660,7 @@ pub async fn post_verification_status(
             )
         })?;
 
-    record_verification_gap_recurrence_outcomes(&state, &session, &session_id, &run_snapshot)
-        .await;
+    record_verification_gap_recurrence_outcomes(&state, &session, &session_id, &run_snapshot).await;
 
     // Emit plan_verification:status_changed event (B1: includes current_gaps + last 5 rounds)
     if let Some(app_handle) = &state.app_state.app_handle {

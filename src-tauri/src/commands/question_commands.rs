@@ -19,7 +19,9 @@ use crate::domain::entities::{
 use crate::domain::services::learned_skill_adapters::{
     capture_plan_mode_verdict, PlanModeVerdict, PlanModeVerdictCaptureInput, PlanModeVerdictOutcome,
 };
-use crate::domain::services::{OutcomeLedgerService, ProjectSkillDistillerService};
+use crate::domain::services::{
+    OutcomeLedgerService, ProjectSkillDistillationOrigin, ProjectSkillDistillerService,
+};
 use crate::AppState;
 
 pub(crate) const PLAN_MODE_PROPOSAL_KIND: &str = "plan_mode_proposal";
@@ -202,7 +204,10 @@ async fn capture_accepted_plan_mode_proposal_outcome(
                     Arc::clone(&state.project_skill_repo),
                 );
                 if let Err(error) = distiller
-                    .stage_eligible_outcome_candidate(&recorded_outcome)
+                    .stage_eligible_outcome_candidate_with_origin(
+                        &recorded_outcome,
+                        ProjectSkillDistillationOrigin::PlanModeObserver,
+                    )
                     .await
                 {
                     tracing::warn!(

@@ -7,7 +7,8 @@ use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{ProjectSkillId, ProjectSkillLifecycleStatus};
 use crate::domain::repositories::ProjectSkillListOptions;
 use crate::domain::services::{
-    DistillEligibleOutcomesInput, ProjectSkillDistillerService, ProjectSkillService,
+    DistillEligibleOutcomesInput, ProjectSkillDistillationOrigin, ProjectSkillDistillerService,
+    ProjectSkillService,
 };
 use crate::error::AppError;
 use crate::http_server::handlers::learned_skills_export::assert_project_id_scope;
@@ -165,6 +166,7 @@ pub async fn distill_project_skills(
             project_id,
             source: req.source,
             limit: req.limit.unwrap_or(25),
+            origin: ProjectSkillDistillationOrigin::ManualCurator,
         })
         .await
         .map_err(|error| {
@@ -198,7 +200,10 @@ async fn update_project_skill_lifecycle(
         .get_by_id(&skill_id)
         .await
         .map_err(|error| {
-            error!("failed to get project skill before lifecycle update: {}", error);
+            error!(
+                "failed to get project skill before lifecycle update: {}",
+                error
+            );
             HttpError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 message: Some("failed to get project skill".to_string()),
@@ -478,5 +483,4 @@ mod tests {
 
         assert_eq!(error.status, StatusCode::FORBIDDEN);
     }
-
 }
