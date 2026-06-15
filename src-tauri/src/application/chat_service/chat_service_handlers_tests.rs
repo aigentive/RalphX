@@ -7,14 +7,17 @@ use tauri::Manager;
 
 use crate::application::{
     chat_service::verification_child_process_registry::VerificationChildProcessRegistry,
-    chat_service::{ProviderErrorCategory, ProviderErrorMetadata},
+    chat_service::{ClaudeChatService, ProviderErrorCategory, ProviderErrorMetadata},
     AppState, InteractiveProcessRegistry,
 };
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, ChatConversation, ChatConversationId, IdeationSessionId,
-    InternalStatus, Project, ProjectId, Task, TaskOutcomeStatus, VerificationStatus,
+    InternalStatus, Project, ProjectId, ProjectSkill, ProjectSkillId,
+    ProjectSkillLifecycleStatus, Task, TaskOutcomeStatus, VerificationStatus,
 };
-use crate::domain::repositories::{StateHistoryMetadata, StatusTransition, TaskOutcomeListOptions};
+use crate::domain::repositories::{
+    SkillUsageListOptions, StateHistoryMetadata, StatusTransition, TaskOutcomeListOptions,
+};
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 
@@ -694,6 +697,83 @@ async fn test_codex_local_tool_rate_limit_text_does_not_global_pause_execution()
     assert!(
         ProviderErrorMetadata::from_task_metadata(updated_task.metadata.as_deref()).is_none(),
         "local tool failures must not persist provider_error metadata"
+    );
+}
+
+#[tokio::test]
+async fn test_interactive_stdin_learned_skill_usage_is_recorded_as_unscored() {
+    let app_state = AppState::new_test();
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = app.handle().clone();
+    let state = handle.state::<AppState>();
+    let project_id = ProjectId::new();
+    let conversation_id = ChatConversationId::new();
+    let now = Utc::now();
+    let skill = ProjectSkill {
+        id: ProjectSkillId::new(),
+        project_id: project_id.clone(),
+        title: "Use planning constraints".to_string(),
+        bucket: "planning".to_string(),
+        stage: "planning".to_string(),
+        status: ProjectSkillLifecycleStatus::Approved,
+        pinned: false,
+        archived: false,
+        scope_paths: Vec::new(),
+        compact_guidance: "Carry approved planning constraints into the next turn.".to_string(),
+        body_markdown: "Detailed guidance".to_string(),
+        predicted_effect: Some("Avoids dropping accepted planning constraints.".to_string()),
+        provenance_json: serde_json::json!({ "test": true }),
+        companion_of_skill_id: None,
+        created_at: now,
+        updated_at: now,
+    };
+
+    let service = ClaudeChatService::<MockRuntime>::new(
+        Arc::clone(&state.chat_message_repo),
+        Arc::clone(&state.chat_attachment_repo),
+        Arc::clone(&state.artifact_repo),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.project_repo),
+        Arc::clone(&state.task_repo),
+        Arc::clone(&state.task_dependency_repo),
+        Arc::clone(&state.ideation_session_repo),
+        Arc::clone(&state.delegated_session_repo),
+        Arc::clone(&state.activity_event_repo),
+        Arc::clone(&state.message_queue),
+        Arc::clone(&state.running_agent_registry),
+        Arc::clone(&state.memory_event_repo),
+        Arc::clone(&state.project_memory_settings_repo),
+    )
+    .with_app_handle(handle.clone());
+
+    service
+        .record_learned_skill_usage_for_interactive_stdin(
+            Some(project_id.as_str()),
+            &conversation_id,
+            &[skill.clone()],
+        )
+        .await;
+
+    let usage = state
+        .skill_usage_event_repo
+        .list_by_project(&project_id, SkillUsageListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(usage.len(), 1);
+    let event = &usage[0];
+    assert_eq!(event.project_skill_id, skill.id);
+    let expected_conversation_id = conversation_id.as_str();
+    assert_eq!(event.conversation_id.as_deref(), Some(expected_conversation_id.as_str()));
+    assert_eq!(event.agent_run_id, None);
+    assert_eq!(event.injection_kind, "interactive_stdin_unattributed");
+    assert_eq!(event.metadata_json["scoring_eligible"], false);
+    assert_eq!(
+        event.metadata_json["scoring_disabled_reason"],
+        "interactive_stdin_turn_has_no_new_agent_run_id"
     );
 }
 

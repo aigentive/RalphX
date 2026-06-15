@@ -2455,6 +2455,54 @@ impl<R: Runtime> AppChatService<R> {
         }
     }
 
+    async fn record_learned_skill_usage_for_interactive_stdin(
+        &self,
+        project_id: Option<&str>,
+        conversation_id: &ChatConversationId,
+        selected_skills: &[ProjectSkill],
+    ) {
+        if selected_skills.is_empty() {
+            return;
+        }
+        let Some(project_id) = project_id.map(str::trim).filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let Some(app_state) = self
+            .app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+        else {
+            return;
+        };
+
+        let project_id = ProjectId::from_string(project_id.to_string());
+        let service = SkillUsageService::new(Arc::clone(&app_state.skill_usage_event_repo));
+        for skill in selected_skills {
+            let mut event = new_skill_usage_event(
+                project_id.clone(),
+                skill.id.clone(),
+                "interactive_stdin_unattributed",
+            );
+            event.conversation_id = Some(conversation_id.as_str().to_string());
+            event.stage = Some(skill.stage.clone());
+            event.bucket = Some(skill.bucket.clone());
+            event.metadata_json = serde_json::json!({
+                "source": "ralphx_project_skill_directive",
+                "attribution_scope": "interactive_stdin_turn",
+                "scoring_eligible": false,
+                "scoring_disabled_reason": "interactive_stdin_turn_has_no_new_agent_run_id",
+            });
+            if let Err(error) = service.record_usage(event).await {
+                tracing::warn!(
+                    project_skill_id = skill.id.as_str(),
+                    conversation_id = conversation_id.as_str(),
+                    error = %error,
+                    "Failed to record unattributed interactive learned project skill usage"
+                );
+            }
+        }
+    }
+
     async fn load_edit_mode_plan_handoff_artifact(
         &self,
         workspace: Option<&AgentConversationWorkspace>,
@@ -2936,9 +2984,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 Arc::clone(&self.delegated_session_repo),
             )
             .await;
-            let (runtime_message, _) = self
+            let (runtime_message, selected_learned_skills) = self
                 .learned_skill_runtime_message(interactive_project_id.as_deref(), runtime_message)
                 .await;
+            self.record_learned_skill_usage_for_interactive_stdin(
+                interactive_project_id.as_deref(),
+                &conversation.id,
+                &selected_learned_skills,
+            )
+            .await;
             let stdin_prompt = chat_service_context::build_initial_prompt(
                 context_type,
                 context_id,
