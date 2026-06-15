@@ -14,6 +14,8 @@ vi.mock("@/api/project-skills", () => ({
     archive: vi.fn(),
     pin: vi.fn(),
     unpin: vi.fn(),
+    previewExport: vi.fn(),
+    applyExport: vi.fn(),
     distill: vi.fn(),
   },
 }));
@@ -91,6 +93,36 @@ describe("ProjectSkillsCuratorPanel", () => {
     mockedProjectSkillsApi.unpin.mockResolvedValue(
       stagedSkill({ id: "approved-skill", status: "approved", pinned: false }),
     );
+    mockedProjectSkillsApi.previewExport.mockResolvedValue({
+      projectId: "project-1",
+      targetRoot: "/repo/.claude/skills",
+      count: 1,
+      files: [
+        {
+          projectSkillId: "approved-skill",
+          title: "Approved review convention",
+          relativePath: ".claude/skills/approved-review-convention/SKILL.md",
+          pinned: false,
+          status: "approved",
+          willWrite: true,
+        },
+      ],
+    });
+    mockedProjectSkillsApi.applyExport.mockResolvedValue({
+      projectId: "project-1",
+      targetRoot: "/repo/.claude/skills",
+      count: 1,
+      files: [
+        {
+          projectSkillId: "approved-skill",
+          title: "Approved review convention",
+          relativePath: ".claude/skills/approved-review-convention/SKILL.md",
+          pinned: false,
+          status: "approved",
+          willWrite: false,
+        },
+      ],
+    });
     mockedProjectSkillsApi.distill.mockResolvedValue({
       stagedSkills: [stagedSkill({ id: "skill-2" })],
       skippedExisting: 0,
@@ -219,6 +251,26 @@ describe("ProjectSkillsCuratorPanel", () => {
     await waitFor(() => {
       expect(mockedProjectSkillsApi.unpin).toHaveBeenCalledWith("approved-skill");
     });
+  });
+
+  it("previews and applies approved skill export", async () => {
+    renderPanel();
+
+    expect(await screen.findByText("Approved review convention")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /preview export/i }));
+    await waitFor(() => {
+      expect(mockedProjectSkillsApi.previewExport).toHaveBeenCalledWith(
+        "project-1",
+      );
+    });
+    expect(await screen.findByText(/1 pending file/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^export$/i }));
+    await waitFor(() => {
+      expect(mockedProjectSkillsApi.applyExport).toHaveBeenCalledWith("project-1");
+    });
+    expect(await screen.findByText(/0 pending files/)).toBeInTheDocument();
   });
 
   it("shows API failures without hiding the panel controls", async () => {
