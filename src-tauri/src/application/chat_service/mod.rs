@@ -4315,6 +4315,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             conversation_id_override,
             composer_project_references: queued_msg.composer_project_references.clone(),
             composer_integration_references: queued_msg.composer_integration_references.clone(),
+            composer_artifact_references: queued_msg.composer_artifact_references.clone(),
             attachment_ids: queued_msg.attachment_ids.clone(),
             ..Default::default()
         };

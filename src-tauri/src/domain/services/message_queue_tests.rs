@@ -659,6 +659,31 @@ fn test_queue_standard_has_no_overrides() {
 }
 
 #[test]
+fn test_queued_message_serialization_skips_default_fresh_session_flag() {
+    let queued = QueuedMessage::new("Normal message".to_string());
+    let value = serde_json::to_value(&queued).expect("queued message should serialize");
+    assert_eq!(value.get("force_new_provider_session"), None);
+
+    let mut fresh = QueuedMessage::new("Switch provider".to_string());
+    fresh.force_new_provider_session = true;
+    let value = serde_json::to_value(&fresh).expect("queued message should serialize");
+    assert_eq!(value["force_new_provider_session"], true);
+}
+
+#[test]
+fn test_queued_message_with_id_has_no_runtime_overrides() {
+    let queued = QueuedMessage::with_id(
+        "client-message-1".to_string(),
+        "Client tracked message".to_string(),
+    );
+
+    assert_eq!(queued.id, "client-message-1");
+    assert_eq!(queued.model_override, None);
+    assert_eq!(queued.logical_effort_override, None);
+    assert!(!queued.force_new_provider_session);
+}
+
+#[test]
 fn test_queue_with_runtime_overrides_preserves_selection() {
     let queue = MessageQueue::new();
 

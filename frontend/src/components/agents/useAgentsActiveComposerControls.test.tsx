@@ -190,6 +190,29 @@ describe("useAgentsActiveComposerControls", () => {
     );
   });
 
+  it("does not update provider runtime without a selected conversation", () => {
+    const setRuntimeForConversation = vi.fn();
+    const { result } = renderHook(() =>
+      useAgentsActiveComposerControls(
+        controlsArgs({
+          selectedConversationId: null,
+          setRuntimeForConversation,
+        }),
+      ),
+    );
+
+    act(() => {
+      result.current.handleActiveProviderChange("codex", [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+      ]);
+    });
+
+    expect(setRuntimeForConversation).not.toHaveBeenCalled();
+  });
+
   it("normalizes active effort changes against provider-supported efforts", () => {
     const setRuntimeForConversation = vi.fn();
     const { result } = renderHook(() =>

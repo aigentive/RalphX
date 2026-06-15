@@ -460,7 +460,7 @@ EOF
 async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
     use crate::application::chat_service::{ChatService, MockChatService};
     use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
-    use crate::domain::services::MessageQueue;
+    use crate::domain::services::{ComposerArtifactReference, MessageQueue};
 
     let message_queue = Arc::new(MessageQueue::new());
     let service = MockChatService::with_queue(Arc::clone(&message_queue));
@@ -485,7 +485,14 @@ async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
         true,
         Vec::new(),
         Vec::new(),
-        Vec::new(),
+        vec![ComposerArtifactReference {
+            artifact_id: "artifact-1".to_string(),
+            kind: "plan".to_string(),
+            title: Some("Implementation Plan".to_string()),
+            session_id: Some("session-1".to_string()),
+            version: Some(2),
+            status: Some("approved".to_string()),
+        }],
         Vec::new(),
     );
 
@@ -510,6 +517,10 @@ async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
     assert_eq!(
         sent_options[0].logical_effort_override,
         Some(LogicalEffort::High)
+    );
+    assert_eq!(
+        sent_options[0].composer_artifact_references,
+        queued.composer_artifact_references
     );
     assert!(sent_options[0].force_new_provider_session);
 }

@@ -263,6 +263,7 @@ impl ChatService for MockChatService {
                 force_new_provider_session: queued_msg.force_new_provider_session,
                 composer_project_references: queued_msg.composer_project_references.clone(),
                 composer_integration_references: queued_msg.composer_integration_references.clone(),
+                composer_artifact_references: queued_msg.composer_artifact_references.clone(),
                 attachment_ids: queued_msg.attachment_ids.clone(),
                 ..Default::default()
             },
