@@ -222,6 +222,17 @@ pub async fn trigger_memory_pipelines(
         let wd = working_directory.to_path_buf();
         let event_repo = memory_event_repo.clone();
 
+        log_memory_pipeline_spawn_requested(
+            memory_event_repo.as_ref(),
+            proj_id,
+            conversation_id,
+            context_type,
+            context_id,
+            "ralphx-memory-maintainer",
+            MemoryActorType::MemoryMaintainer,
+        )
+        .await;
+
         spawn_tasks.push(tokio::spawn(async move {
             if let Err(e) =
                 spawn_memory_maintainer(&conv_id, ctx, &ctx_id, &proj, &cli, &plugin, &wd).await
@@ -266,6 +277,17 @@ pub async fn trigger_memory_pipelines(
         let wd = working_directory.to_path_buf();
         let event_repo = memory_event_repo.clone();
 
+        log_memory_pipeline_spawn_requested(
+            memory_event_repo.as_ref(),
+            proj_id,
+            conversation_id,
+            context_type,
+            context_id,
+            "ralphx-memory-capture",
+            MemoryActorType::MemoryCapture,
+        )
+        .await;
+
         spawn_tasks.push(tokio::spawn(async move {
             if let Err(e) =
                 spawn_memory_capture(&conv_id, ctx, &ctx_id, &proj, &cli, &plugin, &wd).await
@@ -309,6 +331,38 @@ pub async fn trigger_memory_pipelines(
 
     // Don't await - fire and forget
     // Tasks will log their own errors
+}
+
+async fn log_memory_pipeline_spawn_requested(
+    memory_event_repo: Option<&Arc<dyn MemoryEventRepository>>,
+    project_id: &ProjectId,
+    conversation_id: &ChatConversationId,
+    context_type: ChatContextType,
+    context_id: &str,
+    agent: &str,
+    actor_type: MemoryActorType,
+) {
+    let Some(repo) = memory_event_repo else {
+        return;
+    };
+
+    let event = MemoryEvent::new(
+        project_id.clone(),
+        "memory_pipeline_spawn_requested",
+        actor_type,
+        serde_json::json!({
+            "agent": agent,
+            "conversation_id": conversation_id.as_str(),
+            "context_type": context_type.to_string(),
+            "context_id": context_id,
+        }),
+    );
+    if let Err(log_err) = repo.create(event).await {
+        tracing::warn!(
+            error = %log_err,
+            "trigger_memory_pipelines: failed to log memory pipeline spawn request"
+        );
+    }
 }
 
 async fn resolve_project_memory_settings(

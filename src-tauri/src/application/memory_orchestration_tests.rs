@@ -297,3 +297,45 @@ async fn test_trigger_memory_pipelines_uses_repository_settings_and_logs_disable
     assert_eq!(events[0].details["reason"], "disabled");
     assert_eq!(events[0].details["conversation_id"], conv_id.as_str());
 }
+
+#[tokio::test]
+async fn test_trigger_memory_pipelines_logs_enabled_capture_spawn_request() {
+    let project_id = ProjectId::from_string("proj-capture-enabled".to_string());
+    let conv_id = ChatConversationId::from_string("conv-capture-enabled".to_string());
+    let cli_path = PathBuf::from("/usr/bin/claude");
+    let plugin_dir = PathBuf::from("/plugins");
+    let wd = PathBuf::from("/tmp");
+    let event_repo = Arc::new(InMemoryMemoryEventRepository::new());
+
+    trigger_memory_pipelines(
+        ChatContextType::Ideation,
+        "session-123",
+        &conv_id,
+        Some(&project_id),
+        Some("ralphx:ralphx-planner"),
+        &cli_path,
+        &plugin_dir,
+        &wd,
+        Some(ProjectMemorySettings {
+            project_id: project_id.clone(),
+            enabled: true,
+            maintenance_categories: Vec::new(),
+            capture_categories: vec!["planning".to_string()],
+        }),
+        Some(event_repo.clone()),
+        None,
+    )
+    .await;
+
+    let events = event_repo
+        .get_by_type("memory_pipeline_spawn_requested")
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].project_id, project_id);
+    assert_eq!(events[0].actor_type, MemoryActorType::MemoryCapture);
+    assert_eq!(events[0].details["agent"], "ralphx-memory-capture");
+    assert_eq!(events[0].details["conversation_id"], conv_id.as_str());
+    assert_eq!(events[0].details["context_type"], "ideation");
+    assert_eq!(events[0].details["context_id"], "session-123");
+}
