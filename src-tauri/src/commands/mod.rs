@@ -33,6 +33,7 @@ pub mod permission_commands;
 pub mod plan_branch_commands;
 pub mod plan_commands;
 pub mod project_commands;
+pub mod provider_cli_management_commands;
 pub mod qa_commands;
 pub mod question_commands;
 #[cfg(test)]
@@ -170,6 +171,12 @@ pub use permission_commands::{
 };
 pub use project_commands::{
     archive_project, create_project, delete_project, get_project, list_projects, update_project,
+};
+pub use provider_cli_management_commands::{
+    auto_update_managed_provider_clis, get_managed_provider_cli_status,
+    install_or_update_managed_provider_cli, ManagedProviderCliActionInput,
+    ManagedProviderCliActionResponse, ManagedProviderCliAutoUpdateResponse,
+    ManagedProviderCliStatusResponse, ManagedProviderCliStatusesResponse,
 };
 pub use qa_commands::{
     get_qa_results, get_qa_settings, get_task_qa, retry_qa, skip_qa, update_qa_settings,

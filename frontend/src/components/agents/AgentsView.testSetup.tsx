@@ -331,7 +331,7 @@ vi.mock("@/hooks/useProjects", () => ({
 }));
 
 vi.mock("@/hooks/useHarnessProviders", () => ({
-  useHarnessProviders: () => useHarnessProvidersMock(),
+  useHarnessProviders: (options?: unknown) => useHarnessProvidersMock(options),
 }));
 
 vi.mock("@/hooks/useAgentModels", () => ({
@@ -351,6 +351,20 @@ vi.mock("@/hooks/useAgentModels", () => ({
           label: "opus",
           menuLabel: "opus",
           defaultEffort: "xhigh",
+          supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+        },
+        {
+          id: "haiku",
+          label: "haiku",
+          menuLabel: "haiku",
+          defaultEffort: "medium",
+          supportedEfforts: ["low", "medium", "high"],
+        },
+        {
+          id: "fable",
+          label: "fable",
+          menuLabel: "fable",
+          defaultEffort: "high",
           supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
         },
       ],

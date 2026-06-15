@@ -268,6 +268,7 @@ fn legacy_model_value(level: Option<&ModelLevel>) -> Option<String> {
         Some(ModelLevel::Sonnet) => Some("sonnet".to_string()),
         Some(ModelLevel::Opus) => Some("opus".to_string()),
         Some(ModelLevel::Haiku) => Some("haiku".to_string()),
+        Some(ModelLevel::Fable) => Some("fable".to_string()),
         Some(ModelLevel::Inherit) | None => None,
     }
 }

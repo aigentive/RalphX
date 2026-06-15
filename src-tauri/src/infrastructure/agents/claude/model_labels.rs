@@ -5,7 +5,7 @@
 //   grep -r 'model:' agents/*/claude/agent.yaml agents/*/agent.yaml | grep -v '#' | head -20
 //
 // Unique model strings found in config/ralphx.yaml and agent .md files:
-//   sonnet, opus, haiku  (short aliases used by shared runtime config)
+//   sonnet, opus, haiku, fable  (short aliases used by shared runtime config)
 //
 // Full model IDs (claude-*) are included in the table as forward-mapping entries
 // for when they appear in runtime --model output or are explicitly set.
@@ -26,6 +26,7 @@ pub(crate) fn model_id_to_label(id: &str) -> String {
         "sonnet" => "Sonnet 4.6",
         "opus" => "Opus 4.6",
         "haiku" => "Haiku 4.5",
+        "fable" => "Fable 5",
         "gpt-5.5" => "GPT-5.5",
         "gpt-5.4" => "GPT-5.4",
         "gpt-5.4-mini" => "GPT-5.4 Mini",
@@ -36,6 +37,7 @@ pub(crate) fn model_id_to_label(id: &str) -> String {
         "claude-sonnet-4-6" => "Sonnet 4.6",
         "claude-opus-4-6" => "Opus 4.6",
         "claude-haiku-4-5-20251001" => "Haiku 4.5",
+        "claude-fable-5" => "Fable 5",
         // Fallback: return raw ID so the chip is never blank
         other => return other.to_string(),
     }
@@ -54,6 +56,7 @@ mod tests {
         assert_eq!(model_id_to_label("sonnet"), "Sonnet 4.6");
         assert_eq!(model_id_to_label("opus"), "Opus 4.6");
         assert_eq!(model_id_to_label("haiku"), "Haiku 4.5");
+        assert_eq!(model_id_to_label("fable"), "Fable 5");
         assert_eq!(model_id_to_label("gpt-5.5"), "GPT-5.5");
         assert_eq!(model_id_to_label("gpt-5.4"), "GPT-5.4");
         assert_eq!(model_id_to_label("gpt-5.4-mini"), "GPT-5.4 Mini");
@@ -70,6 +73,7 @@ mod tests {
         assert_eq!(model_id_to_label("claude-sonnet-4-6"), "Sonnet 4.6");
         assert_eq!(model_id_to_label("claude-opus-4-6"), "Opus 4.6");
         assert_eq!(model_id_to_label("claude-haiku-4-5-20251001"), "Haiku 4.5");
+        assert_eq!(model_id_to_label("claude-fable-5"), "Fable 5");
     }
 
     #[test]

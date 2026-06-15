@@ -95,6 +95,8 @@ const mockAgentProviderSettings = {
       claudePermissionMode: null,
       claudeDangerouslySkipPermissions: false,
       claudeAllowDangerouslySkipPermissions: false,
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
       available: true,
       binaryFound: true,
       binaryPath: "/opt/homebrew/bin/codex",
@@ -115,6 +117,8 @@ const mockAgentProviderSettings = {
       claudePermissionMode: "bypassPermissions",
       claudeDangerouslySkipPermissions: true,
       claudeAllowDangerouslySkipPermissions: true,
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
       available: true,
       binaryFound: true,
       binaryPath: "/opt/homebrew/bin/claude",
@@ -127,6 +131,41 @@ const mockAgentProviderSettings = {
   ],
   defaultProvider: "codex",
   requiresOnboarding: false,
+};
+
+const mockManagedProviderCliStatuses = {
+  providers: [
+    {
+      provider: "codex",
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
+      supported: true,
+      installed: true,
+      binaryPath: "/opt/homebrew/bin/codex",
+      currentVersion: "0.136.0",
+      latestVersion: "0.137.0",
+      updateAvailable: true,
+      action: "none",
+      status:
+        "codex CLI 0.136.0 is user-managed; 0.137.0 is available. RX will not update it unless management is enabled.",
+      error: null,
+    },
+    {
+      provider: "claude",
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
+      supported: true,
+      installed: true,
+      binaryPath: "/Users/example/.local/bin/claude",
+      currentVersion: "2.1.170",
+      latestVersion: "2.1.175",
+      updateAvailable: true,
+      action: "none",
+      status:
+        "claude CLI 2.1.170 is user-managed; 2.1.175 is available. RX will not update it unless management is enabled.",
+      error: null,
+    },
+  ],
 };
 
 const mockAgentModels = [
@@ -566,6 +605,35 @@ const commandHandlers: Record<
     ],
   }),
   get_agent_provider_settings: async () => mockAgentProviderSettings,
+  get_managed_provider_cli_status: async () => mockManagedProviderCliStatuses,
+  install_or_update_managed_provider_cli: async (args) => {
+    const input = args.input as { provider?: string };
+    const status = mockManagedProviderCliStatuses.providers.find(
+      (entry) => entry.provider === input.provider,
+    );
+    if (!status || !status.supported) {
+      throw new Error("Managed CLI installs are not available for this provider.");
+    }
+    Object.assign(status, {
+      cliManagementMode: "rx_managed",
+      installed: true,
+      currentVersion: status.latestVersion ?? "0.137.0",
+      updateAvailable: false,
+      action: "none",
+      status: `RX-managed ${status.provider} ${status.latestVersion ?? "0.137.0"} is installed.`,
+    });
+    return {
+      provider: status.provider,
+      success: true,
+      status,
+      stdout: "mock install complete",
+      stderr: null,
+    };
+  },
+  auto_update_managed_provider_clis: async () => ({
+    updated: [],
+    skipped: mockManagedProviderCliStatuses.providers,
+  }),
   get_atlassian_integration_settings: async () => mockAtlassianIntegrationSettings,
   save_atlassian_integration_settings: async (args) => {
     const input = args.input as {

@@ -11,6 +11,7 @@ const MODEL_LABEL_MAP: Record<string, string> = {
   sonnet: "Sonnet 4.6",
   opus: "Opus 4.6",
   haiku: "Haiku 4.5",
+  fable: "Fable 5",
   "gpt-5.5": "GPT-5.5",
   "gpt-5.4": "GPT-5.4",
   "gpt-5.4-mini": "GPT-5.4 Mini",
@@ -21,6 +22,7 @@ const MODEL_LABEL_MAP: Record<string, string> = {
   "claude-sonnet-4-6": "Sonnet 4.6",
   "claude-opus-4-6": "Opus 4.6",
   "claude-haiku-4-5-20251001": "Haiku 4.5",
+  "claude-fable-5": "Fable 5",
 };
 
 /**

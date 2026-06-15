@@ -124,7 +124,8 @@ pub struct SendAgentMessageInput {
     pub content: String,
     /// Optional existing conversation to continue.
     pub conversation_id: Option<String>,
-    /// Optional provider harness override for the first spawn of a conversation.
+    /// Optional provider harness selected for this send. Existing conversations switch
+    /// provider by starting a fresh provider-native session when the harness changes.
     pub provider_harness: Option<String>,
     /// Optional explicit model override for the spawned agent.
     pub model_override: Option<String>,
@@ -237,7 +238,7 @@ pub struct StartAgentConversationInput {
     pub content: String,
     /// Optional draft conversation to use after uploading pending attachments.
     pub conversation_id: Option<String>,
-    /// Optional provider harness override for the first spawn of the conversation.
+    /// Optional provider harness selected for the initial conversation send.
     pub provider_harness: Option<String>,
     /// Optional explicit model override for the spawned agent.
     pub model_override: Option<String>,
@@ -7654,7 +7655,7 @@ mod tests {
     #[tokio::test]
     async fn normalize_agent_runtime_falls_back_when_provider_models_disabled() {
         let state = AppState::new_test();
-        for model_id in ["sonnet", "opus", "haiku"] {
+        for model_id in ["sonnet", "opus", "haiku", "fable"] {
             state
                 .agent_model_registry_repo
                 .upsert_custom_model(&AgentModelDefinition::custom(

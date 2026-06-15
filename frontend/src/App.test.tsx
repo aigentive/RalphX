@@ -7,6 +7,7 @@ import { ideationApi } from "@/api/ideation";
 import { agentConversationKeys } from "@/components/agents/useProjectAgentConversations";
 import { chatKeys } from "@/hooks/useChat";
 import { getQueryClient } from "@/lib/queryClient";
+import { api } from "@/lib/tauri";
 import { markPostUpdatePreparing } from "@/lib/postUpdatePreparing";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -21,6 +22,7 @@ import { useMergePipeline } from "@/hooks/useMergePipeline";
 import { useIdeationSession, useIdeationSessions } from "@/hooks/useIdeation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { toast } from "sonner";
+import type { Project } from "@/types/project";
 
 const { sonnerToasterMock } = vi.hoisted(() => ({
   sonnerToasterMock: vi.fn(() => null),
@@ -119,9 +121,18 @@ vi.mock("@/components/activity", () => ({
 
 // Mock AgentsView
 vi.mock("@/components/agents", () => ({
-  AgentsView: ({ footer }: { footer?: React.ReactNode }) => (
+  AgentsView: ({
+    footer,
+    onCreateProject,
+  }: {
+    footer?: React.ReactNode;
+    onCreateProject?: () => void;
+  }) => (
     <div data-testid="agents-view-mock">
       Agents View
+      <button type="button" data-testid="agents-create-project" onClick={onCreateProject}>
+        Add project
+      </button>
       {footer && <div data-testid="agents-footer-mock">{footer}</div>}
     </div>
   ),
@@ -130,6 +141,10 @@ vi.mock("@/components/agents", () => ({
 // Mock UpdateChecker to avoid delayed non-critical updater checks during shell tests.
 vi.mock("@/components/UpdateChecker", () => ({
   UpdateChecker: () => null,
+}));
+
+vi.mock("@/components/ProviderCliUpdateChecker", () => ({
+  ProviderCliUpdateChecker: () => null,
 }));
 
 // Mock SettingsView (still exported from index for backward compat, but no longer used in App)
@@ -157,7 +172,34 @@ vi.mock("@/components/projects/ProjectSelector", () => ({
 
 // Mock ProjectCreationWizard
 vi.mock("@/components/projects/ProjectCreationWizard", () => ({
-  ProjectCreationWizard: () => null,
+  ProjectCreationWizard: ({
+    isOpen,
+    onCreate,
+  }: {
+    isOpen: boolean;
+    onCreate: (project: {
+      name: string;
+      workingDirectory: string;
+      gitMode: "worktree";
+      baseBranch: string;
+    }) => void | Promise<void>;
+  }) =>
+    isOpen ? (
+      <button
+        type="button"
+        data-testid="project-wizard-create"
+        onClick={() =>
+          void onCreate({
+            name: "Created Project",
+            workingDirectory: "/tmp/created-project",
+            gitMode: "worktree",
+            baseBranch: "main",
+          })
+        }
+      >
+        Create Project
+      </button>
+    ) : null,
 }));
 
 // Mock ideation hooks
@@ -376,6 +418,26 @@ function resetStores() {
   getQueryClient().clear();
 }
 
+function buildCreatedProject(overrides: Partial<Project> = {}): Project {
+  return {
+    id: "created-project",
+    name: "Created Project",
+    workingDirectory: "/tmp/created-project",
+    gitMode: "worktree",
+    baseBranch: "main",
+    worktreeParentDirectory: null,
+    useFeatureBranches: true,
+    mergeValidationMode: "block",
+    detectedAnalysis: null,
+    customAnalysis: null,
+    analyzedAt: null,
+    githubPrEnabled: false,
+    createdAt: "2026-06-15T12:00:00Z",
+    updatedAt: "2026-06-15T12:00:00Z",
+    ...overrides,
+  };
+}
+
 describe("App", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -436,6 +498,88 @@ describe("App", () => {
     render(<App />);
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
     expect(screen.getByTestId("nav-agents")).toHaveAttribute("aria-current", "page");
+  });
+
+  it("switches to a new Agents conversation for a project created from Agents", async () => {
+    const createdProject = buildCreatedProject();
+    const createProjectSpy = vi
+      .spyOn(api.projects, "create")
+      .mockResolvedValue(createdProject);
+
+    useUiStore.setState({ currentView: "agents" });
+    useAgentSessionStore.setState({
+      focusedProjectId: "demo-project-1",
+      selectedProjectId: "demo-project-1",
+      selectedConversationId: "old-conversation",
+    });
+
+    render(<App />);
+
+    fireEvent.click(screen.getByTestId("agents-create-project"));
+    fireEvent.click(screen.getByTestId("project-wizard-create"));
+
+    await waitFor(() => expect(createProjectSpy).toHaveBeenCalledTimes(1));
+
+    expect(useProjectStore.getState().activeProjectId).toBe("created-project");
+    expect(useUiStore.getState().currentView).toBe("agents");
+    expect(useAgentSessionStore.getState()).toEqual(
+      expect.objectContaining({
+        focusedProjectId: "created-project",
+        selectedProjectId: null,
+        selectedConversationId: null,
+      })
+    );
+  });
+
+  it("defaults top-bar project creation to Agents and keeps narrowed filters visible", async () => {
+    const createdProject = buildCreatedProject({
+      id: "created-filter-project",
+      name: "Filtered Project",
+    });
+    const createProjectSpy = vi
+      .spyOn(api.projects, "create")
+      .mockResolvedValue(createdProject);
+
+    useUiStore.getState().setCurrentView("graph");
+    useUiStore.setState({
+      selectedTaskId: "task-1",
+      graphSelection: { kind: "task", id: "task-1" },
+    });
+    useAgentSessionStore.setState({
+      focusedProjectId: "demo-project-1",
+      selectedProjectId: "demo-project-1",
+      selectedConversationId: "old-conversation",
+      showAllProjects: false,
+      sidebarProjectFilterIds: ["demo-project-1"],
+    });
+
+    render(<App />);
+
+    fireEvent.click(screen.getByTestId("project-selector-mock"));
+    fireEvent.click(screen.getByTestId("project-wizard-create"));
+
+    await waitFor(() => expect(createProjectSpy).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(useUiStore.getState()).toEqual(
+        expect.objectContaining({
+          currentView: "agents",
+          selectedTaskId: null,
+          graphSelection: null,
+        })
+      )
+    );
+
+    expect(useProjectStore.getState().activeProjectId).toBe("created-filter-project");
+    expect(useUiStore.getState().viewByProject["demo-project-1"]).toBe("graph");
+    expect(useAgentSessionStore.getState()).toEqual(
+      expect.objectContaining({
+        focusedProjectId: "created-filter-project",
+        selectedProjectId: null,
+        selectedConversationId: null,
+        showAllProjects: false,
+        sidebarProjectFilterIds: ["demo-project-1", "created-filter-project"],
+      })
+    );
   });
 
   it("does not show Atlassian awareness on a normal app load", async () => {

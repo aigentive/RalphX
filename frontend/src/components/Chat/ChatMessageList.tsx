@@ -291,11 +291,7 @@ function senderGroupPart(value: string | null | undefined) {
   return trimmed && trimmed.length > 0 ? trimmed : "";
 }
 
-function assistantSenderGroupKeyForMessage(
-  message: ChatMessageData,
-  fallbackProviderHarness: string | null | undefined,
-  fallbackProviderSessionId: string | null | undefined,
-): string | null {
+function assistantSenderGroupKeyForMessage(message: ChatMessageData): string | null {
   if (!isProviderRole(message.role)) {
     return null;
   }
@@ -306,8 +302,8 @@ function assistantSenderGroupKeyForMessage(
   return [
     "assistant",
     senderGroupPart(message.sender),
-    senderGroupPart(message.providerHarness ?? fallbackProviderHarness),
-    senderGroupPart(message.providerSessionId ?? fallbackProviderSessionId),
+    senderGroupPart(message.providerHarness),
+    senderGroupPart(message.providerSessionId),
     senderGroupPart(message.upstreamProvider),
     senderGroupPart(message.providerProfile),
   ].join("\u0000");
@@ -319,11 +315,7 @@ function assistantSenderGroupKeyForTimelineItem(
   fallbackProviderSessionId: string | null | undefined,
 ): string | null {
   if (item.kind === "message") {
-    return assistantSenderGroupKeyForMessage(
-      item.data,
-      fallbackProviderHarness,
-      fallbackProviderSessionId,
-    );
+    return assistantSenderGroupKeyForMessage(item.data);
   }
   if (item.kind === "streaming") {
     return [
@@ -2305,8 +2297,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               {...(composerReferences ? { composerReferences } : {})}
               teammateName={teammateName}
               teammateColor={teammateColor}
-              providerHarness={msg.providerHarness ?? providerHarness}
-              providerSessionId={msg.providerSessionId ?? providerSessionId}
+              providerHarness={msg.providerHarness}
+              providerSessionId={msg.providerSessionId}
               upstreamProvider={msg.upstreamProvider}
               providerProfile={msg.providerProfile}
               logicalModel={msg.logicalModel}
@@ -2325,7 +2317,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           </ContentShell>
         </div>
       );
-    }, [contentWidthClassName, firstItemIndex, footerContent, getTeammateInfo, handleFooterRef, handleLastRenderedRowRef, providerHarness, providerSessionId, timeline.length, timelineSenderGroups]);
+    }, [contentWidthClassName, firstItemIndex, footerContent, getTeammateInfo, handleFooterRef, handleLastRenderedRowRef, timeline.length, timelineSenderGroups]);
 
     if (isTestEnv) {
       return (
@@ -2445,8 +2437,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                     {...(composerReferences ? { composerReferences } : {})}
                     teammateName={teammateName}
                     teammateColor={teammateColor}
-                    providerHarness={msg.providerHarness ?? providerHarness}
-                    providerSessionId={msg.providerSessionId ?? providerSessionId}
+                    providerHarness={msg.providerHarness}
+                    providerSessionId={msg.providerSessionId}
                     upstreamProvider={msg.upstreamProvider}
                     providerProfile={msg.providerProfile}
                     logicalModel={msg.logicalModel}

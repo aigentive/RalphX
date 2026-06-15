@@ -459,8 +459,11 @@ EOF
 #[tokio::test]
 async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
     use crate::application::chat_service::{ChatService, MockChatService};
+    use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
+    use crate::domain::services::{ComposerArtifactReference, MessageQueue};
 
-    let service = MockChatService::new();
+    let message_queue = Arc::new(MessageQueue::new());
+    let service = MockChatService::with_queue(Arc::clone(&message_queue));
     let missing = service
         .send_queued_message_now(ChatContextType::Task, "task-1", "missing")
         .await
@@ -470,10 +473,28 @@ async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
         "missing queued message error should identify the queue lookup failure"
     );
 
-    let queued = service
-        .queue_message(ChatContextType::Task, "task-1", "queued content", None)
-        .await
-        .expect("queued message should be accepted");
+    let queued = message_queue.queue_with_runtime_overrides_and_project_references(
+        ChatContextType::Task,
+        "task-1",
+        "queued content".to_string(),
+        Some(r#"{"source":"queue-now"}"#.to_string()),
+        None,
+        Some(AgentHarnessKind::Codex),
+        Some("gpt-5.5".to_string()),
+        Some(LogicalEffort::High),
+        true,
+        Vec::new(),
+        Vec::new(),
+        vec![ComposerArtifactReference {
+            artifact_id: "artifact-1".to_string(),
+            kind: "plan".to_string(),
+            title: Some("Implementation Plan".to_string()),
+            session_id: Some("session-1".to_string()),
+            version: Some(2),
+            status: Some("approved".to_string()),
+        }],
+        Vec::new(),
+    );
 
     let result = service
         .send_queued_message_now(ChatContextType::Task, "task-1", &queued.id)
@@ -485,6 +506,23 @@ async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
         service.get_sent_messages().await,
         vec!["queued content".to_string()]
     );
+    let sent_options = service.get_sent_options().await;
+    assert_eq!(sent_options.len(), 1);
+    assert_eq!(
+        sent_options[0].metadata.as_deref(),
+        Some(r#"{"source":"queue-now"}"#)
+    );
+    assert_eq!(sent_options[0].harness_override, Some(AgentHarnessKind::Codex));
+    assert_eq!(sent_options[0].model_override.as_deref(), Some("gpt-5.5"));
+    assert_eq!(
+        sent_options[0].logical_effort_override,
+        Some(LogicalEffort::High)
+    );
+    assert_eq!(
+        sent_options[0].composer_artifact_references,
+        queued.composer_artifact_references
+    );
+    assert!(sent_options[0].force_new_provider_session);
 }
 
 #[tokio::test]

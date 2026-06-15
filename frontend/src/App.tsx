@@ -26,6 +26,7 @@ import { TeamSplitView } from "@/components/Team";
 import { TaskGraphView } from "@/components/TaskGraph";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { UpdateChecker } from "@/components/UpdateChecker";
+import { ProviderCliUpdateChecker } from "@/components/ProviderCliUpdateChecker";
 import { PostUpdatePreparingScreen } from "@/components/PostUpdatePreparingScreen";
 import { ProjectCreationWizard } from "@/components/projects/ProjectCreationWizard";
 import { PlanQuickSwitcherPalette } from "@/components/plan/PlanQuickSwitcherPalette";
@@ -76,6 +77,19 @@ import { ScreenshotGalleryTestPage } from "@/test-pages/ScreenshotGalleryTest";
 
 const queryClient = getQueryClient();
 const ATLASSIAN_AWARENESS_TOAST_KEY = "ralphx.atlassianIntegrationAwareness.v1";
+
+function ensureCreatedProjectVisibleInAgentFilters(projectId: string) {
+  const {
+    showAllProjects,
+    sidebarProjectFilterIds,
+    setSidebarProjectFilterIds,
+  } = useAgentSessionStore.getState();
+  if (!showAllProjects) {
+    setSidebarProjectFilterIds([
+      ...new Set([...sidebarProjectFilterIds, projectId]),
+    ]);
+  }
+}
 
 /**
  * Test page router - checks URL params and returns test page if applicable
@@ -716,13 +730,21 @@ function AppContent() {
       await queryClient.invalidateQueries({ queryKey: projectKeys.list() });
       addProject(newProject);
       selectProject(newProject.id);
+      setFocusedAgentProject(newProject.id);
+      clearAgentSelection();
+      ensureCreatedProjectVisibleInAgentFilters(newProject.id);
       setIsProjectWizardOpen(false);
     } catch (error) {
       setProjectCreationError(error instanceof Error ? error.message : "Failed to create project");
     } finally {
       setIsCreatingProject(false);
     }
-  }, [addProject, selectProject]);
+  }, [
+    addProject,
+    clearAgentSelection,
+    selectProject,
+    setFocusedAgentProject,
+  ]);
 
   const handleBrowseFolder = useCallback(async (): Promise<string | null> => {
     try {
@@ -908,6 +930,7 @@ function AppContent() {
       >
       {/* Update checker - runs on mount, shows toast if update available */}
       <UpdateChecker />
+      <ProviderCliUpdateChecker />
 
       {isPostUpdatePreparing ? (
         <PostUpdatePreparingScreen />

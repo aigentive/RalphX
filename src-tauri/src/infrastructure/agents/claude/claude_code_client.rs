@@ -11,7 +11,7 @@ use futures::Stream;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Stdio;
 use std::time::Instant;
@@ -27,7 +27,7 @@ use super::{
     append_claude_permission_args, apply_common_spawn_env, claude_runtime_config,
     create_mcp_config, ensure_claude_spawn_allowed, find_claude_cli, get_allowed_tools,
     get_effective_settings, get_preapproved_tools, normalize_claude_effort_for_cli_path,
-    sanitize_claude_user_state,
+    sanitize_claude_user_state, validate_claude_model_for_cli_path,
 };
 
 // ============================================================================
@@ -374,6 +374,25 @@ impl Default for ClaudeCodeClient {
     }
 }
 
+fn resolved_config_model(config: &AgentConfig) -> Option<String> {
+    config.model.clone().or_else(|| {
+        config.agent.as_ref().and_then(|agent_name| {
+            crate::infrastructure::agents::claude::get_agent_config(agent_name)
+                .and_then(|cfg| cfg.model.clone())
+        })
+    })
+}
+
+fn append_validated_model_args(
+    args: &mut Vec<String>,
+    cli_path: &Path,
+    model: &str,
+) -> Result<(), String> {
+    validate_claude_model_for_cli_path(cli_path, model)?;
+    args.extend(["--model".to_string(), model.to_string()]);
+    Ok(())
+}
+
 #[async_trait]
 impl AgenticClient for ClaudeCodeClient {
     async fn spawn_agent(&self, config: AgentConfig) -> AgentResult<AgentHandle> {
@@ -434,15 +453,9 @@ impl AgenticClient for ClaudeCodeClient {
         }
 
         // Add model: explicit config override first, then per-agent default from config/ralphx.yaml
-        if let Some(model) = &config.model {
-            args.extend(["--model".to_string(), model.clone()]);
-        } else if let Some(agent_name) = &config.agent {
-            if let Some(agent_model) =
-                crate::infrastructure::agents::claude::get_agent_config(agent_name)
-                    .and_then(|cfg| cfg.model.as_ref())
-            {
-                args.extend(["--model".to_string(), agent_model.clone()]);
-            }
+        if let Some(model) = resolved_config_model(&config) {
+            append_validated_model_args(&mut args, &self.cli_path, &model)
+                .map_err(AgentError::SpawnFailed)?;
         }
 
         // Add max tokens if specified
@@ -664,15 +677,8 @@ impl ClaudeCodeClient {
         }
 
         // Model override: explicit config first, then per-agent default from config/ralphx.yaml
-        if let Some(model) = &config.model {
-            args.extend(["--model".to_string(), model.clone()]);
-        } else if let Some(agent_name) = &config.agent {
-            if let Some(agent_model) =
-                crate::infrastructure::agents::claude::get_agent_config(agent_name)
-                    .and_then(|cfg| cfg.model.as_ref())
-            {
-                args.extend(["--model".to_string(), agent_model.clone()]);
-            }
+        if let Some(model) = resolved_config_model(config) {
+            append_validated_model_args(&mut args, &self.cli_path, &model)?;
         }
 
         // Max tokens
@@ -930,7 +936,7 @@ impl ClaudeCodeClient {
         args.extend(["--agent-type".to_string(), config.agent_type.clone()]);
 
         // Model selection (within model ceiling)
-        args.extend(["--model".to_string(), config.model.clone()]);
+        append_validated_model_args(&mut args, &self.cli_path, &config.model)?;
 
         // Effort level — explicitly passed by spawner via .with_effort(), or global default
         let effort = config

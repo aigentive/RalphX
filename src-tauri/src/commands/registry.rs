@@ -202,6 +202,9 @@ macro_rules! register_tauri_commands {
             commands::ideation_commands::update_agent_lane_settings,
             commands::harness_provider_commands::get_agent_provider_settings,
             commands::harness_provider_commands::update_agent_provider_settings,
+            commands::provider_cli_management_commands::get_managed_provider_cli_status,
+            commands::provider_cli_management_commands::install_or_update_managed_provider_cli,
+            commands::provider_cli_management_commands::auto_update_managed_provider_clis,
             // Ideation effort commands
             commands::ideation_commands::get_ideation_effort_settings,
             commands::ideation_commands::update_ideation_effort_settings,

@@ -92,6 +92,7 @@ pub(crate) async fn build_session_namer_agent_spawn(
         agent: Some(bootstrap.agent_name),
         model: resolved.runtime.model,
         harness: resolved.runtime.harness,
+        cli_path_override: resolved.runtime.cli_path_override,
         logical_effort: resolved.runtime.logical_effort,
         approval_policy: resolved.runtime.approval_policy,
         sandbox_mode: resolved.runtime.sandbox_mode,

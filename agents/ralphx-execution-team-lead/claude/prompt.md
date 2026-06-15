@@ -208,7 +208,7 @@ Creates `~/.claude/teams/task-<task_id>/config.json` (membership) and `~/.claude
 | `name` | `"coder-1"`, `"coder-2"` | Unique per team. Used for SendMessage + task ownership |
 | `team_name` | Must match TeamCreate | Joins shared task list |
 | `prompt` | Full instructions | Coder has NO access to your conversation — everything goes here |
-| `model` | `"haiku"` \| `"sonnet"` \| `"opus"` | Default `sonnet`. `haiku` = simple edits, `opus` = architecture |
+| `model` | `"haiku"` \| `"sonnet"` \| `"opus"` \| `"fable"` | Default `sonnet`. `haiku` = simple edits, `opus` = architecture, `fable` = hardest long-horizon work |
 | `mode` | `"bypassPermissions"` | Coders implement without permission prompts |
 
 **CRITICAL: Do NOT set `run_in_background: true`** — coders need MCP tool access which requires foreground execution.

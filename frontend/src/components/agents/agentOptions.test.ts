@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_AGENT_RUNTIME,
   agentEffortOptionsForModel,
+  agentModelOptions,
   normalizeRuntimeSelection,
 } from "./agentOptions";
 
@@ -154,6 +155,74 @@ describe("agentOptions", () => {
     ).toEqual({
       provider: "claude",
       modelId: "custom-claude-model",
+      effort: "high",
+    });
+  });
+
+  it("progressively exposes Fable only when Claude reports the alias", () => {
+    expect(agentModelOptions("claude").map((option) => option.id)).toEqual([
+      "sonnet",
+      "opus",
+      "haiku",
+    ]);
+    expect(
+      agentModelOptions("claude", undefined, ["sonnet", "opus", "haiku"]).map(
+        (option) => option.id,
+      ),
+    ).toEqual(["sonnet", "opus", "haiku"]);
+    expect(
+      agentModelOptions("claude", undefined, ["sonnet", "opus", "haiku", "fable"]).map(
+        (option) => option.id,
+      ),
+    ).toEqual(["sonnet", "opus", "haiku", "fable"]);
+  });
+
+  it("falls back from Fable only when provider model aliases are known unsupported", () => {
+    expect(
+      normalizeRuntimeSelection({
+        provider: "claude",
+        modelId: "fable",
+        effort: "xhigh",
+      }),
+    ).toEqual({
+      provider: "claude",
+      modelId: "fable",
+      effort: "xhigh",
+    });
+
+    expect(
+      normalizeRuntimeSelection(
+        {
+          provider: "claude",
+          modelId: "fable",
+          effort: "xhigh",
+        },
+        undefined,
+        null,
+        ["sonnet", "opus", "haiku"],
+      ),
+    ).toEqual({
+      provider: "claude",
+      modelId: "sonnet",
+      effort: "medium",
+    });
+  });
+
+  it("keeps custom Claude models while gating Fable aliases", () => {
+    expect(
+      normalizeRuntimeSelection(
+        {
+          provider: "claude",
+          modelId: "my-fable-compatible-model",
+          effort: "high",
+        },
+        undefined,
+        null,
+        ["sonnet", "opus", "haiku"],
+      ),
+    ).toEqual({
+      provider: "claude",
+      modelId: "my-fable-compatible-model",
       effort: "high",
     });
   });

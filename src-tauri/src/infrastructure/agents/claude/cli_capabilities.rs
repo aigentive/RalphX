@@ -5,7 +5,12 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::domain::agents::LogicalEffort;
 
+pub const CLAUDE_FABLE_MODEL_ALIAS: &str = "fable";
+pub const CLAUDE_FABLE_API_MODEL_ID: &str = "claude-fable-5";
+pub const CLAUDE_FABLE_MIN_VERSION: (u64, u64, u64) = (2, 1, 170);
+
 const CLAUDE_XHIGH_MIN_VERSION: (u64, u64, u64) = (2, 1, 111);
+const BASE_CLAUDE_MODEL_ALIASES: [&str; 3] = ["sonnet", "opus", "haiku"];
 const CLAUDE_EFFORT_ORDER: [LogicalEffort; 5] = [
     LogicalEffort::Low,
     LogicalEffort::Medium,
@@ -27,6 +32,7 @@ static CLAUDE_CLI_CAPABILITY_CACHE: OnceLock<
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaudeCliCapabilities {
     pub version: Option<String>,
+    pub supported_model_aliases: Vec<String>,
     pub supported_efforts: Vec<LogicalEffort>,
 }
 
@@ -40,6 +46,17 @@ impl ClaudeCliCapabilities {
             .iter()
             .map(ToString::to_string)
             .collect()
+    }
+
+    pub fn supports_model_alias(&self, model: &str) -> bool {
+        let normalized = normalize_model_alias(model);
+        self.supported_model_aliases
+            .iter()
+            .any(|alias| alias == &normalized)
+    }
+
+    pub fn supports_fable_model(&self) -> bool {
+        self.supports_model_alias(CLAUDE_FABLE_MODEL_ALIAS)
     }
 }
 
@@ -58,9 +75,11 @@ pub fn parse_claude_cli_capabilities(
     let supported_efforts = parse_supported_efforts_from_help(help_output)
         .filter(|efforts| !efforts.is_empty())
         .unwrap_or_else(|| fallback_supported_efforts(version.as_deref()));
+    let supported_model_aliases = fallback_supported_model_aliases(version.as_deref());
 
     ClaudeCliCapabilities {
         version,
+        supported_model_aliases,
         supported_efforts,
     }
 }
@@ -113,6 +132,37 @@ pub fn normalize_claude_effort_for_capabilities(
     normalize_claude_effort_for_supported(effort, &capabilities.supported_efforts)
 }
 
+pub fn validate_claude_model_for_cli_path(cli_path: &Path, model: &str) -> Result<(), String> {
+    if !is_claude_fable_model(model) {
+        return Ok(());
+    }
+
+    let capabilities = probe_claude_cli_cached(cli_path).map_err(|error| {
+        format!(
+            "Cannot verify Claude Code supports Fable 5 before launching with --model {model:?}: {error}"
+        )
+    })?;
+    if capabilities.supports_fable_model() {
+        return Ok(());
+    }
+
+    let installed_version = capabilities
+        .version
+        .as_deref()
+        .map(|version| format!("Installed Claude Code version is {version}. "))
+        .unwrap_or_default();
+    Err(format!(
+        "Claude Fable 5 requires Claude Code v2.1.170 or newer. {installed_version}Upgrade Claude Code before selecting --model fable."
+    ))
+}
+
+pub fn is_claude_fable_model(model: &str) -> bool {
+    matches!(
+        normalize_model_alias(model).as_str(),
+        CLAUDE_FABLE_MODEL_ALIAS | CLAUDE_FABLE_API_MODEL_ID
+    )
+}
+
 fn normalize_claude_effort_for_supported(effort: &str, supported: &[LogicalEffort]) -> String {
     let Ok(requested) = effort.parse::<LogicalEffort>() else {
         tracing::warn!(
@@ -163,6 +213,24 @@ fn fallback_supported_efforts(version: Option<&str>) -> Vec<LogicalEffort> {
     } else {
         LEGACY_CLAUDE_EFFORTS.to_vec()
     }
+}
+
+fn fallback_supported_model_aliases(version: Option<&str>) -> Vec<String> {
+    let mut aliases = BASE_CLAUDE_MODEL_ALIASES
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if version
+        .and_then(parse_semver_triplet)
+        .is_some_and(|version| version >= CLAUDE_FABLE_MIN_VERSION)
+    {
+        aliases.push(CLAUDE_FABLE_MODEL_ALIAS.to_string());
+    }
+    aliases
+}
+
+fn normalize_model_alias(model: &str) -> String {
+    model.trim().to_ascii_lowercase()
 }
 
 fn parse_semver_triplet(version: &str) -> Option<(u64, u64, u64)> {

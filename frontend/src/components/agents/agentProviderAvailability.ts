@@ -16,6 +16,8 @@ export interface AgentProviderAvailabilityOption {
   label: string;
   disabled?: boolean;
   disabledReason?: string;
+  cliVersion?: string | null;
+  supportedModelAliases?: readonly string[] | null;
   supportedEfforts?: readonly string[] | null;
 }
 
@@ -36,6 +38,12 @@ export function buildAgentProviderAvailabilityOptions({
 
     return {
       ...option,
+      ...(provider?.cliVersion !== undefined
+        ? { cliVersion: provider.cliVersion }
+        : {}),
+      ...(provider?.supportedModelAliases !== undefined
+        ? { supportedModelAliases: provider.supportedModelAliases }
+        : {}),
       ...(provider?.supportedEfforts !== undefined
         ? { supportedEfforts: provider.supportedEfforts }
         : {}),
@@ -49,6 +57,15 @@ export function supportedEffortsForProvider(
   provider: AgentProvider,
 ): readonly string[] | null {
   return providerOptions.find((option) => option.id === provider)?.supportedEfforts ?? null;
+}
+
+export function supportedModelAliasesForProvider(
+  providerOptions: readonly AgentProviderAvailabilityOption[],
+  provider: AgentProvider,
+): readonly string[] | null {
+  return (
+    providerOptions.find((option) => option.id === provider)?.supportedModelAliases ?? null
+  );
 }
 
 export function findSelectableAgentProvider(
@@ -78,6 +95,7 @@ export function normalizeRuntimeForSelectableProvider({
     runtime,
     modelRegistry,
     supportedEffortsForProvider(providerOptions, runtime.provider),
+    supportedModelAliasesForProvider(providerOptions, runtime.provider),
   );
   const selectedProvider = findSelectableAgentProvider(
     providerOptions,
@@ -100,6 +118,7 @@ export function normalizeRuntimeForSelectableProvider({
     },
     modelRegistry,
     supportedEffortsForProvider(providerOptions, fallbackProvider),
+    supportedModelAliasesForProvider(providerOptions, fallbackProvider),
   );
 }
 

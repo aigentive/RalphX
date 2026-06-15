@@ -544,6 +544,36 @@ describe("AgentsChatHeader", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it("shows the commit and publish shortcut for linked edit workspaces", () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    const openPublishPane = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({
+          id: "conversation-1",
+          agentMode: "edit",
+        })}
+        workspace={conversationWorkspace({
+          mode: "edit",
+          linkedIdeationSessionId: "planning-session-1",
+        })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={publish}
+        onOpenPublishPane={openPublishPane}
+        onToggleTerminal={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId("agents-publish-workspace"));
+
+    expect(openPublishPane).toHaveBeenCalledTimes(1);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it("opens a selected workspace target from the header dropdown", () => {
     const openWorkspaceTarget = vi.fn();
     renderWithProviders(
@@ -820,6 +850,32 @@ describe("AgentsChatHeader", () => {
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Tasks")).not.toBeInTheDocument();
+  });
+
+  it("shows the attached Plan shortcut for linked edit workspaces", () => {
+    const onSelectArtifact = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ agentMode: "edit" })}
+        workspace={conversationWorkspace({
+          mode: "edit",
+          linkedIdeationSessionId: "planning-session-1",
+        })}
+        availableArtifactTabs={["plan", "verification", "proposal"]}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={onSelectArtifact}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText("Plan"));
+
+    expect(onSelectArtifact).toHaveBeenCalledWith("plan");
+    expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
   });
 
   it("shows ideation artifact shortcuts for ideation-mode conversations", () => {

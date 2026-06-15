@@ -6,11 +6,15 @@
 // This is a consolidation of ExecutionMessageQueue to support
 // queueing messages for all context types, not just TaskExecution.
 
-use crate::domain::agents::AgentHarnessKind;
+use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{ChatAttachmentId, ChatContextType, TaskId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 /// User-selected project reference metadata that must survive queue replay.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,6 +116,15 @@ pub struct QueuedMessage {
     /// Optional runtime harness override to preserve relaunch/recovery provider continuity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness_override: Option<AgentHarnessKind>,
+    /// Optional model override selected when this message was queued.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_override: Option<String>,
+    /// Optional provider-neutral effort override selected when this message was queued.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logical_effort_override: Option<LogicalEffort>,
+    /// Whether queue replay must start a fresh provider-native session.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub force_new_provider_session: bool,
     /// Optional composer project references used for runtime-only prompt expansion.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub composer_project_references: Vec<ComposerProjectReference>,
@@ -137,6 +150,9 @@ impl QueuedMessage {
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            model_override: None,
+            logical_effort_override: None,
+            force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
@@ -155,6 +171,9 @@ impl QueuedMessage {
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            model_override: None,
+            logical_effort_override: None,
+            force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
@@ -293,11 +312,49 @@ impl MessageQueue {
         composer_artifact_references: Vec<ComposerArtifactReference>,
         attachment_ids: Vec<ChatAttachmentId>,
     ) -> QueuedMessage {
+        self.queue_with_runtime_overrides_and_project_references(
+            context_type,
+            context_id,
+            content,
+            metadata_override,
+            created_at_override,
+            harness_override,
+            None,
+            None,
+            false,
+            composer_project_references,
+            composer_integration_references,
+            composer_artifact_references,
+            attachment_ids,
+        )
+    }
+
+    /// Queue a message with the full runtime selection captured at enqueue time.
+    #[allow(clippy::too_many_arguments)]
+    pub fn queue_with_runtime_overrides_and_project_references(
+        &self,
+        context_type: ChatContextType,
+        context_id: impl Into<String>,
+        content: String,
+        metadata_override: Option<String>,
+        created_at_override: Option<String>,
+        harness_override: Option<AgentHarnessKind>,
+        model_override: Option<String>,
+        logical_effort_override: Option<LogicalEffort>,
+        force_new_provider_session: bool,
+        composer_project_references: Vec<ComposerProjectReference>,
+        composer_integration_references: Vec<ComposerIntegrationReference>,
+        composer_artifact_references: Vec<ComposerArtifactReference>,
+        attachment_ids: Vec<ChatAttachmentId>,
+    ) -> QueuedMessage {
         let key = QueueKey::new(context_type, context_id);
         let mut message = QueuedMessage::new(content);
         message.metadata_override = metadata_override;
         message.created_at_override = created_at_override;
         message.harness_override = harness_override;
+        message.model_override = model_override;
+        message.logical_effort_override = logical_effort_override;
+        message.force_new_provider_session = force_new_provider_session;
         message.composer_project_references = composer_project_references;
         message.composer_integration_references = composer_integration_references;
         message.composer_artifact_references = composer_artifact_references;

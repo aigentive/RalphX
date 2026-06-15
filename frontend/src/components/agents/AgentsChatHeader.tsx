@@ -299,16 +299,25 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   const conversationMode = conversation
     ? resolveConversationAgentMode(conversation, workspace)
     : null;
+  const isLinkedPlanEditWorkspace =
+    conversationMode === "edit" &&
+    Boolean(workspace?.linkedIdeationSessionId || workspace?.linkedPlanBranchId);
   const visibleHeaderArtifactTabs = useMemo(
-    () =>
-      HEADER_ARTIFACT_TABS.filter((tab) =>
+    () => {
+      const tabs = HEADER_ARTIFACT_TABS.filter((tab) =>
         availableArtifactTabs.includes(tab.id),
-      ),
-    [availableArtifactTabs],
+      );
+      return isLinkedPlanEditWorkspace
+        ? tabs.filter((tab) => tab.id === "plan")
+        : tabs;
+    },
+    [availableArtifactTabs, isLinkedPlanEditWorkspace],
   );
   const showHeaderArtifactShortcuts =
-    (conversationMode === "ideation" || conversationMode === "plan") &&
-    visibleHeaderArtifactTabs.length > 0;
+    visibleHeaderArtifactTabs.length > 0 &&
+    (conversationMode === "ideation" ||
+      conversationMode === "plan" ||
+      isLinkedPlanEditWorkspace);
   const showArtifactToggle =
     artifactOpen ||
     conversationMode === "ideation" ||
