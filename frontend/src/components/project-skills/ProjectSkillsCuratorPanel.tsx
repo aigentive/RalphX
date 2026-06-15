@@ -65,6 +65,13 @@ const settingsKey = (projectId: string) =>
 const reportCardsKey = (projectId: string) =>
   ["project-skills", projectId, "report-cards"] as const;
 
+const PROJECT_SKILL_SOURCE_ROOT_OPTIONS = [
+  { id: ".claude/skills", label: "Claude skills" },
+  { id: ".codex/skills", label: "Codex skills" },
+  { id: ".agents/skills", label: "Agent skills" },
+  { id: ".ralphx/skills", label: "RalphX skills" },
+] as const;
+
 interface MemoryPromotionFormState {
   memoryId: string;
   title: string;
@@ -94,6 +101,12 @@ export function ProjectSkillsCuratorPanel({
     useState<ProjectSkillImportPreviewResult | null>(null);
   const [projectDirectoryImport, setProjectDirectoryImport] =
     useState<ProjectSkillImportPreviewResult | null>(null);
+  const [projectDirectorySyncedCount, setProjectDirectorySyncedCount] =
+    useState(0);
+  const [sourceImportRoots, setSourceImportRoots] = useState<string[]>([
+    ".claude/skills",
+  ]);
+  const [sourceImportSyncEnabled, setSourceImportSyncEnabled] = useState(false);
   const [memoryPromotion, setMemoryPromotion] = useState({
     memoryId: "",
     title: "",
@@ -248,9 +261,15 @@ export function ProjectSkillsCuratorPanel({
   });
 
   const applyProjectDirectoryImportMutation = useMutation({
-    mutationFn: () => projectSkillsApi.applyProjectDirectoryImport(projectId),
+    mutationFn: () =>
+      projectSkillsApi.applyProjectDirectoryImport({
+        projectId,
+        sourceRoots: sourceImportRoots,
+        sourceSyncEnabled: sourceImportSyncEnabled,
+      }),
     onSuccess: (result) => {
       setProjectDirectoryImport(result.preview);
+      setProjectDirectorySyncedCount(result.syncedCount);
       invalidateSkills();
     },
   });
@@ -485,10 +504,15 @@ export function ProjectSkillsCuratorPanel({
             importManifest={importManifest}
             importPreview={importPreview}
             projectDirectoryImport={projectDirectoryImport}
+            projectDirectorySyncedCount={projectDirectorySyncedCount}
+            sourceImportRoots={sourceImportRoots}
+            sourceImportSyncEnabled={sourceImportSyncEnabled}
             memoryPromotion={memoryPromotion}
             onImportManifestChange={setImportManifest}
             onPreviewImport={() => previewImportMutation.mutate()}
             onApplyImport={() => applyImportMutation.mutate()}
+            onSourceImportRootsChange={setSourceImportRoots}
+            onSourceImportSyncEnabledChange={setSourceImportSyncEnabled}
             onApplyProjectDirectoryImport={() =>
               applyProjectDirectoryImportMutation.mutate()
             }
@@ -723,6 +747,9 @@ function ProjectSkillEditDialog({
   const [bodyMarkdown, setBodyMarkdown] = useState(skill.bodyMarkdown);
   const [predictedEffect, setPredictedEffect] = useState(skill.predictedEffect ?? "");
   const [scopePaths, setScopePaths] = useState(skill.scopePaths.join("\n"));
+  const [sourceSyncEnabled, setSourceSyncEnabled] = useState(
+    skill.sourceSyncEnabled,
+  );
 
   const resetForm = () => {
     setTitle(skill.title);
@@ -732,6 +759,7 @@ function ProjectSkillEditDialog({
     setBodyMarkdown(skill.bodyMarkdown);
     setPredictedEffect(skill.predictedEffect ?? "");
     setScopePaths(skill.scopePaths.join("\n"));
+    setSourceSyncEnabled(skill.sourceSyncEnabled);
   };
   const canSave =
     title.trim().length > 0 &&
@@ -762,12 +790,20 @@ function ProjectSkillEditDialog({
           <div>
             <DialogTitle>Edit skill draft</DialogTitle>
             <DialogDescription className="mt-1 leading-5">
-              Refine the reusable procedure before approval or future injection.
-              Provenance and lifecycle state stay unchanged.
+              Save edits to RalphX's internal skill copy. Source files are not
+              overwritten from this dialog.
             </DialogDescription>
           </div>
         </DialogHeader>
         <div className="grid max-h-[70vh] gap-4 overflow-auto px-6 py-5">
+          {skill.sourcePath ? (
+            <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
+              Source: <span className="font-medium">{skill.sourcePath}</span>.{" "}
+              {sourceSyncEnabled
+                ? "Track source is on: explicit source reloads may refresh this internal copy from the file."
+                : "Snapshot mode is on: source reloads skip this internal copy unless tracking is enabled."}
+            </div>
+          ) : null}
           <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
             Title
             <Input
@@ -831,6 +867,35 @@ function ProjectSkillEditDialog({
               onChange={(event) => setScopePaths(event.target.value)}
             />
           </label>
+          {skill.sourcePath ? (
+            <div className="grid gap-2">
+              <div className="text-xs font-medium uppercase text-[var(--text-tertiary)]">
+                Source sync
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={!sourceSyncEnabled ? "default" : "outline"}
+                  onClick={() => setSourceSyncEnabled(false)}
+                >
+                  Snapshot copy
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={sourceSyncEnabled ? "default" : "outline"}
+                  onClick={() => setSourceSyncEnabled(true)}
+                >
+                  Track source
+                </Button>
+              </div>
+              <p className="text-xs leading-5 text-[var(--text-secondary)]">
+                Track source only controls future RalphX reloads from the
+                source folder. Saving here still updates RalphX only.
+              </p>
+            </div>
+          ) : null}
           <div className="flex justify-end gap-2">
             <Button
               type="button"
@@ -855,6 +920,7 @@ function ProjectSkillEditDialog({
                   compactGuidance: compactGuidance.trim(),
                   bodyMarkdown: bodyMarkdown.trim(),
                   predictedEffect: predictedEffect.trim(),
+                  sourceSyncEnabled: skill.sourcePath ? sourceSyncEnabled : null,
                 });
                 setOpen(false);
               }}
@@ -914,10 +980,15 @@ function ImportPromotionPanel({
   importManifest,
   importPreview,
   projectDirectoryImport,
+  projectDirectorySyncedCount,
+  sourceImportRoots,
+  sourceImportSyncEnabled,
   memoryPromotion,
   onImportManifestChange,
   onPreviewImport,
   onApplyImport,
+  onSourceImportRootsChange,
+  onSourceImportSyncEnabledChange,
   onApplyProjectDirectoryImport,
   onMemoryPromotionChange,
   onPromoteMemory,
@@ -926,10 +997,15 @@ function ImportPromotionPanel({
   importManifest: string;
   importPreview: ProjectSkillImportPreviewResult | null;
   projectDirectoryImport: ProjectSkillImportPreviewResult | null;
+  projectDirectorySyncedCount: number;
+  sourceImportRoots: string[];
+  sourceImportSyncEnabled: boolean;
   memoryPromotion: MemoryPromotionFormState;
   onImportManifestChange: (value: string) => void;
   onPreviewImport: () => void;
   onApplyImport: () => void;
+  onSourceImportRootsChange: (roots: string[]) => void;
+  onSourceImportSyncEnabledChange: (enabled: boolean) => void;
   onApplyProjectDirectoryImport: () => void;
   onMemoryPromotionChange: (value: MemoryPromotionFormState) => void;
   onPromoteMemory: () => void;
@@ -945,6 +1021,14 @@ function ImportPromotionPanel({
     patch: Partial<MemoryPromotionFormState>,
   ): void => {
     onMemoryPromotionChange({ ...memoryPromotion, ...patch });
+  };
+  const toggleSourceRoot = (root: string): void => {
+    const nextRoots = sourceImportRoots.includes(root)
+      ? sourceImportRoots.filter((value) => value !== root)
+      : [...sourceImportRoots, root];
+    onSourceImportRootsChange(
+      nextRoots.length > 0 ? nextRoots : [PROJECT_SKILL_SOURCE_ROOT_OPTIONS[0].id],
+    );
   };
 
   return (
@@ -963,23 +1047,66 @@ function ImportPromotionPanel({
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-medium text-[var(--text-primary)]">
-                  Existing project skills
+                  Existing project skill folders
                 </div>
                 <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
-                  Load `.claude/skills/*/SKILL.md` from this project into the
-                  Review Queue. Imported rows still need approval.
+                  Load `SKILL.md` files from selected project-local folders into
+                  the Review Queue. Imported rows are internal RalphX copies.
                 </p>
               </div>
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={disabled}
+                disabled={disabled || sourceImportRoots.length === 0}
                 onClick={onApplyProjectDirectoryImport}
               >
                 <FileDown />
-                Load .claude/skills
+                Load folders
               </Button>
+            </div>
+            <div className="mt-3 grid gap-2">
+              <div className="flex flex-wrap gap-2">
+                {PROJECT_SKILL_SOURCE_ROOT_OPTIONS.map((option) => (
+                  <Button
+                    key={option.id}
+                    type="button"
+                    size="sm"
+                    variant={
+                      sourceImportRoots.includes(option.id) ? "default" : "outline"
+                    }
+                    disabled={disabled}
+                    onClick={() => toggleSourceRoot(option.id)}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={!sourceImportSyncEnabled ? "default" : "outline"}
+                  disabled={disabled}
+                  onClick={() => onSourceImportSyncEnabledChange(false)}
+                >
+                  Snapshot copy
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={sourceImportSyncEnabled ? "default" : "outline"}
+                  disabled={disabled}
+                  onClick={() => onSourceImportSyncEnabledChange(true)}
+                >
+                  Track source
+                </Button>
+              </div>
+              <p className="text-xs leading-5 text-[var(--text-secondary)]">
+                Snapshot copies can be edited independently. Track source lets a
+                future folder reload refresh the RalphX copy from the source
+                file; it still never writes back to that file.
+              </p>
             </div>
             {projectDirectoryImport ? (
               <div className="mt-3 flex flex-wrap gap-2 text-xs text-[var(--text-secondary)]">
@@ -991,6 +1118,9 @@ function ImportPromotionPanel({
                 </Badge>
                 <Badge variant="outline">
                   {projectDirectoryImport.invalidCount} invalid
+                </Badge>
+                <Badge variant="outline">
+                  {projectDirectorySyncedCount} synced
                 </Badge>
               </div>
             ) : null}
@@ -1284,6 +1414,7 @@ function ProjectSkillApprovedCard({
           <p className="mt-2 line-clamp-2 text-sm text-[var(--text-secondary)]">
             {skill.compactGuidance}
           </p>
+          {skill.sourcePath ? <ProjectSkillSourceLine skill={skill} /> : null}
         </div>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:shrink-0 sm:justify-end">
           <ProjectSkillEditDialog
@@ -1361,6 +1492,7 @@ function ProjectSkillCandidateCard({
               {skill.predictedEffect}
             </p>
           ) : null}
+          {skill.sourcePath ? <ProjectSkillSourceLine skill={skill} /> : null}
         </div>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:shrink-0 sm:justify-end">
           <ProjectSkillEditDialog
@@ -1400,5 +1532,16 @@ function ProjectSkillCandidateCard({
         </div>
       </div>
     </Card>
+  );
+}
+
+function ProjectSkillSourceLine({ skill }: { skill: ProjectSkill }) {
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--text-tertiary)]">
+      <Badge variant="outline">
+        {skill.sourceSyncEnabled ? "tracks source" : "snapshot"}
+      </Badge>
+      <span className="min-w-0 break-all">{skill.sourcePath}</span>
+    </div>
   );
 }

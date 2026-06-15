@@ -12,8 +12,8 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     MemoryEntryRepository, ProjectSkillListOptions, ProjectSkillRepository,
-    SkillUsageEventRepository, SkillUsageListOptions, TaskOutcomeListOptions, TaskOutcomeRepository,
-    UpsertTaskOutcomeInput,
+    SkillUsageEventRepository, SkillUsageListOptions, TaskOutcomeListOptions,
+    TaskOutcomeRepository, UpsertTaskOutcomeInput,
 };
 use crate::domain::services::learned_skill_adapters::LearnedSkillConstraintCitation;
 use crate::error::{AppError, AppResult};
@@ -101,6 +101,7 @@ pub struct UpdateProjectSkillContentInput {
     pub compact_guidance: String,
     pub body_markdown: String,
     pub predicted_effect: String,
+    pub source_sync_enabled: Option<bool>,
 }
 
 pub struct DistillEligibleOutcomesInput {
@@ -225,6 +226,9 @@ impl ProjectSkillService {
         skill.compact_guidance = input.compact_guidance;
         skill.body_markdown = input.body_markdown;
         skill.predicted_effect = Some(input.predicted_effect);
+        if let Some(source_sync_enabled) = input.source_sync_enabled {
+            set_project_skill_source_sync_enabled(&mut skill.provenance_json, source_sync_enabled);
+        }
         self.repo.update_content(skill).await
     }
 
@@ -1043,6 +1047,21 @@ fn normalized_import_key(title: &str, bucket: &str, stage: &str) -> String {
     )
 }
 
+fn set_project_skill_source_sync_enabled(provenance: &mut Value, enabled: bool) {
+    if !provenance.is_object() {
+        *provenance = serde_json::json!({});
+    }
+    if let Some(object) = provenance.as_object_mut() {
+        object.insert("source_sync_enabled".to_string(), Value::Bool(enabled));
+        if let Some(source_snapshot) = object
+            .get_mut("source_snapshot")
+            .and_then(Value::as_object_mut)
+        {
+            source_snapshot.insert("source_sync_enabled".to_string(), Value::Bool(enabled));
+        }
+    }
+}
+
 fn is_safe_import_scope_path(path: &str) -> bool {
     let path = path.trim();
     !path.is_empty()
@@ -1267,12 +1286,12 @@ mod tests {
 
     use super::{
         new_empty_task_outcome, new_skill_usage_event, DistillEligibleOutcomesInput,
-        ProjectSkillAgingStatus, ProjectSkillDistillationOrigin, ProjectSkillDistillerService,
-        ProjectSkillEvidenceLevel, ProjectSkillImportApplyInput, ProjectSkillImportCandidate,
-        ProjectSkillImportDecision, ProjectSkillImportPreviewInput, ProjectSkillImportPreviewService,
+        MemoryToProjectSkillPromotionService, ProjectSkillAgingStatus,
+        ProjectSkillDistillationOrigin, ProjectSkillDistillerService, ProjectSkillEvidenceLevel,
+        ProjectSkillImportApplyInput, ProjectSkillImportCandidate, ProjectSkillImportDecision,
+        ProjectSkillImportPreviewInput, ProjectSkillImportPreviewService,
         ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService,
-        MemoryToProjectSkillPromotionService, PromoteMemoryToProjectSkillInput, SkillUsageService,
-        StageProjectSkillFromOutcomeInput,
+        PromoteMemoryToProjectSkillInput, SkillUsageService, StageProjectSkillFromOutcomeInput,
     };
     use crate::domain::entities::types::ProjectId;
     use crate::domain::entities::{
@@ -1281,12 +1300,12 @@ mod tests {
     };
     use crate::domain::repositories::{
         MemoryEntryRepository, ProjectSkillListOptions, ProjectSkillRepository,
-        SkillUsageListOptions, SkillUsageEventRepository, TaskOutcomeRepository,
+        SkillUsageEventRepository, SkillUsageListOptions, TaskOutcomeRepository,
         UpsertTaskOutcomeInput,
     };
     use crate::infrastructure::memory::{
-        InMemoryMemoryEntryRepository, MemoryProjectSkillRepository, MemorySkillUsageEventRepository,
-        MemoryTaskOutcomeRepository,
+        InMemoryMemoryEntryRepository, MemoryProjectSkillRepository,
+        MemorySkillUsageEventRepository, MemoryTaskOutcomeRepository,
     };
 
     fn staged_skill(project_id: ProjectId) -> ProjectSkill {
@@ -1441,7 +1460,10 @@ mod tests {
         assert_eq!(preview.eligible_count, 1);
         assert_eq!(preview.invalid_count, 0);
         assert_eq!(preview.duplicate_count, 0);
-        assert_eq!(preview.rows[0].decision, ProjectSkillImportDecision::Eligible);
+        assert_eq!(
+            preview.rows[0].decision,
+            ProjectSkillImportDecision::Eligible
+        );
         let written = repo
             .list_by_project(&project_id, ProjectSkillListOptions::default())
             .await
@@ -1474,7 +1496,10 @@ mod tests {
 
         assert_eq!(preview.eligible_count, 0);
         assert_eq!(preview.invalid_count, 1);
-        assert_eq!(preview.rows[0].decision, ProjectSkillImportDecision::Invalid);
+        assert_eq!(
+            preview.rows[0].decision,
+            ProjectSkillImportDecision::Invalid
+        );
         assert!(preview.rows[0]
             .reasons
             .iter()
@@ -1510,8 +1535,14 @@ mod tests {
 
         assert_eq!(preview.eligible_count, 0);
         assert_eq!(preview.duplicate_count, 1);
-        assert_eq!(preview.rows[0].decision, ProjectSkillImportDecision::Duplicate);
-        assert_eq!(preview.rows[0].duplicate_project_skill_id, Some(existing.id));
+        assert_eq!(
+            preview.rows[0].decision,
+            ProjectSkillImportDecision::Duplicate
+        );
+        assert_eq!(
+            preview.rows[0].duplicate_project_skill_id,
+            Some(existing.id)
+        );
         assert!(preview.rows[0]
             .reasons
             .iter()
@@ -1683,13 +1714,9 @@ mod tests {
             .await
             .unwrap();
 
-        for (index, outcome_id) in [
-            Some(success.id.clone()),
-            Some(failure.id.clone()),
-            None,
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, outcome_id) in [Some(success.id.clone()), Some(failure.id.clone()), None]
+            .into_iter()
+            .enumerate()
         {
             let mut event =
                 new_skill_usage_event(project_id.clone(), skill.id.clone(), "compact_index");
@@ -1717,7 +1744,10 @@ mod tests {
         assert_eq!(card.linked_outcome_count, 2);
         assert_eq!(card.succeeded_outcome_count, 1);
         assert_eq!(card.failed_outcome_count, 1);
-        assert_eq!(card.evidence_level, ProjectSkillEvidenceLevel::InsufficientData);
+        assert_eq!(
+            card.evidence_level,
+            ProjectSkillEvidenceLevel::InsufficientData
+        );
         assert_eq!(card.aging_status, ProjectSkillAgingStatus::Active);
     }
 

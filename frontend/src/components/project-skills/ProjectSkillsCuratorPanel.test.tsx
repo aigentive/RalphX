@@ -46,6 +46,9 @@ function stagedSkill(overrides: Partial<ProjectSkill> = {}): ProjectSkill {
     bodyMarkdown: "Detailed skill guidance.",
     predictedEffect: "Prevents repeated validation loops.",
     provenance: { outcome_id: "outcome-1" },
+    sourcePath: null,
+    sourceRoot: null,
+    sourceSyncEnabled: false,
     companionOfSkillId: null,
     createdAt: "2026-06-14T10:00:00Z",
     updatedAt: "2026-06-14T10:00:00Z",
@@ -204,6 +207,7 @@ describe("ProjectSkillsCuratorPanel", () => {
       },
       importedSkills: [stagedSkill({ id: "imported-skill" })],
       importedCount: 1,
+      syncedCount: 0,
     });
     mockedProjectSkillsApi.applyProjectDirectoryImport.mockResolvedValue({
       preview: {
@@ -214,6 +218,7 @@ describe("ProjectSkillsCuratorPanel", () => {
       },
       importedSkills: [stagedSkill({ id: "native-skill" })],
       importedCount: 1,
+      syncedCount: 0,
     });
     mockedProjectSkillsApi.promoteMemory.mockResolvedValue(
       stagedSkill({ id: "promoted-skill", title: "Promoted review procedure" }),
@@ -318,14 +323,21 @@ describe("ProjectSkillsCuratorPanel", () => {
     const user = userEvent.setup();
 
     await user.click(await screen.findByRole("tab", { name: /advanced/i }));
-    fireEvent.click(screen.getByRole("button", { name: /load \.claude\/skills/i }));
+    fireEvent.click(screen.getByRole("button", { name: /codex skills/i }));
+    fireEvent.click(screen.getByRole("button", { name: /track source/i }));
+    fireEvent.click(screen.getByRole("button", { name: /load folders/i }));
 
     await waitFor(() => {
       expect(mockedProjectSkillsApi.applyProjectDirectoryImport).toHaveBeenCalledWith(
-        "project-1",
+        {
+          projectId: "project-1",
+          sourceRoots: [".claude/skills", ".codex/skills"],
+          sourceSyncEnabled: true,
+        },
       );
     });
     expect(await screen.findByText("1 loaded")).toBeInTheDocument();
+    expect(screen.getByText("0 synced")).toBeInTheDocument();
   });
 
   it("promotes memory entries through the curator panel", async () => {

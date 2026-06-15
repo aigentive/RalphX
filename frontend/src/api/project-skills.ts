@@ -127,6 +127,7 @@ const ProjectSkillImportApplyResponseSchema = z.object({
   preview: ProjectSkillImportPreviewResponseSchema,
   imported_skills: z.array(ProjectSkillResponseSchema),
   imported_count: z.number(),
+  synced_count: z.number().optional().default(0),
 });
 
 const PromoteMemoryToProjectSkillResponseSchema = z.object({
@@ -160,6 +161,9 @@ export interface ProjectSkill {
   bodyMarkdown: string;
   predictedEffect: string | null;
   provenance: unknown;
+  sourcePath: string | null;
+  sourceRoot: string | null;
+  sourceSyncEnabled: boolean;
   companionOfSkillId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -299,6 +303,13 @@ export interface ProjectSkillImportApplyResult {
   preview: ProjectSkillImportPreviewResult;
   importedSkills: ProjectSkill[];
   importedCount: number;
+  syncedCount: number;
+}
+
+export interface ProjectSkillDirectoryImportInput {
+  projectId: string;
+  sourceRoots?: string[];
+  sourceSyncEnabled?: boolean;
 }
 
 export interface PromoteMemoryToProjectSkillInput {
@@ -321,9 +332,34 @@ export interface UpdateProjectSkillInput {
   compactGuidance: string;
   bodyMarkdown: string;
   predictedEffect: string;
+  sourceSyncEnabled?: boolean | null;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function booleanValue(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function sourceSnapshotValue(
+  provenance: unknown,
+): Record<string, unknown> | null {
+  const object = objectValue(provenance);
+  return objectValue(object?.source_snapshot);
 }
 
 function transformProjectSkill(raw: RawProjectSkill): ProjectSkill {
+  const provenance = raw.provenance_json;
+  const provenanceObject = objectValue(provenance);
+  const sourceSnapshot = sourceSnapshotValue(provenance);
   return {
     id: raw.id,
     projectId: raw.project_id,
@@ -337,7 +373,15 @@ function transformProjectSkill(raw: RawProjectSkill): ProjectSkill {
     compactGuidance: raw.compact_guidance,
     bodyMarkdown: raw.body_markdown,
     predictedEffect: raw.predicted_effect ?? null,
-    provenance: raw.provenance_json,
+    provenance,
+    sourcePath:
+      stringValue(provenanceObject?.external_id) ??
+      stringValue(sourceSnapshot?.relative_path),
+    sourceRoot: stringValue(sourceSnapshot?.source_root),
+    sourceSyncEnabled:
+      booleanValue(provenanceObject?.source_sync_enabled) ??
+      booleanValue(sourceSnapshot?.source_sync_enabled) ??
+      false,
     companionOfSkillId: raw.companion_of_skill_id ?? null,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
@@ -547,6 +591,9 @@ export const projectSkillsApi = {
       compact_guidance: input.compactGuidance,
       body_markdown: input.bodyMarkdown,
       predicted_effect: input.predictedEffect,
+      ...(input.sourceSyncEnabled != null
+        ? { source_sync_enabled: input.sourceSyncEnabled }
+        : {}),
     });
     const parsed = ProjectSkillLifecycleResponseSchema.parse(raw);
     return parsed.skill ? transformProjectSkill(parsed.skill) : null;
@@ -613,17 +660,26 @@ export const projectSkillsApi = {
       preview: transformProjectSkillImportPreview(parsed.preview),
       importedSkills: parsed.imported_skills.map(transformProjectSkill),
       importedCount: parsed.imported_count,
+      syncedCount: parsed.synced_count,
     };
   },
 
   async applyProjectDirectoryImport(
-    projectId: string,
+    input: ProjectSkillDirectoryImportInput | string,
   ): Promise<ProjectSkillImportApplyResult> {
+    const request =
+      typeof input === "string"
+        ? { projectId: input, sourceRoots: undefined, sourceSyncEnabled: undefined }
+        : input;
     const raw = await postJson<unknown>(
       "project_skills/import/project_directory/apply",
       {
-        project_id: projectId,
+        project_id: request.projectId,
         confirm_import: true,
+        ...(request.sourceRoots ? { source_roots: request.sourceRoots } : {}),
+        ...(request.sourceSyncEnabled != null
+          ? { source_sync_enabled: request.sourceSyncEnabled }
+          : {}),
       },
     );
     const parsed = ProjectSkillImportApplyResponseSchema.parse(raw);
@@ -631,6 +687,7 @@ export const projectSkillsApi = {
       preview: transformProjectSkillImportPreview(parsed.preview),
       importedSkills: parsed.imported_skills.map(transformProjectSkill),
       importedCount: parsed.imported_count,
+      syncedCount: parsed.synced_count,
     };
   },
 

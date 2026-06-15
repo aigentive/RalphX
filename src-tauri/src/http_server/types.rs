@@ -1407,6 +1407,7 @@ pub struct UpdateProjectSkillRequest {
     pub compact_guidance: String,
     pub body_markdown: String,
     pub predicted_effect: String,
+    pub source_sync_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1567,12 +1568,16 @@ pub struct ApplyProjectSkillImportResponse {
     pub preview: PreviewProjectSkillImportResponse,
     pub imported_skills: Vec<ProjectSkillResponse>,
     pub imported_count: usize,
+    pub synced_count: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProjectSkillDirectoryImportRequest {
     pub project_id: String,
     pub confirm_import: bool,
+    #[serde(default)]
+    pub source_roots: Vec<String>,
+    pub source_sync_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

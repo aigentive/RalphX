@@ -426,6 +426,7 @@ pub async fn update_project_skill(
             compact_guidance: req.compact_guidance,
             body_markdown: req.body_markdown,
             predicted_effect: req.predicted_effect,
+            source_sync_enabled: req.source_sync_enabled,
         })
         .await
         .map_err(|error| match error {
@@ -937,6 +938,7 @@ pub async fn apply_project_skill_import(
         preview: preview_response(result.preview),
         imported_skills,
         imported_count,
+        synced_count: 0,
     }))
 }
 
@@ -956,21 +958,24 @@ pub async fn apply_project_skill_directory_import(
         });
     }
 
-    let candidates = scan_project_native_skills(&state, &project_id)
-        .await
-        .map_err(|error| {
-            error!("failed to scan project .claude/skills: {}", error);
-            HttpError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: Some("failed to scan project skills".to_string()),
-            }
-        })?;
+    let source_roots = selected_project_skill_source_roots(req.source_roots)?;
+    let source_sync_enabled = req.source_sync_enabled.unwrap_or(false);
+    let candidates =
+        scan_project_native_skills(&state, &project_id, &source_roots, source_sync_enabled)
+            .await
+            .map_err(|error| {
+                error!("failed to scan project .claude/skills: {}", error);
+                HttpError {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: Some("failed to scan project skills".to_string()),
+                }
+            })?;
     let service =
         ProjectSkillImportPreviewService::new(Arc::clone(&state.app_state.project_skill_repo));
     let result = service
         .apply_import(ProjectSkillImportApplyInput {
-            project_id,
-            candidates,
+            project_id: project_id.clone(),
+            candidates: candidates.clone(),
             confirm_import: true,
         })
         .await
@@ -987,6 +992,19 @@ pub async fn apply_project_skill_directory_import(
                 }
             }
         })?;
+    let synced_count = if source_sync_enabled {
+        sync_source_tracked_project_skills(&state, &project_id, &candidates)
+            .await
+            .map_err(|error| {
+                error!("failed to sync project source skills: {}", error);
+                HttpError {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: Some("failed to sync project source skills".to_string()),
+                }
+            })?
+    } else {
+        0
+    };
     let imported_skills = result
         .imported_skills
         .into_iter()
@@ -998,12 +1016,15 @@ pub async fn apply_project_skill_directory_import(
         preview: preview_response(result.preview),
         imported_skills,
         imported_count,
+        synced_count,
     }))
 }
 
 async fn scan_project_native_skills(
     state: &HttpServerState,
     project_id: &ProjectId,
+    source_roots: &[String],
+    source_sync_enabled: bool,
 ) -> AppResult<Vec<ProjectSkillImportCandidate>> {
     let project = state
         .app_state
@@ -1013,7 +1034,22 @@ async fn scan_project_native_skills(
         .ok_or_else(|| AppError::NotFound(format!("project {} not found", project_id)))?;
     let project_root =
         validate_absolute_non_root_path(Path::new(&project.working_directory), "project root")?;
-    let skills_root = project_root.join(".claude").join("skills");
+    let mut candidates = Vec::new();
+    for source_root in source_roots {
+        candidates.extend(
+            scan_project_skill_source_root(&project_root, source_root, source_sync_enabled).await?,
+        );
+    }
+
+    Ok(candidates)
+}
+
+async fn scan_project_skill_source_root(
+    project_root: &Path,
+    source_root: &str,
+    source_sync_enabled: bool,
+) -> AppResult<Vec<ProjectSkillImportCandidate>> {
+    let skills_root = project_root.join(source_root);
     if !skills_root.exists() {
         return Ok(Vec::new());
     }
@@ -1079,7 +1115,7 @@ async fn scan_project_native_skills(
                 title
             )
         });
-        let relative_path = format!(".claude/skills/{file_name}/SKILL.md");
+        let relative_path = format!("{source_root}/{file_name}/SKILL.md");
         candidates.push(ProjectSkillImportCandidate {
             external_id: Some(relative_path.clone()),
             title,
@@ -1090,16 +1126,19 @@ async fn scan_project_native_skills(
             body_markdown,
             predicted_effect: "Makes an existing target-repository skill available for RalphX review, approval, and future injection.".to_string(),
             provenance_json: serde_json::json!({
-                "source": "target_project_claude_skill",
+                "source": "target_project_skill_folder",
                 "relative_path": relative_path,
+                "source_root": source_root,
+                "source_sync_enabled": source_sync_enabled,
             }),
             source_snapshot_json: serde_json::json!({
-                "kind": "target_project_claude_skill",
+                "kind": "target_project_skill_folder",
                 "relative_path": relative_path,
+                "source_root": source_root,
+                "source_sync_enabled": source_sync_enabled,
             }),
         });
     }
-
     Ok(candidates)
 }
 
@@ -1109,6 +1148,118 @@ fn is_safe_native_skill_dir_name(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn selected_project_skill_source_roots(requested: Vec<String>) -> Result<Vec<String>, HttpError> {
+    let roots = if requested.is_empty() {
+        vec![".claude/skills".to_string()]
+    } else {
+        requested
+    };
+    let mut selected = Vec::new();
+    for root in roots {
+        let root = root.trim().trim_matches('/').to_string();
+        if !is_supported_project_skill_source_root(&root) {
+            return Err(HttpError {
+                status: StatusCode::BAD_REQUEST,
+                message: Some(format!("unsupported project skill source folder: {root}")),
+            });
+        }
+        if !selected.contains(&root) {
+            selected.push(root);
+        }
+    }
+    Ok(selected)
+}
+
+fn is_supported_project_skill_source_root(value: &str) -> bool {
+    matches!(
+        value,
+        ".claude/skills" | ".codex/skills" | ".agents/skills" | ".ralphx/skills"
+    )
+}
+
+async fn sync_source_tracked_project_skills(
+    state: &HttpServerState,
+    project_id: &ProjectId,
+    candidates: &[ProjectSkillImportCandidate],
+) -> AppResult<usize> {
+    let existing_skills = state
+        .app_state
+        .project_skill_repo
+        .list_by_project(
+            project_id,
+            ProjectSkillListOptions {
+                include_archived: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+    let service = ProjectSkillService::new(Arc::clone(&state.app_state.project_skill_repo));
+    let mut synced_count = 0;
+    for candidate in candidates {
+        let Some(external_id) = candidate.external_id.as_deref() else {
+            continue;
+        };
+        let Some(existing) = existing_skills
+            .iter()
+            .find(|skill| project_skill_external_id(skill).as_deref() == Some(external_id))
+        else {
+            continue;
+        };
+        if !project_skill_source_sync_enabled(existing) {
+            continue;
+        }
+        if existing.archived
+            || matches!(
+                existing.status,
+                ProjectSkillLifecycleStatus::Archived | ProjectSkillLifecycleStatus::Retired
+            )
+        {
+            continue;
+        }
+        if service
+            .update_skill_content(UpdateProjectSkillContentInput {
+                project_skill_id: existing.id.clone(),
+                title: candidate.title.clone(),
+                bucket: candidate.bucket.clone(),
+                stage: candidate.stage.clone(),
+                scope_paths: candidate.scope_paths.clone(),
+                compact_guidance: candidate.compact_guidance.clone(),
+                body_markdown: candidate.body_markdown.clone(),
+                predicted_effect: candidate.predicted_effect.clone(),
+                source_sync_enabled: Some(true),
+            })
+            .await?
+            .is_some()
+        {
+            synced_count += 1;
+        }
+    }
+    Ok(synced_count)
+}
+
+fn project_skill_external_id(skill: &ProjectSkill) -> Option<String> {
+    skill
+        .provenance_json
+        .get("external_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+fn project_skill_source_sync_enabled(skill: &ProjectSkill) -> bool {
+    skill
+        .provenance_json
+        .get("source_sync_enabled")
+        .and_then(serde_json::Value::as_bool)
+        .or_else(|| {
+            skill
+                .provenance_json
+                .get("source_snapshot")
+                .and_then(|value| value.get("source_sync_enabled"))
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 fn native_skill_title(markdown: &str) -> Option<String> {
@@ -1526,6 +1677,7 @@ mod tests {
                 compact_guidance: "Check the current branch before exporting skills.".to_string(),
                 body_markdown: "Detailed updated procedure.".to_string(),
                 predicted_effect: "Prevents exporting from protected branches.".to_string(),
+                source_sync_enabled: Some(false),
             }),
         )
         .await

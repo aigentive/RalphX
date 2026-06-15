@@ -95,6 +95,9 @@ describe("projectSkillsApi", () => {
         bodyMarkdown: "Detailed guidance",
         predictedEffect: "Prevents repeated validation loops.",
         provenance: { outcome_id: "outcome-1" },
+        sourcePath: null,
+        sourceRoot: null,
+        sourceSyncEnabled: false,
         companionOfSkillId: null,
         createdAt: "2026-06-14T10:00:00Z",
         updatedAt: "2026-06-14T10:00:00Z",
@@ -571,15 +574,21 @@ describe("projectSkillsApi", () => {
           }),
         ],
         imported_count: 1,
+        synced_count: 0,
       }),
     );
 
     await expect(
-      projectSkillsApi.applyProjectDirectoryImport("project-1"),
+      projectSkillsApi.applyProjectDirectoryImport({
+        projectId: "project-1",
+        sourceRoots: [".claude/skills", ".codex/skills"],
+        sourceSyncEnabled: true,
+      }),
     ).resolves.toMatchObject({
       importedCount: 1,
       importedSkills: [{ id: "native-skill", status: "staged" }],
       preview: { eligibleCount: 1 },
+      syncedCount: 0,
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -588,6 +597,8 @@ describe("projectSkillsApi", () => {
         body: JSON.stringify({
           project_id: "project-1",
           confirm_import: true,
+          source_roots: [".claude/skills", ".codex/skills"],
+          source_sync_enabled: true,
         }),
       }),
     );
