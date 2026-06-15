@@ -1,4 +1,5 @@
 use axum::{extract::State, http::StatusCode, Json};
+use chrono::Utc;
 use serde::Deserialize;
 use std::path::Path;
 use std::process::Stdio;
@@ -36,6 +37,8 @@ use crate::utils::path_safety::validate_absolute_non_root_path;
 const GIT_HISTORY_SCAN_LIMIT: usize = 50;
 const GIT_HISTORY_DISTILL_SOURCE: &str = "git_commit_history";
 const GITHUB_PR_HISTORY_SCAN_LIMIT: usize = 25;
+const GITHUB_PR_CANDIDATE_LIST_LIMIT: usize = 25;
+const GITHUB_PR_CANDIDATE_MAX_LIMIT: usize = 50;
 const GITHUB_PR_DISTILL_SOURCE: &str = "github_pr_history";
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -611,6 +614,158 @@ pub async fn list_project_skill_report_cards(
     Ok(Json(ListProjectSkillReportCardsResponse { cards, count }))
 }
 
+pub async fn list_project_skill_pull_request_candidates(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<ListProjectSkillPullRequestCandidatesRequest>,
+) -> Result<Json<ListProjectSkillPullRequestCandidatesResponse>, HttpError> {
+    let project_id = ProjectId::from_string(req.project_id);
+    assert_project_id_scope(&project_id, &scope)?;
+    let limit = req
+        .limit
+        .unwrap_or(GITHUB_PR_CANDIDATE_LIST_LIMIT)
+        .clamp(1, GITHUB_PR_CANDIDATE_MAX_LIMIT);
+    let working_dir = project_working_dir(&state, &project_id).await?;
+    if !working_dir.is_dir() {
+        return Ok(Json(ListProjectSkillPullRequestCandidatesResponse {
+            candidates: Vec::new(),
+            count: 0,
+            limit,
+        }));
+    }
+
+    let candidates = read_recent_github_pull_requests(&working_dir, limit)
+        .await
+        .map_err(|error| {
+            error!("failed to list GitHub PR skill candidates: {}", error);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to list GitHub PR skill candidates".to_string()),
+            }
+        })?
+        .into_iter()
+        .map(ProjectSkillPullRequestCandidateResponse::from)
+        .collect::<Vec<_>>();
+    let count = candidates.len();
+
+    Ok(Json(ListProjectSkillPullRequestCandidatesResponse {
+        candidates,
+        count,
+        limit,
+    }))
+}
+
+pub async fn stage_project_skill_from_pull_request(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<StageProjectSkillFromPullRequestRequest>,
+) -> Result<Json<StageProjectSkillFromPullRequestResponse>, HttpError> {
+    let project_id = ProjectId::from_string(req.project_id);
+    assert_project_id_scope(&project_id, &scope)?;
+    if req.number <= 0 {
+        return Err(HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some("pull request number must be positive".to_string()),
+        });
+    }
+
+    let working_dir = project_working_dir(&state, &project_id).await?;
+    if !working_dir.is_dir() {
+        return Err(HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some("project working directory is unavailable".to_string()),
+        });
+    }
+    let pull_request =
+        read_recent_github_pull_requests(&working_dir, GITHUB_PR_CANDIDATE_MAX_LIMIT)
+            .await
+            .map_err(|error| {
+                error!("failed to read GitHub PR skill candidate: {}", error);
+                HttpError {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: Some("failed to read GitHub PR skill candidate".to_string()),
+                }
+            })?
+            .into_iter()
+            .find(|candidate| candidate.number == req.number)
+            .ok_or_else(|| HttpError {
+                status: StatusCode::NOT_FOUND,
+                message: Some(
+                    "pull request candidate was not found in recent GitHub PRs".to_string(),
+                ),
+            })?;
+
+    if let Some(existing) =
+        existing_project_skill_for_pull_request(&state, &project_id, pull_request.number).await?
+    {
+        return Ok(Json(StageProjectSkillFromPullRequestResponse {
+            skill: Some(ProjectSkillResponse::from(existing)),
+            skipped_existing: true,
+        }));
+    }
+
+    let now = Utc::now();
+    let title = truncate_for_pr_skill_title(&pull_request.title, 86);
+    let evidence = github_pr_skill_evidence(&pull_request);
+    let skill = ProjectSkill {
+        id: ProjectSkillId::new(),
+        project_id: project_id.clone(),
+        title: format!("Draft PR lesson: #{} {title}", pull_request.number),
+        bucket: "execution".to_string(),
+        stage: "execution".to_string(),
+        status: ProjectSkillLifecycleStatus::Staged,
+        pinned: false,
+        archived: false,
+        scope_paths: Vec::new(),
+        compact_guidance: format!(
+            "Review PR #{} and rewrite this draft into one reusable project procedure before approval.",
+            pull_request.number
+        ),
+        body_markdown: format!(
+            "## Draft from GitHub PR metadata\n\nThis draft was created from bounded PR metadata only. It has not read the full diff or repository contents. Edit it into a concrete reusable procedure before approving it.\n\nPR evidence:\n\n```json\n{}\n```",
+            serde_json::to_string_pretty(&evidence).unwrap_or_else(|_| "{}".to_string())
+        ),
+        predicted_effect: Some(format!(
+            "Helps future agents reuse the reviewed procedure from PR #{} after a human converts the metadata into an accurate skill.",
+            pull_request.number
+        )),
+        provenance_json: serde_json::json!({
+            "source": GITHUB_PR_DISTILL_SOURCE,
+            "source_ref_kind": "pull_request",
+            "source_ref_id": pull_request.number.to_string(),
+            "pull_request_number": pull_request.number,
+            "draft_requires_human_edit": true,
+            "evidence": evidence,
+        }),
+        companion_of_skill_id: None,
+        created_at: now,
+        updated_at: now,
+    };
+
+    let service = ProjectSkillService::new(Arc::clone(&state.app_state.project_skill_repo));
+    let staged = service
+        .stage_skill(skill)
+        .await
+        .map_err(|error| match error {
+            AppError::Validation(message) => HttpError {
+                status: StatusCode::BAD_REQUEST,
+                message: Some(message),
+            },
+            other => {
+                error!("failed to stage GitHub PR project skill: {}", other);
+                HttpError {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: Some("failed to stage GitHub PR project skill".to_string()),
+                }
+            }
+        })?;
+
+    Ok(Json(StageProjectSkillFromPullRequestResponse {
+        skill: Some(ProjectSkillResponse::from(staged)),
+        skipped_existing: false,
+    }))
+}
+
 async fn ingest_recent_git_history_outcomes(
     state: &HttpServerState,
     project_id: &ProjectId,
@@ -743,6 +898,122 @@ struct GithubPrSummary {
     updated_at: Option<String>,
     head_ref_name: Option<String>,
     base_ref_name: Option<String>,
+}
+
+impl From<GithubPrSummary> for ProjectSkillPullRequestCandidateResponse {
+    fn from(summary: GithubPrSummary) -> Self {
+        Self {
+            number: summary.number,
+            title: summary.title,
+            state: summary.state,
+            url: summary.url,
+            merged_at: summary.merged_at,
+            closed_at: summary.closed_at,
+            updated_at: summary.updated_at,
+            head_ref_name: summary.head_ref_name,
+            base_ref_name: summary.base_ref_name,
+        }
+    }
+}
+
+async fn project_working_dir(
+    state: &HttpServerState,
+    project_id: &ProjectId,
+) -> Result<std::path::PathBuf, HttpError> {
+    let project = state
+        .app_state
+        .project_repo
+        .get_by_id(project_id)
+        .await
+        .map_err(|error| {
+            error!(
+                "failed to load project for skill candidate discovery: {}",
+                error
+            );
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to load project".to_string()),
+            }
+        })?
+        .ok_or_else(|| HttpError {
+            status: StatusCode::NOT_FOUND,
+            message: Some(format!("project {} not found", project_id)),
+        })?;
+    validate_absolute_non_root_path(Path::new(&project.working_directory), "project root")
+        .map(|path| path.to_path_buf())
+        .map_err(|error| HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some(error.to_string()),
+        })
+}
+
+async fn existing_project_skill_for_pull_request(
+    state: &HttpServerState,
+    project_id: &ProjectId,
+    number: i64,
+) -> Result<Option<ProjectSkill>, HttpError> {
+    let source_ref_id = number.to_string();
+    let skills = state
+        .app_state
+        .project_skill_repo
+        .list_by_project(
+            project_id,
+            ProjectSkillListOptions {
+                include_archived: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|error| {
+            error!("failed to list project skills for PR dedupe: {}", error);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to list project skills".to_string()),
+            }
+        })?;
+    Ok(skills.into_iter().find(|skill| {
+        let provenance = &skill.provenance_json;
+        provenance
+            .get("pull_request_number")
+            .and_then(serde_json::Value::as_i64)
+            == Some(number)
+            || (provenance.get("source").and_then(serde_json::Value::as_str)
+                == Some(GITHUB_PR_DISTILL_SOURCE)
+                && provenance
+                    .get("source_ref_kind")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("pull_request")
+                && provenance
+                    .get("source_ref_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(source_ref_id.as_str()))
+    }))
+}
+
+fn github_pr_skill_evidence(summary: &GithubPrSummary) -> serde_json::Value {
+    serde_json::json!({
+        "source": "gh_pr_list",
+        "number": summary.number,
+        "title": summary.title,
+        "state": summary.state,
+        "url": summary.url,
+        "merged_at": summary.merged_at,
+        "closed_at": summary.closed_at,
+        "updated_at": summary.updated_at,
+        "head_ref_name": summary.head_ref_name,
+        "base_ref_name": summary.base_ref_name,
+        "scan_limit": GITHUB_PR_CANDIDATE_MAX_LIMIT,
+        "full_diff_read": false,
+    })
+}
+
+fn truncate_for_pr_skill_title(value: &str, max_chars: usize) -> String {
+    let mut output = value.trim().to_string();
+    if output.chars().count() > max_chars {
+        output = output.chars().take(max_chars.saturating_sub(3)).collect();
+        output.push_str("...");
+    }
+    output
 }
 
 async fn read_recent_github_pull_requests(
@@ -970,6 +1241,15 @@ pub async fn apply_project_skill_directory_import(
                     message: Some("failed to scan project skills".to_string()),
                 }
             })?;
+    let synced_count = sync_source_tracked_project_skills(&state, &project_id, &candidates)
+        .await
+        .map_err(|error| {
+            error!("failed to sync project source skills: {}", error);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("failed to sync project source skills".to_string()),
+            }
+        })?;
     let service =
         ProjectSkillImportPreviewService::new(Arc::clone(&state.app_state.project_skill_repo));
     let result = service
@@ -992,19 +1272,6 @@ pub async fn apply_project_skill_directory_import(
                 }
             }
         })?;
-    let synced_count = if source_sync_enabled {
-        sync_source_tracked_project_skills(&state, &project_id, &candidates)
-            .await
-            .map_err(|error| {
-                error!("failed to sync project source skills: {}", error);
-                HttpError {
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: Some("failed to sync project source skills".to_string()),
-                }
-            })?
-    } else {
-        0
-    };
     let imported_skills = result
         .imported_skills
         .into_iter()
@@ -1597,6 +1864,30 @@ mod tests {
         }
     }
 
+    fn source_import_candidate() -> ProjectSkillImportCandidate {
+        ProjectSkillImportCandidate {
+            external_id: Some(".claude/skills/review/SKILL.md".to_string()),
+            title: "Updated source skill".to_string(),
+            bucket: "execution".to_string(),
+            stage: "execution".to_string(),
+            scope_paths: Vec::new(),
+            compact_guidance: "Use the updated source procedure.".to_string(),
+            body_markdown: "## Updated\n\nFollow the updated source procedure.".to_string(),
+            predicted_effect: "Keeps RalphX skill guidance aligned with source files.".to_string(),
+            provenance_json: json!({
+                "source": "target_project_skill_folder",
+                "relative_path": ".claude/skills/review/SKILL.md",
+                "source_sync_enabled": true
+            }),
+            source_snapshot_json: json!({
+                "kind": "target_project_skill_folder",
+                "relative_path": ".claude/skills/review/SKILL.md",
+                "source_root": ".claude/skills",
+                "source_sync_enabled": true
+            }),
+        }
+    }
+
     fn promote_memory_request(
         project_id: &str,
         memory_id: &str,
@@ -1693,6 +1984,82 @@ mod tests {
             response.predicted_effect.as_deref(),
             Some("Prevents exporting from protected branches.")
         );
+    }
+
+    #[tokio::test]
+    async fn source_tracked_project_skill_sync_updates_internal_copy() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-source-sync".to_string());
+        let mut skill = staged_skill(project_id.clone());
+        skill.id = ProjectSkillId::from_string("skill-source-sync".to_string());
+        skill.title = "Old source title".to_string();
+        skill.provenance_json = json!({
+            "source": "project_skill_import",
+            "external_id": ".claude/skills/review/SKILL.md",
+            "source_sync_enabled": true,
+            "source_snapshot": {
+                "relative_path": ".claude/skills/review/SKILL.md",
+                "source_sync_enabled": true
+            }
+        });
+        let skill_id = skill.id.clone();
+        app_state.project_skill_repo.create(skill).await.unwrap();
+        let state = test_state(app_state.clone());
+
+        let synced =
+            sync_source_tracked_project_skills(&state, &project_id, &[source_import_candidate()])
+                .await
+                .unwrap();
+
+        let updated = app_state
+            .project_skill_repo
+            .get_by_id(&skill_id)
+            .await
+            .unwrap()
+            .expect("updated skill");
+        assert_eq!(synced, 1);
+        assert_eq!(updated.title, "Updated source skill");
+        assert_eq!(
+            updated.body_markdown,
+            "## Updated\n\nFollow the updated source procedure."
+        );
+        assert!(project_skill_source_sync_enabled(&updated));
+    }
+
+    #[tokio::test]
+    async fn snapshot_project_skill_sync_does_not_update_internal_copy() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-source-snapshot".to_string());
+        let mut skill = staged_skill(project_id.clone());
+        skill.id = ProjectSkillId::from_string("skill-source-snapshot".to_string());
+        skill.title = "Old source title".to_string();
+        skill.provenance_json = json!({
+            "source": "project_skill_import",
+            "external_id": ".claude/skills/review/SKILL.md",
+            "source_sync_enabled": false,
+            "source_snapshot": {
+                "relative_path": ".claude/skills/review/SKILL.md",
+                "source_sync_enabled": false
+            }
+        });
+        let skill_id = skill.id.clone();
+        app_state.project_skill_repo.create(skill).await.unwrap();
+        let state = test_state(app_state.clone());
+
+        let synced =
+            sync_source_tracked_project_skills(&state, &project_id, &[source_import_candidate()])
+                .await
+                .unwrap();
+
+        let unchanged = app_state
+            .project_skill_repo
+            .get_by_id(&skill_id)
+            .await
+            .unwrap()
+            .expect("unchanged skill");
+        assert_eq!(synced, 0);
+        assert_eq!(unchanged.title, "Old source title");
+        assert!(!project_skill_source_sync_enabled(&unchanged));
     }
 
     #[tokio::test]

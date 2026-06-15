@@ -293,6 +293,83 @@ describe("projectSkillsApi", () => {
     );
   });
 
+  it("lists bounded GitHub PR skill candidates", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          {
+            number: 42,
+            title: "Tighten merge validation",
+            state: "MERGED",
+            url: "https://github.com/aigentive/ralphx.app/pull/42",
+            merged_at: "2026-06-14T10:00:00Z",
+            closed_at: null,
+            updated_at: "2026-06-14T10:05:00Z",
+            head_ref_name: "feature/merge-validation",
+            base_ref_name: "main",
+          },
+        ],
+        count: 1,
+        limit: 25,
+      }),
+    );
+
+    await expect(
+      projectSkillsApi.listPullRequestCandidates({
+        projectId: "project-1",
+        limit: 25,
+      }),
+    ).resolves.toMatchObject({
+      count: 1,
+      limit: 25,
+      candidates: [
+        {
+          number: 42,
+          title: "Tighten merge validation",
+          state: "MERGED",
+          baseRefName: "main",
+        },
+      ],
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:3847/api/project_skills/pr_candidates/list",
+      expect.objectContaining({
+        body: JSON.stringify({
+          project_id: "project-1",
+          limit: 25,
+        }),
+      }),
+    );
+  });
+
+  it("stages one GitHub PR draft skill", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        skill: projectSkill({ id: "skill-pr-42", title: "Draft PR lesson" }),
+        skipped_existing: false,
+      }),
+    );
+
+    await expect(
+      projectSkillsApi.stageFromPullRequest({
+        projectId: "project-1",
+        number: 42,
+      }),
+    ).resolves.toMatchObject({
+      skill: { id: "skill-pr-42", title: "Draft PR lesson" },
+      skippedExisting: false,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:3847/api/project_skills/pr_candidates/stage",
+      expect.objectContaining({
+        body: JSON.stringify({
+          project_id: "project-1",
+          number: 42,
+        }),
+      }),
+    );
+  });
+
   it("updates project skill reviewable fields", async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({

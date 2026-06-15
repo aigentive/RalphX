@@ -23,6 +23,7 @@ import {
   type ProjectSkillImportPreviewResult,
   type ProjectSkill,
   type ProjectSkillExportResult,
+  type ProjectSkillPullRequestCandidate,
   type ProjectSkillReportCard,
   type UpdateProjectSkillInput,
 } from "@/api/project-skills";
@@ -82,7 +83,7 @@ interface MemoryPromotionFormState {
   predictedEffect: string;
 }
 
-type CandidateSourceMode = "auto" | "stored" | "commits" | "prs";
+type CandidateSourceMode = "stored" | "prs";
 
 export function ProjectSkillsCuratorPanel({
   projectId,
@@ -93,9 +94,16 @@ export function ProjectSkillsCuratorPanel({
     useState<ProjectSkillExportResult | null>(null);
   const [candidateDialogOpen, setCandidateDialogOpen] = useState(false);
   const [candidateSourceMode, setCandidateSourceMode] =
-    useState<CandidateSourceMode>("auto");
+    useState<CandidateSourceMode>("stored");
   const [candidateResult, setCandidateResult] =
     useState<DistillProjectSkillsResult | null>(null);
+  const [pullRequestCandidates, setPullRequestCandidates] = useState<
+    ProjectSkillPullRequestCandidate[]
+  >([]);
+  const [pullRequestStageResult, setPullRequestStageResult] = useState<{
+    number: number;
+    skippedExisting: boolean;
+  } | null>(null);
   const [importManifest, setImportManifest] = useState("");
   const [importPreview, setImportPreview] =
     useState<ProjectSkillImportPreviewResult | null>(null);
@@ -168,20 +176,46 @@ export function ProjectSkillsCuratorPanel({
       projectSkillsApi.distill({
         projectId,
         limit: 10,
-        source:
-          candidateSourceMode === "commits"
-            ? "git_commit_history"
-            : candidateSourceMode === "prs"
-              ? "github_pr_history"
-              : null,
-        includeGitHistory:
-          candidateSourceMode === "auto" || candidateSourceMode === "commits",
-        includeGithubPrHistory:
-          candidateSourceMode === "auto" || candidateSourceMode === "prs",
+        source: null,
+        includeGitHistory: false,
+        includeGithubPrHistory: false,
       }),
-    onMutate: () => setCandidateResult(null),
+    onMutate: () => {
+      setCandidateResult(null);
+      setPullRequestStageResult(null);
+    },
     onSuccess: (result) => {
       setCandidateResult(result);
+      invalidateSkills();
+    },
+  });
+
+  const listPullRequestsMutation = useMutation({
+    mutationFn: () =>
+      projectSkillsApi.listPullRequestCandidates({
+        projectId,
+        limit: 25,
+      }),
+    onMutate: () => {
+      setCandidateResult(null);
+      setPullRequestStageResult(null);
+    },
+    onSuccess: (result) => {
+      setPullRequestCandidates(result.candidates);
+    },
+  });
+
+  const stagePullRequestMutation = useMutation({
+    mutationFn: (number: number) =>
+      projectSkillsApi.stageFromPullRequest({
+        projectId,
+        number,
+      }),
+    onMutate: (number) => {
+      setPullRequestStageResult({ number, skippedExisting: false });
+    },
+    onSuccess: (result, number) => {
+      setPullRequestStageResult({ number, skippedExisting: result.skippedExisting });
       invalidateSkills();
     },
   });
@@ -307,6 +341,8 @@ export function ProjectSkillsCuratorPanel({
   const reportCards = reportCardsQuery.data?.cards ?? [];
   const isBusy =
     distillMutation.isPending ||
+    listPullRequestsMutation.isPending ||
+    stagePullRequestMutation.isPending ||
     approveMutation.isPending ||
     rejectMutation.isPending ||
     archiveMutation.isPending ||
@@ -328,6 +364,8 @@ export function ProjectSkillsCuratorPanel({
         settingsQuery.error ??
         reportCardsQuery.error ??
         distillMutation.error ??
+        listPullRequestsMutation.error ??
+        stagePullRequestMutation.error ??
         approveMutation.error ??
         rejectMutation.error ??
         archiveMutation.error ??
@@ -388,7 +426,16 @@ export function ProjectSkillsCuratorPanel({
           sourceMode={candidateSourceMode}
           onSourceModeChange={setCandidateSourceMode}
           onOpenChange={setCandidateDialogOpen}
+          pullRequestCandidates={pullRequestCandidates}
+          pullRequestPending={listPullRequestsMutation.isPending}
+          pullRequestError={
+            listPullRequestsMutation.error ?? stagePullRequestMutation.error
+          }
+          pullRequestStagePending={stagePullRequestMutation.isPending}
+          pullRequestStageResult={pullRequestStageResult}
           onFindCandidates={() => distillMutation.mutate()}
+          onLoadPullRequests={() => listPullRequestsMutation.mutate()}
+          onStagePullRequest={(number) => stagePullRequestMutation.mutate(number)}
         />
       </div>
 
@@ -543,7 +590,14 @@ function CandidateDiscoveryDialog({
   sourceMode,
   onSourceModeChange,
   onOpenChange,
+  pullRequestCandidates,
+  pullRequestPending,
+  pullRequestError,
+  pullRequestStagePending,
+  pullRequestStageResult,
   onFindCandidates,
+  onLoadPullRequests,
+  onStagePullRequest,
 }: {
   disabled: boolean;
   open: boolean;
@@ -553,16 +607,21 @@ function CandidateDiscoveryDialog({
   sourceMode: CandidateSourceMode;
   onSourceModeChange: (mode: CandidateSourceMode) => void;
   onOpenChange: (open: boolean) => void;
+  pullRequestCandidates: ProjectSkillPullRequestCandidate[];
+  pullRequestPending: boolean;
+  pullRequestError: Error | null;
+  pullRequestStagePending: boolean;
+  pullRequestStageResult: { number: number; skippedExisting: boolean } | null;
   onFindCandidates: () => void;
+  onLoadPullRequests: () => void;
+  onStagePullRequest: (number: number) => void;
 }) {
   const sourceDescription =
-    sourceMode === "commits"
-      ? "Scans the latest 50 non-merge commits and stages up to 10 commit-pattern drafts."
-      : sourceMode === "prs"
-        ? "Scans recent GitHub pull requests with `gh pr list` and stages up to 10 PR-pattern drafts."
-      : sourceMode === "stored"
-        ? "Scans only RalphX-recorded task, conversation, PR, review, and workspace outcomes."
-        : "Scans stored RalphX outcomes first, then falls back to recent commits and GitHub PRs when no candidates exist.";
+    sourceMode === "prs"
+      ? "Loads recent GitHub pull request metadata only. Pick one PR to create a draft for review."
+      : "Scans only RalphX-recorded task, conversation, PR, review, and workspace outcomes.";
+  const actionPending = sourceMode === "prs" ? pullRequestPending : pending;
+  const actionDisabled = disabled || actionPending;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -573,7 +632,7 @@ function CandidateDiscoveryDialog({
           disabled={disabled}
           className="w-full sm:w-auto"
         >
-          <RefreshCw className={cn(pending && "animate-spin")} />
+          <RefreshCw className={cn(actionPending && "animate-spin")} />
           Find candidates...
         </Button>
       </DialogTrigger>
@@ -595,9 +654,7 @@ function CandidateDiscoveryDialog({
             </div>
             <div className="flex flex-wrap gap-2">
               {[
-                { id: "auto" as const, label: "Auto" },
                 { id: "stored" as const, label: "Stored outcomes" },
-                { id: "commits" as const, label: "Recent commits" },
                 { id: "prs" as const, label: "GitHub PRs" },
               ].map((option) => (
                 <Button
@@ -605,6 +662,7 @@ function CandidateDiscoveryDialog({
                   type="button"
                   size="sm"
                   variant={sourceMode === option.id ? "default" : "outline"}
+                  aria-pressed={sourceMode === option.id}
                   onClick={() => onSourceModeChange(option.id)}
                 >
                   {option.label}
@@ -616,48 +674,93 @@ function CandidateDiscoveryDialog({
             {sourceDescription} Duplicates already represented by an existing
             skill are skipped.
           </div>
-          {pending ? (
+          {pending && sourceMode === "stored" ? (
             <div className="flex items-center gap-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs text-[var(--text-secondary)]">
               <RefreshCw className="h-3.5 w-3.5 animate-spin" />
               Finding reusable skill candidates...
             </div>
           ) : null}
-          {result ? (
+          {pullRequestPending && sourceMode === "prs" ? (
+            <div className="flex items-center gap-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+              Loading recent pull requests...
+            </div>
+          ) : null}
+          {result && sourceMode === "stored" ? (
             <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
               Staged {result.stagedSkills.length} candidate
               {result.stagedSkills.length === 1 ? "" : "s"} in the Review
               Queue. Skipped {result.skippedExisting} duplicate
               {result.skippedExisting === 1 ? "" : "s"}.
-              {result.scannedGitCommits > 0 ? (
-                <>
-                  {" "}
-                  Git fallback scanned {result.scannedGitCommits} recent commit
-                  {result.scannedGitCommits === 1 ? "" : "s"} and recorded{" "}
-                  {result.ingestedOutcomes} reusable outcome
-                  {result.ingestedOutcomes === 1 ? "" : "s"}.
-                </>
-              ) : null}
-              {result.scannedGithubPrs > 0 ? (
-                <>
-                  {" "}
-                  GitHub PR fallback scanned {result.scannedGithubPrs} pull
-                  request{result.scannedGithubPrs === 1 ? "" : "s"}.
-                </>
-              ) : null}
             </div>
           ) : null}
-          {error ? (
+          {sourceMode === "prs" && pullRequestCandidates.length > 0 ? (
+            <div className="grid max-h-[280px] gap-2 overflow-y-auto rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] p-2">
+              {pullRequestCandidates.map((pullRequest) => (
+                <div
+                  key={pullRequest.number}
+                  className="grid gap-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 sm:grid-cols-[1fr_auto] sm:items-center"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-[var(--text-primary)]">
+                      #{pullRequest.number} {pullRequest.title}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-2 text-xs text-[var(--text-tertiary)]">
+                      {pullRequest.state ? <span>{pullRequest.state}</span> : null}
+                      {pullRequest.baseRefName ? (
+                        <span>base {pullRequest.baseRefName}</span>
+                      ) : null}
+                      {pullRequest.updatedAt ? (
+                        <span>updated {pullRequest.updatedAt.slice(0, 10)}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={disabled || pullRequestStagePending}
+                    onClick={() => onStagePullRequest(pullRequest.number)}
+                  >
+                    Create draft
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {sourceMode === "prs" &&
+          !pullRequestPending &&
+          pullRequestCandidates.length === 0 ? (
+            <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs text-[var(--text-tertiary)]">
+              Load PRs to choose one pull request. RalphX uses PR metadata only;
+              it does not read the full diff in this step.
+            </div>
+          ) : null}
+          {pullRequestStageResult && sourceMode === "prs" ? (
+            <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
+              {pullRequestStageResult.skippedExisting
+                ? `PR #${pullRequestStageResult.number} already has a draft in the Review Queue.`
+                : `Created a draft for PR #${pullRequestStageResult.number}. Edit it before approval.`}
+            </div>
+          ) : null}
+          {error || pullRequestError ? (
             <div
               role="alert"
               className="rounded-md border border-[var(--status-error)]/30 bg-[var(--status-error)]/10 px-3 py-2 text-xs text-[var(--status-error)]"
             >
-              {error.message}
+              {(error ?? pullRequestError)?.message}
             </div>
           ) : null}
           <div className="flex justify-end">
-            <Button type="button" onClick={onFindCandidates} disabled={disabled}>
-              <RefreshCw className={cn(pending && "animate-spin")} />
-              Find candidates
+            <Button
+              type="button"
+              onClick={
+                sourceMode === "prs" ? onLoadPullRequests : onFindCandidates
+              }
+              disabled={actionDisabled}
+            >
+              <RefreshCw className={cn(actionPending && "animate-spin")} />
+              {sourceMode === "prs" ? "Load PRs" : "Find candidates"}
             </Button>
           </div>
         </div>
@@ -877,6 +980,7 @@ function ProjectSkillEditDialog({
                   type="button"
                   size="sm"
                   variant={!sourceSyncEnabled ? "default" : "outline"}
+                  aria-pressed={!sourceSyncEnabled}
                   onClick={() => setSourceSyncEnabled(false)}
                 >
                   Snapshot copy
@@ -885,6 +989,7 @@ function ProjectSkillEditDialog({
                   type="button"
                   size="sm"
                   variant={sourceSyncEnabled ? "default" : "outline"}
+                  aria-pressed={sourceSyncEnabled}
                   onClick={() => setSourceSyncEnabled(true)}
                 >
                   Track source
@@ -1075,6 +1180,7 @@ function ImportPromotionPanel({
                     variant={
                       sourceImportRoots.includes(option.id) ? "default" : "outline"
                     }
+                    aria-pressed={sourceImportRoots.includes(option.id)}
                     disabled={disabled}
                     onClick={() => toggleSourceRoot(option.id)}
                   >
@@ -1087,6 +1193,7 @@ function ImportPromotionPanel({
                   type="button"
                   size="sm"
                   variant={!sourceImportSyncEnabled ? "default" : "outline"}
+                  aria-pressed={!sourceImportSyncEnabled}
                   disabled={disabled}
                   onClick={() => onSourceImportSyncEnabledChange(false)}
                 >
@@ -1096,6 +1203,7 @@ function ImportPromotionPanel({
                   type="button"
                   size="sm"
                   variant={sourceImportSyncEnabled ? "default" : "outline"}
+                  aria-pressed={sourceImportSyncEnabled}
                   disabled={disabled}
                   onClick={() => onSourceImportSyncEnabledChange(true)}
                 >

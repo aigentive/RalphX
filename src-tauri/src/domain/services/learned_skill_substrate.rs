@@ -707,10 +707,12 @@ impl ProjectSkillImportPreviewService {
                 },
             )
             .await?;
-        let existing_keys = existing_skills
-            .iter()
-            .map(|skill| (project_skill_import_key(skill), skill.id.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let mut existing_keys = BTreeMap::new();
+        for skill in &existing_skills {
+            for key in project_skill_import_keys(skill) {
+                existing_keys.insert(key, skill.id.clone());
+            }
+        }
 
         let mut seen_keys = BTreeSet::new();
         let mut rows = Vec::with_capacity(input.candidates.len());
@@ -720,13 +722,17 @@ impl ProjectSkillImportPreviewService {
 
         for (index, candidate) in input.candidates.into_iter().enumerate() {
             let mut reasons = validate_import_candidate(&candidate);
-            let key = candidate_import_key(&candidate);
-            let duplicate_project_skill_id = existing_keys.get(&key).cloned();
+            let keys = candidate_import_keys(&candidate);
+            let duplicate_project_skill_id =
+                keys.iter().find_map(|key| existing_keys.get(key).cloned());
             if duplicate_project_skill_id.is_some() {
                 reasons.push("matching project skill already exists".to_string());
             }
-            if !seen_keys.insert(key) {
+            if keys.iter().any(|key| seen_keys.contains(key)) {
                 reasons.push("duplicate candidate in import manifest".to_string());
+            }
+            for key in keys {
+                seen_keys.insert(key);
             }
 
             let decision = if duplicate_project_skill_id.is_some() {
@@ -1030,17 +1036,54 @@ fn validate_memory_promotion_boundary(
     Ok(())
 }
 
-fn project_skill_import_key(skill: &ProjectSkill) -> String {
-    normalized_import_key(&skill.title, &skill.bucket, &skill.stage)
+fn project_skill_import_keys(skill: &ProjectSkill) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let Some(external_id) = project_skill_import_external_id(skill) {
+        keys.push(normalized_source_import_key(&external_id));
+    }
+    keys.push(normalized_title_import_key(
+        &skill.title,
+        &skill.bucket,
+        &skill.stage,
+    ));
+    keys
 }
 
-fn candidate_import_key(candidate: &ProjectSkillImportCandidate) -> String {
-    normalized_import_key(&candidate.title, &candidate.bucket, &candidate.stage)
+fn candidate_import_keys(candidate: &ProjectSkillImportCandidate) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let Some(external_id) = candidate
+        .external_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        keys.push(normalized_source_import_key(external_id));
+    }
+    keys.push(normalized_title_import_key(
+        &candidate.title,
+        &candidate.bucket,
+        &candidate.stage,
+    ));
+    keys
 }
 
-fn normalized_import_key(title: &str, bucket: &str, stage: &str) -> String {
+fn project_skill_import_external_id(skill: &ProjectSkill) -> Option<String> {
+    skill
+        .provenance_json
+        .get("external_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn normalized_source_import_key(external_id: &str) -> String {
+    format!("source:{}", external_id.trim().to_lowercase())
+}
+
+fn normalized_title_import_key(title: &str, bucket: &str, stage: &str) -> String {
     format!(
-        "{}\n{}\n{}",
+        "title:{}\n{}\n{}",
         title.trim().to_lowercase(),
         bucket.trim().to_lowercase(),
         stage.trim().to_lowercase()
@@ -1547,6 +1590,46 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason == "matching project skill already exists"));
+    }
+
+    #[tokio::test]
+    async fn project_skill_import_preview_dedupes_stable_source_id_before_title() {
+        let repo = Arc::new(MemoryProjectSkillRepository::new());
+        let project_id = ProjectId::from_string("project-import".to_string());
+        let mut existing = staged_skill(project_id.clone());
+        existing.title = "Old imported title".to_string();
+        existing.provenance_json = json!({
+            "source": "project_skill_import",
+            "external_id": ".claude/skills/review/SKILL.md",
+            "source_snapshot": {
+                "relative_path": ".claude/skills/review/SKILL.md",
+                "source_sync_enabled": true
+            }
+        });
+        let existing = repo.create(existing).await.unwrap();
+        let service = ProjectSkillImportPreviewService::new(repo);
+        let mut candidate = import_candidate();
+        candidate.external_id = Some(".claude/skills/review/SKILL.md".to_string());
+        candidate.title = "New imported title".to_string();
+
+        let preview = service
+            .preview_import(ProjectSkillImportPreviewInput {
+                project_id,
+                candidates: vec![candidate],
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(preview.eligible_count, 0);
+        assert_eq!(preview.duplicate_count, 1);
+        assert_eq!(
+            preview.rows[0].decision,
+            ProjectSkillImportDecision::Duplicate
+        );
+        assert_eq!(
+            preview.rows[0].duplicate_project_skill_id,
+            Some(existing.id)
+        );
     }
 
     #[tokio::test]

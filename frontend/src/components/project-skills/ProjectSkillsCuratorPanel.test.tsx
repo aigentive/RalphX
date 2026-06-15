@@ -26,6 +26,8 @@ vi.mock("@/api/project-skills", () => ({
     applyImport: vi.fn(),
     applyProjectDirectoryImport: vi.fn(),
     promoteMemory: vi.fn(),
+    listPullRequestCandidates: vi.fn(),
+    stageFromPullRequest: vi.fn(),
   },
 }));
 
@@ -152,6 +154,15 @@ describe("ProjectSkillsCuratorPanel", () => {
       ingestedOutcomes: 0,
       scannedGitCommits: 0,
       scannedGithubPrs: 0,
+    });
+    mockedProjectSkillsApi.listPullRequestCandidates.mockResolvedValue({
+      candidates: [],
+      count: 0,
+      limit: 25,
+    });
+    mockedProjectSkillsApi.stageFromPullRequest.mockResolvedValue({
+      skill: stagedSkill({ id: "skill-pr" }),
+      skippedExisting: false,
     });
     mockedProjectSkillsApi.listReportCards.mockResolvedValue({
       count: 1,
@@ -420,50 +431,69 @@ describe("ProjectSkillsCuratorPanel", () => {
         projectId: "project-1",
         limit: 10,
         source: null,
-        includeGitHistory: true,
-        includeGithubPrHistory: true,
+        includeGitHistory: false,
+        includeGithubPrHistory: false,
       });
     });
     expect(await screen.findByText(/Staged 1 candidate/i)).toBeInTheDocument();
     expect(await screen.findByText("Review PR evidence")).toBeInTheDocument();
   });
 
-  it("can scan recent commits explicitly for candidates", async () => {
+  it("does not expose recent commit batch generation", async () => {
     const user = userEvent.setup();
     renderPanel();
 
     await user.click(await screen.findByRole("button", { name: /find candidates\.\.\./i }));
-    await user.click(screen.getByRole("button", { name: /recent commits/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^find candidates$/i }));
-
-    await waitFor(() => {
-      expect(mockedProjectSkillsApi.distill).toHaveBeenCalledWith({
-        projectId: "project-1",
-        limit: 10,
-        source: "git_commit_history",
-        includeGitHistory: true,
-        includeGithubPrHistory: false,
-      });
-    });
+    expect(
+      screen.queryByRole("button", { name: /recent commits/i }),
+    ).not.toBeInTheDocument();
   });
 
-  it("can scan GitHub PRs explicitly for candidates", async () => {
+  it("loads GitHub PRs and stages one selected draft", async () => {
     const user = userEvent.setup();
+    mockedProjectSkillsApi.listPullRequestCandidates.mockResolvedValue({
+      candidates: [
+        {
+          number: 42,
+          title: "Tighten merge validation",
+          state: "MERGED",
+          url: "https://github.com/aigentive/ralphx.app/pull/42",
+          mergedAt: "2026-06-14T10:00:00Z",
+          closedAt: null,
+          updatedAt: "2026-06-14T10:05:00Z",
+          headRefName: "feature/merge-validation",
+          baseRefName: "main",
+        },
+      ],
+      count: 1,
+      limit: 25,
+    });
+    mockedProjectSkillsApi.stageFromPullRequest.mockResolvedValue({
+      skill: stagedSkill({ id: "skill-pr-42", title: "Draft PR lesson" }),
+      skippedExisting: false,
+    });
     renderPanel();
 
     await user.click(await screen.findByRole("button", { name: /find candidates\.\.\./i }));
     await user.click(screen.getByRole("button", { name: /github prs/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^find candidates$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^load prs$/i }));
 
     await waitFor(() => {
-      expect(mockedProjectSkillsApi.distill).toHaveBeenCalledWith({
+      expect(mockedProjectSkillsApi.listPullRequestCandidates).toHaveBeenCalledWith({
         projectId: "project-1",
-        limit: 10,
-        source: "github_pr_history",
-        includeGitHistory: false,
-        includeGithubPrHistory: true,
+        limit: 25,
       });
     });
+    expect(await screen.findByText(/#42 Tighten merge validation/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /create draft/i }));
+    await waitFor(() => {
+      expect(mockedProjectSkillsApi.stageFromPullRequest).toHaveBeenCalledWith({
+        projectId: "project-1",
+        number: 42,
+      });
+    });
+    expect(await screen.findByText(/Created a draft for PR #42/i)).toBeInTheDocument();
   });
 
   it("runs lifecycle actions for staged skills", async () => {

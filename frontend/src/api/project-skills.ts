@@ -64,6 +64,29 @@ const DistillProjectSkillsResponseSchema = z.object({
   scanned_github_prs: z.number().optional().default(0),
 });
 
+const ProjectSkillPullRequestCandidateResponseSchema = z.object({
+  number: z.number(),
+  title: z.string(),
+  state: z.string().nullable().optional(),
+  url: z.string().nullable().optional(),
+  merged_at: z.string().nullable().optional(),
+  closed_at: z.string().nullable().optional(),
+  updated_at: z.string().nullable().optional(),
+  head_ref_name: z.string().nullable().optional(),
+  base_ref_name: z.string().nullable().optional(),
+});
+
+const ListProjectSkillPullRequestCandidatesResponseSchema = z.object({
+  candidates: z.array(ProjectSkillPullRequestCandidateResponseSchema),
+  count: z.number(),
+  limit: z.number(),
+});
+
+const StageProjectSkillFromPullRequestResponseSchema = z.object({
+  skill: ProjectSkillResponseSchema.nullable().optional(),
+  skipped_existing: z.boolean(),
+});
+
 const ProjectSkillExportFileResponseSchema = z.object({
   project_skill_id: z.string(),
   title: z.string(),
@@ -210,6 +233,29 @@ export interface DistillProjectSkillsResult {
   ingestedOutcomes: number;
   scannedGitCommits: number;
   scannedGithubPrs: number;
+}
+
+export interface ProjectSkillPullRequestCandidate {
+  number: number;
+  title: string;
+  state: string | null;
+  url: string | null;
+  mergedAt: string | null;
+  closedAt: string | null;
+  updatedAt: string | null;
+  headRefName: string | null;
+  baseRefName: string | null;
+}
+
+export interface ListProjectSkillPullRequestCandidatesResult {
+  candidates: ProjectSkillPullRequestCandidate[];
+  count: number;
+  limit: number;
+}
+
+export interface StageProjectSkillFromPullRequestResult {
+  skill: ProjectSkill | null;
+  skippedExisting: boolean;
 }
 
 export interface ProjectSkillExportFile {
@@ -385,6 +431,22 @@ function transformProjectSkill(raw: RawProjectSkill): ProjectSkill {
     companionOfSkillId: raw.companion_of_skill_id ?? null,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+  };
+}
+
+function transformPullRequestCandidate(
+  raw: z.infer<typeof ProjectSkillPullRequestCandidateResponseSchema>,
+): ProjectSkillPullRequestCandidate {
+  return {
+    number: raw.number,
+    title: raw.title,
+    state: raw.state ?? null,
+    url: raw.url ?? null,
+    mergedAt: raw.merged_at ?? null,
+    closedAt: raw.closed_at ?? null,
+    updatedAt: raw.updated_at ?? null,
+    headRefName: raw.head_ref_name ?? null,
+    baseRefName: raw.base_ref_name ?? null,
   };
 }
 
@@ -578,6 +640,37 @@ export const projectSkillsApi = {
       ingestedOutcomes: parsed.ingested_outcomes,
       scannedGitCommits: parsed.scanned_git_commits,
       scannedGithubPrs: parsed.scanned_github_prs,
+    };
+  },
+
+  async listPullRequestCandidates(input: {
+    projectId: string;
+    limit?: number | null;
+  }): Promise<ListProjectSkillPullRequestCandidatesResult> {
+    const raw = await postJson<unknown>("project_skills/pr_candidates/list", {
+      project_id: input.projectId,
+      ...(input.limit != null ? { limit: input.limit } : {}),
+    });
+    const parsed = ListProjectSkillPullRequestCandidatesResponseSchema.parse(raw);
+    return {
+      candidates: parsed.candidates.map(transformPullRequestCandidate),
+      count: parsed.count,
+      limit: parsed.limit,
+    };
+  },
+
+  async stageFromPullRequest(input: {
+    projectId: string;
+    number: number;
+  }): Promise<StageProjectSkillFromPullRequestResult> {
+    const raw = await postJson<unknown>("project_skills/pr_candidates/stage", {
+      project_id: input.projectId,
+      number: input.number,
+    });
+    const parsed = StageProjectSkillFromPullRequestResponseSchema.parse(raw);
+    return {
+      skill: parsed.skill ? transformProjectSkill(parsed.skill) : null,
+      skippedExisting: parsed.skipped_existing,
     };
   },
 

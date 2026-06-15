@@ -1434,6 +1434,44 @@ pub struct DistillProjectSkillsResponse {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ListProjectSkillPullRequestCandidatesRequest {
+    pub project_id: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillPullRequestCandidateResponse {
+    pub number: i64,
+    pub title: String,
+    pub state: Option<String>,
+    pub url: Option<String>,
+    pub merged_at: Option<String>,
+    pub closed_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub head_ref_name: Option<String>,
+    pub base_ref_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ListProjectSkillPullRequestCandidatesResponse {
+    pub candidates: Vec<ProjectSkillPullRequestCandidateResponse>,
+    pub count: usize,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StageProjectSkillFromPullRequestRequest {
+    pub project_id: String,
+    pub number: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StageProjectSkillFromPullRequestResponse {
+    pub skill: Option<ProjectSkillResponse>,
+    pub skipped_existing: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct ListProjectSkillReportCardsRequest {
     pub project_id: String,
     pub min_linked_outcomes: Option<usize>,
