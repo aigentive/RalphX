@@ -281,6 +281,10 @@ pub async fn start_http_server(
             post(preview_project_skill_import),
         )
         .route(
+            "/api/project_skills/import/apply",
+            post(apply_project_skill_import),
+        )
+        .route(
             "/api/project_skills/settings/get",
             post(get_project_skill_settings),
         )

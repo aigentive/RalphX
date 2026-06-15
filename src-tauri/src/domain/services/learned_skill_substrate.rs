@@ -409,6 +409,13 @@ pub struct ProjectSkillImportPreviewInput {
     pub candidates: Vec<ProjectSkillImportCandidate>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProjectSkillImportApplyInput {
+    pub project_id: ProjectId,
+    pub candidates: Vec<ProjectSkillImportCandidate>,
+    pub confirm_import: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectSkillImportDecision {
     Eligible,
@@ -432,6 +439,12 @@ pub struct ProjectSkillImportPreview {
     pub eligible_count: usize,
     pub invalid_count: usize,
     pub duplicate_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSkillImportApplyResult {
+    pub preview: ProjectSkillImportPreview,
+    pub imported_skills: Vec<ProjectSkill>,
 }
 
 #[derive(Debug, Clone)]
@@ -669,6 +682,68 @@ impl ProjectSkillImportPreviewService {
             eligible_count,
             invalid_count,
             duplicate_count,
+        })
+    }
+
+    pub async fn apply_import(
+        &self,
+        input: ProjectSkillImportApplyInput,
+    ) -> AppResult<ProjectSkillImportApplyResult> {
+        if !input.confirm_import {
+            return Err(AppError::Validation(
+                "project skill import requires confirm_import=true".to_string(),
+            ));
+        }
+
+        let preview = self
+            .preview_import(ProjectSkillImportPreviewInput {
+                project_id: input.project_id.clone(),
+                candidates: input.candidates.clone(),
+            })
+            .await?;
+        let eligible_indexes = preview
+            .rows
+            .iter()
+            .filter(|row| row.decision == ProjectSkillImportDecision::Eligible)
+            .map(|row| row.index)
+            .collect::<BTreeSet<_>>();
+        let skill_service = ProjectSkillService::new(Arc::clone(&self.skill_repo));
+        let mut imported_skills = Vec::with_capacity(eligible_indexes.len());
+
+        for (index, candidate) in input.candidates.into_iter().enumerate() {
+            if !eligible_indexes.contains(&index) {
+                continue;
+            }
+            let now = Utc::now();
+            let skill = ProjectSkill {
+                id: ProjectSkillId::new(),
+                project_id: input.project_id.clone(),
+                title: candidate.title,
+                bucket: candidate.bucket,
+                stage: candidate.stage,
+                status: ProjectSkillLifecycleStatus::Staged,
+                pinned: false,
+                archived: false,
+                scope_paths: candidate.scope_paths,
+                compact_guidance: candidate.compact_guidance,
+                body_markdown: candidate.body_markdown,
+                predicted_effect: Some(candidate.predicted_effect),
+                provenance_json: serde_json::json!({
+                    "source": "project_skill_import",
+                    "external_id": candidate.external_id,
+                    "import_provenance": candidate.provenance_json,
+                    "source_snapshot": candidate.source_snapshot_json,
+                }),
+                companion_of_skill_id: None,
+                created_at: now,
+                updated_at: now,
+            };
+            imported_skills.push(skill_service.stage_skill(skill).await?);
+        }
+
+        Ok(ProjectSkillImportApplyResult {
+            preview,
+            imported_skills,
         })
     }
 }
@@ -982,9 +1057,9 @@ mod tests {
     use super::{
         new_empty_task_outcome, new_skill_usage_event, DistillEligibleOutcomesInput,
         ProjectSkillAgingStatus, ProjectSkillDistillationOrigin, ProjectSkillDistillerService,
-        ProjectSkillEvidenceLevel, ProjectSkillImportCandidate, ProjectSkillImportDecision,
-        ProjectSkillImportPreviewInput, ProjectSkillImportPreviewService, ProjectSkillReportOptions,
-        ProjectSkillReportService, ProjectSkillService, SkillUsageService,
+        ProjectSkillEvidenceLevel, ProjectSkillImportApplyInput, ProjectSkillImportCandidate,
+        ProjectSkillImportDecision, ProjectSkillImportPreviewInput, ProjectSkillImportPreviewService,
+        ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService, SkillUsageService,
         StageProjectSkillFromOutcomeInput,
     };
     use crate::domain::entities::types::ProjectId;
@@ -1209,6 +1284,63 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason == "matching project skill already exists"));
+    }
+
+    #[tokio::test]
+    async fn project_skill_import_apply_requires_confirmation() {
+        let repo = Arc::new(MemoryProjectSkillRepository::new());
+        let service = ProjectSkillImportPreviewService::new(repo);
+        let project_id = ProjectId::from_string("project-import".to_string());
+
+        let result = service
+            .apply_import(ProjectSkillImportApplyInput {
+                project_id,
+                candidates: vec![import_candidate()],
+                confirm_import: false,
+            })
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn project_skill_import_apply_stages_only_eligible_rows_with_snapshot_provenance() {
+        let repo = Arc::new(MemoryProjectSkillRepository::new());
+        let service = ProjectSkillImportPreviewService::new(repo.clone());
+        let project_id = ProjectId::from_string("project-import".to_string());
+        let mut invalid = import_candidate();
+        invalid.external_id = Some("invalid-skill".to_string());
+        invalid.title = "Invalid imported skill".to_string();
+        invalid.scope_paths = vec!["../outside".to_string()];
+
+        let result = service
+            .apply_import(ProjectSkillImportApplyInput {
+                project_id: project_id.clone(),
+                candidates: vec![import_candidate(), invalid],
+                confirm_import: true,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.preview.eligible_count, 1);
+        assert_eq!(result.preview.invalid_count, 1);
+        assert_eq!(result.imported_skills.len(), 1);
+        let imported = &result.imported_skills[0];
+        assert_eq!(imported.status, ProjectSkillLifecycleStatus::Staged);
+        assert_eq!(
+            imported
+                .provenance_json
+                .get("source")
+                .and_then(serde_json::Value::as_str),
+            Some("project_skill_import")
+        );
+        assert!(imported.provenance_json.get("source_snapshot").is_some());
+
+        let written = repo
+            .list_by_project(&project_id, ProjectSkillListOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(written.len(), 1);
     }
 
     #[tokio::test]
