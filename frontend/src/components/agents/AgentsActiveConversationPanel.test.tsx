@@ -296,6 +296,26 @@ vi.mock("@/hooks/useHarnessProviders", () => ({
         supportedEfforts: ["low", "medium", "high", "max"],
         updatedAt: "2026-05-16T00:00:00.000Z",
       },
+      {
+        provider: "codex",
+        enabled: true,
+        isDefault: false,
+        model: null,
+        effort: null,
+        approvalPolicy: null,
+        sandboxMode: null,
+        claudePermissionMode: null,
+        claudeDangerouslySkipPermissions: false,
+        claudeAllowDangerouslySkipPermissions: false,
+        available: true,
+        binaryFound: true,
+        binaryPath: "/tmp/codex",
+        status: "ready",
+        error: null,
+        missingCoreExecFeatures: [],
+        supportedEfforts: ["low", "medium", "high", "xhigh"],
+        updatedAt: "2026-05-16T00:00:00.000Z",
+      },
     ],
     isLoading: false,
     isPlaceholderData: false,
@@ -314,12 +334,18 @@ vi.mock("@/stores/uiStore", () => ({
 
 vi.mock("./AgentComposerSurface", () => ({
   AgentComposerSurface: ({
+    provider,
     model,
     effort,
     showHelperText,
     onSend,
     onForkSession,
   }: {
+    provider: {
+      value: string;
+      disabled?: boolean;
+      onValueChange: (value: "claude" | "codex") => void;
+    };
     model: { value: string; onValueChange: (value: string) => void };
     effort: { value: string; onValueChange: (value: string) => void };
     showHelperText?: boolean;
@@ -327,9 +353,16 @@ vi.mock("./AgentComposerSurface", () => ({
     onForkSession?: () => Promise<unknown> | void;
   }) => (
     <div>
+      <div data-testid="workspace-provider-value">{provider.value}</div>
       <div data-testid="workspace-model-value">{model.value}</div>
       <div data-testid="workspace-effort-value">{effort.value}</div>
       <div data-testid="workspace-helper-enabled">{String(showHelperText !== false)}</div>
+      <button
+        type="button"
+        data-testid="change-workspace-provider"
+        disabled={provider.disabled}
+        onClick={() => provider.onValueChange("codex")}
+      />
       <button
         type="button"
         data-testid="change-workspace-model"
@@ -489,6 +522,7 @@ function renderPanel(
     onActiveConversationModeMenuOpen: vi.fn(),
     onActiveEffortChange: vi.fn(),
     onActiveModelChange: vi.fn(),
+    onActiveProviderChange: vi.fn(),
     onAgentUserMessageSent: vi.fn(),
     onConversationModeSwitched: vi.fn(),
     onFocusIdeationSession: vi.fn(),
@@ -560,6 +594,7 @@ describe("AgentsActiveConversationPanel", () => {
     const onActiveEffortChange = vi.fn();
     renderPanel({ onActiveEffortChange, onActiveModelChange });
 
+    expect(screen.getByTestId("workspace-provider-value").textContent).toBe("claude");
     expect(screen.getByTestId("workspace-effort-value").textContent).toBe("high");
     expect(screen.getByTestId("workspace-helper-enabled").textContent).toBe("true");
 
@@ -577,6 +612,23 @@ describe("AgentsActiveConversationPanel", () => {
       "medium",
       "high",
       "max",
+    ]);
+  });
+
+  it("allows provider changes in an existing workspace conversation", () => {
+    const onActiveProviderChange = vi.fn();
+    renderPanel({ onActiveProviderChange });
+
+    const providerButton = screen.getByTestId("change-workspace-provider");
+    expect(providerButton).not.toBeDisabled();
+
+    fireEvent.click(providerButton);
+
+    expect(onActiveProviderChange).toHaveBeenCalledWith("codex", [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
     ]);
   });
 

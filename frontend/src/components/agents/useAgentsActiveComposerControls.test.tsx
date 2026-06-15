@@ -155,6 +155,64 @@ describe("useAgentsActiveComposerControls", () => {
     );
   });
 
+  it("normalizes active provider changes to a provider default model", () => {
+    const setRuntimeForConversation = vi.fn();
+    const { result } = renderHook(() =>
+      useAgentsActiveComposerControls(
+        controlsArgs({
+          normalizedActiveRuntime: {
+            provider: "claude",
+            modelId: "opus",
+            effort: "high",
+          },
+          setRuntimeForConversation,
+        }),
+      ),
+    );
+
+    act(() => {
+      result.current.handleActiveProviderChange("codex", [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+      ]);
+    });
+
+    expect(setRuntimeForConversation).toHaveBeenCalledWith(
+      "conversation-1",
+      "project-1",
+      {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "xhigh",
+      },
+    );
+  });
+
+  it("does not update provider runtime without a selected conversation", () => {
+    const setRuntimeForConversation = vi.fn();
+    const { result } = renderHook(() =>
+      useAgentsActiveComposerControls(
+        controlsArgs({
+          selectedConversationId: null,
+          setRuntimeForConversation,
+        }),
+      ),
+    );
+
+    act(() => {
+      result.current.handleActiveProviderChange("codex", [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+      ]);
+    });
+
+    expect(setRuntimeForConversation).not.toHaveBeenCalled();
+  });
+
   it("normalizes active effort changes against provider-supported efforts", () => {
     const setRuntimeForConversation = vi.fn();
     const { result } = renderHook(() =>
