@@ -376,6 +376,7 @@ describe("ProjectSkillsCuratorPanel", () => {
         limit: 10,
       });
     });
+    expect(await screen.findByText(/Staged 1 candidate/i)).toBeInTheDocument();
     expect(await screen.findByText("Review PR evidence")).toBeInTheDocument();
   });
 

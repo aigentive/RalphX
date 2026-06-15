@@ -16,6 +16,7 @@ import { useState } from "react";
 
 import {
   projectSkillsApi,
+  type DistillProjectSkillsResult,
   type ProjectSkillImportCandidate,
   type ProjectSkillImportPreviewResult,
   type ProjectSkill,
@@ -78,6 +79,9 @@ export function ProjectSkillsCuratorPanel({
   const queryClient = useQueryClient();
   const [exportPreview, setExportPreview] =
     useState<ProjectSkillExportResult | null>(null);
+  const [candidateDialogOpen, setCandidateDialogOpen] = useState(false);
+  const [candidateResult, setCandidateResult] =
+    useState<DistillProjectSkillsResult | null>(null);
   const [importManifest, setImportManifest] = useState("");
   const [importPreview, setImportPreview] =
     useState<ProjectSkillImportPreviewResult | null>(null);
@@ -139,7 +143,11 @@ export function ProjectSkillsCuratorPanel({
 
   const distillMutation = useMutation({
     mutationFn: () => projectSkillsApi.distill({ projectId, limit: 10 }),
-    onSuccess: invalidateSkills,
+    onMutate: () => setCandidateResult(null),
+    onSuccess: (result) => {
+      setCandidateResult(result);
+      invalidateSkills();
+    },
   });
 
   const approveMutation = useMutation({
@@ -314,7 +322,11 @@ export function ProjectSkillsCuratorPanel({
       <div className="flex flex-wrap items-center justify-end gap-2">
         <CandidateDiscoveryDialog
           disabled={isBusy}
+          open={candidateDialogOpen}
           pending={distillMutation.isPending}
+          result={candidateResult}
+          error={distillMutation.error}
+          onOpenChange={setCandidateDialogOpen}
           onFindCandidates={() => distillMutation.mutate()}
         />
       </div>
@@ -439,15 +451,23 @@ export function ProjectSkillsCuratorPanel({
 
 function CandidateDiscoveryDialog({
   disabled,
+  open,
   pending,
+  result,
+  error,
+  onOpenChange,
   onFindCandidates,
 }: {
   disabled: boolean;
+  open: boolean;
   pending: boolean;
+  result: DistillProjectSkillsResult | null;
+  error: Error | null;
+  onOpenChange: (open: boolean) => void;
   onFindCandidates: () => void;
 }) {
   return (
-    <Dialog>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
         <Button type="button" size="sm" disabled={disabled}>
           <RefreshCw className={cn(pending && "animate-spin")} />
@@ -470,6 +490,28 @@ function CandidateDiscoveryDialog({
             The current run checks up to 10 eligible outcomes for this project
             and skips duplicates already represented by an existing skill.
           </div>
+          {pending ? (
+            <div className="flex items-center gap-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+              Finding reusable skill candidates...
+            </div>
+          ) : null}
+          {result ? (
+            <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
+              Staged {result.stagedSkills.length} candidate
+              {result.stagedSkills.length === 1 ? "" : "s"} in the Review
+              Queue. Skipped {result.skippedExisting} duplicate
+              {result.skippedExisting === 1 ? "" : "s"}.
+            </div>
+          ) : null}
+          {error ? (
+            <div
+              role="alert"
+              className="rounded-md border border-[var(--status-error)]/30 bg-[var(--status-error)]/10 px-3 py-2 text-xs text-[var(--status-error)]"
+            >
+              {error.message}
+            </div>
+          ) : null}
           <div className="flex justify-end">
             <Button type="button" onClick={onFindCandidates} disabled={disabled}>
               <RefreshCw className={cn(pending && "animate-spin")} />

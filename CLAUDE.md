@@ -4,12 +4,13 @@
 
 ## Priority Zero — Owner Strategy Alignment (NON-NEGOTIABLE)
 
-Before ANY user-facing content, documentation, UI copy, or messaging work, agents MUST load these on demand:
+Before ANY user-facing content, documentation, UI copy, or messaging work, agents MUST load these on demand when the files exist:
 - `~/.ralphx/founder/founder-profile.md` — Owner vision and non-negotiables
 - `~/.ralphx/strategy/project-goal-card.md` — Messaging architecture, positioning, ICPs, competitive landscape
 - `~/.ralphx/strategy/project-metrics.md` — Verifiable project data points
 
 These are the **owner's directives**. They override default agent judgment on messaging. Do not keep them as always-on `@` imports in project memory.
+If any file is absent, record that it was unavailable and continue with repository-local instructions; missing private strategy files must not fail worker startup or task execution.
 
 ---
 
