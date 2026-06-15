@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::process::Command;
 
 use chrono::Utc;
 use serde_json::json;
@@ -18,6 +19,22 @@ use crate::infrastructure::memory::{
 fn temp_project_dir() -> tempfile::TempDir {
     let cwd = std::env::current_dir().expect("current dir");
     tempfile::tempdir_in(cwd).expect("temp project dir")
+}
+
+fn init_git_repo(project_dir: &std::path::Path, branch: &str) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project_dir)
+        .arg("init")
+        .arg("-b")
+        .arg(branch)
+        .output()
+        .expect("run git init");
+    assert!(
+        output.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn approved_skill(project_id: ProjectId, title: &str) -> ProjectSkill {
@@ -100,6 +117,7 @@ async fn preview_export_includes_approved_and_pinned_active_skills() {
 #[tokio::test]
 async fn apply_export_writes_skill_markdown_and_is_idempotent() {
     let project_dir = temp_project_dir();
+    init_git_repo(project_dir.path(), "ralphx/export-skills");
     let (project_id, _project_repo, skill_repo, settings_repo, service) =
         setup_service(project_dir.path()).await;
     settings_repo
@@ -145,6 +163,59 @@ async fn apply_export_requires_project_export_opt_in() {
     assert!(error.to_string().contains("enabled"));
     let preview = service.preview_export(&project_id).await.unwrap();
     assert_eq!(preview.files.len(), 1);
+}
+
+#[tokio::test]
+async fn apply_export_rejects_protected_git_branch() {
+    let project_dir = temp_project_dir();
+    init_git_repo(project_dir.path(), "main");
+    let (project_id, _project_repo, skill_repo, settings_repo, service) =
+        setup_service(project_dir.path()).await;
+    settings_repo
+        .upsert(ProjectSkillSettings {
+            project_id: project_id.clone(),
+            export_enabled: true,
+        })
+        .await
+        .unwrap();
+    skill_repo
+        .create(approved_skill(project_id.clone(), "Approved Skill"))
+        .await
+        .unwrap();
+
+    let error = service
+        .apply_export(&project_id)
+        .await
+        .expect_err("export apply should reject protected branches");
+
+    assert!(error.to_string().contains("protected branch main"));
+}
+
+#[tokio::test]
+async fn apply_export_requires_clean_review_branch() {
+    let project_dir = temp_project_dir();
+    init_git_repo(project_dir.path(), "ralphx/export-skills");
+    std::fs::write(project_dir.path().join("unrelated.txt"), "dirty\n").unwrap();
+    let (project_id, _project_repo, skill_repo, settings_repo, service) =
+        setup_service(project_dir.path()).await;
+    settings_repo
+        .upsert(ProjectSkillSettings {
+            project_id: project_id.clone(),
+            export_enabled: true,
+        })
+        .await
+        .unwrap();
+    skill_repo
+        .create(approved_skill(project_id.clone(), "Approved Skill"))
+        .await
+        .unwrap();
+
+    let error = service
+        .apply_export(&project_id)
+        .await
+        .expect_err("export apply should reject dirty review branches");
+
+    assert!(error.to_string().contains("clean review branch"));
 }
 
 #[tokio::test]
