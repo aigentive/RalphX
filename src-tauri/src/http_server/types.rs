@@ -9,8 +9,8 @@ use crate::application::{AppState, TeamService, TeamStateTracker};
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{
-    AgentTaskState, Artifact, ArtifactContent, AuditLogEntry, MemoryEntry, StepProgressSummary,
-    ProjectSkill, TaskProposal, TaskStep,
+    AgentTaskState, Artifact, ArtifactContent, AuditLogEntry, MemoryEntry, ProjectSkill,
+    StepProgressSummary, TaskProposal, TaskStep,
 };
 use crate::http_server::delegation::DelegationService;
 use crate::http_server::handlers::artifacts::EditError;
@@ -1389,6 +1389,23 @@ pub struct ApplyProjectSkillExportRequest {
     pub project_id: String,
     #[serde(default)]
     pub confirm_export: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GetProjectSkillSettingsRequest {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateProjectSkillSettingsRequest {
+    pub project_id: String,
+    pub export_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillSettingsResponse {
+    pub project_id: String,
+    pub export_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

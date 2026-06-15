@@ -399,9 +399,12 @@ mod v20260612124826_provider_cli_management_policy_tests;
 mod v20260614120000_learned_skill_substrate;
 #[cfg(test)]
 mod v20260614120000_learned_skill_substrate_tests;
+mod v20260615092455_project_skill_settings;
+#[cfg(test)]
+mod v20260615092455_project_skill_settings_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260614120000;
+pub const SCHEMA_VERSION: i64 = 20260615092455;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1120,6 +1123,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260614120000,
         name: "learned_skill_substrate",
         migrate: v20260614120000_learned_skill_substrate::migrate,
+    },
+    Migration {
+        version: 20260615092455,
+        name: "project_skill_settings",
+        migrate: v20260615092455_project_skill_settings::migrate,
     },
 ];
 

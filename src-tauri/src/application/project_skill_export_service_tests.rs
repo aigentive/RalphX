@@ -6,10 +6,14 @@ use serde_json::json;
 use super::ProjectSkillExportService;
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
-    Project, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus,
+    Project, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, ProjectSkillSettings,
 };
-use crate::domain::repositories::{ProjectRepository, ProjectSkillRepository};
-use crate::infrastructure::memory::{MemoryProjectRepository, MemoryProjectSkillRepository};
+use crate::domain::repositories::{
+    ProjectRepository, ProjectSkillRepository, ProjectSkillSettingsRepository,
+};
+use crate::infrastructure::memory::{
+    MemoryProjectRepository, MemoryProjectSkillRepository, MemoryProjectSkillSettingsRepository,
+};
 
 fn temp_project_dir() -> tempfile::TempDir {
     let cwd = std::env::current_dir().expect("current dir");
@@ -45,10 +49,12 @@ async fn setup_service(
     ProjectId,
     Arc<MemoryProjectRepository>,
     Arc<MemoryProjectSkillRepository>,
+    Arc<MemoryProjectSkillSettingsRepository>,
     ProjectSkillExportService,
 ) {
     let project_repo = Arc::new(MemoryProjectRepository::new());
     let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+    let settings_repo = Arc::new(MemoryProjectSkillSettingsRepository::new());
     let mut project = Project::new(
         "Export Test".to_string(),
         project_dir.to_string_lossy().to_string(),
@@ -59,14 +65,16 @@ async fn setup_service(
     let service = ProjectSkillExportService::new(
         Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
         Arc::clone(&skill_repo) as Arc<dyn ProjectSkillRepository>,
+        Arc::clone(&settings_repo) as Arc<dyn ProjectSkillSettingsRepository>,
     );
-    (project_id, project_repo, skill_repo, service)
+    (project_id, project_repo, skill_repo, settings_repo, service)
 }
 
 #[tokio::test]
 async fn preview_export_includes_approved_and_pinned_active_skills() {
     let project_dir = temp_project_dir();
-    let (project_id, _project_repo, skill_repo, service) = setup_service(project_dir.path()).await;
+    let (project_id, _project_repo, skill_repo, _settings_repo, service) =
+        setup_service(project_dir.path()).await;
     skill_repo
         .create(approved_skill(project_id.clone(), "Approved Skill"))
         .await
@@ -92,7 +100,15 @@ async fn preview_export_includes_approved_and_pinned_active_skills() {
 #[tokio::test]
 async fn apply_export_writes_skill_markdown_and_is_idempotent() {
     let project_dir = temp_project_dir();
-    let (project_id, _project_repo, skill_repo, service) = setup_service(project_dir.path()).await;
+    let (project_id, _project_repo, skill_repo, settings_repo, service) =
+        setup_service(project_dir.path()).await;
+    settings_repo
+        .upsert(ProjectSkillSettings {
+            project_id: project_id.clone(),
+            export_enabled: true,
+        })
+        .await
+        .unwrap();
     skill_repo
         .create(approved_skill(project_id.clone(), "Approved Skill"))
         .await
@@ -112,6 +128,26 @@ async fn apply_export_writes_skill_markdown_and_is_idempotent() {
 }
 
 #[tokio::test]
+async fn apply_export_requires_project_export_opt_in() {
+    let project_dir = temp_project_dir();
+    let (project_id, _project_repo, skill_repo, _settings_repo, service) =
+        setup_service(project_dir.path()).await;
+    skill_repo
+        .create(approved_skill(project_id.clone(), "Approved Skill"))
+        .await
+        .unwrap();
+
+    let error = service
+        .apply_export(&project_id)
+        .await
+        .expect_err("export apply should require project opt-in");
+
+    assert!(error.to_string().contains("enabled"));
+    let preview = service.preview_export(&project_id).await.unwrap();
+    assert_eq!(preview.files.len(), 1);
+}
+
+#[tokio::test]
 async fn export_rejects_relative_project_roots() {
     let project_repo = Arc::new(MemoryProjectRepository::new());
     let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
@@ -122,6 +158,8 @@ async fn export_rejects_relative_project_roots() {
     let service = ProjectSkillExportService::new(
         project_repo as Arc<dyn ProjectRepository>,
         skill_repo as Arc<dyn ProjectSkillRepository>,
+        Arc::new(MemoryProjectSkillSettingsRepository::new())
+            as Arc<dyn ProjectSkillSettingsRepository>,
     );
 
     let error = service
@@ -142,7 +180,15 @@ async fn export_rejects_symlinked_skills_directory() {
     let dot_claude = project_dir.path().join(".claude");
     std::fs::create_dir_all(&dot_claude).unwrap();
     symlink(escape_dir.path(), dot_claude.join("skills")).unwrap();
-    let (project_id, _project_repo, skill_repo, service) = setup_service(project_dir.path()).await;
+    let (project_id, _project_repo, skill_repo, settings_repo, service) =
+        setup_service(project_dir.path()).await;
+    settings_repo
+        .upsert(ProjectSkillSettings {
+            project_id: project_id.clone(),
+            export_enabled: true,
+        })
+        .await
+        .unwrap();
     skill_repo
         .create(approved_skill(project_id.clone(), "Approved Skill"))
         .await

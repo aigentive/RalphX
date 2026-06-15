@@ -2,20 +2,34 @@ import { Download, Eye } from "lucide-react";
 
 import type { ProjectSkillExportResult } from "@/api/project-skills";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 
 interface ProjectSkillsExportControlsProps {
   disabled: boolean;
+  exportEnabled: boolean;
+  onExportEnabledChange: (enabled: boolean) => void;
   onPreview: () => void;
   onApply: () => void;
 }
 
 export function ProjectSkillsExportControls({
   disabled,
+  exportEnabled,
+  onExportEnabledChange,
   onPreview,
   onApply,
 }: ProjectSkillsExportControlsProps) {
   return (
     <>
+      <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+        <Switch
+          checked={exportEnabled}
+          onCheckedChange={onExportEnabledChange}
+          disabled={disabled}
+          aria-label="Enable project skill export"
+        />
+        Export enabled
+      </label>
       <Button
         type="button"
         size="sm"
@@ -31,7 +45,7 @@ export function ProjectSkillsExportControls({
         size="sm"
         variant="outline"
         onClick={onApply}
-        disabled={disabled}
+        disabled={disabled || !exportEnabled}
       >
         <Download />
         Export

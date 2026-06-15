@@ -7,6 +7,7 @@ use crate::application::project_skill_export_service::{
     ProjectSkillExportPreview, ProjectSkillExportService,
 };
 use crate::domain::entities::types::ProjectId;
+use crate::domain::entities::ProjectSkillSettings;
 use crate::error::AppError;
 use crate::http_server::project_scope::ProjectScope;
 use crate::http_server::types::HttpError;
@@ -21,8 +22,12 @@ pub async fn preview_project_skill_export(
     let service = ProjectSkillExportService::new(
         Arc::clone(&state.app_state.project_repo),
         Arc::clone(&state.app_state.project_skill_repo),
+        Arc::clone(&state.app_state.project_skill_settings_repo),
     );
-    let preview = service.preview_export(&project_id).await.map_err(export_error)?;
+    let preview = service
+        .preview_export(&project_id)
+        .await
+        .map_err(export_error)?;
     Ok(Json(export_response(preview)))
 }
 
@@ -43,9 +48,50 @@ pub async fn apply_project_skill_export(
     let service = ProjectSkillExportService::new(
         Arc::clone(&state.app_state.project_repo),
         Arc::clone(&state.app_state.project_skill_repo),
+        Arc::clone(&state.app_state.project_skill_settings_repo),
     );
-    let preview = service.apply_export(&project_id).await.map_err(export_error)?;
+    let preview = service
+        .apply_export(&project_id)
+        .await
+        .map_err(export_error)?;
     Ok(Json(export_response(preview)))
+}
+
+pub async fn get_project_skill_settings(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<GetProjectSkillSettingsRequest>,
+) -> Result<Json<ProjectSkillSettingsResponse>, HttpError> {
+    let project_id = ProjectId::from_string(req.project_id);
+    assert_project_id_scope(&project_id, &scope)?;
+    let settings = state
+        .app_state
+        .project_skill_settings_repo
+        .get_for_project(&project_id)
+        .await
+        .map_err(export_error)?
+        .unwrap_or_else(|| ProjectSkillSettings::default_for_project(project_id));
+    Ok(Json(settings_response(settings)))
+}
+
+pub async fn update_project_skill_settings(
+    State(state): State<HttpServerState>,
+    scope: ProjectScope,
+    Json(req): Json<UpdateProjectSkillSettingsRequest>,
+) -> Result<Json<ProjectSkillSettingsResponse>, HttpError> {
+    let project_id = ProjectId::from_string(req.project_id);
+    assert_project_id_scope(&project_id, &scope)?;
+    let settings = ProjectSkillSettings {
+        project_id,
+        export_enabled: req.export_enabled,
+    };
+    let settings = state
+        .app_state
+        .project_skill_settings_repo
+        .upsert(settings)
+        .await
+        .map_err(export_error)?;
+    Ok(Json(settings_response(settings)))
 }
 
 pub(crate) fn assert_project_id_scope(
@@ -81,6 +127,13 @@ fn export_response(preview: ProjectSkillExportPreview) -> ProjectSkillExportResp
         target_root: preview.target_root.to_string_lossy().to_string(),
         count: files.len(),
         files,
+    }
+}
+
+fn settings_response(settings: ProjectSkillSettings) -> ProjectSkillSettingsResponse {
+    ProjectSkillSettingsResponse {
+        project_id: settings.project_id.as_str().to_string(),
+        export_enabled: settings.export_enabled,
     }
 }
 
@@ -181,8 +234,56 @@ mod tests {
         .0;
 
         assert_eq!(response.count, 1);
-        assert!(response.files[0].relative_path.starts_with(".claude/skills/"));
+        assert!(response.files[0]
+            .relative_path
+            .starts_with(".claude/skills/"));
         assert!(response.files[0].will_write);
+    }
+
+    #[tokio::test]
+    async fn project_skill_settings_default_to_export_disabled() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-export".to_string());
+
+        let response = get_project_skill_settings(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![project_id])),
+            Json(GetProjectSkillSettingsRequest {
+                project_id: "project-export".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert!(!response.export_enabled);
+    }
+
+    #[tokio::test]
+    async fn update_project_skill_settings_persists_export_opt_in() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-export".to_string());
+
+        let response = update_project_skill_settings(
+            State(test_state(Arc::clone(&app_state))),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(UpdateProjectSkillSettingsRequest {
+                project_id: "project-export".to_string(),
+                export_enabled: true,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert!(response.export_enabled);
+        let loaded = app_state
+            .project_skill_settings_repo
+            .get_for_project(&project_id)
+            .await
+            .unwrap()
+            .expect("saved settings");
+        assert!(loaded.export_enabled);
     }
 
     #[tokio::test]

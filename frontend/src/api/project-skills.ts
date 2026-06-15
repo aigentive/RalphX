@@ -59,8 +59,14 @@ const ProjectSkillExportResponseSchema = z.object({
   count: z.number(),
 });
 
+const ProjectSkillSettingsResponseSchema = z.object({
+  project_id: z.string(),
+  export_enabled: z.boolean(),
+});
+
 type RawProjectSkill = z.infer<typeof ProjectSkillResponseSchema>;
 type RawProjectSkillExport = z.infer<typeof ProjectSkillExportResponseSchema>;
+type RawProjectSkillSettings = z.infer<typeof ProjectSkillSettingsResponseSchema>;
 
 export type ProjectSkillStatus = z.infer<typeof ProjectSkillStatusSchema>;
 
@@ -119,6 +125,11 @@ export interface ProjectSkillExportResult {
   count: number;
 }
 
+export interface ProjectSkillSettings {
+  projectId: string;
+  exportEnabled: boolean;
+}
+
 function transformProjectSkill(raw: RawProjectSkill): ProjectSkill {
   return {
     id: raw.id,
@@ -153,6 +164,15 @@ function transformProjectSkillExport(raw: RawProjectSkillExport): ProjectSkillEx
       status: file.status,
       willWrite: file.will_write,
     })),
+  };
+}
+
+function transformProjectSkillSettings(
+  raw: RawProjectSkillSettings,
+): ProjectSkillSettings {
+  return {
+    projectId: raw.project_id,
+    exportEnabled: raw.export_enabled,
   };
 }
 
@@ -246,5 +266,27 @@ export const projectSkillsApi = {
       confirm_export: true,
     });
     return transformProjectSkillExport(ProjectSkillExportResponseSchema.parse(raw));
+  },
+
+  async getSettings(projectId: string): Promise<ProjectSkillSettings> {
+    const raw = await postJson<unknown>("project_skills/settings/get", {
+      project_id: projectId,
+    });
+    return transformProjectSkillSettings(
+      ProjectSkillSettingsResponseSchema.parse(raw),
+    );
+  },
+
+  async updateSettings(
+    projectId: string,
+    settings: Pick<ProjectSkillSettings, "exportEnabled">,
+  ): Promise<ProjectSkillSettings> {
+    const raw = await postJson<unknown>("project_skills/settings/update", {
+      project_id: projectId,
+      export_enabled: settings.exportEnabled,
+    });
+    return transformProjectSkillSettings(
+      ProjectSkillSettingsResponseSchema.parse(raw),
+    );
   },
 } as const;

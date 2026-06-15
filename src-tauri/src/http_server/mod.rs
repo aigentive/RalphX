@@ -272,6 +272,14 @@ pub async fn start_http_server(
         .route("/api/project_skills/unpin", post(unpin_project_skill))
         .route("/api/project_skills/distill", post(distill_project_skills))
         .route(
+            "/api/project_skills/settings/get",
+            post(get_project_skill_settings),
+        )
+        .route(
+            "/api/project_skills/settings/update",
+            post(update_project_skill_settings),
+        )
+        .route(
             "/api/project_skills/export/preview",
             post(preview_project_skill_export),
         )

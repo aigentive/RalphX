@@ -24,6 +24,7 @@ pub mod plan_branch;
 pub mod plan_selection_stats;
 pub mod project;
 pub mod project_memory_settings;
+pub mod project_skill_settings;
 pub mod research;
 pub mod review;
 pub mod review_issue;
@@ -122,6 +123,7 @@ pub use plan_branch::{ParsePlanBranchStatusError, PlanBranch, PlanBranchId, Plan
 pub use plan_selection_stats::{PlanSelectionStats, SelectionSource};
 pub use project::{GitMode, MergeStrategy, MergeValidationMode, Project};
 pub use project_memory_settings::ProjectMemorySettings;
+pub use project_skill_settings::ProjectSkillSettings;
 pub use research::{
     CustomDepth, ParseResearchDepthPresetError, ParseResearchProcessStatusError, ResearchBrief,
     ResearchDepth, ResearchDepthPreset, ResearchOutput, ResearchPresets, ResearchProcess,
