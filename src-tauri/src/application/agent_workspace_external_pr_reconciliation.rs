@@ -17,8 +17,9 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ProjectRepository,
+    TaskOutcomeRepository,
 };
-use crate::domain::services::{GithubServiceTrait, PrStatus};
+use crate::domain::services::{AgentWorkspaceOutcomeAdapter, GithubServiceTrait, PrStatus};
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::git_runtime_config;
 
@@ -53,6 +54,7 @@ pub(crate) struct AgentWorkspaceExternalPrReconciliationDeps {
     pub pr_poller_registry: Option<Arc<PrPollerRegistry>>,
     pub chat_service: Option<Arc<dyn ChatService>>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
+    pub task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     pub app_handle: Option<AppHandle>,
 }
 
@@ -179,8 +181,43 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
             Some("pushed"),
         )
         .await?;
-    append_external_pr_reconciliation_event(&deps.workspace_repo, &conversation_id, pr_status)
-        .await?;
+    let event =
+        append_external_pr_reconciliation_event(&deps.workspace_repo, &conversation_id, pr_status)
+            .await?;
+    let linked_workspace = deps
+        .workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await?
+        .unwrap_or(workspace.clone());
+    let adapter = AgentWorkspaceOutcomeAdapter::new(Arc::clone(&deps.task_outcome_repo));
+    let record_result = if matches!(pr.status, PrStatus::Open) {
+        adapter
+            .record_publish_succeeded(
+                &linked_workspace,
+                Some(&event),
+                "External pull request linked",
+            )
+            .await
+    } else {
+        adapter
+            .record_pr_terminal(
+                &linked_workspace,
+                Some(&event),
+                pr.number,
+                pr_status,
+                terminal_linked_pr_summary(pr_status),
+            )
+            .await
+    };
+    if let Err(error) = record_result {
+        tracing::warn!(
+            conversation_id = conversation_id.as_str(),
+            pr_number = pr.number,
+            pr_status,
+            error = %error,
+            "Failed to record external direct agent workspace PR outcome"
+        );
+    }
     emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
 
     if matches!(pr.status, PrStatus::Open) {
@@ -194,6 +231,7 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
                 Path::new(&project.working_directory).to_path_buf(),
                 Arc::clone(&deps.workspace_repo),
                 Arc::clone(&deps.agent_run_repo),
+                Arc::clone(&deps.task_outcome_repo),
                 Arc::clone(chat_service),
             );
         }
@@ -246,13 +284,35 @@ async fn reconcile_linked_agent_workspace_pr(
         )
         .await?;
     deps.workspace_repo
-        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-            workspace.conversation_id.clone(),
-            format!("pr_{pr_status}"),
-            "succeeded",
-            terminal_linked_pr_summary(pr_status),
-            None,
-        ))
+        .append_publication_event({
+            let event = AgentConversationWorkspacePublicationEvent::new(
+                workspace.conversation_id.clone(),
+                format!("pr_{pr_status}"),
+                "succeeded",
+                terminal_linked_pr_summary(pr_status),
+                None,
+            );
+            let adapter = AgentWorkspaceOutcomeAdapter::new(Arc::clone(&deps.task_outcome_repo));
+            if let Err(error) = adapter
+                .record_pr_terminal(
+                    workspace,
+                    Some(&event),
+                    pr_number,
+                    pr_status,
+                    terminal_linked_pr_summary(pr_status),
+                )
+                .await
+            {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    pr_status,
+                    error = %error,
+                    "Failed to record linked direct agent workspace terminal PR outcome"
+                );
+            }
+            event
+        })
         .await?;
     emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
     cleanup_terminal_agent_workspace_after_pr(
@@ -400,7 +460,7 @@ async fn append_external_pr_reconciliation_event(
     workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
     conversation_id: &ChatConversationId,
     pr_status: &str,
-) -> AppResult<()> {
+) -> AppResult<AgentConversationWorkspacePublicationEvent> {
     let (step, summary) = match pr_status {
         "merged" => ("external_pr_merged", "External pull request was merged"),
         "closed" => (
@@ -410,15 +470,17 @@ async fn append_external_pr_reconciliation_event(
         "draft" => ("external_pr_linked", "External draft pull request linked"),
         _ => ("external_pr_linked", "External pull request linked"),
     };
+    let event = AgentConversationWorkspacePublicationEvent::new(
+        conversation_id.clone(),
+        step,
+        "succeeded",
+        summary,
+        None,
+    );
     workspace_repo
-        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-            conversation_id.clone(),
-            step,
-            "succeeded",
-            summary,
-            None,
-        ))
-        .await
+        .append_publication_event(event.clone())
+        .await?;
+    Ok(event)
 }
 
 fn emit_workspace_changed(app_handle: Option<&AppHandle>, conversation_id: &ChatConversationId) {

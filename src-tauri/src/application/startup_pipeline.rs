@@ -28,8 +28,8 @@ use crate::domain::repositories::{
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
     MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository,
     OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository, ProjectMemorySettingsRepository,
-    ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskRepository,
-    TaskStepRepository,
+    ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskOutcomeRepository,
+    TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     running_agent_registry::kill_orphaned_mcp_servers, MessageQueue, RunningAgentRegistry,
@@ -61,6 +61,7 @@ pub(crate) struct StartupPipelineDeps {
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
+    pub task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     pub ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
     pub message_queue: Arc<MessageQueue>,
@@ -171,6 +172,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         agent_conversation_workspace_repo,
         orphan_worktree_cleanup_marker_repo,
         agent_run_repo,
+        task_outcome_repo,
         ideation_session_repo,
         activity_event_repo,
         message_queue,
@@ -446,6 +448,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&project_repo),
         Arc::clone(&pr_poller_registry),
         Arc::clone(&agent_run_repo),
+        Arc::clone(&task_outcome_repo),
         Arc::clone(&recovery_chat_service),
         Arc::clone(&blocked_git_project_ids),
     )
@@ -464,6 +467,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 pr_poller_registry: Some(Arc::clone(&pr_poller_registry)),
                 chat_service: Some(Arc::clone(&recovery_chat_service)),
                 agent_run_repo: Arc::clone(&agent_run_repo),
+                task_outcome_repo: Arc::clone(&task_outcome_repo),
                 app_handle: Some(app_handle.clone()),
             };
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
@@ -514,6 +518,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     recover_stale_agent_workspace_publish_repairs_on_startup(
         Arc::clone(&agent_conversation_workspace_repo),
         Arc::clone(&agent_run_repo),
+        Arc::clone(&task_outcome_repo),
     )
     .await;
     startup_phase_completed("stale_workspace_publish_repair", phase_started_at);
@@ -528,6 +533,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 pr_poller_registry: Some(Arc::clone(&pr_poller_registry)),
                 chat_service: Some(Arc::clone(&recovery_chat_service)),
                 agent_run_repo: Arc::clone(&agent_run_repo),
+                task_outcome_repo: Arc::clone(&task_outcome_repo),
                 app_handle: Some(app_handle.clone()),
             };
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);

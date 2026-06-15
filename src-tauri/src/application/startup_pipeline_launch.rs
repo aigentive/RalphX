@@ -29,6 +29,7 @@ fn build_startup_pipeline_deps(
     let startup_orphan_worktree_cleanup_marker_repo =
         Arc::clone(&app_state.orphan_worktree_cleanup_marker_repo);
     let startup_agent_run_repo = Arc::clone(&app_state.agent_run_repo);
+    let startup_task_outcome_repo = Arc::clone(&app_state.task_outcome_repo);
     let startup_ideation_session_repo = Arc::clone(&app_state.ideation_session_repo);
     let startup_activity_event_repo = Arc::clone(&app_state.activity_event_repo);
     let startup_message_queue = Arc::clone(&app_state.message_queue);
@@ -70,6 +71,7 @@ fn build_startup_pipeline_deps(
         agent_conversation_workspace_repo: startup_agent_conversation_workspace_repo,
         orphan_worktree_cleanup_marker_repo: startup_orphan_worktree_cleanup_marker_repo,
         agent_run_repo: startup_agent_run_repo,
+        task_outcome_repo: startup_task_outcome_repo,
         ideation_session_repo: startup_ideation_session_repo,
         activity_event_repo: startup_activity_event_repo,
         message_queue: startup_message_queue,

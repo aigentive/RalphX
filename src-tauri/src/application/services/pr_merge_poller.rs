@@ -27,12 +27,13 @@ use crate::domain::entities::{
 use crate::domain::entities::{InternalStatus, PlanBranchId, Project, TaskId};
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
+    TaskOutcomeRepository,
 };
 use crate::domain::services::github_service::{
     PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
     PrReviewFeedback,
 };
-use crate::domain::services::{GithubServiceTrait, PrStatus};
+use crate::domain::services::{AgentWorkspaceOutcomeAdapter, GithubServiceTrait, PrStatus};
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_PR_FIXER;
 
@@ -133,6 +134,7 @@ impl PrPollerRegistry {
         working_dir: PathBuf,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
         agent_run_repo: Arc<dyn AgentRunRepository>,
+        task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
         chat_service: Arc<dyn ChatService>,
     ) {
         use dashmap::mapref::entry::Entry;
@@ -175,6 +177,7 @@ impl PrPollerRegistry {
                 semaphore,
                 workspace_repo,
                 agent_run_repo,
+                task_outcome_repo,
                 chat_service,
             )
             .await;
@@ -373,6 +376,7 @@ impl PrPollerRegistry {
         pr_number: i64,
         working_dir: &Path,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
         chat_service: Arc<dyn ChatService>,
     ) -> crate::AppResult<bool> {
         let Some(github) = self.github_service.as_ref() else {
@@ -385,6 +389,7 @@ impl PrPollerRegistry {
             pr_number,
             conversation_id,
             workspace_repo,
+            task_outcome_repo,
             chat_service,
         )
         .await
@@ -790,6 +795,7 @@ async fn agent_workspace_poll_loop(
     semaphore: Arc<tokio::sync::Semaphore>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
+    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     chat_service: Arc<dyn ChatService>,
 ) {
     let interval = Duration::from_secs(60);
@@ -840,6 +846,7 @@ async fn agent_workspace_poll_loop(
                 drop(permit);
                 let _ = mark_agent_workspace_pr_terminal(
                     Arc::clone(&workspace_repo),
+                    Arc::clone(&task_outcome_repo),
                     &conversation_id,
                     "merged",
                     "Pull request merged",
@@ -861,6 +868,7 @@ async fn agent_workspace_poll_loop(
                 drop(permit);
                 let _ = mark_agent_workspace_pr_terminal(
                     Arc::clone(&workspace_repo),
+                    Arc::clone(&task_outcome_repo),
                     &conversation_id,
                     "closed",
                     "Pull request closed without merging",
@@ -930,6 +938,7 @@ async fn agent_workspace_poll_loop(
                     pr_number,
                     &conversation_id,
                     Arc::clone(&workspace_repo),
+                    Arc::clone(&task_outcome_repo),
                     Arc::clone(&chat_service),
                 )
                 .await
@@ -1057,6 +1066,7 @@ async fn mark_agent_workspace_pr_open(
 
 async fn mark_agent_workspace_pr_terminal(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     conversation_id: &ChatConversationId,
     status: &str,
     summary: &str,
@@ -1078,13 +1088,31 @@ async fn mark_agent_workspace_pr_terminal(
         )
         .await?;
     workspace_repo
-        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-            conversation_id.clone(),
-            format!("pr_{status}"),
-            "succeeded",
-            summary,
-            None,
-        ))
+        .append_publication_event({
+            let event = AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                format!("pr_{status}"),
+                "succeeded",
+                summary,
+                None,
+            );
+            let adapter = AgentWorkspaceOutcomeAdapter::new(task_outcome_repo);
+            if let Some(pr_number) = workspace.publication_pr_number {
+                if let Err(error) = adapter
+                    .record_pr_terminal(&workspace, Some(&event), pr_number, status, summary)
+                    .await
+                {
+                    tracing::warn!(
+                        conversation_id = conversation_id.as_str(),
+                        pr_number,
+                        status,
+                        error = %error,
+                        "Failed to record direct agent workspace terminal PR outcome"
+                    );
+                }
+            }
+            event
+        })
         .await
 }
 
@@ -1723,6 +1751,7 @@ async fn route_agent_workspace_review_feedback_if_present(
     pr_number: i64,
     conversation_id: &ChatConversationId,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     chat_service: Arc<dyn ChatService>,
 ) -> crate::AppResult<bool> {
     let Some(feedback) = github
@@ -1794,18 +1823,40 @@ async fn route_agent_workspace_review_feedback_if_present(
             )
             .await?;
     }
+    let summary = format!(
+        "GitHub PR #{pr_number} requested changes from @{}",
+        feedback.author
+    );
+    let event = AgentConversationWorkspacePublicationEvent::new(
+        conversation_id.clone(),
+        "github_review",
+        "needs_agent",
+        summary.clone(),
+        Some(classification.clone()),
+    );
     workspace_repo
-        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-            conversation_id.clone(),
-            "github_review",
-            "needs_agent",
-            format!(
-                "GitHub PR #{pr_number} requested changes from @{}",
-                feedback.author
-            ),
-            Some(classification),
-        ))
+        .append_publication_event(event.clone())
         .await?;
+    let adapter = AgentWorkspaceOutcomeAdapter::new(task_outcome_repo);
+    if let Err(error) = adapter
+        .record_pr_review_requested_changes(
+            &workspace,
+            Some(&event),
+            pr_number,
+            Some(feedback.author.as_str()),
+            &summary,
+            Some(classification.as_str()),
+        )
+        .await
+    {
+        tracing::warn!(
+            conversation_id = conversation_id.as_str(),
+            pr_number,
+            review_id = feedback.review_id.as_str(),
+            error = %error,
+            "Failed to record direct agent workspace PR review outcome"
+        );
+    }
 
     Ok(true)
 }

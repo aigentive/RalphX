@@ -18,8 +18,8 @@ use crate::application::runtime_factory::{
 };
 use crate::application::task_scheduler_service::TaskSchedulerService;
 use crate::application::task_transition_service::TaskTransitionService;
-use crate::application::AppState;
 use crate::application::InteractiveProcessRegistry;
+use crate::application::{AppState, GitService};
 use crate::commands::{execution_commands::AGENT_ACTIVE_STATUSES, ExecutionState};
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
@@ -31,13 +31,17 @@ use crate::domain::entities::{
     VerificationGap, VerificationStatus,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
-    ChatConversationRepository, ChatMessageRepository, ExecutionSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository,
-    ProjectMemorySettingsRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
-    TaskProposalRepository, TaskRepository, TaskStepRepository,
+    ActivityEventRepository, AgentConversationWorkspaceRepository, AgentRunRepository,
+    ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ExecutionSettingsRepository, IdeationSessionRepository,
+    MemoryEventRepository, PlanBranchRepository, ProjectMemorySettingsRepository,
+    ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
+    TaskRepository, TaskStepRepository,
 };
-use crate::domain::services::{MessageQueue, OutcomeLedgerService, RunningAgentRegistry};
+use crate::domain::services::{
+    is_direct_edit_workspace, AgentWorkspaceOutcomeAdapter, MessageQueue, OutcomeLedgerService,
+    RunningAgentRegistry,
+};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
@@ -119,6 +123,71 @@ async fn record_task_execution_outcome<R: Runtime>(
             outcome_class,
             error = %error,
             "Failed to record task execution outcome"
+        );
+    }
+}
+
+async fn record_direct_workspace_turn_outcome<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    agent_conversation_workspace_repo: &Option<Arc<dyn AgentConversationWorkspaceRepository>>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    context_type: ChatContextType,
+    conversation_id: &ChatConversationId,
+    agent_run_id: &str,
+    has_output: bool,
+) {
+    if context_type != ChatContextType::Project || !has_output {
+        return;
+    }
+    let Some(workspace_repo) = agent_conversation_workspace_repo.as_ref() else {
+        return;
+    };
+    let Some(app_state) = app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<AppState>())
+    else {
+        return;
+    };
+    let workspace = match workspace_repo.get_by_conversation_id(conversation_id).await {
+        Ok(Some(workspace)) if is_direct_edit_workspace(&workspace) => workspace,
+        Ok(_) => return,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "Failed to load direct agent workspace for learned-skill outcome capture"
+            );
+            return;
+        }
+    };
+    match GitService::has_uncommitted_changes(Path::new(&workspace.worktree_path)).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                worktree_path = workspace.worktree_path.as_str(),
+                error = %error,
+                "Failed to inspect direct agent workspace changes for learned-skill outcome capture"
+            );
+            return;
+        }
+    }
+    let agent_run = agent_run_repo
+        .get_by_id(&AgentRunId::from_string(agent_run_id.to_string()))
+        .await
+        .ok()
+        .flatten();
+    let adapter = AgentWorkspaceOutcomeAdapter::new(Arc::clone(&app_state.task_outcome_repo));
+    if let Err(error) = adapter
+        .record_turn_with_code_changes(&workspace, agent_run.as_ref())
+        .await
+    {
+        tracing::warn!(
+            conversation_id = conversation_id.as_str(),
+            agent_run_id,
+            error = %error,
+            "Failed to record direct agent workspace learned-skill outcome"
         );
     }
 }
@@ -839,6 +908,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
     message_queue: &Arc<MessageQueue>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
     memory_event_repo: &Arc<dyn MemoryEventRepository>,
+    agent_conversation_workspace_repo: &Option<Arc<dyn AgentConversationWorkspaceRepository>>,
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
@@ -849,6 +919,17 @@ pub(super) async fn handle_stream_success<R: Runtime>(
         Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>,
     >,
 ) {
+    record_direct_workspace_turn_outcome(
+        app_handle,
+        agent_conversation_workspace_repo,
+        agent_run_repo,
+        context_type,
+        conversation_id,
+        agent_run_id,
+        has_output,
+    )
+    .await;
+
     // Handle task state transition (only for TaskExecution)
     if context_type == ChatContextType::TaskExecution {
         if let Some(ref exec_state) = execution_state {
@@ -1570,6 +1651,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 message_queue,
                 running_agent_registry,
                 memory_event_repo,
+                &None,
                 plan_branch_repo,
                 task_step_repo,
                 execution_settings_repo,
@@ -1651,6 +1733,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 message_queue,
                 running_agent_registry,
                 memory_event_repo,
+                &None,
                 plan_branch_repo,
                 task_step_repo,
                 execution_settings_repo,

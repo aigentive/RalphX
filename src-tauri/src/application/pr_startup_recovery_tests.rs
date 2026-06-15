@@ -30,7 +30,7 @@ use crate::domain::services::{
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryPlanBranchRepository, MemoryProjectRepository,
+    MemoryPlanBranchRepository, MemoryProjectRepository, MemoryTaskOutcomeRepository,
 };
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -260,6 +260,7 @@ async fn startup_agent_workspace_pr_recovery_restarts_active_published_poller() 
         project_repo,
         Arc::clone(&registry),
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::new(MockChatService::new()),
         Arc::new(HashSet::new()),
     )
