@@ -1,36 +1,42 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, Check, Pin, PinOff, RefreshCw, X } from "lucide-react";
 import type { ReactNode } from "react";
+import { useState } from "react";
 
-import { projectSkillsApi, type ProjectSkill } from "@/api/project-skills";
+import {
+  projectSkillsApi,
+  type ProjectSkill,
+  type ProjectSkillExportResult,
+} from "@/api/project-skills";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
+import {
+  ProjectSkillsExportControls,
+  ProjectSkillsExportSummary,
+} from "./ProjectSkillsExportControls";
+
 interface ProjectSkillsCuratorPanelProps {
   projectId: string;
   className?: string;
 }
 
-const stagedSkillsKey = (projectId: string) => [
-  "project-skills",
-  projectId,
-  "staged",
-] as const;
+const stagedSkillsKey = (projectId: string) =>
+  ["project-skills", projectId, "staged"] as const;
 
-const approvedSkillsKey = (projectId: string) => [
-  "project-skills",
-  projectId,
-  "approved",
-] as const;
+const approvedSkillsKey = (projectId: string) =>
+  ["project-skills", projectId, "approved"] as const;
 
 export function ProjectSkillsCuratorPanel({
   projectId,
   className,
 }: ProjectSkillsCuratorPanelProps) {
   const queryClient = useQueryClient();
+  const [exportPreview, setExportPreview] =
+    useState<ProjectSkillExportResult | null>(null);
   const stagedQueryKey = stagedSkillsKey(projectId);
   const approvedQueryKey = approvedSkillsKey(projectId);
 
@@ -89,6 +95,16 @@ export function ProjectSkillsCuratorPanel({
     onSuccess: invalidateSkills,
   });
 
+  const previewExportMutation = useMutation({
+    mutationFn: () => projectSkillsApi.previewExport(projectId),
+    onSuccess: setExportPreview,
+  });
+
+  const applyExportMutation = useMutation({
+    mutationFn: () => projectSkillsApi.applyExport(projectId),
+    onSuccess: setExportPreview,
+  });
+
   const stagedSkills = stagedQuery.data ?? [];
   const approvedSkills = approvedQuery.data ?? [];
   const isBusy =
@@ -97,7 +113,9 @@ export function ProjectSkillsCuratorPanel({
     rejectMutation.isPending ||
     archiveMutation.isPending ||
     pinMutation.isPending ||
-    unpinMutation.isPending;
+    unpinMutation.isPending ||
+    previewExportMutation.isPending ||
+    applyExportMutation.isPending;
   const error =
     stagedQuery.error ??
     approvedQuery.error ??
@@ -106,7 +124,9 @@ export function ProjectSkillsCuratorPanel({
     rejectMutation.error ??
     archiveMutation.error ??
     pinMutation.error ??
-    unpinMutation.error;
+    unpinMutation.error ??
+    previewExportMutation.error ??
+    applyExportMutation.error;
 
   return (
     <section
@@ -122,17 +142,24 @@ export function ProjectSkillsCuratorPanel({
             {stagedSkills.length} staged, {approvedSkills.length} approved
           </div>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          onClick={() => distillMutation.mutate()}
-          disabled={isBusy}
-        >
-          <RefreshCw
-            className={cn(distillMutation.isPending && "animate-spin")}
+        <div className="flex flex-wrap items-center gap-2">
+          <ProjectSkillsExportControls
+            disabled={isBusy || approvedSkills.length === 0}
+            onPreview={() => previewExportMutation.mutate()}
+            onApply={() => applyExportMutation.mutate()}
           />
-          Distill
-        </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => distillMutation.mutate()}
+            disabled={isBusy}
+          >
+            <RefreshCw
+              className={cn(distillMutation.isPending && "animate-spin")}
+            />
+            Distill
+          </Button>
+        </div>
       </div>
 
       {error ? (
@@ -142,6 +169,10 @@ export function ProjectSkillsCuratorPanel({
         >
           {error.message}
         </div>
+      ) : null}
+
+      {exportPreview ? (
+        <ProjectSkillsExportSummary preview={exportPreview} />
       ) : null}
 
       {stagedQuery.isLoading || approvedQuery.isLoading ? (
