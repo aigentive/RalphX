@@ -1204,6 +1204,12 @@ mod tests {
     #[test]
     fn resolve_default_chat_service_bootstrap_uses_default_harness() {
         let _lock = plugin_override_lock().lock().expect("lock harness caches");
+        let (_temp, plugin_dir, generated_dir) = make_runtime_plugin_layout();
+        let _runtime_guard =
+            crate::infrastructure::agents::claude::override_runtime_plugin_dirs_for_tests(
+                plugin_dir,
+                generated_dir,
+            );
         if let Some(cache) = HARNESS_RUNTIME_PROBE_CACHE.get() {
             cache.lock().unwrap().clear();
         }

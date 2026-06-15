@@ -1,10 +1,13 @@
-use std::sync::Arc;
 use std::process::Command;
+use std::sync::Arc;
 
 use chrono::Utc;
 use serde_json::json;
 
-use super::ProjectSkillExportService;
+use super::{
+    export_relative_path, render_skill_markdown, short_hash, skill_dir_name,
+    validate_export_relative_path, ProjectSkillExportService,
+};
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
     Project, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, ProjectSkillSettings,
@@ -271,4 +274,44 @@ async fn export_rejects_symlinked_skills_directory() {
         .expect_err("symlinked skills directory must fail");
 
     assert!(error.to_string().contains("symlink"));
+}
+
+#[test]
+fn export_helpers_sanitize_skill_paths_and_markdown() {
+    let project_id = ProjectId::from_string("project-export".to_string());
+    let mut skill = approved_skill(
+        project_id,
+        "!!! Very Long Export Skill Name With Spaces And Symbols That Keeps Going !!!",
+    );
+    skill.predicted_effect = None;
+    skill.compact_guidance = "  Quote \"unsafe\" guidance  ".to_string();
+    skill.body_markdown = "  ## Steps\n\nUse the safe path.  ".to_string();
+
+    let dir_name = skill_dir_name(&skill);
+    assert!(dir_name.starts_with("very-long-export-skill-name-with-spaces-and"));
+    assert!(dir_name.ends_with(&short_hash(skill.id.as_str())));
+
+    let relative_path = export_relative_path(&skill);
+    assert_eq!(
+        relative_path.file_name().and_then(|value| value.to_str()),
+        Some("SKILL.md")
+    );
+    validate_export_relative_path(&relative_path).unwrap();
+
+    let markdown = render_skill_markdown(&skill);
+    assert!(markdown.contains("description: \"Quote \\\"unsafe\\\" guidance\""));
+    assert!(markdown.contains("## Predicted Effect\n\nNot specified."));
+}
+
+#[test]
+fn export_relative_path_validation_rejects_unsafe_paths() {
+    for path in [
+        std::path::Path::new("/tmp/.claude/skills/skill/SKILL.md"),
+        std::path::Path::new(".claude/../skills/skill/SKILL.md"),
+        std::path::Path::new(".codex/skills/skill/SKILL.md"),
+    ] {
+        let error =
+            validate_export_relative_path(path).expect_err("unsafe export path should be rejected");
+        assert!(error.to_string().contains(".claude/skills"));
+    }
 }

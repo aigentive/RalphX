@@ -8,6 +8,13 @@ import { projectSkillsApi, type ProjectSkill } from "@/api/project-skills";
 import { ProjectSkillsCuratorPanel } from "./ProjectSkillsCuratorPanel";
 
 vi.mock("@/api/project-skills", () => ({
+  PROJECT_SKILL_CATEGORY_VALUES: [
+    "planning",
+    "verification",
+    "review",
+    "execution",
+    "merge",
+  ],
   projectSkillsApi: {
     list: vi.fn(),
     approve: vi.fn(),
@@ -365,6 +372,14 @@ describe("ProjectSkillsCuratorPanel", () => {
     expect(screen.getByText("Compact guidance")).toBeInTheDocument();
     expect(screen.getByText("Skill body")).toBeInTheDocument();
     expect(screen.getByText("Predicted effect")).toBeInTheDocument();
+    expect(screen.getByLabelText("Promoted skill bucket")).toHaveRole("combobox");
+    expect(screen.getByLabelText("Promoted skill stage")).toHaveRole("combobox");
+    fireEvent.change(screen.getByLabelText("Promoted skill bucket"), {
+      target: { value: "execution" },
+    });
+    fireEvent.change(screen.getByLabelText("Promoted skill stage"), {
+      target: { value: "merge" },
+    });
     fireEvent.change(screen.getByLabelText("Memory id"), {
       target: { value: "memory-1" },
     });
@@ -387,8 +402,8 @@ describe("ProjectSkillsCuratorPanel", () => {
         projectId: "project-1",
         memoryId: "memory-1",
         title: "Promoted review procedure",
-        bucket: "review",
-        stage: "review",
+        bucket: "execution",
+        stage: "merge",
         compactGuidance: "Turn the memory into a review checklist.",
         bodyMarkdown: "## Procedure\n\nApply the checklist.",
         predictedEffect: "Reduces review misses.",
@@ -534,6 +549,12 @@ describe("ProjectSkillsCuratorPanel", () => {
     const guidanceInput = screen.getByLabelText("Skill compact guidance");
     await user.clear(guidanceInput);
     await user.type(guidanceInput, "Check the branch before exporting approved skills.");
+    fireEvent.change(screen.getByLabelText("Skill bucket"), {
+      target: { value: "execution" },
+    });
+    fireEvent.change(screen.getByLabelText("Skill stage"), {
+      target: { value: "merge" },
+    });
     fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
 
     await waitFor(() => {
@@ -541,6 +562,8 @@ describe("ProjectSkillsCuratorPanel", () => {
         expect.objectContaining({
           projectSkillId: "skill-1",
           title: "Check branch before export",
+          bucket: "execution",
+          stage: "merge",
           compactGuidance: "Check the branch before exporting approved skills.",
           predictedEffect: "Prevents repeated validation loops.",
         }),

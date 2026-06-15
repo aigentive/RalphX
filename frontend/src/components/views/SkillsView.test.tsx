@@ -1,14 +1,15 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SkillsView } from "./SkillsView";
 
 const mockProject = { id: "proj-1", name: "RalphX" };
+let activeProject: typeof mockProject | null = mockProject;
 
 vi.mock("@/stores/projectStore", () => ({
   selectActiveProject: (state: { project: typeof mockProject | null }) => state.project,
   useProjectStore: vi.fn((selector: (state: { project: typeof mockProject | null }) => unknown) =>
-    selector({ project: mockProject }),
+    selector({ project: activeProject }),
   ),
 }));
 
@@ -23,6 +24,10 @@ vi.mock("@/components/projects/ProjectSelector", () => ({
 }));
 
 describe("SkillsView", () => {
+  beforeEach(() => {
+    activeProject = mockProject;
+  });
+
   it("renders the project skills curator on the dedicated skills view", () => {
     render(<SkillsView />);
 
@@ -35,5 +40,14 @@ describe("SkillsView", () => {
       "data-project",
       "proj-1",
     );
+  });
+
+  it("prompts for project selection before rendering project skills", () => {
+    activeProject = null;
+
+    render(<SkillsView />);
+
+    expect(screen.getByText("Select a project to view skills")).toBeInTheDocument();
+    expect(screen.queryByTestId("project-skills-curator")).not.toBeInTheDocument();
   });
 });

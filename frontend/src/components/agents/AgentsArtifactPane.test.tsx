@@ -1310,8 +1310,13 @@ describe("AgentsArtifactPane", () => {
       conversation(),
     );
 
+    await waitFor(() => expect(getSessionPlanMock).toHaveBeenCalledWith("session-1"));
     await userEvent.click(
-      await screen.findByRole("button", { name: /Create Proposals/i }),
+      await screen.findByRole(
+        "button",
+        { name: /Create Proposals/i },
+        deferredHydrationTimeout,
+      ),
     );
 
     await waitFor(() =>

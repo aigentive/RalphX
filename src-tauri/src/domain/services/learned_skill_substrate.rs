@@ -18,6 +18,10 @@ use crate::domain::repositories::{
 use crate::domain::services::learned_skill_adapters::LearnedSkillConstraintCitation;
 use crate::error::{AppError, AppResult};
 
+const PROJECT_SKILL_BUCKET_VALUES: &[&str] =
+    &["planning", "verification", "review", "execution", "merge"];
+const PROJECT_SKILL_STAGE_VALUES: &[&str] = PROJECT_SKILL_BUCKET_VALUES;
+
 pub struct OutcomeLedgerService {
     repo: Arc<dyn TaskOutcomeRepository>,
 }
@@ -200,8 +204,8 @@ impl ProjectSkillService {
         input: UpdateProjectSkillContentInput,
     ) -> AppResult<Option<ProjectSkill>> {
         validate_non_empty("project skill title", &input.title)?;
-        validate_non_empty("project skill bucket", &input.bucket)?;
-        validate_non_empty("project skill stage", &input.stage)?;
+        validate_project_skill_bucket(&input.bucket)?;
+        validate_project_skill_stage(&input.stage)?;
         validate_non_empty("project skill compact_guidance", &input.compact_guidance)?;
         validate_non_empty("project skill body_markdown", &input.body_markdown)?;
         validate_non_empty("predicted_effect", &input.predicted_effect)?;
@@ -956,8 +960,8 @@ pub fn new_skill_usage_event(
 
 fn validate_project_skill(skill: &ProjectSkill) -> AppResult<()> {
     validate_non_empty("project skill title", &skill.title)?;
-    validate_non_empty("project skill bucket", &skill.bucket)?;
-    validate_non_empty("project skill stage", &skill.stage)?;
+    validate_project_skill_bucket(&skill.bucket)?;
+    validate_project_skill_stage(&skill.stage)?;
     validate_non_empty("project skill compact_guidance", &skill.compact_guidance)
 }
 
@@ -974,6 +978,19 @@ fn validate_import_candidate(candidate: &ProjectSkillImportCandidate) -> Vec<Str
         if value.trim().is_empty() {
             reasons.push(format!("{label} is required"));
         }
+    }
+
+    if !is_project_skill_bucket(candidate.bucket.as_str()) {
+        reasons.push(format!(
+            "bucket must be one of {}",
+            PROJECT_SKILL_BUCKET_VALUES.join(", ")
+        ));
+    }
+    if !is_project_skill_stage(candidate.stage.as_str()) {
+        reasons.push(format!(
+            "stage must be one of {}",
+            PROJECT_SKILL_STAGE_VALUES.join(", ")
+        ));
     }
 
     if !candidate.provenance_json.is_object()
@@ -1019,8 +1036,8 @@ fn validate_memory_promotion_boundary(
             "only active memory entries can be promoted".to_string(),
         ));
     }
-    validate_non_empty("project skill bucket", &input.bucket)?;
-    validate_non_empty("project skill stage", &input.stage)?;
+    validate_project_skill_bucket(&input.bucket)?;
+    validate_project_skill_stage(&input.stage)?;
     validate_non_empty("project skill compact_guidance", &input.compact_guidance)?;
     validate_non_empty("project skill body_markdown", &input.body_markdown)?;
     validate_non_empty("predicted_effect", &input.predicted_effect)?;
@@ -1034,6 +1051,36 @@ fn validate_memory_promotion_boundary(
         ));
     }
     Ok(())
+}
+
+fn validate_project_skill_bucket(bucket: &str) -> AppResult<()> {
+    validate_non_empty("project skill bucket", bucket)?;
+    if !is_project_skill_bucket(bucket) {
+        return Err(AppError::Validation(format!(
+            "project skill bucket must be one of {}",
+            PROJECT_SKILL_BUCKET_VALUES.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+fn validate_project_skill_stage(stage: &str) -> AppResult<()> {
+    validate_non_empty("project skill stage", stage)?;
+    if !is_project_skill_stage(stage) {
+        return Err(AppError::Validation(format!(
+            "project skill stage must be one of {}",
+            PROJECT_SKILL_STAGE_VALUES.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+fn is_project_skill_bucket(bucket: &str) -> bool {
+    PROJECT_SKILL_BUCKET_VALUES.contains(&bucket.trim())
+}
+
+fn is_project_skill_stage(stage: &str) -> bool {
+    PROJECT_SKILL_STAGE_VALUES.contains(&stage.trim())
 }
 
 fn project_skill_import_keys(skill: &ProjectSkill) -> Vec<String> {
@@ -1322,6 +1369,7 @@ fn provenance_refs_from_json(value: &Value) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
     use std::sync::Arc;
 
     use chrono::{Duration, Utc};
@@ -1335,11 +1383,12 @@ mod tests {
         ProjectSkillImportPreviewInput, ProjectSkillImportPreviewService,
         ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService,
         PromoteMemoryToProjectSkillInput, SkillUsageService, StageProjectSkillFromOutcomeInput,
+        UpdateProjectSkillContentInput,
     };
     use crate::domain::entities::types::ProjectId;
     use crate::domain::entities::{
         MemoryBucket, MemoryEntry, MemoryEntryId, ProjectSkill, ProjectSkillId,
-        ProjectSkillLifecycleStatus, TaskOutcomeStatus,
+        ProjectSkillLifecycleStatus, SkillUsageEventId, TaskOutcomeId, TaskOutcomeStatus,
     };
     use crate::domain::repositories::{
         MemoryEntryRepository, ProjectSkillListOptions, ProjectSkillRepository,
@@ -1397,6 +1446,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn learned_skill_entity_ids_and_statuses_round_trip() {
+        let task_outcome_id = TaskOutcomeId::from_string("outcome-1");
+        let project_skill_id = ProjectSkillId::from_string("skill-1");
+        let usage_event_id = SkillUsageEventId::from_string("usage-1");
+
+        assert_eq!(task_outcome_id.as_str(), "outcome-1");
+        assert_eq!(project_skill_id.as_str(), "skill-1");
+        assert_eq!(usage_event_id.as_str(), "usage-1");
+        assert!(!TaskOutcomeId::new().as_str().is_empty());
+        assert!(!ProjectSkillId::new().as_str().is_empty());
+        assert!(!SkillUsageEventId::new().as_str().is_empty());
+
+        for (value, expected) in [
+            ("unknown", TaskOutcomeStatus::Unknown),
+            ("eligible", TaskOutcomeStatus::Eligible),
+            ("ineligible", TaskOutcomeStatus::Ineligible),
+            ("succeeded", TaskOutcomeStatus::Succeeded),
+            ("failed", TaskOutcomeStatus::Failed),
+        ] {
+            assert_eq!(TaskOutcomeStatus::from_str(value).unwrap(), expected);
+            assert_eq!(expected.to_string(), value);
+        }
+        assert!(TaskOutcomeStatus::from_str("pending").is_err());
+
+        for (value, expected) in [
+            ("staged", ProjectSkillLifecycleStatus::Staged),
+            ("approved", ProjectSkillLifecycleStatus::Approved),
+            ("rejected", ProjectSkillLifecycleStatus::Rejected),
+            ("archived", ProjectSkillLifecycleStatus::Archived),
+            ("retired", ProjectSkillLifecycleStatus::Retired),
+        ] {
+            assert_eq!(
+                ProjectSkillLifecycleStatus::from_str(value).unwrap(),
+                expected
+            );
+            assert_eq!(expected.to_string(), value);
+        }
+        assert!(ProjectSkillLifecycleStatus::from_str("draft").is_err());
+    }
+
     fn promotion_input(
         project_id: ProjectId,
         memory_id: MemoryEntryId,
@@ -1423,6 +1513,67 @@ mod tests {
         let result = service.stage_skill(skill).await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn project_skill_service_rejects_unknown_bucket_and_stage() {
+        let service = ProjectSkillService::new(Arc::new(MemoryProjectSkillRepository::new()));
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let mut skill = staged_skill(project_id);
+        skill.bucket = "reviewer".to_string();
+
+        let error = service
+            .stage_skill(skill)
+            .await
+            .expect_err("unknown bucket/stage should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("project skill bucket must be one of"));
+    }
+
+    #[tokio::test]
+    async fn project_skill_service_rejects_unknown_stage() {
+        let service = ProjectSkillService::new(Arc::new(MemoryProjectSkillRepository::new()));
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let mut skill = staged_skill(project_id);
+        skill.stage = "unsupported_stage".to_string();
+
+        let error = service
+            .stage_skill(skill)
+            .await
+            .expect_err("unknown stage should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("project skill stage must be one of"));
+    }
+
+    #[tokio::test]
+    async fn project_skill_service_rejects_unknown_category_on_update() {
+        let repo = Arc::new(MemoryProjectSkillRepository::new());
+        let service = ProjectSkillService::new(repo.clone());
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let skill = repo.create(staged_skill(project_id)).await.unwrap();
+
+        let error = service
+            .update_skill_content(UpdateProjectSkillContentInput {
+                project_skill_id: skill.id,
+                title: "Updated skill".to_string(),
+                bucket: "execution".to_string(),
+                stage: "unsupported_stage".to_string(),
+                scope_paths: Vec::new(),
+                compact_guidance: "Updated compact guidance.".to_string(),
+                body_markdown: "Updated body markdown.".to_string(),
+                predicted_effect: "Keeps category validation centralized.".to_string(),
+                source_sync_enabled: None,
+            })
+            .await
+            .expect_err("unknown stage should be rejected during update");
+
+        assert!(error
+            .to_string()
+            .contains("project skill stage must be one of"));
     }
 
     #[tokio::test]
@@ -1520,6 +1671,8 @@ mod tests {
         let service = ProjectSkillImportPreviewService::new(repo);
         let project_id = ProjectId::from_string("project-import".to_string());
         let mut candidate = import_candidate();
+        candidate.bucket = "reviewer".to_string();
+        candidate.stage = "unsupported_stage".to_string();
         candidate.predicted_effect = " ".to_string();
         candidate.provenance_json = json!({});
         candidate.source_snapshot_json = json!(null);
@@ -1547,6 +1700,14 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason == "predicted_effect is required"));
+        assert!(preview.rows[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.starts_with("bucket must be one of")));
+        assert!(preview.rows[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.starts_with("stage must be one of")));
         assert!(preview.rows[0]
             .reasons
             .iter()
@@ -1712,6 +1873,36 @@ mod tests {
         let result = service.promote_memory(input).await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn memory_to_project_skill_promotion_rejects_unknown_category() {
+        let memory_repo = Arc::new(InMemoryMemoryEntryRepository::new());
+        let skill_repo: Arc<dyn ProjectSkillRepository> =
+            Arc::new(MemoryProjectSkillRepository::new());
+        let project_id = ProjectId::from_string("project-memory".to_string());
+        let memory = MemoryEntry::new(
+            project_id.clone(),
+            MemoryBucket::OperationalPlaybooks,
+            "Export branch checks".to_string(),
+            "Check the export branch before writing files.".to_string(),
+            "Memory facts about the branch checks.".to_string(),
+            vec!["src-tauri".to_string()],
+            "hash-1".to_string(),
+        );
+        let memory = memory_repo.create(memory).await.unwrap();
+        let service = MemoryToProjectSkillPromotionService::new(memory_repo, skill_repo);
+        let mut input = promotion_input(project_id, memory.id);
+        input.stage = "unsupported_stage".to_string();
+
+        let error = service
+            .promote_memory(input)
+            .await
+            .expect_err("unknown stage should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("project skill stage must be one of"));
     }
 
     #[tokio::test]

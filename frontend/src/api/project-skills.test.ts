@@ -121,6 +121,27 @@ describe("projectSkillsApi", () => {
     );
   });
 
+  it("rejects project skill responses with unsupported categories", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        skills: [
+          projectSkill({
+            bucket: "reviewer",
+            stage: "unsupported_stage",
+          }),
+        ],
+        count: 1,
+      }),
+    );
+
+    await expect(
+      projectSkillsApi.list({
+        projectId: "project-1",
+        status: "staged",
+      }),
+    ).rejects.toThrow();
+  });
+
   it("approves project skills through the lifecycle endpoint", async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({

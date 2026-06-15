@@ -10,12 +10,22 @@ const ProjectSkillStatusSchema = z.enum([
   "retired",
 ]);
 
+export const PROJECT_SKILL_CATEGORY_VALUES = [
+  "planning",
+  "verification",
+  "review",
+  "execution",
+  "merge",
+] as const;
+
+const ProjectSkillCategorySchema = z.enum(PROJECT_SKILL_CATEGORY_VALUES);
+
 const ProjectSkillResponseSchema = z.object({
   id: z.string(),
   project_id: z.string(),
   title: z.string(),
-  bucket: z.string(),
-  stage: z.string(),
+  bucket: ProjectSkillCategorySchema,
+  stage: ProjectSkillCategorySchema,
   status: ProjectSkillStatusSchema,
   pinned: z.boolean(),
   archived: z.boolean(),
@@ -111,8 +121,8 @@ const ProjectSkillSettingsResponseSchema = z.object({
 const ProjectSkillReportCardResponseSchema = z.object({
   project_skill_id: z.string(),
   title: z.string(),
-  bucket: z.string(),
-  stage: z.string(),
+  bucket: ProjectSkillCategorySchema,
+  stage: ProjectSkillCategorySchema,
   pinned: z.boolean(),
   usage_count: z.number(),
   linked_outcome_count: z.number(),
@@ -169,13 +179,14 @@ type RawProjectSkillImportPreviewRow = z.infer<
 >;
 
 export type ProjectSkillStatus = z.infer<typeof ProjectSkillStatusSchema>;
+export type ProjectSkillCategory = z.infer<typeof ProjectSkillCategorySchema>;
 
 export interface ProjectSkill {
   id: string;
   projectId: string;
   title: string;
-  bucket: string;
-  stage: string;
+  bucket: ProjectSkillCategory;
+  stage: ProjectSkillCategory;
   status: ProjectSkillStatus;
   pinned: boolean;
   archived: boolean;
@@ -196,8 +207,8 @@ export interface ListProjectSkillsInput {
   projectId: string;
   status?: ProjectSkillStatus | null;
   includeArchived?: boolean;
-  stage?: string | null;
-  bucket?: string | null;
+  stage?: ProjectSkillCategory | null;
+  bucket?: ProjectSkillCategory | null;
   scopePath?: string | null;
 }
 
@@ -282,8 +293,8 @@ export interface ProjectSkillSettings {
 export interface ProjectSkillReportCard {
   projectSkillId: string;
   title: string;
-  bucket: string;
-  stage: string;
+  bucket: ProjectSkillCategory;
+  stage: ProjectSkillCategory;
   pinned: boolean;
   usageCount: number;
   linkedOutcomeCount: number;
@@ -310,8 +321,8 @@ export interface ProjectSkillReportCardsResult {
 export interface ProjectSkillImportCandidate {
   externalId?: string | null;
   title: string;
-  bucket: string;
-  stage: string;
+  bucket: ProjectSkillCategory;
+  stage: ProjectSkillCategory;
   scopePaths?: string[];
   compactGuidance: string;
   bodyMarkdown: string;
@@ -362,8 +373,8 @@ export interface PromoteMemoryToProjectSkillInput {
   projectId: string;
   memoryId: string;
   title?: string | null;
-  bucket: string;
-  stage: string;
+  bucket: ProjectSkillCategory;
+  stage: ProjectSkillCategory;
   compactGuidance: string;
   bodyMarkdown: string;
   predictedEffect: string;
@@ -372,8 +383,8 @@ export interface PromoteMemoryToProjectSkillInput {
 export interface UpdateProjectSkillInput {
   projectSkillId: string;
   title: string;
-  bucket: string;
-  stage: string;
+  bucket: ProjectSkillCategory;
+  stage: ProjectSkillCategory;
   scopePaths: string[];
   compactGuidance: string;
   bodyMarkdown: string;

@@ -17,8 +17,10 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 
 import {
+  PROJECT_SKILL_CATEGORY_VALUES,
   projectSkillsApi,
   type DistillProjectSkillsResult,
+  type ProjectSkillCategory,
   type ProjectSkillImportCandidate,
   type ProjectSkillImportPreviewResult,
   type ProjectSkill,
@@ -73,15 +75,33 @@ const PROJECT_SKILL_SOURCE_ROOT_OPTIONS = [
   { id: ".ralphx/skills", label: "RalphX skills" },
 ] as const;
 
+const PROJECT_SKILL_CATEGORY_OPTIONS: Array<{
+  value: ProjectSkillCategory;
+  label: string;
+}> = PROJECT_SKILL_CATEGORY_VALUES.map((value) => ({
+  value,
+  label: value.charAt(0).toUpperCase() + value.slice(1),
+}));
+
 interface MemoryPromotionFormState {
   memoryId: string;
   title: string;
-  bucket: string;
-  stage: string;
+  bucket: ProjectSkillCategory;
+  stage: ProjectSkillCategory;
   compactGuidance: string;
   bodyMarkdown: string;
   predictedEffect: string;
 }
+
+const DEFAULT_MEMORY_PROMOTION: MemoryPromotionFormState = {
+  memoryId: "",
+  title: "",
+  bucket: "review",
+  stage: "review",
+  compactGuidance: "",
+  bodyMarkdown: "",
+  predictedEffect: "",
+};
 
 type CandidateSourceMode = "stored" | "prs";
 
@@ -115,15 +135,9 @@ export function ProjectSkillsCuratorPanel({
     ".claude/skills",
   ]);
   const [sourceImportSyncEnabled, setSourceImportSyncEnabled] = useState(false);
-  const [memoryPromotion, setMemoryPromotion] = useState({
-    memoryId: "",
-    title: "",
-    bucket: "review",
-    stage: "review",
-    compactGuidance: "",
-    bodyMarkdown: "",
-    predictedEffect: "",
-  });
+  const [memoryPromotion, setMemoryPromotion] = useState<MemoryPromotionFormState>(
+    DEFAULT_MEMORY_PROMOTION,
+  );
   const [localError, setLocalError] = useState<string | null>(null);
   const stagedQueryKey = stagedSkillsKey(projectId);
   const approvedQueryKey = approvedSkillsKey(projectId);
@@ -314,8 +328,8 @@ export function ProjectSkillsCuratorPanel({
         projectId,
         memoryId: memoryPromotion.memoryId.trim(),
         title: memoryPromotion.title.trim() || null,
-        bucket: memoryPromotion.bucket.trim(),
-        stage: memoryPromotion.stage.trim(),
+        bucket: memoryPromotion.bucket,
+        stage: memoryPromotion.stage,
         compactGuidance: memoryPromotion.compactGuidance,
         bodyMarkdown: memoryPromotion.bodyMarkdown,
         predictedEffect: memoryPromotion.predictedEffect,
@@ -323,15 +337,7 @@ export function ProjectSkillsCuratorPanel({
     onMutate: () => setLocalError(null),
     onSuccess: () => {
       invalidateSkills();
-      setMemoryPromotion({
-        memoryId: "",
-        title: "",
-        bucket: "review",
-        stage: "review",
-        compactGuidance: "",
-        bodyMarkdown: "",
-        predictedEffect: "",
-      });
+      setMemoryPromotion(DEFAULT_MEMORY_PROMOTION);
     },
     onError: (error) => setLocalError(error.message),
   });
@@ -866,8 +872,6 @@ function ProjectSkillEditDialog({
   };
   const canSave =
     title.trim().length > 0 &&
-    bucket.trim().length > 0 &&
-    stage.trim().length > 0 &&
     compactGuidance.trim().length > 0 &&
     bodyMarkdown.trim().length > 0 &&
     predictedEffect.trim().length > 0;
@@ -918,18 +922,18 @@ function ProjectSkillEditDialog({
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
               Bucket
-              <Input
+              <ProjectSkillCategorySelect
                 aria-label="Skill bucket"
                 value={bucket}
-                onChange={(event) => setBucket(event.target.value)}
+                onChange={setBucket}
               />
             </label>
             <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
               Stage
-              <Input
+              <ProjectSkillCategorySelect
                 aria-label="Skill stage"
                 value={stage}
-                onChange={(event) => setStage(event.target.value)}
+                onChange={setStage}
               />
             </label>
           </div>
@@ -1016,8 +1020,8 @@ function ProjectSkillEditDialog({
                 onUpdate({
                   projectSkillId: skill.id,
                   title: title.trim(),
-                  bucket: bucket.trim(),
-                  stage: stage.trim(),
+                  bucket,
+                  stage,
                   scopePaths: scopePaths
                     .split(/\r?\n/)
                     .map((path) => path.trim())
@@ -1036,6 +1040,31 @@ function ProjectSkillEditDialog({
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function ProjectSkillCategorySelect({
+  "aria-label": ariaLabel,
+  value,
+  onChange,
+}: {
+  "aria-label": string;
+  value: ProjectSkillCategory;
+  onChange: (value: ProjectSkillCategory) => void;
+}) {
+  return (
+    <select
+      aria-label={ariaLabel}
+      value={value}
+      onChange={(event) => onChange(event.target.value as ProjectSkillCategory)}
+      className="h-9 w-full rounded-md border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-1 text-sm text-[var(--text-primary)] shadow-sm outline-none transition-colors focus:border-[var(--border-focus)] focus:ring-1 focus:ring-[var(--border-focus)] disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {PROJECT_SKILL_CATEGORY_OPTIONS.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -1299,20 +1328,18 @@ function ImportPromotionPanel({
             </label>
             <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
               Bucket
-              <Input
+              <ProjectSkillCategorySelect
                 aria-label="Promoted skill bucket"
-                placeholder="review"
                 value={memoryPromotion.bucket}
-                onChange={(event) => updatePromotion({ bucket: event.target.value })}
+                onChange={(bucket) => updatePromotion({ bucket })}
               />
             </label>
             <label className="grid gap-1 text-xs text-[var(--text-secondary)]">
               Stage
-              <Input
+              <ProjectSkillCategorySelect
                 aria-label="Promoted skill stage"
-                placeholder="review"
                 value={memoryPromotion.stage}
-                onChange={(event) => updatePromotion({ stage: event.target.value })}
+                onChange={(stage) => updatePromotion({ stage })}
               />
             </label>
           </div>

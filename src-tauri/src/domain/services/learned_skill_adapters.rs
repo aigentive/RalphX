@@ -414,3 +414,358 @@ impl FingerprintEvidence {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::entities::ideation::{VerificationGap, VerificationRoundSnapshot};
+
+    fn skill(id: &str, project_id: &str, status: LearnedSkillStatus) -> LearnedSkillRecord {
+        LearnedSkillRecord {
+            id: id.to_string(),
+            project_id: project_id.to_string(),
+            title: format!("Skill {id}"),
+            status,
+            caller_surfaces: Vec::new(),
+            stages: Vec::new(),
+            buckets: Vec::new(),
+            path_scopes: Vec::new(),
+            compact_guidance: "Keep the learned guidance compact.".to_string(),
+            predicted_effect: "Reduce repeated mistakes.".to_string(),
+            provenance_refs: Vec::new(),
+        }
+    }
+
+    fn round(round: u32, descriptions: &[&str]) -> VerificationRoundSnapshot {
+        let gaps = descriptions
+            .iter()
+            .map(|description| VerificationGap {
+                severity: "high".to_string(),
+                category: "testing".to_string(),
+                description: (*description).to_string(),
+                why_it_matters: Some(
+                    "Recurring verification gaps should stay descriptive until gated.".to_string(),
+                ),
+                source: Some("layer2".to_string()),
+            })
+            .collect::<Vec<_>>();
+        VerificationRoundSnapshot {
+            round,
+            fingerprints: gaps
+                .iter()
+                .map(|gap| gap_fingerprint(&gap.description))
+                .collect(),
+            gap_score: gaps.len() as u32 * 3,
+            gaps,
+            parse_failed: false,
+        }
+    }
+
+    #[test]
+    fn plan_mode_capture_records_accept_decline_and_suppression_paths() {
+        let accepted = capture_plan_mode_verdict(PlanModeVerdictCaptureInput {
+            project_id: "project-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            planning_session_id: Some("planning-session-1".to_string()),
+            accepted_session_id: Some("accepted-session-1".to_string()),
+            plan_artifact_id: Some("plan-1".to_string()),
+            verdict: PlanModeVerdict::Accepted,
+            reason: Some("Architecture work needs plan mode.".to_string()),
+        })
+        .expect("accepted verdict should be captured");
+
+        assert_eq!(accepted.outcome_class, "plan_mode_accepted");
+        assert_eq!(accepted.status, "eligible");
+        assert_eq!(
+            accepted.refs.get("accepted_session_id").map(String::as_str),
+            Some("accepted-session-1")
+        );
+        assert_eq!(
+            accepted.refs.get("plan_artifact_id").map(String::as_str),
+            Some("plan-1")
+        );
+        assert!(!accepted.mutates_accepted_session);
+        assert!(accepted.evidence_summary.contains("Architecture work"));
+
+        let declined = capture_plan_mode_verdict(PlanModeVerdictCaptureInput {
+            project_id: "project-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            planning_session_id: Some("planning-session-1".to_string()),
+            accepted_session_id: None,
+            plan_artifact_id: None,
+            verdict: PlanModeVerdict::Declined,
+            reason: Some(" ".to_string()),
+        })
+        .expect("declined verdict should be captured");
+        assert_eq!(declined.outcome_class, "plan_mode_declined");
+        assert_eq!(
+            declined.evidence_summary,
+            "Plan-mode verdict captured without model transcript body."
+        );
+
+        assert!(capture_plan_mode_verdict(PlanModeVerdictCaptureInput {
+            project_id: "project-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            planning_session_id: Some("planning-session-1".to_string()),
+            accepted_session_id: None,
+            plan_artifact_id: None,
+            verdict: PlanModeVerdict::Skipped,
+            reason: Some("Narrow edit.".to_string()),
+        })
+        .is_none());
+        assert!(capture_plan_mode_verdict(PlanModeVerdictCaptureInput {
+            project_id: "project-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            planning_session_id: None,
+            accepted_session_id: Some("accepted-session-1".to_string()),
+            plan_artifact_id: None,
+            verdict: PlanModeVerdict::Accepted,
+            reason: None,
+        })
+        .is_none());
+    }
+
+    #[test]
+    fn plan_mode_capture_truncates_long_reasons() {
+        let outcome = capture_plan_mode_verdict(PlanModeVerdictCaptureInput {
+            project_id: "project-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            planning_session_id: Some("planning-session-1".to_string()),
+            accepted_session_id: None,
+            plan_artifact_id: None,
+            verdict: PlanModeVerdict::Accepted,
+            reason: Some("x".repeat(300)),
+        })
+        .expect("accepted verdict should be captured");
+
+        assert_eq!(outcome.evidence_summary.chars().count(), 243);
+        assert!(outcome.evidence_summary.ends_with("..."));
+    }
+
+    #[test]
+    fn pre_execution_selection_filters_sorts_and_limits_skills() {
+        let selected = select_pre_execution_learned_skills(
+            LearnedSkillSelectionRequest {
+                project_id: "project-1".to_string(),
+                caller_surface: "ralphx-execution-worker".to_string(),
+                stage: LearnedSkillStage::Execution,
+                bucket: LearnedSkillBucket::Execution,
+                touched_paths: vec!["src-tauri/src/application/chat_service/mod.rs".to_string()],
+                max_skills: 1,
+            },
+            &[
+                skill("skill-z", "project-1", LearnedSkillStatus::Approved)
+                    .with_caller_surfaces(vec!["ralphx-execution-worker"])
+                    .with_stages(vec![LearnedSkillStage::Execution])
+                    .with_buckets(vec![LearnedSkillBucket::Execution])
+                    .with_path_scopes(vec!["src-tauri/src/application"])
+                    .with_predicted_effect("Reduce repeated execution misses.")
+                    .with_provenance_refs(vec!["outcome-1"]),
+                skill("skill-a", "project-1", LearnedSkillStatus::Approved)
+                    .with_caller_surfaces(vec!["ralphx-execution-worker"])
+                    .with_stages(vec![LearnedSkillStage::Execution])
+                    .with_buckets(vec![LearnedSkillBucket::Execution])
+                    .with_path_scopes(vec!["src-tauri/src/application"]),
+                skill("skill-surface", "project-1", LearnedSkillStatus::Approved)
+                    .with_caller_surfaces(vec!["ralphx-review-history"])
+                    .with_stages(vec![LearnedSkillStage::Execution])
+                    .with_buckets(vec![LearnedSkillBucket::Execution])
+                    .with_path_scopes(vec!["src-tauri/src/application"]),
+                skill("skill-staged", "project-1", LearnedSkillStatus::Staged)
+                    .with_caller_surfaces(vec!["ralphx-execution-worker"])
+                    .with_stages(vec![LearnedSkillStage::Execution])
+                    .with_buckets(vec![LearnedSkillBucket::Execution])
+                    .with_path_scopes(vec!["src-tauri/src/application"]),
+                skill("skill-project", "project-2", LearnedSkillStatus::Approved)
+                    .with_caller_surfaces(vec!["ralphx-execution-worker"])
+                    .with_stages(vec![LearnedSkillStage::Execution])
+                    .with_buckets(vec![LearnedSkillBucket::Execution])
+                    .with_path_scopes(vec!["src-tauri/src/application"]),
+                skill("skill-stage", "project-1", LearnedSkillStatus::Approved)
+                    .with_caller_surfaces(vec!["ralphx-execution-worker"])
+                    .with_stages(vec![LearnedSkillStage::Planning])
+                    .with_buckets(vec![LearnedSkillBucket::Execution])
+                    .with_path_scopes(vec!["src-tauri/src/application"]),
+                skill("skill-bucket", "project-1", LearnedSkillStatus::Approved)
+                    .with_caller_surfaces(vec!["ralphx-execution-worker"])
+                    .with_stages(vec![LearnedSkillStage::Execution])
+                    .with_buckets(vec![LearnedSkillBucket::Review])
+                    .with_path_scopes(vec!["src-tauri/src/application"]),
+                skill("skill-path", "project-1", LearnedSkillStatus::Approved)
+                    .with_caller_surfaces(vec!["ralphx-execution-worker"])
+                    .with_stages(vec![LearnedSkillStage::Execution])
+                    .with_buckets(vec![LearnedSkillBucket::Execution])
+                    .with_path_scopes(vec!["frontend/src"]),
+            ],
+        );
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|skill| skill.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["skill-a"]
+        );
+    }
+
+    #[test]
+    fn pre_execution_selection_rejects_invalid_or_empty_scope_inputs() {
+        for touched_paths in [
+            vec!["/src-tauri/src/application/chat_service/mod.rs".to_string()],
+            vec!["src-tauri\\src\\application".to_string()],
+            vec!["src-tauri//src".to_string()],
+            Vec::new(),
+        ] {
+            let selected = select_pre_execution_learned_skills(
+                LearnedSkillSelectionRequest {
+                    project_id: "project-1".to_string(),
+                    caller_surface: "ralphx-execution-worker".to_string(),
+                    stage: LearnedSkillStage::Execution,
+                    bucket: LearnedSkillBucket::Execution,
+                    touched_paths,
+                    max_skills: 4,
+                },
+                &[
+                    skill("skill-match", "project-1", LearnedSkillStatus::Approved)
+                        .with_caller_surfaces(vec!["ralphx-execution-worker"])
+                        .with_stages(vec![LearnedSkillStage::Execution])
+                        .with_buckets(vec![LearnedSkillBucket::Execution])
+                        .with_path_scopes(vec!["src-tauri/src/application"]),
+                ],
+            );
+            assert!(selected.is_empty());
+        }
+    }
+
+    #[test]
+    fn pre_execution_selection_handles_empty_limits_and_unscoped_skills() {
+        let approved = skill("skill-match", "project-1", LearnedSkillStatus::Approved)
+            .with_caller_surfaces(vec!["ralphx-execution-worker"])
+            .with_stages(vec![LearnedSkillStage::Execution])
+            .with_buckets(vec![LearnedSkillBucket::Execution]);
+
+        assert!(select_pre_execution_learned_skills(
+            LearnedSkillSelectionRequest {
+                project_id: "project-1".to_string(),
+                caller_surface: "ralphx-execution-worker".to_string(),
+                stage: LearnedSkillStage::Execution,
+                bucket: LearnedSkillBucket::Execution,
+                touched_paths: vec!["src-tauri/src/application/mod.rs".to_string()],
+                max_skills: 0,
+            },
+            std::slice::from_ref(&approved),
+        )
+        .is_empty());
+
+        let selected = select_pre_execution_learned_skills(
+            LearnedSkillSelectionRequest {
+                project_id: "project-1".to_string(),
+                caller_surface: " ralphx-execution-worker ".to_string(),
+                stage: LearnedSkillStage::Execution,
+                bucket: LearnedSkillBucket::Execution,
+                touched_paths: Vec::new(),
+                max_skills: 4,
+            },
+            &[approved],
+        );
+        assert_eq!(selected.len(), 1);
+    }
+
+    #[test]
+    fn constraint_bundle_citations_copy_relevant_fields() {
+        let selected = vec![skill(
+            "skill-review-loop",
+            "project-1",
+            LearnedSkillStatus::Approved,
+        )
+        .with_predicted_effect("Reduce repeated verification gaps.")
+        .with_provenance_refs(vec!["outcome-1", "verification-round-3"])];
+
+        let citations = build_constraint_bundle_skill_citations(&selected);
+
+        assert_eq!(citations.len(), 1);
+        assert_eq!(citations[0].skill_id, "skill-review-loop");
+        assert_eq!(
+            citations[0].predicted_effect,
+            "Reduce repeated verification gaps."
+        );
+        assert_eq!(
+            citations[0].provenance_refs,
+            vec!["outcome-1".to_string(), "verification-round-3".to_string()]
+        );
+    }
+
+    #[test]
+    fn verification_gap_recurrence_reports_all_gate_outcomes() {
+        let below_corpus = verification_gap_recurrence_candidates(
+            &[round(1, &["Missing reviewer regression test"])],
+            VerificationGapRecurrenceGate {
+                min_occurrences: 2,
+                min_rounds: 2,
+                min_corpus_size: 3,
+            },
+        );
+        assert_eq!(below_corpus.corpus_size, 1);
+        assert_eq!(
+            below_corpus.suppressed_gaps[0].reason,
+            VerificationGapSuppressionReason::BelowCorpusGate
+        );
+
+        let below_occurrence = verification_gap_recurrence_candidates(
+            &[
+                round(1, &["Missing reviewer regression test"]),
+                round(2, &["Document export preview"]),
+                round(3, &["Trace native skill imports"]),
+            ],
+            VerificationGapRecurrenceGate {
+                min_occurrences: 2,
+                min_rounds: 2,
+                min_corpus_size: 3,
+            },
+        );
+        assert!(below_occurrence.recurring_gaps.is_empty());
+        assert!(below_occurrence
+            .suppressed_gaps
+            .iter()
+            .all(|gap| gap.reason == VerificationGapSuppressionReason::BelowOccurrenceGate));
+
+        let below_round = verification_gap_recurrence_candidates(
+            &[round(
+                1,
+                &[
+                    "Missing reviewer regression test",
+                    "Missing reviewer regression test",
+                    "Document export preview",
+                ],
+            )],
+            VerificationGapRecurrenceGate {
+                min_occurrences: 2,
+                min_rounds: 2,
+                min_corpus_size: 3,
+            },
+        );
+        assert!(below_round
+            .suppressed_gaps
+            .iter()
+            .any(|gap| gap.reason == VerificationGapSuppressionReason::BelowRoundGate));
+
+        let promoted = verification_gap_recurrence_candidates(
+            &[
+                round(1, &["Missing reviewer regression test"]),
+                round(2, &["reviewer regression test missing"]),
+                round(3, &["Missing reviewer regression test"]),
+            ],
+            VerificationGapRecurrenceGate {
+                min_occurrences: 2,
+                min_rounds: 2,
+                min_corpus_size: 3,
+            },
+        );
+        assert_eq!(promoted.recurring_gaps.len(), 1);
+        assert_eq!(promoted.recurring_gaps[0].occurrences, 3);
+        assert_eq!(promoted.recurring_gaps[0].distinct_rounds, 3);
+        assert!(promoted.recurring_gaps[0]
+            .descriptions
+            .contains(&"Missing reviewer regression test".to_string()));
+    }
+}
