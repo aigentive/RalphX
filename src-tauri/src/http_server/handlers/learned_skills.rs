@@ -10,6 +10,7 @@ use crate::domain::services::{
     DistillEligibleOutcomesInput, ProjectSkillDistillerService, ProjectSkillService,
 };
 use crate::error::AppError;
+use crate::http_server::handlers::learned_skills_export::assert_project_id_scope;
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
 use crate::http_server::types::HttpError;
 
@@ -284,18 +285,6 @@ async fn update_project_skill_pin(
     }))
 }
 
-fn assert_project_id_scope(project_id: &ProjectId, scope: &ProjectScope) -> Result<(), HttpError> {
-    if let ProjectScope(Some(allowed)) = scope {
-        if !allowed.contains(project_id) {
-            return Err(HttpError {
-                status: StatusCode::FORBIDDEN,
-                message: Some("API key does not have access to this project".to_string()),
-            });
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,4 +478,5 @@ mod tests {
 
         assert_eq!(error.status, StatusCode::FORBIDDEN);
     }
+
 }

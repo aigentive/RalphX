@@ -51,6 +51,7 @@ pub mod permission_state;
 pub(crate) mod plan_complexity_assessment;
 pub mod plan_ranking;
 pub mod priority_service;
+pub mod project_skill_export_service;
 pub(crate) mod provider_onboarding_gate;
 pub mod provider_session_fork;
 pub mod pr_startup_recovery;

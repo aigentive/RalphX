@@ -1379,6 +1379,36 @@ pub struct DistillProjectSkillsResponse {
     pub skipped_existing: usize,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct PreviewProjectSkillExportRequest {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplyProjectSkillExportRequest {
+    pub project_id: String,
+    #[serde(default)]
+    pub confirm_export: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillExportFileResponse {
+    pub project_skill_id: String,
+    pub title: String,
+    pub relative_path: String,
+    pub pinned: bool,
+    pub status: String,
+    pub will_write: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillExportResponse {
+    pub project_id: String,
+    pub target_root: String,
+    pub files: Vec<ProjectSkillExportFileResponse>,
+    pub count: usize,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RefreshMemoryRuleIndexRequest {
     pub project_id: String,
