@@ -108,6 +108,10 @@ const ProjectSkillImportApplyResponseSchema = z.object({
   imported_count: z.number(),
 });
 
+const PromoteMemoryToProjectSkillResponseSchema = z.object({
+  skill: ProjectSkillResponseSchema,
+});
+
 type RawProjectSkill = z.infer<typeof ProjectSkillResponseSchema>;
 type RawProjectSkillExport = z.infer<typeof ProjectSkillExportResponseSchema>;
 type RawProjectSkillSettings = z.infer<typeof ProjectSkillSettingsResponseSchema>;
@@ -248,6 +252,17 @@ export interface ProjectSkillImportApplyResult {
   preview: ProjectSkillImportPreviewResult;
   importedSkills: ProjectSkill[];
   importedCount: number;
+}
+
+export interface PromoteMemoryToProjectSkillInput {
+  projectId: string;
+  memoryId: string;
+  title?: string | null;
+  bucket: string;
+  stage: string;
+  compactGuidance: string;
+  bodyMarkdown: string;
+  predictedEffect: string;
 }
 
 function transformProjectSkill(raw: RawProjectSkill): ProjectSkill {
@@ -480,6 +495,21 @@ export const projectSkillsApi = {
       importedSkills: parsed.imported_skills.map(transformProjectSkill),
       importedCount: parsed.imported_count,
     };
+  },
+
+  async promoteMemory(input: PromoteMemoryToProjectSkillInput): Promise<ProjectSkill> {
+    const raw = await postJson<unknown>("project_skills/promote_memory", {
+      project_id: input.projectId,
+      memory_id: input.memoryId,
+      title: input.title ?? null,
+      bucket: input.bucket,
+      stage: input.stage,
+      compact_guidance: input.compactGuidance,
+      body_markdown: input.bodyMarkdown,
+      predicted_effect: input.predictedEffect,
+    });
+    const parsed = PromoteMemoryToProjectSkillResponseSchema.parse(raw);
+    return transformProjectSkill(parsed.skill);
   },
 
   async previewExport(projectId: string): Promise<ProjectSkillExportResult> {

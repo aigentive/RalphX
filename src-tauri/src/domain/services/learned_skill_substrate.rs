@@ -6,12 +6,14 @@ use serde_json::Value;
 
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
-    ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, SkillUsageEvent, SkillUsageEventId,
-    TaskOutcome, TaskOutcomeId, TaskOutcomeStatus,
+    MemoryEntry, MemoryEntryId, MemoryStatus, ProjectSkill, ProjectSkillId,
+    ProjectSkillLifecycleStatus, SkillUsageEvent, SkillUsageEventId, TaskOutcome, TaskOutcomeId,
+    TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
-    ProjectSkillListOptions, ProjectSkillRepository, SkillUsageEventRepository,
-    SkillUsageListOptions, TaskOutcomeListOptions, TaskOutcomeRepository, UpsertTaskOutcomeInput,
+    MemoryEntryRepository, ProjectSkillListOptions, ProjectSkillRepository,
+    SkillUsageEventRepository, SkillUsageListOptions, TaskOutcomeListOptions, TaskOutcomeRepository,
+    UpsertTaskOutcomeInput,
 };
 use crate::domain::services::learned_skill_adapters::LearnedSkillConstraintCitation;
 use crate::error::{AppError, AppResult};
@@ -389,6 +391,11 @@ pub struct ProjectSkillImportPreviewService {
     skill_repo: Arc<dyn ProjectSkillRepository>,
 }
 
+pub struct MemoryToProjectSkillPromotionService {
+    memory_repo: Arc<dyn MemoryEntryRepository>,
+    skill_service: ProjectSkillService,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectSkillImportCandidate {
     pub external_id: Option<String>,
@@ -445,6 +452,23 @@ pub struct ProjectSkillImportPreview {
 pub struct ProjectSkillImportApplyResult {
     pub preview: ProjectSkillImportPreview,
     pub imported_skills: Vec<ProjectSkill>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PromoteMemoryToProjectSkillInput {
+    pub project_id: ProjectId,
+    pub memory_id: MemoryEntryId,
+    pub title: Option<String>,
+    pub bucket: String,
+    pub stage: String,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PromoteMemoryToProjectSkillResult {
+    pub skill: ProjectSkill,
 }
 
 #[derive(Debug, Clone)]
@@ -748,6 +772,63 @@ impl ProjectSkillImportPreviewService {
     }
 }
 
+impl MemoryToProjectSkillPromotionService {
+    pub fn new(
+        memory_repo: Arc<dyn MemoryEntryRepository>,
+        project_skill_repo: Arc<dyn ProjectSkillRepository>,
+    ) -> Self {
+        Self {
+            memory_repo,
+            skill_service: ProjectSkillService::new(project_skill_repo),
+        }
+    }
+
+    pub async fn promote_memory(
+        &self,
+        input: PromoteMemoryToProjectSkillInput,
+    ) -> AppResult<PromoteMemoryToProjectSkillResult> {
+        let memory = self
+            .memory_repo
+            .get_by_id(&input.memory_id)
+            .await?
+            .ok_or_else(|| AppError::Validation("memory entry not found".to_string()))?;
+        validate_memory_promotion_boundary(&memory, &input)?;
+
+        let now = Utc::now();
+        let skill = ProjectSkill {
+            id: ProjectSkillId::new(),
+            project_id: input.project_id,
+            title: input.title.unwrap_or_else(|| memory.title.clone()),
+            bucket: input.bucket,
+            stage: input.stage,
+            status: ProjectSkillLifecycleStatus::Staged,
+            pinned: false,
+            archived: false,
+            scope_paths: memory.scope_paths.clone(),
+            compact_guidance: input.compact_guidance,
+            body_markdown: input.body_markdown,
+            predicted_effect: Some(input.predicted_effect),
+            provenance_json: serde_json::json!({
+                "source": "memory_to_project_skill_promotion",
+                "memory_id": memory.id.as_str(),
+                "memory_bucket": memory.bucket.to_string(),
+                "memory_title": memory.title,
+                "memory_summary": memory.summary,
+                "source_context_type": memory.source_context_type,
+                "source_context_id": memory.source_context_id,
+                "source_conversation_id": memory.source_conversation_id,
+            }),
+            companion_of_skill_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        Ok(PromoteMemoryToProjectSkillResult {
+            skill: self.skill_service.stage_skill(skill).await?,
+        })
+    }
+}
+
 impl SkillUsageService {
     pub fn new(repo: Arc<dyn SkillUsageEventRepository>) -> Self {
         Self { repo }
@@ -867,6 +948,37 @@ fn validate_import_candidate(candidate: &ProjectSkillImportCandidate) -> Vec<Str
     }
 
     reasons
+}
+
+fn validate_memory_promotion_boundary(
+    memory: &MemoryEntry,
+    input: &PromoteMemoryToProjectSkillInput,
+) -> AppResult<()> {
+    if memory.project_id != input.project_id {
+        return Err(AppError::Validation(
+            "memory entry belongs to a different project".to_string(),
+        ));
+    }
+    if memory.status != MemoryStatus::Active {
+        return Err(AppError::Validation(
+            "only active memory entries can be promoted".to_string(),
+        ));
+    }
+    validate_non_empty("project skill bucket", &input.bucket)?;
+    validate_non_empty("project skill stage", &input.stage)?;
+    validate_non_empty("project skill compact_guidance", &input.compact_guidance)?;
+    validate_non_empty("project skill body_markdown", &input.body_markdown)?;
+    validate_non_empty("predicted_effect", &input.predicted_effect)?;
+
+    if input.compact_guidance.trim() == memory.summary.trim()
+        || input.body_markdown.trim() == memory.details_markdown.trim()
+    {
+        return Err(AppError::Validation(
+            "memory promotion requires procedural guidance distinct from factual memory content"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn project_skill_import_key(skill: &ProjectSkill) -> String {
@@ -1059,19 +1171,23 @@ mod tests {
         ProjectSkillAgingStatus, ProjectSkillDistillationOrigin, ProjectSkillDistillerService,
         ProjectSkillEvidenceLevel, ProjectSkillImportApplyInput, ProjectSkillImportCandidate,
         ProjectSkillImportDecision, ProjectSkillImportPreviewInput, ProjectSkillImportPreviewService,
-        ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService, SkillUsageService,
+        ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService,
+        MemoryToProjectSkillPromotionService, PromoteMemoryToProjectSkillInput, SkillUsageService,
         StageProjectSkillFromOutcomeInput,
     };
     use crate::domain::entities::types::ProjectId;
     use crate::domain::entities::{
-        ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, TaskOutcomeStatus,
+        MemoryBucket, MemoryEntry, MemoryEntryId, ProjectSkill, ProjectSkillId,
+        ProjectSkillLifecycleStatus, TaskOutcomeStatus,
     };
     use crate::domain::repositories::{
-        ProjectSkillListOptions, ProjectSkillRepository, SkillUsageListOptions,
-        SkillUsageEventRepository, TaskOutcomeRepository, UpsertTaskOutcomeInput,
+        MemoryEntryRepository, ProjectSkillListOptions, ProjectSkillRepository,
+        SkillUsageListOptions, SkillUsageEventRepository, TaskOutcomeRepository,
+        UpsertTaskOutcomeInput,
     };
     use crate::infrastructure::memory::{
-        MemoryProjectSkillRepository, MemorySkillUsageEventRepository, MemoryTaskOutcomeRepository,
+        InMemoryMemoryEntryRepository, MemoryProjectSkillRepository, MemorySkillUsageEventRepository,
+        MemoryTaskOutcomeRepository,
     };
 
     fn staged_skill(project_id: ProjectId) -> ProjectSkill {
@@ -1120,6 +1236,22 @@ mod tests {
         }
     }
 
+    fn promotion_input(
+        project_id: ProjectId,
+        memory_id: MemoryEntryId,
+    ) -> PromoteMemoryToProjectSkillInput {
+        PromoteMemoryToProjectSkillInput {
+            project_id,
+            memory_id,
+            title: Some("Run branch checks before export".to_string()),
+            bucket: "review".to_string(),
+            stage: "review".to_string(),
+            compact_guidance: "Before exporting learned skills, verify the checkout is on a clean review branch.".to_string(),
+            body_markdown: "## Procedure\n\nCheck branch protection, worktree status, and preview output before export.".to_string(),
+            predicted_effect: "Prevents unsafe direct writes during skill export.".to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn project_skill_service_enforces_predicted_effect_before_staging() {
         let service = ProjectSkillService::new(Arc::new(MemoryProjectSkillRepository::new()));
@@ -1134,7 +1266,8 @@ mod tests {
 
     #[tokio::test]
     async fn project_skill_service_lifecycle_and_usage_services_work_together() {
-        let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+        let skill_repo: Arc<dyn ProjectSkillRepository> =
+            Arc::new(MemoryProjectSkillRepository::new());
         let usage_repo = Arc::new(MemorySkillUsageEventRepository::new());
         let skill_service = ProjectSkillService::new(skill_repo);
         let usage_service = SkillUsageService::new(usage_repo);
@@ -1337,6 +1470,83 @@ mod tests {
         assert!(imported.provenance_json.get("source_snapshot").is_some());
 
         let written = repo
+            .list_by_project(&project_id, ProjectSkillListOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(written.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn memory_to_project_skill_promotion_requires_procedural_content() {
+        let memory_repo = Arc::new(InMemoryMemoryEntryRepository::new());
+        let skill_repo: Arc<dyn ProjectSkillRepository> =
+            Arc::new(MemoryProjectSkillRepository::new());
+        let project_id = ProjectId::from_string("project-memory".to_string());
+        let memory = MemoryEntry::new(
+            project_id.clone(),
+            MemoryBucket::OperationalPlaybooks,
+            "Export branch checks".to_string(),
+            "Check the export branch before writing files.".to_string(),
+            "Memory facts about the branch checks.".to_string(),
+            vec!["src-tauri".to_string()],
+            "hash-1".to_string(),
+        );
+        let memory = memory_repo.create(memory).await.unwrap();
+        let service = MemoryToProjectSkillPromotionService::new(memory_repo, skill_repo);
+        let mut input = promotion_input(project_id, memory.id);
+        input.compact_guidance = "Check the export branch before writing files.".to_string();
+
+        let result = service.promote_memory(input).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn memory_to_project_skill_promotion_stages_skill_with_memory_provenance() {
+        let memory_repo = Arc::new(InMemoryMemoryEntryRepository::new());
+        let skill_repo: Arc<dyn ProjectSkillRepository> =
+            Arc::new(MemoryProjectSkillRepository::new());
+        let project_id = ProjectId::from_string("project-memory".to_string());
+        let mut memory = MemoryEntry::new(
+            project_id.clone(),
+            MemoryBucket::OperationalPlaybooks,
+            "Export branch checks".to_string(),
+            "Check the export branch before writing files.".to_string(),
+            "Memory facts about the branch checks.".to_string(),
+            vec!["src-tauri".to_string()],
+            "hash-1".to_string(),
+        );
+        memory.source_context_type = Some("agent_run".to_string());
+        memory.source_context_id = Some("run-1".to_string());
+        let memory = memory_repo.create(memory).await.unwrap();
+        let service =
+            MemoryToProjectSkillPromotionService::new(memory_repo, Arc::clone(&skill_repo));
+
+        let result = service
+            .promote_memory(promotion_input(project_id.clone(), memory.id.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(result.skill.status, ProjectSkillLifecycleStatus::Staged);
+        assert_eq!(result.skill.scope_paths, vec!["src-tauri".to_string()]);
+        assert_eq!(
+            result
+                .skill
+                .provenance_json
+                .get("source")
+                .and_then(serde_json::Value::as_str),
+            Some("memory_to_project_skill_promotion")
+        );
+        assert_eq!(
+            result
+                .skill
+                .provenance_json
+                .get("memory_id")
+                .and_then(serde_json::Value::as_str),
+            Some(memory.id.as_str())
+        );
+
+        let written = skill_repo
             .list_by_project(&project_id, ProjectSkillListOptions::default())
             .await
             .unwrap();

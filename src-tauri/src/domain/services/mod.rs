@@ -42,12 +42,13 @@ pub use github_service::{
 pub use index_rewriter::{IndexRewriter, RewriteResult};
 pub use learned_skill_substrate::{
     new_empty_task_outcome, new_skill_usage_event, DistillEligibleOutcomesInput,
-    DistillEligibleOutcomesResult, OutcomeLedgerService, ProjectSkillDistillerService,
-    ProjectSkillDistillationOrigin, ProjectSkillEvidenceLevel, ProjectSkillImportApplyInput,
-    ProjectSkillImportApplyResult, ProjectSkillImportCandidate, ProjectSkillImportDecision,
-    ProjectSkillImportPreview, ProjectSkillImportPreviewInput, ProjectSkillImportPreviewRow,
-    ProjectSkillImportPreviewService, ProjectSkillReportCard, ProjectSkillReportOptions,
-    ProjectSkillReportService, ProjectSkillService, SkillUsageService,
+    DistillEligibleOutcomesResult, MemoryToProjectSkillPromotionService, OutcomeLedgerService,
+    ProjectSkillDistillerService, ProjectSkillDistillationOrigin, ProjectSkillEvidenceLevel,
+    ProjectSkillImportApplyInput, ProjectSkillImportApplyResult, ProjectSkillImportCandidate,
+    ProjectSkillImportDecision, ProjectSkillImportPreview, ProjectSkillImportPreviewInput,
+    ProjectSkillImportPreviewRow, ProjectSkillImportPreviewService, ProjectSkillReportCard,
+    ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService,
+    PromoteMemoryToProjectSkillInput, PromoteMemoryToProjectSkillResult, SkillUsageService,
     StageProjectSkillFromOutcomeInput,
 };
 pub use verification_events::{
