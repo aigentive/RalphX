@@ -6,6 +6,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { Navigation } from "./Navigation";
 import type { FeatureFlags } from "@/types/feature-flags";
+import {
+  resetSkillsEnabledForTests,
+  setSkillsEnabled,
+} from "@/stores/skillsSettingsStore";
 
 // Dynamic mock state
 let mockState = {
@@ -64,6 +68,7 @@ describe("Navigation", () => {
     mockState = { activeTeams: {} };
     mockFeatureFlags = { activityPage: true, extensibilityPage: true };
     mockTaskCount = 0;
+    resetSkillsEnabledForTests(true);
   });
 
   it("renders all nav items", () => {
@@ -164,6 +169,7 @@ describe("Navigation — feature flag filtering", () => {
     mockState = { activeTeams: {} };
     mockFeatureFlags = { activityPage: true, extensibilityPage: true };
     mockTaskCount = 0;
+    resetSkillsEnabledForTests(true);
   });
 
   it("renders activity and extensibility nav items when flags are enabled", () => {
@@ -214,6 +220,15 @@ describe("Navigation — feature flag filtering", () => {
     expect(screen.getByTestId("nav-skills")).toBeInTheDocument();
     expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
   });
+
+  it("hides the Skills nav item when the Skills surface is disabled", () => {
+    setSkillsEnabled(false);
+
+    render(<Navigation {...defaultProps} />);
+
+    expect(screen.queryByTestId("nav-skills")).toBeNull();
+    expect(screen.getByTestId("nav-agents")).toBeInTheDocument();
+  });
 });
 
 describe("Navigation — hideViews (welcome mode)", () => {
@@ -227,6 +242,7 @@ describe("Navigation — hideViews (welcome mode)", () => {
     mockState = { activeTeams: {} };
     mockFeatureFlags = { activityPage: true, extensibilityPage: true };
     mockTaskCount = 10;
+    resetSkillsEnabledForTests(true);
   });
 
   it("hides every view nav item when hideViews is true", () => {

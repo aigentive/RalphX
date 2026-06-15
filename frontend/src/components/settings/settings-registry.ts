@@ -12,6 +12,7 @@ export type SettingsSectionId =
   | "api-keys"
   | "integrations"
   | "external-mcp"
+  | "app-preferences"
   | "accessibility";
 
 export type SettingsGroupId =
@@ -55,6 +56,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "integrations", groupId: "integrations", label: "Atlassian" },
   { id: "api-keys", groupId: "access", label: "API Keys" },
   { id: "external-mcp", groupId: "access", label: "External MCP" },
+  { id: "app-preferences", groupId: "preferences", label: "App Preferences" },
   { id: "accessibility", groupId: "preferences", label: "Accessibility" },
 ];
 

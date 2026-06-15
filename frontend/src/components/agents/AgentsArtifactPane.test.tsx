@@ -8,6 +8,10 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import type { AgentConversationWorkspace } from "@/api/chat";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
+import {
+  resetSkillsEnabledForTests,
+  setSkillsEnabled,
+} from "@/stores/skillsSettingsStore";
 import { createTestQueryClient } from "@/test/store-utils";
 import { AgentsArtifactPane } from "./AgentsArtifactPane";
 
@@ -370,6 +374,7 @@ function renderPane(
 
 describe("AgentsArtifactPane", () => {
   beforeEach(() => {
+    resetSkillsEnabledForTests(true);
     getWorkspaceChangesMock.mockResolvedValue([
       { path: "frontend/src/App.tsx", status: "modified", additions: 4, deletions: 1 },
     ]);
@@ -709,6 +714,15 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+  });
+
+  it("hides the skills tab when the Skills surface is disabled", () => {
+    setSkillsEnabled(false);
+
+    renderPane("publish", workspace({ mode: "edit" }));
+
+    expect(screen.queryByTestId("agents-artifact-tab-skills")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
   });
 
   it("persists PR supervision switches from the publish pane", async () => {

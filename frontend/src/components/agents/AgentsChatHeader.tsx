@@ -37,6 +37,7 @@ import { formatBranchDisplay } from "@/lib/branch-utils";
 import { withAlpha } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chatStore";
+import { useSkillsEnabled } from "@/stores/skillsSettingsStore";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import type { ModelDisplay } from "@/types/chat-conversation";
 
@@ -302,6 +303,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   onSelectArtifact,
   showTitle = true,
 }: AgentsChatHeaderProps) {
+  const [skillsEnabled] = useSkillsEnabled();
   const title = conversation?.title || "Untitled agent";
   const conversationMode = conversation
     ? resolveConversationAgentMode(conversation, workspace)
@@ -311,9 +313,9 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
       ...HEADER_IDEATION_ARTIFACT_TABS.filter((tab) =>
         availableArtifactTabs.includes(tab.id),
       ),
-      HEADER_SKILLS_TAB,
+      ...(skillsEnabled ? [HEADER_SKILLS_TAB] : []),
     ],
-    [availableArtifactTabs],
+    [availableArtifactTabs, skillsEnabled],
   );
   const showHeaderArtifactShortcuts =
     Boolean(conversation) && visibleHeaderArtifactTabs.length > 0;
@@ -321,7 +323,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     artifactOpen ||
     conversationMode === "ideation" ||
     (conversationMode === "plan" && visibleHeaderArtifactTabs.length > 0) ||
-    Boolean(conversation);
+    Boolean(conversation && skillsEnabled);
   // Hide the publish shortcut whenever any artifact pane is open — the user
   // can already reach Commit & Publish via the artifact tab bar, so the
   // header CTA is redundant (and visually crowds the Update-from-base label).

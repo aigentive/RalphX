@@ -37,6 +37,7 @@ import { useIdeationStore, selectActiveSession } from "@/stores/ideationStore";
 import { useProposalStore } from "@/stores/proposalStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useSkillsEnabled } from "@/stores/skillsSettingsStore";
 import { DEFAULT_PROJECT_VIEW, type ViewType } from "@/types/chat";
 import type { ApplyProposalsInput } from "@/api/ideation.types";
 import type { UpdateProposalInput } from "@/api/ideation";
@@ -152,6 +153,7 @@ function AppContent() {
   const exitBattleMode = useUiStore((s) => s.exitBattleMode);
   const { isNavCompact } = useNavCompactBreakpoint();
   const { data: featureFlags } = useFeatureFlags();
+  const [skillsEnabled] = useSkillsEnabled();
 
   // Redirect to the default project view in production when the current view is disabled.
   useEffect(() => {
@@ -159,6 +161,12 @@ function AppContent() {
       setCurrentView(DEFAULT_PROJECT_VIEW);
     }
   }, [currentView, featureFlags, setCurrentView]);
+
+  useEffect(() => {
+    if (!skillsEnabled && currentView === "skills") {
+      setCurrentView(DEFAULT_PROJECT_VIEW);
+    }
+  }, [currentView, setCurrentView, skillsEnabled]);
 
   // Welcome screen overlay state
   const showWelcomeOverlay = useUiStore((s) => s.showWelcomeOverlay);

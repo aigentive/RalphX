@@ -38,6 +38,7 @@ import { useConversationHistoryWindow } from "@/hooks/useChat";
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useDependencyGraph } from "@/hooks/useDependencyGraph";
 import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
+import { useSkillsEnabled } from "@/stores/skillsSettingsStore";
 import type { Artifact } from "@/types/artifact";
 import type { IdeationSession, TaskProposal, VerificationStatus } from "@/types/ideation";
 import type {
@@ -201,6 +202,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onClose,
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
+  const [skillsEnabled] = useSkillsEnabled();
   const canHydrateIdeationArtifacts = Boolean(
     focusedIdeationSessionId ||
       workspace?.mode === "ideation" ||
@@ -306,10 +308,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const visibleTabs = useMemo(
     () => [
       ...ARTIFACT_TABS.filter((tab) => availableIdeationTabIds.includes(tab.id)),
-      SKILLS_TAB,
+      ...(skillsEnabled ? [SKILLS_TAB] : []),
       ...(showPublishTab ? [PUBLISH_TAB] : []),
     ],
-    [availableIdeationTabIds, showPublishTab],
+    [availableIdeationTabIds, showPublishTab, skillsEnabled],
   );
   const effectiveActiveTab =
     visibleTabs.some((tab) => tab.id === activeTab)
@@ -614,6 +616,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           onOpenVerification={() => onTabChange("verification")}
           taskArtifactSelectedId={taskArtifactSelectedId}
           onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
+          skillsEnabled={skillsEnabled}
         />
       </div>
     </aside>
@@ -650,6 +653,7 @@ type ArtifactContentProps = {
   onOpenVerification: () => void;
   taskArtifactSelectedId: string | null;
   onTaskArtifactSelectedIdChange: (id: string | null) => void;
+  skillsEnabled: boolean;
 };
 
 function ArtifactContent({
@@ -679,6 +683,7 @@ function ArtifactContent({
   onOpenVerification,
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
+  skillsEnabled,
 }: ArtifactContentProps) {
   const criticalPathSet = useMemo(
     () => new Set(dependencyGraph?.criticalPath ?? []),
@@ -730,6 +735,9 @@ function ArtifactContent({
   }
 
   if (activeTab === "skills") {
+    if (!skillsEnabled) {
+      return <EmptyArtifactState title="Skills are disabled" />;
+    }
     if (!projectId || !conversationId) {
       return <EmptyArtifactState title="No conversation selected" />;
     }

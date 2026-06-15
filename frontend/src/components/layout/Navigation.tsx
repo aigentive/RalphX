@@ -14,6 +14,7 @@ import { useTeamStore, selectHasAnyActiveTeam, selectTotalTeammateCount } from "
 import { useProjectStore } from "@/stores/projectStore";
 import { useProjectStats } from "@/hooks/useProjectStats";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useSkillsEnabled } from "@/stores/skillsSettingsStore";
 import { ALL_NAV_ITEMS } from "./nav-items";
 import type { ViewType } from "@/types/chat";
 
@@ -86,11 +87,16 @@ export function Navigation({ currentView, onViewChange, onOpenSettings, hideView
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const { data: stats } = useProjectStats(activeProjectId ?? undefined);
   const { data: featureFlags } = useFeatureFlags();
+  const [skillsEnabled] = useSkillsEnabled();
 
   const taskCount = stats?.taskCount ?? 0;
   const visibleItems = hideViews
     ? []
-    : ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags, taskCount));
+    : ALL_NAV_ITEMS.filter(
+        (item) =>
+          item.visible(featureFlags, taskCount) &&
+          (item.view !== "skills" || skillsEnabled),
+      );
 
   return (
     <nav

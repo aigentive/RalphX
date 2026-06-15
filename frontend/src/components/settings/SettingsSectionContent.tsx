@@ -61,6 +61,11 @@ const LazyExternalMcpSettingsPanel = lazy(() =>
     default: module.ExternalMcpSettingsPanel,
   })),
 );
+const LazyAppPreferencesSection = lazy(() =>
+  import("./AppPreferencesSection").then((module) => ({
+    default: module.AppPreferencesSection,
+  })),
+);
 const LazyAccessibilitySection = lazy(() =>
   import("./AccessibilitySection").then((module) => ({
     default: module.AccessibilitySection,
@@ -127,6 +132,7 @@ export function SettingsSectionContent({
       {section === "integrations" && <LazyAtlassianIntegrationSettingsPanel />}
       {section === "api-keys" && <LazyApiKeysSection />}
       {section === "external-mcp" && <LazyExternalMcpSettingsPanel />}
+      {section === "app-preferences" && <LazyAppPreferencesSection />}
       {section === "accessibility" && <LazyAccessibilitySection />}
     </Suspense>
   );
