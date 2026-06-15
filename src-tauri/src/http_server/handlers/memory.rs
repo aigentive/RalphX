@@ -202,6 +202,21 @@ pub async fn upsert_memories(
         "upsert_memories: inserted={}, skipped={}, failed={}",
         inserted, skipped, failed
     );
+    let _ = state
+        .app_state
+        .memory_event_repo
+        .create(MemoryEvent::new(
+            project_id,
+            "memory_capture_decision",
+            MemoryActorType::MemoryCapture,
+            json!({
+                "inserted": inserted,
+                "skipped": skipped,
+                "failed": failed,
+                "total": req.memories.len(),
+            }),
+        ))
+        .await;
 
     Ok(Json(UpsertMemoriesResponse {
         inserted,
@@ -458,3 +473,7 @@ pub async fn get_conversation_transcript(
         message_count,
     }))
 }
+
+#[cfg(test)]
+#[path = "memory_tests.rs"]
+mod memory_tests;
