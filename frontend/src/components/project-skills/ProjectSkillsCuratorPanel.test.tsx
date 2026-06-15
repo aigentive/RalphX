@@ -249,9 +249,9 @@ describe("ProjectSkillsCuratorPanel", () => {
   it("previews and applies project skill imports", async () => {
     renderPanel();
 
-    await screen.findByText("Import");
+    await screen.findByText("Import skill manifest");
     expect(
-      screen.getByText(/Preview is read-only; Apply stages only rows/i),
+      screen.getByText(/Apply adds valid rows to the Review Queue/i),
     ).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Project skill import manifest"), {
       target: {
@@ -273,7 +273,7 @@ describe("ProjectSkillsCuratorPanel", () => {
       },
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /preview import/i }));
+    fireEvent.click(screen.getByRole("button", { name: /preview manifest/i }));
     await waitFor(() => {
       expect(mockedProjectSkillsApi.previewImport).toHaveBeenCalledWith(
         expect.objectContaining({ projectId: "project-1" }),
@@ -281,7 +281,7 @@ describe("ProjectSkillsCuratorPanel", () => {
     });
     expect(await screen.findByText("1 eligible")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /apply import/i }));
+    fireEvent.click(screen.getByRole("button", { name: /add to review queue/i }));
     await waitFor(() => {
       expect(mockedProjectSkillsApi.applyImport).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -295,9 +295,9 @@ describe("ProjectSkillsCuratorPanel", () => {
   it("promotes memory entries through the curator panel", async () => {
     renderPanel();
 
-    await screen.findByText("Promote memory");
+    await screen.findByText("Create skill from memory");
     expect(
-      screen.getByText(/The memory stays unchanged/i),
+      screen.getByText(/rewrite the lesson as reusable agent procedure/i),
     ).toBeInTheDocument();
     expect(screen.getByText("Memory ID")).toBeInTheDocument();
     expect(screen.getByText("Compact guidance")).toBeInTheDocument();
@@ -319,7 +319,7 @@ describe("ProjectSkillsCuratorPanel", () => {
       target: { value: "Reduces review misses." },
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /^promote$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create draft skill/i }));
     await waitFor(() => {
       expect(mockedProjectSkillsApi.promoteMemory).toHaveBeenCalledWith({
         projectId: "project-1",
