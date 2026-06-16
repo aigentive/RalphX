@@ -7,9 +7,12 @@ use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ChatConversationId,
     IdeationAnalysisBaseRefKind, ProjectId,
 };
-use ralphx_lib::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
+use ralphx_lib::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentRunRepository, TaskOutcomeRepository,
+};
 use ralphx_lib::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
+    MemoryTaskOutcomeRepository,
 };
 
 fn needs_agent_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
@@ -50,9 +53,11 @@ async fn recovers_needs_agent_workspace_when_no_agent_run_is_active() {
         .await
         .expect("mark run failed");
 
+    let task_outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
     let recovered = recover_stale_agent_workspace_publish_repairs(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+        Arc::clone(&task_outcome_repo) as Arc<dyn TaskOutcomeRepository>,
     )
     .await
     .expect("recover stale repair");
@@ -91,9 +96,11 @@ async fn keeps_needs_agent_workspace_locked_while_agent_run_is_active() {
         .await
         .expect("seed active run");
 
+    let task_outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
     let recovered = recover_stale_publish_repair_for_workspace(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+        Arc::clone(&task_outcome_repo) as Arc<dyn TaskOutcomeRepository>,
         workspace,
     )
     .await

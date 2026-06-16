@@ -31,6 +31,7 @@ use crate::error::{AppError, AppResult};
 use crate::http_server::handlers::learned_skills_export::assert_project_id_scope;
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
 use crate::http_server::types::HttpError;
+use crate::application::project_skill_export_service::MAX_SKILL_DESCRIPTION_CHARS;
 use crate::infrastructure::tool_paths::{resolve_gh_cli_path, resolve_git_cli_path};
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
@@ -704,38 +705,39 @@ pub async fn stage_project_skill_from_pull_request(
         }));
     }
 
+    // Enrich from `gh pr view` (files, commits, reviews, labels, body) so the
+    // candidate encodes real triggers + scope; fall back to summary-only
+    // templating if detail is unavailable (graceful degradation).
+    let detail = read_github_pull_request_detail(&working_dir, pull_request.number)
+        .await
+        .unwrap_or(None);
+    let source = match detail {
+        Some(detail) => pr_skill_source_from_detail(detail),
+        None => pr_skill_source_from_summary(&pull_request),
+    };
+    let fields = build_pr_skill_fields(&source);
+
     let now = Utc::now();
-    let title = truncate_for_pr_skill_title(&pull_request.title, 86);
-    let evidence = github_pr_skill_evidence(&pull_request);
     let skill = ProjectSkill {
         id: ProjectSkillId::new(),
         project_id: project_id.clone(),
-        title: format!("Draft PR lesson: #{} {title}", pull_request.number),
+        title: fields.title,
         bucket: "execution".to_string(),
         stage: "execution".to_string(),
         status: ProjectSkillLifecycleStatus::Staged,
         pinned: false,
         archived: false,
-        scope_paths: Vec::new(),
-        compact_guidance: format!(
-            "Review PR #{} and rewrite this draft into one reusable project procedure before approval.",
-            pull_request.number
-        ),
-        body_markdown: format!(
-            "## Draft from GitHub PR metadata\n\nThis draft was created from bounded PR metadata only. It has not read the full diff or repository contents. Edit it into a concrete reusable procedure before approving it.\n\nPR evidence:\n\n```json\n{}\n```",
-            serde_json::to_string_pretty(&evidence).unwrap_or_else(|_| "{}".to_string())
-        ),
-        predicted_effect: Some(format!(
-            "Helps future agents reuse the reviewed procedure from PR #{} after a human converts the metadata into an accurate skill.",
-            pull_request.number
-        )),
+        scope_paths: fields.scope_paths,
+        compact_guidance: fields.compact_guidance,
+        body_markdown: fields.body_markdown,
+        predicted_effect: Some(fields.predicted_effect),
         provenance_json: serde_json::json!({
             "source": GITHUB_PR_DISTILL_SOURCE,
             "source_ref_kind": "pull_request",
             "source_ref_id": pull_request.number.to_string(),
             "pull_request_number": pull_request.number,
-            "draft_requires_human_edit": true,
-            "evidence": evidence,
+            "enriched_from_pr_detail": fields.enriched,
+            "evidence": fields.evidence,
         }),
         companion_of_skill_id: None,
         created_at: now,
@@ -850,10 +852,13 @@ async fn ingest_recent_github_pr_outcomes(
             _ => TaskOutcomeStatus::Eligible,
         };
         outcome.outcome_class = Some("github_pr_history".to_string());
+        // Redact the free-text PR title before it lands in evidence_json: this
+        // path feeds the distiller and can reach a committed SKILL.md, so it must
+        // be scrubbed just like the enriched single-PR path.
         outcome.evidence_json = serde_json::json!({
             "source": "gh_pr_list",
             "number": pull_request.number,
-            "title": pull_request.title,
+            "title": redact_pr_text(&pull_request.title),
             "state": pull_request.state,
             "url": pull_request.url,
             "merged_at": pull_request.merged_at,
@@ -990,32 +995,6 @@ async fn existing_project_skill_for_pull_request(
     }))
 }
 
-fn github_pr_skill_evidence(summary: &GithubPrSummary) -> serde_json::Value {
-    serde_json::json!({
-        "source": "gh_pr_list",
-        "number": summary.number,
-        "title": summary.title,
-        "state": summary.state,
-        "url": summary.url,
-        "merged_at": summary.merged_at,
-        "closed_at": summary.closed_at,
-        "updated_at": summary.updated_at,
-        "head_ref_name": summary.head_ref_name,
-        "base_ref_name": summary.base_ref_name,
-        "scan_limit": GITHUB_PR_CANDIDATE_MAX_LIMIT,
-        "full_diff_read": false,
-    })
-}
-
-fn truncate_for_pr_skill_title(value: &str, max_chars: usize) -> String {
-    let mut output = value.trim().to_string();
-    if output.chars().count() > max_chars {
-        output = output.chars().take(max_chars.saturating_sub(3)).collect();
-        output.push_str("...");
-    }
-    output
-}
-
 async fn read_recent_github_pull_requests(
     working_dir: &Path,
     limit: usize,
@@ -1062,6 +1041,428 @@ fn parse_github_pr_summaries(output: &str) -> AppResult<Vec<GithubPrSummary>> {
     pull_requests
         .retain(|pull_request| pull_request.number > 0 && !pull_request.title.trim().is_empty());
     Ok(pull_requests)
+}
+
+const MAX_PR_BODY_EXCERPT_CHARS: usize = 600;
+const MAX_PR_SCOPE_PATHS: usize = 8;
+const MAX_PR_WORKFLOW_COMMITS: usize = 8;
+const MAX_PR_SKILL_TITLE_CHARS: usize = 64;
+
+/// Structured `gh pr view --json` fields used to build a useful, reusable skill
+/// candidate. The raw diff is intentionally NOT fetched: structured metadata
+/// (files, commits, reviews, labels, body) gives enough signal for deterministic
+/// templating while avoiding the large-payload / secret-in-diff surface.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GithubPrDetail {
+    #[serde(default)]
+    number: i64,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    additions: i64,
+    #[serde(default)]
+    deletions: i64,
+    #[serde(default)]
+    base_ref_name: Option<String>,
+    #[serde(default)]
+    files: Vec<GithubPrFile>,
+    #[serde(default)]
+    commits: Vec<GithubPrCommit>,
+    #[serde(default)]
+    reviews: Vec<GithubPrReview>,
+    #[serde(default)]
+    labels: Vec<GithubPrLabel>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubPrFile {
+    #[serde(default)]
+    path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GithubPrCommit {
+    #[serde(default)]
+    message_headline: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubPrReview {
+    #[serde(default)]
+    state: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubPrLabel {
+    #[serde(default)]
+    name: String,
+}
+
+/// Read structured detail for one PR via `gh pr view <n> --json ...`.
+/// Returns `Ok(None)` when gh is unavailable/unauthenticated or the PR is not
+/// found, so staging degrades gracefully to summary-only templating.
+async fn read_github_pull_request_detail(
+    working_dir: &Path,
+    number: i64,
+) -> AppResult<Option<GithubPrDetail>> {
+    if number <= 0 {
+        return Ok(None);
+    }
+    let output = timeout(Duration::from_secs(15), async {
+        let child = Command::new(resolve_gh_cli_path())
+            .arg("pr")
+            .arg("view")
+            // `number` is a validated positive integer, never a raw string arg.
+            .arg(number.to_string())
+            .arg("--json")
+            .arg("number,body,state,url,additions,deletions,baseRefName,files,commits,reviews,labels")
+            .current_dir(working_dir)
+            .env("GH_NO_UPDATE_NOTIFIER", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| {
+                AppError::Infrastructure(format!("failed to start gh pr view: {error}"))
+            })?;
+        child.wait_with_output().await.map_err(|error| {
+            AppError::Infrastructure(format!("failed to read gh pr view output: {error}"))
+        })
+    })
+    .await
+    .map_err(|_| AppError::Infrastructure("timed out reading GitHub PR detail".to_string()))??;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let detail = serde_json::from_slice::<GithubPrDetail>(&output.stdout)
+        .map_err(|error| AppError::Infrastructure(format!("failed to parse gh pr view: {error}")))?;
+    Ok(Some(detail))
+}
+
+/// Mask common secret shapes before PR free-text is persisted to provenance JSON
+/// or rendered into an exported (committed) SKILL.md.
+fn redact_pr_text(text: &str) -> String {
+    use std::sync::OnceLock;
+    static TOKEN_PATTERNS: OnceLock<Vec<regex::Regex>> = OnceLock::new();
+    let patterns = TOKEN_PATTERNS.get_or_init(|| {
+        [
+            r"gh[pousr]_[A-Za-z0-9]{20,}",
+            r"github_pat_[A-Za-z0-9_]{20,}",
+            r"sk-(?:ant-)?[A-Za-z0-9_\-]{16,}",
+            r"rxk_(?:live|test)_[A-Za-z0-9]{8,}",
+            r"AKIA[0-9A-Z]{16}",
+            r"xox[baprs]-[A-Za-z0-9\-]{10,}",
+            r"AIza[0-9A-Za-z_\-]{35}",
+            r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+        ]
+        .iter()
+        .filter_map(|pattern| regex::Regex::new(pattern).ok())
+        .collect()
+    });
+    let mut output = text.to_string();
+    for pattern in patterns {
+        output = pattern.replace_all(&output, "[REDACTED]").into_owned();
+    }
+    static KV_PATTERN: OnceLock<regex::Regex> = OnceLock::new();
+    let kv = KV_PATTERN.get_or_init(|| {
+        // Value capture handles quoted strings ("hunter2 with spaces") fully, and
+        // otherwise masks the first unquoted token (so inline prose after a
+        // `KEY=value word word` is preserved).
+        regex::Regex::new(
+            r#"(?i)\b([A-Z0-9_]*(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key)[A-Z0-9_]*)\s*[:=]\s*(?:"[^"]*"|'[^']*'|\S+)"#,
+        )
+        .expect("valid secret key=value regex")
+    });
+    kv.replace_all(&output, "$1=[REDACTED]").into_owned()
+}
+
+/// Provider-neutral inputs for deterministic PR skill templating.
+struct PrSkillSource {
+    number: i64,
+    url: Option<String>,
+    state: Option<String>,
+    base_ref: Option<String>,
+    changed_paths: Vec<String>,
+    commit_headlines: Vec<String>,
+    review_states: Vec<String>,
+    labels: Vec<String>,
+    body_excerpt: Option<String>,
+    additions: i64,
+    deletions: i64,
+    enriched: bool,
+}
+
+struct PrSkillFields {
+    title: String,
+    compact_guidance: String,
+    body_markdown: String,
+    predicted_effect: String,
+    scope_paths: Vec<String>,
+    evidence: serde_json::Value,
+    enriched: bool,
+}
+
+fn pr_skill_source_from_detail(detail: GithubPrDetail) -> PrSkillSource {
+    let changed_paths = detail
+        .files
+        .into_iter()
+        .map(|file| file.path.trim().to_string())
+        .filter(|path| !path.is_empty())
+        .collect::<Vec<_>>();
+    let commit_headlines = detail
+        .commits
+        .into_iter()
+        .map(|commit| redact_pr_text(commit.message_headline.trim()))
+        .filter(|headline| !headline.is_empty())
+        .collect::<Vec<_>>();
+    let review_states = detail
+        .reviews
+        .into_iter()
+        .map(|review| review.state.trim().to_string())
+        .filter(|state| !state.is_empty())
+        .collect::<Vec<_>>();
+    let labels = detail
+        .labels
+        .into_iter()
+        // Label names are arbitrary user-controlled free text → redact like other PR text.
+        .map(|label| redact_pr_text(label.name.trim()))
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    let body_excerpt = {
+        let redacted = redact_pr_text(detail.body.trim());
+        if redacted.is_empty() {
+            None
+        } else {
+            Some(truncate_text(&redacted, MAX_PR_BODY_EXCERPT_CHARS))
+        }
+    };
+    PrSkillSource {
+        number: detail.number,
+        url: detail.url,
+        state: detail.state,
+        base_ref: detail.base_ref_name,
+        changed_paths,
+        commit_headlines,
+        review_states,
+        labels,
+        body_excerpt,
+        additions: detail.additions,
+        deletions: detail.deletions,
+        enriched: true,
+    }
+}
+
+fn pr_skill_source_from_summary(summary: &GithubPrSummary) -> PrSkillSource {
+    PrSkillSource {
+        number: summary.number,
+        url: summary.url.clone(),
+        state: summary.state.clone(),
+        base_ref: summary.base_ref_name.clone(),
+        changed_paths: Vec::new(),
+        commit_headlines: Vec::new(),
+        review_states: Vec::new(),
+        labels: Vec::new(),
+        body_excerpt: None,
+        additions: 0,
+        deletions: 0,
+        enriched: false,
+    }
+}
+
+/// Reduce a changed file path to a stable directory scope prefix (up to 3 dir
+/// segments), dropping the file name. Top-level files yield no scope.
+fn pr_scope_path(file: &str) -> Option<String> {
+    let parts: Vec<&str> = file
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    if parts.len() <= 1 {
+        return None;
+    }
+    let take = (parts.len() - 1).min(3);
+    Some(parts[..take].join("/"))
+}
+
+fn pr_scope_paths(changed_paths: &[String]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut paths = Vec::new();
+    for file in changed_paths {
+        if let Some(scope) = pr_scope_path(file) {
+            if seen.insert(scope.clone()) {
+                paths.push(scope);
+                if paths.len() >= MAX_PR_SCOPE_PATHS {
+                    break;
+                }
+            }
+        }
+    }
+    paths
+}
+
+fn pr_file_extensions(changed_paths: &[String]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut extensions = Vec::new();
+    for file in changed_paths {
+        if let Some(extension) = Path::new(file).extension().and_then(|value| value.to_str()) {
+            let dotted = format!(".{extension}");
+            if seen.insert(dotted.clone()) {
+                extensions.push(dotted);
+                if extensions.len() >= 4 {
+                    break;
+                }
+            }
+        }
+    }
+    extensions
+}
+
+fn pr_primary_area(scope_paths: &[String]) -> String {
+    scope_paths
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "the repository".to_string())
+}
+
+fn pr_review_summary(review_states: &[String]) -> String {
+    if review_states.is_empty() {
+        return "no recorded reviews".to_string();
+    }
+    let approved = review_states
+        .iter()
+        .filter(|state| state.eq_ignore_ascii_case("APPROVED"))
+        .count();
+    let changes = review_states
+        .iter()
+        .filter(|state| state.eq_ignore_ascii_case("CHANGES_REQUESTED"))
+        .count();
+    let mut parts = Vec::new();
+    if approved > 0 {
+        parts.push(format!("{approved} approving"));
+    }
+    if changes > 0 {
+        parts.push(format!("{changes} requesting changes"));
+    }
+    if parts.is_empty() {
+        format!("{} review(s)", review_states.len())
+    } else {
+        parts.join(", ")
+    }
+}
+
+/// Build deterministic, open-standard-aligned skill fields from PR signal:
+/// a gerund title, a third-person what+when description carrying concrete
+/// triggers, derived scope paths, and a progressive-disclosure body.
+fn build_pr_skill_fields(source: &PrSkillSource) -> PrSkillFields {
+    let scope_paths = pr_scope_paths(&source.changed_paths);
+    let extensions = pr_file_extensions(&source.changed_paths);
+    let area = pr_primary_area(&scope_paths);
+    let review_summary = pr_review_summary(&source.review_states);
+
+    let title = truncate_text(&format!("Reviewing {area} changes"), MAX_PR_SKILL_TITLE_CHARS);
+
+    let mut compact_guidance = String::from("Reuse the reviewed approach from this change set.");
+    if scope_paths.is_empty() {
+        compact_guidance.push_str(" Use when reviewing similar changes");
+    } else {
+        compact_guidance.push_str(&format!(" Use when working on {}", scope_paths.join(", ")));
+    }
+    if !extensions.is_empty() {
+        compact_guidance.push_str(&format!(" or editing {} files", extensions.join("/")));
+    }
+    if !source.labels.is_empty() {
+        compact_guidance.push_str(&format!(" ({} work)", source.labels.join(", ")));
+    }
+    compact_guidance.push('.');
+
+    let when = if scope_paths.is_empty() {
+        "similar changes".to_string()
+    } else {
+        scope_paths.join(", ")
+    };
+    let extension_clause = if extensions.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", extensions.join(", "))
+    };
+    let workflow = if source.commit_headlines.is_empty() {
+        "1. Review the change set and mirror its approach for the same kind of work.".to_string()
+    } else {
+        source
+            .commit_headlines
+            .iter()
+            .take(MAX_PR_WORKFLOW_COMMITS)
+            .enumerate()
+            .map(|(index, headline)| format!("{}. {headline}", index + 1))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let url_clause = source
+        .url
+        .as_deref()
+        .map(|url| format!(" ({url})"))
+        .unwrap_or_default();
+    let labels_line = if source.labels.is_empty() {
+        String::new()
+    } else {
+        format!("\nLabels: {}.", source.labels.join(", "))
+    };
+    let body_excerpt_block = source
+        .body_excerpt
+        .as_deref()
+        .filter(|excerpt| !excerpt.is_empty())
+        .map(|excerpt| format!("\n\nPR summary:\n\n{excerpt}"))
+        .unwrap_or_default();
+    let body_markdown = format!(
+        "## When to use\n\nWhen working on {when}{extension_clause}.\n\n## Workflow\n\n{workflow}\n\n## Verification\n\n- Re-run the project's lint and tests before approving.\n- Confirm the result matches the original review outcome ({review_summary}).\n\n<details>\n<summary>Provenance</summary>\n\nDistilled from GitHub PR #{number}{url_clause}. Changed {file_count} files (+{additions}/-{deletions}).{labels_line}{body_excerpt_block}\n\n</details>",
+        number = source.number,
+        file_count = source.changed_paths.len(),
+        additions = source.additions,
+        deletions = source.deletions,
+    );
+
+    let predicted_effect =
+        format!("Fewer repeated mistakes when changing {area} ({review_summary}).");
+
+    let evidence = serde_json::json!({
+        "source": "gh_pr_view",
+        "number": source.number,
+        "url": source.url,
+        "state": source.state,
+        "base_ref_name": source.base_ref,
+        "changed_paths": source.changed_paths.iter().take(50).collect::<Vec<_>>(),
+        "changed_file_count": source.changed_paths.len(),
+        "additions": source.additions,
+        "deletions": source.deletions,
+        "commit_headlines": source
+            .commit_headlines
+            .iter()
+            .take(MAX_PR_WORKFLOW_COMMITS)
+            .collect::<Vec<_>>(),
+        "review_states": source.review_states,
+        "labels": source.labels,
+        "body_excerpt": source.body_excerpt,
+        "full_diff_read": false,
+        "redaction_applied": true,
+        "enriched_from_pr_detail": source.enriched,
+    });
+
+    PrSkillFields {
+        title,
+        compact_guidance,
+        body_markdown,
+        predicted_effect,
+        scope_paths,
+        evidence,
+        enriched: source.enriched,
+    }
 }
 
 async fn read_recent_git_commits(
@@ -1399,7 +1800,7 @@ async fn scan_project_skill_source_root(
         }
         // The same validated path is reused after rejecting symlinks.
         // codeql[rust/path-injection]
-        let body_markdown = tokio::fs::read_to_string(&skill_file)
+        let raw_markdown = tokio::fs::read_to_string(&skill_file)
             .await
             .map_err(|error| {
                 AppError::Infrastructure(format!(
@@ -1407,13 +1808,47 @@ async fn scan_project_skill_source_root(
                     skill_file.display()
                 ))
             })?;
-        let title =
-            native_skill_title(&body_markdown).unwrap_or_else(|| humanize_skill_dir(&file_name));
-        let compact_guidance = native_skill_compact_guidance(&body_markdown).unwrap_or_else(|| {
-            format!(
-                "Use the `{}` project skill when its procedure applies.",
-                title
-            )
+        // Parse open-standard frontmatter symmetrically with the exporter so
+        // `description` and `paths` round-trip and YAML lines are never scraped
+        // into the body guidance.
+        let (frontmatter, body) = split_skill_frontmatter(&raw_markdown);
+        let title = native_skill_title(&body)
+            .or_else(|| {
+                frontmatter
+                    .as_ref()
+                    .and_then(|matter| matter.name.as_deref())
+                    .map(humanize_skill_dir)
+            })
+            .unwrap_or_else(|| humanize_skill_dir(&file_name));
+        // Strip the H1/Predicted-Effect wrapper so re-export does not duplicate them.
+        let (body_markdown, extracted_effect) = split_imported_skill_body(&body);
+        let compact_guidance = frontmatter
+            .as_ref()
+            .and_then(|matter| matter.description.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            // Same cap as the exporter so the description does not drift on round-trip.
+            .map(|value| truncate_text(value, MAX_SKILL_DESCRIPTION_CHARS))
+            .or_else(|| native_skill_compact_guidance(&body_markdown))
+            .unwrap_or_else(|| {
+                format!(
+                    "Use the `{}` project skill when its procedure applies.",
+                    title
+                )
+            });
+        let scope_paths = frontmatter
+            .as_ref()
+            .map(|matter| {
+                matter
+                    .paths
+                    .iter()
+                    .map(|path| path.trim().to_string())
+                    .filter(|path| !path.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let predicted_effect = extracted_effect.unwrap_or_else(|| {
+            "Makes an existing target-repository skill available for RalphX review, approval, and future injection.".to_string()
         });
         let relative_path = format!("{source_root}/{file_name}/SKILL.md");
         candidates.push(ProjectSkillImportCandidate {
@@ -1421,10 +1856,10 @@ async fn scan_project_skill_source_root(
             title,
             bucket: "execution".to_string(),
             stage: "execution".to_string(),
-            scope_paths: Vec::new(),
+            scope_paths,
             compact_guidance,
             body_markdown,
-            predicted_effect: "Makes an existing target-repository skill available for RalphX review, approval, and future injection.".to_string(),
+            predicted_effect,
             provenance_json: serde_json::json!({
                 "source": "target_project_skill_folder",
                 "relative_path": relative_path,
@@ -1589,6 +2024,83 @@ fn project_skill_source_sync_enabled(skill: &ProjectSkill) -> bool {
                 .and_then(serde_json::Value::as_bool)
         })
         .unwrap_or(false)
+}
+
+/// Open Agent Skills frontmatter fields RalphX reads back on import. Unknown
+/// keys (e.g. `metadata`, Claude-only fields) are ignored so any spec-compliant
+/// SKILL.md parses cleanly.
+#[derive(Debug, Default, serde::Deserialize)]
+struct ParsedSkillFrontmatter {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    paths: Vec<String>,
+}
+
+/// Split a leading `---`-fenced YAML frontmatter block from the markdown body.
+/// Returns the parsed frontmatter (when present and valid) and the body with the
+/// frontmatter removed, so body scraping never reads YAML values.
+fn split_skill_frontmatter(markdown: &str) -> (Option<ParsedSkillFrontmatter>, String) {
+    let normalized = markdown.strip_prefix('\u{feff}').unwrap_or(markdown);
+    let after_open = match normalized
+        .strip_prefix("---\n")
+        .or_else(|| normalized.strip_prefix("---\r\n"))
+    {
+        Some(rest) => rest,
+        None => return (None, markdown.to_string()),
+    };
+
+    let mut frontmatter_text = String::new();
+    let mut body_offset: Option<usize> = None;
+    let mut offset = 0usize;
+    for line in after_open.split_inclusive('\n') {
+        if line.trim_end_matches(['\n', '\r']) == "---" {
+            body_offset = Some(offset + line.len());
+            break;
+        }
+        frontmatter_text.push_str(line);
+        offset += line.len();
+    }
+
+    let Some(body_offset) = body_offset else {
+        // Opening fence with no closing fence: treat as plain markdown.
+        return (None, markdown.to_string());
+    };
+    let body = after_open[body_offset..]
+        .trim_start_matches(['\n', '\r'])
+        .to_string();
+    let parsed = serde_yaml::from_str::<ParsedSkillFrontmatter>(&frontmatter_text).ok();
+    (parsed, body)
+}
+
+/// Strip a leading `# <title>` H1 and a trailing `## Predicted Effect` section
+/// from an imported skill body, returning the procedure body and any extracted
+/// predicted effect. This keeps the round-trip idempotent: a RalphX-exported
+/// skill re-imports to the same procedure body the exporter will re-wrap, so the
+/// H1/Predicted-Effect sections are not duplicated on re-export.
+fn split_imported_skill_body(body: &str) -> (String, Option<String>) {
+    let (main, predicted_effect) = match body.split_once("\n## Predicted Effect") {
+        Some((before, after)) => {
+            let effect = after.trim_start_matches([':', ' ', '\n', '\r']).trim();
+            let effect =
+                (!effect.is_empty() && effect != "Not specified.").then(|| effect.to_string());
+            (before, effect)
+        }
+        None => (body, None),
+    };
+    let trimmed = main.trim_start();
+    let procedure = match trimmed.strip_prefix("# ") {
+        Some(after_hash) => after_hash
+            .split_once('\n')
+            .map(|(_, rest)| rest)
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        None => trimmed.trim().to_string(),
+    };
+    (procedure, predicted_effect)
 }
 
 fn native_skill_title(markdown: &str) -> Option<String> {
@@ -1948,6 +2460,207 @@ mod tests {
                 "source_sync_enabled": true
             }),
         }
+    }
+
+    #[test]
+    fn split_skill_frontmatter_parses_fields_and_strips_body() {
+        let markdown = "---\nname: foo-bar\ndescription: \"Does X. Use when Y.\"\npaths:\n  - \"src/a\"\n  - \"src/b\"\nmetadata:\n  generator: ralphx-learned-skill\n---\n\n# Title\n\nThis is a sufficiently long body line.\n";
+        let (frontmatter, body) = split_skill_frontmatter(markdown);
+        let frontmatter = frontmatter.expect("frontmatter parsed");
+        assert_eq!(frontmatter.name.as_deref(), Some("foo-bar"));
+        assert_eq!(frontmatter.description.as_deref(), Some("Does X. Use when Y."));
+        assert_eq!(frontmatter.paths, vec!["src/a".to_string(), "src/b".to_string()]);
+        assert!(body.starts_with("# Title"));
+        // Frontmatter values must NOT leak into the scraped body: the scraped
+        // guidance is the body line, never the frontmatter `description`.
+        assert!(!body.contains("description:"));
+        assert_eq!(
+            native_skill_compact_guidance(&body).as_deref(),
+            Some("This is a sufficiently long body line.")
+        );
+    }
+
+    #[test]
+    fn split_skill_frontmatter_returns_none_for_plain_markdown() {
+        let markdown = "# Title\n\nNo frontmatter here.\n";
+        let (frontmatter, body) = split_skill_frontmatter(markdown);
+        assert!(frontmatter.is_none());
+        assert_eq!(body, markdown);
+    }
+
+    #[tokio::test]
+    async fn scan_project_skill_source_root_round_trips_description_and_paths() {
+        let project_dir = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("temp project dir");
+        let skill_dir = project_dir.path().join(".claude/skills/reviewing-merge");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        // Exactly the open-standard shape the exporter writes.
+        let content = "---\nname: reviewing-merge-abc123\ndescription: \"Review merge-validation output before approving. Use when working on src-tauri/src.\"\npaths:\n  - \"src-tauri/src\"\n  - \"frontend/src\"\nmetadata:\n  generator: ralphx-learned-skill\n---\n\n# Reviewing Merge Validation Changes\n\n## When to use\n\nWhen touching merge validation code.\n\n## Predicted Effect\n\nFewer repeated validation failures.\n";
+        std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+
+        let candidates =
+            scan_project_skill_source_root(project_dir.path(), ".claude/skills", false)
+                .await
+                .expect("scan succeeds");
+
+        assert_eq!(candidates.len(), 1);
+        let candidate = &candidates[0];
+        // Title from the body H1, guidance from the frontmatter description.
+        assert_eq!(candidate.title, "Reviewing Merge Validation Changes");
+        assert!(candidate
+            .compact_guidance
+            .starts_with("Review merge-validation output before approving"));
+        // paths -> scope_paths round-trips.
+        assert_eq!(
+            candidate.scope_paths,
+            vec!["src-tauri/src".to_string(), "frontend/src".to_string()]
+        );
+        // Frontmatter is stripped from the stored body.
+        assert!(!candidate.body_markdown.contains("description:"));
+        assert!(candidate.body_markdown.contains("## When to use"));
+        // H1 + Predicted Effect are stripped (idempotent re-export); effect captured.
+        assert!(!candidate
+            .body_markdown
+            .contains("# Reviewing Merge Validation Changes"));
+        assert!(!candidate.body_markdown.contains("## Predicted Effect"));
+        assert_eq!(
+            candidate.predicted_effect,
+            "Fewer repeated validation failures."
+        );
+    }
+
+    #[test]
+    fn redact_pr_text_masks_secrets() {
+        let input = "Token ghp_abcdefghijklmnopqrstuvwxyz0123 and API_KEY=supersecretvalue123 plus normal text.";
+        let output = redact_pr_text(input);
+        assert!(!output.contains("ghp_abcdefghijklmnopqrstuvwxyz0123"));
+        assert!(!output.contains("supersecretvalue123"));
+        assert!(output.contains("[REDACTED]"));
+        assert!(output.contains("normal text"));
+
+        // Quoted multi-word secret values are masked in full (not just the first token).
+        let quoted = redact_pr_text("password = \"hunter2 with spaces\" trailing");
+        assert!(!quoted.contains("hunter2 with spaces"));
+        assert!(quoted.contains("[REDACTED]"));
+        assert!(quoted.contains("trailing"));
+    }
+
+    #[test]
+    fn split_imported_skill_body_strips_h1_and_predicted_effect() {
+        let body = "# Reviewing Merge Changes\n\n## When to use\n\nWhen touching merge code.\n\n## Predicted Effect\n\nFewer repeats.";
+        let (procedure, effect) = split_imported_skill_body(body);
+        assert!(procedure.starts_with("## When to use"));
+        assert!(!procedure.contains("# Reviewing Merge Changes"));
+        assert!(!procedure.contains("## Predicted Effect"));
+        assert_eq!(effect.as_deref(), Some("Fewer repeats."));
+    }
+
+    #[test]
+    fn build_pr_skill_fields_encodes_triggers_scope_and_workflow() {
+        let source = PrSkillSource {
+            number: 42,
+            url: Some("https://github.com/x/y/pull/42".to_string()),
+            state: Some("MERGED".to_string()),
+            base_ref: Some("main".to_string()),
+            changed_paths: vec![
+                "src-tauri/src/domain/services/merge.rs".to_string(),
+                "src-tauri/src/domain/services/validation.rs".to_string(),
+                "frontend/src/components/Merge.tsx".to_string(),
+            ],
+            commit_headlines: vec![
+                "Add merge guard".to_string(),
+                "Cover guard with tests".to_string(),
+            ],
+            review_states: vec!["APPROVED".to_string(), "CHANGES_REQUESTED".to_string()],
+            labels: vec!["backend".to_string()],
+            body_excerpt: Some("Adds a guard.".to_string()),
+            additions: 120,
+            deletions: 8,
+            enriched: true,
+        };
+
+        let fields = build_pr_skill_fields(&source);
+
+        // Gerund title within the open-standard length budget.
+        assert!(fields.title.chars().count() <= 64);
+        assert!(fields.title.starts_with("Reviewing "));
+        // Third-person what+when description carrying concrete triggers.
+        assert!(fields.compact_guidance.contains("Use when working on"));
+        assert!(fields.compact_guidance.contains("src-tauri/src/domain"));
+        assert!(
+            fields.compact_guidance.contains(".rs") || fields.compact_guidance.contains(".tsx")
+        );
+        // scope_paths derived from changed files (dir prefixes, deduped).
+        assert!(fields
+            .scope_paths
+            .contains(&"src-tauri/src/domain".to_string()));
+        assert!(fields
+            .scope_paths
+            .contains(&"frontend/src/components".to_string()));
+        // Progressive-disclosure body with workflow from commit headlines.
+        assert!(fields.body_markdown.contains("## When to use"));
+        assert!(fields.body_markdown.contains("## Workflow"));
+        assert!(fields.body_markdown.contains("## Verification"));
+        assert!(fields.body_markdown.contains("1. Add merge guard"));
+        assert!(fields.body_markdown.contains("PR #42"));
+        assert!(fields.enriched);
+    }
+
+    #[test]
+    fn build_pr_skill_fields_degrades_without_detail() {
+        let summary = GithubPrSummary {
+            number: 7,
+            title: "Fix bug".to_string(),
+            state: Some("MERGED".to_string()),
+            url: None,
+            merged_at: None,
+            closed_at: None,
+            updated_at: None,
+            head_ref_name: None,
+            base_ref_name: Some("main".to_string()),
+        };
+        let source = pr_skill_source_from_summary(&summary);
+        let fields = build_pr_skill_fields(&source);
+
+        assert!(!fields.enriched);
+        assert!(fields.scope_paths.is_empty());
+        assert!(fields
+            .compact_guidance
+            .contains("Use when reviewing similar changes"));
+        assert!(fields.body_markdown.contains("Review the change set"));
+    }
+
+    #[test]
+    fn pr_skill_source_from_detail_redacts_body_and_commits() {
+        let detail = GithubPrDetail {
+            number: 9,
+            body: "Set API_KEY=supersecretvalue123 in env.".to_string(),
+            state: Some("OPEN".to_string()),
+            url: None,
+            additions: 1,
+            deletions: 0,
+            base_ref_name: None,
+            files: vec![GithubPrFile {
+                path: "src/a.rs".to_string(),
+            }],
+            commits: vec![GithubPrCommit {
+                message_headline: "Use ghp_abcdefghijklmnopqrstuvwxyz0123".to_string(),
+            }],
+            reviews: vec![GithubPrReview {
+                state: "APPROVED".to_string(),
+            }],
+            labels: vec![GithubPrLabel {
+                name: "feature".to_string(),
+            }],
+        };
+
+        let source = pr_skill_source_from_detail(detail);
+
+        let excerpt = source.body_excerpt.as_deref().expect("body excerpt");
+        assert!(excerpt.contains("[REDACTED]"));
+        assert!(!excerpt.contains("supersecretvalue123"));
+        assert!(source.commit_headlines[0].contains("[REDACTED]"));
+        assert!(!source.commit_headlines[0].contains("ghp_abcdefghijklmnopqrstuvwxyz0123"));
     }
 
     #[test]

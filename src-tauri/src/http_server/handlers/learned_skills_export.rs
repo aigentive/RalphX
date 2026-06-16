@@ -233,11 +233,17 @@ mod tests {
         .unwrap()
         .0;
 
-        assert_eq!(response.count, 1);
-        assert!(response.files[0]
-            .relative_path
-            .starts_with(".claude/skills/"));
-        assert!(response.files[0].will_write);
+        // One skill exported into both provider roots (.claude/skills + .agents/skills).
+        assert_eq!(response.count, 2);
+        assert!(response
+            .files
+            .iter()
+            .any(|file| file.relative_path.starts_with(".claude/skills/")));
+        assert!(response
+            .files
+            .iter()
+            .any(|file| file.relative_path.starts_with(".agents/skills/")));
+        assert!(response.files.iter().all(|file| file.will_write));
     }
 
     #[tokio::test]

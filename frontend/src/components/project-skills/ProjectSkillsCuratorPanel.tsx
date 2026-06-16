@@ -56,6 +56,9 @@ interface ProjectSkillsCuratorPanelProps {
   className?: string;
 }
 
+const EYEBROW_CLASS =
+  "text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]";
+
 const stagedSkillsKey = (projectId: string) =>
   ["project-skills", projectId, "staged"] as const;
 
@@ -400,74 +403,78 @@ export function ProjectSkillsCuratorPanel({
           icon={ClipboardList}
           label="Review queue"
           value={stagedCount}
-          detail={stagedCount === 1 ? "candidate waiting" : "candidates waiting"}
+          detail="awaiting approval"
         />
         <SkillMetricTile
           icon={ShieldCheck}
           label="Approved"
           value={approvedCount}
-          detail={approvedCount === 1 ? "skill available" : "skills available"}
+          detail="ready for agents"
         />
         <SkillMetricTile
           icon={Sparkles}
           label="Report cards"
           value={reportCardCount}
-          detail="descriptive usage evidence"
+          detail="usage evidence"
         />
         <SkillMetricTile
           icon={FileDown}
           label="Export"
-          value={exportEnabled ? "On" : "Off"}
-          detail={exportEnabled ? "review branch required" : "explicit opt-in"}
-        />
-      </div>
-
-      <div className="flex flex-wrap items-center justify-start gap-2 sm:justify-end">
-        <CandidateDiscoveryDialog
-          disabled={isBusy}
-          open={candidateDialogOpen}
-          pending={distillMutation.isPending}
-          result={candidateResult}
-          error={distillMutation.error}
-          sourceMode={candidateSourceMode}
-          onSourceModeChange={setCandidateSourceMode}
-          onOpenChange={setCandidateDialogOpen}
-          pullRequestCandidates={pullRequestCandidates}
-          pullRequestPending={listPullRequestsMutation.isPending}
-          pullRequestError={
-            listPullRequestsMutation.error ?? stagePullRequestMutation.error
-          }
-          pullRequestStagePending={stagePullRequestMutation.isPending}
-          pullRequestStageResult={pullRequestStageResult}
-          onFindCandidates={() => distillMutation.mutate()}
-          onLoadPullRequests={() => listPullRequestsMutation.mutate()}
-          onStagePullRequest={(number) => stagePullRequestMutation.mutate(number)}
+          status={exportEnabled ? "on" : "off"}
+          value={exportEnabled ? "Enabled" : "Off"}
+          detail={exportEnabled ? "review branch" : "opt-in"}
         />
       </div>
 
       <Tabs defaultValue="review" className="grid gap-4">
-        <TabsList className="h-auto flex-wrap justify-start rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-1">
-          <TabsTrigger value="review" className="text-xs">
-            Review queue
-          </TabsTrigger>
-          <TabsTrigger value="approved" className="text-xs">
-            Approved
-          </TabsTrigger>
-          <TabsTrigger value="reports" className="text-xs">
-            Reports
-          </TabsTrigger>
-          <TabsTrigger value="advanced" className="text-xs">
-            Advanced
-          </TabsTrigger>
-        </TabsList>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <TabsList className="h-auto flex-wrap justify-start rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-1">
+            <TabsTrigger value="review" className="text-xs">
+              Review queue
+              <TabCount count={stagedCount} />
+            </TabsTrigger>
+            <TabsTrigger value="approved" className="text-xs">
+              Approved
+              <TabCount count={approvedCount} />
+            </TabsTrigger>
+            <TabsTrigger value="reports" className="text-xs">
+              Reports
+              <TabCount count={reportCardCount} />
+            </TabsTrigger>
+            <TabsTrigger value="advanced" className="text-xs">
+              Advanced
+            </TabsTrigger>
+          </TabsList>
+          <CandidateDiscoveryDialog
+            disabled={isBusy}
+            open={candidateDialogOpen}
+            pending={distillMutation.isPending}
+            result={candidateResult}
+            error={distillMutation.error}
+            sourceMode={candidateSourceMode}
+            onSourceModeChange={setCandidateSourceMode}
+            onOpenChange={setCandidateDialogOpen}
+            pullRequestCandidates={pullRequestCandidates}
+            pullRequestPending={listPullRequestsMutation.isPending}
+            pullRequestError={
+              listPullRequestsMutation.error ?? stagePullRequestMutation.error
+            }
+            pullRequestStagePending={stagePullRequestMutation.isPending}
+            pullRequestStageResult={pullRequestStageResult}
+            onFindCandidates={() => distillMutation.mutate()}
+            onLoadPullRequests={() => listPullRequestsMutation.mutate()}
+            onStagePullRequest={(number) =>
+              stagePullRequestMutation.mutate(number)
+            }
+          />
+        </div>
 
         <TabsContent value="review" className="mt-0 grid gap-4">
           {stagedQuery.isLoading ? (
             <Skeleton className="h-28 w-full" />
           ) : (
             <SkillSection
-              title="Review Queue"
-              description="Staged candidates must be approved before agents can use them."
+              hint="Approve a skill before agents can reuse it."
               emptyMessage="No staged learned skills."
               skills={stagedSkills}
               renderSkill={(skill) => (
@@ -500,8 +507,8 @@ export function ProjectSkillsCuratorPanel({
                 style={{ color: "var(--notice-info-icon)" }}
               />
               <p>
-                Approved skills are available to agents for this project.
-                Export is optional and opens in a separate review dialog.
+                Approved skills are available to agents in this project. Export
+                is optional.
               </p>
             </div>
             <ProjectSkillsExportDialog
@@ -520,8 +527,6 @@ export function ProjectSkillsCuratorPanel({
             <Skeleton className="h-28 w-full" />
           ) : (
             <SkillSection
-              title="Approved Skills"
-              description="Approved skills are eligible for future injection and export."
               emptyMessage="No approved learned skills."
               skills={approvedSkills}
               renderSkill={(skill) => (
@@ -548,9 +553,8 @@ export function ProjectSkillsCuratorPanel({
 
         <TabsContent value="advanced" className="mt-0 grid gap-4">
           <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-            Advanced intake is for controlled imports and one-off memory
-            promotions. New rows still land in the Review Queue and require
-            approval before agents can use them.
+            Imports and memory promotions land in the Review queue and still
+            need approval before agents can use them.
           </div>
           <ImportPromotionPanel
             disabled={isBusy}
@@ -655,7 +659,7 @@ function CandidateDiscoveryDialog({
         </DialogHeader>
         <div className="grid gap-4 px-6 py-5">
           <div className="grid gap-2">
-            <div className="text-xs font-medium uppercase text-[var(--text-tertiary)]">
+            <div className={EYEBROW_CLASS}>
               Candidate source
             </div>
             <div className="flex flex-wrap gap-2">
@@ -711,7 +715,7 @@ function CandidateDiscoveryDialog({
                     <div className="truncate text-sm font-medium text-[var(--text-primary)]">
                       #{pullRequest.number} {pullRequest.title}
                     </div>
-                    <div className="mt-1 flex flex-wrap gap-2 text-xs text-[var(--text-tertiary)]">
+                    <div className="mt-1 flex flex-wrap gap-2 text-xs text-[var(--text-muted)]">
                       {pullRequest.state ? <span>{pullRequest.state}</span> : null}
                       {pullRequest.baseRefName ? (
                         <span>base {pullRequest.baseRefName}</span>
@@ -737,7 +741,7 @@ function CandidateDiscoveryDialog({
           {sourceMode === "prs" &&
           !pullRequestPending &&
           pullRequestCandidates.length === 0 ? (
-            <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs text-[var(--text-tertiary)]">
+            <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs text-[var(--text-muted)]">
               Load PRs to choose one pull request. RalphX uses PR metadata only;
               it does not read the full diff in this step.
             </div>
@@ -818,7 +822,7 @@ function ProjectSkillsExportDialog({
         </DialogHeader>
         <div className="grid gap-4 px-6 py-5">
           {approvedCount === 0 ? (
-            <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs text-[var(--text-tertiary)]">
+            <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs text-[var(--text-muted)]">
               Approve or pin at least one skill before export controls can
               write files.
             </div>
@@ -976,7 +980,7 @@ function ProjectSkillEditDialog({
           </label>
           {skill.sourcePath ? (
             <div className="grid gap-2">
-              <div className="text-xs font-medium uppercase text-[var(--text-tertiary)]">
+              <div className={EYEBROW_CLASS}>
                 Source sync
               </div>
               <div className="flex flex-wrap gap-2">
@@ -1057,7 +1061,7 @@ function ProjectSkillCategorySelect({
       aria-label={ariaLabel}
       value={value}
       onChange={(event) => onChange(event.target.value as ProjectSkillCategory)}
-      className="h-9 w-full rounded-md border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-1 text-sm text-[var(--text-primary)] shadow-sm outline-none transition-colors focus:border-[var(--border-focus)] focus:ring-1 focus:ring-[var(--border-focus)] disabled:cursor-not-allowed disabled:opacity-50"
+      className="h-9 w-full rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-1 text-sm text-[var(--text-primary)] shadow-sm outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)] disabled:cursor-not-allowed disabled:opacity-50"
     >
       {PROJECT_SKILL_CATEGORY_OPTIONS.map((option) => (
         <option key={option.value} value={option.value}>
@@ -1068,32 +1072,57 @@ function ProjectSkillCategorySelect({
   );
 }
 
+function TabCount({ count }: { count: number }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-[4px] bg-[var(--bg-base)] px-1 text-[0.625rem] font-semibold leading-none text-[var(--text-muted)]"
+    >
+      {count}
+    </span>
+  );
+}
+
 function SkillMetricTile({
   icon: Icon,
   label,
   value,
   detail,
+  status,
 }: {
   icon: typeof ClipboardList;
   label: string;
   value: number | string;
   detail: string;
+  status?: "on" | "off";
 }) {
   return (
     <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-xs font-medium uppercase text-[var(--text-tertiary)]">
-            {label}
-          </div>
-          <div className="mt-2 text-2xl font-semibold leading-none text-[var(--text-primary)]">
-            {value}
-          </div>
-          <div className="mt-2 text-xs text-[var(--text-secondary)]">
-            {detail}
-          </div>
+          <div className={EYEBROW_CLASS}>{label}</div>
+          {status ? (
+            <div className="mt-2 flex items-center gap-1.5 text-sm font-semibold leading-none text-[var(--text-primary)]">
+              <span
+                aria-hidden="true"
+                className="h-2 w-2 rounded-full"
+                style={{
+                  backgroundColor:
+                    status === "on"
+                      ? "var(--status-success)"
+                      : "var(--text-subtle)",
+                }}
+              />
+              {value}
+            </div>
+          ) : (
+            <div className="mt-2 text-2xl font-semibold leading-none text-[var(--text-primary)]">
+              {value}
+            </div>
+          )}
+          <div className="mt-2 text-xs text-[var(--text-muted)]">{detail}</div>
         </div>
-        <div className="grid h-8 w-8 place-items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] text-[var(--text-secondary)]">
+        <div className="grid h-8 w-8 place-items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] text-[var(--text-muted)]">
           <Icon className="h-4 w-4" />
         </div>
       </div>
@@ -1169,7 +1198,7 @@ function ImportPromotionPanel({
     <div className="grid gap-3 md:grid-cols-2">
       <Card className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
         <div className="grid gap-3">
-          <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
+          <h3 className={EYEBROW_CLASS}>
             Import draft skills
           </h3>
           <p className="text-xs text-[var(--text-secondary)]">
@@ -1300,7 +1329,7 @@ function ImportPromotionPanel({
 
       <Card className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
         <div className="grid gap-3">
-          <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
+          <h3 className={EYEBROW_CLASS}>
             Draft from memory
           </h3>
           <p className="text-xs text-[var(--text-secondary)]">
@@ -1399,7 +1428,7 @@ function ReportCardSection({
 }) {
   return (
     <div className="grid gap-2">
-      <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
+      <h3 className={EYEBROW_CLASS}>
         Report cards
       </h3>
       {loading ? (
@@ -1454,7 +1483,7 @@ function ProjectSkillReportCardRow({
             <span>{card.failedOutcomeCount} failed</span>
           </div>
         </div>
-        <div className="text-right text-xs text-[var(--text-tertiary)]">
+        <div className="text-right text-xs text-[var(--text-muted)]">
           {card.lastUsedAt ? `${card.ageDays}d since use` : "not used"}
         </div>
       </div>
@@ -1463,35 +1492,21 @@ function ProjectSkillReportCardRow({
 }
 
 interface SkillSectionProps {
-  title: string;
-  description: string;
+  hint?: string;
   emptyMessage: string;
   skills: ProjectSkill[];
   renderSkill: (skill: ProjectSkill) => ReactNode;
 }
 
 function SkillSection({
-  title,
-  description,
+  hint,
   emptyMessage,
   skills,
   renderSkill,
 }: SkillSectionProps) {
   return (
     <div className="grid gap-2">
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <h3 className="text-xs font-semibold uppercase text-[var(--text-tertiary)]">
-            {title}
-          </h3>
-          <p className="mt-1 text-xs text-[var(--text-secondary)]">
-            {description}
-          </p>
-        </div>
-        <Badge variant="outline" className="text-xs">
-          {skills.length}
-        </Badge>
-      </div>
+      {hint ? <p className="text-xs text-[var(--text-muted)]">{hint}</p> : null}
       {skills.length === 0 ? (
         <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-6 text-sm text-[var(--text-secondary)]">
           {emptyMessage}
@@ -1623,7 +1638,7 @@ function ProjectSkillCandidateCard({
             {skill.compactGuidance}
           </p>
           {skill.predictedEffect ? (
-            <p className="mt-2 line-clamp-2 text-xs text-[var(--text-tertiary)]">
+            <p className="mt-2 line-clamp-2 text-xs text-[var(--text-muted)]">
               {skill.predictedEffect}
             </p>
           ) : null}
@@ -1672,7 +1687,7 @@ function ProjectSkillCandidateCard({
 
 function ProjectSkillSourceLine({ skill }: { skill: ProjectSkill }) {
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--text-tertiary)]">
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
       <Badge variant="outline">
         {skill.sourceSyncEnabled ? "tracks source" : "snapshot"}
       </Badge>

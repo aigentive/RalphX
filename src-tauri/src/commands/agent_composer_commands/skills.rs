@@ -71,6 +71,9 @@ pub async fn list_agent_composer_skills(
         .await
         .map_err(|error| error.to_string())?
         .into_iter()
+        // Path-scoped learned skills auto-activate (Claude `paths` frontmatter /
+        // RalphX path-based injection), so they are intentionally excluded from
+        // the manual composer picker; only unscoped skills are manually selectable.
         .filter(|skill| skill.scope_paths.is_empty())
         .map(project_skill_to_composer_skill)
         .collect::<Vec<_>>();
@@ -103,19 +106,22 @@ pub async fn list_agent_composer_skills(
 fn project_skill_to_composer_skill(skill: ProjectSkill) -> AgentComposerSkillResponse {
     let id = skill.id.as_str().to_string();
     let name = composer_token_from_project_skill(&skill);
-    let description = skill
-        .predicted_effect
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-        .cloned()
-        .or_else(|| {
-            let compact = skill.compact_guidance.trim();
-            if compact.is_empty() {
-                None
-            } else {
-                Some(compact.to_string())
-            }
-        });
+    // Prefer the open-standard `compact_guidance` (third-person what+when) as the
+    // surfaced description so the composer matches the exported SKILL.md, falling
+    // back to predicted_effect only when guidance is empty.
+    let description = {
+        let compact = skill.compact_guidance.trim();
+        if compact.is_empty() {
+            skill
+                .predicted_effect
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        } else {
+            Some(compact.to_string())
+        }
+    };
     AgentComposerSkillResponse {
         id: format!("learned:{id}"),
         name,
@@ -873,9 +879,11 @@ mod tests {
         assert_eq!(response.display_name.as_deref(), Some("Review Error Paths"));
         assert_eq!(response.invocation_kind, "project-skill-directive");
         assert_eq!(response.invocation_value, "skill-123");
+        // Composer surfaces the open-standard compact guidance (what+when),
+        // matching the exported SKILL.md description.
         assert_eq!(
             response.description.as_deref(),
-            Some("Reduces missed rejection paths.")
+            Some("Check fail-closed paths.")
         );
     }
 

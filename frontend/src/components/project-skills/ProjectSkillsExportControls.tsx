@@ -52,10 +52,11 @@ export function ProjectSkillsExportControls({
           Export
         </Button>
       </div>
-      <p className="max-w-[42rem] text-xs text-[var(--text-tertiary)]">
+      <p className="max-w-[42rem] text-xs text-[var(--text-muted)]">
         Export writes approved or pinned skills to the target repo's
-        .claude/skills directory. Apply requires a clean git worktree on a
-        named review branch, not main/master/trunk.
+        .claude/skills (Claude) and .agents/skills (Codex) directories so either
+        provider can reuse them. Apply requires a clean git worktree on a named
+        review branch, not main/master/trunk.
       </p>
     </div>
   );
@@ -82,7 +83,7 @@ export function ProjectSkillsExportSummary({
               className="flex min-w-0 items-center justify-between gap-3"
             >
               <span className="truncate font-mono">{file.relativePath}</span>
-              <span className="shrink-0 text-[var(--text-tertiary)]">
+              <span className="shrink-0 text-[var(--text-muted)]">
                 {file.willWrite ? "will write" : "unchanged"}
               </span>
             </li>
@@ -92,7 +93,7 @@ export function ProjectSkillsExportSummary({
         <div>No approved or pinned skills are eligible for export yet.</div>
       )}
       {preview.files.length > 5 ? (
-        <div className="text-[var(--text-tertiary)]">
+        <div className="text-[var(--text-muted)]">
           {preview.files.length - 5} more file
           {preview.files.length - 5 === 1 ? "" : "s"} hidden.
         </div>

@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
@@ -11,7 +10,16 @@ use crate::domain::repositories::{
     ProjectSkillSettingsRepository,
 };
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use crate::utils::path_safety::validate_absolute_non_root_path;
+
+/// Maximum length of a SKILL.md `description` field (shared by the exporter and
+/// the importer so the write/read caps cannot drift).
+///
+/// The open Agent Skills standard caps `description` at 1024 chars, and both
+/// Claude Code and Codex truncate the startup skill listing, so the description
+/// must stay short and front-loaded.
+pub(crate) const MAX_SKILL_DESCRIPTION_CHARS: usize = 1024;
 
 pub struct ProjectSkillExportService {
     project_repo: Arc<dyn ProjectRepository>,
@@ -91,9 +99,18 @@ impl ProjectSkillExportService {
             .get_by_id(project_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("project {} not found", project_id)))?;
-        let target = ExportTarget::resolve(&project.working_directory)?;
+        let project_root = ExportTarget::canonical_project_root(&project.working_directory)?;
+        // Resolve + validate every provider root up front (symlink/containment
+        // checks) before the git guard or any write.
+        let targets = SkillExportRoot::defaults()
+            .into_iter()
+            .map(|export_root| {
+                ExportTarget::for_root(&project_root, export_root).map(|target| (export_root, target))
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+        // Branch/clean-worktree guard runs ONCE per apply, before any root write.
         if apply {
-            target.validate_review_branch()?;
+            validate_review_branch(&project_root).await?;
         }
         let skills = self
             .project_skill_repo
@@ -109,55 +126,95 @@ impl ProjectSkillExportService {
             .filter(is_export_eligible)
             .collect::<Vec<_>>();
 
-        if apply {
-            target.prepare_root()?;
-        }
-
-        let mut files = Vec::with_capacity(skills.len());
-        for skill in skills {
-            let content = render_skill_markdown(&skill);
-            let relative_path = export_relative_path(&skill);
-            let absolute_path = target.file_path(&relative_path)?;
-            let will_write = match tokio::fs::read_to_string(&absolute_path).await {
-                Ok(existing) => existing != content,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-                Err(error) => {
-                    return Err(AppError::Infrastructure(format!(
-                        "Failed to read exported project skill {}: {error}",
-                        absolute_path.display()
-                    )));
-                }
-            };
-
-            if apply && will_write {
-                target.prepare_skill_file(&absolute_path)?;
-                // target and all path components are validated by ExportTarget.
-                // codeql[rust/path-injection]
-                tokio::fs::write(&absolute_path, content)
-                    .await
-                    .map_err(|error| {
-                        AppError::Infrastructure(format!(
-                            "Failed to write exported project skill {}: {error}",
-                            absolute_path.display()
-                        ))
-                    })?;
+        // Write the same canonical SKILL.md into every default provider root so an
+        // approved skill is immediately reusable by Claude Code and Codex.
+        let mut files = Vec::with_capacity(skills.len() * targets.len());
+        for (export_root, target) in &targets {
+            if apply {
+                target.prepare_root()?;
             }
 
-            files.push(ProjectSkillExportFile {
-                project_skill_id: skill.id.as_str().to_string(),
-                title: skill.title,
-                relative_path: relative_path.to_string_lossy().replace('\\', "/"),
-                pinned: skill.pinned,
-                status: skill.status,
-                will_write,
-            });
+            for skill in &skills {
+                let content = render_skill_markdown(skill);
+                let relative_path = export_relative_path(skill, *export_root);
+                let absolute_path = target.file_path(&relative_path)?;
+                let will_write = match tokio::fs::read_to_string(&absolute_path).await {
+                    Ok(existing) => existing != content,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                    Err(error) => {
+                        return Err(AppError::Infrastructure(format!(
+                            "Failed to read exported project skill {}: {error}",
+                            absolute_path.display()
+                        )));
+                    }
+                };
+
+                if apply && will_write {
+                    target.prepare_skill_file(&absolute_path)?;
+                    // target and all path components are validated by ExportTarget.
+                    // codeql[rust/path-injection]
+                    tokio::fs::write(&absolute_path, content)
+                        .await
+                        .map_err(|error| {
+                            AppError::Infrastructure(format!(
+                                "Failed to write exported project skill {}: {error}",
+                                absolute_path.display()
+                            ))
+                        })?;
+                }
+
+                files.push(ProjectSkillExportFile {
+                    project_skill_id: skill.id.as_str().to_string(),
+                    title: skill.title.clone(),
+                    relative_path: relative_path.to_string_lossy().replace('\\', "/"),
+                    pinned: skill.pinned,
+                    status: skill.status,
+                    will_write,
+                });
+            }
         }
 
         Ok(ProjectSkillExportPreview {
             project_id: project_id.clone(),
-            target_root: target.root,
+            target_root: project_root,
             files,
         })
+    }
+}
+
+/// Cross-provider skill export roots. A fixed enum → literal path mapping keeps
+/// untrusted strings out of filesystem sinks (CodeQL path-safety) and is keyed
+/// by provider so one canonical SKILL.md is reusable by both Claude Code and
+/// Codex.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillExportRoot {
+    /// Claude Code reads project skills from `.claude/skills`.
+    Claude,
+    /// Codex reads project skills from `.agents/skills` (NOT `.codex/skills`).
+    /// Verified against RalphX's own Codex discovery: `codex_skill_roots()` in
+    /// `commands/agent_composer_commands/skills.rs` joins `CODEX_AGENTS_DIR_NAME`
+    /// (`.agents`) + `skills`. Both roots here are also accepted by the importer's
+    /// `is_supported_project_skill_source_root`, so write and read targets agree.
+    Codex,
+}
+
+impl SkillExportRoot {
+    /// Roots written by default so an approved skill is reusable by either provider.
+    fn defaults() -> [SkillExportRoot; 2] {
+        [SkillExportRoot::Claude, SkillExportRoot::Codex]
+    }
+
+    /// Fixed (top-level dir, `skills`) components for this root.
+    fn components(self) -> (&'static str, &'static str) {
+        match self {
+            SkillExportRoot::Claude => (".claude", "skills"),
+            SkillExportRoot::Codex => (".agents", "skills"),
+        }
+    }
+
+    fn relative_prefix(self) -> PathBuf {
+        let (top, skills) = self.components();
+        PathBuf::from(top).join(skills)
     }
 }
 
@@ -167,7 +224,8 @@ struct ExportTarget {
 }
 
 impl ExportTarget {
-    fn resolve(project_root: &str) -> AppResult<Self> {
+    /// Canonicalize and validate the project working directory once per export.
+    fn canonical_project_root(project_root: &str) -> AppResult<PathBuf> {
         let project_root =
             validate_absolute_non_root_path(Path::new(project_root), "project skill export root")?;
         let project_root = std::fs::canonicalize(&project_root).map_err(|error| {
@@ -182,22 +240,26 @@ impl ExportTarget {
                 project_root.display()
             )));
         }
+        Ok(project_root)
+    }
 
-        let dot_claude = project_root.join(".claude");
-        reject_symlink(&dot_claude, "project skill export .claude directory")?;
-        let root = dot_claude.join("skills");
+    /// Resolve the skills directory for a specific provider root under an
+    /// already-canonicalized project root.
+    fn for_root(project_root: &Path, export_root: SkillExportRoot) -> AppResult<Self> {
+        let (top, skills) = export_root.components();
+        let top_dir = project_root.join(top);
+        reject_symlink(&top_dir, "project skill export provider directory")?;
+        let root = top_dir.join(skills);
         reject_symlink(&root, "project skill export skills directory")?;
-        assert_child_path(
-            &project_root,
-            &root,
-            "project skill export skills directory",
-        )?;
-
-        Ok(Self { project_root, root })
+        assert_child_path(project_root, &root, "project skill export skills directory")?;
+        Ok(Self {
+            project_root: project_root.to_path_buf(),
+            root,
+        })
     }
 
     fn prepare_root(&self) -> AppResult<()> {
-        // Fixed `.claude/skills` child under a canonicalized project root.
+        // Fixed provider `skills` child under a canonicalized project root.
         // codeql[rust/path-injection]
         std::fs::create_dir_all(&self.root).map_err(|error| {
             AppError::Infrastructure(format!(
@@ -211,80 +273,6 @@ impl ExportTarget {
             &self.root,
             "project skill export skills directory",
         )
-    }
-
-    fn validate_review_branch(&self) -> AppResult<()> {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(&self.project_root)
-            .arg("rev-parse")
-            .arg("--show-toplevel")
-            .output()
-            .map_err(|error| {
-                AppError::Infrastructure(format!(
-                    "Failed to inspect project skill export git repository {}: {error}",
-                    self.project_root.display()
-                ))
-            })?;
-        if !output.status.success() {
-            return Err(AppError::Validation(
-                "project skill export apply requires a git repository review branch".to_string(),
-            ));
-        }
-
-        let branch_output = Command::new("git")
-            .arg("-C")
-            .arg(&self.project_root)
-            .arg("symbolic-ref")
-            .arg("--short")
-            .arg("HEAD")
-            .output()
-            .map_err(|error| {
-                AppError::Infrastructure(format!(
-                    "Failed to inspect project skill export git branch {}: {error}",
-                    self.project_root.display()
-                ))
-            })?;
-        if !branch_output.status.success() {
-            return Err(AppError::Validation(
-                "project skill export apply requires a named review branch".to_string(),
-            ));
-        }
-        let branch = String::from_utf8_lossy(&branch_output.stdout)
-            .trim()
-            .to_string();
-        if matches!(branch.as_str(), "main" | "master" | "trunk") {
-            return Err(AppError::Validation(format!(
-                "project skill export apply refuses to write directly on protected branch {branch}; create a review branch first"
-            )));
-        }
-
-        let status_output = Command::new("git")
-            .arg("-C")
-            .arg(&self.project_root)
-            .arg("status")
-            .arg("--porcelain")
-            .arg("--untracked-files=all")
-            .output()
-            .map_err(|error| {
-                AppError::Infrastructure(format!(
-                    "Failed to inspect project skill export worktree status {}: {error}",
-                    self.project_root.display()
-                ))
-            })?;
-        if !status_output.status.success() {
-            return Err(AppError::Validation(
-                "project skill export apply could not inspect git worktree status".to_string(),
-            ));
-        }
-        if !status_output.stdout.is_empty() {
-            return Err(AppError::Validation(
-                "project skill export apply requires a clean review branch before writing"
-                    .to_string(),
-            ));
-        }
-
-        Ok(())
     }
 
     fn file_path(&self, relative_path: &Path) -> AppResult<PathBuf> {
@@ -316,13 +304,81 @@ impl ExportTarget {
     }
 }
 
+/// Run a `git -C <project_root> <args...>` command through the shared CLI
+/// resolver so it works under the stripped PATH of a Finder/Homebrew launch.
+async fn run_export_git(
+    project_root: &Path,
+    args: &[&str],
+    context: &str,
+) -> AppResult<std::process::Output> {
+    tokio::process::Command::new(resolve_git_cli_path())
+        .arg("-C")
+        .arg(project_root)
+        .args(args)
+        .output()
+        .await
+        .map_err(|error| {
+            AppError::Infrastructure(format!(
+                "Failed to inspect project skill export {context} {}: {error}",
+                project_root.display()
+            ))
+        })
+}
+
+/// Require a clean, named, non-protected review branch before writing exports.
+/// Runs once per apply, independent of how many provider roots are written.
+async fn validate_review_branch(project_root: &Path) -> AppResult<()> {
+    let output = run_export_git(project_root, &["rev-parse", "--show-toplevel"], "git repository")
+        .await?;
+    if !output.status.success() {
+        return Err(AppError::Validation(
+            "project skill export apply requires a git repository review branch".to_string(),
+        ));
+    }
+
+    let branch_output =
+        run_export_git(project_root, &["symbolic-ref", "--short", "HEAD"], "git branch").await?;
+    if !branch_output.status.success() {
+        return Err(AppError::Validation(
+            "project skill export apply requires a named review branch".to_string(),
+        ));
+    }
+    let branch = String::from_utf8_lossy(&branch_output.stdout)
+        .trim()
+        .to_string();
+    if matches!(branch.as_str(), "main" | "master" | "trunk") {
+        return Err(AppError::Validation(format!(
+            "project skill export apply refuses to write directly on protected branch {branch}; create a review branch first"
+        )));
+    }
+
+    let status_output = run_export_git(
+        project_root,
+        &["status", "--porcelain", "--untracked-files=all"],
+        "git worktree status",
+    )
+    .await?;
+    if !status_output.status.success() {
+        return Err(AppError::Validation(
+            "project skill export apply could not inspect git worktree status".to_string(),
+        ));
+    }
+    if !status_output.stdout.is_empty() {
+        return Err(AppError::Validation(
+            "project skill export apply requires a clean review branch before writing".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 fn is_export_eligible(skill: &ProjectSkill) -> bool {
     !skill.archived && (skill.status == ProjectSkillLifecycleStatus::Approved || skill.pinned)
 }
 
-fn export_relative_path(skill: &ProjectSkill) -> PathBuf {
-    PathBuf::from(".claude")
-        .join("skills")
+fn export_relative_path(skill: &ProjectSkill, export_root: SkillExportRoot) -> PathBuf {
+    export_root
+        .relative_prefix()
         .join(skill_dir_name(skill))
         .join("SKILL.md")
 }
@@ -348,10 +404,18 @@ fn skill_dir_name(skill: &ProjectSkill) -> String {
         }
     }
     let slug = slug.trim_matches('-');
+    // Open-standard skill names must not contain the reserved words `claude` or
+    // `anthropic`; drop those tokens so the folder name (== frontmatter `name`)
+    // stays loadable across providers.
+    let slug = slug
+        .split('-')
+        .filter(|token| !token.is_empty() && !matches!(*token, "claude" | "anthropic"))
+        .collect::<Vec<_>>()
+        .join("-");
     let slug = if slug.is_empty() {
         "project-skill"
     } else {
-        slug
+        slug.as_str()
     };
     format!("{}-{}", slug, short_hash(skill.id.as_str()))
 }
@@ -367,21 +431,83 @@ fn short_hash(value: &str) -> String {
 }
 
 fn render_skill_markdown(skill: &ProjectSkill) -> String {
-    let description = skill.compact_guidance.trim();
-    let predicted_effect = skill.predicted_effect.as_deref().unwrap_or("").trim();
-    format!(
-        "---\nname: {}\ndescription: {}\n---\n\n# {}\n\n{}\n\n## Guidance\n\n{}\n\n## Predicted Effect\n\n{}\n",
-        yaml_string(&skill.title),
-        yaml_string(description),
-        skill.title.trim(),
-        description,
-        skill.body_markdown.trim(),
-        if predicted_effect.is_empty() {
-            "Not specified."
-        } else {
-            predicted_effect
+    // Open Agent Skills standard frontmatter (https://agentskills.io/specification):
+    // `name` MUST match the parent directory; `description` carries the
+    // third-person what+when triggers; `paths` scopes Claude auto-activation and
+    // is safely ignored by Codex. One canonical file loads across both providers.
+    let name = skill_dir_name(skill);
+    let description = skill_description(skill);
+
+    let mut frontmatter = String::new();
+    frontmatter.push_str(&format!("name: {name}\n"));
+    frontmatter.push_str(&format!("description: {}\n", yaml_string(&description)));
+
+    let scope_paths: Vec<&str> = skill
+        .scope_paths
+        .iter()
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+        .collect();
+    if !scope_paths.is_empty() {
+        frontmatter.push_str("paths:\n");
+        for path in &scope_paths {
+            frontmatter.push_str(&format!("  - {}\n", yaml_string(path)));
         }
+    }
+
+    frontmatter.push_str("metadata:\n");
+    frontmatter.push_str("  generator: ralphx-learned-skill\n");
+    if let Some(source) = provenance_source(skill) {
+        frontmatter.push_str(&format!("  source: {}\n", yaml_string(&source)));
+    }
+
+    let predicted_effect = skill.predicted_effect.as_deref().unwrap_or("").trim();
+    let predicted_effect = if predicted_effect.is_empty() {
+        "Not specified."
+    } else {
+        predicted_effect
+    };
+
+    // Body keeps the procedure only; the description lives in frontmatter so it
+    // is not duplicated (open-standard best practice).
+    format!(
+        "---\n{frontmatter}---\n\n# {}\n\n{}\n\n## Predicted Effect\n\n{}\n",
+        skill.title.trim(),
+        skill.body_markdown.trim(),
+        predicted_effect
     )
+}
+
+/// Third-person what+when description for the SKILL frontmatter, capped to the
+/// open-standard limit.
+fn skill_description(skill: &ProjectSkill) -> String {
+    truncate_chars(skill.compact_guidance.trim(), MAX_SKILL_DESCRIPTION_CHARS)
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    value.chars().take(max_chars).collect()
+}
+
+/// Portable provenance source string for `metadata.source`, derived from the
+/// skill's provenance JSON when available.
+fn provenance_source(skill: &ProjectSkill) -> Option<String> {
+    let object = skill.provenance_json.as_object()?;
+    if let Some(number) = object
+        .get("pull_request_number")
+        .or_else(|| object.get("pr_number"))
+        .and_then(serde_json::Value::as_i64)
+    {
+        return Some(format!("github-pull-request-{number}"));
+    }
+    object
+        .get("source")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn yaml_string(value: &str) -> String {
@@ -389,10 +515,13 @@ fn yaml_string(value: &str) -> String {
 }
 
 fn validate_export_relative_path(path: &Path) -> AppResult<()> {
-    let expected_prefix = Path::new(".claude").join("skills");
-    if path.is_absolute() || !path.starts_with(&expected_prefix) {
+    let allowed = !path.is_absolute()
+        && SkillExportRoot::defaults()
+            .iter()
+            .any(|root| path.starts_with(root.relative_prefix()));
+    if !allowed {
         return Err(AppError::Validation(format!(
-            "project skill export path must stay under .claude/skills: {}",
+            "project skill export path must stay under .claude/skills or .agents/skills: {}",
             path.display()
         )));
     }

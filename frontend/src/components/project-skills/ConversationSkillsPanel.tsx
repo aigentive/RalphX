@@ -10,6 +10,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface ConversationSkillsPanelProps {
   projectId: string;
@@ -68,16 +74,25 @@ export function ConversationSkillsPanel({
             Generated or used in this conversation
           </p>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={() => processMutation.mutate()}
-          disabled={isRefreshing}
-          aria-label="Process conversation skills"
-        >
-          <RefreshCw className={isRefreshing ? "animate-spin" : undefined} />
-        </Button>
+        <TooltipProvider delayDuration={300}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => processMutation.mutate()}
+                disabled={isRefreshing}
+                aria-label="Process conversation skills"
+              >
+                <RefreshCw
+                  className={isRefreshing ? "animate-spin" : undefined}
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Process conversation skills</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
