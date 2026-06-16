@@ -30,6 +30,8 @@ vi.mock("@/stores/ideationStore", () => ({
 }));
 
 let mockActiveProjectId: string | null = "project-1";
+let mockActiveProjectWorkingDirectory = "/mock/repo";
+let mockActiveProjectBaseBranch = "main";
 vi.mock("@/stores/projectStore", () => ({
   useProjectStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
@@ -38,8 +40,8 @@ vi.mock("@/stores/projectStore", () => ({
         "project-1": {
           id: "project-1",
           name: "Mock Project",
-          workingDirectory: "/mock/repo",
-          baseBranch: "main",
+          workingDirectory: mockActiveProjectWorkingDirectory,
+          baseBranch: mockActiveProjectBaseBranch,
         },
       },
     }),
@@ -121,12 +123,24 @@ async function expectStartFromLabel(label: string) {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("StartSessionPanel", () => {
   const onNewSession = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockActiveProjectId = "project-1";
+    mockActiveProjectWorkingDirectory = "/mock/repo";
+    mockActiveProjectBaseBranch = "main";
     mockMutateAsync.mockResolvedValue({ id: "session-1", projectId: "project-1" });
     mockIdeationTeamModeAvailable = true;
     mockGetGitDefaultBranch.mockResolvedValue("main");
@@ -220,6 +234,32 @@ describe("StartSessionPanel", () => {
           teamConfig: expect.objectContaining({ maxTeammates: 5 }),
         }),
       );
+    });
+
+    it("blocks start and seed actions until the base branch selection is ready", async () => {
+      const defaultBranch = deferred<string>();
+      const currentBranch = deferred<string>();
+      const branches = deferred<string[]>();
+      mockGetGitDefaultBranch.mockReturnValueOnce(defaultBranch.promise);
+      mockGetGitCurrentBranch.mockReturnValueOnce(currentBranch.promise);
+      mockGetGitBranches.mockReturnValueOnce(branches.promise);
+
+      render(<StartSessionPanel onNewSession={onNewSession} />);
+      fireEvent.click(screen.getByText(/Research Team/));
+
+      expect(screen.getByText("Start Research Session")).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Seed from Draft Task" })).toBeDisabled();
+      expect(mockMutateAsync).not.toHaveBeenCalled();
+
+      await act(async () => {
+        defaultBranch.resolve("main");
+        currentBranch.resolve("pr/366");
+        branches.resolve(["main", "pr/366"]);
+      });
+
+      await expectStartFromLabel("Project default (main)");
+      expect(screen.getByText("Start Research Session")).not.toBeDisabled();
+      expect(screen.getByRole("button", { name: "Seed from Draft Task" })).not.toBeDisabled();
     });
 
     it("starts team ideation from a selected pull request head branch", async () => {
@@ -363,15 +403,50 @@ describe("StartSessionPanel", () => {
   });
 
   describe("handleSeedFromTask", () => {
-    it("preselects current branch when it differs from project default", async () => {
+    it("preselects the project default when current branch differs from it", async () => {
       mockGetGitCurrentBranch.mockResolvedValueOnce("feature/current");
       mockGetGitBranches.mockResolvedValueOnce(["main", "feature/current", "feature/other"]);
 
       render(<StartSessionPanel onNewSession={onNewSession} />);
 
-      await expectStartFromLabel("Current branch (feature/current)");
+      await expectStartFromLabel("Project default (main)");
       fireEvent.click(screen.getByTestId("start-from-select"));
-      expect(await screen.findByText("Project default (main)")).toBeInTheDocument();
+      expect(await screen.findByText("Current branch (feature/current)")).toBeInTheDocument();
+    });
+
+    it("preserves a selected project default across branch option reloads", async () => {
+      const user = userEvent.setup();
+      mockGetGitCurrentBranch.mockResolvedValue("pr/366");
+      mockGetGitBranches.mockResolvedValue(["main", "pr/366", "feature/other"]);
+      const { rerender } = render(<StartSessionPanel onNewSession={onNewSession} />);
+
+      await expectStartFromLabel("Project default (main)");
+      await user.click(screen.getByTestId("start-from-select"));
+      await user.click(await screen.findByText("Current branch (pr/366)"));
+      await expectStartFromLabel("Current branch (pr/366)");
+      await user.click(screen.getByTestId("start-from-select"));
+      await user.click(await screen.findByText("Project default (main)"));
+      await expectStartFromLabel("Project default (main)");
+
+      mockActiveProjectWorkingDirectory = "/mock/repo/";
+      rerender(<StartSessionPanel onNewSession={onNewSession} />);
+
+      await waitFor(() => expect(mockGetGitCurrentBranch).toHaveBeenCalledTimes(2));
+      await expectStartFromLabel("Project default (main)");
+      fireEvent.click(screen.getByText(/Research Team/));
+
+      await act(async () => {
+        fireEvent.click(screen.getByText("Start Research Session"));
+      });
+
+      expect(mockMutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          analysisBase: expect.objectContaining({
+            kind: "project_default",
+            ref: "main",
+          }),
+        }),
+      );
     });
 
     it("includes team params when in team mode", async () => {
