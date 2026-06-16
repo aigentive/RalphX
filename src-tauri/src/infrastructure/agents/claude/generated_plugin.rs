@@ -1077,6 +1077,60 @@ mod tests {
     }
 
     #[test]
+    fn generated_plugin_runtime_entries_preserve_valid_hooks_config_without_scripts() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        let base_hooks_dir = base_plugin_dir.join(HOOKS_ENTRY_NAME);
+        let valid_hooks_config = "{\n  \"hooks\": {\n    \"PreToolUse\": []\n  }\n}\n";
+        fs::create_dir_all(&base_hooks_dir).expect("create base hooks dir");
+        fs::create_dir_all(&generated_dir).expect("create generated plugin dir");
+        fs::write(base_hooks_dir.join(HOOKS_CONFIG_FILE), valid_hooks_config)
+            .expect("write valid hooks config");
+
+        sync_runtime_entries(&base_plugin_dir, &base_plugin_dir, &generated_dir)
+            .expect("sync runtime entries");
+
+        assert_eq!(
+            fs::read_to_string(generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_CONFIG_FILE))
+                .expect("read generated hooks config"),
+            valid_hooks_config
+        );
+        assert!(
+            !generated_dir
+                .join(HOOKS_ENTRY_NAME)
+                .join(HOOKS_SCRIPTS_DIR)
+                .exists(),
+            "generated hooks should omit scripts when source hooks has none"
+        );
+    }
+
+    #[test]
+    fn generated_plugin_runtime_entries_use_empty_hooks_config_when_source_hooks_missing() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        fs::create_dir_all(&base_plugin_dir).expect("create base plugin dir");
+        fs::create_dir_all(&generated_dir).expect("create generated plugin dir");
+
+        sync_runtime_entries(&base_plugin_dir, &base_plugin_dir, &generated_dir)
+            .expect("sync runtime entries");
+
+        assert_eq!(
+            fs::read_to_string(generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_CONFIG_FILE))
+                .expect("read generated hooks config"),
+            EMPTY_HOOKS_CONFIG
+        );
+        assert!(
+            !generated_dir
+                .join(HOOKS_ENTRY_NAME)
+                .join(HOOKS_SCRIPTS_DIR)
+                .exists(),
+            "generated hooks should not invent a scripts entry"
+        );
+    }
+
+    #[test]
     fn generated_plugin_dir_current_validation_rejects_dirty_or_stale_shapes() {
         let dir = tempfile::TempDir::new().expect("create temp dir");
         let base_plugin_dir = dir.path().join("base/plugins/app");
@@ -1149,6 +1203,40 @@ mod tests {
             &generated_dir
         )
         .expect("stale runtime symlink should be inspectable"));
+    }
+
+    #[test]
+    fn generated_plugin_dir_current_validation_rejects_stale_hooks_scripts_entry() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        let base_hooks_dir = base_plugin_dir.join(HOOKS_ENTRY_NAME);
+        fs::create_dir_all(base_hooks_dir.join(HOOKS_SCRIPTS_DIR))
+            .expect("create base hooks scripts dir");
+        fs::create_dir_all(&generated_dir).expect("create generated plugin dir");
+
+        seed_generated_runtime_links(&base_plugin_dir, &generated_dir);
+        assert!(generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("generated plugin should start current"));
+
+        fs::remove_file(generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_SCRIPTS_DIR))
+            .expect("remove generated scripts symlink");
+        ensure_symlink(
+            &dir.path().join("stale/hooks/scripts"),
+            &generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_SCRIPTS_DIR),
+        )
+        .expect("seed stale hooks scripts symlink");
+
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("stale hooks scripts symlink should be inspectable"));
     }
 
     #[test]

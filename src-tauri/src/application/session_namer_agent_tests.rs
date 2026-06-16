@@ -18,7 +18,10 @@ use crate::domain::agents::{
     AgentOutput, AgentResponse, AgentResult, AgenticClient, ClientCapabilities, LogicalEffort,
     ResponseChunk,
 };
-use crate::domain::entities::{ChatConversation, DelegatedSession, IdeationSession, Project, Task};
+use crate::domain::entities::{
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversation, DelegatedSession,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, Project, Task,
+};
 use crate::infrastructure::agents::claude::agent_names;
 use crate::infrastructure::{MockAgenticClient, MockCallType};
 
@@ -201,6 +204,40 @@ fn session_namer_extracts_title_from_claude_pseudo_tool_output() {
         extract_session_namer_title(output).as_deref(),
         Some("Test session namer")
     );
+}
+
+#[test]
+fn session_namer_extracts_title_from_structured_and_defensive_output_shapes() {
+    let assistant_text =
+        r#"{"message":{"content":[{"type":"text","text":"Title: Build retry diagnostics"}]}}"#;
+    assert_eq!(
+        extract_session_namer_title(assistant_text).as_deref(),
+        Some("Build retry diagnostics")
+    );
+
+    let tool_use = r#"{"message":{"content":[{"type":"tool_use","input":{"title":"Repair generated plugin hooks"}}]}}"#;
+    assert_eq!(
+        extract_session_namer_title(tool_use).as_deref(),
+        Some("Repair generated plugin hooks")
+    );
+
+    let line_delimited = "noise\n{\"title\":\"Name Codex conversations\"}\nmore noise";
+    assert_eq!(
+        extract_session_namer_title(line_delimited).as_deref(),
+        Some("Name Codex conversations")
+    );
+
+    let long_title =
+        "Add reliable session namer persistence despite utility agent pseudo tool output";
+    assert_eq!(
+        extract_session_namer_title(long_title).as_deref(),
+        Some("Add reliable session namer persistence despite uti")
+    );
+
+    assert!(extract_session_namer_title("").is_none());
+    assert!(extract_session_namer_title("first line\nsecond line").is_none());
+    assert!(extract_session_namer_title("<invoke name=\"update_session_title\">").is_none());
+    assert!(extract_session_namer_title(&"x".repeat(81)).is_none());
 }
 
 #[tokio::test]
@@ -438,6 +475,222 @@ async fn session_namer_fire_and_forget_persists_generated_conversation_title() {
     }
 
     assert_eq!(updated_title.as_deref(), Some("Test session namer"));
+}
+
+#[tokio::test]
+async fn session_namer_fire_and_forget_persists_generated_session_title() {
+    let concrete_client = Arc::new(SuccessfulSessionNamerClient::new(
+        r#"{"title":"Repair session naming"}"#,
+    ));
+    let agent_client: Arc<dyn AgenticClient> = concrete_client;
+    let state = AppState::new_test().with_agent_client(agent_client);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    let project = Project::new(
+        "Generated Session Title Project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+    let session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+
+    spawn_session_namer_agent(
+        &state,
+        SessionNamerTarget::session_initial(session.id.as_str(), "session namer issue"),
+    )
+    .await
+    .unwrap();
+
+    let mut updated = None;
+    for _ in 0..20 {
+        updated = state
+            .ideation_session_repo
+            .get_by_id(&session.id)
+            .await
+            .unwrap();
+        if updated
+            .as_ref()
+            .and_then(|session| session.title.as_deref())
+            == Some("Repair session naming")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let updated = updated.expect("session remains persisted");
+    assert_eq!(updated.title.as_deref(), Some("Repair session naming"));
+    assert_eq!(updated.title_source.as_deref(), Some("auto"));
+}
+
+#[tokio::test]
+async fn session_namer_fire_and_forget_syncs_linked_planning_session_title() {
+    let concrete_client = Arc::new(SuccessfulSessionNamerClient::new("Review CLI gaps"));
+    let agent_client: Arc<dyn AgenticClient> = concrete_client;
+    let state = AppState::new_test().with_agent_client(agent_client);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    let project = Project::new(
+        "Linked Planning Title Project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+    let session = state
+        .ideation_session_repo
+        .create(
+            IdeationSession::builder()
+                .project_id(project.id.clone())
+                .session_flow(IdeationSessionFlow::Planning)
+                .source_context_type("agent_conversation")
+                .source_context_id(conversation.id.as_str())
+                .build(),
+        )
+        .await
+        .unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Plan,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/project/linked-planning-title".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    spawn_session_namer_agent(
+        &state,
+        conversation_initial(conversation.id.as_str(), "Review CLI coverage gaps"),
+    )
+    .await
+    .unwrap();
+
+    let mut conversation_title = None;
+    let mut session_title = None;
+    for _ in 0..20 {
+        conversation_title = state
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .and_then(|conversation| conversation.title);
+        session_title = state
+            .ideation_session_repo
+            .get_by_id(&session.id)
+            .await
+            .unwrap()
+            .and_then(|session| session.title);
+        if conversation_title.as_deref() == Some("Review CLI gaps")
+            && session_title.as_deref() == Some("Review CLI gaps")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    assert_eq!(conversation_title.as_deref(), Some("Review CLI gaps"));
+    assert_eq!(session_title.as_deref(), Some("Review CLI gaps"));
+}
+
+#[tokio::test]
+async fn session_namer_fire_and_forget_keeps_user_named_linked_planning_session_title() {
+    let concrete_client = Arc::new(SuccessfulSessionNamerClient::new(
+        "Fresh Conversation Title",
+    ));
+    let agent_client: Arc<dyn AgenticClient> = concrete_client;
+    let state = AppState::new_test().with_agent_client(agent_client);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    let project = Project::new(
+        "User Named Linked Planning Title Project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+    let session = state
+        .ideation_session_repo
+        .create(
+            IdeationSession::builder()
+                .project_id(project.id.clone())
+                .title("User Plan Title")
+                .title_source("user")
+                .session_flow(IdeationSessionFlow::Planning)
+                .source_context_type("agent_conversation")
+                .source_context_id(conversation.id.as_str())
+                .build(),
+        )
+        .await
+        .unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Plan,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/project/user-named-linked-planning-title".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    spawn_session_namer_agent(
+        &state,
+        conversation_initial(conversation.id.as_str(), "Retitle conversation only"),
+    )
+    .await
+    .unwrap();
+
+    let mut conversation_title = None;
+    for _ in 0..20 {
+        conversation_title = state
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .and_then(|conversation| conversation.title);
+        if conversation_title.as_deref() == Some("Fresh Conversation Title") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let session = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .unwrap()
+        .expect("session remains persisted");
+    assert_eq!(
+        conversation_title.as_deref(),
+        Some("Fresh Conversation Title")
+    );
+    assert_eq!(session.title.as_deref(), Some("User Plan Title"));
+    assert_eq!(session.title_source.as_deref(), Some("user"));
 }
 
 #[tokio::test]
