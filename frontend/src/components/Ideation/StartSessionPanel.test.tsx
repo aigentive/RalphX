@@ -449,6 +449,27 @@ describe("StartSessionPanel", () => {
       );
     });
 
+    it("falls back to the project default when branch option loading throws", async () => {
+      const user = userEvent.setup();
+      mockGetGitCurrentBranch.mockResolvedValueOnce("feature/current");
+      mockGetGitBranches.mockResolvedValueOnce(["main", "feature/current"]);
+      const { rerender } = render(<StartSessionPanel onNewSession={onNewSession} />);
+
+      await expectStartFromLabel("Project default (main)");
+      await user.click(screen.getByTestId("start-from-select"));
+      await user.click(await screen.findByText("Current branch (feature/current)"));
+      await expectStartFromLabel("Current branch (feature/current)");
+
+      mockGetGitDefaultBranch.mockImplementationOnce(() => {
+        throw new Error("git unavailable");
+      });
+      mockActiveProjectWorkingDirectory = "/mock/repo-fallback";
+      rerender(<StartSessionPanel onNewSession={onNewSession} />);
+
+      await waitFor(() => expect(mockGetGitDefaultBranch).toHaveBeenCalledTimes(2));
+      await expectStartFromLabel("Project default (main)");
+    });
+
     it("includes team params when in team mode", async () => {
       render(<StartSessionPanel onNewSession={onNewSession} />);
       await expectStartFromLabel("Project default (main)");

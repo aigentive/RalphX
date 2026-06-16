@@ -2564,6 +2564,50 @@ async fn test_create_ideation_session_rejects_mislabeled_project_default_ref() {
     );
 }
 
+#[tokio::test]
+async fn test_create_ideation_session_project_default_ignores_blank_ref() {
+    use ralphx_lib::domain::entities::IdeationAnalysisBaseRefKind;
+    use ralphx_lib::testing::create_mock_app;
+
+    let app = create_mock_app();
+    let handle = app.handle().clone();
+    let state = setup_apply_test_state();
+    let repo_dir = setup_git_repo_for_apply_test();
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+
+    let main_sha = git_stdout(repo_dir.path(), &["rev-parse", "main"]);
+    let mut project = Project::new(
+        "Test Project".to_string(),
+        repo_dir.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().to_string());
+    let project = state.project_repo.create(project).await.unwrap();
+
+    let result = create_ideation_session_impl(
+        &handle,
+        &state,
+        CreateSessionInput {
+            project_id: project.id.to_string(),
+            title: Some("Blank Base Ref Session".to_string()),
+            seed_task_id: None,
+            team_mode: None,
+            team_config: None,
+            analysis_base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            analysis_base_ref: Some("   ".to_string()),
+            analysis_base_display_name: Some("Project default (main)".to_string()),
+        },
+    )
+    .await
+    .expect("blank project_default ref should resolve to project default");
+
+    assert_eq!(result.analysis_base_ref.as_deref(), Some("main"));
+    assert_eq!(
+        result.analysis_base_commit.as_deref(),
+        Some(main_sha.as_str())
+    );
+}
+
 // ============================================================================
 // Proof Obligation #5: branch creation failure leaves no orphaned ExecutionPlan
 // ============================================================================
