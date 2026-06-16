@@ -2389,7 +2389,7 @@ mod tests {
     use crate::application::{AppState, TeamService, TeamStateTracker};
     use crate::commands::ExecutionState;
     use crate::domain::entities::{
-        ChatConversation, ChatMessage, MemoryBucket, MemoryEntry, ProjectSkill,
+        ChatConversation, ChatMessage, MemoryBucket, MemoryEntry, Project, ProjectSkill,
         ProjectSkillLifecycleStatus, SkillUsageEvent, SkillUsageEventId, TaskOutcomeStatus,
     };
     use crate::domain::repositories::{ProjectSkillListOptions, UpsertTaskOutcomeInput};
@@ -2428,6 +2428,13 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    fn test_project(name: &str, working_directory: &Path) -> Project {
+        Project::new(
+            name.to_string(),
+            working_directory.to_string_lossy().to_string(),
+        )
     }
 
     fn import_preview_request(project_id: &str) -> PreviewProjectSkillImportRequest {
@@ -2698,6 +2705,56 @@ mod tests {
     }
 
     #[test]
+    fn parse_github_pr_summaries_filters_invalid_rows_and_reports_bad_json() {
+        let output = r#"[
+          {"number": 0, "title": "No number", "state": "OPEN"},
+          {"number": 3, "title": "   ", "state": "OPEN"},
+          {"number": 4, "title": "Useful PR", "state": "MERGED", "url": "https://example.test/pr/4"}
+        ]"#;
+
+        let pull_requests = parse_github_pr_summaries(output).unwrap();
+
+        assert_eq!(pull_requests.len(), 1);
+        assert_eq!(pull_requests[0].number, 4);
+        assert_eq!(pull_requests[0].title, "Useful PR");
+        assert!(parse_github_pr_summaries("not json")
+            .unwrap_err()
+            .to_string()
+            .contains("failed to parse gh PR history"));
+    }
+
+    #[tokio::test]
+    async fn read_github_pull_request_detail_returns_none_for_invalid_number() {
+        let project_dir =
+            tempfile::tempdir_in(std::env::current_dir().expect("cwd")).expect("temp project dir");
+
+        let detail = read_github_pull_request_detail(project_dir.path(), 0)
+            .await
+            .unwrap();
+
+        assert!(detail.is_none());
+    }
+
+    #[test]
+    fn native_skill_parsing_helpers_handle_fallbacks_and_truncation() {
+        assert_eq!(
+            native_skill_title("# Review Guard\n\nBody").as_deref(),
+            Some("Review Guard")
+        );
+        assert!(native_skill_title("No heading").is_none());
+        assert_eq!(humanize_skill_dir("review_guard-flow"), "Review Guard Flow");
+
+        let long_guidance =
+            "This project skill guidance sentence is intentionally long enough to be selected. "
+                .repeat(8);
+        let markdown = format!("---\nignored: true\n---\n\n# Title\n\n{long_guidance}");
+        let guidance = native_skill_compact_guidance(&markdown).expect("guidance");
+
+        assert!(guidance.starts_with("This project skill guidance sentence"));
+        assert!(guidance.chars().count() < long_guidance.chars().count());
+    }
+
+    #[test]
     fn contained_native_skill_file_accepts_safe_folder_name() {
         let project_root = Path::new("/workspace/project");
         let skills_root = Path::new("/workspace/project/.claude/skills");
@@ -2735,6 +2792,259 @@ mod tests {
         assert!(error
             .to_string()
             .contains("project skills directory escapes project root"));
+    }
+
+    #[test]
+    fn selected_project_skill_source_roots_defaults_dedupes_and_rejects_unknown_roots() {
+        assert_eq!(
+            selected_project_skill_source_roots(Vec::new()).unwrap(),
+            vec![".claude/skills".to_string()]
+        );
+        assert_eq!(
+            selected_project_skill_source_roots(vec![
+                "/.codex/skills/".to_string(),
+                ".codex/skills".to_string(),
+                ".agents/skills".to_string(),
+            ])
+            .unwrap(),
+            vec![".codex/skills".to_string(), ".agents/skills".to_string()]
+        );
+
+        let error = selected_project_skill_source_roots(vec!["../skills".to_string()])
+            .expect_err("unsupported root rejected");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("unsupported project skill source folder"));
+    }
+
+    #[tokio::test]
+    async fn list_project_skills_filters_status_bucket_and_scope() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-list-skills".to_string());
+        let mut matching = staged_skill(project_id.clone());
+        matching.title = "Scoped review skill".to_string();
+        matching.scope_paths = vec!["src-tauri/src/http_server".to_string()];
+        let mut other_bucket = staged_skill(project_id.clone());
+        other_bucket.title = "Other bucket skill".to_string();
+        other_bucket.bucket = "planning".to_string();
+        let mut approved = staged_skill(project_id.clone());
+        approved.title = "Approved skill".to_string();
+        approved.status = ProjectSkillLifecycleStatus::Approved;
+        app_state.project_skill_repo.create(matching).await.unwrap();
+        app_state
+            .project_skill_repo
+            .create(other_bucket)
+            .await
+            .unwrap();
+        app_state.project_skill_repo.create(approved).await.unwrap();
+
+        let response = list_project_skills(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(ListProjectSkillsRequest {
+                project_id: project_id.as_str().to_string(),
+                status: Some("staged".to_string()),
+                include_archived: false,
+                stage: Some("review".to_string()),
+                bucket: Some("review".to_string()),
+                scope_path: Some("src-tauri/src/http_server/mod.rs".to_string()),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert_eq!(response.count, 1);
+        assert_eq!(response.skills[0].title, "Scoped review skill");
+    }
+
+    #[tokio::test]
+    async fn get_project_skill_returns_none_and_rejects_cross_project_rows() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-get-skill".to_string());
+        let skill = staged_skill(project_id.clone());
+        let skill_id = skill.id.clone();
+        app_state.project_skill_repo.create(skill).await.unwrap();
+
+        let missing = get_project_skill(
+            State(test_state(app_state.clone())),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(GetProjectSkillRequest {
+                project_skill_id: "missing-skill".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(missing.skill.is_none());
+
+        let error = get_project_skill(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![ProjectId::from_string(
+                "other-project".to_string(),
+            )])),
+            Json(GetProjectSkillRequest {
+                project_skill_id: skill_id.as_str().to_string(),
+            }),
+        )
+        .await
+        .expect_err("cross-project get should fail");
+        assert_eq!(error.status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn pr_candidate_handlers_return_empty_for_missing_workdir_and_reject_bad_number() {
+        let app_state = Arc::new(AppState::new_test());
+        let project = test_project(
+            "Missing workdir project",
+            Path::new("/tmp/ralphx-missing-pr-skill-workdir"),
+        );
+        let project_id = project.id.clone();
+        app_state.project_repo.create(project).await.unwrap();
+
+        let candidates = list_project_skill_pull_request_candidates(
+            State(test_state(app_state.clone())),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(ListProjectSkillPullRequestCandidatesRequest {
+                project_id: project_id.as_str().to_string(),
+                limit: Some(999),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert_eq!(candidates.count, 0);
+        assert_eq!(candidates.limit, GITHUB_PR_CANDIDATE_MAX_LIMIT);
+
+        let error = stage_project_skill_from_pull_request(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(StageProjectSkillFromPullRequestRequest {
+                project_id: project_id.as_str().to_string(),
+                number: 0,
+            }),
+        )
+        .await
+        .expect_err("non-positive PR number rejected");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("pull request number must be positive"));
+    }
+
+    #[tokio::test]
+    async fn process_conversation_project_skills_rejects_empty_and_missing_conversations() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_id = ProjectId::from_string("project-process-invalid".to_string());
+
+        let empty_error = process_conversation_project_skills(
+            State(test_state(app_state.clone())),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(ProcessConversationProjectSkillsRequest {
+                project_id: project_id.as_str().to_string(),
+                conversation_id: "  ".to_string(),
+            }),
+        )
+        .await
+        .expect_err("empty conversation id rejected");
+        assert_eq!(empty_error.status, StatusCode::BAD_REQUEST);
+        assert!(empty_error
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("conversation_id is required"));
+
+        let missing_error = process_conversation_project_skills(
+            State(test_state(app_state)),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(ProcessConversationProjectSkillsRequest {
+                project_id: project_id.as_str().to_string(),
+                conversation_id: "missing-conversation".to_string(),
+            }),
+        )
+        .await
+        .expect_err("missing conversation rejected");
+        assert_eq!(missing_error.status, StatusCode::NOT_FOUND);
+        assert!(missing_error
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("conversation not found"));
+    }
+
+    #[tokio::test]
+    async fn apply_project_skill_directory_import_requires_confirmation() {
+        let project_id = ProjectId::from_string("project-import-confirm".to_string());
+        let error = apply_project_skill_directory_import(
+            State(test_state(Arc::new(AppState::new_test()))),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(ProjectSkillDirectoryImportRequest {
+                project_id: project_id.as_str().to_string(),
+                confirm_import: false,
+                source_roots: Vec::new(),
+                source_sync_enabled: None,
+            }),
+        )
+        .await
+        .expect_err("confirmation is required");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("confirm_import=true"));
+    }
+
+    #[tokio::test]
+    async fn apply_project_skill_directory_import_scans_and_imports_project_skill_files() {
+        let app_state = Arc::new(AppState::new_test());
+        let project_dir =
+            tempfile::tempdir_in(std::env::current_dir().expect("cwd")).expect("temp project dir");
+        let project = test_project("Import project", project_dir.path());
+        let project_id = project.id.clone();
+        app_state.project_repo.create(project).await.unwrap();
+        let skill_dir = project_dir.path().join(".codex/skills/review-guard");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: review-guard\ndescription: \"Check review evidence before approving.\"\npaths:\n  - \"src-tauri/src\"\n---\n\n# Review Guard\n\n## Procedure\n\nConfirm the review evidence is complete.\n\n## Predicted Effect\n\nReduces missed review evidence.\n",
+        )
+        .unwrap();
+
+        let response = apply_project_skill_directory_import(
+            State(test_state(app_state.clone())),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(ProjectSkillDirectoryImportRequest {
+                project_id: project_id.as_str().to_string(),
+                confirm_import: true,
+                source_roots: vec![".codex/skills".to_string()],
+                source_sync_enabled: Some(true),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert_eq!(response.imported_count, 1);
+        assert_eq!(response.synced_count, 0);
+        assert_eq!(response.imported_skills[0].title, "Review Guard");
+        assert_eq!(
+            response.imported_skills[0].scope_paths,
+            vec!["src-tauri/src"]
+        );
+        assert!(response.imported_skills[0]
+            .compact_guidance
+            .starts_with("Check review evidence"));
+        assert_eq!(response.preview.eligible_count, 1);
     }
 
     fn promote_memory_request(
