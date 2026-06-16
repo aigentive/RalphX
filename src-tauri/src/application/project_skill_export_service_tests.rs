@@ -40,6 +40,21 @@ fn init_git_repo(project_dir: &std::path::Path, branch: &str) {
     );
 }
 
+fn run_git(project_dir: &std::path::Path, args: &[&str]) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project_dir)
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn approved_skill(project_id: ProjectId, title: &str) -> ProjectSkill {
     let now = Utc::now();
     ProjectSkill {
@@ -193,6 +208,67 @@ async fn apply_export_requires_project_export_opt_in() {
 }
 
 #[tokio::test]
+async fn apply_export_requires_git_repository() {
+    let project_dir = tempfile::tempdir().expect("isolated temp project dir");
+    let (project_id, _project_repo, skill_repo, settings_repo, service) =
+        setup_service(project_dir.path()).await;
+    settings_repo
+        .upsert(ProjectSkillSettings {
+            project_id: project_id.clone(),
+            export_enabled: true,
+        })
+        .await
+        .unwrap();
+    skill_repo
+        .create(approved_skill(project_id.clone(), "Approved Skill"))
+        .await
+        .unwrap();
+
+    let error = service
+        .apply_export(&project_id)
+        .await
+        .expect_err("export apply should require a git repository");
+
+    assert!(error.to_string().contains("git repository review branch"));
+}
+
+#[tokio::test]
+async fn apply_export_requires_named_branch() {
+    let project_dir = temp_project_dir();
+    init_git_repo(project_dir.path(), "ralphx/export-skills");
+    run_git(
+        project_dir.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    run_git(project_dir.path(), &["config", "user.name", "RalphX Test"]);
+    run_git(
+        project_dir.path(),
+        &["commit", "--allow-empty", "-m", "initial"],
+    );
+    run_git(project_dir.path(), &["checkout", "--detach", "HEAD"]);
+    let (project_id, _project_repo, skill_repo, settings_repo, service) =
+        setup_service(project_dir.path()).await;
+    settings_repo
+        .upsert(ProjectSkillSettings {
+            project_id: project_id.clone(),
+            export_enabled: true,
+        })
+        .await
+        .unwrap();
+    skill_repo
+        .create(approved_skill(project_id.clone(), "Approved Skill"))
+        .await
+        .unwrap();
+
+    let error = service
+        .apply_export(&project_id)
+        .await
+        .expect_err("export apply should require a named branch");
+
+    assert!(error.to_string().contains("named review branch"));
+}
+
+#[tokio::test]
 async fn apply_export_rejects_protected_git_branch() {
     let project_dir = temp_project_dir();
     init_git_repo(project_dir.path(), "main");
@@ -266,6 +342,62 @@ async fn export_rejects_relative_project_roots() {
         .expect_err("relative project root must fail");
 
     assert!(error.to_string().contains("absolute"));
+}
+
+#[tokio::test]
+async fn export_rejects_missing_and_file_project_roots() {
+    let project_dir = temp_project_dir();
+    let missing_root = project_dir.path().join("missing");
+    let file_root = project_dir.path().join("project-file");
+    std::fs::write(&file_root, "not a directory").unwrap();
+
+    for (root, expected) in [
+        (missing_root, "must exist"),
+        (file_root, "must be a directory"),
+    ] {
+        let project_repo = Arc::new(MemoryProjectRepository::new());
+        let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+        let mut project = Project::new(
+            "Export Test".to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        project.id = ProjectId::from_string(format!("project-export-{expected}"));
+        let project_id = project.id.clone();
+        project_repo.create(project).await.unwrap();
+        let service = ProjectSkillExportService::new(
+            project_repo as Arc<dyn ProjectRepository>,
+            skill_repo as Arc<dyn ProjectSkillRepository>,
+            Arc::new(MemoryProjectSkillSettingsRepository::new())
+                as Arc<dyn ProjectSkillSettingsRepository>,
+        );
+
+        let error = service
+            .preview_export(&project_id)
+            .await
+            .expect_err("invalid project root should fail");
+
+        assert!(error.to_string().contains(expected));
+    }
+}
+
+#[tokio::test]
+async fn preview_export_reports_existing_read_errors() {
+    let project_dir = temp_project_dir();
+    let (project_id, _project_repo, skill_repo, _settings_repo, service) =
+        setup_service(project_dir.path()).await;
+    let skill = approved_skill(project_id.clone(), "Directory Collision Skill");
+    let relative_path = export_relative_path(&skill, SkillExportRoot::Claude);
+    std::fs::create_dir_all(project_dir.path().join(&relative_path)).unwrap();
+    skill_repo.create(skill).await.unwrap();
+
+    let error = service
+        .preview_export(&project_id)
+        .await
+        .expect_err("directory at SKILL.md path should fail read");
+
+    assert!(error
+        .to_string()
+        .contains("Failed to read exported project skill"));
 }
 
 #[cfg(unix)]
@@ -377,10 +509,31 @@ fn skill_dir_name_strips_reserved_words() {
 }
 
 #[test]
+fn skill_dir_name_falls_back_when_title_has_no_safe_tokens() {
+    let project_id = ProjectId::from_string("project-export".to_string());
+    let skill = approved_skill(project_id, "Claude Anthropic !!!");
+    let dir = skill_dir_name(&skill);
+
+    assert!(dir.starts_with("project-skill-"));
+}
+
+#[test]
+fn render_skill_markdown_uses_pull_request_provenance_source() {
+    let project_id = ProjectId::from_string("project-export".to_string());
+    let mut skill = approved_skill(project_id, "PR Evidence Skill");
+    skill.provenance_json = json!({ "pull_request_number": 42 });
+
+    let markdown = render_skill_markdown(&skill);
+
+    assert!(markdown.contains("  source: \"github-pull-request-42\"\n"));
+}
+
+#[test]
 fn export_relative_path_validation_rejects_unsafe_paths() {
     for path in [
         std::path::Path::new("/tmp/.claude/skills/skill/SKILL.md"),
         std::path::Path::new(".claude/../skills/skill/SKILL.md"),
+        std::path::Path::new(".claude/skills/bad\\name/SKILL.md"),
         std::path::Path::new(".codex/skills/skill/SKILL.md"),
     ] {
         let error =
