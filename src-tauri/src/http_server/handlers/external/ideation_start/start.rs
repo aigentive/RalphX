@@ -643,6 +643,7 @@ pub async fn start_ideation_http(
         if let Some(ref cloned) = cloned_artifact {
             session_builder.plan_artifact_id = Some(cloned.id.clone());
         }
+        session_builder.session_flow = IdeationSessionFlow::Planning;
         session_builder.source_session_id = Some(import.source_session_id.clone());
         session_builder.source_project_id = Some(project_id.as_str().to_string());
     }
