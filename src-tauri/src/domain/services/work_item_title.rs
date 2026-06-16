@@ -152,9 +152,7 @@ fn trim_leading_title_separators(value: &str) -> &str {
 
 fn normalize_jira_key(value: &str) -> Option<String> {
     let trimmed = value.trim().trim_matches(|ch| ch == '[' || ch == ']');
-    let mut parts = trimmed.splitn(2, '-');
-    let project = parts.next()?;
-    let number = parts.next()?;
+    let (project, number) = trimmed.split_once('-')?;
     let project = project.to_ascii_uppercase();
     if project.is_empty()
         || number.is_empty()

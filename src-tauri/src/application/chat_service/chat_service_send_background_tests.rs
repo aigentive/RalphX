@@ -898,7 +898,7 @@ async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
         .await
         .expect("queued message should send through mock service");
 
-    assert_eq!(result.was_queued, false);
+    assert!(!result.was_queued);
     assert_eq!(
         service.get_sent_messages().await,
         vec!["queued content".to_string()]

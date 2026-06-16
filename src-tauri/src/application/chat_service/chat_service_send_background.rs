@@ -236,9 +236,7 @@ fn is_agent_task_ledger_tool(tool_name: &str) -> bool {
 }
 
 fn is_mutating_work_tool(tool_name: &str) -> bool {
-    AGENT_TASK_LEDGER_MUTATING_WORK_TOOL_NAMES
-        .iter()
-        .any(|work_tool| tool_name == *work_tool)
+    AGENT_TASK_LEDGER_MUTATING_WORK_TOOL_NAMES.contains(&tool_name)
 }
 
 fn is_nonrecoverable_terminal_tool(tool_name: &str) -> bool {
