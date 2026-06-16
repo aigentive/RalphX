@@ -542,6 +542,10 @@ pub async fn start_http_server(
             "/api/external/webhooks/health",
             get(get_webhook_health_http),
         )
+        .route(
+            "/api/integrations/linear/webhook",
+            post(receive_linear_webhook_http),
+        )
         .route("/api/external/task-note", post(create_task_note_http))
         // Team endpoints (agent teams) — two-phase plan flow
         .route("/api/team/plan/request", post(request_team_plan_register))

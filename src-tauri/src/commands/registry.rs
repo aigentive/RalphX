@@ -228,6 +228,8 @@ macro_rules! register_tauri_commands {
             commands::workflow_commands::get_active_workflow_columns,
             commands::workflow_commands::get_builtin_workflows,
             commands::workflow_commands::seed_builtin_workflows,
+            commands::linear_commands::get_linear_webhook_config,
+            commands::linear_commands::save_linear_webhook_signing_secret,
             // Artifact commands
             commands::artifact_commands::get_artifacts,
             commands::artifact_commands::get_artifact,

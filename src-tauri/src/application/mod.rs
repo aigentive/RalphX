@@ -43,6 +43,7 @@ pub(crate) mod git_artifact_cleanup;
 pub mod harness_runtime_registry;
 pub mod ideation_service;
 pub mod interactive_process_registry;
+pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
@@ -142,6 +143,11 @@ pub use interactive_process_registry::{InteractiveProcessKey, InteractiveProcess
 pub use ideation_service::{
     CreateProposalOptions, IdeationService, SessionStats, SessionWithData, UpdateProposalOptions,
     UpdateSource,
+};
+pub use linear_webhook_reconciliation_service::{
+    ExternalIssueLink, LinearWebhookAction, LinearWebhookError, LinearWebhookHeaders,
+    LinearWebhookOutcome, LinearWebhookReconciliationService, LinearWebhookRequest,
+    LinearWebhookStore, MemoryLinearWebhookStore,
 };
 pub use memory_archive_service::MemoryArchiveService;
 pub use permission_state::{PendingPermissionInfo, PermissionDecision, PermissionState};

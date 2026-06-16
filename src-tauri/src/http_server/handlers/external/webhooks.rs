@@ -1,4 +1,13 @@
 use super::*;
+use axum::body::Bytes;
+
+use crate::application::{
+    LinearWebhookAction, LinearWebhookError, LinearWebhookHeaders,
+    LinearWebhookReconciliationService, LinearWebhookRequest, LinearWebhookStore,
+};
+use crate::domain::services::SecretStore;
+use crate::infrastructure::secret_store::MacosKeychainSecretStore;
+use crate::infrastructure::sqlite::SqliteLinearWebhookStore;
 
 #[derive(Debug, Deserialize)]
 pub struct RegisterWebhookRequest {
@@ -248,4 +257,132 @@ pub struct WebhookHealthItem {
 #[derive(Debug, Serialize)]
 pub struct WebhookHealthResponse {
     pub webhooks: Vec<WebhookHealthItem>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LinearWebhookResponse {
+    pub accepted: bool,
+    pub delivery_id: String,
+    pub duplicate: bool,
+    pub action: String,
+}
+
+/// POST /api/integrations/linear/webhook — receive Linear webhooks.
+///
+/// This endpoint intentionally takes raw bytes so HMAC validation runs over the
+/// exact request body Linear signed, before JSON parsing or reconciliation.
+pub async fn receive_linear_webhook_http(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<LinearWebhookResponse>, HttpError> {
+    let store = Arc::new(SqliteLinearWebhookStore::new(state.app_state.db.clone()));
+    let (enabled, signing_secret_ref) = store
+        .get_config()
+        .await
+        .map_err(internal_linear_webhook_error)?;
+    if !enabled {
+        return Err(linear_webhook_http_error(LinearWebhookError::MissingSecret));
+    }
+    let signing_secret_ref = signing_secret_ref
+        .ok_or_else(|| linear_webhook_http_error(LinearWebhookError::MissingSecret))?;
+    let signing_secret = MacosKeychainSecretStore::new()
+        .get_secret(&signing_secret_ref)
+        .await
+        .map_err(|error| {
+            linear_webhook_http_error(LinearWebhookError::Reconciliation(error.to_string()))
+        })?
+        .ok_or_else(|| linear_webhook_http_error(LinearWebhookError::MissingSecret))?;
+
+    let mut transition_service_builder = state
+        .app_state
+        .build_transition_service_with_execution_state(Arc::clone(&state.execution_state));
+    if let Some(ref publisher) = state.app_state.webhook_publisher {
+        transition_service_builder =
+            transition_service_builder.with_webhook_publisher_for_emitter(Arc::clone(publisher));
+    }
+    let transition_service = transition_service_builder
+        .with_external_events_repo(Arc::clone(&state.app_state.external_events_repo));
+    let store_for_service: Arc<dyn LinearWebhookStore> = store;
+
+    let service = LinearWebhookReconciliationService::new(
+        signing_secret,
+        store_for_service,
+        Arc::clone(&state.app_state.workflow_repo),
+    );
+    let request = LinearWebhookRequest {
+        headers: LinearWebhookHeaders {
+            signature: header_string(&headers, "linear-signature"),
+            delivery: header_string(&headers, "linear-delivery"),
+            event: header_string(&headers, "linear-event"),
+        },
+        raw_body: body.to_vec(),
+    };
+
+    let outcome = service
+        .handle(request, chrono::Utc::now())
+        .await
+        .map_err(linear_webhook_http_error)?;
+    if let LinearWebhookAction::TransitionedTask {
+        task_id,
+        target_status,
+    } = &outcome.action
+    {
+        transition_service
+            .transition_task(task_id, *target_status)
+            .await
+            .map_err(internal_linear_webhook_error)?;
+    }
+
+    Ok(Json(LinearWebhookResponse {
+        accepted: true,
+        delivery_id: outcome.delivery_id,
+        duplicate: outcome.duplicate,
+        action: linear_action_label(&outcome.action).to_string(),
+    }))
+}
+
+fn header_string(headers: &HeaderMap, name: &'static str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+fn linear_action_label(action: &LinearWebhookAction) -> &'static str {
+    match action {
+        LinearWebhookAction::TransitionedTask { .. } => "transitioned_task",
+        LinearWebhookAction::RecordedIssue => "recorded_issue",
+        LinearWebhookAction::RecordedIssueActivity => "recorded_issue_activity",
+        LinearWebhookAction::NoLinkedTask => "no_linked_task",
+        LinearWebhookAction::NoMappedStatus => "no_mapped_status",
+        LinearWebhookAction::UnsupportedEvent => "unsupported_event",
+        LinearWebhookAction::DuplicateDelivery => "duplicate_delivery",
+    }
+}
+
+fn internal_linear_webhook_error(error: crate::error::AppError) -> HttpError {
+    error!("Linear webhook infrastructure error: {}", error);
+    HttpError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: Some(error.to_string()),
+    }
+}
+
+fn linear_webhook_http_error(error: LinearWebhookError) -> HttpError {
+    let status = match error {
+        LinearWebhookError::MissingSignature | LinearWebhookError::InvalidSignature => {
+            StatusCode::UNAUTHORIZED
+        }
+        LinearWebhookError::StaleTimestamp => StatusCode::UNAUTHORIZED,
+        LinearWebhookError::MalformedBody(_) | LinearWebhookError::MissingDeliveryId => {
+            StatusCode::BAD_REQUEST
+        }
+        LinearWebhookError::MissingSecret => StatusCode::SERVICE_UNAVAILABLE,
+        LinearWebhookError::Reconciliation(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    HttpError {
+        status,
+        message: Some(error.to_string()),
+    }
 }

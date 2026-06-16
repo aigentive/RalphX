@@ -23,6 +23,7 @@ pub mod git_commands;
 pub mod harness_provider_commands;
 pub mod health;
 pub mod ideation_commands;
+pub mod linear_commands;
 pub mod merge_pipeline_commands;
 pub mod metrics_commands;
 pub(crate) mod metrics_queries;
@@ -158,6 +159,10 @@ pub use ideation_commands::{
     IdeationSessionResponse, OrchestratorMessageResponse,
     PriorityAssessmentResponse, SessionWithDataResponse, TaskProposalResponse,
     ToolCallResultResponse,
+};
+pub use linear_commands::{
+    get_linear_webhook_config, save_linear_webhook_signing_secret,
+    LinearWebhookConfigResponse, SaveLinearWebhookSigningSecretInput,
 };
 pub use merge_pipeline_commands::{
     get_merge_phase_list, get_merge_pipeline, get_merge_progress, MergePipelineResponse,

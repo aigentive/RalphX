@@ -6,7 +6,8 @@ use tauri::State;
 
 use crate::application::AppState;
 use crate::domain::entities::{
-    ColumnBehavior, InternalStatus, WorkflowColumn, WorkflowDefaults, WorkflowId, WorkflowSchema,
+    ColumnBehavior, ExternalSyncConfig, InternalStatus, WorkflowColumn, WorkflowDefaults,
+    WorkflowId, WorkflowSchema,
 };
 
 /// Input for creating a new column
@@ -68,6 +69,7 @@ pub struct CreateWorkflowInput {
     pub is_default: Option<bool>,
     pub worker_profile: Option<String>,
     pub reviewer_profile: Option<String>,
+    pub external_sync: Option<ExternalSyncConfig>,
 }
 
 /// Input for updating a workflow
@@ -79,6 +81,7 @@ pub struct UpdateWorkflowInput {
     pub is_default: Option<bool>,
     pub worker_profile: Option<String>,
     pub reviewer_profile: Option<String>,
+    pub external_sync: Option<ExternalSyncConfig>,
 }
 
 /// Response wrapper for state group within a column
@@ -160,6 +163,8 @@ pub struct WorkflowResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub columns: Vec<WorkflowColumnResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_sync: Option<ExternalSyncConfig>,
     pub is_default: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker_profile: Option<String>,
@@ -179,6 +184,7 @@ impl From<WorkflowSchema> for WorkflowResponse {
                 .iter()
                 .map(WorkflowColumnResponse::from)
                 .collect(),
+            external_sync: workflow.external_sync,
             is_default: workflow.is_default,
             worker_profile: workflow.defaults.worker_profile,
             reviewer_profile: workflow.defaults.reviewer_profile,
@@ -243,6 +249,7 @@ pub async fn create_workflow(
     if input.is_default.unwrap_or(false) {
         workflow = workflow.as_default();
     }
+    workflow.external_sync = input.external_sync;
 
     // Set defaults
     workflow.defaults = WorkflowDefaults {
@@ -296,6 +303,9 @@ pub async fn update_workflow(
     if let Some(reviewer_profile) = input.reviewer_profile {
         workflow.defaults.reviewer_profile = Some(reviewer_profile);
     }
+    if let Some(external_sync) = input.external_sync {
+        workflow.external_sync = Some(external_sync);
+    }
 
     state
         .workflow_repo
@@ -323,38 +333,21 @@ pub async fn delete_workflow(id: String, state: State<'_, AppState>) -> Result<(
 pub async fn seed_builtin_workflows(state: State<'_, AppState>) -> Result<usize, String> {
     let mut created = 0;
 
-    // Check and create RalphX default workflow
-    let default_id = WorkflowId::from_string("ralphx-default");
-    if state
-        .workflow_repo
-        .get_by_id(&default_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .is_none()
-    {
-        state
+    for workflow in builtin_workflows() {
+        if state
             .workflow_repo
-            .create(WorkflowSchema::default_ralphx())
+            .get_by_id(&workflow.id)
             .await
-            .map_err(|e| e.to_string())?;
-        created += 1;
-    }
-
-    // Check and create Jira workflow
-    let jira_id = WorkflowId::from_string("jira-compatible");
-    if state
-        .workflow_repo
-        .get_by_id(&jira_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .is_none()
-    {
-        state
-            .workflow_repo
-            .create(WorkflowSchema::jira_compatible())
-            .await
-            .map_err(|e| e.to_string())?;
-        created += 1;
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
+            state
+                .workflow_repo
+                .create(workflow)
+                .await
+                .map_err(|e| e.to_string())?;
+            created += 1;
+        }
     }
 
     Ok(created)
@@ -419,8 +412,16 @@ pub async fn get_active_workflow_columns(
 /// Get the builtin workflow schemas
 #[tauri::command]
 pub async fn get_builtin_workflows() -> Result<Vec<WorkflowResponse>, String> {
-    Ok(vec![
-        WorkflowResponse::from(WorkflowSchema::default_ralphx()),
-        WorkflowResponse::from(WorkflowSchema::jira_compatible()),
-    ])
+    Ok(builtin_workflows()
+        .into_iter()
+        .map(WorkflowResponse::from)
+        .collect())
+}
+
+fn builtin_workflows() -> Vec<WorkflowSchema> {
+    vec![
+        WorkflowSchema::default_ralphx(),
+        WorkflowSchema::jira_compatible(),
+        WorkflowSchema::linear_compatible(),
+    ]
 }

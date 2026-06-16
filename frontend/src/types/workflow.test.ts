@@ -4,8 +4,10 @@ import {
   WorkflowSchemaZ,
   defaultWorkflow,
   jiraCompatibleWorkflow,
+  linearCompatibleWorkflow,
   BUILTIN_WORKFLOWS,
   getBuiltinWorkflow,
+  transformWorkflow,
   SyncProviderSchema,
   SyncDirectionSchema,
   ConflictResolutionSchema,
@@ -577,11 +579,93 @@ describe("jiraCompatibleWorkflow", () => {
   });
 });
 
+describe("linearCompatibleWorkflow", () => {
+  it("has Linear workflow identity without changing existing ids", () => {
+    expect(defaultWorkflow.id).toBe("ralphx-default");
+    expect(jiraCompatibleWorkflow.id).toBe("jira-compat");
+    expect(linearCompatibleWorkflow.id).toBe("linear-compat");
+  });
+
+  it("has 6 columns with Linear-oriented names", () => {
+    expect(linearCompatibleWorkflow.columns.map((column) => column.id)).toEqual([
+      "backlog",
+      "todo",
+      "in_progress",
+      "in_review",
+      "done",
+      "canceled",
+    ]);
+  });
+
+  it("has external sync configured for Linear", () => {
+    expect(linearCompatibleWorkflow.externalSync).toBeDefined();
+    expect(linearCompatibleWorkflow.externalSync?.provider).toBe("linear");
+    expect(linearCompatibleWorkflow.externalSync?.sync.direction).toBe("bidirectional");
+    expect(linearCompatibleWorkflow.externalSync?.sync.webhook).toBe(true);
+    expect(linearCompatibleWorkflow.externalSync?.conflictResolution).toBe("external_wins");
+    expect(linearCompatibleWorkflow.externalSync?.mapping["In Progress"]).toEqual({
+      externalStatus: "In Progress",
+      internalStatus: "executing",
+      columnId: "in_progress",
+    });
+  });
+
+  it("validates against schema", () => {
+    const result = WorkflowSchemaZ.safeParse(linearCompatibleWorkflow);
+    expect(result.success).toBe(true);
+  });
+
+  it("round-trips external sync from backend response shape", () => {
+    const result = transformWorkflow({
+      id: "linear-compat",
+      name: "Linear Compatible",
+      description: "Linear-style workflow with external state mapping",
+      columns: [
+        { id: "todo", name: "Todo", maps_to: "ready" },
+        { id: "in_progress", name: "In Progress", maps_to: "executing" },
+      ],
+      external_sync: {
+        provider: "linear",
+        mapping: {
+          "In Progress": {
+            external_status: "In Progress",
+            internal_status: "executing",
+            column_id: "in_progress",
+          },
+        },
+        sync: {
+          direction: "bidirectional",
+          webhook: true,
+        },
+        conflict_resolution: "external_wins",
+      },
+      is_default: false,
+    });
+
+    expect(result.externalSync).toEqual({
+      provider: "linear",
+      mapping: {
+        "In Progress": {
+          externalStatus: "In Progress",
+          internalStatus: "executing",
+          columnId: "in_progress",
+        },
+      },
+      sync: {
+        direction: "bidirectional",
+        webhook: true,
+      },
+      conflictResolution: "external_wins",
+    });
+  });
+});
+
 describe("BUILTIN_WORKFLOWS", () => {
-  it("contains default and jira-compatible workflows", () => {
-    expect(BUILTIN_WORKFLOWS).toHaveLength(2);
+  it("contains default, jira-compatible, and linear-compatible workflows", () => {
+    expect(BUILTIN_WORKFLOWS).toHaveLength(3);
     expect(BUILTIN_WORKFLOWS[0].id).toBe("ralphx-default");
     expect(BUILTIN_WORKFLOWS[1].id).toBe("jira-compat");
+    expect(BUILTIN_WORKFLOWS[2].id).toBe("linear-compat");
   });
 
   it("has exactly one default workflow", () => {
@@ -602,6 +686,12 @@ describe("getBuiltinWorkflow", () => {
     const workflow = getBuiltinWorkflow("jira-compat");
     expect(workflow).toBeDefined();
     expect(workflow?.name).toBe("Jira Compatible");
+  });
+
+  it("returns linear workflow by id", () => {
+    const workflow = getBuiltinWorkflow("linear-compat");
+    expect(workflow).toBeDefined();
+    expect(workflow?.name).toBe("Linear Compatible");
   });
 
   it("returns undefined for unknown id", () => {
