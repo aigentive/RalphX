@@ -20,6 +20,7 @@ use crate::application::AgentClientBundle;
 use crate::application::AgentTerminalService;
 use crate::application::AtlassianIntegrationService;
 use crate::application::EmptyAtlassianApiClient;
+use crate::application::ExternalIssueLinkService;
 use crate::application::PermissionState;
 use crate::application::QuestionState;
 use crate::application::ResumeValidator;
@@ -68,9 +69,9 @@ use crate::infrastructure::memory::{
     MemoryChatConversationRepository, MemoryChatMessageRepository, MemoryChatTimelineRepository,
     MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
     MemoryExecutionSettingsRepository, MemoryExternalEventsRepository,
-    MemoryGlobalExecutionSettingsRepository, MemoryIdeationEffortSettingsRepository,
-    MemoryIdeationModelSettingsRepository, MemoryIdeationSessionRepository,
-    MemoryIdeationSettingsRepository, MemoryMethodologyRepository,
+    MemoryExternalIssueLinkRepository, MemoryGlobalExecutionSettingsRepository,
+    MemoryIdeationEffortSettingsRepository, MemoryIdeationModelSettingsRepository,
+    MemoryIdeationSessionRepository, MemoryIdeationSettingsRepository, MemoryMethodologyRepository,
     MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
     MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
     MemoryProjectRepository, MemoryProposalDependencyRepository, MemoryQuestionRepository,
@@ -94,18 +95,18 @@ use crate::infrastructure::sqlite::{
     SqliteChatConversationRepository, SqliteChatMessageRepository, SqliteChatTimelineRepository,
     SqliteDelegatedSessionRepository, SqliteExecutionPlanRepository,
     SqliteExecutionSettingsRepository, SqliteExternalEventsRepository,
-    SqliteGlobalExecutionSettingsRepository, SqliteIdeationEffortSettingsRepository,
-    SqliteIdeationModelSettingsRepository, SqliteIdeationSessionRepository,
-    SqliteIdeationSettingsRepository, SqliteMemoryArchiveRepository, SqliteMemoryEntryRepository,
-    SqliteMemoryEventRepository, SqliteMethodologyRepository,
-    SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
-    SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
-    SqliteProjectRepository, SqliteProposalDependencyRepository, SqliteQuestionRepository,
-    SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
-    SqliteRunningAgentRegistry, SqliteSessionLinkRepository, SqliteTaskDependencyRepository,
-    SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
-    SqliteTaskStepRepository, SqliteTeamMessageRepository, SqliteTeamSessionRepository,
-    SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqliteExternalIssueLinkRepository, SqliteGlobalExecutionSettingsRepository,
+    SqliteIdeationEffortSettingsRepository, SqliteIdeationModelSettingsRepository,
+    SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
+    SqliteMemoryArchiveRepository, SqliteMemoryEntryRepository, SqliteMemoryEventRepository,
+    SqliteMethodologyRepository, SqliteOrphanWorktreeCleanupMarkerRepository,
+    SqlitePermissionRepository, SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository,
+    SqliteProcessRepository, SqliteProjectRepository, SqliteProposalDependencyRepository,
+    SqliteQuestionRepository, SqliteReviewIssueRepository, SqliteReviewRepository,
+    SqliteReviewSettingsRepository, SqliteRunningAgentRegistry, SqliteSessionLinkRepository,
+    SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
+    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
+    SqliteTeamSessionRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
 };
 use crate::infrastructure::GhCliGithubService;
 use crate::infrastructure::HyperAtlassianApiClient;
@@ -133,6 +134,8 @@ pub struct AppState {
     pub api_key_repo: Arc<dyn ApiKeyRepository>,
     /// Native Atlassian/Jira/Confluence integration service.
     pub atlassian_integration_service: Arc<AtlassianIntegrationService>,
+    /// Provider-neutral external issue link and sync service.
+    pub external_issue_link_service: Arc<ExternalIssueLinkService>,
     /// Agent profile repository (SQLite in production)
     pub agent_profile_repo: Arc<dyn AgentProfileRepository>,
     /// TaskQA repository for QA artifacts
@@ -313,6 +316,20 @@ impl AppState {
             Arc::new(MemorySecretStore::new()),
             Arc::new(EmptyAtlassianApiClient),
         ))
+    }
+
+    fn production_external_issue_link_service(
+        shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+    ) -> Arc<ExternalIssueLinkService> {
+        Arc::new(ExternalIssueLinkService::new(Arc::new(
+            SqliteExternalIssueLinkRepository::from_shared(Arc::clone(shared_conn)),
+        )))
+    }
+
+    fn memory_external_issue_link_service() -> Arc<ExternalIssueLinkService> {
+        Arc::new(ExternalIssueLinkService::new(Arc::new(
+            MemoryExternalIssueLinkRepository::new(),
+        )))
     }
 
     fn enable_claude_test_mode() {
@@ -790,6 +807,7 @@ impl AppState {
             atlassian_integration_service: Self::production_atlassian_integration_service(
                 &shared_conn,
             ),
+            external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(SqliteAgentProfileRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1010,6 +1028,7 @@ impl AppState {
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
+            external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1136,6 +1155,7 @@ impl AppState {
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
+            external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1272,6 +1292,7 @@ impl AppState {
             ))),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
+            external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1402,6 +1423,7 @@ impl AppState {
             project_repo,
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
+            external_issue_link_service: Self::memory_external_issue_link_service(),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),

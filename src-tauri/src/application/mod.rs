@@ -35,6 +35,7 @@ pub mod chat_service;
 pub mod dependency_service;
 pub mod event_cleanup_service;
 pub mod execution_settings_bootstrap;
+pub mod external_issue_link_service;
 pub mod ideation_effort_bootstrap;
 pub mod ideation_model_bootstrap;
 pub mod diff_service;
@@ -131,6 +132,7 @@ pub use event_cleanup_service::EventCleanupService;
 pub use execution_settings_bootstrap::{
     load_or_seed_execution_settings_defaults, ExecutionSettingsBootstrapResult,
 };
+pub use external_issue_link_service::ExternalIssueLinkService;
 pub use diff_service::{
     ConflictDiff, DiffHunk, DiffLine, DiffLineKind, DiffPageRow, DiffRefKind, DiffService,
     DiffSide, FileChange, FileChangeStatus, FileDiff, FileDiffPage, RangeLine,

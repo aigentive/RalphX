@@ -42,6 +42,7 @@ pub mod sqlite_external_events_repo;
 #[cfg(test)]
 mod sqlite_execution_plan_repo_tests;
 pub mod sqlite_execution_settings_repo;
+pub mod sqlite_external_issue_link_repo;
 pub mod sqlite_ideation_effort_settings_repo;
 pub mod sqlite_ideation_model_settings_repo;
 pub mod sqlite_ideation_session_repo;
@@ -118,6 +119,7 @@ pub use sqlite_external_events_repo::SqliteExternalEventsRepository;
 pub use sqlite_execution_settings_repo::{
     SqliteExecutionSettingsRepository, SqliteGlobalExecutionSettingsRepository,
 };
+pub use sqlite_external_issue_link_repo::SqliteExternalIssueLinkRepository;
 pub use sqlite_ideation_effort_settings_repo::SqliteIdeationEffortSettingsRepository;
 pub use sqlite_ideation_model_settings_repo::SqliteIdeationModelSettingsRepository;
 pub use sqlite_ideation_session_repo::SqliteIdeationSessionRepository;

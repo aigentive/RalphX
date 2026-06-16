@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::error::AppResult;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IntegrationValidationStatus {
@@ -134,6 +136,235 @@ pub trait AtlassianIntegrationSettingsRepository: Send + Sync {
         &self,
         settings: &AtlassianIntegrationSettings,
     ) -> Result<AtlassianIntegrationSettings, Box<dyn std::error::Error>>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalIssueLocalObjectKind {
+    Task,
+    Proposal,
+    Session,
+    PullRequest,
+    Check,
+    Qa,
+}
+
+impl ExternalIssueLocalObjectKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Task => "task",
+            Self::Proposal => "proposal",
+            Self::Session => "session",
+            Self::PullRequest => "pull_request",
+            Self::Check => "check",
+            Self::Qa => "qa",
+        }
+    }
+}
+
+impl std::str::FromStr for ExternalIssueLocalObjectKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "task" => Ok(Self::Task),
+            "proposal" => Ok(Self::Proposal),
+            "session" => Ok(Self::Session),
+            "pull_request" => Ok(Self::PullRequest),
+            "check" => Ok(Self::Check),
+            "qa" => Ok(Self::Qa),
+            other => Err(format!("Unknown external issue local object kind: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalIssueLocalObject {
+    pub kind: ExternalIssueLocalObjectKind,
+    pub id: String,
+}
+
+impl ExternalIssueLocalObject {
+    pub fn new(kind: ExternalIssueLocalObjectKind, id: impl Into<String>) -> Self {
+        Self {
+            kind,
+            id: id.into(),
+        }
+    }
+
+    pub fn task(id: impl Into<String>) -> Self {
+        Self::new(ExternalIssueLocalObjectKind::Task, id)
+    }
+
+    pub fn proposal(id: impl Into<String>) -> Self {
+        Self::new(ExternalIssueLocalObjectKind::Proposal, id)
+    }
+
+    pub fn session(id: impl Into<String>) -> Self {
+        Self::new(ExternalIssueLocalObjectKind::Session, id)
+    }
+
+    pub fn pull_request(id: impl Into<String>) -> Self {
+        Self::new(ExternalIssueLocalObjectKind::PullRequest, id)
+    }
+
+    pub fn check(id: impl Into<String>) -> Self {
+        Self::new(ExternalIssueLocalObjectKind::Check, id)
+    }
+
+    pub fn qa(id: impl Into<String>) -> Self {
+        Self::new(ExternalIssueLocalObjectKind::Qa, id)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalIssueSyncStatus {
+    Pending,
+    Succeeded,
+    Failed,
+    Skipped,
+}
+
+impl ExternalIssueSyncStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+impl std::str::FromStr for ExternalIssueSyncStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "succeeded" => Ok(Self::Succeeded),
+            "failed" => Ok(Self::Failed),
+            "skipped" => Ok(Self::Skipped),
+            other => Err(format!("Unknown external issue sync status: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalIssueLink {
+    pub id: String,
+    pub provider: String,
+    pub external_kind: String,
+    pub external_id: String,
+    pub external_key: Option<String>,
+    pub external_url: Option<String>,
+    pub local_object: ExternalIssueLocalObject,
+    pub local_project_id: Option<String>,
+    pub local_sha: Option<String>,
+    pub local_state: Option<String>,
+    pub idempotency_key: String,
+    pub metadata_json: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalIssueLinkUpsert {
+    pub provider: String,
+    pub external_kind: String,
+    pub external_id: String,
+    pub external_key: Option<String>,
+    pub external_url: Option<String>,
+    pub local_object: ExternalIssueLocalObject,
+    pub local_project_id: Option<String>,
+    pub local_sha: Option<String>,
+    pub local_state: Option<String>,
+    pub idempotency_key: String,
+    pub metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalIssueSyncRecord {
+    pub id: String,
+    pub link_id: String,
+    pub sync_kind: String,
+    pub idempotency_key: String,
+    pub local_sha: Option<String>,
+    pub local_state: Option<String>,
+    pub external_version: Option<String>,
+    pub status: ExternalIssueSyncStatus,
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub error_message: Option<String>,
+    pub metadata_json: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalIssueSyncRecordUpsert {
+    pub link_id: String,
+    pub sync_kind: String,
+    pub idempotency_key: String,
+    pub local_sha: Option<String>,
+    pub local_state: Option<String>,
+    pub external_version: Option<String>,
+    pub status: ExternalIssueSyncStatus,
+    pub error_message: Option<String>,
+    pub metadata_json: Option<String>,
+}
+
+#[async_trait]
+pub trait ExternalIssueLinkRepository: Send + Sync {
+    async fn upsert_link(&self, input: ExternalIssueLinkUpsert) -> AppResult<ExternalIssueLink>;
+
+    async fn get_link(&self, id: &str) -> AppResult<Option<ExternalIssueLink>>;
+
+    async fn find_link_by_idempotency_key(
+        &self,
+        idempotency_key: &str,
+    ) -> AppResult<Option<ExternalIssueLink>>;
+
+    async fn find_link_by_external_identity(
+        &self,
+        provider: &str,
+        external_kind: &str,
+        external_id: &str,
+    ) -> AppResult<Option<ExternalIssueLink>>;
+
+    async fn list_links_for_local(
+        &self,
+        local_object: &ExternalIssueLocalObject,
+    ) -> AppResult<Vec<ExternalIssueLink>>;
+
+    async fn upsert_sync_record(
+        &self,
+        input: ExternalIssueSyncRecordUpsert,
+    ) -> AppResult<ExternalIssueSyncRecord>;
+
+    async fn find_sync_record_by_idempotency_key(
+        &self,
+        idempotency_key: &str,
+    ) -> AppResult<Option<ExternalIssueSyncRecord>>;
+
+    async fn list_sync_records_for_link(
+        &self,
+        link_id: &str,
+    ) -> AppResult<Vec<ExternalIssueSyncRecord>>;
+
+    async fn update_sync_status(
+        &self,
+        sync_record_id: &str,
+        status: ExternalIssueSyncStatus,
+        external_version: Option<&str>,
+        error_message: Option<&str>,
+    ) -> AppResult<Option<ExternalIssueSyncRecord>>;
 }
 
 #[cfg(test)]
