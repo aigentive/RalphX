@@ -712,6 +712,7 @@ fn split_match_terms(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::services::learned_skill_adapters::LearnedSkillStatus;
     use std::fs;
     use tempfile::tempdir;
 
@@ -1120,5 +1121,171 @@ Body.
             split_match_terms("Workspace bridge, code-quality."),
             vec!["workspace", "bridge", "code-quality"]
         );
+    }
+
+    fn learned_skill_record(id: &str) -> LearnedSkillRecord {
+        LearnedSkillRecord {
+            id: id.to_string(),
+            project_id: "project-1".to_string(),
+            title: format!("Skill {id}"),
+            status: LearnedSkillStatus::Approved,
+            caller_surfaces: vec!["reviewer".to_string()],
+            stages: vec![LearnedSkillStage::Review],
+            buckets: vec![LearnedSkillBucket::Review],
+            path_scopes: Vec::new(),
+            compact_guidance: "Use this when reviewing repeated failures.".to_string(),
+            predicted_effect: "Reduces repeated review mistakes.".to_string(),
+            provenance_refs: vec!["pr-42".to_string()],
+        }
+    }
+
+    #[test]
+    fn pre_execution_context_derives_surface_stage_bucket_and_limit() {
+        let runtime_context = McpRuntimeContext {
+            context_type: Some("task_execution".to_string()),
+            project_id: Some(" project-1 ".to_string()),
+            ..McpRuntimeContext::default()
+        };
+
+        let context = pre_execution_learned_skill_context_from_records(
+            "ralphx:ralphx-execution-worker",
+            Some(&runtime_context),
+            vec![learned_skill_record("skill-1")],
+            vec!["src/lib.rs".to_string()],
+            None,
+        )
+        .expect("context");
+
+        assert_eq!(context.request.project_id, "project-1");
+        assert_eq!(context.request.caller_surface, "ralphx-execution-worker");
+        assert_eq!(context.request.stage, LearnedSkillStage::Execution);
+        assert_eq!(context.request.bucket, LearnedSkillBucket::Execution);
+        assert_eq!(context.request.max_skills, DEFAULT_PRE_EXECUTION_LEARNED_SKILL_LIMIT);
+        assert_eq!(context.request.touched_paths, vec!["src/lib.rs"]);
+        assert_eq!(context.available_skills.len(), 1);
+    }
+
+    #[test]
+    fn pre_execution_context_rejects_missing_inputs_and_infers_non_execution_stages() {
+        let runtime_context = McpRuntimeContext {
+            context_type: Some("verification".to_string()),
+            project_id: Some("project-1".to_string()),
+            ..McpRuntimeContext::default()
+        };
+        assert!(
+            pre_execution_learned_skill_context_from_records(
+                "reviewer",
+                Some(&runtime_context),
+                Vec::new(),
+                Vec::new(),
+                Some(3),
+            )
+            .is_none()
+        );
+        assert!(
+            pre_execution_learned_skill_context_from_records(
+                "   ",
+                Some(&runtime_context),
+                vec![learned_skill_record("skill-1")],
+                Vec::new(),
+                Some(3),
+            )
+            .is_none()
+        );
+        assert!(
+            pre_execution_learned_skill_context_from_records(
+                "reviewer",
+                None,
+                vec![learned_skill_record("skill-1")],
+                Vec::new(),
+                Some(3),
+            )
+            .is_none()
+        );
+
+        let context = pre_execution_learned_skill_context_from_records(
+            "ralphx-reviewer",
+            Some(&runtime_context),
+            vec![learned_skill_record("skill-1")],
+            Vec::new(),
+            Some(3),
+        )
+        .expect("verification context");
+        assert_eq!(context.request.stage, LearnedSkillStage::Verification);
+        assert_eq!(context.request.bucket, LearnedSkillBucket::Verification);
+        assert_eq!(context.request.max_skills, 3);
+
+        assert_eq!(
+            inferred_pre_execution_learned_skill_stage(None, "ralphx-execution-merger"),
+            LearnedSkillStage::Merge
+        );
+        assert_eq!(
+            inferred_pre_execution_learned_skill_stage(None, "ralphx-chat-project"),
+            LearnedSkillStage::Planning
+        );
+    }
+
+    #[test]
+    fn learned_skill_citations_escape_and_filter_unsafe_ids() {
+        let citations = vec![
+            LearnedSkillConstraintCitation {
+                skill_id: "unsafe/id".to_string(),
+                title: "Unsafe".to_string(),
+                predicted_effect: "Should not appear".to_string(),
+                compact_guidance: "Skip".to_string(),
+                provenance_refs: Vec::new(),
+            },
+            LearnedSkillConstraintCitation {
+                skill_id: "skill-1".to_string(),
+                title: "Review <merge> & \"quotes\"".to_string(),
+                predicted_effect: "Avoid <bad> output".to_string(),
+                compact_guidance: "Use 'carefully'".to_string(),
+                provenance_refs: vec!["pr<42>".to_string()],
+            },
+        ];
+
+        let injected = inject_learned_skill_citations_into_system_prompt("Base", &citations);
+
+        assert_eq!(injected.injected_skill_names, vec!["learned:skill-1"]);
+        assert!(injected
+            .system_prompt
+            .contains("Review &lt;merge&gt; &amp; &quot;quotes&quot;"));
+        assert!(injected.system_prompt.contains("Use &#39;carefully&#39;"));
+        assert!(injected.system_prompt.contains("pr&lt;42&gt;"));
+        assert!(!injected.system_prompt.contains("Should not appear"));
+    }
+
+    #[test]
+    fn learned_skill_injection_extends_existing_injection_only_when_selected() {
+        let base = InternalSkillInjection {
+            system_prompt: "Base prompt".to_string(),
+            injected_skill_names: vec!["workspace-swe".to_string()],
+        };
+        let no_context =
+            inject_pre_execution_learned_skills_into_existing_injection(base.clone(), None);
+        assert_eq!(no_context, base);
+
+        let context = PreExecutionLearnedSkillContext {
+            request: LearnedSkillSelectionRequest {
+                project_id: "project-1".to_string(),
+                caller_surface: "reviewer".to_string(),
+                stage: LearnedSkillStage::Review,
+                bucket: LearnedSkillBucket::Review,
+                touched_paths: Vec::new(),
+                max_skills: 1,
+            },
+            available_skills: vec![learned_skill_record("skill-1")],
+        };
+
+        let injected =
+            inject_pre_execution_learned_skills_into_existing_injection(base, Some(&context));
+
+        assert_eq!(
+            injected.injected_skill_names,
+            vec!["workspace-swe", "learned:skill-1"]
+        );
+        assert!(injected
+            .system_prompt
+            .contains("<ralphx_learned_skill_citations>"));
     }
 }

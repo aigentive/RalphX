@@ -529,6 +529,25 @@ fn render_skill_markdown_uses_pull_request_provenance_source() {
 }
 
 #[test]
+fn render_skill_markdown_uses_explicit_provenance_source_and_skips_empty_sources() {
+    let project_id = ProjectId::from_string("project-export".to_string());
+    let mut skill = approved_skill(project_id, "Source Evidence Skill");
+    skill.provenance_json = json!({ "source": "  local-analysis  " });
+
+    let markdown = render_skill_markdown(&skill);
+
+    assert!(markdown.contains("  source: \"local-analysis\"\n"));
+
+    skill.provenance_json = json!({ "source": "   " });
+    let markdown = render_skill_markdown(&skill);
+    assert!(!markdown.contains("  source:"));
+
+    skill.provenance_json = json!("not-an-object");
+    let markdown = render_skill_markdown(&skill);
+    assert!(!markdown.contains("  source:"));
+}
+
+#[test]
 fn export_relative_path_validation_rejects_unsafe_paths() {
     for path in [
         std::path::Path::new("/tmp/.claude/skills/skill/SKILL.md"),
@@ -540,4 +559,16 @@ fn export_relative_path_validation_rejects_unsafe_paths() {
             validate_export_relative_path(path).expect_err("unsafe export path should be rejected");
         assert!(error.to_string().contains(".claude/skills"));
     }
+}
+
+#[test]
+fn export_relative_path_validation_accepts_provider_roots_only_with_safe_components() {
+    validate_export_relative_path(std::path::Path::new(".agents/skills/skill/SKILL.md"))
+        .expect("codex provider root should be accepted");
+    validate_export_relative_path(std::path::Path::new(".claude/skills/skill/SKILL.md"))
+        .expect("claude provider root should be accepted");
+
+    let error = validate_export_relative_path(std::path::Path::new(".agents/skill"))
+        .expect_err("provider root without skills directory should fail");
+    assert!(error.to_string().contains(".agents/skills"));
 }

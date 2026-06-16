@@ -888,6 +888,36 @@ mod tests {
     }
 
     #[test]
+    fn project_skill_composer_response_falls_back_to_predicted_effect_and_safe_id_token() {
+        let skill = ProjectSkill {
+            id: crate::domain::entities::ProjectSkillId::from_string("skill.id:unsafe_123"),
+            project_id: ProjectId::from_string("project-1".to_string()),
+            title: "!!!".to_string(),
+            bucket: "reviewer".to_string(),
+            stage: "approved".to_string(),
+            status: ProjectSkillLifecycleStatus::Approved,
+            pinned: false,
+            archived: false,
+            scope_paths: Vec::new(),
+            compact_guidance: "   ".to_string(),
+            body_markdown: "Check fail-closed paths.".to_string(),
+            predicted_effect: Some("  Reduces repeated mistakes.  ".to_string()),
+            provenance_json: serde_json::json!({ "source": "test" }),
+            companion_of_skill_id: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let response = project_skill_to_composer_skill(skill);
+
+        assert_eq!(response.name, "skillidunsafe123");
+        assert_eq!(
+            response.description.as_deref(),
+            Some("Reduces repeated mistakes.")
+        );
+    }
+
+    #[test]
     fn claude_native_skill_discovery_reads_project_skills_and_commands() {
         let temp = tempdir().expect("tempdir");
         fs::create_dir_all(temp.path().join(".claude/skills/ship-it")).expect("skill dir");
@@ -1130,6 +1160,32 @@ Skill body.
     }
 
     #[test]
+    fn claude_command_reader_prefers_frontmatter_description() {
+        let temp = tempdir().expect("tempdir");
+        let commands_root = temp.path().join(".claude/commands");
+        fs::create_dir_all(&commands_root).expect("commands dir");
+        fs::write(
+            commands_root.join("ship.md"),
+            r#"---
+description: Prefer metadata
+display-name: Ship Command
+user-invocable: false
+---
+Fallback first body line.
+"#,
+        )
+        .expect("command file");
+
+        let commands =
+            read_claude_skill_dir(&commands_root, "project-command").expect("commands");
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].display_name.as_deref(), Some("Ship Command"));
+        assert_eq!(commands[0].description.as_deref(), Some("Prefer metadata"));
+        assert!(!commands[0].enabled);
+    }
+
+    #[test]
     fn claude_canonical_agent_skill_entries_are_included() {
         let temp = tempdir().expect("tempdir");
         create_agent(
@@ -1190,6 +1246,35 @@ More body.
     }
 
     #[test]
+    fn codex_skill_reader_uses_frontmatter_description_and_ignores_missing_skill_files() {
+        let temp = tempdir().expect("tempdir");
+        let skills_root = temp.path().join("skills");
+        fs::create_dir_all(skills_root.join("with-file")).expect("skill dir");
+        fs::create_dir_all(skills_root.join("without-file")).expect("missing skill dir");
+        fs::write(
+            skills_root.join("with-file/SKILL.md"),
+            r#"---
+name: with-file
+description: Metadata description
+---
+Body fallback.
+"#,
+        )
+        .expect("skill file");
+
+        let skills =
+            read_codex_skill_dir(&skills_root, "repo", None, &BTreeSet::new()).expect("skills");
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "codex:repo:with-file");
+        assert_eq!(
+            skills[0].description.as_deref(),
+            Some("Metadata description")
+        );
+        assert!(skills[0].enabled);
+    }
+
+    #[test]
     fn codex_config_parser_handles_quotes_comments_and_table_boundaries() {
         let temp = tempdir().expect("tempdir");
         fs::create_dir_all(temp.path().join("skills/disabled")).expect("disabled skill dir");
@@ -1235,6 +1320,24 @@ enabled = false
         .expect("unsafe manifest");
 
         assert!(read_codex_plugin_skill_root(&unsafe_plugin).is_none());
+
+        let absolute_plugin = temp.path().join("absolute-plugin");
+        fs::create_dir_all(absolute_plugin.join(".codex-plugin")).expect("absolute metadata");
+        fs::write(
+            absolute_plugin.join(".codex-plugin/plugin.json"),
+            r#"{"name":"absolute","skills":"/tmp/skills"}"#,
+        )
+        .expect("absolute manifest");
+        assert!(read_codex_plugin_skill_root(&absolute_plugin).is_none());
+
+        let unsafe_name_plugin = temp.path().join("unsafe-name-plugin");
+        fs::create_dir_all(unsafe_name_plugin.join(".codex-plugin")).expect("unsafe metadata");
+        fs::write(
+            unsafe_name_plugin.join(".codex-plugin/plugin.json"),
+            r#"{"name":"bad/name","skills":"./skills"}"#,
+        )
+        .expect("unsafe name manifest");
+        assert!(read_codex_plugin_skill_root(&unsafe_name_plugin).is_none());
 
         let plugin_root = temp
             .path()
