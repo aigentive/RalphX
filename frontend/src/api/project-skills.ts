@@ -69,6 +69,7 @@ const ProjectSkillLifecycleResponseSchema = z.object({
 const DistillProjectSkillsResponseSchema = z.object({
   staged_skills: z.array(ProjectSkillResponseSchema),
   skipped_existing: z.number(),
+  updated_existing: z.number().optional().default(0),
   ingested_outcomes: z.number().optional().default(0),
   scanned_git_commits: z.number().optional().default(0),
   scanned_github_prs: z.number().optional().default(0),
@@ -241,6 +242,7 @@ export interface DistillProjectSkillsInput {
 export interface DistillProjectSkillsResult {
   stagedSkills: ProjectSkill[];
   skippedExisting: number;
+  updatedExisting: number;
   ingestedOutcomes: number;
   scannedGitCommits: number;
   scannedGithubPrs: number;
@@ -648,6 +650,7 @@ export const projectSkillsApi = {
     return {
       stagedSkills: parsed.staged_skills.map(transformProjectSkill),
       skippedExisting: parsed.skipped_existing,
+      updatedExisting: parsed.updated_existing,
       ingestedOutcomes: parsed.ingested_outcomes,
       scannedGitCommits: parsed.scanned_git_commits,
       scannedGithubPrs: parsed.scanned_github_prs,

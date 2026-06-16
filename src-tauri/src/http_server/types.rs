@@ -1428,6 +1428,7 @@ pub struct DistillProjectSkillsRequest {
 pub struct DistillProjectSkillsResponse {
     pub staged_skills: Vec<ProjectSkillResponse>,
     pub skipped_existing: usize,
+    pub updated_existing: usize,
     pub ingested_outcomes: usize,
     pub scanned_git_commits: usize,
     pub scanned_github_prs: usize,

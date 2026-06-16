@@ -158,6 +158,7 @@ describe("ProjectSkillsCuratorPanel", () => {
     mockedProjectSkillsApi.distill.mockResolvedValue({
       stagedSkills: [stagedSkill({ id: "skill-2" })],
       skippedExisting: 0,
+      updatedExisting: 0,
       ingestedOutcomes: 0,
       scannedGitCommits: 0,
       scannedGithubPrs: 0,

@@ -572,6 +572,7 @@ pub async fn distill_project_skills(
             .map(ProjectSkillResponse::from)
             .collect(),
         skipped_existing: result.skipped_existing,
+        updated_existing: result.updated_existing,
         ingested_outcomes,
         scanned_git_commits,
         scanned_github_prs,

@@ -279,6 +279,7 @@ describe("projectSkillsApi", () => {
       jsonResponse({
         staged_skills: [projectSkill({ id: "skill-2", status: "staged" })],
         skipped_existing: 1,
+        updated_existing: 2,
         ingested_outcomes: 3,
         scanned_git_commits: 8,
         scanned_github_prs: 4,
@@ -296,6 +297,7 @@ describe("projectSkillsApi", () => {
     ).resolves.toMatchObject({
       stagedSkills: [{ id: "skill-2", status: "staged" }],
       skippedExisting: 1,
+      updatedExisting: 2,
       ingestedOutcomes: 3,
       scannedGitCommits: 8,
       scannedGithubPrs: 4,

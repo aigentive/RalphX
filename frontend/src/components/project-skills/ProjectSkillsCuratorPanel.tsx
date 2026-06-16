@@ -700,7 +700,9 @@ function CandidateDiscoveryDialog({
             <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
               Staged {result.stagedSkills.length} candidate
               {result.stagedSkills.length === 1 ? "" : "s"} in the Review
-              Queue. Skipped {result.skippedExisting} duplicate
+              Queue. Updated {result.updatedExisting} existing draft
+              {result.updatedExisting === 1 ? "" : "s"}. Skipped{" "}
+              {result.skippedExisting} duplicate
               {result.skippedExisting === 1 ? "" : "s"}.
             </div>
           ) : null}

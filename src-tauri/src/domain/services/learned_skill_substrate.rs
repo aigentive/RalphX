@@ -120,6 +120,13 @@ pub struct DistillEligibleOutcomesInput {
 pub struct DistillEligibleOutcomesResult {
     pub staged_skills: Vec<ProjectSkill>,
     pub skipped_existing: usize,
+    pub updated_existing: usize,
+}
+
+enum OutcomeDistillationAction {
+    Staged(ProjectSkill),
+    Updated(ProjectSkill),
+    Skipped,
 }
 
 impl ProjectSkillService {
@@ -146,6 +153,15 @@ impl ProjectSkillService {
     pub async fn stage_skill_from_outcome(
         &self,
         input: StageProjectSkillFromOutcomeInput,
+    ) -> AppResult<ProjectSkill> {
+        self.stage_skill_from_outcome_with_companion(input, None)
+            .await
+    }
+
+    async fn stage_skill_from_outcome_with_companion(
+        &self,
+        input: StageProjectSkillFromOutcomeInput,
+        companion_of_skill_id: Option<ProjectSkillId>,
     ) -> AppResult<ProjectSkill> {
         if input.outcome.status != TaskOutcomeStatus::Eligible {
             return Err(AppError::Validation(
@@ -180,7 +196,7 @@ impl ProjectSkillService {
                 "review_id": input.outcome.review_id,
                 "additional": input.additional_provenance,
             }),
-            companion_of_skill_id: None,
+            companion_of_skill_id,
             created_at: now,
             updated_at: now,
         };
@@ -358,6 +374,7 @@ impl ProjectSkillDistillerService {
 
         let mut staged_skills = Vec::new();
         let mut skipped_existing = 0;
+        let mut updated_existing = 0;
         let limit = input.limit.max(1);
         for outcome in outcomes {
             if staged_skills.len() >= limit {
@@ -367,19 +384,20 @@ impl ProjectSkillDistillerService {
                 skipped_existing += 1;
                 continue;
             }
-            if let Some(staged) = self
-                .stage_eligible_outcome_candidate_with_origin(&outcome, input.origin)
+            match self
+                .distill_eligible_outcome_with_origin(&outcome, input.origin)
                 .await?
             {
-                staged_skills.push(staged);
-            } else {
-                skipped_existing += 1;
+                OutcomeDistillationAction::Staged(staged) => staged_skills.push(staged),
+                OutcomeDistillationAction::Updated(_) => updated_existing += 1,
+                OutcomeDistillationAction::Skipped => skipped_existing += 1,
             }
         }
 
         Ok(DistillEligibleOutcomesResult {
             staged_skills,
             skipped_existing,
+            updated_existing,
         })
     }
 
@@ -399,8 +417,23 @@ impl ProjectSkillDistillerService {
         outcome: &TaskOutcome,
         origin: ProjectSkillDistillationOrigin,
     ) -> AppResult<Option<ProjectSkill>> {
+        match self
+            .distill_eligible_outcome_with_origin(outcome, origin)
+            .await?
+        {
+            OutcomeDistillationAction::Staged(skill)
+            | OutcomeDistillationAction::Updated(skill) => Ok(Some(skill)),
+            OutcomeDistillationAction::Skipped => Ok(None),
+        }
+    }
+
+    async fn distill_eligible_outcome_with_origin(
+        &self,
+        outcome: &TaskOutcome,
+        origin: ProjectSkillDistillationOrigin,
+    ) -> AppResult<OutcomeDistillationAction> {
         if outcome.status != TaskOutcomeStatus::Eligible {
-            return Ok(None);
+            return Ok(OutcomeDistillationAction::Skipped);
         }
         let existing_skills = self
             .skill_service
@@ -420,14 +453,113 @@ impl ProjectSkillDistillerService {
                 == Some(outcome.id.as_str())
         });
         if already_staged {
-            return Ok(None);
+            return Ok(OutcomeDistillationAction::Skipped);
+        }
+
+        if let Some(fingerprint) = verification_gap_fingerprint_from_outcome(outcome) {
+            if let Some(action) = self
+                .update_or_stage_matching_verification_gap_skill(
+                    outcome,
+                    origin,
+                    &existing_skills,
+                    fingerprint,
+                )
+                .await?
+            {
+                return Ok(action);
+            }
         }
 
         let candidate = build_distilled_skill_candidate(outcome, origin);
-        self.skill_service
+        let staged = self
+            .skill_service
             .stage_skill_from_outcome(candidate)
             .await
-            .map(Some)
+            .map(OutcomeDistillationAction::Staged)?;
+        Ok(staged)
+    }
+
+    async fn update_or_stage_matching_verification_gap_skill(
+        &self,
+        outcome: &TaskOutcome,
+        origin: ProjectSkillDistillationOrigin,
+        existing_skills: &[ProjectSkill],
+        fingerprint: &str,
+    ) -> AppResult<Option<OutcomeDistillationAction>> {
+        let matching_skills = existing_skills
+            .iter()
+            .filter(|skill| project_skill_verification_fingerprint(skill) == Some(fingerprint))
+            .filter(|skill| {
+                !skill.archived
+                    && !matches!(
+                        skill.status,
+                        ProjectSkillLifecycleStatus::Archived
+                            | ProjectSkillLifecycleStatus::Retired
+                            | ProjectSkillLifecycleStatus::Rejected
+                    )
+            })
+            .collect::<Vec<_>>();
+
+        if let Some(staged) = matching_skills
+            .iter()
+            .find(|skill| skill.status == ProjectSkillLifecycleStatus::Staged)
+        {
+            if staged
+                .provenance_json
+                .get("outcome_id")
+                .and_then(Value::as_str)
+                == Some(outcome.id.as_str())
+                || staged
+                    .body_markdown
+                    .contains(outcome.source_ref_id.as_str())
+            {
+                return Ok(Some(OutcomeDistillationAction::Skipped));
+            }
+            let mut updated_body = staged.body_markdown.clone();
+            append_verification_gap_evidence(&mut updated_body, outcome);
+            let updated = self
+                .skill_service
+                .update_skill_content(UpdateProjectSkillContentInput {
+                    project_skill_id: staged.id.clone(),
+                    title: staged.title.clone(),
+                    bucket: staged.bucket.clone(),
+                    stage: staged.stage.clone(),
+                    scope_paths: staged.scope_paths.clone(),
+                    compact_guidance: staged.compact_guidance.clone(),
+                    body_markdown: updated_body,
+                    predicted_effect: staged.predicted_effect.clone().unwrap_or_else(|| {
+                        "Reduces repeated verification gaps after review approval.".to_string()
+                    }),
+                    source_sync_enabled: None,
+                })
+                .await?
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("project skill {} not found", staged.id.as_str()))
+                })?;
+            return Ok(Some(OutcomeDistillationAction::Updated(updated)));
+        }
+
+        if let Some(approved) = matching_skills
+            .iter()
+            .find(|skill| skill.status == ProjectSkillLifecycleStatus::Approved)
+        {
+            let has_pending_companion = existing_skills.iter().any(|skill| {
+                skill.status == ProjectSkillLifecycleStatus::Staged
+                    && skill.companion_of_skill_id.as_ref() == Some(&approved.id)
+                    && project_skill_verification_fingerprint(skill) == Some(fingerprint)
+            });
+            if has_pending_companion {
+                return Ok(Some(OutcomeDistillationAction::Skipped));
+            }
+            let candidate = build_distilled_skill_candidate(outcome, origin);
+            let staged = self
+                .skill_service
+                .stage_skill_from_outcome_with_companion(candidate, Some(approved.id.clone()))
+                .await?;
+            return Ok(Some(OutcomeDistillationAction::Staged(staged)));
+        }
+
+        Ok(None)
     }
 }
 
@@ -1228,7 +1360,76 @@ fn build_distilled_skill_candidate(
             "distillation_origin": origin.as_str(),
             "pipeline_role": origin.pipeline_role(),
             "authoring_contract": PROJECT_SKILL_AUTHORING_CONTRACT,
+            "verification_gap_fingerprint": verification_gap_fingerprint_from_outcome(outcome),
+            "verification_generation": outcome.evidence_json.get("generation").cloned(),
         }),
+    }
+}
+
+fn verification_gap_fingerprint_from_outcome(outcome: &TaskOutcome) -> Option<&str> {
+    if outcome.source != "verification" || outcome.source_ref_kind != "gap_recurrence" {
+        return None;
+    }
+    outcome
+        .evidence_json
+        .get("fingerprint")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn project_skill_verification_fingerprint(skill: &ProjectSkill) -> Option<&str> {
+    skill
+        .provenance_json
+        .get("additional")
+        .and_then(|additional| additional.get("verification_gap_fingerprint"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn append_verification_gap_evidence(body_markdown: &mut String, outcome: &TaskOutcome) {
+    let generation = outcome
+        .evidence_json
+        .get("generation")
+        .and_then(Value::as_i64)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let occurrences = outcome
+        .evidence_json
+        .get("occurrences")
+        .and_then(Value::as_u64)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let distinct_rounds = outcome
+        .evidence_json
+        .get("distinct_rounds")
+        .and_then(Value::as_u64)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let descriptions = outcome
+        .evidence_json
+        .get("descriptions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .take(3)
+        .map(|value| format!("- {value}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    body_markdown.push_str("\n\n## Additional recurrence evidence\n\n");
+    body_markdown.push_str(&format!(
+        "- Outcome: `{}`\n- Verification generation: {generation}\n- Occurrences: {occurrences}\n- Distinct rounds: {distinct_rounds}\n",
+        outcome.source_ref_id
+    ));
+    if !descriptions.is_empty() {
+        body_markdown.push_str("\nObserved descriptions:\n\n");
+        body_markdown.push_str(&descriptions);
+        body_markdown.push('\n');
     }
 }
 
@@ -2321,6 +2522,153 @@ mod tests {
             staged.provenance_json["additional"]["full_diff_read"].as_bool(),
             Some(false)
         );
+    }
+
+    #[tokio::test]
+    async fn verification_distiller_updates_existing_staged_gap_skill() {
+        let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
+        let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let mut first = new_empty_task_outcome(
+            project_id.clone(),
+            "verification",
+            "gap_recurrence",
+            "s1:1:fp",
+        );
+        first.status = TaskOutcomeStatus::Eligible;
+        first.outcome_class = Some("verification_gap_recurring".to_string());
+        first.evidence_json = json!({
+            "fingerprint": "fp",
+            "generation": 1,
+            "occurrences": 2,
+            "distinct_rounds": 2,
+            "descriptions": ["Add migration validation."]
+        });
+        let mut second = new_empty_task_outcome(
+            project_id.clone(),
+            "verification",
+            "gap_recurrence",
+            "s1:2:fp",
+        );
+        second.status = TaskOutcomeStatus::Eligible;
+        second.outcome_class = Some("verification_gap_recurring".to_string());
+        second.evidence_json = json!({
+            "fingerprint": "fp",
+            "generation": 2,
+            "occurrences": 3,
+            "distinct_rounds": 2,
+            "descriptions": ["Migration validation is still missing."]
+        });
+
+        let outcome_repo_for_distiller: Arc<dyn TaskOutcomeRepository> = outcome_repo.clone();
+        let skill_repo_for_distiller: Arc<dyn ProjectSkillRepository> = skill_repo.clone();
+        let distiller =
+            ProjectSkillDistillerService::new(outcome_repo_for_distiller, skill_repo_for_distiller);
+        let staged = distiller
+            .stage_eligible_outcome_candidate_with_origin(
+                &first,
+                ProjectSkillDistillationOrigin::VerificationObserver,
+            )
+            .await
+            .unwrap()
+            .expect("first recurrence should stage");
+        let updated = distiller
+            .stage_eligible_outcome_candidate_with_origin(
+                &second,
+                ProjectSkillDistillationOrigin::VerificationObserver,
+            )
+            .await
+            .unwrap()
+            .expect("second recurrence should update existing staged skill");
+
+        assert_eq!(updated.id, staged.id);
+        assert!(updated
+            .body_markdown
+            .contains("## Additional recurrence evidence"));
+        assert!(updated.body_markdown.contains("s1:2:fp"));
+        let rows = skill_repo
+            .list_by_project(
+                &project_id,
+                ProjectSkillListOptions {
+                    include_archived: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn verification_distiller_stages_companion_for_matching_approved_skill() {
+        let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
+        let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+        let skill_service =
+            ProjectSkillService::new(Arc::clone(&skill_repo) as Arc<dyn ProjectSkillRepository>);
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let mut first = new_empty_task_outcome(
+            project_id.clone(),
+            "verification",
+            "gap_recurrence",
+            "s1:1:fp",
+        );
+        first.status = TaskOutcomeStatus::Eligible;
+        first.outcome_class = Some("verification_gap_recurring".to_string());
+        first.evidence_json = json!({
+            "fingerprint": "fp",
+            "generation": 1,
+            "occurrences": 2,
+            "distinct_rounds": 2,
+            "descriptions": ["Plan lacks rollback criteria."]
+        });
+        let mut second = new_empty_task_outcome(
+            project_id.clone(),
+            "verification",
+            "gap_recurrence",
+            "s1:2:fp",
+        );
+        second.status = TaskOutcomeStatus::Eligible;
+        second.outcome_class = Some("verification_gap_recurring".to_string());
+        second.evidence_json = json!({
+            "fingerprint": "fp",
+            "generation": 2,
+            "occurrences": 3,
+            "distinct_rounds": 2,
+            "descriptions": ["Rollback criteria are still missing."]
+        });
+
+        let outcome_repo_for_distiller: Arc<dyn TaskOutcomeRepository> = outcome_repo.clone();
+        let skill_repo_for_distiller: Arc<dyn ProjectSkillRepository> = skill_repo.clone();
+        let distiller =
+            ProjectSkillDistillerService::new(outcome_repo_for_distiller, skill_repo_for_distiller);
+        let staged = distiller
+            .stage_eligible_outcome_candidate_with_origin(
+                &first,
+                ProjectSkillDistillationOrigin::VerificationObserver,
+            )
+            .await
+            .unwrap()
+            .expect("first recurrence should stage");
+        let approved = skill_service
+            .approve_skill(&staged.id)
+            .await
+            .unwrap()
+            .expect("approved skill");
+        let companion = distiller
+            .stage_eligible_outcome_candidate_with_origin(
+                &second,
+                ProjectSkillDistillationOrigin::VerificationObserver,
+            )
+            .await
+            .unwrap()
+            .expect("approved skill should get staged companion");
+
+        assert_ne!(companion.id, approved.id);
+        assert_eq!(companion.status, ProjectSkillLifecycleStatus::Staged);
+        assert_eq!(companion.companion_of_skill_id, Some(approved.id.clone()));
+        let approved_after = skill_repo.get_by_id(&approved.id).await.unwrap().unwrap();
+        assert_eq!(approved_after.status, ProjectSkillLifecycleStatus::Approved);
+        assert!(!approved_after.body_markdown.contains("s1:2:fp"));
     }
 
     #[tokio::test]
