@@ -256,7 +256,8 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(spawnConversationSessionNamerMock).toHaveBeenCalledWith(
         "conversation-2",
-        "fix agent landing flow"
+        "fix agent landing flow",
+        "codex"
       )
     );
     await waitFor(() =>
@@ -967,7 +968,8 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(spawnConversationSessionNamerMock).toHaveBeenCalledWith(
         "conversation-seeded",
-        "fix agent landing flow"
+        "fix agent landing flow",
+        "codex"
       )
     );
   });

@@ -1589,19 +1589,23 @@ fn add_prompt_args(
 
         // Apply CLI tool restrictions from agent_config
         // Frontmatter tools/disallowedTools only work for subagent spawning,
-        // NOT for direct CLI invocations with --agent -p. We must pass --tools flag.
+        // NOT for direct CLI invocations with --agent -p. Pass --tools only when
+        // there are built-in CLI tools to allow; the Claude CLI treats an empty
+        // value as disabling MCP tools too.
         if let Some(allowed_tools) = get_allowed_tools_for_profile(agent_name, agent_profile) {
-            // Pass --tools even if empty (restricts to MCP-only)
-            cmd.args(["--tools", &allowed_tools]);
-            tracing::debug!(
-                agent = agent_name,
-                tools = if allowed_tools.is_empty() {
-                    "(MCP only)"
-                } else {
-                    allowed_tools.as_str()
-                },
-                "Agent restricted to CLI tools"
-            );
+            if allowed_tools.is_empty() {
+                tracing::debug!(
+                    agent = agent_name,
+                    "Agent configured as MCP-only; omitting --tools because Claude CLI treats an empty value as disabling MCP tools"
+                );
+            } else {
+                cmd.args(["--tools", &allowed_tools]);
+                tracing::debug!(
+                    agent = agent_name,
+                    tools = allowed_tools.as_str(),
+                    "Agent restricted to CLI tools"
+                );
+            }
         }
 
         // Pre-approve tools to bypass permission prompts (MCP + CLI permissions)

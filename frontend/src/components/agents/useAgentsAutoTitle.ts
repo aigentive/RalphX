@@ -27,11 +27,13 @@ export function useAgentsAutoTitle({
       conversationId,
       targetProjectId,
       shouldSpawnSessionNamer,
+      providerHarness,
     }: {
       content: string;
       conversationId: string;
       targetProjectId: string;
       shouldSpawnSessionNamer: boolean;
+      providerHarness?: string | null;
     }) => {
       const conversation = findConversationById(conversationId);
       const titleIsAutoManaged =
@@ -47,8 +49,9 @@ export function useAgentsAutoTitle({
       };
       const isFirstTrackedMessage = state.messages.length === 0;
       if (shouldSpawnSessionNamer && isFirstTrackedMessage) {
+        const namerProviderHarness = providerHarness ?? conversation?.providerHarness ?? null;
         void chatApi
-          .spawnConversationSessionNamer(conversationId, content)
+          .spawnConversationSessionNamer(conversationId, content, namerProviderHarness)
           .catch(() => {
             // Session namer is best-effort; local auto-titling remains as fallback.
           });

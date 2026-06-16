@@ -8,7 +8,8 @@ use async_trait::async_trait;
 use futures::Stream;
 
 use super::session_namer_agent::{
-    build_session_namer_agent_spawn, spawn_session_namer_agent, SessionNamerTarget,
+    build_session_namer_agent_spawn, extract_session_namer_title, spawn_session_namer_agent,
+    SessionNamerTarget,
 };
 use super::AppState;
 use crate::application::harness_runtime_registry::default_repo_root_working_directory;
@@ -21,6 +22,33 @@ use crate::domain::entities::{ChatConversation, DelegatedSession, IdeationSessio
 use crate::infrastructure::agents::claude::agent_names;
 use crate::infrastructure::{MockAgenticClient, MockCallType};
 
+fn conversation_initial(
+    conversation_id: impl Into<String>,
+    user_message: impl Into<String>,
+) -> SessionNamerTarget {
+    SessionNamerTarget::from_initial_request(
+        None,
+        Some(conversation_id.into()),
+        user_message.into(),
+        None,
+    )
+    .expect("conversation target")
+}
+
+fn conversation_initial_with_harness(
+    conversation_id: impl Into<String>,
+    user_message: impl Into<String>,
+    requested_harness: AgentHarnessKind,
+) -> SessionNamerTarget {
+    SessionNamerTarget::from_initial_request(
+        None,
+        Some(conversation_id.into()),
+        user_message.into(),
+        Some(requested_harness),
+    )
+    .expect("conversation target")
+}
+
 #[derive(Debug, Clone, Copy)]
 enum FailingAgentMode {
     Spawn,
@@ -32,6 +60,24 @@ struct FailingSessionNamerClient {
     capabilities: ClientCapabilities,
     spawn_count: AtomicUsize,
     wait_count: AtomicUsize,
+}
+
+struct SuccessfulSessionNamerClient {
+    output_content: String,
+    capabilities: ClientCapabilities,
+    spawn_count: AtomicUsize,
+    wait_count: AtomicUsize,
+}
+
+impl SuccessfulSessionNamerClient {
+    fn new(output_content: impl Into<String>) -> Self {
+        Self {
+            output_content: output_content.into(),
+            capabilities: ClientCapabilities::mock(),
+            spawn_count: AtomicUsize::new(0),
+            wait_count: AtomicUsize::new(0),
+        }
+    }
 }
 
 impl FailingSessionNamerClient {
@@ -50,6 +96,48 @@ impl FailingSessionNamerClient {
 
     fn wait_count(&self) -> usize {
         self.wait_count.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl AgenticClient for SuccessfulSessionNamerClient {
+    async fn spawn_agent(&self, config: AgentConfig) -> AgentResult<AgentHandle> {
+        self.spawn_count.fetch_add(1, Ordering::SeqCst);
+        Ok(AgentHandle::mock(config.role))
+    }
+
+    async fn stop_agent(&self, _handle: &AgentHandle) -> AgentResult<()> {
+        Ok(())
+    }
+
+    async fn wait_for_completion(&self, _handle: &AgentHandle) -> AgentResult<AgentOutput> {
+        self.wait_count.fetch_add(1, Ordering::SeqCst);
+        Ok(AgentOutput {
+            success: true,
+            content: self.output_content.clone(),
+            exit_code: Some(0),
+            duration_ms: Some(25),
+        })
+    }
+
+    async fn send_prompt(&self, _handle: &AgentHandle, prompt: &str) -> AgentResult<AgentResponse> {
+        Ok(AgentResponse::new(prompt))
+    }
+
+    fn stream_response(
+        &self,
+        _handle: &AgentHandle,
+        _prompt: &str,
+    ) -> Pin<Box<dyn Stream<Item = AgentResult<ResponseChunk>> + Send>> {
+        Box::pin(futures::stream::empty())
+    }
+
+    fn capabilities(&self) -> &ClientCapabilities {
+        &self.capabilities
+    }
+
+    async fn is_available(&self) -> AgentResult<bool> {
+        Ok(true)
     }
 }
 
@@ -97,6 +185,24 @@ impl AgenticClient for FailingSessionNamerClient {
     }
 }
 
+#[test]
+fn session_namer_extracts_title_from_plain_title_output() {
+    assert_eq!(
+        extract_session_namer_title("Fix stuck auto rename flow").as_deref(),
+        Some("Fix stuck auto rename flow")
+    );
+}
+
+#[test]
+fn session_namer_extracts_title_from_claude_pseudo_tool_output() {
+    let output = r##"{"type":"result","subtype":"success","result":"# Session Title Generation\n\n**Generated Title:** `Test session namer`\n\n<invoke name=\"update_session_title\">\n<parameter name=\"conversation_id\">conversation-1</parameter>\n<parameter name=\"title\">Test session namer</parameter>\n</invoke>"}"##;
+
+    assert_eq!(
+        extract_session_namer_title(output).as_deref(),
+        Some("Test session namer")
+    );
+}
+
 #[tokio::test]
 async fn session_namer_conversation_spawn_uses_active_project_cwd_and_conversation_harness() {
     let default_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
@@ -122,10 +228,7 @@ async fn session_namer_conversation_spawn_uses_active_project_cwd_and_conversati
 
     let spawn = build_session_namer_agent_spawn(
         &state,
-        SessionNamerTarget::conversation_initial(
-            conversation.id.as_str(),
-            "Name this Codex conversation",
-        ),
+        conversation_initial(conversation.id.as_str(), "Name this Codex conversation"),
     )
     .await
     .unwrap();
@@ -145,6 +248,45 @@ async fn session_namer_conversation_spawn_uses_active_project_cwd_and_conversati
         Some(agent_names::AGENT_SESSION_NAMER)
     );
     assert!(spawn.config.prompt.contains("Name this Codex conversation"));
+}
+
+#[tokio::test]
+async fn session_namer_conversation_spawn_prefers_requested_harness_before_persisted_provider() {
+    let default_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test()
+        .with_agent_client(default_client)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_client.clone());
+
+    let project_dir = tempfile::tempdir().unwrap();
+    let project = Project::new(
+        "Codex Provider Override Project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+
+    let spawn = build_session_namer_agent_spawn(
+        &state,
+        conversation_initial_with_harness(
+            conversation.id.as_str(),
+            "Name this Codex conversation before provider persistence",
+            AgentHarnessKind::Codex,
+        ),
+    )
+    .await
+    .unwrap();
+
+    assert!(Arc::ptr_eq(&spawn.client, &codex_client));
+    assert_eq!(spawn.config.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(spawn.config.model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(spawn.config.logical_effort, Some(LogicalEffort::Medium));
+    assert_eq!(spawn.config.working_directory, project_dir.path());
 }
 
 #[tokio::test]
@@ -253,6 +395,52 @@ async fn session_namer_fire_and_forget_spawns_and_waits_for_accepted_session() {
 }
 
 #[tokio::test]
+async fn session_namer_fire_and_forget_persists_generated_conversation_title() {
+    let concrete_client = Arc::new(SuccessfulSessionNamerClient::new(
+        r#"{"type":"result","result":"**Generated Title:** `Test session namer`"}"#,
+    ));
+    let agent_client: Arc<dyn AgenticClient> = concrete_client;
+    let state = AppState::new_test().with_agent_client(agent_client);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    let project = Project::new(
+        "Generated Conversation Title Project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.set_title("Discuss just a test".to_string());
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    spawn_session_namer_agent(
+        &state,
+        conversation_initial(conversation.id.as_str(), "just a test"),
+    )
+    .await
+    .unwrap();
+
+    let mut updated_title = None;
+    for _ in 0..20 {
+        updated_title = state
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .and_then(|conversation| conversation.title);
+        if updated_title.as_deref() == Some("Test session namer") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    assert_eq!(updated_title.as_deref(), Some("Test session namer"));
+}
+
+#[tokio::test]
 async fn session_namer_fire_and_forget_logs_spawn_and_wait_failures_without_erroring() {
     for mode in [FailingAgentMode::Spawn, FailingAgentMode::Wait] {
         let concrete_client = Arc::new(FailingSessionNamerClient::new(mode));
@@ -320,10 +508,7 @@ async fn session_namer_ideation_conversation_spawn_uses_session_project_cwd() {
 
     let spawn = build_session_namer_agent_spawn(
         &state,
-        SessionNamerTarget::conversation_initial(
-            conversation.id.as_str(),
-            "Name this ideation conversation",
-        ),
+        conversation_initial(conversation.id.as_str(), "Name this ideation conversation"),
     )
     .await
     .unwrap();
@@ -362,10 +547,7 @@ async fn session_namer_task_conversation_spawn_uses_task_project_cwd() {
 
     let spawn = build_session_namer_agent_spawn(
         &state,
-        SessionNamerTarget::conversation_initial(
-            conversation.id.as_str(),
-            "Name this task conversation",
-        ),
+        conversation_initial(conversation.id.as_str(), "Name this task conversation"),
     )
     .await
     .unwrap();
@@ -404,10 +586,7 @@ async fn session_namer_delegation_conversation_spawn_uses_delegated_project_cwd(
 
     let spawn = build_session_namer_agent_spawn(
         &state,
-        SessionNamerTarget::conversation_initial(
-            conversation.id.as_str(),
-            "Name this delegated conversation",
-        ),
+        conversation_initial(conversation.id.as_str(), "Name this delegated conversation"),
     )
     .await
     .unwrap();
@@ -423,7 +602,7 @@ async fn session_namer_missing_conversation_returns_not_found() {
 
     let error = match build_session_namer_agent_spawn(
         &state,
-        SessionNamerTarget::conversation_initial("missing-conversation", "Name this"),
+        conversation_initial("missing-conversation", "Name this"),
     )
     .await
     {
@@ -453,10 +632,7 @@ async fn session_namer_conversation_without_project_uses_runtime_root_fallback()
 
     let spawn = build_session_namer_agent_spawn(
         &state,
-        SessionNamerTarget::conversation_initial(
-            conversation.id.as_str(),
-            "Name this legacy conversation",
-        ),
+        conversation_initial(conversation.id.as_str(), "Name this legacy conversation"),
     )
     .await
     .unwrap();
@@ -474,6 +650,7 @@ fn session_namer_initial_request_target_requires_exactly_one_target_id() {
         Some("session-1".to_string()),
         None,
         "Name session".to_string(),
+        None,
     )
     .unwrap();
     assert!(matches!(
@@ -485,6 +662,7 @@ fn session_namer_initial_request_target_requires_exactly_one_target_id() {
         None,
         Some("conversation-1".to_string()),
         "Name conversation".to_string(),
+        None,
     )
     .unwrap();
     assert!(matches!(
@@ -496,7 +674,10 @@ fn session_namer_initial_request_target_requires_exactly_one_target_id() {
         Some("session-1".to_string()),
         Some("conversation-1".to_string()),
         "ambiguous".to_string(),
+        None,
     )
     .is_err());
-    assert!(SessionNamerTarget::from_initial_request(None, None, "missing".to_string()).is_err());
+    assert!(
+        SessionNamerTarget::from_initial_request(None, None, "missing".to_string(), None).is_err()
+    );
 }

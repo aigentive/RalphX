@@ -636,6 +636,7 @@ function renderSidebar(
         onCreateAgent={vi.fn()}
         onCreateProject={vi.fn()}
         onArchiveProject={vi.fn()}
+        onAutoRenameConversation={vi.fn()}
         onRenameConversation={vi.fn()}
         onArchiveConversation={vi.fn()}
         onRestoreConversation={vi.fn()}
@@ -1304,6 +1305,7 @@ describe("AgentsSidebar", () => {
             onCreateAgent={vi.fn()}
             onCreateProject={vi.fn()}
             onArchiveProject={vi.fn()}
+            onAutoRenameConversation={vi.fn()}
             onRenameConversation={vi.fn()}
             onArchiveConversation={vi.fn()}
             onRestoreConversation={vi.fn()}
@@ -1401,6 +1403,7 @@ describe("AgentsSidebar", () => {
             onCreateAgent={vi.fn()}
             onCreateProject={vi.fn()}
             onArchiveProject={vi.fn()}
+            onAutoRenameConversation={vi.fn()}
             onRenameConversation={vi.fn()}
             onArchiveConversation={vi.fn()}
             onRestoreConversation={vi.fn()}
@@ -1486,6 +1489,7 @@ describe("AgentsSidebar", () => {
             onCreateAgent={vi.fn()}
             onCreateProject={vi.fn()}
             onArchiveProject={vi.fn()}
+            onAutoRenameConversation={vi.fn()}
             onRenameConversation={vi.fn()}
             onArchiveConversation={vi.fn()}
             onRestoreConversation={vi.fn()}
@@ -2217,6 +2221,39 @@ describe("AgentsSidebar", () => {
       expect(onRenameConversation).toHaveBeenCalledWith("conversation-rename", "Review follow-up")
     );
     expect(screen.queryByText("Rename session")).not.toBeInTheDocument();
+  });
+
+  it("starts auto rename from the project session rename dialog", async () => {
+    const user = userEvent.setup();
+    const onAutoRenameConversation = vi.fn().mockResolvedValue(undefined);
+    const onRenameConversation = vi.fn().mockResolvedValue(undefined);
+    const activeConversation = conversation({
+      id: "conversation-auto-rename",
+      title: "Discuss stale fallback",
+    });
+    conversationsByProject.set("project-1", {
+      data: [activeConversation],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], {
+      onAutoRenameConversation,
+      onRenameConversation,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Rename session"));
+    await user.click(screen.getByRole("button", { name: "Auto rename" }));
+
+    await waitFor(() =>
+      expect(onAutoRenameConversation).toHaveBeenCalledWith(activeConversation)
+    );
+    expect(onRenameConversation).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByLabelText("Session title")).toBeNull());
   });
 
   it("forks a session from row actions", async () => {
@@ -3021,6 +3058,43 @@ describe("AgentsSidebar", () => {
     expect(onArchiveConversation).toHaveBeenCalledWith(active);
   });
 
+  it("starts auto rename from the publication session rename dialog", async () => {
+    const user = userEvent.setup();
+    const onAutoRenameConversation = vi.fn().mockResolvedValue(undefined);
+    const active = conversation({
+      id: "conversation-publication-auto-rename",
+      title: "Discuss stale publication fallback",
+    });
+    useAgentSessionStore.setState({
+      sidebarGroupBy: "publication",
+      sidebarPublicationStateFilters: ["active"],
+    });
+    conversationsByProject.set("project-1", {
+      data: [active],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], {
+      onAutoRenameConversation,
+    });
+
+    const row = screen.getByTestId(
+      "agents-session-conversation-publication-auto-rename"
+    );
+    await user.click(within(row).getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Rename session"));
+    await user.click(screen.getByRole("button", { name: "Auto rename" }));
+
+    await waitFor(() =>
+      expect(onAutoRenameConversation).toHaveBeenCalledWith(active)
+    );
+    await waitFor(() => expect(screen.queryByLabelText("Session title")).toBeNull());
+  });
+
   it("opens the selected conversation destination group when publication state changes", async () => {
     const selected = conversation({
       id: "conversation-selected-publish",
@@ -3077,6 +3151,7 @@ describe("AgentsSidebar", () => {
           onCreateAgent={vi.fn()}
           onCreateProject={vi.fn()}
           onArchiveProject={vi.fn()}
+          onAutoRenameConversation={vi.fn()}
           onRenameConversation={vi.fn()}
           onArchiveConversation={vi.fn()}
           onRestoreConversation={vi.fn()}
