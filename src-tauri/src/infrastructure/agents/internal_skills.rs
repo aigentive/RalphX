@@ -917,9 +917,38 @@ description: Workspace bridge instructions
     #[test]
     fn live_agent_internal_skill_configs_are_valid() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        let agent_name = "ralphx-chat-project";
-        validate_agent_internal_skills(&root, agent_name)
-            .unwrap_or_else(|error| panic!("{agent_name} internal skills invalid: {error}"));
+        for agent_name in [
+            "ralphx-chat-project",
+            "ralphx-ideation",
+            "ralphx-memory-capture",
+            "ralphx-memory-maintainer",
+        ] {
+            validate_agent_internal_skills(&root, agent_name)
+                .unwrap_or_else(|error| panic!("{agent_name} internal skills invalid: {error}"));
+        }
+    }
+
+    #[test]
+    fn memory_agents_auto_load_project_skill_authoring_contract() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        for agent_name in ["ralphx-memory-capture", "ralphx-memory-maintainer"] {
+            let injected = inject_internal_skills_into_system_prompt(
+                &root,
+                agent_name,
+                "Base prompt",
+                "Distill a learned project skill candidate from this conversation.",
+            )
+            .unwrap_or_else(|error| panic!("{agent_name} injection failed: {error}"));
+            assert_eq!(
+                injected.injected_skill_names,
+                vec!["project-skill-authoring"],
+                "{agent_name} should load the authoring contract"
+            );
+            assert!(injected.system_prompt.contains("# Project Skill Authoring"));
+            assert!(injected
+                .system_prompt
+                .contains("Do not create one skill per commit, PR, error string, or session."));
+        }
     }
 
     #[test]

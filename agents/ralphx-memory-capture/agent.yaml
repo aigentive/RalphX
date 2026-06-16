@@ -9,6 +9,11 @@ capabilities:
     - get_conversation_transcript
     - upsert_memories
     - mark_memory_obsolete
+  internal_skills:
+    auto_match: true
+    max_auto_loaded: 1
+    allowed:
+      - project-skill-authoring
 harnesses:
   claude:
     model: sonnet

@@ -10,6 +10,7 @@ use tokio::time::timeout;
 use tracing::error;
 
 use super::*;
+use crate::application::project_skill_export_service::MAX_SKILL_DESCRIPTION_CHARS;
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::ChatConversationId;
 use crate::domain::entities::{
@@ -31,7 +32,6 @@ use crate::error::{AppError, AppResult};
 use crate::http_server::handlers::learned_skills_export::assert_project_id_scope;
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
 use crate::http_server::types::HttpError;
-use crate::application::project_skill_export_service::MAX_SKILL_DESCRIPTION_CHARS;
 use crate::infrastructure::tool_paths::{resolve_gh_cli_path, resolve_git_cli_path};
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
@@ -41,6 +41,7 @@ const GITHUB_PR_HISTORY_SCAN_LIMIT: usize = 25;
 const GITHUB_PR_CANDIDATE_LIST_LIMIT: usize = 25;
 const GITHUB_PR_CANDIDATE_MAX_LIMIT: usize = 50;
 const GITHUB_PR_DISTILL_SOURCE: &str = "github_pr_history";
+const PROJECT_SKILL_AUTHORING_CONTRACT: &str = "project-skill-authoring";
 
 #[derive(Debug, Clone, Copy, Default)]
 struct GitHistoryIngestSummary {
@@ -737,6 +738,7 @@ pub async fn stage_project_skill_from_pull_request(
             "source_ref_id": pull_request.number.to_string(),
             "pull_request_number": pull_request.number,
             "enriched_from_pr_detail": fields.enriched,
+            "authoring_contract": PROJECT_SKILL_AUTHORING_CONTRACT,
             "evidence": fields.evidence,
         }),
         companion_of_skill_id: None,
@@ -1142,8 +1144,9 @@ async fn read_github_pull_request_detail(
     if !output.status.success() {
         return Ok(None);
     }
-    let detail = serde_json::from_slice::<GithubPrDetail>(&output.stdout)
-        .map_err(|error| AppError::Infrastructure(format!("failed to parse gh pr view: {error}")))?;
+    let detail = serde_json::from_slice::<GithubPrDetail>(&output.stdout).map_err(|error| {
+        AppError::Infrastructure(format!("failed to parse gh pr view: {error}"))
+    })?;
     Ok(Some(detail))
 }
 
@@ -1357,22 +1360,29 @@ fn pr_review_summary(review_states: &[String]) -> String {
     }
 }
 
-/// Build deterministic, open-standard-aligned skill fields from PR signal:
-/// a gerund title, a third-person what+when description carrying concrete
-/// triggers, derived scope paths, and a progressive-disclosure body.
+/// Build deterministic draft fields from bounded PR signal. This intentionally
+/// produces an authoring worksheet, not a final approved skill.
 fn build_pr_skill_fields(source: &PrSkillSource) -> PrSkillFields {
     let scope_paths = pr_scope_paths(&source.changed_paths);
     let extensions = pr_file_extensions(&source.changed_paths);
     let area = pr_primary_area(&scope_paths);
     let review_summary = pr_review_summary(&source.review_states);
 
-    let title = truncate_text(&format!("Reviewing {area} changes"), MAX_PR_SKILL_TITLE_CHARS);
+    let title = truncate_text(
+        &format!("Draft procedure from PR #{} {area}", source.number),
+        MAX_PR_SKILL_TITLE_CHARS,
+    );
 
-    let mut compact_guidance = String::from("Reuse the reviewed approach from this change set.");
+    let mut compact_guidance = String::from(
+        "Use this selected PR only as bounded evidence while authoring a reusable procedure.",
+    );
     if scope_paths.is_empty() {
-        compact_guidance.push_str(" Use when reviewing similar changes");
+        compact_guidance.push_str(" Review before similar changes");
     } else {
-        compact_guidance.push_str(&format!(" Use when working on {}", scope_paths.join(", ")));
+        compact_guidance.push_str(&format!(
+            " Review before work on {}",
+            scope_paths.join(", ")
+        ));
     }
     if !extensions.is_empty() {
         compact_guidance.push_str(&format!(" or editing {} files", extensions.join("/")));
@@ -1392,17 +1402,19 @@ fn build_pr_skill_fields(source: &PrSkillSource) -> PrSkillFields {
     } else {
         format!(" ({})", extensions.join(", "))
     };
-    let workflow = if source.commit_headlines.is_empty() {
-        "1. Review the change set and mirror its approach for the same kind of work.".to_string()
+    let evidence_steps = if source.commit_headlines.is_empty() {
+        "1. Identify the reusable procedure from the PR metadata before approval.\n2. Add concrete project commands, files, or review checks if this draft is too generic.\n3. Keep only steps that apply beyond this one pull request.".to_string()
     } else {
-        source
+        let commit_hints = source
             .commit_headlines
             .iter()
             .take(MAX_PR_WORKFLOW_COMMITS)
-            .enumerate()
-            .map(|(index, headline)| format!("{}. {headline}", index + 1))
+            .map(|headline| format!("   - {headline}"))
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+        format!(
+            "1. Treat these commit headlines as hints, not as procedure:\n{commit_hints}\n2. Rewrite the reusable steps a future agent should follow.\n3. Remove PR-specific details before approval unless they belong in provenance."
+        )
     };
     let url_clause = source
         .url
@@ -1421,15 +1433,17 @@ fn build_pr_skill_fields(source: &PrSkillSource) -> PrSkillFields {
         .map(|excerpt| format!("\n\nPR summary:\n\n{excerpt}"))
         .unwrap_or_default();
     let body_markdown = format!(
-        "## When to use\n\nWhen working on {when}{extension_clause}.\n\n## Workflow\n\n{workflow}\n\n## Verification\n\n- Re-run the project's lint and tests before approving.\n- Confirm the result matches the original review outcome ({review_summary}).\n\n<details>\n<summary>Provenance</summary>\n\nDistilled from GitHub PR #{number}{url_clause}. Changed {file_count} files (+{additions}/-{deletions}).{labels_line}{body_excerpt_block}\n\n</details>",
+        "## Authoring required\n\nThis is a staged draft from bounded GitHub PR metadata. Edit it before approval so it describes a reusable project procedure, not just PR #{number}.\n\n## When to use\n\nUse when working on {when}{extension_clause}.\n\n## Procedure\n\n{evidence_steps}\n\n## Verification\n\n- Replace generic hints with concrete commands or checks before approval.\n- Confirm the procedure is reusable beyond PR #{number}.\n- Re-run the project's relevant lint and tests when applying this skill.\n- Compare the approved draft against the original review outcome ({review_summary}).\n\n<details>\n<summary>Provenance</summary>\n\n- Source: GitHub PR #{number}{url_clause}.\n- Authoring contract: `{authoring_contract}`.\n- Changed {file_count} files (+{additions}/-{deletions}).\n- Full diff read: false.{labels_line}{body_excerpt_block}\n\n</details>",
         number = source.number,
+        authoring_contract = PROJECT_SKILL_AUTHORING_CONTRACT,
         file_count = source.changed_paths.len(),
         additions = source.additions,
         deletions = source.deletions,
     );
 
-    let predicted_effect =
-        format!("Fewer repeated mistakes when changing {area} ({review_summary}).");
+    let predicted_effect = format!(
+        "Improves similar {area} work only after this PR-backed draft is rewritten into an approved reusable procedure ({review_summary})."
+    );
 
     let evidence = serde_json::json!({
         "source": "gh_pr_view",
@@ -1452,6 +1466,7 @@ fn build_pr_skill_fields(source: &PrSkillSource) -> PrSkillFields {
         "full_diff_read": false,
         "redaction_applied": true,
         "enriched_from_pr_detail": source.enriched,
+        "authoring_contract": PROJECT_SKILL_AUTHORING_CONTRACT,
     });
 
     PrSkillFields {
@@ -2468,8 +2483,14 @@ mod tests {
         let (frontmatter, body) = split_skill_frontmatter(markdown);
         let frontmatter = frontmatter.expect("frontmatter parsed");
         assert_eq!(frontmatter.name.as_deref(), Some("foo-bar"));
-        assert_eq!(frontmatter.description.as_deref(), Some("Does X. Use when Y."));
-        assert_eq!(frontmatter.paths, vec!["src/a".to_string(), "src/b".to_string()]);
+        assert_eq!(
+            frontmatter.description.as_deref(),
+            Some("Does X. Use when Y.")
+        );
+        assert_eq!(
+            frontmatter.paths,
+            vec!["src/a".to_string(), "src/b".to_string()]
+        );
         assert!(body.starts_with("# Title"));
         // Frontmatter values must NOT leak into the scraped body: the scraped
         // guidance is the body line, never the frontmatter `description`.
@@ -2490,8 +2511,8 @@ mod tests {
 
     #[tokio::test]
     async fn scan_project_skill_source_root_round_trips_description_and_paths() {
-        let project_dir = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
-            .expect("temp project dir");
+        let project_dir =
+            tempfile::tempdir_in(std::env::current_dir().expect("cwd")).expect("temp project dir");
         let skill_dir = project_dir.path().join(".claude/skills/reviewing-merge");
         std::fs::create_dir_all(&skill_dir).unwrap();
         // Exactly the open-standard shape the exporter writes.
@@ -2581,11 +2602,12 @@ mod tests {
 
         let fields = build_pr_skill_fields(&source);
 
-        // Gerund title within the open-standard length budget.
+        // Draft title within the open-standard length budget.
         assert!(fields.title.chars().count() <= 64);
-        assert!(fields.title.starts_with("Reviewing "));
-        // Third-person what+when description carrying concrete triggers.
-        assert!(fields.compact_guidance.contains("Use when working on"));
+        assert!(fields.title.starts_with("Draft procedure from PR #42"));
+        // Guidance makes the selected PR an evidence source, not the skill itself.
+        assert!(fields.compact_guidance.contains("bounded evidence"));
+        assert!(fields.compact_guidance.contains("Review before work on"));
         assert!(fields.compact_guidance.contains("src-tauri/src/domain"));
         assert!(
             fields.compact_guidance.contains(".rs") || fields.compact_guidance.contains(".tsx")
@@ -2597,12 +2619,20 @@ mod tests {
         assert!(fields
             .scope_paths
             .contains(&"frontend/src/components".to_string()));
-        // Progressive-disclosure body with workflow from commit headlines.
+        // Progressive-disclosure body with authoring gate and commit hints.
+        assert!(fields.body_markdown.contains("## Authoring required"));
         assert!(fields.body_markdown.contains("## When to use"));
-        assert!(fields.body_markdown.contains("## Workflow"));
+        assert!(fields.body_markdown.contains("## Procedure"));
         assert!(fields.body_markdown.contains("## Verification"));
-        assert!(fields.body_markdown.contains("1. Add merge guard"));
+        assert!(fields.body_markdown.contains("- Add merge guard"));
+        assert!(fields.body_markdown.contains("Full diff read: false"));
+        assert!(fields.body_markdown.contains("project-skill-authoring"));
         assert!(fields.body_markdown.contains("PR #42"));
+        assert_eq!(
+            fields.evidence["authoring_contract"].as_str(),
+            Some("project-skill-authoring")
+        );
+        assert_eq!(fields.evidence["full_diff_read"].as_bool(), Some(false));
         assert!(fields.enriched);
     }
 
@@ -2626,8 +2656,11 @@ mod tests {
         assert!(fields.scope_paths.is_empty());
         assert!(fields
             .compact_guidance
-            .contains("Use when reviewing similar changes"));
-        assert!(fields.body_markdown.contains("Review the change set"));
+            .contains("Review before similar changes"));
+        assert!(fields.body_markdown.contains("Authoring required"));
+        assert!(fields
+            .body_markdown
+            .contains("Keep only steps that apply beyond this one pull request"));
     }
 
     #[test]

@@ -21,6 +21,7 @@ use crate::error::{AppError, AppResult};
 const PROJECT_SKILL_BUCKET_VALUES: &[&str] =
     &["planning", "verification", "review", "execution", "merge"];
 const PROJECT_SKILL_STAGE_VALUES: &[&str] = PROJECT_SKILL_BUCKET_VALUES;
+const PROJECT_SKILL_AUTHORING_CONTRACT: &str = "project-skill-authoring";
 
 pub struct OutcomeLedgerService {
     repo: Arc<dyn TaskOutcomeRepository>,
@@ -1189,29 +1190,44 @@ fn build_distilled_skill_candidate(
     let evidence_summary =
         serde_json::to_string(&outcome.evidence_json).unwrap_or_else(|_| "{}".to_string());
     let evidence_summary = truncate_for_skill_body(&evidence_summary, 1200);
+    let title = format!("Draft procedure for {readable_class}");
+    let compact_guidance = format!(
+        "Review bounded {readable_class} evidence and author a reusable procedure before approval."
+    );
+    let body_markdown = project_skill_authoring_body(
+        &format!(
+            "eligible `{}` outcome from `{}`",
+            outcome_class, outcome.source
+        ),
+        &format!("similar {readable_class} work"),
+        &[
+            "Identify the reusable decision, command, or review step from the evidence.",
+            "Rewrite it as a project procedure that applies beyond this one outcome.",
+            "Keep only steps a future agent can execute or verify.",
+        ],
+        &[
+            "Confirm the procedure is not just a restatement of the prior outcome.",
+            "Check that the scope and bucket/stage match the evidence.",
+        ],
+        &format!("```json\n{}\n```", evidence_summary),
+    );
 
     StageProjectSkillFromOutcomeInput {
         outcome: outcome.clone(),
-        title: format!("Avoid repeat {readable_class}"),
+        title,
         bucket,
         stage,
         scope_paths: scope_paths_from_outcome(outcome),
-        compact_guidance: format!(
-            "Before similar work, check prior {readable_class} evidence and avoid repeating the same failure pattern."
-        ),
-        body_markdown: format!(
-            "## Learned candidate\n\nPrior outcome `{}` from `{}` was marked eligible for review.\n\nEvidence summary:\n\n```json\n{}\n```",
-            outcome_class,
-            outcome.source,
-            evidence_summary
-        ),
+        compact_guidance,
+        body_markdown,
         predicted_effect: format!(
-            "Reduces repeat {readable_class} outcomes by surfacing the prior evidence before similar work."
+            "Reduces repeat {readable_class} outcomes after a reviewer turns the bounded evidence into an approved procedure."
         ),
         additional_provenance: serde_json::json!({
             "distiller": "deterministic_eligible_outcome_v1",
             "distillation_origin": origin.as_str(),
             "pipeline_role": origin.pipeline_role(),
+            "authoring_contract": PROJECT_SKILL_AUTHORING_CONTRACT,
         }),
     }
 }
@@ -1231,29 +1247,69 @@ fn build_git_commit_skill_candidate(
     let evidence_summary =
         serde_json::to_string(&outcome.evidence_json).unwrap_or_else(|_| "{}".to_string());
     let evidence_summary = truncate_for_skill_body(&evidence_summary, 1200);
+    let body_markdown = project_skill_authoring_body(
+        &format!("recent git commit `{title_subject}`"),
+        "similar implementation work in the same project area",
+        &[
+            "Use the commit metadata as a hint, not as the procedure itself.",
+            "Inspect the affected area only if the reviewer needs more evidence.",
+            "Rewrite this draft into a class-level implementation procedure before approval.",
+        ],
+        &[
+            "Do not approve a one-commit summary.",
+            "Confirm the procedure can apply to future work without rereading this commit.",
+        ],
+        &format!(
+            "```json\n{}\n```\n\nEvidence was bounded to commit metadata; full diffs were not read by this draft builder.",
+            evidence_summary
+        ),
+    );
 
     StageProjectSkillFromOutcomeInput {
         outcome: outcome.clone(),
-        title: format!("Review reusable commit pattern: {title_subject}"),
+        title: format!("Draft implementation procedure from {title_subject}"),
         bucket: "execution".to_string(),
         stage: "execution".to_string(),
         scope_paths: scope_paths_from_outcome(outcome),
         compact_guidance: format!(
-            "Before similar code work, review the prior commit `{title_subject}` and extract only the reusable procedure that applies to this project."
+            "Use commit `{title_subject}` only as bounded evidence while authoring a reusable implementation procedure."
         ),
-        body_markdown: format!(
-            "## Candidate from git history\n\nRalphX found this recent commit while scanning project history. Edit this draft before approval so it describes a reusable agent procedure, not just a past change.\n\nCommit evidence:\n\n```json\n{}\n```",
-            evidence_summary
-        ),
+        body_markdown,
         predicted_effect: format!(
-            "Helps agents reuse the implementation pattern behind `{title_subject}` without rereading the full repository history."
+            "Improves similar implementation work only after this metadata-backed draft is rewritten into a reusable approved procedure."
         ),
         additional_provenance: serde_json::json!({
             "distiller": "git_history_commit_v1",
             "distillation_origin": origin.as_str(),
             "pipeline_role": origin.pipeline_role(),
+            "authoring_contract": PROJECT_SKILL_AUTHORING_CONTRACT,
+            "full_diff_read": false,
         }),
     }
+}
+
+fn project_skill_authoring_body(
+    source_label: &str,
+    when_to_use: &str,
+    procedure_steps: &[&str],
+    verification_steps: &[&str],
+    provenance_detail: &str,
+) -> String {
+    let procedure = procedure_steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| format!("{}. {step}", index + 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let verification = verification_steps
+        .iter()
+        .map(|step| format!("- {step}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "## Authoring required\n\nThis is a staged draft created from bounded RalphX evidence. Edit it before approval so it describes a reusable project procedure, not just a past event.\n\n## When to use\n\nUse when doing {when_to_use}.\n\n## Procedure\n\n{procedure}\n\n## Verification\n\n{verification}\n\n## Provenance\n\n- Source: {source_label}.\n- Authoring contract: `{PROJECT_SKILL_AUTHORING_CONTRACT}`.\n- Evidence was bounded; full diffs or full transcripts were not read unless stated.\n\n{provenance_detail}"
+    )
 }
 
 fn bucket_for_outcome_source(source: &str) -> &'static str {
@@ -2204,11 +2260,67 @@ mod tests {
             staged.provenance_json["additional"]["distillation_origin"].as_str(),
             Some("manual_curator")
         );
+        assert_eq!(
+            staged.provenance_json["additional"]["authoring_contract"].as_str(),
+            Some("project-skill-authoring")
+        );
+        assert!(staged.body_markdown.contains("## Authoring required"));
         assert!(staged
             .predicted_effect
             .as_deref()
             .unwrap_or_default()
             .contains("github pr changes requested"));
+    }
+
+    #[tokio::test]
+    async fn git_history_distiller_stages_authoring_draft_not_commit_summary() {
+        let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
+        let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let mut outcome =
+            new_empty_task_outcome(project_id.clone(), "git_commit_history", "commit", "abc123");
+        outcome.status = TaskOutcomeStatus::Eligible;
+        outcome.outcome_class = Some("git_commit_history".to_string());
+        outcome.evidence_json = json!({
+            "sha": "abc123",
+            "subject": "feat: persist merge validation outcomes",
+            "scope_paths": ["src-tauri/src/domain/services"],
+            "full_diff_read": false,
+        });
+        outcome_repo
+            .upsert(UpsertTaskOutcomeInput {
+                outcome: outcome.clone(),
+            })
+            .await
+            .unwrap();
+
+        let distiller = ProjectSkillDistillerService::new(outcome_repo, skill_repo);
+        let result = distiller
+            .distill_eligible_outcomes(DistillEligibleOutcomesInput {
+                project_id,
+                source: Some("git_commit_history".to_string()),
+                limit: 10,
+                origin: ProjectSkillDistillationOrigin::ManualCurator,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.staged_skills.len(), 1);
+        let staged = &result.staged_skills[0];
+        assert!(staged.title.starts_with("Draft implementation procedure"));
+        assert!(!staged.title.starts_with("Review reusable commit pattern"));
+        assert!(staged.body_markdown.contains("## Authoring required"));
+        assert!(staged
+            .body_markdown
+            .contains("full diffs were not read by this draft builder"));
+        assert_eq!(
+            staged.provenance_json["additional"]["authoring_contract"].as_str(),
+            Some("project-skill-authoring")
+        );
+        assert_eq!(
+            staged.provenance_json["additional"]["full_diff_read"].as_bool(),
+            Some(false)
+        );
     }
 
     #[tokio::test]
