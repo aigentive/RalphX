@@ -170,10 +170,7 @@ export async function loadBranchBaseOptions({
 
   return {
     options: Array.from(optionMap.values()),
-    selectedKey:
-      currentBranch && currentBranch !== projectDefault
-        ? `current_branch:${currentBranch}`
-        : `project_default:${projectDefault}`,
+    selectedKey: `project_default:${projectDefault}`,
   };
 }
 
