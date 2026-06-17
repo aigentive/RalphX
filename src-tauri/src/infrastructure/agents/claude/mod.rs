@@ -2189,6 +2189,7 @@ mod create_mcp_config_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::path_safety::{checked_exists, checked_read_to_string};
     use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
 
@@ -2218,6 +2219,16 @@ mod tests {
                 None => std::env::remove_var(self.key),
             }
         }
+    }
+
+    fn read_test_file(path: impl AsRef<Path>) -> String {
+        checked_read_to_string(path.as_ref(), "Claude plugin test fixture")
+            .expect("read Claude plugin test fixture")
+    }
+
+    fn test_path_exists(path: impl AsRef<Path>) -> bool {
+        checked_exists(path.as_ref(), "Claude plugin test fixture")
+            .expect("inspect Claude plugin test fixture")
     }
 
     fn write_executable(path: &Path, contents: &str) {
@@ -2566,8 +2577,7 @@ fi
         let generated_dir =
             materialize_generated_plugin_dir(&plugin_dir).expect("generated plugin dir");
         let generated_session_namer =
-            std::fs::read_to_string(generated_dir.join("agents/ralphx-utility-session-namer.md"))
-                .expect("generated session namer");
+            read_test_file(generated_dir.join("agents/ralphx-utility-session-namer.md"));
         assert!(
             generated_session_namer.contains("Canonical Session Namer Prompt"),
             "generated session namer should use canonical prompt body"
@@ -2577,13 +2587,11 @@ fi
             "generated session namer should render Claude frontmatter"
         );
         assert!(
-            !generated_dir.join("agents/worker.md").exists(),
+            !test_path_exists(generated_dir.join("agents/worker.md")),
             "generated plugin should not carry non-canonical legacy plugin prompt files"
         );
         assert!(
-            generated_dir
-                .join("ralphx-mcp-server/build/index.js")
-                .exists(),
+            test_path_exists(generated_dir.join("ralphx-mcp-server/build/index.js")),
             "generated plugin dir should keep MCP runtime assets available"
         );
     }

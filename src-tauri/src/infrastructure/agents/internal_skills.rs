@@ -324,8 +324,7 @@ fn trusted_skill_file(
 }
 
 fn read_internal_skill_file(skill_name: &str, skill_file: &Path) -> Result<InternalSkill, String> {
-    // codeql[rust/path-injection]
-    let raw = std::fs::read_to_string(skill_file)
+    let raw = crate::utils::path_safety::checked_read_to_string(skill_file, "internal skill")
         .map_err(|error| format!("Failed to read internal skill `{skill_name}`: {error}"))?;
     let (frontmatter, body) = split_frontmatter(&raw)
         .ok_or_else(|| format!("Internal skill `{skill_name}` must start with YAML frontmatter"))?;

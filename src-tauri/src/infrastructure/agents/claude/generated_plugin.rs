@@ -982,6 +982,7 @@ mod tests {
         GENERATED_AGENTS_DIR, HOOKS_CONFIG_FILE, HOOKS_ENTRY_NAME, HOOKS_SCRIPTS_DIR,
         INTERNAL_MCP_SERVER_DIR,
     };
+    use crate::utils::path_safety::validate_absolute_non_root_path;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -1050,6 +1051,38 @@ mod tests {
             .expect("seed generated runtime entries");
     }
 
+    fn create_test_dir_all(path: impl AsRef<Path>) {
+        let path = validate_absolute_non_root_path(path.as_ref(), "generated plugin test dir")
+            .expect("validate generated plugin test dir");
+
+        // codeql[rust/path-injection]
+        fs::create_dir_all(path).expect("create generated plugin test dir");
+    }
+
+    fn write_test_file(path: impl AsRef<Path>, contents: &str) {
+        let path = validate_absolute_non_root_path(path.as_ref(), "generated plugin test file")
+            .expect("validate generated plugin test file");
+
+        // codeql[rust/path-injection]
+        fs::write(path, contents).expect("write generated plugin test file");
+    }
+
+    fn remove_test_file(path: impl AsRef<Path>) {
+        let path = validate_absolute_non_root_path(path.as_ref(), "generated plugin test removal")
+            .expect("validate generated plugin test removal path");
+
+        // codeql[rust/path-injection]
+        fs::remove_file(path).expect("remove generated plugin test file");
+    }
+
+    fn remove_test_dir_all(path: impl AsRef<Path>) {
+        let path = validate_absolute_non_root_path(path.as_ref(), "generated plugin test removal")
+            .expect("validate generated plugin test removal path");
+
+        // codeql[rust/path-injection]
+        fs::remove_dir_all(path).expect("remove generated plugin test dir");
+    }
+
     #[test]
     fn generated_plugin_runtime_entries_normalize_empty_hooks_config() {
         let dir = tempfile::TempDir::new().expect("create temp dir");
@@ -1110,8 +1143,8 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("create temp dir");
         let base_plugin_dir = dir.path().join("base/plugins/app");
         let generated_dir = dir.path().join("generated/claude-plugin");
-        fs::create_dir_all(&base_plugin_dir).expect("create base plugin dir");
-        fs::create_dir_all(&generated_dir).expect("create generated plugin dir");
+        create_test_dir_all(&base_plugin_dir);
+        create_test_dir_all(&generated_dir);
 
         sync_runtime_entries(&base_plugin_dir, &base_plugin_dir, &generated_dir)
             .expect("sync runtime entries");
@@ -1135,8 +1168,8 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("create temp dir");
         let base_plugin_dir = dir.path().join("base/plugins/app");
         let generated_dir = dir.path().join("generated/claude-plugin");
-        fs::create_dir_all(&base_plugin_dir).expect("create base plugin dir");
-        fs::create_dir_all(&generated_dir).expect("create generated plugin dir");
+        create_test_dir_all(&base_plugin_dir);
+        create_test_dir_all(&generated_dir);
 
         assert!(!generated_plugin_dir_is_current(
             &base_plugin_dir,
@@ -1237,6 +1270,80 @@ mod tests {
             &generated_dir
         )
         .expect("stale hooks scripts symlink should be inspectable"));
+    }
+
+    #[test]
+    fn generated_plugin_dir_current_validation_rejects_missing_or_file_hooks_entry() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        create_test_dir_all(&base_plugin_dir);
+        create_test_dir_all(&generated_dir);
+
+        seed_generated_runtime_links(&base_plugin_dir, &generated_dir);
+        assert!(generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("generated plugin should start current"));
+
+        remove_test_dir_all(generated_dir.join(HOOKS_ENTRY_NAME));
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("missing hooks dir should be inspectable"));
+
+        write_test_file(generated_dir.join(HOOKS_ENTRY_NAME), "not a directory");
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("file hooks path should be inspectable"));
+    }
+
+    #[test]
+    fn generated_plugin_dir_current_validation_rejects_missing_hooks_config() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        create_test_dir_all(&base_plugin_dir);
+        create_test_dir_all(&generated_dir);
+
+        seed_generated_runtime_links(&base_plugin_dir, &generated_dir);
+        remove_test_file(generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_CONFIG_FILE));
+
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("missing hooks config should be inspectable"));
+    }
+
+    #[test]
+    fn generated_plugin_dir_current_validation_rejects_unexpected_hooks_scripts_entry() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        create_test_dir_all(&base_plugin_dir);
+        create_test_dir_all(&generated_dir);
+
+        seed_generated_runtime_links(&base_plugin_dir, &generated_dir);
+        write_test_file(
+            generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_SCRIPTS_DIR),
+            "unexpected scripts file",
+        );
+
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("unexpected hooks scripts entry should be inspectable"));
     }
 
     #[test]
