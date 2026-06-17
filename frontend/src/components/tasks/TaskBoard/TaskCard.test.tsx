@@ -16,8 +16,27 @@ const mockPlanBranchState = vi.hoisted((): { current: PlanBranch | null } => ({
   current: null,
 }));
 
+const mockStepProgressState = vi.hoisted((): {
+  current: {
+    total: number;
+    completed: number;
+    skipped: number;
+    failed: number;
+    inProgress: number;
+  } | null;
+} => ({
+  current: null,
+}));
+
 vi.mock("@/hooks/usePlanBranchForTask", () => ({
   usePlanBranchForTask: vi.fn(() => ({ data: mockPlanBranchState.current })),
+}));
+
+vi.mock("@/hooks/useTaskSteps", () => ({
+  useStepProgress: vi.fn(() => ({
+    data: mockStepProgressState.current,
+    isLoading: false,
+  })),
 }));
 
 function createTestPlanBranch(overrides?: Partial<PlanBranch>): PlanBranch {
@@ -67,6 +86,7 @@ function DndWrapper({ children }: { children: React.ReactNode }) {
 describe("TaskCard", () => {
   beforeEach(() => {
     mockPlanBranchState.current = null;
+    mockStepProgressState.current = null;
   });
 
   describe("rendering", () => {
@@ -207,6 +227,51 @@ describe("TaskCard", () => {
       render(<TaskCard task={task} />, { wrapper: DndWrapper });
       const titleElement = screen.getByTestId("task-title");
       expect(titleElement).toHaveClass("truncate");
+    });
+
+    it("renders only title and progress chrome in mini display mode", () => {
+      mockStepProgressState.current = {
+        total: 4,
+        completed: 2,
+        skipped: 0,
+        failed: 0,
+        inProgress: 1,
+      };
+      const task = createMockTask({
+        id: "mini-task",
+        title: "Mini Mode Task",
+        description: "Hidden description",
+        category: "bug",
+        internalStatus: "executing",
+        planArtifactId: "plan-artifact-123",
+        sourceProposalId: "source-proposal-123",
+        taskBranch: "feature/hidden-branch",
+      });
+
+      render(
+        <TaskCard
+          task={task}
+          displayMode="mini"
+          reviewStatus="ai_approved"
+          needsQA
+          hasCheckpoint
+        />,
+        { wrapper: DndWrapper }
+      );
+
+      expect(screen.getByText("Mini Mode Task")).toBeInTheDocument();
+      expect(screen.getByTestId("status-badge-container")).toBeInTheDocument();
+      expect(screen.getByTestId("step-progress-footer")).toBeInTheDocument();
+      expect(screen.getByText("50%")).toBeInTheDocument();
+
+      expect(screen.queryByText("Hidden description")).not.toBeInTheDocument();
+      expect(screen.queryByText("bug")).not.toBeInTheDocument();
+      expect(screen.queryByText("AI Approved")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("task-qa-badge")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("checkpoint-indicator")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("plan-artifact-indicator")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("source-proposal-indicator")).not.toBeInTheDocument();
+      expect(screen.queryByText("hidden-branch")).not.toBeInTheDocument();
     });
   });
 
