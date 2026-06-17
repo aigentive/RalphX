@@ -172,7 +172,7 @@ async fn complete_repair_attempts_publish_without_waiting_for_user_click() {
 }
 
 #[tokio::test]
-async fn complete_update_only_repair_does_not_auto_publish() {
+async fn complete_update_only_repair_rearms_pr_supervision_without_auto_publish() {
     let repo = tempfile::TempDir::new().expect("repo tempdir");
     let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
 
@@ -240,6 +240,14 @@ async fn complete_update_only_repair_does_not_auto_publish() {
         workspace_path.to_string_lossy().to_string(),
     );
     workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.publication_pr_number = Some(391);
+    workspace.publication_pr_url = Some("https://github.com/example/ralphx/pull/391".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.pr_autofix_enabled = true;
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(true);
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    workspace.pr_supervision_summary = Some("Workspace repair is in progress.".to_string());
     app_state
         .agent_conversation_workspace_repo
         .create_or_update(workspace)
@@ -275,8 +283,11 @@ async fn complete_update_only_repair_does_not_auto_publish() {
     assert_eq!(response.new_status, "refreshed");
     assert_eq!(response.auto_publish_status.as_deref(), Some("skipped"));
     assert_eq!(response.auto_publish_error, None);
-    assert_eq!(response.pr_number, None);
-    assert_eq!(response.pr_url, None);
+    assert_eq!(response.pr_number, Some(391));
+    assert_eq!(
+        response.pr_url.as_deref(),
+        Some("https://github.com/example/ralphx/pull/391")
+    );
 
     let refreshed = state
         .app_state
@@ -289,6 +300,11 @@ async fn complete_update_only_repair_does_not_auto_publish() {
         refreshed.publication_push_status.as_deref(),
         Some("refreshed")
     );
+    assert_eq!(
+        refreshed.pr_supervision_status.as_deref(),
+        Some("monitoring")
+    );
+    assert_eq!(refreshed.pr_auto_merge_current, Some(true));
 
     let events = state
         .app_state
