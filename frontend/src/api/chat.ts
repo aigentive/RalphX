@@ -1673,6 +1673,7 @@ export interface AgentConversationWorkspace {
   publicationPrStatus: string | null;
   publicationPushStatus: string | null;
   autoPublishEnabled?: boolean;
+  autoPublishInitialPrEnabled?: boolean;
   autoPublishPausedPrAutofixEnabled?: boolean | null;
   autoPublishPausedPrAutoMergeDesired?: boolean | null;
   prAutofixEnabled?: boolean;
@@ -1845,6 +1846,7 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   publication_pr_status: z.string().nullable(),
   publication_push_status: z.string().nullable(),
   auto_publish_enabled: z.boolean().optional().default(true),
+  auto_publish_initial_pr_enabled: z.boolean().optional().default(false),
   auto_publish_paused_pr_autofix_enabled: z.boolean().nullable().optional().default(null),
   auto_publish_paused_pr_auto_merge_desired: z.boolean().nullable().optional().default(null),
   pr_autofix_enabled: z.boolean().optional().default(false),
@@ -2041,6 +2043,7 @@ function transformAgentConversationWorkspace(
     publicationPrStatus: raw.publication_pr_status,
     publicationPushStatus: raw.publication_push_status,
     autoPublishEnabled: raw.auto_publish_enabled,
+    autoPublishInitialPrEnabled: raw.auto_publish_initial_pr_enabled,
     autoPublishPausedPrAutofixEnabled: raw.auto_publish_paused_pr_autofix_enabled,
     autoPublishPausedPrAutoMergeDesired: raw.auto_publish_paused_pr_auto_merge_desired,
     prAutofixEnabled: raw.pr_autofix_enabled,

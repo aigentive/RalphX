@@ -312,6 +312,7 @@ pub struct AgentConversationWorkspaceResponse {
     pub publication_pr_status: Option<String>,
     pub publication_push_status: Option<String>,
     pub auto_publish_enabled: bool,
+    pub auto_publish_initial_pr_enabled: bool,
     pub auto_publish_paused_pr_autofix_enabled: Option<bool>,
     pub auto_publish_paused_pr_auto_merge_desired: Option<bool>,
     pub pr_autofix_enabled: bool,
@@ -392,6 +393,7 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             publication_pr_status: workspace.publication_pr_status,
             publication_push_status: workspace.publication_push_status,
             auto_publish_enabled: workspace.auto_publish_enabled,
+            auto_publish_initial_pr_enabled: workspace.auto_publish_initial_pr_enabled,
             auto_publish_paused_pr_autofix_enabled: workspace
                 .auto_publish_paused_pr_autofix_enabled,
             auto_publish_paused_pr_auto_merge_desired: workspace
@@ -4206,6 +4208,49 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
         .as_ref()
         .map(|app| emit_workspace_changed_when_done(app, &conversation_id));
 
+    if workspace.publication_pr_number.is_none() {
+        if input.auto_publish_enabled == workspace.auto_publish_initial_pr_enabled {
+            return agent_workspace_response_for_state(state, workspace).await;
+        }
+
+        state
+            .agent_conversation_workspace_repo
+            .update_auto_publish_initial_pr_preference(
+                &conversation_id,
+                input.auto_publish_enabled,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "auto_publish",
+                if input.auto_publish_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                if input.auto_publish_enabled {
+                    "Auto Publish is enabled for the first pull request."
+                } else {
+                    "Auto Publish is disabled for the first pull request."
+                },
+                Some("auto_publish_preferences".to_string()),
+            ))
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let updated = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+        return agent_workspace_response_for_state(state, updated).await;
+    }
+
     if input.auto_publish_enabled == workspace.auto_publish_enabled {
         return agent_workspace_response_for_state(state, workspace).await;
     }
@@ -7796,6 +7841,7 @@ mod tests {
             publication_pr_status: None,
             publication_push_status: None,
             auto_publish_enabled: true,
+            auto_publish_initial_pr_enabled: false,
             auto_publish_paused_pr_autofix_enabled: None,
             auto_publish_paused_pr_auto_merge_desired: None,
             pr_autofix_enabled: false,
@@ -7861,6 +7907,7 @@ mod tests {
             publication_pr_status: Some("open".to_string()),
             publication_push_status: Some("needs_agent".to_string()),
             auto_publish_enabled: true,
+            auto_publish_initial_pr_enabled: false,
             auto_publish_paused_pr_autofix_enabled: None,
             auto_publish_paused_pr_auto_merge_desired: None,
             pr_autofix_enabled: false,
@@ -8543,6 +8590,41 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.step == "auto_publish" && event.status == "enabled"));
+    }
+
+    #[tokio::test]
+    async fn auto_publish_enable_before_pr_sets_initial_pr_opt_in() {
+        let state = AppState::new_test();
+        let workspace = command_test_workspace();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let updated = set_agent_conversation_workspace_auto_publish_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspaceAutoPublishInput {
+                auto_publish_enabled: true,
+            },
+            &state,
+        )
+        .await
+        .expect("Auto Publish should enable before PR publication");
+
+        assert!(updated.auto_publish_enabled);
+        assert!(updated.auto_publish_initial_pr_enabled);
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should list");
+        assert!(events.iter().any(|event| {
+            event.step == "auto_publish"
+                && event.status == "enabled"
+                && event.summary == "Auto Publish is enabled for the first pull request."
+        }));
     }
 
     #[tokio::test]
