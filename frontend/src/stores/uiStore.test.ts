@@ -57,6 +57,7 @@ describe("uiStore", () => {
       selectedTaskByProject: {},
       taskHistoryState: null,
       boardSearchQuery: null,
+      kanbanCardDisplayMode: "default",
       activityFilter: { taskId: null, sessionId: null },
       featureFlags: ALL_ENABLED,
     });
@@ -884,6 +885,15 @@ describe("uiStore", () => {
       expect(() => useUiStore.getState().cleanupProjectRoute("proj-unknown")).not.toThrow();
 
       expect(useUiStore.getState().viewByProject["proj-b"]).toBe("graph");
+    });
+  });
+
+  describe("Kanban card display mode", () => {
+    it("persists the app-wide card display preference to localStorage", () => {
+      useUiStore.getState().setKanbanCardDisplayMode("mini");
+
+      expect(useUiStore.getState().kanbanCardDisplayMode).toBe("mini");
+      expect(localStorage.getItem("ralphx-kanban-card-display-mode")).toBe("mini");
     });
   });
 

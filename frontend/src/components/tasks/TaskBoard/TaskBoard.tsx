@@ -23,12 +23,12 @@ import { useEventBus } from "@/providers/EventProvider";
 import { useTaskBoard } from "./hooks";
 import { TaskBoardSkeleton } from "./TaskBoardSkeleton";
 import { Column } from "./Column";
-import { TaskCard } from "./TaskCard";
+import { TaskCard, type TaskCardDisplayMode } from "./TaskCard";
 import { useUiStore } from "@/stores/uiStore";
 import { usePlanStore, selectActiveExecutionPlanId } from "@/stores/planStore";
 import { Toggle } from "@/components/ui/toggle";
 import { EmptyState } from "@/components/ui/empty-state";
-import { BarChart2, Database, FileText, Sparkles } from "lucide-react";
+import { BarChart2, Database, FileText, Maximize2, Minimize2, Sparkles, type LucideIcon } from "lucide-react";
 import { api } from "@/lib/tauri";
 import { useTaskSearch } from "@/hooks/useTaskSearch";
 import { TaskSearchBar } from "../TaskSearchBar";
@@ -45,6 +45,12 @@ import { useColumnCollapse } from "./useColumnCollapse";
 import {
   TASK_BOARD_EXPANDED_COLUMN_FIXED_WIDTH,
 } from "./TaskBoard.layout";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 /**
  * Get all statuses for a column from its groups, or fallback to mapsTo
@@ -59,6 +65,15 @@ function getColumnStatuses(col: WorkflowColumn): InternalStatus[] {
   }
   return [col.mapsTo];
 }
+
+const CARD_DISPLAY_OPTIONS: ReadonlyArray<{
+  mode: TaskCardDisplayMode;
+  label: string;
+  Icon: LucideIcon;
+}> = [
+  { mode: "mini", label: "Mini cards", Icon: Minimize2 },
+  { mode: "default", label: "Default cards", Icon: Maximize2 },
+];
 
 export interface TaskBoardProps {
   projectId: string;
@@ -115,6 +130,8 @@ export function TaskBoard({
   const fillWidth = fillWidthProp ?? selectedTaskId != null;
   const showMergeTasks = true;
   const [isStatsOpen, setIsStatsOpen] = useState(false);
+  const cardDisplayMode = useUiStore((s) => s.kanbanCardDisplayMode);
+  const setCardDisplayMode = useUiStore((s) => s.setKanbanCardDisplayMode);
   const boardSearchQuery = useUiStore((s) => s.boardSearchQuery);
   const setBoardSearchQuery = useUiStore((s) => s.setBoardSearchQuery);
 
@@ -471,21 +488,70 @@ export function TaskBoard({
             </span>
           </Toggle>
 
-          {/* Project stats popover */}
-          <Popover open={isStatsOpen} onOpenChange={setIsStatsOpen}>
-            <PopoverTrigger asChild>
-              <button
-                className="ml-auto flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
-                aria-label="Project stats"
-                style={{ border: "1px solid transparent" }}
+          <div className="ml-auto flex items-center gap-2">
+            <TooltipProvider delayDuration={250}>
+              <div
+                data-testid="kanban-card-display-toggle"
+                role="group"
+                aria-label="Kanban card layout"
+                className="inline-flex items-center rounded-md p-0.5"
+                style={{
+                  backgroundColor: "var(--bg-sunken)",
+                  borderColor: "var(--border-default)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
+                }}
               >
-                <BarChart2 className="w-4 h-4" />
-              </button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-96 p-0 border-[var(--border-subtle)] bg-transparent shadow-xl">
-              <ProjectStatsCard projectId={projectId} />
-            </PopoverContent>
-          </Popover>
+                {CARD_DISPLAY_OPTIONS.map(({ mode, label, Icon }) => {
+                  const isActive = cardDisplayMode === mode;
+                  return (
+                    <Tooltip key={mode}>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          data-testid={`kanban-card-display-${mode}`}
+                          aria-label={label}
+                          aria-pressed={isActive}
+                          onClick={() => setCardDisplayMode(mode)}
+                          className="flex h-7 w-7 items-center justify-center rounded-[5px] transition-colors"
+                          style={{
+                            backgroundColor: isActive ? "var(--bg-hover)" : "transparent",
+                            borderColor: isActive ? "var(--border-strong)" : "transparent",
+                            borderStyle: "solid",
+                            borderWidth: "1px",
+                            color: isActive ? "var(--text-primary)" : "var(--text-muted)",
+                          }}
+                        >
+                          <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">{label}</TooltipContent>
+                    </Tooltip>
+                  );
+                })}
+              </div>
+            </TooltipProvider>
+
+            {/* Project stats popover */}
+            <Popover open={isStatsOpen} onOpenChange={setIsStatsOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  className="flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
+                  aria-label="Project stats"
+                  style={{
+                    borderColor: "transparent",
+                    borderStyle: "solid",
+                    borderWidth: "1px",
+                  }}
+                >
+                  <BarChart2 className="w-4 h-4" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-96 p-0 border-[var(--border-subtle)] bg-transparent shadow-xl">
+                <ProjectStatsCard projectId={projectId} />
+              </PopoverContent>
+            </Popover>
+          </div>
         </div>
 
         {/* TaskBoard container - v29a grid with 1px dividers */}
@@ -630,6 +696,7 @@ export function TaskBoard({
                     isCollapsed={columnCollapsed}
                     onToggleCollapse={() => toggleCollapse(column.id)}
                     fillWidth={fillWidth}
+                    cardDisplayMode={cardDisplayMode}
                     {...(onTaskSelect !== undefined && { onTaskSelect })}
                   />
                 );
@@ -644,7 +711,7 @@ export function TaskBoard({
             easing: "cubic-bezier(0.34, 1.56, 0.64, 1)",
           }}
         >
-          {activeTask && <TaskCard task={activeTask} isDragging />}
+          {activeTask && <TaskCard task={activeTask} isDragging displayMode={cardDisplayMode} />}
         </DragOverlay>
       </div>
     </DndContext>
