@@ -311,3 +311,132 @@ async fn test_is_handled_for_stopped_task() {
         "Stopped task should be skipped (terminal state)"
     );
 }
+
+fn silent_tool_message() -> crate::domain::entities::ChatMessage {
+    let project_id = crate::domain::entities::ProjectId::from_string("project-1".to_string());
+    let mut message = crate::domain::entities::ChatMessage::user_in_project(project_id, "");
+    message.role = crate::domain::entities::MessageRole::Orchestrator;
+    message.tool_calls = Some(
+        serde_json::json!([
+            {
+                "id": "tool-1",
+                "name": "apply_patch",
+                "arguments": {},
+                "result": null
+            }
+        ])
+        .to_string(),
+    );
+    message.content_blocks = Some(
+        serde_json::json!([
+            {
+                "type": "tool_use",
+                "id": "tool-1",
+                "name": "apply_patch",
+                "arguments": {},
+                "result": null
+            }
+        ])
+        .to_string(),
+    );
+    message
+}
+
+#[test]
+fn durable_silent_completion_recovery_decision_recovers_after_terminal_tool() {
+    let messages = vec![silent_tool_message()];
+
+    let decision = durable_silent_completion_recovery_decision(
+        ChatContextType::Project,
+        true,
+        AgentRunStatus::Completed,
+        &messages,
+        false,
+    );
+
+    let DurableSilentCompletionRecoveryDecision::Recover {
+        attempt,
+        metadata,
+        prompt,
+    } = decision
+    else {
+        panic!("expected recover decision");
+    };
+    assert_eq!(attempt, 1);
+    assert!(prompt.contains("RalphX internal recovery message"));
+    let metadata: serde_json::Value =
+        serde_json::from_str(&metadata).expect("metadata should parse");
+    assert_eq!(metadata["recovery_attempt"], 1);
+    assert_eq!(metadata["resume_in_place"], true);
+    assert_eq!(metadata["persist_hidden_marker"], true);
+}
+
+#[test]
+fn durable_silent_completion_recovery_decision_skips_after_final_text() {
+    let mut message = silent_tool_message();
+    message.content = "Done".to_string();
+    message.content_blocks = Some(
+        serde_json::json!([
+            {
+                "type": "tool_use",
+                "id": "tool-1",
+                "name": "apply_patch",
+                "arguments": {},
+                "result": null
+            },
+            {
+                "type": "text",
+                "text": "Done"
+            }
+        ])
+        .to_string(),
+    );
+    let messages = vec![message];
+
+    assert_eq!(
+        durable_silent_completion_recovery_decision(
+            ChatContextType::Project,
+            true,
+            AgentRunStatus::Completed,
+            &messages,
+            false,
+        ),
+        DurableSilentCompletionRecoveryDecision::NotNeeded
+    );
+}
+
+#[test]
+fn durable_silent_completion_recovery_decision_stops_after_max_attempts() {
+    let mut marker = crate::domain::entities::ChatMessage::user_in_project(
+        crate::domain::entities::ProjectId::from_string("project-1".to_string()),
+        "RalphX hidden resume-in-place message was delivered.",
+    );
+    marker.role = crate::domain::entities::MessageRole::System;
+    marker.metadata = Some(silent_completion_recovery_metadata(3, 4_000));
+    let messages = vec![silent_tool_message(), marker];
+
+    assert_eq!(
+        durable_silent_completion_recovery_decision(
+            ChatContextType::Project,
+            true,
+            AgentRunStatus::Completed,
+            &messages,
+            false,
+        ),
+        DurableSilentCompletionRecoveryDecision::Exhausted { attempts: 3 }
+    );
+}
+
+#[test]
+fn durable_silent_completion_recovery_decision_skips_when_already_queued() {
+    assert_eq!(
+        durable_silent_completion_recovery_decision(
+            ChatContextType::Project,
+            true,
+            AgentRunStatus::Completed,
+            &[silent_tool_message()],
+            true,
+        ),
+        DurableSilentCompletionRecoveryDecision::AlreadyQueued
+    );
+}

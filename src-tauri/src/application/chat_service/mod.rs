@@ -118,6 +118,11 @@ pub use chat_service_send_background::finalize_assistant_message_for_test;
 pub use chat_service_send_background::finalize_no_output_assistant_message_for_test;
 #[doc(hidden)]
 pub use chat_service_send_background::finalize_structured_assistant_message_for_test;
+pub(crate) use chat_service_send_background::{
+    should_recover_silent_completion, silent_completion_recovery_attempt,
+    silent_completion_recovery_backoff_ms, silent_completion_recovery_max_attempts,
+    silent_completion_recovery_metadata, silent_completion_recovery_prompt,
+};
 pub use chat_service_streaming::process_stream_background;
 pub use chat_service_streaming::{
     is_completion_tool_name, should_kill_on_timeout, ActiveTaskTracker, CompletionSignalTracker,
@@ -1996,6 +2001,35 @@ impl<R: Runtime> AppChatService<R> {
         Ok(())
     }
 
+    async fn persist_hidden_resume_in_place_marker(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        conversation_id: ChatConversationId,
+        metadata: Option<&str>,
+    ) -> Result<(), ChatServiceError> {
+        let Some(marker_metadata) =
+            chat_service_queue::hidden_resume_in_place_marker_metadata(metadata)
+        else {
+            return Ok(());
+        };
+
+        let mut marker = chat_service_context::create_user_message(
+            context_type,
+            context_id,
+            chat_service_queue::HIDDEN_RESUME_IN_PLACE_MARKER_CONTENT,
+            conversation_id,
+            Some(marker_metadata),
+            None,
+        );
+        marker.role = MessageRole::System;
+        self.chat_message_repo
+            .create(marker)
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+        Ok(())
+    }
+
     /// Create a spawnable Claude CLI command (one-shot mode with `-p`).
     /// Kept for fallback/non-interactive spawn paths (queue resume, retry).
     #[allow(dead_code)]
@@ -2900,6 +2934,14 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                                 render_ready: None,
                             },
                         );
+                    } else {
+                        self.persist_hidden_resume_in_place_marker(
+                            context_type,
+                            context_id,
+                            conversation.id,
+                            options.metadata.as_deref(),
+                        )
+                        .await?;
                     }
 
                     // Emit run_started so frontend shows activity spinner. Reuse the
@@ -3536,6 +3578,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     render_ready: None,
                 },
             );
+        } else if let Err(error) = self
+            .persist_hidden_resume_in_place_marker(
+                context_type,
+                context_id,
+                conversation_id,
+                options.metadata.as_deref(),
+            )
+            .await
+        {
+            cleanup_and_err!(error);
         }
 
         // 6. Resolve working directory
@@ -4043,6 +4095,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             run_chain_id,
             is_retry_attempt: false,
             user_message_content: Some(message.to_string()),
+            turn_metadata: options.metadata.clone(),
             conversation: Some(conversation.clone()),
             agent_name: Some(resolved_agent_name),
             team_mode: runtime_team_mode,
