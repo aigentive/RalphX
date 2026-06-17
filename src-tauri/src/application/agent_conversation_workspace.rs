@@ -311,6 +311,7 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
         publication_pr_status: None,
         publication_push_status: None,
         auto_publish_enabled: true,
+        auto_publish_initial_pr_enabled: false,
         auto_publish_paused_pr_autofix_enabled: None,
         auto_publish_paused_pr_auto_merge_desired: None,
         pr_autofix_enabled: pr_automation_defaults.autofix_enabled,

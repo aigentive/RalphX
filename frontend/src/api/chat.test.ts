@@ -1282,6 +1282,7 @@ describe("chat api", () => {
       conversationId: "conversation-1",
       projectId: "project-1",
       branchName: "ralphx/demo/agent-conversation-1",
+      autoPublishInitialPrEnabled: false,
     });
   });
 
