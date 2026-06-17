@@ -265,6 +265,10 @@ async fn provider_observations_probe_fake_clis_without_latest_lookup() {
     let home_dir = temp_dir.path().join("home");
     let path_bin_dir = temp_dir.path().join("path-bin");
     let native_bin_dir = home_dir.join(".local").join("bin");
+    let _managed_cli_dir =
+        crate::utils::runtime_log_paths::override_managed_provider_cli_dir_for_tests(
+            temp_dir.path().join("managed-cli"),
+        );
     let managed_codex_path = crate::utils::runtime_log_paths::managed_codex_binary_path();
     let _managed_codex_cleanup = FileCleanup::new(managed_codex_path.clone());
 
@@ -339,6 +343,10 @@ async fn status_readers_use_provider_settings_and_probe_without_latest_lookup() 
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let home_dir = temp_dir.path().join("home");
     let native_bin_dir = home_dir.join(".local").join("bin");
+    let _managed_cli_dir =
+        crate::utils::runtime_log_paths::override_managed_provider_cli_dir_for_tests(
+            temp_dir.path().join("managed-cli"),
+        );
     let managed_codex_path = crate::utils::runtime_log_paths::managed_codex_binary_path();
     let _managed_codex_cleanup = FileCleanup::new(managed_codex_path.clone());
 
@@ -411,6 +419,10 @@ async fn provider_observations_report_missing_and_probe_errors() {
     let home_dir = temp_dir.path().join("home");
     let path_bin_dir = temp_dir.path().join("path-bin");
     let native_bin_dir = home_dir.join(".local").join("bin");
+    let _managed_cli_dir =
+        crate::utils::runtime_log_paths::override_managed_provider_cli_dir_for_tests(
+            temp_dir.path().join("managed-cli"),
+        );
     let managed_codex_path = crate::utils::runtime_log_paths::managed_codex_binary_path();
     let _managed_codex_cleanup = FileCleanup::new(managed_codex_path.clone());
 
@@ -676,6 +688,10 @@ async fn managed_codex_installer_runs_fake_installer_with_rx_owned_env() {
         .expect("test env mutex");
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let fake_bin_dir = temp_dir.path().join("fake-bin");
+    let _managed_cli_dir =
+        crate::utils::runtime_log_paths::override_managed_provider_cli_dir_for_tests(
+            temp_dir.path().join("managed-cli"),
+        );
     let managed_codex_path = crate::utils::runtime_log_paths::managed_codex_binary_path();
     let _managed_codex_cleanup = FileCleanup::new(managed_codex_path.clone());
     write_executable_script(
