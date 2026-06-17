@@ -122,6 +122,11 @@ function mockJiraIssue(input: {
   };
 }
 
+const mockLinearWebhookConfig = {
+  enabled: false,
+  hasSigningSecret: false,
+};
+
 const mockAgentProviderSettings = {
   providers: [
     {
@@ -827,6 +832,16 @@ const commandHandlers: Record<
     const input = args.input as { conversationId: string };
     mockAgentConversationJiraIssues.delete(input.conversationId);
     return { issue: null };
+  },
+  get_linear_webhook_config: async () => mockLinearWebhookConfig,
+  save_linear_webhook_signing_secret: async (args) => {
+    const input = args.input as { signingSecret?: string; enabled?: boolean };
+    if (!input.signingSecret?.trim()) {
+      throw new Error("Linear webhook signing secret cannot be empty");
+    }
+    mockLinearWebhookConfig.enabled = input.enabled ?? true;
+    mockLinearWebhookConfig.hasSigningSecret = true;
+    return mockLinearWebhookConfig;
   },
   update_agent_provider_settings: async (args) => {
     const input = args.input as Partial<
