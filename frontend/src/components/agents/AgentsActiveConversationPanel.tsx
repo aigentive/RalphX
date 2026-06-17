@@ -33,6 +33,12 @@ import type {
 import type { AgentRunCompletedPayload } from "@/types/events";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  fallbackBranchBaseOptions,
+  loadBranchBaseOptions,
+  loadPullRequestBaseOptions,
+  type BranchBaseOption,
+} from "@/components/shared/branchBaseOptions";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
@@ -101,6 +107,8 @@ import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
 } from "./agentWorkspaceQueries";
+import { getAgentWorkspaceTerminalPublicationStatus } from "./agentWorkspacePublishState";
+import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
 
 const AGENTS_CHAT_CONTENT_WIDTH_CLASS = "max-w-[980px]";
 const PLAN_MODE_PROPOSAL_KIND = "plan_mode_proposal";
@@ -108,6 +116,22 @@ const PLAN_MODE_PROPOSAL_ACCEPT_VALUE = "switch_to_plan";
 const PLAN_MODE_SWITCH_EVENT_RETRY_DELAY_MS = 150;
 const PLAN_MODE_SWITCH_FALLBACK_RETRY_DELAY_MS = 750;
 const PLAN_MODE_SWITCH_MAX_RETRY_ATTEMPTS = 40;
+
+function getWorkspaceBasePickerKey(
+  workspace: AgentConversationWorkspace | null,
+  freshness: AgentConversationWorkspaceFreshness | undefined,
+): string {
+  if (!workspace) {
+    return "";
+  }
+  const baseRef =
+    freshness?.effectiveBaseRef ?? freshness?.baseRef ?? workspace.baseRef;
+  const baseKind =
+    freshness?.baseStatus === "retargeted"
+      ? "project_default"
+      : workspace.baseRefKind;
+  return `${baseKind}:${baseRef}`;
+}
 
 interface PendingPlanModeSwitch {
   conversationId: string;
@@ -465,19 +489,47 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const [isImplementingPlanDirectly, setIsImplementingPlanDirectly] = useState(false);
   const [isStartingPlanVerification, setIsStartingPlanVerification] = useState(false);
   const [
+    shouldLoadWorkspaceBaseOptions,
+    setShouldLoadWorkspaceBaseOptions,
+  ] = useState(false);
+  const [
+    workspaceBasePullRequestOptions,
+    setWorkspaceBasePullRequestOptions,
+  ] = useState<BranchBaseOption[]>([]);
+  const [
+    isLoadingWorkspaceBasePullRequests,
+    setIsLoadingWorkspaceBasePullRequests,
+  ] = useState(false);
+  const [
+    workspaceBasePullRequestMessage,
+    setWorkspaceBasePullRequestMessage,
+  ] = useState<string | null>(null);
+  const [
     pendingPlanModeSwitch,
     setPendingPlanModeSwitch,
   ] = useState<PendingPlanModeSwitch | null>(null);
   const pendingPlanModeSwitchConversationIdRef = useRef<string | null>(null);
   const pendingPlanModeSwitchAutoContinueMessageRef = useRef<string | null>(null);
   const pendingPlanModeSwitchRetryCountRef = useRef(0);
+  const workspaceBasePullRequestRequestRef = useRef(0);
   const markComposerActivity = useCallback(() => {
     setIsComposerHydrationPaused(true);
     setComposerActivityTick((tick) => tick + 1);
   }, []);
   useEffect(() => {
     setIsComposerHydrationPaused(false);
+    setShouldLoadWorkspaceBaseOptions(false);
+    setWorkspaceBasePullRequestOptions([]);
+    setWorkspaceBasePullRequestMessage(null);
+    setIsLoadingWorkspaceBasePullRequests(false);
+    workspaceBasePullRequestRequestRef.current += 1;
   }, [selectedConversationId]);
+  const {
+    isUpdatingFromBase: isUpdatingComposerWorkspaceBase,
+    runUpdateFromBase: runComposerWorkspaceBaseUpdate,
+  } = useAgentWorkspaceBaseUpdate({
+    conversationTitle: activeConversation.title,
+  });
   useEffect(() => {
     if (!isComposerHydrationPaused) {
       return;
@@ -532,6 +584,174 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     focusedChatSessionId ??
     (activeConversation.contextType === "ideation" ? activeConversation.contextId : undefined);
   const isFocusedChildChat = chatFocus.type !== "workspace";
+  const workspaceBaseSelectorAvailable =
+    !isFocusedChildChat &&
+    activeConversation.contextType === "project" &&
+    Boolean(activeWorkspace?.conversationId) &&
+    activeWorkspace?.status !== "missing" &&
+    !getAgentWorkspaceTerminalPublicationStatus(activeWorkspace);
+  const fallbackWorkspaceBaseOptions = useMemo(
+    () =>
+      fallbackBranchBaseOptions(
+        activeWorkspaceFreshness?.effectiveBaseRef ??
+          activeWorkspaceFreshness?.baseRef ??
+          activeWorkspace?.baseRef ??
+          "main",
+      ),
+    [
+      activeWorkspace?.baseRef,
+      activeWorkspaceFreshness?.baseRef,
+      activeWorkspaceFreshness?.effectiveBaseRef,
+    ],
+  );
+  const workspaceBaseOptionsQuery = useQuery({
+    queryKey: [
+      "agents",
+      "conversation-workspace-base-options",
+      activeWorkspace?.conversationId,
+      activeProjectId,
+      activeWorkspace?.worktreePath,
+      activeWorkspace?.branchName,
+      activeWorkspace?.baseRef,
+    ],
+    queryFn: async () => {
+      const result = await loadBranchBaseOptions({
+        projectId: activeProjectId,
+        workingDirectory: activeWorkspace!.worktreePath,
+        includeAgentBranches: false,
+      });
+      return {
+        options: result.options.filter(
+          (option) => option.selection.ref !== activeWorkspace!.branchName,
+        ),
+        selectedKey: result.selectedKey,
+      };
+    },
+    enabled:
+      workspaceBaseSelectorAvailable &&
+      shouldLoadWorkspaceBaseOptions &&
+      Boolean(activeWorkspace?.worktreePath),
+    staleTime: 10_000,
+  });
+  const workspaceBaseOptionsResult =
+    workspaceBaseOptionsQuery.data ?? fallbackWorkspaceBaseOptions;
+  const workspaceBaseOptions = workspaceBaseOptionsResult.options;
+  const workspaceBasePickerValue = getWorkspaceBasePickerKey(
+    activeWorkspace,
+    activeWorkspaceFreshness,
+  );
+  const workspaceBaseSelectionOptions = useMemo(
+    () => [...workspaceBaseOptions, ...workspaceBasePullRequestOptions],
+    [workspaceBaseOptions, workspaceBasePullRequestOptions],
+  );
+  const handleWorkspaceBasePickerIntent = useCallback(() => {
+    if (workspaceBaseSelectorAvailable) {
+      setShouldLoadWorkspaceBaseOptions(true);
+    }
+  }, [workspaceBaseSelectorAvailable]);
+  const handleWorkspaceBasePickerOpenChange = useCallback(
+    (open: boolean) => {
+      if (open && workspaceBaseSelectorAvailable) {
+        setShouldLoadWorkspaceBaseOptions(true);
+      }
+    },
+    [workspaceBaseSelectorAvailable],
+  );
+  const searchWorkspaceBasePullRequestOptions = useCallback(
+    (query: string) => {
+      if (!activeProjectId || !workspaceBaseSelectorAvailable) {
+        setWorkspaceBasePullRequestOptions([]);
+        setWorkspaceBasePullRequestMessage(null);
+        setIsLoadingWorkspaceBasePullRequests(false);
+        return;
+      }
+
+      const requestId = ++workspaceBasePullRequestRequestRef.current;
+      setIsLoadingWorkspaceBasePullRequests(true);
+      setWorkspaceBasePullRequestMessage(null);
+
+      void loadPullRequestBaseOptions({ projectId: activeProjectId, query })
+        .then((options) => {
+          if (workspaceBasePullRequestRequestRef.current !== requestId) {
+            return;
+          }
+          setWorkspaceBasePullRequestOptions((current) => {
+            const selected = current.find(
+              (option) => option.key === workspaceBasePickerValue,
+            );
+            if (
+              selected &&
+              !options.some((option) => option.key === selected.key)
+            ) {
+              return [selected, ...options];
+            }
+            return options;
+          });
+          setIsLoadingWorkspaceBasePullRequests(false);
+        })
+        .catch((error) => {
+          if (workspaceBasePullRequestRequestRef.current !== requestId) {
+            return;
+          }
+          setWorkspaceBasePullRequestOptions((current) =>
+            current.filter((option) => option.key === workspaceBasePickerValue),
+          );
+          setWorkspaceBasePullRequestMessage(
+            error instanceof Error
+              ? error.message
+              : "Unable to load pull requests",
+          );
+          setIsLoadingWorkspaceBasePullRequests(false);
+        });
+    },
+    [activeProjectId, workspaceBasePickerValue, workspaceBaseSelectorAvailable],
+  );
+  const handleWorkspaceBaseChange = useCallback(
+    (value: string) => {
+      if (
+        !workspaceBaseSelectorAvailable ||
+        !activeWorkspace ||
+        isUpdatingComposerWorkspaceBase ||
+        value === workspaceBasePickerValue
+      ) {
+        return;
+      }
+      const selectedOption = workspaceBaseSelectionOptions.find(
+        (option: BranchBaseOption) => option.key === value,
+      );
+      if (!selectedOption) {
+        toast.error("Select a base branch before rebasing");
+        return;
+      }
+
+      void confirm({
+        title: "Rebase workspace?",
+        description: `This will rebase ${activeWorkspace.branchName} onto ${selectedOption.selection.displayName}. If conflicts are found, RalphX will route this workspace through repair before the conversation continues.`,
+        confirmText: "Rebase workspace",
+      }).then((confirmed) => {
+        if (!confirmed) {
+          return;
+        }
+        runComposerWorkspaceBaseUpdate({
+          baseSelection: selectedOption.selection,
+          conversationId: activeWorkspace.conversationId,
+          detail: `From ${selectedOption.selection.displayName}`,
+          kind: "rebase",
+          title: "Rebasing branch",
+          workspace: activeWorkspace,
+        });
+      });
+    },
+    [
+      activeWorkspace,
+      confirm,
+      isUpdatingComposerWorkspaceBase,
+      runComposerWorkspaceBaseUpdate,
+      workspaceBaseSelectionOptions,
+      workspaceBasePickerValue,
+      workspaceBaseSelectorAvailable,
+    ],
+  );
   const panelStoreKeyOverride = useMemo(() => {
     if (focusedChatSessionId) {
       return buildStoreKey("ideation", focusedChatSessionId);
@@ -1452,6 +1672,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
               };
               const shouldShowPlanComposerCta =
                 !!planComposerHint && composerProps.questionMode === undefined;
+              const workspaceBaseEditable =
+                workspaceBaseSelectorAvailable &&
+                composerProps.agentStatus !== "generating" &&
+                !composerProps.isSending &&
+                !isForkingConversation &&
+                !isUpdatingComposerWorkspaceBase;
 
               return (
                 <>
@@ -1691,6 +1917,21 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     />
                     <AgentConversationBaseLine
                       workspace={activeWorkspace}
+                      editable={workspaceBaseSelectorAvailable}
+                      disabled={!workspaceBaseEditable}
+                      isLoading={
+                        workspaceBaseOptionsQuery.isFetching ||
+                        isUpdatingComposerWorkspaceBase
+                      }
+                      options={workspaceBaseOptions}
+                      pullRequestOptions={workspaceBasePullRequestOptions}
+                      isLoadingPullRequests={isLoadingWorkspaceBasePullRequests}
+                      pullRequestMessage={workspaceBasePullRequestMessage}
+                      value={workspaceBasePickerValue}
+                      onValueChange={handleWorkspaceBaseChange}
+                      onIntent={handleWorkspaceBasePickerIntent}
+                      onOpenChange={handleWorkspaceBasePickerOpenChange}
+                      onPullRequestSearch={searchWorkspaceBasePullRequestOptions}
                       {...(activeWorkspaceFreshness
                         ? { freshness: activeWorkspaceFreshness }
                         : {})}

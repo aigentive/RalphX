@@ -26,7 +26,6 @@ import { toast } from "sonner";
 import { diffApi } from "@/api/diff";
 import {
   chatApi,
-  type AgentConversationBaseSelection,
   type AgentConversationWorkspace,
   type AgentConversationWorkspacePublicationEvent,
 } from "@/api/chat";
@@ -92,12 +91,10 @@ import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import { mapReviewCommitsToDiffViewerCommits } from "./useAgentWorkspaceChangeSummary";
 import {
   AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
-  type AgentWorkspaceOperationToast,
-  type AgentWorkspaceOperationToastResultOptions,
   agentWorkspaceOperationToastId,
   agentWorkspaceOperationToastDescription,
-  startAgentWorkspaceOperationToast,
 } from "./agentWorkspaceOperationToast";
+import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
@@ -215,50 +212,13 @@ export function AgentPublishPanel({
     null,
   );
   const prDescriptionPrecomputeKeysRef = useRef<Set<string>>(new Set());
-  const updateFromBaseProgressToastRef =
-    useRef<AgentWorkspaceOperationToast | null>(null);
   const [selectedRebaseBaseKey, setSelectedRebaseBaseKey] = useState("");
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
   const toastConversationTitle = conversationTitle?.trim() || null;
-  const startUpdateFromBaseProgressToast = ({
-    conversationId,
-    detail,
-    kind,
-    title,
-  }: {
-    conversationId: string;
-    detail: string;
-    kind: "rebase" | "update-from-base";
-    title: string;
-  }) => {
-    updateFromBaseProgressToastRef.current?.dispose();
-    const progressToast = startAgentWorkspaceOperationToast({
-      conversationTitle: toastConversationTitle,
-      detail,
-      id: agentWorkspaceOperationToastId(conversationId, kind),
-      title,
-    });
-    updateFromBaseProgressToastRef.current = progressToast;
-    return progressToast;
-  };
-  const settleUpdateFromBaseProgressToast = (
-    progressToast: AgentWorkspaceOperationToast,
-    outcome: "error" | "info" | "success",
-    message: string,
-    options?: AgentWorkspaceOperationToastResultOptions,
-  ) => {
-    if (updateFromBaseProgressToastRef.current === progressToast) {
-      updateFromBaseProgressToastRef.current = null;
-    }
-    if (outcome === "success") {
-      progressToast.success(message, options);
-    } else if (outcome === "info") {
-      progressToast.info(message, options);
-    } else {
-      progressToast.error(message, options);
-    }
-  };
+  const { isUpdatingFromBase, runUpdateFromBase } = useAgentWorkspaceBaseUpdate({
+    conversationTitle,
+  });
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
   // Workspace-only flag computed early so reviewQuery can decide whether the
   // inline diff view will be visible.
@@ -347,12 +307,6 @@ export function AgentPublishPanel({
       !!workspace?.worktreePath &&
       baseBlocked,
     staleTime: 10_000,
-  });
-  const updateFromBaseMutation = useMutation({
-    mutationFn: (base?: AgentConversationBaseSelection | null) =>
-      base
-        ? chatApi.updateAgentConversationWorkspaceFromBase(conversationId!, base)
-        : chatApi.updateAgentConversationWorkspaceFromBase(conversationId!),
   });
   const rebaseBaseOptionsResult =
     rebaseBaseOptionsQuery.data ?? fallbackRebaseOptions;
@@ -516,7 +470,6 @@ export function AgentPublishPanel({
   const isBranchUpdateNeeded =
     !baseBlocked && !terminalPublicationStatus && Boolean(freshness?.isBaseAhead);
   const isPublishCurrent = isAgentWorkspacePublishCurrent(workspace, freshness);
-  const isUpdatingFromBase = updateFromBaseMutation.isPending;
   const isPublishingThisWorkspace = isPublishingWorkspace || localPublishInFlight;
   const effectivePublishing = isPublishingThisWorkspace || isUpdatingFromBase;
   const isRepairPending = workspace.publicationPushStatus === "needs_agent";
@@ -655,68 +608,6 @@ export function AgentPublishPanel({
               : reviewQuery.isSuccess
                 ? "No changed files detected yet."
                 : "Review changes before publishing.";
-  const runUpdateFromBase = (
-    baseSelection: AgentConversationBaseSelection | null | undefined,
-    toastOptions: {
-      detail: string;
-      kind: "rebase" | "update-from-base";
-      title: string;
-    },
-  ) => {
-    if (!conversationId) {
-      return;
-    }
-    const requestConversationId = conversationId;
-    const requestWorkspace = workspace;
-    const progressToast = startUpdateFromBaseProgressToast({
-      ...toastOptions,
-      conversationId: requestConversationId,
-    });
-
-    void updateFromBaseMutation
-      .mutateAsync(baseSelection)
-      .then(async (result) => {
-        queryClient.setQueryData(
-          ["agents", "conversation-workspace", result.workspace.conversationId],
-          result.workspace,
-        );
-        await invalidateWorkspaceQueries(queryClient, result.workspace.conversationId);
-        settleUpdateFromBaseProgressToast(
-          progressToast,
-          "success",
-          result.updated
-            ? `Updated from ${result.targetRef}`
-            : `Already current with ${result.targetRef}`,
-        );
-      })
-      .catch(async (error) => {
-        const errorMessage =
-          error instanceof Error ? error.message : "Failed to update from base";
-        let refreshedWorkspace: AgentConversationWorkspace | null = null;
-        try {
-          refreshedWorkspace =
-            await chatApi.getAgentConversationWorkspace(requestConversationId);
-          if (refreshedWorkspace) {
-            queryClient.setQueryData(
-              ["agents", "conversation-workspace", requestConversationId],
-              refreshedWorkspace,
-            );
-          }
-        } catch {
-          refreshedWorkspace = null;
-        }
-        const repairStarted =
-          (refreshedWorkspace ?? requestWorkspace)?.publicationPushStatus ===
-          "needs_agent";
-        settleUpdateFromBaseProgressToast(
-          progressToast,
-          repairStarted ? "info" : "error",
-          repairStarted ? "Repair started" : "Failed to update from base",
-          { detail: errorMessage },
-        );
-        void invalidateWorkspaceQueries(queryClient, requestConversationId);
-      });
-  };
   const confirmUpdateFromBase = () => {
     void confirm({
       title: "Update from base branch?",
@@ -726,10 +617,15 @@ export function AgentPublishPanel({
       if (!confirmed) {
         return;
       }
-      runUpdateFromBase(undefined, {
+      if (!conversationId) {
+        return;
+      }
+      runUpdateFromBase({
+        conversationId,
         detail: `From ${baseActionLabel}`,
         kind: "update-from-base",
         title: "Updating branch",
+        workspace,
       });
     });
   };
@@ -739,10 +635,13 @@ export function AgentPublishPanel({
       return;
     }
     setRebaseDialogOpen(false);
-    runUpdateFromBase(selectedRebaseBase.selection, {
+    runUpdateFromBase({
+      baseSelection: selectedRebaseBase.selection,
+      conversationId: workspace.conversationId,
       detail: `From ${selectedRebaseBase.selection.displayName}`,
       kind: "rebase",
       title: "Rebasing branch",
+      workspace,
     });
   };
   const confirmClosePr = () => {

@@ -10,6 +10,7 @@ interface UseAgentUserMessageAutoTitleArgs {
     conversationId: string;
     targetProjectId: string;
     shouldSpawnSessionNamer: boolean;
+    providerHarness?: string | null;
   }) => void;
   selectedConversationId: string | null;
 }
@@ -26,11 +27,13 @@ export function useAgentUserMessageAutoTitle({
       if (!conversationId || !activeProjectId) {
         return;
       }
+      const conversation = findConversationById(conversationId);
       handleAutoManagedTitle({
         content,
         conversationId,
         targetProjectId: activeProjectId,
-        shouldSpawnSessionNamer: findConversationById(conversationId)?.contextType === "project",
+        shouldSpawnSessionNamer: conversation?.contextType === "project",
+        providerHarness: conversation?.providerHarness ?? null,
       });
     },
     [
