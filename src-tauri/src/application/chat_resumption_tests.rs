@@ -16,6 +16,17 @@ async fn setup_test_state() -> (Arc<ExecutionState>, AppState) {
     (execution_state, app_state)
 }
 
+async fn spawn_test_stdin() -> (tokio::process::ChildStdin, tokio::process::Child) {
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to spawn cat");
+    let stdin = child.stdin.take().expect("no stdin");
+    (stdin, child)
+}
+
 /// Helper to build a ChatResumptionRunner from test state
 fn build_runner(
     app_state: &AppState,
@@ -53,6 +64,20 @@ fn build_runner_with_agent_run_repo(
             Arc::clone(&app_state.memory_event_repo),
         ),
     )
+}
+
+#[tokio::test]
+async fn chat_resumption_runner_builder_attaches_runtime_support_repos() {
+    let (execution_state, app_state) = setup_test_state().await;
+
+    let runner = build_runner(&app_state, &execution_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .with_execution_settings_repo(Arc::clone(&app_state.execution_settings_repo))
+        .with_agent_lane_settings_repo(Arc::clone(&app_state.agent_lane_settings_repo))
+        .with_agent_provider_settings_repo(Arc::clone(&app_state.agent_provider_settings_repo))
+        .with_interactive_process_registry(Arc::clone(&app_state.interactive_process_registry));
+
+    let _chat_service = runner.create_chat_service();
 }
 
 struct InterruptedAgentRunRepo {
@@ -191,6 +216,10 @@ fn test_context_type_priority_ordering() {
     );
     assert!(
         context_type_priority(ChatContextType::Review)
+            < context_type_priority(ChatContextType::Merge)
+    );
+    assert!(
+        context_type_priority(ChatContextType::Merge)
             < context_type_priority(ChatContextType::Task)
     );
     assert!(
@@ -199,6 +228,10 @@ fn test_context_type_priority_ordering() {
     );
     assert!(
         context_type_priority(ChatContextType::Ideation)
+            < context_type_priority(ChatContextType::Delegation)
+    );
+    assert!(
+        context_type_priority(ChatContextType::Delegation)
             < context_type_priority(ChatContextType::Project)
     );
 }
@@ -225,6 +258,8 @@ fn test_prioritize_resumptions_sorts_correctly() {
     let conversations = vec![
         create_interrupted(ChatContextType::Project), // Lowest priority
         create_interrupted(ChatContextType::TaskExecution), // Highest priority
+        create_interrupted(ChatContextType::Merge),
+        create_interrupted(ChatContextType::Delegation),
         create_interrupted(ChatContextType::Ideation),
         create_interrupted(ChatContextType::Review),
         create_interrupted(ChatContextType::Task),
@@ -243,13 +278,18 @@ fn test_prioritize_resumptions_sorts_correctly() {
         ChatContextType::TaskExecution
     );
     assert_eq!(sorted[1].conversation.context_type, ChatContextType::Review);
-    assert_eq!(sorted[2].conversation.context_type, ChatContextType::Task);
+    assert_eq!(sorted[2].conversation.context_type, ChatContextType::Merge);
+    assert_eq!(sorted[3].conversation.context_type, ChatContextType::Task);
     assert_eq!(
-        sorted[3].conversation.context_type,
+        sorted[4].conversation.context_type,
         ChatContextType::Ideation
     );
     assert_eq!(
-        sorted[4].conversation.context_type,
+        sorted[5].conversation.context_type,
+        ChatContextType::Delegation
+    );
+    assert_eq!(
+        sorted[6].conversation.context_type,
         ChatContextType::Project
     );
 }
@@ -412,6 +452,56 @@ async fn test_is_handled_by_task_resumption_for_ideation() {
     assert!(
         is_handled,
         "Ideation should be handled by dedicated recovery loop, not ChatResumptionRunner"
+    );
+}
+
+#[tokio::test]
+async fn test_is_handled_by_task_resumption_for_missing_merge_task() {
+    let (execution_state, app_state) = setup_test_state().await;
+    let missing_task_id = TaskId::new();
+
+    let mut conv = ChatConversation::new_task_execution(missing_task_id.clone());
+    conv.context_type = ChatContextType::Merge;
+    conv.context_id = missing_task_id.as_str().to_string();
+    conv.claude_session_id = Some("test-session".to_string());
+
+    let run = AgentRun::new(conv.id);
+    let interrupted = InterruptedConversation {
+        conversation: conv,
+        last_run: run,
+    };
+
+    let runner = build_runner(&app_state, &execution_state);
+
+    let is_handled = runner.is_handled_by_task_resumption(&interrupted).await;
+    assert!(
+        is_handled,
+        "Merge conversation without a task should be skipped by chat resumption"
+    );
+}
+
+#[tokio::test]
+async fn test_is_handled_by_task_resumption_for_delegation() {
+    let (execution_state, app_state) = setup_test_state().await;
+    let project_id = crate::domain::entities::ProjectId::new();
+
+    let mut conv = ChatConversation::new_project(project_id);
+    conv.context_type = ChatContextType::Delegation;
+    conv.context_id = "delegated-session-1".to_string();
+    conv.claude_session_id = Some("test-session".to_string());
+
+    let run = AgentRun::new(conv.id);
+    let interrupted = InterruptedConversation {
+        conversation: conv,
+        last_run: run,
+    };
+
+    let runner = build_runner(&app_state, &execution_state);
+
+    let is_handled = runner.is_handled_by_task_resumption(&interrupted).await;
+    assert!(
+        !is_handled,
+        "Delegation conversations are not owned by task resumption"
     );
 }
 
@@ -595,6 +685,36 @@ async fn durable_silent_completion_recovery_skips_active_runtime() {
     let runner = build_runner(&app_state, &execution_state);
 
     assert_eq!(runner.recover_durable_silent_completions().await, 0);
+    assert!(app_state
+        .message_queue
+        .get_queued(ChatContextType::Project, &conversation_id.as_str())
+        .is_empty());
+}
+
+#[tokio::test]
+async fn durable_silent_completion_recovery_skips_interactive_registry_runtime() {
+    let (execution_state, app_state) = setup_test_state().await;
+    let conversation_id = create_durable_recovery_candidate(&app_state).await;
+    let (stdin, _child) = spawn_test_stdin().await;
+    let key = InteractiveProcessKey::new(
+        ChatContextType::Project.to_string(),
+        conversation_id.as_str(),
+    );
+    app_state
+        .interactive_process_registry
+        .register(key.clone(), stdin)
+        .await;
+
+    let runner = build_runner(&app_state, &execution_state)
+        .with_interactive_process_registry(Arc::clone(&app_state.interactive_process_registry));
+
+    assert_eq!(runner.recover_durable_silent_completions().await, 0);
+    assert!(
+        app_state
+            .interactive_process_registry
+            .has_process(&key)
+            .await
+    );
     assert!(app_state
         .message_queue
         .get_queued(ChatContextType::Project, &conversation_id.as_str())
