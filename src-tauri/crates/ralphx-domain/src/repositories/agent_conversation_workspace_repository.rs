@@ -113,6 +113,14 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(())
     }
 
+    async fn update_auto_publish_initial_pr_preference(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _enabled: bool,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn update_pr_auto_merge_state(
         &self,
         _conversation_id: &ChatConversationId,
