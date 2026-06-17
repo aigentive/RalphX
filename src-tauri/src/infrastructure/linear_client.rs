@@ -108,15 +108,7 @@ impl LinearApiClient for HyperLinearApiClient {
                 Value::Object(Default::default()),
             )
             .await?;
-        if data
-            .get("viewer")
-            .and_then(|viewer| viewer.get("id"))
-            .is_some()
-        {
-            Ok(())
-        } else {
-            Err("Linear credentials did not return a viewer".to_string())
-        }
+        validate_viewer_data(&data)
     }
 
     async fn search_issues(
@@ -135,15 +127,7 @@ impl LinearApiClient for HyperLinearApiClient {
                 }),
             )
             .await?;
-        let nodes = data
-            .get("searchIssues")
-            .and_then(|issues| issues.get("nodes"))
-            .and_then(|nodes| nodes.as_array())
-            .ok_or_else(|| "Linear search response did not include issues".to_string())?;
-        Ok(nodes
-            .iter()
-            .filter_map(issue_summary_from_node)
-            .collect::<Vec<_>>())
+        search_issue_summaries_from_data(&data)
     }
 
     async fn fetch_issue(
@@ -173,15 +157,7 @@ impl LinearApiClient for HyperLinearApiClient {
                 }),
             )
             .await?;
-        let issue = data
-            .get("issue")
-            .ok_or_else(|| "Linear issue response did not include issue".to_string())?;
-        issue_content_from_node(issue).ok_or_else(|| {
-            format!(
-                "Linear issue response did not include readable issue {}",
-                reference.id
-            )
-        })
+        issue_content_from_data(&data, &reference.id)
     }
 }
 
@@ -221,6 +197,39 @@ fn render_http_error(status: u16, bytes: &[u8]) -> String {
     } else {
         format!("Linear returned HTTP {status}: {body}")
     }
+}
+
+fn validate_viewer_data(data: &Value) -> Result<(), String> {
+    if data
+        .get("viewer")
+        .and_then(|viewer| viewer.get("id"))
+        .is_some()
+    {
+        Ok(())
+    } else {
+        Err("Linear credentials did not return a viewer".to_string())
+    }
+}
+
+fn search_issue_summaries_from_data(data: &Value) -> Result<Vec<LinearIssueSummary>, String> {
+    let nodes = data
+        .get("searchIssues")
+        .and_then(|issues| issues.get("nodes"))
+        .and_then(|nodes| nodes.as_array())
+        .ok_or_else(|| "Linear search response did not include issues".to_string())?;
+    Ok(nodes
+        .iter()
+        .filter_map(issue_summary_from_node)
+        .collect::<Vec<_>>())
+}
+
+fn issue_content_from_data(data: &Value, reference_id: &str) -> Result<LinearIssueContent, String> {
+    let issue = data
+        .get("issue")
+        .ok_or_else(|| "Linear issue response did not include issue".to_string())?;
+    issue_content_from_node(issue).ok_or_else(|| {
+        format!("Linear issue response did not include readable issue {reference_id}")
+    })
 }
 
 fn issue_summary_from_node(node: &Value) -> Option<LinearIssueSummary> {
@@ -319,6 +328,95 @@ mod tests {
         assert_eq!(
             render_http_error(503, b"temporarily unavailable\n"),
             "Linear returned HTTP 503: temporarily unavailable"
+        );
+    }
+
+    #[test]
+    fn viewer_validation_requires_viewer_id() {
+        assert!(validate_viewer_data(&serde_json::json!({
+            "viewer": { "id": "viewer-id", "name": "User" }
+        }))
+        .is_ok());
+
+        assert_eq!(
+            validate_viewer_data(&serde_json::json!({ "viewer": { "name": "User" } })).unwrap_err(),
+            "Linear credentials did not return a viewer"
+        );
+    }
+
+    #[test]
+    fn search_issue_summaries_from_data_filters_unreadable_nodes() {
+        let data = serde_json::json!({
+            "searchIssues": {
+                "nodes": [
+                    {
+                        "id": "issue-1",
+                        "identifier": "LIN-1",
+                        "title": "Readable",
+                        "description": " first issue ",
+                        "state": { "name": "Todo" }
+                    },
+                    {
+                        "id": "issue-2"
+                    }
+                ]
+            }
+        });
+
+        let issues = search_issue_summaries_from_data(&data).expect("search data should parse");
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].id, "issue-1");
+        assert_eq!(issues[0].key.as_deref(), Some("LIN-1"));
+        assert_eq!(issues[0].title, "Readable");
+        assert_eq!(issues[0].excerpt.as_deref(), Some("first issue"));
+        assert_eq!(issues[0].state_name.as_deref(), Some("Todo"));
+    }
+
+    #[test]
+    fn search_issue_summaries_from_data_requires_nodes_array() {
+        let error = search_issue_summaries_from_data(&serde_json::json!({
+            "searchIssues": {}
+        }))
+        .unwrap_err();
+
+        assert_eq!(error, "Linear search response did not include issues");
+    }
+
+    #[test]
+    fn issue_content_from_data_maps_issue_and_reports_missing_issue() {
+        let content = issue_content_from_data(
+            &serde_json::json!({
+                "issue": {
+                    "id": "issue-1",
+                    "identifier": "LIN-1",
+                    "title": "Readable",
+                    "url": "https://linear.app/acme/issue/LIN-1/readable",
+                    "description": "Issue body",
+                    "state": { "name": "In Progress" }
+                }
+            }),
+            "issue-1",
+        )
+        .expect("issue data should parse");
+
+        assert_eq!(content.id, "issue-1");
+        assert_eq!(content.key.as_deref(), Some("LIN-1"));
+        assert_eq!(content.title, "Readable");
+        assert_eq!(content.body, "Issue body");
+        assert_eq!(content.state_name.as_deref(), Some("In Progress"));
+
+        assert_eq!(
+            issue_content_from_data(&serde_json::json!({}), "missing").unwrap_err(),
+            "Linear issue response did not include issue"
+        );
+        assert_eq!(
+            issue_content_from_data(
+                &serde_json::json!({ "issue": { "id": "issue-1" } }),
+                "issue-1",
+            )
+            .unwrap_err(),
+            "Linear issue response did not include readable issue issue-1"
         );
     }
 

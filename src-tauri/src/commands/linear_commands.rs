@@ -167,7 +167,16 @@ pub async fn save_linear_webhook_signing_secret(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tauri::Manager;
+
     use crate::domain::integrations::IntegrationValidationStatus;
+
+    fn test_app() -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .manage(AppState::new_test())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build")
+    }
 
     #[test]
     fn integration_settings_response_reports_secret_presence_without_secret_value() {
@@ -197,5 +206,62 @@ mod tests {
         assert_eq!(response.validation_status, "not_configured");
         assert!(!response.issue_search_available);
         assert!(response.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_linear_integration_settings_returns_default_state() {
+        let app = test_app();
+
+        let settings = get_linear_integration_settings(app.state::<AppState>())
+            .await
+            .expect("default settings should load");
+        assert!(!settings.enabled);
+        assert!(!settings.has_api_token);
+        assert_eq!(settings.validation_status, "not_configured");
+    }
+
+    #[tokio::test]
+    async fn search_linear_issues_short_circuits_blank_query() {
+        let app = test_app();
+
+        let response = search_linear_issues(
+            SearchLinearIssuesInput {
+                query: "   \n\t ".to_string(),
+                limit: Some(50),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("blank searches should not call Linear");
+
+        assert!(response.issues.is_empty());
+    }
+
+    #[tokio::test]
+    async fn validate_linear_integration_reports_missing_token() {
+        let app = test_app();
+
+        let error = validate_linear_integration(app.state::<AppState>())
+            .await
+            .expect_err("validation without a token should fail");
+
+        assert!(error.contains("Linear API token is required"));
+    }
+
+    #[tokio::test]
+    async fn save_linear_webhook_signing_secret_rejects_blank_secret_before_keychain_write() {
+        let app = test_app();
+
+        let error = save_linear_webhook_signing_secret(
+            SaveLinearWebhookSigningSecretInput {
+                signing_secret: "  ".to_string(),
+                enabled: Some(true),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect_err("blank signing secrets should be rejected");
+
+        assert_eq!(error, "Linear webhook signing secret cannot be empty");
     }
 }
