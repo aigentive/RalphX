@@ -545,7 +545,7 @@ pub(crate) fn refresh_harness_runtime_probe(harness: AgentHarnessKind) -> Harnes
     probe_harness(harness)
 }
 
-fn clear_harness_runtime_caches_for_harness(harness: AgentHarnessKind) {
+pub(crate) fn clear_harness_runtime_caches_for_harness(harness: AgentHarnessKind) {
     if let Some(cache) = HARNESS_RUNTIME_PROBE_CACHE.get() {
         cache.lock().unwrap().remove(&harness);
     }

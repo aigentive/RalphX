@@ -24,11 +24,15 @@ use crate::domain::agents::{
 };
 
 use super::{
-    append_claude_permission_args, apply_common_spawn_env, claude_runtime_config,
+    append_claude_permission_args, apply_common_spawn_env,
+    build_spawnable_command_with_mcp_runtime_context_and_profile, claude_runtime_config,
     create_mcp_config, ensure_claude_spawn_allowed, find_claude_cli, get_allowed_tools,
     get_effective_settings, get_preapproved_tools, normalize_claude_effort_for_cli_path,
-    sanitize_claude_user_state, validate_claude_model_for_cli_path,
+    sanitize_claude_user_state, validate_claude_model_for_cli_path, SpawnableCommand,
 };
+
+#[cfg(test)]
+use super::build_spawnable_command_with_mcp_runtime_context_and_profile_for_test;
 
 // ============================================================================
 // Streaming Event Types
@@ -374,6 +378,78 @@ impl Default for ClaudeCodeClient {
     }
 }
 
+impl ClaudeCodeClient {
+    fn build_spawnable_agent_command(
+        &self,
+        config: &AgentConfig,
+        resume_session_id: Option<&str>,
+        enforce_spawn_guard: bool,
+    ) -> Result<SpawnableCommand, String> {
+        let plugin_dir = config
+            .plugin_dir
+            .as_deref()
+            .unwrap_or_else(|| Path::new("./plugins/app"));
+        let effort_override = config.logical_effort.map(|effort| effort.to_string());
+
+        let mut spawnable = if enforce_spawn_guard {
+            build_spawnable_command_with_mcp_runtime_context_and_profile(
+                &self.cli_path,
+                plugin_dir,
+                &config.prompt,
+                config.agent.as_deref(),
+                None,
+                resume_session_id,
+                &config.working_directory,
+                false,
+                effort_override.as_deref(),
+                config.model.as_deref(),
+                None,
+            )?
+        } else {
+            #[cfg(test)]
+            {
+                build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
+                    &self.cli_path,
+                    plugin_dir,
+                    &config.prompt,
+                    config.agent.as_deref(),
+                    None,
+                    resume_session_id,
+                    &config.working_directory,
+                    false,
+                    effort_override.as_deref(),
+                    config.model.as_deref(),
+                    None,
+                )?
+            }
+            #[cfg(not(test))]
+            {
+                let _ = enforce_spawn_guard;
+                build_spawnable_command_with_mcp_runtime_context_and_profile(
+                    &self.cli_path,
+                    plugin_dir,
+                    &config.prompt,
+                    config.agent.as_deref(),
+                    None,
+                    resume_session_id,
+                    &config.working_directory,
+                    false,
+                    effort_override.as_deref(),
+                    config.model.as_deref(),
+                    None,
+                )?
+            }
+        };
+
+        if let Some(max_tokens) = config.max_tokens {
+            spawnable.arg("--max-tokens");
+            spawnable.arg(&max_tokens.to_string());
+        }
+
+        Ok(spawnable)
+    }
+}
+
 fn resolved_config_model(config: &AgentConfig) -> Option<String> {
     config.model.clone().or_else(|| {
         config.agent.as_ref().and_then(|agent_name| {
@@ -399,7 +475,6 @@ impl AgenticClient for ClaudeCodeClient {
         if let Err(err) = ensure_claude_spawn_allowed() {
             return Err(AgentError::SpawnNotAllowed(err));
         }
-        sanitize_claude_user_state();
 
         // Check if CLI is available first
         if !self.cli_path.exists() && which::which(&self.cli_path).is_err() {
@@ -409,101 +484,21 @@ impl AgenticClient for ClaudeCodeClient {
             )));
         }
 
-        let mut args = vec!["-p".to_string(), config.prompt.clone()];
-
-        // Add output format for streaming
-        args.extend(["--output-format".to_string(), "stream-json".to_string()]);
-        args.push("--verbose".to_string()); // Required for stream-json with -p
-        if let Some(sources) = &claude_runtime_config().setting_sources {
-            if !sources.is_empty() {
-                args.extend(["--setting-sources".to_string(), sources.join(",")]);
-            }
-        }
-        // Avoid startup parser crashes in slash-command/skills loading path.
-        args.push("--disable-slash-commands".to_string());
-
-        // Add plugin directory for agent/skill discovery
-        if let Some(plugin_dir) = &config.plugin_dir {
-            args.extend(["--plugin-dir".to_string(), plugin_dir.display().to_string()]);
-
-            // Create dynamic MCP config for agent-specific tool filtering
-            // Use --strict-mcp-config to ignore user/global MCP servers that can hang
-            // Hard error on invalid config — MCP is critical infra, fail loud.
-            if let Some(agent) = &config.agent {
-                let temp_path = create_mcp_config(plugin_dir, agent, false)
-                    .map_err(|e| AgentError::SpawnFailed(e))?;
-                args.extend([
-                    "--mcp-config".to_string(),
-                    temp_path.display().to_string(),
-                    "--strict-mcp-config".to_string(),
-                ]);
-            }
-        }
-
-        // Add agent name if specified
-        if let Some(agent) = &config.agent {
-            args.extend(["--agent".to_string(), agent.clone()]);
-        }
-
-        // Apply CLI tool restrictions from agent_config
-        if let Some(agent_name) = &config.agent {
-            if let Some(allowed_tools) = get_allowed_tools(agent_name) {
-                args.extend(["--tools".to_string(), allowed_tools]);
-            }
-        }
-
-        // Add model: explicit config override first, then per-agent default from config/ralphx.yaml
-        if let Some(model) = resolved_config_model(&config) {
-            append_validated_model_args(&mut args, &self.cli_path, &model)
-                .map_err(AgentError::SpawnFailed)?;
-        }
-
-        // Add max tokens if specified
-        if let Some(max_tokens) = config.max_tokens {
-            args.extend(["--max-tokens".to_string(), max_tokens.to_string()]);
-        }
-
-        // Permission handling from config/harnesses/claude.yaml.
-        append_claude_permission_args(&mut args, config.agent.as_deref());
-        // Optional settings JSON passed to claude CLI via --settings.
-        // Agent-specific profile overrides global profile when configured.
-        if let Some(s) = get_effective_settings(config.agent.as_deref()) {
-            if let Ok(json) = serde_json::to_string(s) {
-                args.extend(["--settings".to_string(), json]);
-            }
-        }
-
-        // Pre-approve agent-specific tools (MCP + CLI permissions, no prompts)
-        if let Some(agent) = &config.agent {
-            if let Some(preapproved) = get_preapproved_tools(agent) {
-                args.push("--allowedTools".to_string());
-                args.push(preapproved);
-            }
-        }
-
-        // Build command
-        let mut cmd = tokio::process::Command::new(&self.cli_path);
-        cmd.args(&args)
-            .current_dir(&config.working_directory)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .stdin(Stdio::null());
-        apply_common_spawn_env(&mut cmd);
-        if let Some(plugin_dir) = &config.plugin_dir {
-            cmd.env("CLAUDE_PLUGIN_ROOT", plugin_dir);
-        }
+        let mut spawnable = self
+            .build_spawnable_agent_command(&config, None, true)
+            .map_err(AgentError::SpawnFailed)?;
 
         // Add environment variables
         for (key, value) in &config.env {
-            cmd.env(key, value);
+            spawnable.env(key, value);
         }
 
         // Spawn the process and record start time for duration tracking
-        tracing::info!(cmd = ?cmd, "Spawning CLI agent (agentic)");
+        tracing::info!(cmd = ?spawnable, "Spawning CLI agent (agentic)");
         let start_time = Instant::now();
-        let child = cmd
-            .kill_on_drop(true)
+        let child = spawnable
             .spawn()
+            .await
             .map_err(|e| AgentError::SpawnFailed(e.to_string()))?;
 
         let handle = AgentHandle::new(ClientType::ClaudeCode, config.role);
@@ -668,11 +663,20 @@ impl ClaudeCodeClient {
 
         // Apply CLI tool restrictions from agent_config
         // Frontmatter tools/disallowedTools only work for subagent spawning,
-        // NOT for direct CLI invocations with --agent -p. We must pass --tools flag.
+        // NOT for direct CLI invocations with --agent -p. Pass --tools only when
+        // there are built-in CLI tools to allow; the Claude CLI treats an empty
+        // value as disabling MCP tools too.
         if let Some(agent_name) = &config.agent {
             if let Some(allowed_tools) = get_allowed_tools(agent_name) {
-                tracing::debug!(agent = %agent_name, tools = if allowed_tools.is_empty() { "(MCP only)" } else { allowed_tools.as_str() }, "Agent restricted to CLI tools");
-                args.extend(["--tools".to_string(), allowed_tools]);
+                if allowed_tools.is_empty() {
+                    tracing::debug!(
+                        agent = %agent_name,
+                        "Agent configured as MCP-only; omitting --tools because Claude CLI treats an empty value as disabling MCP tools"
+                    );
+                } else {
+                    tracing::debug!(agent = %agent_name, tools = allowed_tools.as_str(), "Agent restricted to CLI tools");
+                    args.extend(["--tools".to_string(), allowed_tools]);
+                }
             }
         }
 

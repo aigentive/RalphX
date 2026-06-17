@@ -607,3 +607,14 @@ impl AgentConversationWorkspaceRepository for WorkspaceLoadErrorRepository {
         Err(repo_error())
     }
 }
+
+#[tokio::test]
+async fn workspace_repository_default_linked_ideation_lookup_returns_none() {
+    let repo = WorkspaceLoadErrorRepository;
+    let loaded = repo
+        .get_by_linked_ideation_session_id(&IdeationSessionId::from_string("session-1"))
+        .await
+        .unwrap();
+
+    assert!(loaded.is_none());
+}

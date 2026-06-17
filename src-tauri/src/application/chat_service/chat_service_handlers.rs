@@ -589,6 +589,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
         run_chain_id,
         is_retry_attempt: true,
         user_message_content: user_message_content.map(str::to_string),
+        turn_metadata: None,
         conversation: Some(retry_conv),
         agent_name: agent_name.map(str::to_string),
         team_mode,

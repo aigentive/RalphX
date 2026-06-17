@@ -588,12 +588,21 @@ pub async fn spawn_session_namer(
     session_id: Option<String>,
     conversation_id: Option<String>,
     first_message: String,
+    provider_harness: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let requested_harness = provider_harness
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::parse)
+        .transpose()
+        .map_err(|error| format!("Invalid provider harness for session namer: {error}"))?;
     let target = SessionNamerTarget::from_initial_request(
         session_id,
         conversation_id,
         first_message,
+        requested_harness,
     )
     .map_err(str::to_string)?;
     spawn_session_namer_agent(&state, target)

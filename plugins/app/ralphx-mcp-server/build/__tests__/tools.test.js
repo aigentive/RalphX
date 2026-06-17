@@ -13,6 +13,11 @@ import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM
 function toolsByAgent() {
     return getToolsByAgent();
 }
+function inputSchemaProperties(toolName) {
+    const tool = getAllTools().find((candidate) => candidate.name === toolName);
+    expect(tool, `${toolName} tool`).toBeDefined();
+    return (tool.inputSchema.properties ?? {});
+}
 describe('getAllowedToolNames', () => {
     beforeEach(() => {
         // Clear env var before each test
@@ -240,6 +245,31 @@ describe('tool input schemas', () => {
             expect(tool.inputSchema, `${tool.name} inputSchema`).not.toHaveProperty('allOf');
             expect(tool.inputSchema, `${tool.name} inputSchema`).not.toHaveProperty('anyOf');
         }
+    });
+    it('advertises create_task_proposal dependency fields supported by the backend', () => {
+        const tool = getAllTools().find((candidate) => candidate.name === 'create_task_proposal');
+        expect(tool).toBeDefined();
+        const properties = inputSchemaProperties('create_task_proposal');
+        expect(properties.depends_on).toMatchObject({
+            type: 'array',
+            items: { type: 'string' },
+        });
+        expect(tool.inputSchema.required ?? []).not.toContain('depends_on');
+    });
+    it('advertises update_task_proposal dependency edit fields supported by the backend', () => {
+        const tool = getAllTools().find((candidate) => candidate.name === 'update_task_proposal');
+        expect(tool).toBeDefined();
+        const properties = inputSchemaProperties('update_task_proposal');
+        expect(properties.add_depends_on).toMatchObject({
+            type: 'array',
+            items: { type: 'string' },
+        });
+        expect(properties.add_blocks).toMatchObject({
+            type: 'array',
+            items: { type: 'string' },
+        });
+        expect(tool.inputSchema.required ?? []).not.toContain('add_depends_on');
+        expect(tool.inputSchema.required ?? []).not.toContain('add_blocks');
     });
 });
 describe('getFilteredTools', () => {

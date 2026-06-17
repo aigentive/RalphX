@@ -1,6 +1,7 @@
 use super::{
-    session_changed_after_resume, should_process_stream_queue,
-    should_warn_missing_agent_task_ledger,
+    enqueue_silent_completion_recovery, session_changed_after_resume, should_process_stream_queue,
+    should_recover_silent_completion, should_warn_missing_agent_task_ledger,
+    silent_completion_recovery_backoff, SilentCompletionRecoveryEnqueue,
 };
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
@@ -81,6 +82,402 @@ fn stream_queue_processing_gate_allows_non_cancel_silent_exit_with_queue() {
     assert!(
         should_process_stream_queue(1, true, true, false),
         "timeout/eof silent exits can still drain queued messages"
+    );
+}
+
+#[test]
+fn silent_completion_recovery_triggers_after_tool_without_final_text() {
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![
+        ContentBlockItem::Text {
+            text: "I am patching this now.".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("patch-1".to_string()),
+            name: "apply_patch".to_string(),
+            arguments: serde_json::json!({ "file": "src/lib.rs" }),
+            result: Some(serde_json::json!({ "ok": true })),
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+    ];
+
+    assert!(should_recover_silent_completion(
+        ChatContextType::Project,
+        "I am patching this now.",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+    ));
+}
+
+#[test]
+fn silent_completion_recovery_treats_blank_text_before_tool_as_unfinished() {
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![
+        ContentBlockItem::Text {
+            text: "   ".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("patch-1".to_string()),
+            name: "apply_patch".to_string(),
+            arguments: serde_json::json!({ "file": "src/lib.rs" }),
+            result: Some(serde_json::json!({ "ok": true })),
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+    ];
+
+    assert!(should_recover_silent_completion(
+        ChatContextType::Project,
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+    ));
+}
+
+#[test]
+fn silent_completion_recovery_does_not_trigger_after_final_text() {
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![
+        ContentBlockItem::ToolUse {
+            id: Some("patch-1".to_string()),
+            name: "apply_patch".to_string(),
+            arguments: serde_json::json!({ "file": "src/lib.rs" }),
+            result: Some(serde_json::json!({ "ok": true })),
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+        ContentBlockItem::Text {
+            text: "Done and validated.".to_string(),
+        },
+    ];
+
+    assert!(!should_recover_silent_completion(
+        ChatContextType::Project,
+        "Done and validated.",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+    ));
+}
+
+#[test]
+fn silent_completion_recovery_ignores_terminal_completion_tools() {
+    let tool_calls = vec![test_tool_call("mcp__ralphx__execution_complete")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("complete-1".to_string()),
+        name: "mcp__ralphx__execution_complete".to_string(),
+        arguments: serde_json::json!({}),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    assert!(!should_recover_silent_completion(
+        ChatContextType::Project,
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+    ));
+}
+
+#[test]
+fn silent_completion_recovery_triggers_from_legacy_tool_calls_without_content_blocks() {
+    let tool_calls = vec![test_tool_call("apply_patch")];
+
+    assert!(should_recover_silent_completion(
+        ChatContextType::Project,
+        "",
+        &tool_calls,
+        &[],
+        0,
+        false,
+        false,
+        true,
+    ));
+}
+
+#[test]
+fn silent_completion_recovery_ignores_question_and_permission_tools() {
+    for tool_name in [
+        "mcp__ralphx__ask_user_question",
+        "mcp__ralphx__permission_request",
+        "mcp__ralphx__resolve_permission_request",
+    ] {
+        let tool_calls = vec![test_tool_call(tool_name)];
+        let content_blocks = vec![ContentBlockItem::ToolUse {
+            id: Some("tool-1".to_string()),
+            name: tool_name.to_string(),
+            arguments: serde_json::json!({}),
+            result: Some(serde_json::json!({ "ok": true })),
+            parent_tool_use_id: None,
+            diff_context: None,
+        }];
+
+        assert!(
+            !should_recover_silent_completion(
+                ChatContextType::Project,
+                "",
+                &tool_calls,
+                &content_blocks,
+                0,
+                false,
+                false,
+                true,
+            ),
+            "{tool_name} should not trigger silent-completion recovery"
+        );
+    }
+}
+
+#[test]
+fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
+    let queue = crate::domain::services::MessageQueue::new();
+    queue.queue(
+        ChatContextType::Project,
+        "conversation-1",
+        "user follow-up".to_string(),
+    );
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        None,
+    );
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Queued {
+            attempt: 1,
+            backoff_ms: 1_000,
+        }
+    );
+    let queued = queue.get_queued(ChatContextType::Project, "conversation-1");
+    assert_eq!(queued.len(), 2);
+    assert!(queued[0].content.contains("ended after tool activity"));
+    assert_eq!(queued[1].content, "user follow-up");
+    let metadata: serde_json::Value =
+        serde_json::from_str(queued[0].metadata_override.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["resume_in_place"], true);
+    assert_eq!(metadata["persist_hidden_marker"], true);
+    assert_eq!(metadata["recovery_attempt"], 1);
+    assert_eq!(metadata["recovery_max_attempts"], 3);
+    assert_eq!(
+        silent_completion_recovery_backoff(queued[0].metadata_override.as_deref())
+            .map(|duration| duration.as_millis()),
+        Some(1_000)
+    );
+}
+
+#[test]
+fn silent_completion_recovery_enqueues_second_attempt_with_backoff() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let metadata = serde_json::json!({
+        "recovery_reason": "silent_completion_after_tool_activity",
+        "recovery_attempt": 1,
+    })
+    .to_string();
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        Some(&metadata),
+    );
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Queued {
+            attempt: 2,
+            backoff_ms: 2_000,
+        }
+    );
+    let queued = queue.get_queued(ChatContextType::Project, "conversation-1");
+    assert_eq!(queued.len(), 1);
+    let metadata: serde_json::Value =
+        serde_json::from_str(queued[0].metadata_override.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["recovery_attempt"], 2);
+    assert_eq!(metadata["recovery_backoff_ms"], 2_000);
+}
+
+#[test]
+fn silent_completion_recovery_enqueues_first_attempt_for_unrelated_prior_metadata() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let metadata = serde_json::json!({
+        "recovery_reason": "other_recovery_path",
+        "recovery_attempt": 2,
+    })
+    .to_string();
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        Some(&metadata),
+    );
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Queued {
+            attempt: 1,
+            backoff_ms: 1_000,
+        }
+    );
+    let queued = queue.get_queued(ChatContextType::Project, "conversation-1");
+    assert_eq!(queued.len(), 1);
+    let queued_metadata: serde_json::Value =
+        serde_json::from_str(queued[0].metadata_override.as_deref().unwrap()).unwrap();
+    assert_eq!(queued_metadata["recovery_attempt"], 1);
+}
+
+#[test]
+fn silent_completion_recovery_stops_at_max_attempts() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let metadata = serde_json::json!({
+        "resume_in_place": true,
+        "recovery_reason": "silent_completion_after_tool_activity",
+        "recovery_attempt": 3,
+    })
+    .to_string();
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        Some(&metadata),
+    );
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Exhausted { attempts: 3 }
+    );
+    assert!(queue
+        .get_queued(ChatContextType::Project, "conversation-1")
+        .is_empty());
+}
+
+#[test]
+fn silent_completion_recovery_enqueue_skips_without_resumable_session() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        false,
+        None,
+    );
+
+    assert_eq!(result, SilentCompletionRecoveryEnqueue::NotNeeded);
+    assert!(queue
+        .get_queued(ChatContextType::Project, "conversation-1")
+        .is_empty());
+}
+
+#[test]
+fn silent_completion_recovery_backoff_ignores_invalid_metadata() {
+    assert_eq!(silent_completion_recovery_backoff(None), None);
+    assert_eq!(silent_completion_recovery_backoff(Some("not json")), None);
+    assert_eq!(
+        silent_completion_recovery_backoff(Some(
+            r#"{"recovery_reason":"different","recovery_backoff_ms":1000}"#
+        )),
+        None
     );
 }
 
@@ -512,7 +909,10 @@ async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
         sent_options[0].metadata.as_deref(),
         Some(r#"{"source":"queue-now"}"#)
     );
-    assert_eq!(sent_options[0].harness_override, Some(AgentHarnessKind::Codex));
+    assert_eq!(
+        sent_options[0].harness_override,
+        Some(AgentHarnessKind::Codex)
+    );
     assert_eq!(sent_options[0].model_override.as_deref(), Some("gpt-5.5"));
     assert_eq!(
         sent_options[0].logical_effort_override,
@@ -747,6 +1147,7 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         run_chain_id: None,
         is_retry_attempt: false,
         user_message_content: Some("initial prompt".to_string()),
+        turn_metadata: None,
         conversation: Some(conversation),
         agent_name: Some("orchestrator".to_string()),
         team_mode: false,

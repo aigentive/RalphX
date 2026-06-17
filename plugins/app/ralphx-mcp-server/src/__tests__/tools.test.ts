@@ -66,6 +66,17 @@ function toolsByAgent(): Record<string, string[]> {
   return getToolsByAgent();
 }
 
+type SchemaProperty = {
+  type?: string;
+  items?: { type?: string };
+};
+
+function inputSchemaProperties(toolName: string): Record<string, SchemaProperty> {
+  const tool = getAllTools().find((candidate) => candidate.name === toolName);
+  expect(tool, `${toolName} tool`).toBeDefined();
+  return (tool!.inputSchema.properties ?? {}) as Record<string, SchemaProperty>;
+}
+
 describe('getAllowedToolNames', () => {
   beforeEach(() => {
     // Clear env var before each test
@@ -335,6 +346,35 @@ describe('tool input schemas', () => {
       expect(tool.inputSchema, `${tool.name} inputSchema`).not.toHaveProperty('allOf');
       expect(tool.inputSchema, `${tool.name} inputSchema`).not.toHaveProperty('anyOf');
     }
+  });
+
+  it('advertises create_task_proposal dependency fields supported by the backend', () => {
+    const tool = getAllTools().find((candidate) => candidate.name === 'create_task_proposal');
+    expect(tool).toBeDefined();
+
+    const properties = inputSchemaProperties('create_task_proposal');
+    expect(properties.depends_on).toMatchObject({
+      type: 'array',
+      items: { type: 'string' },
+    });
+    expect(tool!.inputSchema.required ?? []).not.toContain('depends_on');
+  });
+
+  it('advertises update_task_proposal dependency edit fields supported by the backend', () => {
+    const tool = getAllTools().find((candidate) => candidate.name === 'update_task_proposal');
+    expect(tool).toBeDefined();
+
+    const properties = inputSchemaProperties('update_task_proposal');
+    expect(properties.add_depends_on).toMatchObject({
+      type: 'array',
+      items: { type: 'string' },
+    });
+    expect(properties.add_blocks).toMatchObject({
+      type: 'array',
+      items: { type: 'string' },
+    });
+    expect(tool!.inputSchema.required ?? []).not.toContain('add_depends_on');
+    expect(tool!.inputSchema.required ?? []).not.toContain('add_blocks');
   });
 });
 

@@ -129,6 +129,32 @@ impl ChatConversationRepository for MockChatConversationRepository {
             .cloned())
     }
 
+    async fn list_recent_resumable_by_context_type(
+        &self,
+        context_type: ChatContextType,
+        limit: u32,
+    ) -> AppResult<Vec<ChatConversation>> {
+        let mut conversations: Vec<ChatConversation> = self
+            .conversations
+            .iter()
+            .filter(|conversation| {
+                conversation.context_type == context_type
+                    && conversation.archived_at.is_none()
+                    && (conversation.provider_session_id.is_some()
+                        || conversation.claude_session_id.is_some())
+            })
+            .cloned()
+            .collect();
+        conversations.sort_by(|left, right| {
+            right
+                .last_message_at
+                .unwrap_or(right.updated_at)
+                .cmp(&left.last_message_at.unwrap_or(left.updated_at))
+        });
+        conversations.truncate(limit as usize);
+        Ok(conversations)
+    }
+
     async fn update_provider_session_ref(
         &self,
         _id: &ChatConversationId,

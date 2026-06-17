@@ -16,16 +16,29 @@ use std::sync::Arc;
 use tauri::{AppHandle, Runtime};
 use tracing::{info, warn};
 
+use crate::application::chat_service::{
+    should_recover_silent_completion, silent_completion_recovery_attempt,
+    silent_completion_recovery_backoff_ms, silent_completion_recovery_max_attempts,
+    silent_completion_recovery_metadata, silent_completion_recovery_prompt, SendMessageOptions,
+};
+use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::runtime_factory::{
     build_chat_service_with_fallback, ChatRuntimeFactoryDeps,
 };
 use crate::application::{AppChatService, ChatService, InteractiveProcessRegistry};
 use crate::commands::execution_commands::{ExecutionState, AGENT_ACTIVE_STATUSES};
-use crate::domain::entities::{ChatContextType, InterruptedConversation, TaskId};
+use crate::domain::entities::{
+    AgentRunStatus, ChatContextType, ChatMessage, InterruptedConversation, MessageRole, TaskId,
+};
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, AgentProviderSettingsRepository, AgentRunRepository,
     ExecutionSettingsRepository, PlanBranchRepository, TaskRepository,
 };
+use crate::domain::services::RunningAgentKey;
+use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
+
+const DURABLE_SILENT_COMPLETION_RECOVERY_SCAN_LIMIT: u32 = 100;
+const DURABLE_SILENT_COMPLETION_RECOVERY_MESSAGE_LIMIT: u32 = 20;
 
 /// Runs chat resumption on startup.
 ///
@@ -132,70 +145,240 @@ impl<R: Runtime> ChatResumptionRunner<R> {
             }
         };
 
+        let mut resumed = 0u32;
         if interrupted.is_empty() {
             info!("[CHAT_RESUMPTION] No interrupted conversations to resume");
-            return;
-        }
+        } else {
+            info!(
+                count = interrupted.len(),
+                "[CHAT_RESUMPTION] Found interrupted conversations"
+            );
 
-        info!(
-            count = interrupted.len(),
-            "[CHAT_RESUMPTION] Found interrupted conversations"
-        );
+            // 3. Sort by priority
+            let sorted = self.prioritize_resumptions(interrupted);
 
-        // 3. Sort by priority
-        let sorted = self.prioritize_resumptions(interrupted);
+            // 4. Resume each (skip if handled by task resumption)
+            for conv in sorted {
+                if self.is_handled_by_task_resumption(&conv).await {
+                    info!(
+                        conversation_id = conv.conversation.id.as_str(),
+                        context_type = %conv.conversation.context_type,
+                        "[CHAT_RESUMPTION] Skipping - handled by task resumption"
+                    );
+                    continue;
+                }
 
-        // 4. Resume each (skip if handled by task resumption)
-        let mut resumed = 0u32;
-        for conv in sorted {
-            if self.is_handled_by_task_resumption(&conv).await {
                 info!(
                     conversation_id = conv.conversation.id.as_str(),
                     context_type = %conv.conversation.context_type,
-                    "[CHAT_RESUMPTION] Skipping - handled by task resumption"
+                    context_id = %conv.conversation.context_id,
+                    "[CHAT_RESUMPTION] Resuming conversation"
+                );
+
+                // Create ChatService and send resume message
+                let chat_service = self.create_chat_service();
+                match chat_service
+                    .send_message(
+                        conv.conversation.context_type,
+                        &conv.conversation.context_id,
+                        "Continue where you left off.",
+                        Default::default(),
+                    )
+                    .await
+                {
+                    Ok(_result) => {
+                        info!(
+                            conversation_id = conv.conversation.id.as_str(),
+                            "[CHAT_RESUMPTION] Successfully resumed conversation"
+                        );
+                        resumed += 1;
+                    }
+                    Err(e) => {
+                        warn!(
+                            conversation_id = conv.conversation.id.as_str(),
+                            error = %e,
+                            "[CHAT_RESUMPTION] Failed to resume conversation"
+                        );
+                    }
+                }
+            }
+        }
+
+        let durable_recovered = self.recover_durable_silent_completions().await;
+
+        info!(
+            interrupted_resumed = resumed,
+            durable_silent_recovered = durable_recovered,
+            "[CHAT_RESUMPTION] Chat resumption complete"
+        );
+    }
+
+    async fn recover_durable_silent_completions(&self) -> u32 {
+        let conversations = match self
+            .chat_runtime_deps
+            .conversation_repo
+            .list_recent_resumable_by_context_type(
+                ChatContextType::Project,
+                DURABLE_SILENT_COMPLETION_RECOVERY_SCAN_LIMIT,
+            )
+            .await
+        {
+            Ok(conversations) => conversations,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "[CHAT_RESUMPTION] Failed to list durable silent-completion recovery candidates"
+                );
+                return 0;
+            }
+        };
+
+        let mut recovered = 0u32;
+        for conversation in conversations {
+            let runtime_context_id = conversation.id.as_str();
+            if self
+                .has_active_runtime_for_context(ChatContextType::Project, &runtime_context_id)
+                .await
+            {
+                info!(
+                    conversation_id = conversation.id.as_str(),
+                    "[CHAT_RESUMPTION] Skipping durable silent-completion recovery; runtime already active"
                 );
                 continue;
             }
 
-            info!(
-                conversation_id = conv.conversation.id.as_str(),
-                context_type = %conv.conversation.context_type,
-                context_id = %conv.conversation.context_id,
-                "[CHAT_RESUMPTION] Resuming conversation"
-            );
+            let latest_run = match self
+                .agent_run_repo
+                .get_latest_for_conversation(&conversation.id)
+                .await
+            {
+                Ok(Some(run)) => run,
+                Ok(None) => continue,
+                Err(error) => {
+                    warn!(
+                        conversation_id = conversation.id.as_str(),
+                        error = %error,
+                        "[CHAT_RESUMPTION] Failed to load latest run for durable silent-completion recovery"
+                    );
+                    continue;
+                }
+            };
 
-            // Create ChatService and send resume message
+            let messages = match self
+                .chat_runtime_deps
+                .chat_message_repo
+                .get_recent_by_conversation_paginated(
+                    &conversation.id,
+                    DURABLE_SILENT_COMPLETION_RECOVERY_MESSAGE_LIMIT,
+                    0,
+                )
+                .await
+            {
+                Ok(messages) => messages,
+                Err(error) => {
+                    warn!(
+                        conversation_id = conversation.id.as_str(),
+                        error = %error,
+                        "[CHAT_RESUMPTION] Failed to load messages for durable silent-completion recovery"
+                    );
+                    continue;
+                }
+            };
+
+            let queued_recovery_exists = self
+                .chat_runtime_deps
+                .message_queue
+                .get_queued(ChatContextType::Project, &runtime_context_id)
+                .iter()
+                .any(|queued| {
+                    silent_completion_recovery_attempt(queued.metadata_override.as_deref()) > 0
+                });
+            let decision = durable_silent_completion_recovery_decision(
+                conversation.context_type,
+                conversation.provider_session_ref().is_some(),
+                latest_run.status,
+                &messages,
+                queued_recovery_exists,
+            );
+            let DurableSilentCompletionRecoveryDecision::Recover {
+                attempt,
+                metadata,
+                prompt,
+            } = decision
+            else {
+                match decision {
+                    DurableSilentCompletionRecoveryDecision::AlreadyQueued => info!(
+                        conversation_id = conversation.id.as_str(),
+                        "[CHAT_RESUMPTION] Skipping durable silent-completion recovery; recovery already queued"
+                    ),
+                    DurableSilentCompletionRecoveryDecision::Exhausted { attempts } => warn!(
+                        conversation_id = conversation.id.as_str(),
+                        attempts,
+                        "[CHAT_RESUMPTION] Durable silent-completion recovery attempts exhausted"
+                    ),
+                    DurableSilentCompletionRecoveryDecision::NotNeeded
+                    | DurableSilentCompletionRecoveryDecision::Recover { .. } => {}
+                }
+                continue;
+            };
+
             let chat_service = self.create_chat_service();
             match chat_service
                 .send_message(
-                    conv.conversation.context_type,
-                    &conv.conversation.context_id,
-                    "Continue where you left off.",
-                    Default::default(),
+                    ChatContextType::Project,
+                    &conversation.context_id,
+                    &prompt,
+                    SendMessageOptions {
+                        metadata: Some(metadata),
+                        conversation_id_override: Some(conversation.id),
+                        ..Default::default()
+                    },
                 )
                 .await
             {
                 Ok(_result) => {
-                    info!(
-                        conversation_id = conv.conversation.id.as_str(),
-                        "[CHAT_RESUMPTION] Successfully resumed conversation"
-                    );
-                    resumed += 1;
-                }
-                Err(e) => {
+                    recovered += 1;
                     warn!(
-                        conversation_id = conv.conversation.id.as_str(),
-                        error = %e,
-                        "[CHAT_RESUMPTION] Failed to resume conversation"
+                        conversation_id = conversation.id.as_str(),
+                        attempt,
+                        max_attempts = silent_completion_recovery_max_attempts(),
+                        "[CHAT_RESUMPTION] Started durable silent-completion recovery"
+                    );
+                }
+                Err(error) => {
+                    warn!(
+                        conversation_id = conversation.id.as_str(),
+                        error = %error,
+                        "[CHAT_RESUMPTION] Failed to start durable silent-completion recovery"
                     );
                 }
             }
         }
+        recovered
+    }
 
-        info!(
-            count = resumed,
-            "[CHAT_RESUMPTION] Chat resumption complete"
-        );
+    async fn has_active_runtime_for_context(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+    ) -> bool {
+        if self
+            .chat_runtime_deps
+            .running_agent_registry
+            .is_running(&RunningAgentKey::new(context_type.to_string(), context_id))
+            .await
+        {
+            return true;
+        }
+        if let Some(registry) = self.interactive_process_registry.as_ref() {
+            return registry
+                .has_process(&InteractiveProcessKey::new(
+                    context_type.to_string(),
+                    context_id,
+                ))
+                .await;
+        }
+        false
     }
 
     /// Sort interrupted conversations by priority.
@@ -280,6 +463,99 @@ impl<R: Runtime> ChatResumptionRunner<R> {
             &deps,
         )
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DurableSilentCompletionRecoveryDecision {
+    NotNeeded,
+    AlreadyQueued,
+    Exhausted {
+        attempts: u32,
+    },
+    Recover {
+        attempt: u32,
+        metadata: String,
+        prompt: String,
+    },
+}
+
+fn durable_silent_completion_recovery_decision(
+    context_type: ChatContextType,
+    has_session_for_queue: bool,
+    latest_run_status: AgentRunStatus,
+    messages: &[ChatMessage],
+    queued_recovery_exists: bool,
+) -> DurableSilentCompletionRecoveryDecision {
+    if queued_recovery_exists {
+        return DurableSilentCompletionRecoveryDecision::AlreadyQueued;
+    }
+    if latest_run_status != AgentRunStatus::Completed {
+        return DurableSilentCompletionRecoveryDecision::NotNeeded;
+    }
+
+    let Some(assistant_message) = latest_assistant_message(messages) else {
+        return DurableSilentCompletionRecoveryDecision::NotNeeded;
+    };
+    let tool_calls = parse_tool_calls(assistant_message.tool_calls.as_deref());
+    let content_blocks = parse_content_blocks(assistant_message.content_blocks.as_deref());
+    if !should_recover_silent_completion(
+        context_type,
+        &assistant_message.content,
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        has_session_for_queue,
+    ) {
+        return DurableSilentCompletionRecoveryDecision::NotNeeded;
+    }
+
+    let prior_metadata = latest_silent_completion_recovery_metadata(messages);
+    let prior_attempt = silent_completion_recovery_attempt(prior_metadata);
+    if prior_attempt >= silent_completion_recovery_max_attempts() {
+        return DurableSilentCompletionRecoveryDecision::Exhausted {
+            attempts: prior_attempt,
+        };
+    }
+
+    let attempt = prior_attempt + 1;
+    let backoff_ms = silent_completion_recovery_backoff_ms(attempt);
+    DurableSilentCompletionRecoveryDecision::Recover {
+        attempt,
+        metadata: silent_completion_recovery_metadata(attempt, backoff_ms),
+        prompt: silent_completion_recovery_prompt(attempt),
+    }
+}
+
+fn latest_assistant_message(messages: &[ChatMessage]) -> Option<&ChatMessage> {
+    messages.iter().rev().find(|message| {
+        matches!(
+            message.role,
+            MessageRole::Orchestrator
+                | MessageRole::Worker
+                | MessageRole::Reviewer
+                | MessageRole::Merger
+        )
+    })
+}
+
+fn latest_silent_completion_recovery_metadata(messages: &[ChatMessage]) -> Option<&str> {
+    messages
+        .iter()
+        .rev()
+        .filter_map(|message| message.metadata.as_deref())
+        .find(|metadata| silent_completion_recovery_attempt(Some(metadata)) > 0)
+}
+
+fn parse_tool_calls(raw: Option<&str>) -> Vec<ToolCall> {
+    raw.and_then(|value| serde_json::from_str::<Vec<ToolCall>>(value).ok())
+        .unwrap_or_default()
+}
+
+fn parse_content_blocks(raw: Option<&str>) -> Vec<ContentBlockItem> {
+    raw.and_then(|value| serde_json::from_str::<Vec<ContentBlockItem>>(value).ok())
+        .unwrap_or_default()
 }
 
 /// Get priority value for a context type (lower = higher priority).

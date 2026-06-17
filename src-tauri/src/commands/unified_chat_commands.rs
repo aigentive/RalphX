@@ -109,6 +109,8 @@ const AGENT_WORKSPACE_REPAIR_SENT_STEP: &str = "repair_sent";
 const AGENT_WORKSPACE_REPAIR_ACTION_PREFIX: &str = "agent_fixable:";
 const AGENT_WORKSPACE_REPAIR_ACTION_PUBLISH: &str = "publish";
 const AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY: &str = "update_only";
+const AGENT_WORKSPACE_BASE_UPDATE_RUNNING_MESSAGE: &str =
+    "Cannot change workspace base while the agent is responding";
 pub const AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE: &str =
     "Agent workspace publish is already in progress";
 
@@ -310,6 +312,7 @@ pub struct AgentConversationWorkspaceResponse {
     pub publication_pr_status: Option<String>,
     pub publication_push_status: Option<String>,
     pub auto_publish_enabled: bool,
+    pub auto_publish_initial_pr_enabled: bool,
     pub auto_publish_paused_pr_autofix_enabled: Option<bool>,
     pub auto_publish_paused_pr_auto_merge_desired: Option<bool>,
     pub pr_autofix_enabled: bool,
@@ -390,6 +393,7 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             publication_pr_status: workspace.publication_pr_status,
             publication_push_status: workspace.publication_push_status,
             auto_publish_enabled: workspace.auto_publish_enabled,
+            auto_publish_initial_pr_enabled: workspace.auto_publish_initial_pr_enabled,
             auto_publish_paused_pr_autofix_enabled: workspace
                 .auto_publish_paused_pr_autofix_enabled,
             auto_publish_paused_pr_auto_merge_desired: workspace
@@ -769,6 +773,7 @@ struct ExplicitPublishBaseSelection {
     kind: IdeationAnalysisBaseRefKind,
     base_ref: String,
     display_name: String,
+    source_pull_request: Option<AgentWorkspaceSourcePullRequest>,
 }
 
 fn normalize_explicit_publish_base_selection(
@@ -790,6 +795,20 @@ fn normalize_explicit_publish_base_selection(
                 .to_string(),
         );
     }
+    if let Some(source_pull_request) = selection.source_pull_request.as_ref() {
+        if kind != IdeationAnalysisBaseRefKind::LocalBranch {
+            return Err("Source pull request metadata requires a local_branch base ref".to_string());
+        }
+        let head_ref_name = source_pull_request.head_ref_name.trim();
+        if head_ref_name.is_empty() {
+            return Err("Source pull request head branch is required".to_string());
+        }
+        if head_ref_name != base_ref {
+            return Err(
+                "Source pull request head branch must match the selected base ref".to_string(),
+            );
+        }
+    }
     let display_name = selection
         .display_name
         .map(|value| value.trim().to_string())
@@ -809,6 +828,7 @@ fn normalize_explicit_publish_base_selection(
         kind,
         base_ref,
         display_name,
+        source_pull_request: selection.source_pull_request,
     }))
 }
 
@@ -1015,6 +1035,8 @@ pub struct SwitchAgentConversationModeInput {
     pub base_ref: Option<String>,
     /// Optional user-facing base ref label.
     pub base_display_name: Option<String>,
+    /// Optional source pull request metadata when the selected base came from a PR head branch.
+    pub base_source_pull_request: Option<AgentWorkspaceSourcePullRequestInput>,
 }
 
 /// Response from switch_agent_conversation_mode command.
@@ -2544,6 +2566,14 @@ fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {
     )
 }
 
+fn agent_mode_should_create_workspace(
+    mode: AgentConversationWorkspaceMode,
+    source_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
+) -> bool {
+    agent_mode_requires_workspace(mode)
+        || (mode == AgentConversationWorkspaceMode::Chat && source_pull_request.is_some())
+}
+
 async fn agent_workspace_pr_automation_defaults_for_project(
     state: &AppState,
     project_id: &ProjectId,
@@ -2588,6 +2618,31 @@ mod agent_mode_workspace_tests {
         ));
         assert!(agent_mode_requires_workspace(
             AgentConversationWorkspaceMode::Ideation
+        ));
+    }
+
+    #[test]
+    fn source_pr_backed_chat_mode_creates_workspace() {
+        let source_pull_request = AgentWorkspaceSourcePullRequest {
+            number: 123,
+            url: None,
+            title: None,
+            head_ref_name: "feature/source-pr".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: None,
+        };
+
+        assert!(agent_mode_should_create_workspace(
+            AgentConversationWorkspaceMode::Chat,
+            Some(&source_pull_request),
+        ));
+        assert!(!agent_mode_should_create_workspace(
+            AgentConversationWorkspaceMode::Chat,
+            None,
+        ));
+        assert!(agent_mode_should_create_workspace(
+            AgentConversationWorkspaceMode::Edit,
+            None,
         ));
     }
 
@@ -2841,6 +2896,8 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
         base_ref_kind,
         base_ref.as_deref(),
     )?;
+    let should_create_workspace =
+        agent_mode_should_create_workspace(mode, source_pull_request.as_ref());
     let project_id = ProjectId::from_string(input.project_id.clone());
     log_start_agent_conversation_phase(&input.project_id, None, "parse_input", parse_input_started);
 
@@ -2903,7 +2960,7 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
             "Creating chat",
         );
     }
-    if agent_mode_requires_workspace(mode) {
+    if should_create_workspace {
         emit_start_agent_conversation_progress(
             &app,
             &input.project_id,
@@ -2912,7 +2969,7 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
             "Setup workspace",
         );
     }
-    let workspace = if agent_mode_requires_workspace(mode) {
+    let workspace = if should_create_workspace {
         let pr_automation_defaults =
             agent_workspace_pr_automation_defaults_for_project(&state, &project.id).await?;
         let mut workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
@@ -3184,6 +3241,15 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let target_mode = parse_agent_workspace_mode(Some(input.mode.as_str()))?;
     let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
+    let base_ref = trim_optional_input(input.base_ref);
+    let base_display_name = trim_optional_input(input.base_display_name);
+    let source_pull_request = normalize_agent_workspace_source_pull_request(
+        input.base_source_pull_request,
+        base_ref_kind,
+        base_ref.as_deref(),
+    )?;
+    let should_create_workspace =
+        agent_mode_should_create_workspace(target_mode, source_pull_request.as_ref());
 
     let mut conversation = state
         .chat_conversation_repo
@@ -3265,7 +3331,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             }
         }
         None => {
-            if agent_mode_requires_workspace(target_mode) {
+            if should_create_workspace {
                 let project_id = ProjectId::from_string(conversation.context_id.clone());
                 let project = state
                     .project_repo
@@ -3282,15 +3348,9 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                     target_mode,
                     AgentConversationWorkspaceBaseSelection {
                         kind: base_ref_kind,
-                        base_ref: input
-                            .base_ref
-                            .map(|value| value.trim().to_string())
-                            .filter(|value| !value.is_empty()),
-                        display_name: input
-                            .base_display_name
-                            .map(|value| value.trim().to_string())
-                            .filter(|value| !value.is_empty()),
-                        source_pull_request: None,
+                        base_ref,
+                        display_name: base_display_name,
+                        source_pull_request,
                     },
                     AgentConversationWorkspaceSetupMode::Blocking,
                     pr_automation_defaults,
@@ -4190,6 +4250,49 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
         .as_ref()
         .map(|app| emit_workspace_changed_when_done(app, &conversation_id));
 
+    if workspace.publication_pr_number.is_none() {
+        if input.auto_publish_enabled == workspace.auto_publish_initial_pr_enabled {
+            return agent_workspace_response_for_state(state, workspace).await;
+        }
+
+        state
+            .agent_conversation_workspace_repo
+            .update_auto_publish_initial_pr_preference(
+                &conversation_id,
+                input.auto_publish_enabled,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "auto_publish",
+                if input.auto_publish_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                if input.auto_publish_enabled {
+                    "Auto Publish is enabled for the first pull request."
+                } else {
+                    "Auto Publish is disabled for the first pull request."
+                },
+                Some("auto_publish_preferences".to_string()),
+            ))
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let updated = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+        return agent_workspace_response_for_state(state, updated).await;
+    }
+
     if input.auto_publish_enabled == workspace.auto_publish_enabled {
         return agent_workspace_response_for_state(state, workspace).await;
     }
@@ -4814,6 +4917,7 @@ pub async fn update_agent_conversation_workspace_from_base(
     base_ref_kind: Option<String>,
     base_ref: Option<String>,
     base_display_name: Option<String>,
+    base_source_pull_request: Option<AgentWorkspaceSourcePullRequestInput>,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
     team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
@@ -4821,11 +4925,17 @@ pub async fn update_agent_conversation_workspace_from_base(
 ) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let _workspace_changed_event = emit_workspace_changed_when_done(&app, &conversation_id);
+    let kind = parse_agent_workspace_base_kind(base_ref_kind.as_deref())?;
+    let source_pull_request = normalize_agent_workspace_source_pull_request(
+        base_source_pull_request,
+        kind,
+        base_ref.as_deref(),
+    )?;
     let selection = AgentConversationWorkspaceBaseSelection {
-        kind: parse_agent_workspace_base_kind(base_ref_kind.as_deref())?,
+        kind,
         base_ref,
         display_name: base_display_name,
-        source_pull_request: None,
+        source_pull_request,
     };
     update_agent_conversation_workspace_from_base_for_app_state(
         state.inner(),
@@ -4845,6 +4955,21 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
     conversation_id: ChatConversationId,
     selection: AgentConversationWorkspaceBaseSelection,
 ) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        conversation_id.as_str(),
+    );
+    let interactive_slot_key = format!(
+        "{}/{}",
+        ChatContextType::Project.to_string(),
+        conversation_id.as_str()
+    );
+    if state.running_agent_registry.is_running(&running_key).await
+        && !execution_state.is_interactive_idle(&interactive_slot_key)
+    {
+        return Err(AGENT_WORKSPACE_BASE_UPDATE_RUNNING_MESSAGE.to_string());
+    }
+
     let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let _pr_description_invalidation =
         AgentWorkspacePrDescriptionInvalidationGuard::new(&conversation_id, true);
@@ -4894,6 +5019,21 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
     let base_resolution = if let Some(explicit_base) = explicit_base.as_ref() {
         publish_target.base_ref = explicit_base.base_ref.clone();
         publish_target.base_display_name = Some(explicit_base.display_name.clone());
+        if explicit_base.source_pull_request.is_some() {
+            if let Err(error) = GitService::fetch_origin(&publish_target.worktree_path).await {
+                let message = format!("Failed to refresh selected pull request branch: {error}");
+                mark_agent_workspace_update_failure_with_target(
+                    state,
+                    &workspace,
+                    &message,
+                    None,
+                    &repair_service,
+                    &publish_target.repair_target(),
+                )
+                .await;
+                return Err(message);
+            }
+        }
         if let Err(message) = validate_explicit_publish_base_ref(
             &publish_target.worktree_path,
             &explicit_base.base_ref,
@@ -5089,6 +5229,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
         workspace.base_ref_kind = explicit_base.kind;
         workspace.base_ref = explicit_base.base_ref.clone();
         workspace.base_display_name = Some(explicit_base.display_name.clone());
+        workspace.source_pull_request = explicit_base.source_pull_request.clone();
         workspace.updated_at = chrono::Utc::now();
     } else if let Some(base_resolution) = base_resolution.as_ref() {
         persist_workspace_base_resolution_if_retargeted(state, &mut workspace, base_resolution)
@@ -7386,6 +7527,7 @@ mod tests {
     use crate::application::agent_conversation_workspace_base::{
         BaseResolutionResult, BaseStatus, BLOCK_REASON_MISSING_BASE_COMMIT,
     };
+    use crate::application::git_service::GitService;
     use crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRecoveryTrigger;
     use crate::application::publish_resilience::PublishBranchFreshnessStatus;
     use crate::application::{
@@ -7402,11 +7544,11 @@ mod tests {
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
         AgentConversationWorkspacePublicationEvent, AgentRun, AgentWorkspacePrDescription,
-        ArtifactId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-        ChatMessageId, ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind,
-        ChatTimelineItemStatus, ExecutionPlan, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
-        IdeationSession, IdeationSessionFlow, IdeationSessionId, MessageRole, PlanBranch,
-        PlanBranchId, PlanBranchStatus, Project, ProjectId, Task,
+        AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
+        ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
+        ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan, ExecutionPlanStatus,
+        IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
+        MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, Task,
         DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -7728,6 +7870,7 @@ mod tests {
             publication_pr_status: None,
             publication_push_status: None,
             auto_publish_enabled: true,
+            auto_publish_initial_pr_enabled: false,
             auto_publish_paused_pr_autofix_enabled: None,
             auto_publish_paused_pr_auto_merge_desired: None,
             pr_autofix_enabled: false,
@@ -7793,6 +7936,7 @@ mod tests {
             publication_pr_status: Some("open".to_string()),
             publication_push_status: Some("needs_agent".to_string()),
             auto_publish_enabled: true,
+            auto_publish_initial_pr_enabled: false,
             auto_publish_paused_pr_autofix_enabled: None,
             auto_publish_paused_pr_auto_merge_desired: None,
             pr_autofix_enabled: false,
@@ -8478,6 +8622,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auto_publish_enable_before_pr_sets_initial_pr_opt_in() {
+        let state = AppState::new_test();
+        let workspace = command_test_workspace();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let updated = set_agent_conversation_workspace_auto_publish_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspaceAutoPublishInput {
+                auto_publish_enabled: true,
+            },
+            &state,
+        )
+        .await
+        .expect("Auto Publish should enable before PR publication");
+
+        assert!(updated.auto_publish_enabled);
+        assert!(updated.auto_publish_initial_pr_enabled);
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should list");
+        assert!(events.iter().any(|event| {
+            event.step == "auto_publish"
+                && event.status == "enabled"
+                && event.summary == "Auto Publish is enabled for the first pull request."
+        }));
+    }
+
+    #[tokio::test]
     async fn pr_supervision_rejects_enable_when_auto_publish_is_paused() {
         let state = AppState::new_test();
         let mut workspace = command_test_workspace();
@@ -8639,6 +8818,28 @@ mod tests {
             .expect("current branch should normalize")
             .expect("current branch should produce a selection");
         assert_eq!(current.display_name, "Current branch (feature/base)");
+
+        let source_pull_request = AgentWorkspaceSourcePullRequest {
+            number: 42,
+            url: Some("https://github.com/mock/repo/pull/42".to_string()),
+            title: Some("Add PR base".to_string()),
+            head_ref_name: "feature/pr-base".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: Some("pr-head-sha".to_string()),
+        };
+        let pr_base =
+            normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                base_ref: Some("feature/pr-base".to_string()),
+                display_name: Some("PR #42: Add PR base".to_string()),
+                source_pull_request: Some(source_pull_request.clone()),
+            })
+            .expect("PR-backed local branch should normalize")
+            .expect("PR-backed local branch should produce a selection");
+        assert_eq!(pr_base.kind, IdeationAnalysisBaseRefKind::LocalBranch);
+        assert_eq!(pr_base.base_ref, "feature/pr-base");
+        assert_eq!(pr_base.display_name, "PR #42: Add PR base");
+        assert_eq!(pr_base.source_pull_request, Some(source_pull_request));
 
         let error =
             normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
@@ -9907,6 +10108,260 @@ mod tests {
         assert_eq!(
             response.workspace.base_commit.as_deref(),
             Some(release_sha.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_base_rejects_running_conversation() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "update-running-conversation",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new(
+                    ChatContextType::Project.to_string(),
+                    conversation_id.as_str(),
+                ),
+                123,
+                conversation_id.as_str(),
+                "run-update-base".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let error = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                base_ref: None,
+                display_name: None,
+                source_pull_request: None,
+            },
+        )
+        .await
+        .expect_err("running conversation should reject workspace base update");
+
+        assert_eq!(
+            error,
+            "Cannot change workspace base while the agent is responding"
+        );
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_ne!(
+            stored.publication_push_status.as_deref(),
+            Some("refreshing")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_base_allows_interactive_idle_conversation() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "update-interactive-idle-conversation",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new(
+                    ChatContextType::Project.to_string(),
+                    conversation_id.as_str(),
+                ),
+                123,
+                conversation_id.as_str(),
+                "run-update-base-idle".to_string(),
+                None,
+                None,
+            )
+            .await;
+        execution_state.mark_interactive_idle(&format!(
+            "{}/{}",
+            ChatContextType::Project.to_string(),
+            conversation_id.as_str()
+        ));
+
+        let result = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                base_ref: None,
+                display_name: None,
+                source_pull_request: None,
+            },
+        )
+        .await
+        .expect("interactive-idle conversation should allow workspace base update");
+
+        assert_eq!(result.workspace.conversation_id, conversation_id.as_str());
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_base_pr_selection_persists_source_pull_request() {
+        let (temp, state, conversation_id, _github) = setup_publish_command_state(
+            "update-pr-base",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let repo_path = temp.path().join("repo");
+        let head = git(&repo_path, &["rev-parse", "HEAD"]);
+        git(
+            &repo_path,
+            &["update-ref", "refs/heads/feature/pr-base", &head],
+        );
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let source_pull_request = AgentWorkspaceSourcePullRequest {
+            number: 42,
+            url: Some("https://github.com/mock/repo/pull/42".to_string()),
+            title: Some("Add PR base".to_string()),
+            head_ref_name: "feature/pr-base".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: Some("pr-head-sha".to_string()),
+        };
+
+        let result = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                base_ref: Some("feature/pr-base".to_string()),
+                display_name: Some("PR #42: Add PR base".to_string()),
+                source_pull_request: Some(source_pull_request.clone()),
+            },
+        )
+        .await
+        .expect("PR-backed base update should succeed");
+
+        assert_eq!(result.workspace.base_ref_kind, "local_branch");
+        assert_eq!(result.workspace.base_ref, "feature/pr-base");
+        assert_eq!(
+            result.workspace.base_display_name.as_deref(),
+            Some("PR #42: Add PR base")
+        );
+        let response_source = result
+            .workspace
+            .source_pull_request
+            .as_ref()
+            .expect("response should include source PR metadata");
+        assert_eq!(response_source.number, 42);
+        assert_eq!(response_source.head_ref_name, "feature/pr-base");
+
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.source_pull_request, Some(source_pull_request));
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_base_pr_selection_fetches_remote_head_before_validation() {
+        let (temp, state, conversation_id, _github) = setup_publish_command_state(
+            "update-pr-base-remote-only",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let repo_path = temp.path().join("repo");
+        let origin_path = temp.path().join("origin.git");
+        git(
+            &repo_path,
+            &["init", "--bare", origin_path.to_str().expect("origin path")],
+        );
+        git(
+            &repo_path,
+            &["remote", "add", "origin", origin_path.to_str().expect("origin path")],
+        );
+        git(&repo_path, &["push", "origin", "main"]);
+        git(&repo_path, &["checkout", "-b", "feature/pr-remote-only"]);
+        std::fs::write(repo_path.join("pr.txt"), "remote pr head\n")
+            .expect("fixture file should be written");
+        git(&repo_path, &["add", "pr.txt"]);
+        git(&repo_path, &["commit", "-m", "remote pr head"]);
+        let pr_head = git(&repo_path, &["rev-parse", "HEAD"]);
+        git(&repo_path, &["push", "origin", "feature/pr-remote-only"]);
+        git(&repo_path, &["checkout", "main"]);
+        git(&repo_path, &["branch", "-D", "feature/pr-remote-only"]);
+        git(
+            &repo_path,
+            &["update-ref", "-d", "refs/remotes/origin/feature/pr-remote-only"],
+        );
+        assert!(
+            !GitService::ref_exists(&repo_path, "feature/pr-remote-only")
+                .await
+                .expect("local branch check should succeed")
+        );
+        assert!(
+            !GitService::ref_exists(&repo_path, "origin/feature/pr-remote-only")
+                .await
+                .expect("remote tracking check should succeed")
+        );
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+
+        let result = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                base_ref: Some("feature/pr-remote-only".to_string()),
+                display_name: Some("PR #43: Remote-only PR base".to_string()),
+                source_pull_request: Some(AgentWorkspaceSourcePullRequest {
+                    number: 43,
+                    url: Some("https://github.com/mock/repo/pull/43".to_string()),
+                    title: Some("Remote-only PR base".to_string()),
+                    head_ref_name: "feature/pr-remote-only".to_string(),
+                    base_ref_name: Some("main".to_string()),
+                    head_ref_oid: Some(pr_head),
+                }),
+            },
+        )
+        .await
+        .expect("PR-backed remote-only base update should fetch and succeed");
+
+        assert_eq!(result.workspace.base_ref, "feature/pr-remote-only");
+        assert!(
+            GitService::ref_exists(&repo_path, "origin/feature/pr-remote-only")
+                .await
+                .expect("remote tracking check should succeed after update")
         );
     }
 
@@ -11380,6 +11835,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -11440,6 +11896,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -11451,6 +11908,92 @@ mod tests {
         assert_eq!(workspace.mode.as_str(), "edit");
         assert!(workspace.pr_autofix_enabled);
         assert!(workspace.pr_auto_merge_desired);
+    }
+
+    #[tokio::test]
+    async fn switching_branchless_chat_to_edit_persists_source_pull_request_metadata() {
+        let state = AppState::new_test();
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_publish_repo(&repo_path);
+        git(&repo_path, &["checkout", "-b", "feature/source-pr"]);
+        std::fs::write(repo_path.join("README.md"), "source pr\n")
+            .expect("fixture update should be written");
+        git(&repo_path, &["add", "README.md"]);
+        git(&repo_path, &["commit", "-m", "source pr"]);
+        let source_sha = git(&repo_path, &["rev-parse", "HEAD"]);
+        git(&repo_path, &["checkout", "main"]);
+
+        let project_id = ProjectId::from_string("project-source-pr-switch".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
+        let mut project = Project::new(
+            "Mode Switch Source PR".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project persisted");
+        let mut conversation = ChatConversation::new_project(project_id);
+        conversation.id = conversation_id.clone();
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation persisted");
+
+        let response = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "edit".to_string(),
+                base_ref_kind: Some("local_branch".to_string()),
+                base_ref: Some("feature/source-pr".to_string()),
+                base_display_name: Some("PR #456: Source PR".to_string()),
+                base_source_pull_request: Some(AgentWorkspaceSourcePullRequestInput {
+                    number: 456,
+                    url: Some("https://github.com/owner/repo/pull/456".to_string()),
+                    title: Some("Source PR".to_string()),
+                    head_ref_name: "feature/source-pr".to_string(),
+                    base_ref_name: Some("main".to_string()),
+                    head_ref_oid: Some(source_sha.clone()),
+                }),
+            },
+            &state,
+        )
+        .await
+        .expect("edit mode switch should create source PR workspace");
+
+        let workspace = response.workspace.expect("workspace should be returned");
+        assert_eq!(workspace.mode, "edit");
+        assert_eq!(workspace.base_ref, "feature/source-pr");
+        let source = workspace
+            .source_pull_request
+            .expect("source PR metadata should be returned");
+        assert_eq!(source.number, 456);
+        assert_eq!(source.head_ref_name, "feature/source-pr");
+        assert_eq!(source.head_ref_oid.as_deref(), Some(source_sha.as_str()));
+
+        let persisted = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup succeeds")
+            .expect("workspace should persist");
+        assert_eq!(
+            persisted
+                .source_pull_request
+                .as_ref()
+                .map(|source| source.number),
+            Some(456)
+        );
+        assert!(persisted.publication_pr_number.is_none());
     }
 
     #[tokio::test]
@@ -11508,6 +12051,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -11524,6 +12068,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -11579,6 +12124,7 @@ mod tests {
                 base_ref_kind: Some("project_default".to_string()),
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -11649,6 +12195,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -11710,6 +12257,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )

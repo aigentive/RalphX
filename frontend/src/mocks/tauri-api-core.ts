@@ -289,6 +289,12 @@ function toSnakeAgentWorkspace(workspace: AgentConversationWorkspace | null) {
     publication_pr_url: workspace.publicationPrUrl,
     publication_pr_status: workspace.publicationPrStatus,
     publication_push_status: workspace.publicationPushStatus,
+    auto_publish_enabled: workspace.autoPublishEnabled ?? true,
+    auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+    auto_publish_paused_pr_autofix_enabled:
+      workspace.autoPublishPausedPrAutofixEnabled ?? null,
+    auto_publish_paused_pr_auto_merge_desired:
+      workspace.autoPublishPausedPrAutoMergeDesired ?? null,
     status: workspace.status,
     created_at: workspace.createdAt,
     updated_at: workspace.updatedAt,
@@ -1086,6 +1092,12 @@ const commandHandlers: Record<
       publication_pr_url: workspace.publicationPrUrl,
       publication_pr_status: workspace.publicationPrStatus,
       publication_push_status: workspace.publicationPushStatus,
+      auto_publish_enabled: workspace.autoPublishEnabled ?? true,
+      auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+      auto_publish_paused_pr_autofix_enabled:
+        workspace.autoPublishPausedPrAutofixEnabled ?? null,
+      auto_publish_paused_pr_auto_merge_desired:
+        workspace.autoPublishPausedPrAutoMergeDesired ?? null,
       status: workspace.status,
       created_at: workspace.createdAt,
       updated_at: workspace.updatedAt,
@@ -1132,6 +1144,12 @@ const commandHandlers: Record<
             publication_pr_url: workspace.publicationPrUrl,
             publication_pr_status: workspace.publicationPrStatus,
             publication_push_status: workspace.publicationPushStatus,
+            auto_publish_enabled: workspace.autoPublishEnabled ?? true,
+            auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+            auto_publish_paused_pr_autofix_enabled:
+              workspace.autoPublishPausedPrAutofixEnabled ?? null,
+            auto_publish_paused_pr_auto_merge_desired:
+              workspace.autoPublishPausedPrAutoMergeDesired ?? null,
             status: workspace.status,
             created_at: workspace.createdAt,
             updated_at: workspace.updatedAt,
@@ -1232,6 +1250,12 @@ const commandHandlers: Record<
             publication_pr_url: workspace.publicationPrUrl,
             publication_pr_status: workspace.publicationPrStatus,
             publication_push_status: workspace.publicationPushStatus,
+            auto_publish_enabled: workspace.autoPublishEnabled ?? true,
+            auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+            auto_publish_paused_pr_autofix_enabled:
+              workspace.autoPublishPausedPrAutofixEnabled ?? null,
+            auto_publish_paused_pr_auto_merge_desired:
+              workspace.autoPublishPausedPrAutoMergeDesired ?? null,
             status: workspace.status,
             created_at: workspace.createdAt,
             updated_at: workspace.updatedAt,
@@ -1289,6 +1313,12 @@ const commandHandlers: Record<
             publication_pr_url: workspace.publicationPrUrl,
             publication_pr_status: workspace.publicationPrStatus,
             publication_push_status: workspace.publicationPushStatus,
+            auto_publish_enabled: workspace.autoPublishEnabled ?? true,
+            auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+            auto_publish_paused_pr_autofix_enabled:
+              workspace.autoPublishPausedPrAutofixEnabled ?? null,
+            auto_publish_paused_pr_auto_merge_desired:
+              workspace.autoPublishPausedPrAutoMergeDesired ?? null,
             status: workspace.status,
             created_at: workspace.createdAt,
             updated_at: workspace.updatedAt,

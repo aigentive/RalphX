@@ -57,6 +57,12 @@ export const IDEATION_TOOLS: Tool[] = [
           type: "string",
           description: "Optional: target project ID or filesystem path for cross-project ideation. Tag this proposal with the project it targets.",
         },
+        depends_on: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Optional proposal IDs that must be completed before this proposal. Use for staged or ordered work; omit only when the proposal is genuinely independent.",
+        },
         expected_proposal_count: {
           type: "integer",
           description: "Total number of proposals you intend to create in this session. Required on every create_task_proposal call. First proposal locks the count; returns ready_to_finalize: true when proposal count matches expected_proposal_count — call finalize_proposals then.",
@@ -113,6 +119,18 @@ export const IDEATION_TOOLS: Tool[] = [
         target_project: {
           type: "string",
           description: "Optional: set or update the target project for this proposal. Pass null or omit to leave unchanged.",
+        },
+        add_depends_on: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Optional proposal IDs that this proposal should depend on. Adds dependency edges without replacing existing dependencies.",
+        },
+        add_blocks: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Optional proposal IDs that this proposal should block. Adds reverse dependency edges without replacing existing dependencies.",
         },
       },
       required: ["proposal_id"],
