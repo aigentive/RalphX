@@ -202,6 +202,8 @@ mod harness_runtime_registry_tests;
 #[cfg(test)]
 mod ideation_harness_availability_tests;
 #[cfg(test)]
+mod ideation_workspace_tests;
+#[cfg(test)]
 mod orphan_worktree_cleanup_tests;
 #[cfg(test)]
 mod pr_startup_recovery_tests;

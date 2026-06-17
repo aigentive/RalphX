@@ -151,7 +151,7 @@ describe("branchBaseOptions", () => {
       projectBaseBranch: "main",
     });
 
-    expect(result.selectedKey).toBe("current_branch:feature/current");
+    expect(result.selectedKey).toBe("project_default:main");
     expect(result.options.map((option) => option.label)).toEqual([
       "Project default (main)",
       "Current branch (feature/current)",
@@ -201,7 +201,7 @@ describe("branchBaseOptions", () => {
         source: "project",
       })
     );
-    expect(result.selectedKey).toBe("current_branch:feature/current");
+    expect(result.selectedKey).toBe("project_default:develop");
   });
 
   it("falls back to Git's detected default when configured base is blank", async () => {
