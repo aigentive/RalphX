@@ -123,6 +123,12 @@ function createWrapper() {
 describe("TaskBoard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
+    useUiStore.setState({
+      boardSearchQuery: null,
+      kanbanCardDisplayMode: "default",
+      selectedTaskId: null,
+    });
     // Default mock for archived count
     vi.mocked(api.tasks.getArchivedCount).mockResolvedValue(0);
     // Default mock for search
@@ -277,6 +283,36 @@ describe("TaskBoard", () => {
 
       expect(defaultButton).toHaveAttribute("aria-pressed", "false");
       expect(miniButton).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("keeps mini card density after leaving and returning across projects", async () => {
+      vi.mocked(getActiveWorkflowColumns).mockResolvedValue(createMockColumns());
+
+      const firstRender = render(<TaskBoard projectId="p1" />, { wrapper: createWrapper() });
+
+      const firstDensityGroup = await screen.findByRole("group", {
+        name: /kanban card layout/i,
+      });
+      const firstMiniButton = within(firstDensityGroup).getByRole("button", {
+        name: /mini cards/i,
+      });
+
+      fireEvent.click(firstMiniButton);
+      expect(localStorage.getItem("ralphx-kanban-card-display-mode")).toBe("mini");
+
+      firstRender.unmount();
+
+      render(<TaskBoard projectId="p2" />, { wrapper: createWrapper() });
+
+      const secondDensityGroup = await screen.findByRole("group", {
+        name: /kanban card layout/i,
+      });
+      expect(
+        within(secondDensityGroup).getByRole("button", { name: /mini cards/i })
+      ).toHaveAttribute("aria-pressed", "true");
+      expect(
+        within(secondDensityGroup).getByRole("button", { name: /default cards/i })
+      ).toHaveAttribute("aria-pressed", "false");
     });
 
     it("clears boardSearchQuery when search bar close button is clicked", async () => {

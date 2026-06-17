@@ -130,7 +130,8 @@ export function TaskBoard({
   const fillWidth = fillWidthProp ?? selectedTaskId != null;
   const showMergeTasks = true;
   const [isStatsOpen, setIsStatsOpen] = useState(false);
-  const [cardDisplayMode, setCardDisplayMode] = useState<TaskCardDisplayMode>("default");
+  const cardDisplayMode = useUiStore((s) => s.kanbanCardDisplayMode);
+  const setCardDisplayMode = useUiStore((s) => s.setKanbanCardDisplayMode);
   const boardSearchQuery = useUiStore((s) => s.boardSearchQuery);
   const setBoardSearchQuery = useUiStore((s) => s.setBoardSearchQuery);
 
