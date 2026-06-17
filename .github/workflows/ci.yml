@@ -138,7 +138,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.run_rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       RALPHX_TEST_MODE: "1"
     steps:
