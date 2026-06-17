@@ -374,6 +374,70 @@ mod tests {
     }
 
     #[test]
+    fn search_issue_summaries_from_data_maps_multiple_optional_shapes() {
+        let data = serde_json::json!({
+            "searchIssues": {
+                "nodes": [
+                    {
+                        "id": "issue-1",
+                        "identifier": "LIN-1",
+                        "title": "With all optional fields",
+                        "url": "https://linear.app/acme/issue/LIN-1/all",
+                        "description": "All fields",
+                        "state": { "name": "Todo" }
+                    },
+                    {
+                        "id": "issue-2",
+                        "identifier": null,
+                        "title": "Without optional strings",
+                        "url": null,
+                        "description": null,
+                        "state": null
+                    },
+                    {
+                        "id": "issue-3",
+                        "identifier": "LIN-3",
+                        "title": "Without state name",
+                        "url": "https://linear.app/acme/issue/LIN-3/no-state-name",
+                        "description": "No state name",
+                        "state": {}
+                    }
+                ]
+            }
+        });
+
+        let issues = search_issue_summaries_from_data(&data).expect("search data should parse");
+
+        assert_eq!(issues.len(), 3);
+        assert_eq!(issues[0].id, "issue-1");
+        assert_eq!(issues[0].key.as_deref(), Some("LIN-1"));
+        assert_eq!(issues[0].title, "With all optional fields");
+        assert_eq!(
+            issues[0].url.as_deref(),
+            Some("https://linear.app/acme/issue/LIN-1/all")
+        );
+        assert_eq!(issues[0].excerpt.as_deref(), Some("All fields"));
+        assert_eq!(issues[0].state_name.as_deref(), Some("Todo"));
+
+        assert_eq!(issues[1].id, "issue-2");
+        assert!(issues[1].key.is_none());
+        assert_eq!(issues[1].title, "Without optional strings");
+        assert!(issues[1].url.is_none());
+        assert!(issues[1].excerpt.is_none());
+        assert!(issues[1].state_name.is_none());
+
+        assert_eq!(issues[2].id, "issue-3");
+        assert_eq!(issues[2].key.as_deref(), Some("LIN-3"));
+        assert_eq!(issues[2].title, "Without state name");
+        assert_eq!(
+            issues[2].url.as_deref(),
+            Some("https://linear.app/acme/issue/LIN-3/no-state-name")
+        );
+        assert_eq!(issues[2].excerpt.as_deref(), Some("No state name"));
+        assert!(issues[2].state_name.is_none());
+    }
+
+    #[test]
     fn search_issue_summaries_from_data_requires_nodes_array() {
         let error = search_issue_summaries_from_data(&serde_json::json!({
             "searchIssues": {}
