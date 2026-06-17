@@ -390,7 +390,110 @@ fn linear_webhook_http_error(error: LinearWebhookError) -> HttpError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::{AppState, TeamService, TeamStateTracker};
+    use crate::commands::ExecutionState;
     use crate::domain::entities::{InternalStatus, TaskId};
+    use crate::http_server::handlers::external_auth::EXTERNAL_KEY_ID_HEADER;
+    use crate::http_server::types::HttpServerState;
+
+    fn test_http_state() -> HttpServerState {
+        let app_state = Arc::new(AppState::new_test());
+        let tracker = TeamStateTracker::new();
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
+        HttpServerState {
+            app_state,
+            execution_state: Arc::new(ExecutionState::new()),
+            team_tracker: tracker,
+            team_service,
+            delegation_service: Default::default(),
+        }
+    }
+
+    fn api_key_headers(api_key_id: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(EXTERNAL_KEY_ID_HEADER, api_key_id.parse().unwrap());
+        headers
+    }
+
+    #[tokio::test]
+    async fn webhook_registration_list_health_and_unregister_flow() {
+        let state = test_http_state();
+        let headers = api_key_headers("api-key-1");
+
+        let registered = register_webhook_http(
+            State(state.clone()),
+            ProjectScope(None),
+            headers.clone(),
+            Json(RegisterWebhookRequest {
+                url: "https://example.com/webhook".to_string(),
+                event_types: Some(vec!["task.updated".to_string()]),
+                project_ids: vec!["project-1".to_string()],
+            }),
+        )
+        .await
+        .expect("webhook should register")
+        .0;
+
+        assert_eq!(registered.url, "https://example.com/webhook");
+        assert_eq!(
+            registered.event_types.as_deref(),
+            Some([String::from("task.updated")].as_slice())
+        );
+        assert_eq!(registered.project_ids, vec!["project-1"]);
+        assert!(registered.active);
+        assert!(!registered.secret.is_empty());
+
+        let listed = list_webhooks_http(State(state.clone()), headers.clone())
+            .await
+            .expect("webhooks should list")
+            .0;
+        assert_eq!(listed.webhooks.len(), 1);
+        assert_eq!(listed.webhooks[0].id, registered.id);
+        assert_eq!(
+            listed.webhooks[0].event_types.as_deref(),
+            Some([String::from("task.updated")].as_slice())
+        );
+
+        let health = get_webhook_health_http(State(state.clone()), headers.clone())
+            .await
+            .expect("webhook health should list")
+            .0;
+        assert_eq!(health.webhooks.len(), 1);
+        assert_eq!(health.webhooks[0].id, registered.id);
+        assert!(health.webhooks[0].active);
+        assert_eq!(health.webhooks[0].failure_count, 0);
+
+        let unregistered =
+            unregister_webhook_http(State(state.clone()), headers.clone(), Path(registered.id))
+                .await
+                .expect("webhook should unregister")
+                .0;
+        assert!(unregistered.success);
+
+        let missing = unregister_webhook_http(
+            State(state),
+            headers,
+            Path("missing-webhook".to_string()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn receive_linear_webhook_maps_store_errors_to_internal_server_error() {
+        let state = test_http_state();
+        let error = receive_linear_webhook_http(
+            State(state),
+            HeaderMap::new(),
+            Bytes::from_static(br#"{"type":"Issue"}"#),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!error.message.as_deref().unwrap_or_default().is_empty());
+    }
 
     #[test]
     fn linear_action_labels_cover_all_reconciliation_outcomes() {
