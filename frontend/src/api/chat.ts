@@ -2875,15 +2875,15 @@ export async function startAgentConversation(
           ? {
               baseRefKind: input.base.kind,
               baseRef: input.base.ref,
-	              baseDisplayName: input.base.displayName,
-	              ...(input.base.sourcePullRequest
-	                ? {
-	                    baseSourcePullRequest: sourcePullRequestInvokeInput(
-	                      input.base.sourcePullRequest
-	                    ),
-	                  }
-	                : {}),
-	            }
+              baseDisplayName: input.base.displayName,
+              ...(input.base.sourcePullRequest
+                ? {
+                    baseSourcePullRequest: sourcePullRequestInvokeInput(
+                      input.base.sourcePullRequest
+                    ),
+                  }
+                : {}),
+            }
           : {}),
       },
     },
