@@ -386,3 +386,88 @@ fn linear_webhook_http_error(error: LinearWebhookError) -> HttpError {
         message: Some(error.to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::entities::{InternalStatus, TaskId};
+
+    #[test]
+    fn linear_action_labels_cover_all_reconciliation_outcomes() {
+        let task_id = TaskId::from_string("task-1".to_string());
+        let actions = [
+            (
+                LinearWebhookAction::TransitionedTask {
+                    task_id,
+                    target_status: InternalStatus::Executing,
+                },
+                "transitioned_task",
+            ),
+            (LinearWebhookAction::RecordedIssue, "recorded_issue"),
+            (
+                LinearWebhookAction::RecordedIssueActivity,
+                "recorded_issue_activity",
+            ),
+            (LinearWebhookAction::NoLinkedTask, "no_linked_task"),
+            (LinearWebhookAction::NoMappedStatus, "no_mapped_status"),
+            (LinearWebhookAction::UnsupportedEvent, "unsupported_event"),
+            (LinearWebhookAction::DuplicateDelivery, "duplicate_delivery"),
+        ];
+
+        for (action, expected) in actions {
+            assert_eq!(linear_action_label(&action), expected);
+        }
+    }
+
+    #[test]
+    fn linear_webhook_errors_map_to_http_statuses() {
+        let cases = [
+            (
+                LinearWebhookError::MissingSignature,
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                LinearWebhookError::InvalidSignature,
+                StatusCode::UNAUTHORIZED,
+            ),
+            (LinearWebhookError::StaleTimestamp, StatusCode::UNAUTHORIZED),
+            (
+                LinearWebhookError::MalformedBody("bad json".to_string()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                LinearWebhookError::MissingDeliveryId,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                LinearWebhookError::MissingSecret,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                LinearWebhookError::Reconciliation("database unavailable".to_string()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+
+        for (error, expected_status) in cases {
+            let http_error = linear_webhook_http_error(error);
+            assert_eq!(http_error.status, expected_status);
+            assert!(http_error.message.is_some());
+        }
+    }
+
+    #[test]
+    fn header_string_reads_valid_headers_and_ignores_invalid_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert("linear-delivery", "delivery-1".parse().unwrap());
+        let invalid = axum::http::HeaderValue::from_bytes(b"\xff").unwrap();
+        headers.insert("linear-event", invalid);
+
+        assert_eq!(
+            header_string(&headers, "linear-delivery").as_deref(),
+            Some("delivery-1")
+        );
+        assert!(header_string(&headers, "linear-event").is_none());
+        assert!(header_string(&headers, "missing").is_none());
+    }
+}

@@ -32,6 +32,10 @@ impl SqliteLinearIntegrationSettingsRepository {
     }
 }
 
+#[cfg(test)]
+#[path = "sqlite_linear_integration_settings_repo_tests.rs"]
+mod tests;
+
 fn parse_datetime(raw: Option<String>) -> Option<DateTime<Utc>> {
     let raw = raw?;
     if let Ok(dt) = DateTime::parse_from_rfc3339(&raw) {

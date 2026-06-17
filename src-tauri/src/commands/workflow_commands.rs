@@ -425,3 +425,128 @@ fn builtin_workflows() -> Vec<WorkflowSchema> {
         WorkflowSchema::linear_compatible(),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::entities::{
+        ConflictResolution, ExternalStatusMapping, ExternalSyncConfig, SyncDirection,
+        SyncProvider, SyncSettings,
+    };
+
+    #[test]
+    fn column_input_maps_behavior_and_rejects_unknown_status() {
+        let input = WorkflowColumnInput {
+            id: "review".to_string(),
+            name: "Review".to_string(),
+            maps_to: "reviewing".to_string(),
+            color: Some("#ff6b35".to_string()),
+            icon: Some("check".to_string()),
+            skip_review: Some(true),
+            auto_advance: Some(false),
+            agent_profile: Some("reviewer".to_string()),
+        };
+
+        let column = input.to_column().expect("column should parse");
+
+        assert_eq!(column.id, "review");
+        assert_eq!(column.name, "Review");
+        assert_eq!(column.maps_to, InternalStatus::Reviewing);
+        assert_eq!(column.color.as_deref(), Some("#ff6b35"));
+        assert_eq!(column.icon.as_deref(), Some("check"));
+        let behavior = column.behavior.expect("behavior should be populated");
+        assert_eq!(behavior.skip_review, Some(true));
+        assert_eq!(behavior.auto_advance, Some(false));
+        assert_eq!(behavior.agent_profile.as_deref(), Some("reviewer"));
+
+        let invalid = WorkflowColumnInput {
+            maps_to: "unknown-status".to_string(),
+            ..input
+        };
+        assert!(invalid.to_column().unwrap_err().contains("Invalid internal status"));
+    }
+
+    #[test]
+    fn workflow_response_preserves_external_sync_and_defaults() {
+        let mut workflow = WorkflowSchema::new(
+            "Linear Workflow",
+            vec![WorkflowColumn::new(
+                "in_progress",
+                "In Progress",
+                InternalStatus::Executing,
+            )
+            .with_behavior(ColumnBehavior::new().with_auto_advance(true))],
+        )
+        .as_default();
+        workflow.description = Some("Workflow description".to_string());
+        workflow.defaults = WorkflowDefaults {
+            worker_profile: Some("worker".to_string()),
+            reviewer_profile: Some("reviewer".to_string()),
+        };
+        workflow.external_sync = Some(ExternalSyncConfig {
+            provider: SyncProvider::Linear,
+            mapping: [(
+                "In Progress".to_string(),
+                ExternalStatusMapping {
+                    external_status: "In Progress".to_string(),
+                    internal_status: InternalStatus::Executing,
+                    column_id: "in_progress".to_string(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            sync: SyncSettings {
+                direction: SyncDirection::Bidirectional,
+                webhook: Some(true),
+            },
+            conflict_resolution: ConflictResolution::ExternalWins,
+        });
+
+        let response = WorkflowResponse::from(workflow);
+
+        assert_eq!(response.name, "Linear Workflow");
+        assert_eq!(response.description.as_deref(), Some("Workflow description"));
+        assert!(response.is_default);
+        assert_eq!(response.worker_profile.as_deref(), Some("worker"));
+        assert_eq!(response.reviewer_profile.as_deref(), Some("reviewer"));
+        assert!(response.external_sync.is_some());
+        assert_eq!(response.columns.len(), 1);
+        assert_eq!(response.columns[0].maps_to, "executing");
+        assert_eq!(response.columns[0].auto_advance, Some(true));
+    }
+
+    #[test]
+    fn builtin_workflows_include_linear_compatible_schema() {
+        let responses = builtin_workflows()
+            .into_iter()
+            .map(WorkflowResponse::from)
+            .collect::<Vec<_>>();
+
+        assert!(responses
+            .iter()
+            .any(|workflow| workflow.id == "linear-compat"));
+        assert!(responses
+            .iter()
+            .any(|workflow| workflow.id == "jira-compat"));
+        assert!(responses
+            .iter()
+            .any(|workflow| workflow.id == "ralphx-default"));
+    }
+
+    #[test]
+    fn builtin_default_workflow_response_uses_current_default_shape() {
+        let mut stale_default = WorkflowSchema::default_ralphx();
+        stale_default.columns = vec![WorkflowColumn::new("old", "Old", InternalStatus::Ready)];
+        stale_default.defaults = WorkflowDefaults {
+            worker_profile: Some("worker".to_string()),
+            reviewer_profile: Some("reviewer".to_string()),
+        };
+
+        let response = WorkflowResponse::from(stale_default);
+
+        assert_eq!(response.id, "ralphx-default");
+        assert!(response.columns.len() > 1);
+        assert_eq!(response.worker_profile.as_deref(), Some("worker"));
+        assert_eq!(response.reviewer_profile.as_deref(), Some("reviewer"));
+    }
+}
