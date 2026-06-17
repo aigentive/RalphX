@@ -1,3 +1,4 @@
+use crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests;
 use crate::application::{harness_runtime_registry::HarnessRuntimeProbe, AppState, AGENT_LANES};
 use crate::domain::agents::{
     AgentHarnessKind, AgentLane, AgentProviderCliManagementMode, AgentProviderSettings,
@@ -528,6 +529,53 @@ async fn update_settings_saves_default_and_applies_lanes_with_ready_probe() {
         assert_eq!(stored.settings.model.as_deref(), Some("gpt-5.4"));
         assert_eq!(stored.settings.effort, Some(LogicalEffort::High));
     }
+}
+
+#[tokio::test]
+async fn update_settings_reprobes_managed_cli_after_mode_switch() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let missing_codex_path = temp_dir.path().join("missing-codex");
+    let _override = override_managed_codex_binary_path_for_tests(missing_codex_path.clone());
+    let state = AppState::new_test();
+    let mut stored = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    stored.enabled = true;
+    stored.is_default = true;
+    stored.cli_management_mode = AgentProviderCliManagementMode::UserManaged;
+    state
+        .agent_provider_settings_repo
+        .upsert(&stored)
+        .await
+        .expect("save existing provider");
+    let probes = HashMap::from([
+        (AgentHarnessKind::Codex, ready_probe("/usr/bin/codex")),
+        (AgentHarnessKind::Claude, ready_probe("/usr/bin/claude")),
+    ]);
+    let next = UpdateAgentProviderSettingsInput {
+        cli_management_mode: Some("rx_managed".to_string()),
+        auto_update_enabled: Some(false),
+        ..input("codex")
+    };
+
+    let response = update_provider_settings_with_probes(next, &state, &probes)
+        .await
+        .expect("update provider settings");
+
+    let codex = response
+        .providers
+        .iter()
+        .find(|provider| provider.provider == "codex")
+        .expect("codex provider");
+    assert_eq!(codex.cli_management_mode, "rx_managed");
+    assert!(codex.enabled);
+    assert!(!codex.available);
+    assert_eq!(
+        codex.binary_path.as_deref(),
+        Some(missing_codex_path.to_string_lossy().as_ref())
+    );
+    assert_eq!(codex.status, "RX-managed Codex is not installed.");
 }
 
 #[tokio::test]

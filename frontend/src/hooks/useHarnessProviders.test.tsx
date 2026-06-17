@@ -105,6 +105,9 @@ describe("useHarnessProviders", () => {
       queryKey: harnessProviderKeys.all,
     });
     expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["provider-cli-management"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["agent", "harness"],
     });
   });

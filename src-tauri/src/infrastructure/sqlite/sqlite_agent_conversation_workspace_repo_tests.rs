@@ -758,6 +758,32 @@ async fn auto_publish_preferences_round_trip() {
 }
 
 #[tokio::test]
+async fn auto_publish_initial_pr_preference_round_trip() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let workspace = make_workspace(conversation_id.clone());
+    repo.create_or_update(workspace).await.unwrap();
+
+    let loaded = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert!(!loaded.auto_publish_initial_pr_enabled);
+
+    repo.update_auto_publish_initial_pr_preference(&conversation_id, true)
+        .await
+        .unwrap();
+
+    let updated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert!(updated.auto_publish_initial_pr_enabled);
+    assert!(updated.auto_publish_enabled);
+}
+
+#[tokio::test]
 async fn terminal_publication_update_clears_stale_pr_supervision_state() {
     let (_db, repo, conversation_id) = setup_repo();
     let mut workspace = make_workspace(conversation_id.clone());

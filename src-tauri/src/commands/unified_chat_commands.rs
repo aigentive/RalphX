@@ -313,6 +313,7 @@ pub struct AgentConversationWorkspaceResponse {
     pub publication_pr_status: Option<String>,
     pub publication_push_status: Option<String>,
     pub auto_publish_enabled: bool,
+    pub auto_publish_initial_pr_enabled: bool,
     pub auto_publish_paused_pr_autofix_enabled: Option<bool>,
     pub auto_publish_paused_pr_auto_merge_desired: Option<bool>,
     pub pr_autofix_enabled: bool,
@@ -393,6 +394,7 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             publication_pr_status: workspace.publication_pr_status,
             publication_push_status: workspace.publication_push_status,
             auto_publish_enabled: workspace.auto_publish_enabled,
+            auto_publish_initial_pr_enabled: workspace.auto_publish_initial_pr_enabled,
             auto_publish_paused_pr_autofix_enabled: workspace
                 .auto_publish_paused_pr_autofix_enabled,
             auto_publish_paused_pr_auto_merge_desired: workspace
@@ -799,7 +801,9 @@ fn normalize_explicit_publish_base_selection(
     }
     if let Some(source_pull_request) = selection.source_pull_request.as_ref() {
         if kind != IdeationAnalysisBaseRefKind::LocalBranch {
-            return Err("Source pull request metadata requires a local_branch base ref".to_string());
+            return Err(
+                "Source pull request metadata requires a local_branch base ref".to_string(),
+            );
         }
         let head_ref_name = source_pull_request.head_ref_name.trim();
         if head_ref_name.is_empty() {
@@ -2573,7 +2577,9 @@ async fn agent_workspace_pr_automation_defaults_for_project(
         .get_settings(Some(project_id))
         .await
         .map_err(|error| error.to_string())?;
-    Ok(AgentConversationWorkspacePrAutomationDefaults::from(&settings))
+    Ok(AgentConversationWorkspacePrAutomationDefaults::from(
+        &settings,
+    ))
 }
 
 fn validate_agent_conversation_mode_transition(
@@ -3257,8 +3263,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             } else {
                 false
             };
-            let linked_plan_handoff_changed = if target_mode
-                == AgentConversationWorkspaceMode::Edit
+            let linked_plan_handoff_changed = if target_mode == AgentConversationWorkspaceMode::Edit
                 && !workspace_mode_lock.locked
                 && workspace.linked_plan_branch_id.is_some()
             {
@@ -3305,8 +3310,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| format!("Project not found: {}", conversation.context_id))?;
                 let pr_automation_defaults =
-                    agent_workspace_pr_automation_defaults_for_project(&state, &project.id)
-                        .await?;
+                    agent_workspace_pr_automation_defaults_for_project(&state, &project.id).await?;
                 let workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
                     &project,
                     &conversation.id,
@@ -4423,6 +4427,46 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
             target,
         )
         .await?;
+    }
+
+    if automation_target.is_none() && workspace.publication_pr_number.is_none() {
+        if input.auto_publish_enabled == workspace.auto_publish_initial_pr_enabled {
+            return agent_workspace_response_for_state(state, workspace).await;
+        }
+
+        state
+            .agent_conversation_workspace_repo
+            .update_auto_publish_initial_pr_preference(&conversation_id, input.auto_publish_enabled)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "auto_publish",
+                if input.auto_publish_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                if input.auto_publish_enabled {
+                    "Auto Publish is enabled for the first pull request."
+                } else {
+                    "Auto Publish is disabled for the first pull request."
+                },
+                Some("auto_publish_preferences".to_string()),
+            ))
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let updated = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+        return agent_workspace_response_for_state(state, updated).await;
     }
 
     if input.auto_publish_enabled == workspace.auto_publish_enabled {
@@ -5814,10 +5858,9 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         .map_err(|error| {
             format!("Linked ideation workspace cannot be published from its plan branch: {error}")
         })?;
-    let plan_branch = publish_target
-        .plan_branch
-        .as_ref()
-        .ok_or_else(|| "Linked ideation publish target did not include a plan branch".to_string())?;
+    let plan_branch = publish_target.plan_branch.as_ref().ok_or_else(|| {
+        "Linked ideation publish target did not include a plan branch".to_string()
+    })?;
     let pr_number = plan_branch
         .pr_number
         .ok_or_else(|| "No PR associated with this linked plan branch".to_string())?;
@@ -6054,9 +6097,12 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         .await
         .map_err(|e| e.to_string())?;
     let push_started = Instant::now();
-    if let Err(error) =
-        push_publish_branch(github, &publish_target.worktree_path, &publish_target.branch_name)
-            .await
+    if let Err(error) = push_publish_branch(
+        github,
+        &publish_target.worktree_path,
+        &publish_target.branch_name,
+    )
+    .await
     {
         let error = error.to_string();
         tracing::warn!(
@@ -8155,8 +8201,8 @@ mod tests {
     use crate::application::agent_conversation_workspace_base::{
         BaseResolutionResult, BaseStatus, BLOCK_REASON_MISSING_BASE_COMMIT,
     };
-    use crate::application::git_service::GitService;
     use crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRecoveryTrigger;
+    use crate::application::git_service::GitService;
     use crate::application::publish_resilience::PublishBranchFreshnessStatus;
     use crate::application::{
         chat_service::MockChatService, AppState, TeamService, TeamStateTracker,
@@ -8167,7 +8213,6 @@ mod tests {
         AgentResponse, AgentResult, AgenticClient, ClientCapabilities, LogicalEffort,
         ProviderSessionRef, ResponseChunk,
     };
-    use crate::domain::execution::ExecutionSettings;
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
@@ -8177,9 +8222,9 @@ mod tests {
         ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan, ExecutionPlanStatus,
         IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
         InternalStatus, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project,
-        ProjectId, Task,
-        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+        ProjectId, Task, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
+    use crate::domain::execution::ExecutionSettings;
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
     use crate::domain::services::github_service::PrHealth;
     use crate::domain::services::{
@@ -8499,6 +8544,7 @@ mod tests {
             publication_pr_status: None,
             publication_push_status: None,
             auto_publish_enabled: true,
+            auto_publish_initial_pr_enabled: false,
             auto_publish_paused_pr_autofix_enabled: None,
             auto_publish_paused_pr_auto_merge_desired: None,
             pr_autofix_enabled: false,
@@ -8564,6 +8610,7 @@ mod tests {
             publication_pr_status: Some("open".to_string()),
             publication_push_status: Some("needs_agent".to_string()),
             auto_publish_enabled: true,
+            auto_publish_initial_pr_enabled: false,
             auto_publish_paused_pr_autofix_enabled: None,
             auto_publish_paused_pr_auto_merge_desired: None,
             pr_autofix_enabled: false,
@@ -9319,10 +9366,7 @@ mod tests {
 
         assert!(!paused.auto_publish_enabled);
         assert_eq!(paused.auto_publish_paused_pr_autofix_enabled, Some(true));
-        assert_eq!(
-            paused.auto_publish_paused_pr_auto_merge_desired,
-            Some(true)
-        );
+        assert_eq!(paused.auto_publish_paused_pr_auto_merge_desired, Some(true));
         assert!(!paused.pr_autofix_enabled);
         assert!(!paused.pr_auto_merge_desired);
         assert_eq!(paused.pr_supervision_status.as_deref(), Some("paused"));
@@ -9342,10 +9386,7 @@ mod tests {
         assert_eq!(resumed.auto_publish_paused_pr_auto_merge_desired, None);
         assert!(resumed.pr_autofix_enabled);
         assert!(resumed.pr_auto_merge_desired);
-        assert_eq!(
-            resumed.pr_supervision_status.as_deref(),
-            Some("monitoring")
-        );
+        assert_eq!(resumed.pr_supervision_status.as_deref(), Some("monitoring"));
 
         let events = state
             .agent_conversation_workspace_repo
@@ -9360,6 +9401,41 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.step == "auto_publish" && event.status == "enabled"));
+    }
+
+    #[tokio::test]
+    async fn auto_publish_enable_before_pr_sets_initial_pr_opt_in() {
+        let state = AppState::new_test();
+        let workspace = command_test_workspace();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let updated = set_agent_conversation_workspace_auto_publish_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspaceAutoPublishInput {
+                auto_publish_enabled: true,
+            },
+            &state,
+        )
+        .await
+        .expect("Auto Publish should enable before PR publication");
+
+        assert!(updated.auto_publish_enabled);
+        assert!(updated.auto_publish_initial_pr_enabled);
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should list");
+        assert!(events.iter().any(|event| {
+            event.step == "auto_publish"
+                && event.status == "enabled"
+                && event.summary == "Auto Publish is enabled for the first pull request."
+        }));
     }
 
     #[tokio::test]
@@ -9975,7 +10051,10 @@ mod tests {
         let worktree_parent = temp.path().join("worktrees");
         let main_sha = setup_publish_repo(&repo_path);
         let origin_path = repo_path.to_string_lossy().to_string();
-        git(&repo_path, &["remote", "add", "origin", origin_path.as_str()]);
+        git(
+            &repo_path,
+            &["remote", "add", "origin", origin_path.as_str()],
+        );
         let plan_branch_name = format!("feature/plan-publish-{suffix}");
         git(&repo_path, &["checkout", "-b", &plan_branch_name]);
         std::fs::write(repo_path.join("plan.txt"), "plan branch change\n")
@@ -11122,7 +11201,12 @@ mod tests {
         );
         git(
             &repo_path,
-            &["remote", "add", "origin", origin_path.to_str().expect("origin path")],
+            &[
+                "remote",
+                "add",
+                "origin",
+                origin_path.to_str().expect("origin path"),
+            ],
         );
         git(&repo_path, &["push", "origin", "main"]);
         git(&repo_path, &["checkout", "-b", "feature/pr-remote-only"]);
@@ -11136,7 +11220,11 @@ mod tests {
         git(&repo_path, &["branch", "-D", "feature/pr-remote-only"]);
         git(
             &repo_path,
-            &["update-ref", "-d", "refs/remotes/origin/feature/pr-remote-only"],
+            &[
+                "update-ref",
+                "-d",
+                "refs/remotes/origin/feature/pr-remote-only",
+            ],
         );
         assert!(
             !GitService::ref_exists(&repo_path, "feature/pr-remote-only")
@@ -13049,7 +13137,10 @@ mod tests {
 
         assert_eq!(switched.mode, "edit");
         assert_eq!(switched.branch_name, plan_branch_name);
-        assert_eq!(switched.worktree_path, expected_plan_worktree.to_string_lossy());
+        assert_eq!(
+            switched.worktree_path,
+            expected_plan_worktree.to_string_lossy()
+        );
         assert_eq!(switched.linked_ideation_session_id, None);
         assert_eq!(switched.linked_plan_branch_id, None);
         assert_eq!(switched.publication_pr_number, Some(123));
@@ -13681,7 +13772,10 @@ mod tests {
         assert_eq!(tool["diff_context"]["old_file_exists"], false);
         assert_eq!(tool["diff_preview"]["old_total_lines"], 0);
         assert_eq!(tool["diff_preview"]["new_total_lines"], 2);
-        assert_eq!(tool["diff_preview"]["hunks"][0]["lines"][0]["kind"], "addition");
+        assert_eq!(
+            tool["diff_preview"]["hunks"][0]["lines"][0]["kind"],
+            "addition"
+        );
     }
 
     #[tokio::test]

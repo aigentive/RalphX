@@ -65,10 +65,12 @@ enum AutoPublishDecision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutoPublishSkipReason {
+    WorkspaceMissing,
     InactiveWorkspace,
     NotEditWorkspace,
     ExecutionOwnedWorkspace,
     NoExistingPr,
+    InitialPrAutoPublishDisabled,
     AutoPublishDisabled,
     TerminalPr,
     PublishAlreadyActive,
@@ -81,10 +83,12 @@ enum AutoPublishSkipReason {
 impl AutoPublishSkipReason {
     fn as_str(self) -> &'static str {
         match self {
+            Self::WorkspaceMissing => "workspace_missing",
             Self::InactiveWorkspace => "inactive_workspace",
             Self::NotEditWorkspace => "not_edit_workspace",
             Self::ExecutionOwnedWorkspace => "execution_owned_workspace",
             Self::NoExistingPr => "no_existing_pr",
+            Self::InitialPrAutoPublishDisabled => "initial_pr_auto_publish_disabled",
             Self::AutoPublishDisabled => "auto_publish_disabled",
             Self::TerminalPr => "terminal_pr",
             Self::PublishAlreadyActive => "publish_already_active",
@@ -96,9 +100,8 @@ impl AutoPublishSkipReason {
     }
 }
 
-/// Register backend-only listeners that continue already-published agent
-/// workspace PRs after an agent turn finishes. First-time PR creation remains a
-/// deliberate user action; this only updates PRs that already exist.
+/// Register backend-only listeners that publish opted-in agent workspaces after
+/// an agent turn finishes, then keep already-published PRs fresh.
 pub(crate) fn install_agent_workspace_auto_publish_listeners<R>(app: &tauri::App<R>)
 where
     R: Runtime,
@@ -352,7 +355,7 @@ where
         .map_err(|error| error.to_string())?
     else {
         return Ok(AutoPublishDecision::Skip(
-            AutoPublishSkipReason::NoExistingPr,
+            AutoPublishSkipReason::WorkspaceMissing,
         ));
     };
 
@@ -366,13 +369,14 @@ where
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
-    let publish_target = resolve_agent_workspace_publish_target(state, &project, &workspace).await?;
-    if publish_target
-        .plan_branch
-        .as_ref()
-        .and_then(|branch| branch.pr_number)
-        .or(workspace.publication_pr_number)
-        .is_none()
+    let publish_target =
+        resolve_agent_workspace_publish_target(state, &project, &workspace).await?;
+    if publish_target.plan_branch.as_ref().is_some()
+        && publish_target
+            .plan_branch
+            .as_ref()
+            .and_then(|branch| branch.pr_number)
+            .is_none()
     {
         return Ok(AutoPublishDecision::Skip(
             AutoPublishSkipReason::NoExistingPr,
@@ -527,10 +531,15 @@ fn static_auto_publish_skip_reason(
     if workspace.is_execution_owned() && !linked_ideation_plan_workspace {
         return Some(AutoPublishSkipReason::ExecutionOwnedWorkspace);
     }
-    if workspace.publication_pr_number.is_none() && !linked_ideation_plan_workspace {
-        return Some(AutoPublishSkipReason::NoExistingPr);
-    }
-    if !workspace.auto_publish_enabled {
+    if workspace.publication_pr_number.is_none() {
+        if linked_ideation_plan_workspace {
+            if !workspace.auto_publish_enabled {
+                return Some(AutoPublishSkipReason::AutoPublishDisabled);
+            }
+        } else if !workspace.auto_publish_initial_pr_enabled {
+            return Some(AutoPublishSkipReason::InitialPrAutoPublishDisabled);
+        }
+    } else if !workspace.auto_publish_enabled {
         return Some(AutoPublishSkipReason::AutoPublishDisabled);
     }
     if is_terminal_agent_conversation_publication_status(workspace.publication_pr_status.as_deref())
@@ -574,11 +583,11 @@ fn begin_auto_publish(conversation_id: &ChatConversationId) -> Option<AutoPublis
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
     use crate::domain::entities::{
         ArtifactId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId,
         ProjectId,
     };
-    use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
     use std::path::Path;
     use std::process::Command;
     use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
@@ -713,6 +722,7 @@ mod tests {
     #[test]
     fn skip_reason_strings_are_stable_for_logs() {
         let cases = [
+            (AutoPublishSkipReason::WorkspaceMissing, "workspace_missing"),
             (
                 AutoPublishSkipReason::InactiveWorkspace,
                 "inactive_workspace",
@@ -725,7 +735,10 @@ mod tests {
                 AutoPublishSkipReason::ExecutionOwnedWorkspace,
                 "execution_owned_workspace",
             ),
-            (AutoPublishSkipReason::NoExistingPr, "no_existing_pr"),
+            (
+                AutoPublishSkipReason::InitialPrAutoPublishDisabled,
+                "initial_pr_auto_publish_disabled",
+            ),
             (
                 AutoPublishSkipReason::AutoPublishDisabled,
                 "auto_publish_disabled",
@@ -920,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_publish_requires_existing_pr() {
+    fn initial_pr_auto_publish_requires_explicit_opt_in() {
         let mut workspace = workspace();
         workspace.publication_pr_number = None;
 
@@ -937,8 +950,22 @@ mod tests {
 
         assert_eq!(
             decision,
-            AutoPublishDecision::Skip(AutoPublishSkipReason::NoExistingPr)
+            AutoPublishDecision::Skip(AutoPublishSkipReason::InitialPrAutoPublishDisabled)
         );
+    }
+
+    #[test]
+    fn initial_pr_auto_publish_runs_with_explicit_opt_in() {
+        let mut workspace = workspace();
+        workspace.publication_pr_number = None;
+        workspace.auto_publish_initial_pr_enabled = true;
+        let mut facts = facts();
+        facts.has_uncommitted_changes = true;
+
+        let decision =
+            should_auto_publish_existing_pr(&workspace, facts, AutoPublishTrigger::AgentCompletion);
+
+        assert_eq!(decision, AutoPublishDecision::Publish);
     }
 
     #[test]
@@ -1088,7 +1115,7 @@ mod tests {
 
         assert_eq!(
             decision,
-            AutoPublishDecision::Skip(AutoPublishSkipReason::NoExistingPr)
+            AutoPublishDecision::Skip(AutoPublishSkipReason::WorkspaceMissing)
         );
     }
 

@@ -153,6 +153,7 @@ fn queued_created_at_override(queued_msg: &QueuedMessage) -> Option<chrono::Date
 fn provider_switch_send_options_for_queued_message(
     queued_msg: &QueuedMessage,
     conversation_id: ChatConversationId,
+    force_new_provider_session: bool,
 ) -> SendMessageOptions {
     SendMessageOptions {
         metadata: queued_msg.metadata_override.clone(),
@@ -165,9 +166,26 @@ fn provider_switch_send_options_for_queued_message(
         composer_integration_references: queued_msg.composer_integration_references.clone(),
         composer_artifact_references: queued_msg.composer_artifact_references.clone(),
         attachment_ids: queued_msg.attachment_ids.clone(),
-        force_new_provider_session: true,
+        force_new_provider_session,
         ..Default::default()
     }
+}
+
+fn queued_target_harness(
+    queued_msg: &QueuedMessage,
+    fallback_harness: AgentHarnessKind,
+) -> AgentHarnessKind {
+    queued_msg.harness_override.unwrap_or(fallback_harness)
+}
+
+fn can_reuse_fresh_provider_run(
+    queued_msg: &QueuedMessage,
+    fresh_provider_harness: Option<AgentHarnessKind>,
+) -> bool {
+    queued_msg.force_new_provider_session
+        && queued_msg
+            .harness_override
+            .is_some_and(|harness| Some(harness) == fresh_provider_harness)
 }
 
 async fn persist_hidden_resume_in_place_marker(
@@ -346,6 +364,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
 ) -> QueueProcessingOutcome {
     let mut total_processed = 0u32;
     let mut last_run_id: Option<String> = None;
+    let mut fresh_provider_harness: Option<AgentHarnessKind> = None;
 
     // Outer loop: keep processing until queue is stable-empty
     loop {
@@ -491,11 +510,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
 
             if queued_message_requires_fresh_provider_session(&queued_msg, harness) {
                 let Some(ref handle) = app_handle else {
-                    message_queue.queue_front_existing(
-                        context_type,
-                        queue_context_id,
-                        queued_msg,
-                    );
+                    message_queue.queue_front_existing(context_type, queue_context_id, queued_msg);
                     tracing::warn!(
                         %context_type,
                         context_id,
@@ -513,6 +528,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     execution_state.as_ref().map(Arc::clone),
                     Some(handle.clone()),
                 );
+                let target_harness = queued_target_harness(&queued_msg, harness);
+                let force_new_provider_session =
+                    !can_reuse_fresh_provider_run(&queued_msg, fresh_provider_harness);
                 let send_result = service
                     .send_message(
                         context_type,
@@ -521,6 +539,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         provider_switch_send_options_for_queued_message(
                             &queued_msg,
                             conversation_id.clone(),
+                            force_new_provider_session,
                         ),
                     )
                     .await;
@@ -531,6 +550,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         if !result.agent_run_id.is_empty() {
                             last_run_id = Some(result.agent_run_id.clone());
                         }
+                        if !result.was_queued {
+                            fresh_provider_harness = Some(target_harness);
+                        }
                         tracing::info!(
                             %context_type,
                             context_id,
@@ -538,12 +560,16 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             queued_message_id = %queued_msg.id,
                             agent_run_id = %result.agent_run_id,
                             was_queued = result.was_queued,
+                            force_new_provider_session,
                             "[QUEUE] Replayed provider-switch queued message through chat service"
                         );
-                        return QueueProcessingOutcome {
-                            total_processed,
-                            last_run_id,
-                        };
+                        if result.was_queued {
+                            return QueueProcessingOutcome {
+                                total_processed,
+                                last_run_id,
+                            };
+                        }
+                        continue;
                     }
                     Err(error) => {
                         let error_string = error.to_string();
@@ -1276,8 +1302,11 @@ mod tests {
         }];
         message.attachment_ids = vec![attachment_id];
 
-        let options =
-            provider_switch_send_options_for_queued_message(&message, conversation_id.clone());
+        let options = provider_switch_send_options_for_queued_message(
+            &message,
+            conversation_id.clone(),
+            true,
+        );
 
         assert_eq!(options.metadata.as_deref(), Some(r#"{"source":"queue"}"#));
         assert_eq!(
@@ -1305,6 +1334,50 @@ mod tests {
         );
         assert_eq!(options.attachment_ids, message.attachment_ids);
         assert!(options.force_new_provider_session);
+    }
+
+    #[test]
+    fn provider_switch_send_options_can_reuse_fresh_provider_run() {
+        let conversation_id = ChatConversationId::new();
+        let mut message = QueuedMessage::new("second queued provider message".to_string());
+        message.harness_override = Some(AgentHarnessKind::Codex);
+        message.force_new_provider_session = true;
+
+        let options =
+            provider_switch_send_options_for_queued_message(&message, conversation_id, false);
+
+        assert_eq!(options.harness_override, Some(AgentHarnessKind::Codex));
+        assert!(
+            !options.force_new_provider_session,
+            "same-harness queued follow-ups should reuse the freshly started provider run"
+        );
+    }
+
+    #[test]
+    fn fresh_provider_run_reuse_requires_matching_queued_harness() {
+        let mut same_harness = QueuedMessage::new("same harness".to_string());
+        same_harness.harness_override = Some(AgentHarnessKind::Codex);
+        same_harness.force_new_provider_session = true;
+
+        let mut no_harness = QueuedMessage::new("explicit fresh session".to_string());
+        no_harness.force_new_provider_session = true;
+
+        let mut different_harness = QueuedMessage::new("different harness".to_string());
+        different_harness.harness_override = Some(AgentHarnessKind::Claude);
+        different_harness.force_new_provider_session = true;
+
+        assert!(can_reuse_fresh_provider_run(
+            &same_harness,
+            Some(AgentHarnessKind::Codex)
+        ));
+        assert!(!can_reuse_fresh_provider_run(
+            &no_harness,
+            Some(AgentHarnessKind::Codex)
+        ));
+        assert!(!can_reuse_fresh_provider_run(
+            &different_harness,
+            Some(AgentHarnessKind::Codex)
+        ));
     }
 
     #[tokio::test]
