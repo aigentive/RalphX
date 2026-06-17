@@ -348,6 +348,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Free runner disk for Rust IPC coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/lib/android \
+            /usr/share/dotnet
+          sudo apt-get clean
+          df -h /
+
       - name: Install Linux system dependencies
         shell: bash
         run: bash scripts/ci-install-linux-deps.sh
