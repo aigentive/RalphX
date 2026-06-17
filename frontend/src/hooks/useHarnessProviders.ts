@@ -39,6 +39,7 @@ export function useHarnessProviders(options: UseHarnessProvidersOptions = {}) {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: harnessProviderKeys.all }),
+        queryClient.invalidateQueries({ queryKey: ["provider-cli-management"] }),
         queryClient.invalidateQueries({ queryKey: ["agent", "harness"] }),
       ]);
     },

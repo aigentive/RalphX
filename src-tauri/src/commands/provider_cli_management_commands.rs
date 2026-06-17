@@ -15,7 +15,10 @@ use tauri::State;
 use tokio::process::Command;
 use tokio_util::bytes::Bytes;
 
-use crate::application::{managed_provider_cli::is_launchable_file, AppState};
+use crate::application::{
+    harness_runtime_registry::clear_harness_runtime_caches_for_harness,
+    managed_provider_cli::is_launchable_file, AppState,
+};
 use crate::domain::agents::{
     AgentHarnessKind, AgentProviderCliManagementMode, AgentProviderSettings,
     STANDARD_AGENT_HARNESSES,
@@ -793,6 +796,7 @@ async fn install_or_update_managed_provider_cli_inner(
         AgentHarnessKind::Codex => run_managed_codex_installer().await?,
         AgentHarnessKind::Claude => run_managed_claude_install_or_update().await?,
     };
+    clear_harness_runtime_caches_for_harness(provider);
     let status = managed_provider_cli_status_for_settings(state, settings, true).await?;
     Ok(ManagedProviderCliActionResponse {
         provider: provider.to_string(),
