@@ -3728,4 +3728,204 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByTestId("agents-publish-event-icon-event-pushing"))
       .toHaveAttribute("data-state", "active");
   });
+
+  it("shows approved-plan CTAs for an imported clone session discovered via v1_start_ideation", async () => {
+    useConversationMock.mockReturnValue({
+      data: {
+        conversation: conversation(),
+        messages: [
+          {
+            id: "message-1",
+            conversationId: "conversation-1",
+            role: "assistant",
+            content: "",
+            toolCalls: [
+              {
+                id: "tool-1",
+                name: "v1_start_ideation",
+                arguments: {},
+                result: {
+                  session_id: "cloned-session-1",
+                  plan_imported: true,
+                  cloned_plan_artifact_id: "cloned-artifact-1",
+                  source_plan_artifact_id: "source-artifact-1",
+                },
+              },
+            ],
+            contentBlocks: [],
+            createdAt: "2026-04-23T09:00:00Z",
+          },
+        ],
+      },
+      isLoading: false,
+    });
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "cloned-session-1",
+        projectId: "project-1",
+        title: "Imported Plan",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "cloned-artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        sourceSessionId: "source-session-1",
+        acceptanceStatus: null,
+      },
+      proposals: [],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "cloned-artifact-1",
+      type: "specification",
+      name: "Imported Plan",
+      content: {
+        type: "inline",
+        text: "# Imported Plan\n\nCloned content.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "plan_import",
+        version: 1,
+      },
+      derivedFrom: ["source-artifact-1"],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "cloned-artifact-1",
+        approvedVersion: 1,
+        approvedAt: "2026-04-23T09:00:00Z",
+      },
+    });
+
+    renderPane(
+      "plan",
+      workspace({ mode: "plan", linkedIdeationSessionId: null }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await waitFor(() =>
+      expect(getIdeationSessionMock).toHaveBeenCalledWith("cloned-session-1"),
+    );
+    await waitFor(() =>
+      expect(getSessionPlanMock).toHaveBeenCalledWith("cloned-session-1"),
+    );
+
+    expect(
+      await screen.findByRole("button", { name: /Create Proposals/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Implement Directly/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Approve Plan/i })).not.toBeInTheDocument();
+  });
+
+  it("shows draft-approval CTA for an imported clone session with a draft plan", async () => {
+    useConversationMock.mockReturnValue({
+      data: {
+        conversation: conversation(),
+        messages: [
+          {
+            id: "message-1",
+            conversationId: "conversation-1",
+            role: "assistant",
+            content: "",
+            toolCalls: [
+              {
+                id: "tool-1",
+                name: "v1_start_ideation",
+                arguments: {},
+                result: {
+                  session_id: "cloned-session-draft",
+                  plan_imported: true,
+                },
+              },
+            ],
+            contentBlocks: [],
+            createdAt: "2026-04-23T09:00:00Z",
+          },
+        ],
+      },
+      isLoading: false,
+    });
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "cloned-session-draft",
+        projectId: "project-1",
+        title: "Draft Imported Plan",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "cloned-artifact-draft",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        sourceSessionId: "source-session-1",
+        acceptanceStatus: null,
+      },
+      proposals: [],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "cloned-artifact-draft",
+      type: "specification",
+      name: "Draft Imported Plan",
+      content: {
+        type: "inline",
+        text: "# Draft Plan\n\nNeeds approval.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "plan_import",
+        version: 1,
+      },
+      derivedFrom: ["source-artifact-1"],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "draft",
+      },
+    });
+
+    renderPane(
+      "plan",
+      workspace({ mode: "plan", linkedIdeationSessionId: null }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await waitFor(() =>
+      expect(getIdeationSessionMock).toHaveBeenCalledWith("cloned-session-draft"),
+    );
+
+    expect(
+      await screen.findByRole("button", { name: /Approve Plan/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Create Proposals/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Implement Directly/i })).not.toBeInTheDocument();
+  });
 });
