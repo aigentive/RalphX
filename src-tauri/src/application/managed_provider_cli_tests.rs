@@ -1,3 +1,4 @@
+use crate::application::harness_runtime_registry::HarnessRuntimeProbe;
 use crate::domain::agents::{
     AgentHarnessKind, AgentProviderCliManagementMode, AgentProviderSettings,
 };
@@ -6,6 +7,7 @@ use crate::utils::runtime_log_paths::{
 };
 
 use super::{
+    checked_managed_provider_cli_launch_path, managed_probe_error,
     managed_provider_cli_launch_path, managed_provider_runtime_probe,
     override_managed_codex_binary_path_for_tests,
 };
@@ -40,9 +42,7 @@ fn rx_managed_codex_launches_from_app_owned_binary_path() {
         AgentProviderCliManagementMode::RxManaged,
     );
 
-    let path = managed_provider_cli_launch_path(&settings)
-        .expect("managed Codex path override")
-        .expect("managed Codex path");
+    let path = managed_provider_cli_launch_path(&settings).expect("managed Codex path");
 
     assert_eq!(path, managed_codex_binary_path());
     assert!(path.starts_with(managed_provider_cli_dir()));
@@ -91,6 +91,48 @@ fn rx_managed_codex_runtime_probe_reports_missing_binary() {
 }
 
 #[test]
+fn checked_rx_managed_codex_launch_path_rejects_missing_binary() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let missing_path = temp_dir.path().join("codex");
+    let _override = override_managed_codex_binary_path_for_tests(missing_path);
+    let settings = provider_settings(
+        AgentHarnessKind::Codex,
+        AgentProviderCliManagementMode::RxManaged,
+    );
+
+    let result = checked_managed_provider_cli_launch_path(&settings, "test runtime")
+        .expect("managed Codex launch path result");
+
+    assert_eq!(
+        result.expect_err("missing managed binary should fail"),
+        "RX-managed Codex is not installed."
+    );
+}
+
+#[test]
+fn managed_probe_error_falls_back_to_purpose_and_provider() {
+    let probe = HarnessRuntimeProbe {
+        binary_path: None,
+        binary_found: false,
+        probe_succeeded: false,
+        available: false,
+        missing_core_exec_features: Vec::new(),
+        cli_version: None,
+        supported_model_aliases: None,
+        supported_efforts: None,
+        error: None,
+    };
+
+    assert_eq!(
+        managed_probe_error(probe, "test runtime", AgentHarnessKind::Codex),
+        "test runtime harness unavailable: codex"
+    );
+}
+
+#[test]
 fn rx_managed_codex_runtime_probe_reports_probe_error() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
@@ -121,6 +163,40 @@ fn rx_managed_codex_runtime_probe_reports_probe_error() {
         .as_deref()
         .unwrap_or_default()
         .contains("probe failed"));
+}
+
+#[test]
+fn checked_rx_managed_codex_launch_path_accepts_available_cli() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let codex_path = temp_dir.path().join("codex");
+    write_executable(
+        &codex_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 0.144.0\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+    );
+    let _override = override_managed_codex_binary_path_for_tests(codex_path.clone());
+    let settings = provider_settings(
+        AgentHarnessKind::Codex,
+        AgentProviderCliManagementMode::RxManaged,
+    );
+
+    let result = checked_managed_provider_cli_launch_path(&settings, "test runtime")
+        .expect("managed Codex launch path result");
+
+    assert_eq!(result.expect("available managed binary"), codex_path);
 }
 
 #[test]

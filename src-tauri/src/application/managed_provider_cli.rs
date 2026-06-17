@@ -11,13 +11,13 @@ use crate::utils::runtime_log_paths::managed_codex_binary_path;
 
 pub(crate) fn managed_provider_cli_launch_path(
     settings: &AgentProviderSettings,
-) -> Option<Result<PathBuf, String>> {
+) -> Option<PathBuf> {
     if settings.cli_management_mode != AgentProviderCliManagementMode::RxManaged {
         return None;
     }
 
     match settings.provider {
-        AgentHarnessKind::Codex => Some(Ok(managed_codex_cli_path())),
+        AgentHarnessKind::Codex => Some(managed_codex_cli_path()),
         AgentHarnessKind::Claude => None,
     }
 }
@@ -26,20 +26,23 @@ pub(crate) fn checked_managed_provider_cli_launch_path(
     settings: &AgentProviderSettings,
     purpose: &str,
 ) -> Option<Result<PathBuf, String>> {
-    let launch_path = managed_provider_cli_launch_path(settings)?;
-    Some(match launch_path {
-        Ok(cli_path) => {
-            if let Some(probe) = managed_provider_runtime_probe(settings) {
-                if !probe.available {
-                    return Some(Err(probe.error.unwrap_or_else(|| {
-                        format!("{purpose} harness unavailable: {}", settings.provider)
-                    })));
-                }
-            }
-            Ok(cli_path)
+    let cli_path = managed_provider_cli_launch_path(settings)?;
+    if let Some(probe) = managed_provider_runtime_probe(settings) {
+        if !probe.available {
+            return Some(Err(managed_probe_error(probe, purpose, settings.provider)));
         }
-        Err(error) => Err(error),
-    })
+    }
+    Some(Ok(cli_path))
+}
+
+fn managed_probe_error(
+    probe: HarnessRuntimeProbe,
+    purpose: &str,
+    provider: AgentHarnessKind,
+) -> String {
+    probe
+        .error
+        .unwrap_or_else(|| format!("{purpose} harness unavailable: {provider}"))
 }
 
 fn managed_codex_cli_path() -> PathBuf {
@@ -59,16 +62,7 @@ pub(crate) fn managed_provider_runtime_probe(
     settings: &AgentProviderSettings,
 ) -> Option<HarnessRuntimeProbe> {
     let launch_path = managed_provider_cli_launch_path(settings)?;
-
-    match launch_path {
-        Ok(path) if settings.provider == AgentHarnessKind::Codex => {
-            Some(managed_codex_runtime_probe(path))
-        }
-        Ok(_) => Some(unavailable_managed_provider_probe(
-            "RX-managed provider launches are unavailable for this provider.",
-        )),
-        Err(error) => Some(unavailable_managed_provider_probe(error)),
-    }
+    Some(managed_codex_runtime_probe(launch_path))
 }
 
 fn managed_codex_runtime_probe(path: PathBuf) -> HarnessRuntimeProbe {
@@ -125,20 +119,6 @@ fn managed_codex_runtime_probe(path: PathBuf) -> HarnessRuntimeProbe {
             supported_efforts: None,
             error: Some(error),
         },
-    }
-}
-
-fn unavailable_managed_provider_probe(error: impl Into<String>) -> HarnessRuntimeProbe {
-    HarnessRuntimeProbe {
-        binary_path: None,
-        binary_found: false,
-        probe_succeeded: false,
-        available: false,
-        missing_core_exec_features: Vec::new(),
-        cli_version: None,
-        supported_model_aliases: None,
-        supported_efforts: None,
-        error: Some(error.into()),
     }
 }
 
