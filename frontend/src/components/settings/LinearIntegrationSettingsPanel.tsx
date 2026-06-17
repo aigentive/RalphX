@@ -1,10 +1,5 @@
 import { useState } from "react";
-import {
-  CheckCircle2,
-  KeyRound,
-  Loader2,
-  XCircle,
-} from "lucide-react";
+import { CheckCircle2, KeyRound, Loader2, XCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +7,16 @@ import { Label } from "@/components/ui/label";
 import { useLinearIntegration } from "@/hooks/useLinearIntegration";
 
 import { ErrorBanner, SectionCard } from "./SettingsView.shared";
+
+function errorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return fallback;
+}
 
 export function LinearIntegrationSettingsPanel() {
   const {
@@ -53,12 +58,22 @@ export function LinearIntegrationSettingsPanel() {
 
     try {
       await saveSettingsAsync({ apiToken: trimmed });
+      const validated = await validateAsync();
+      if (
+        !validated.enabled ||
+        validated.validationStatus !== "valid" ||
+        !validated.issueSearchAvailable
+      ) {
+        setLocalError(
+          validated.lastError ??
+            "Linear API token was saved, but issue references are still disabled",
+        );
+        return;
+      }
       setApiToken("");
       setSaved(true);
     } catch (err) {
-      setLocalError(
-        err instanceof Error ? err.message : "Failed to save Linear API token",
-      );
+      setLocalError(errorMessage(err, "Failed to save Linear API token"));
     }
   };
 
@@ -66,14 +81,20 @@ export function LinearIntegrationSettingsPanel() {
     setLocalError(null);
     setSaved(false);
     try {
-      await validateAsync();
+      const validated = await validateAsync();
+      if (
+        !validated.enabled ||
+        validated.validationStatus !== "valid" ||
+        !validated.issueSearchAvailable
+      ) {
+        setLocalError(
+          validated.lastError ?? "Failed to validate Linear integration",
+        );
+        return;
+      }
       setSaved(true);
     } catch (err) {
-      setLocalError(
-        err instanceof Error
-          ? err.message
-          : "Failed to validate Linear integration",
-      );
+      setLocalError(errorMessage(err, "Failed to validate Linear integration"));
     }
   };
 

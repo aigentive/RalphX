@@ -85,7 +85,6 @@ describe("LinearIntegrationSettingsPanel", () => {
 
     await user.type(screen.getByLabelText("API token"), "lin_api_token");
     await user.click(screen.getByRole("button", { name: /Save API token/ }));
-    await user.click(screen.getByRole("button", { name: "Validate" }));
 
     expect(linearHook.saveSettingsAsync).toHaveBeenCalledWith({
       apiToken: "lin_api_token",
@@ -93,4 +92,43 @@ describe("LinearIntegrationSettingsPanel", () => {
     expect(linearHook.validateAsync).toHaveBeenCalled();
   });
 
+  it("shows backend validation failures after saving a token", async () => {
+    const user = userEvent.setup();
+    linearHook.state.settings.hasApiToken = true;
+    linearHook.validateAsync.mockResolvedValue({
+      enabled: false,
+      hasApiToken: true,
+      validationStatus: "invalid",
+      issueSearchAvailable: false,
+      lastError: "Linear returned HTTP 401",
+      updatedAt: new Date(0).toISOString(),
+    });
+
+    render(<LinearIntegrationSettingsPanel />);
+
+    await user.type(screen.getByLabelText("API token"), "lin_api_token");
+    await user.click(screen.getByRole("button", { name: /Save API token/ }));
+
+    expect(
+      await screen.findByText("Linear returned HTTP 401"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows string errors from the validate command", async () => {
+    const user = userEvent.setup();
+    linearHook.state.settings.hasApiToken = true;
+    linearHook.validateAsync.mockRejectedValue(
+      "Linear API token is missing from secure storage",
+    );
+
+    render(<LinearIntegrationSettingsPanel />);
+
+    await user.click(screen.getByRole("button", { name: "Validate" }));
+
+    expect(
+      await screen.findByText(
+        "Linear API token is missing from secure storage",
+      ),
+    ).toBeInTheDocument();
+  });
 });
