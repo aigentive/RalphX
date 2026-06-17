@@ -571,7 +571,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const reconcileRafRef = useRef<number | null>(null);
     const scrollerResizeObserverRef = useRef<ResizeObserver | null>(null);
     const scrollerResizeRafRef = useRef<number | null>(null);
-    const bottomScrollIntentUntilRef = useRef(0);
+    const bottomScrollIntentUntilRef = useRef<number | null>(null);
     const isUserScrollingAwayFromBottomRef = useRef(false);
     const hasUserScrollInputRef = useRef(false);
     const userScrollAwayVersionRef = useRef(0);
@@ -1291,7 +1291,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       isLastItemVisibleRef.current = true;
       setIsLastItemVisible(true);
       lastObservedScrollTopRef.current = null;
-      bottomScrollIntentUntilRef.current = 0;
+      bottomScrollIntentUntilRef.current = null;
       isUserScrollingAwayFromBottomRef.current = false;
       hasUserScrollInputRef.current = false;
       userScrollAwayVersionRef.current = 0;
@@ -1323,7 +1323,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     }, [isAgentRunning, scheduleBottomPin]);
 
     const hasRecentBottomScrollIntent = useCallback(
-      () => performance.now() <= bottomScrollIntentUntilRef.current,
+      () =>
+        bottomScrollIntentUntilRef.current !== null &&
+        performance.now() <= bottomScrollIntentUntilRef.current,
       [],
     );
 
@@ -1468,13 +1470,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         hasUserScrollInputRef.current = true;
         if (event.deltaY < 0) {
           markUserScrollingAwayFromBottom();
-          return;
-        }
-        if (event.deltaY > 0) {
-          markBottomScrollIntent();
         }
       },
-      [markBottomScrollIntent, markUserScrollingAwayFromBottom],
+      [markUserScrollingAwayFromBottom],
     );
 
     const handleScrollerPointerDown = useCallback(
@@ -1889,13 +1887,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }
 
         event.preventDefault();
-        if (event.deltaY > 0) {
-          markBottomScrollIntent();
-        }
         scrollElementByDelta(el, event.deltaX, event.deltaY);
         handleScrollReconcile();
       },
-      [handleScrollReconcile, isTestEnv, markBottomScrollIntent, shouldShowScrollToBottom],
+      [handleScrollReconcile, isTestEnv, shouldShowScrollToBottom],
     );
 
     const handleRangeChanged = useCallback(
