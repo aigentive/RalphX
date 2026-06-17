@@ -421,6 +421,43 @@ mod tests {
     }
 
     #[test]
+    fn http_error_with_unreadable_graphql_errors_falls_back_to_body() {
+        let body = br#"{"errors":[{"extensions":{"code":"bad"}}]}"#;
+
+        assert_eq!(render_http_error(500, body), "Linear returned HTTP 500: ");
+        assert_eq!(render_graphql_errors(&[]), "");
+    }
+
+    #[test]
+    fn issue_summary_from_node_keeps_absent_optional_fields_empty() {
+        let node = serde_json::json!({
+            "id": "issue-id",
+            "title": "Required fields only"
+        });
+
+        let summary = issue_summary_from_node(&node).expect("required fields should parse");
+
+        assert_eq!(summary.id, "issue-id");
+        assert_eq!(summary.title, "Required fields only");
+        assert!(summary.key.is_none());
+        assert!(summary.url.is_none());
+        assert!(summary.excerpt.is_none());
+        assert!(summary.state_name.is_none());
+    }
+
+    #[test]
+    fn trim_excerpt_preserves_short_text_and_truncates_on_char_boundary() {
+        assert_eq!(trim_excerpt("  short text  "), "short text");
+
+        let long = format!("{}{}", "a".repeat(239), "ééé");
+        let excerpt = trim_excerpt(&long);
+
+        assert!(excerpt.ends_with("..."));
+        assert!(excerpt.len() <= 243);
+        assert!(excerpt.is_char_boundary(excerpt.len() - 3));
+    }
+
+    #[test]
     fn issue_summary_from_node_maps_optional_fields_and_trims_excerpt() {
         let long_description = format!("{}tail", "a".repeat(240));
         let node = serde_json::json!({
