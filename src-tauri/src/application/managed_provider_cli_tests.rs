@@ -1,7 +1,9 @@
 use crate::domain::agents::{
     AgentHarnessKind, AgentProviderCliManagementMode, AgentProviderSettings,
 };
-use crate::utils::runtime_log_paths::managed_codex_binary_path;
+use crate::utils::runtime_log_paths::{
+    app_runtime_dir, managed_codex_binary_path, managed_provider_cli_dir,
+};
 
 use super::{
     managed_provider_cli_launch_path, managed_provider_runtime_probe,
@@ -43,6 +45,10 @@ fn rx_managed_codex_launches_from_app_owned_binary_path() {
         .expect("managed Codex path");
 
     assert_eq!(path, managed_codex_binary_path());
+    assert!(path.starts_with(managed_provider_cli_dir()));
+    if cfg!(debug_assertions) {
+        assert!(!path.starts_with(app_runtime_dir()));
+    }
 }
 
 #[test]

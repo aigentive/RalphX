@@ -22,6 +22,26 @@ pub(crate) fn managed_provider_cli_launch_path(
     }
 }
 
+pub(crate) fn checked_managed_provider_cli_launch_path(
+    settings: &AgentProviderSettings,
+    purpose: &str,
+) -> Option<Result<PathBuf, String>> {
+    let launch_path = managed_provider_cli_launch_path(settings)?;
+    Some(match launch_path {
+        Ok(cli_path) => {
+            if let Some(probe) = managed_provider_runtime_probe(settings) {
+                if !probe.available {
+                    return Some(Err(probe.error.unwrap_or_else(|| {
+                        format!("{purpose} harness unavailable: {}", settings.provider)
+                    })));
+                }
+            }
+            Ok(cli_path)
+        }
+        Err(error) => Err(error),
+    })
+}
+
 fn managed_codex_cli_path() -> PathBuf {
     #[cfg(test)]
     if let Some(path) = managed_codex_binary_path_override()
