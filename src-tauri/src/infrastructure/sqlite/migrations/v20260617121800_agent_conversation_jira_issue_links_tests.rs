@@ -33,6 +33,53 @@ fn setup_test_db() -> Connection {
     conn
 }
 
+fn setup_test_db_without_workspace_table() -> Connection {
+    let conn = Connection::open_in_memory().expect("Failed to create in-memory database");
+    conn.execute_batch(
+        "CREATE TABLE chat_conversations (
+            id TEXT PRIMARY KEY,
+            context_type TEXT NOT NULL,
+            context_id TEXT NOT NULL,
+            agent_mode TEXT,
+            created_at TEXT NOT NULL DEFAULT '2026-06-17T12:00:00Z',
+            updated_at TEXT NOT NULL DEFAULT '2026-06-17T12:00:00Z'
+        );
+        CREATE TABLE chat_messages (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT REFERENCES chat_conversations(id) ON DELETE CASCADE,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            metadata TEXT,
+            created_at TEXT DEFAULT '2026-06-17T12:00:00Z'
+        );",
+    )
+    .unwrap();
+    conn
+}
+
+fn setup_pre_agent_mode_schema() -> Connection {
+    let conn = Connection::open_in_memory().expect("Failed to create in-memory database");
+    conn.execute_batch(
+        "CREATE TABLE chat_conversations (
+            id TEXT PRIMARY KEY,
+            context_type TEXT NOT NULL,
+            context_id TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT '2026-06-17T12:00:00Z',
+            updated_at TEXT NOT NULL DEFAULT '2026-06-17T12:00:00Z'
+        );
+        CREATE TABLE chat_messages (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT REFERENCES chat_conversations(id) ON DELETE CASCADE,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            metadata TEXT,
+            created_at TEXT DEFAULT '2026-06-17T12:00:00Z'
+        );",
+    )
+    .unwrap();
+    conn
+}
+
 fn insert_agent_conversation(conn: &Connection, id: &str, project_id: &str) {
     conn.execute(
         "INSERT INTO chat_conversations (id, context_type, context_id, agent_mode, created_at, updated_at)
@@ -147,6 +194,53 @@ fn backfill_uses_first_jira_reference_inside_metadata() {
         )
         .unwrap();
     assert_eq!(issue_key, "RX-42");
+}
+
+#[test]
+fn backfill_supports_agent_conversations_without_workspace_table() {
+    let conn = setup_test_db_without_workspace_table();
+    conn.execute(
+        "INSERT INTO chat_conversations (id, context_type, context_id, agent_mode)
+         VALUES ('conv-1', 'project', 'project-1', 'edit')",
+        [],
+    )
+    .unwrap();
+    insert_user_message(
+        &conn,
+        "conv-1",
+        "msg-first",
+        r#"{"composer_integration_references":[{"provider":"atlassian","kind":"jira","id":"RX-42"}]}"#,
+        "2026-06-17T12:01:00Z",
+    );
+
+    v20260617121800_agent_conversation_jira_issue_links::migrate(&conn).unwrap();
+
+    let row: (String, String) = conn
+        .query_row(
+            "SELECT project_id, issue_key
+             FROM agent_conversation_jira_issue_links WHERE conversation_id = 'conv-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("project-1".to_string(), "RX-42".to_string()));
+}
+
+#[test]
+fn migration_skips_backfill_when_agent_mode_column_is_not_present_yet() {
+    let conn = setup_pre_agent_mode_schema();
+
+    v20260617121800_agent_conversation_jira_issue_links::migrate(&conn).unwrap();
+
+    assert!(table_exists(&conn, "agent_conversation_jira_issue_links"));
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM agent_conversation_jira_issue_links",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
 }
 
 #[test]

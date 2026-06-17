@@ -144,6 +144,44 @@ async fn refresh_jira_issue_link_records_error_when_integration_disabled() {
 }
 
 #[tokio::test]
+async fn jira_assignment_commands_return_validation_errors_for_empty_or_missing_assignments() {
+    let app = mock_builder()
+        .manage(AppState::new_test())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let conversation_id = ChatConversationId::new();
+
+    let empty_issue_error = assign_agent_conversation_jira_issue(
+        AssignAgentConversationJiraIssueInput {
+            conversation_id: conversation_id.as_str(),
+            project_id: Some("project-1".to_string()),
+            issue_key: "   ".to_string(),
+            issue_id: None,
+            title: None,
+            issue_url: None,
+            refresh: Some(false),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(empty_issue_error, "Jira issue key is required");
+
+    let missing_assignment_error = refresh_agent_conversation_jira_issue(
+        RefreshAgentConversationJiraIssueInput {
+            conversation_id: conversation_id.as_str(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        missing_assignment_error,
+        "No Jira issue is assigned to this conversation"
+    );
+}
+
+#[tokio::test]
 async fn jira_assignment_commands_round_trip_and_refresh_cached_issue() {
     let app_state = AppState::new_test();
     app_state

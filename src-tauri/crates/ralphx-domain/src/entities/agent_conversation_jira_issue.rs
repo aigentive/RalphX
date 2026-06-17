@@ -123,3 +123,7 @@ impl AgentConversationJiraIssueLink {
         self
     }
 }
+
+#[cfg(test)]
+#[path = "agent_conversation_jira_issue_tests.rs"]
+mod tests;

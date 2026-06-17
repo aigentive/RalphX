@@ -111,6 +111,44 @@ async fn insert_if_absent_does_not_overwrite_existing_assignment() {
 }
 
 #[tokio::test]
+async fn get_by_conversation_id_falls_back_for_legacy_bad_status_and_datetime_values() {
+    let db = setup_test_db();
+    let repo = SqliteAgentConversationJiraIssueRepository::from_shared(db.shared_conn());
+    let conversation_id = ChatConversationId::from_string("conv-1");
+    seed_conversation(&db, &conversation_id);
+
+    repo.upsert(link(&conversation_id, "RX-42")).await.unwrap();
+    db.with_connection(|conn| {
+        conn.execute("PRAGMA ignore_check_constraints = ON", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE agent_conversation_jira_issue_links
+             SET refresh_status = 'legacy',
+                 assigned_at = 'bad-date',
+                 created_at = 'bad-date',
+                 updated_at = 'bad-date',
+                 last_refreshed_at = 'bad-date'
+             WHERE conversation_id = ?1",
+            rusqlite::params![conversation_id.as_str()],
+        )
+        .unwrap();
+    });
+
+    let loaded = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(loaded.issue_key, "RX-42");
+    assert_eq!(
+        loaded.refresh_status,
+        AgentConversationJiraRefreshStatus::NotLoaded
+    );
+    assert!(loaded.last_refreshed_at.is_some());
+}
+
+#[tokio::test]
 async fn clear_removes_assignment() {
     let db = setup_test_db();
     let repo = SqliteAgentConversationJiraIssueRepository::from_shared(db.shared_conn());
