@@ -168,6 +168,55 @@ fn silent_completion_recovery_ignores_terminal_completion_tools() {
 }
 
 #[test]
+fn silent_completion_recovery_triggers_from_legacy_tool_calls_without_content_blocks() {
+    let tool_calls = vec![test_tool_call("apply_patch")];
+
+    assert!(should_recover_silent_completion(
+        ChatContextType::Project,
+        "",
+        &tool_calls,
+        &[],
+        0,
+        false,
+        false,
+        true,
+    ));
+}
+
+#[test]
+fn silent_completion_recovery_ignores_question_and_permission_tools() {
+    for tool_name in [
+        "mcp__ralphx__ask_user_question",
+        "mcp__ralphx__permission_request",
+        "mcp__ralphx__resolve_permission_request",
+    ] {
+        let tool_calls = vec![test_tool_call(tool_name)];
+        let content_blocks = vec![ContentBlockItem::ToolUse {
+            id: Some("tool-1".to_string()),
+            name: tool_name.to_string(),
+            arguments: serde_json::json!({}),
+            result: Some(serde_json::json!({ "ok": true })),
+            parent_tool_use_id: None,
+            diff_context: None,
+        }];
+
+        assert!(
+            !should_recover_silent_completion(
+                ChatContextType::Project,
+                "",
+                &tool_calls,
+                &content_blocks,
+                0,
+                false,
+                false,
+                true,
+            ),
+            "{tool_name} should not trigger silent-completion recovery"
+        );
+    }
+}
+
+#[test]
 fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
     let queue = crate::domain::services::MessageQueue::new();
     queue.queue(
@@ -224,6 +273,53 @@ fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
 }
 
 #[test]
+fn silent_completion_recovery_enqueues_second_attempt_with_backoff() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let metadata = serde_json::json!({
+        "recovery_reason": "silent_completion_after_tool_activity",
+        "recovery_attempt": 1,
+    })
+    .to_string();
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        Some(&metadata),
+    );
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Queued {
+            attempt: 2,
+            backoff_ms: 2_000,
+        }
+    );
+    let queued = queue.get_queued(ChatContextType::Project, "conversation-1");
+    assert_eq!(queued.len(), 1);
+    let metadata: serde_json::Value =
+        serde_json::from_str(queued[0].metadata_override.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["recovery_attempt"], 2);
+    assert_eq!(metadata["recovery_backoff_ms"], 2_000);
+}
+
+#[test]
 fn silent_completion_recovery_stops_at_max_attempts() {
     let queue = crate::domain::services::MessageQueue::new();
     let metadata = serde_json::json!({
@@ -263,6 +359,18 @@ fn silent_completion_recovery_stops_at_max_attempts() {
     assert!(queue
         .get_queued(ChatContextType::Project, "conversation-1")
         .is_empty());
+}
+
+#[test]
+fn silent_completion_recovery_backoff_ignores_invalid_metadata() {
+    assert_eq!(silent_completion_recovery_backoff(None), None);
+    assert_eq!(silent_completion_recovery_backoff(Some("not json")), None);
+    assert_eq!(
+        silent_completion_recovery_backoff(Some(
+            r#"{"recovery_reason":"different","recovery_backoff_ms":1000}"#
+        )),
+        None
+    );
 }
 
 #[test]
