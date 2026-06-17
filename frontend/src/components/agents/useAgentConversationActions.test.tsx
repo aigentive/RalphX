@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import {
   chatApi,
   type AgentConversationWorkspace,
+  type ChatMessageResponse,
   type ForkAgentConversationResult,
 } from "@/api/chat";
 import { chatKeys } from "@/hooks/useChat";
@@ -27,6 +28,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
     chatApi: {
       ...actual.chatApi,
       forkAgentConversation: vi.fn(),
+      getConversation: vi.fn(),
+      spawnConversationSessionNamer: vi.fn(),
     },
   };
 });
@@ -34,6 +37,7 @@ vi.mock("@/api/chat", async (importOriginal) => {
 vi.mock("sonner", () => ({
   toast: {
     error: vi.fn(),
+    success: vi.fn(),
   },
 }));
 
@@ -73,6 +77,27 @@ function createConversation(
     createdAt: NOW,
     updatedAt: NOW,
     archivedAt: null,
+    ...overrides,
+  };
+}
+
+function createMessage(
+  overrides: Partial<ChatMessageResponse> = {}
+): ChatMessageResponse {
+  return {
+    id: "message-1",
+    sessionId: null,
+    projectId: null,
+    taskId: null,
+    role: "user",
+    content: "please fix the title",
+    metadata: null,
+    parentMessageId: null,
+    conversationId: "conversation-auto-rename",
+    toolCalls: null,
+    contentBlocks: null,
+    sender: null,
+    createdAt: NOW,
     ...overrides,
   };
 }
@@ -258,5 +283,85 @@ describe("useAgentConversationActions", () => {
       description: "fork failed",
       duration: 10000,
     });
+  });
+
+  it("reruns the session namer from the first user message and conversation provider", async () => {
+    const sourceConversation = createConversation({
+      id: "conversation-auto-rename",
+      contextId: "project-1",
+      providerHarness: "codex",
+    });
+    vi.mocked(chatApi.getConversation).mockResolvedValueOnce({
+      conversation: sourceConversation,
+      messages: [
+        createMessage({
+          id: "assistant-1",
+          role: "assistant",
+          content: "I can help.",
+        }),
+        createMessage({
+          id: "user-1",
+          content: "  please analyze the prod app logs  ",
+        }),
+      ],
+    });
+    vi.mocked(chatApi.spawnConversationSessionNamer).mockResolvedValueOnce(undefined);
+    const agentConversation: AgentConversation = {
+      ...sourceConversation,
+      projectId: "project-1",
+      ideationSessionId: null,
+    };
+    const { args, result } = renderActions();
+
+    await act(async () => {
+      await result.current.handleAutoRenameConversation(agentConversation);
+    });
+
+    expect(chatApi.getConversation).toHaveBeenCalledWith("conversation-auto-rename");
+    expect(chatApi.spawnConversationSessionNamer).toHaveBeenCalledWith(
+      "conversation-auto-rename",
+      "please analyze the prod app logs",
+      "codex"
+    );
+    expect(args.clearAutoManagedTitle).toHaveBeenCalledWith(
+      "conversation-auto-rename"
+    );
+    expect(args.invalidateProjectConversations).toHaveBeenCalledWith("project-1");
+    expect(toast.success).toHaveBeenCalledWith("Auto rename started");
+  });
+
+  it("does not spawn the session namer when no user message is available", async () => {
+    const sourceConversation = createConversation({
+      id: "conversation-empty-transcript",
+      contextId: "project-1",
+      providerHarness: "codex",
+    });
+    vi.mocked(chatApi.getConversation).mockResolvedValueOnce({
+      conversation: sourceConversation,
+      messages: [
+        createMessage({
+          id: "assistant-1",
+          role: "assistant",
+          content: "No user content here.",
+        }),
+      ],
+    });
+    const agentConversation: AgentConversation = {
+      ...sourceConversation,
+      projectId: "project-1",
+      ideationSessionId: null,
+    };
+    const { result } = renderActions();
+
+    await expect(
+      act(async () => {
+        await result.current.handleAutoRenameConversation(agentConversation);
+      })
+    ).rejects.toThrow("No user message is available for auto rename");
+
+    expect(chatApi.spawnConversationSessionNamer).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(
+      "No user message is available for auto rename"
+    );
   });
 });

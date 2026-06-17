@@ -320,6 +320,12 @@ export function HarnessProvidersSection() {
       input.applyToAllLanes = changes.applyToAllLanes;
     }
     await updateProviderAsync(input);
+    if (
+      changes.cliManagementMode !== undefined ||
+      changes.autoUpdateEnabled !== undefined
+    ) {
+      await refetchStatus();
+    }
   };
 
   const applyProviderToAgents = async (

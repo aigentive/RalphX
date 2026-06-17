@@ -354,30 +354,15 @@ impl AppState {
         purpose: &str,
     ) -> AppResult<Option<PathBuf>> {
         let Some(launch_path) =
-            crate::application::managed_provider_cli::managed_provider_cli_launch_path(
+            crate::application::managed_provider_cli::checked_managed_provider_cli_launch_path(
                 provider_settings,
+                purpose,
             )
         else {
             return Ok(None);
         };
 
-        let cli_path = launch_path.map_err(AppError::Infrastructure)?;
-        if let Some(probe) =
-            crate::application::managed_provider_cli::managed_provider_runtime_probe(
-                provider_settings,
-            )
-        {
-            if !probe.available {
-                return Err(AppError::Infrastructure(probe.error.unwrap_or_else(|| {
-                    format!(
-                        "{purpose} harness unavailable: {}",
-                        provider_settings.provider
-                    )
-                })));
-            }
-        }
-
-        Ok(Some(cli_path))
+        launch_path.map(Some).map_err(AppError::Infrastructure)
     }
 
     async fn resolve_background_agent_client_and_cli_path_override(
@@ -651,6 +636,30 @@ impl AppState {
         conversation: &ChatConversation,
         project_id: Option<&str>,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        self.resolve_session_namer_runtime_for_conversation_with_requested_harness(
+            conversation,
+            project_id,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn resolve_session_namer_runtime_for_conversation_with_requested_harness(
+        &self,
+        conversation: &ChatConversation,
+        project_id: Option<&str>,
+        requested_harness: Option<AgentHarnessKind>,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        if let Some(harness) = requested_harness {
+            let runtime = self
+                .resolve_background_agent_runtime_for_harness(
+                    harness,
+                    "session namer requested provider",
+                )
+                .await?;
+            return Ok(Self::lock_utility_agent_runtime_model(runtime));
+        }
+
         if let Some(harness) = conversation.provider_harness {
             let runtime = self
                 .resolve_background_agent_runtime_for_harness(

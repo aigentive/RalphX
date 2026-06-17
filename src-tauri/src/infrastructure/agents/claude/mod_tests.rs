@@ -13,9 +13,12 @@ use crate::infrastructure::agents::harness_agent_catalog::{
     load_harness_agent_prompt, AgentPromptHarness,
 };
 use crate::infrastructure::agents::mcp_runtime_context::McpRuntimeContext;
+use crate::utils::path_safety::{
+    checked_exists, checked_read_to_string, validate_absolute_non_root_path,
+};
 use serde_yaml::Value;
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -136,6 +139,43 @@ fn symlink_dir(source: impl AsRef<Path>, target: impl AsRef<Path>) {
 #[cfg(windows)]
 fn symlink_dir(source: impl AsRef<Path>, target: impl AsRef<Path>) {
     std::os::windows::fs::symlink_dir(source, target).expect("create directory symlink");
+}
+
+fn read_test_file(path: impl AsRef<Path>) -> String {
+    checked_read_to_string(path.as_ref(), "Claude plugin test fixture")
+        .expect("read Claude plugin test fixture")
+}
+
+fn test_path_exists(path: impl AsRef<Path>) -> bool {
+    checked_exists(path.as_ref(), "Claude plugin test fixture")
+        .expect("inspect Claude plugin test fixture")
+}
+
+fn read_test_link(path: impl AsRef<Path>) -> PathBuf {
+    let path = validate_absolute_non_root_path(path.as_ref(), "Claude plugin test symlink")
+        .expect("validate Claude plugin test symlink");
+
+    // codeql[rust/path-injection]
+    std::fs::read_link(path).expect("read Claude plugin test symlink")
+}
+
+fn test_symlink_metadata_is_err(path: impl AsRef<Path>) -> bool {
+    let path = validate_absolute_non_root_path(path.as_ref(), "Claude plugin test metadata")
+        .expect("validate Claude plugin test metadata path");
+
+    // codeql[rust/path-injection]
+    std::fs::symlink_metadata(path).is_err()
+}
+
+fn remove_test_file_or_dir(path: impl AsRef<Path>) {
+    let path = validate_absolute_non_root_path(path.as_ref(), "Claude plugin test removal")
+        .expect("validate Claude plugin test removal path");
+
+    // codeql[rust/path-injection]
+    if std::fs::remove_file(&path).is_err() {
+        // codeql[rust/path-injection]
+        std::fs::remove_dir(&path).expect("remove Claude plugin test directory");
+    }
 }
 
 /// Parse the JSON args array from an MCP config value without touching temp files.
@@ -850,8 +890,7 @@ skills:
 
     let generated_dir =
         materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
-    let generated_prompt = std::fs::read_to_string(generated_dir.join("agents/ralphx-ideation.md"))
-        .expect("read generated agent prompt");
+    let generated_prompt = read_test_file(generated_dir.join("agents/ralphx-ideation.md"));
 
     assert!(
         generated_prompt.contains("name: ralphx-ideation"),
@@ -911,8 +950,7 @@ description: Generates concise ideation session titles from user or plan context
     let generated_dir =
         materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
     let generated_prompt =
-        std::fs::read_to_string(generated_dir.join("agents/ralphx-utility-session-namer.md"))
-            .expect("read generated session namer prompt");
+        read_test_file(generated_dir.join("agents/ralphx-utility-session-namer.md"));
 
     assert!(
         generated_prompt.contains("model: haiku"),
@@ -1035,8 +1073,7 @@ capabilities:
         raw_prompt_path_str.as_str(),
         "Claude must not use the raw canonical prompt file when generated appendices are present"
     );
-    let generated_prompt =
-        std::fs::read_to_string(generated_prompt_path.as_str()).expect("read generated prompt");
+    let generated_prompt = read_test_file(Path::new(generated_prompt_path.as_str()));
     assert!(
         generated_prompt.contains("General worker prompt"),
         "generated prompt should preserve the canonical prompt body"
@@ -1076,7 +1113,7 @@ fn test_materialize_generated_plugin_dir_skips_canonical_agent_symlinks_outside_
         materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
 
     assert!(
-        !generated_dir.join("agents/ralphx-escape.md").exists(),
+        !test_path_exists(generated_dir.join("agents/ralphx-escape.md")),
         "generated plugin materialization must ignore canonical agent directories that resolve outside the project root"
     );
 }
@@ -1112,9 +1149,7 @@ max_turns: 80
 
     let generated_dir =
         materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
-    let generated_prompt =
-        std::fs::read_to_string(generated_dir.join("agents/ralphx-plan-verifier.md"))
-            .expect("read generated plan verifier prompt");
+    let generated_prompt = read_test_file(generated_dir.join("agents/ralphx-plan-verifier.md"));
 
     assert!(
         generated_prompt.contains("maxTurns: 80"),
@@ -1148,8 +1183,7 @@ description: Generates concise ideation session titles from user or plan context
     let generated_dir =
         materialize_generated_plugin_dir(&plugin_dir).expect("first generated plugin dir");
     let generated_prompt_path = generated_dir.join("agents/ralphx-utility-session-namer.md");
-    let first_prompt =
-        std::fs::read_to_string(&generated_prompt_path).expect("read initial generated prompt");
+    let first_prompt = read_test_file(&generated_prompt_path);
     assert!(
         first_prompt.contains("Initial generated prompt"),
         "first materialization should render the initial prompt body"
@@ -1168,8 +1202,7 @@ description: Generates concise ideation session titles from user or plan context
         "generated plugin path should be stable within the same process"
     );
 
-    let reused_prompt =
-        std::fs::read_to_string(&generated_prompt_path).expect("read reused generated prompt");
+    let reused_prompt = read_test_file(&generated_prompt_path);
     assert!(
         reused_prompt.contains("Initial generated prompt"),
         "later materialize calls in the same process must reuse the first generated prompt"
@@ -1198,17 +1231,12 @@ fn test_materialize_generated_plugin_dir_repairs_cached_runtime_entries_after_ex
 
     let generated_dir =
         materialize_generated_plugin_dir(&plugin_dir).expect("first generated plugin dir");
-    let expected_mcp_source = std::fs::read_link(generated_dir.join("ralphx-mcp-server"))
-        .expect("read initial mcp symlink");
+    let expected_mcp_source = read_test_link(generated_dir.join("ralphx-mcp-server"));
     let stale_runtime = tempfile::TempDir::new().expect("create stale runtime dir");
     let stale_mcp_dir = stale_runtime.path().join("plugins/app/ralphx-mcp-server");
     std::fs::create_dir_all(&stale_mcp_dir).expect("create stale mcp dir");
     let generated_mcp_dir = generated_dir.join("ralphx-mcp-server");
-    // codeql[rust/path-injection]
-    if std::fs::remove_file(&generated_mcp_dir).is_err() {
-        // codeql[rust/path-injection]
-        std::fs::remove_dir(&generated_mcp_dir).expect("remove generated mcp dir symlink");
-    }
+    remove_test_file_or_dir(&generated_mcp_dir);
     symlink_dir(&stale_mcp_dir, &generated_mcp_dir);
     symlink_dir(&stale_mcp_dir, generated_dir.join(".cache"));
 
@@ -1217,18 +1245,16 @@ fn test_materialize_generated_plugin_dir_repairs_cached_runtime_entries_after_ex
 
     assert_eq!(repaired_dir, generated_dir);
     assert_eq!(
-        std::fs::read_link(repaired_dir.join("ralphx-mcp-server"))
-            .expect("read repaired mcp symlink"),
+        read_test_link(repaired_dir.join("ralphx-mcp-server")),
         expected_mcp_source,
         "cached materialization should repair externally mutated managed runtime symlinks"
     );
     assert!(
-        std::fs::symlink_metadata(repaired_dir.join(".cache")).is_err(),
+        test_symlink_metadata_is_err(repaired_dir.join(".cache")),
         "cached materialization should remove unmanaged top-level entries"
     );
     assert!(
-        std::fs::read_to_string(repaired_dir.join("agents/ralphx-utility-session-namer.md"))
-            .expect("read repaired generated prompt")
+        read_test_file(repaired_dir.join("agents/ralphx-utility-session-namer.md"))
             .contains("Prompt before runtime contamination"),
         "repair should preserve generated canonical prompt materialization"
     );
@@ -1239,9 +1265,7 @@ fn test_materialize_generated_plugin_dir_prefers_root_canonical_claude_disallowe
     let (_dir, _root, plugin_dir, _runtime_guard) = make_isolated_live_project_plugin_dir();
     let generated_dir =
         materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
-    let generated_prompt =
-        std::fs::read_to_string(generated_dir.join("agents/ralphx-plan-verifier.md"))
-            .expect("read generated agent prompt");
+    let generated_prompt = read_test_file(generated_dir.join("agents/ralphx-plan-verifier.md"));
     let (frontmatter, _) = split_frontmatter(&generated_prompt);
     let disallowed_tools = frontmatter["disallowedTools"]
         .as_sequence()
@@ -1269,7 +1293,7 @@ fn test_materialize_generated_plugin_dir_omits_removed_supervisor_agent() {
     let generated_prompt_path = generated_dir.join("agents/ralphx-execution-supervisor.md");
 
     assert!(
-        !generated_prompt_path.exists(),
+        !test_path_exists(&generated_prompt_path),
         "removed supervisor agent should not be materialized into generated Claude assets"
     );
 }
@@ -1289,8 +1313,7 @@ fn test_materialize_generated_plugin_dir_matches_canonical_and_runtime_semantics
         let generated_path = generated_dir
             .join("agents")
             .join(format!("{agent_name}.md"));
-        let generated_markdown =
-            std::fs::read_to_string(&generated_path).expect("read generated agent markdown");
+        let generated_markdown = read_test_file(&generated_path);
         let definition = load_canonical_agent_definition(&root, &agent_name)
             .unwrap_or_else(|| panic!("missing canonical definition for {agent_name}"));
         let canonical_body =
@@ -1380,20 +1403,17 @@ fn test_materialize_generated_plugin_dir_uses_fallback_runtime_entries_when_loca
     .expect("materialize generated plugin dir");
 
     assert_eq!(
-        std::fs::read_to_string(generated_dir.join(".mcp.json"))
-            .expect("read generated mcp config"),
+        read_test_file(generated_dir.join(".mcp.json")),
         r#"{"mcpServers":{"ralphx":{"type":"stdio","command":"node","args":["local-config"]}}}"#,
         "generated plugin should preserve the local config surface"
     );
     assert_eq!(
-        std::fs::read_to_string(generated_dir.join("ralphx-mcp-server/build/index.js"))
-            .expect("read generated runtime entry"),
+        read_test_file(generated_dir.join("ralphx-mcp-server/build/index.js")),
         "// fallback runtime",
         "generated plugin should link the runnable fallback runtime bundle"
     );
     assert!(
-        std::fs::read_to_string(generated_dir.join("agents/ralphx-plan-verifier.md"))
-            .expect("read generated prompt")
+        read_test_file(generated_dir.join("agents/ralphx-plan-verifier.md"))
             .contains("Local canonical verifier prompt"),
         "generated plugin should keep canonical prompts from the local RalphX checkout"
     );
