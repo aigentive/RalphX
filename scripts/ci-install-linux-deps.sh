@@ -3,6 +3,21 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
+disable_unneeded_microsoft_apt_sources() {
+  local disabled_dir="/tmp/ralphx-disabled-apt-sources"
+  local source
+
+  sudo mkdir -p "${disabled_dir}"
+
+  shopt -s nullglob
+  for source in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+    if sudo grep -Eq 'packages\.microsoft\.com/(repos/azure-cli|ubuntu/24\.04/prod)' "${source}"; then
+      sudo mv "${source}" "${disabled_dir}/$(basename "${source}").disabled"
+    fi
+  done
+  shopt -u nullglob
+}
+
 retry_apt() {
   local attempt
   for attempt in 1 2 3; do
@@ -22,6 +37,7 @@ retry_apt() {
   done
 }
 
+disable_unneeded_microsoft_apt_sources
 retry_apt update
 retry_apt install --no-install-recommends -y \
   build-essential \

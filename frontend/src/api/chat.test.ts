@@ -540,6 +540,22 @@ describe("chat api", () => {
     });
   });
 
+  it("passes selected provider when spawning the session namer", async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await spawnConversationSessionNamer(
+      "conversation-42",
+      "fix the agents landing flow",
+      "codex"
+    );
+
+    expect(mockInvoke).toHaveBeenCalledWith("spawn_session_namer", {
+      conversationId: "conversation-42",
+      firstMessage: "fix the agents landing flow",
+      providerHarness: "codex",
+    });
+  });
+
   it("does not infer claude harness from provider session id alone", async () => {
     mockInvoke.mockResolvedValue([
       {
