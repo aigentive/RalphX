@@ -344,6 +344,7 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: never
+      CARGO_BUILD_JOBS: "1"
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6

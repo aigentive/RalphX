@@ -254,6 +254,18 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(())
     }
 
+    async fn update_auto_publish_initial_pr_preference(
+        &self,
+        conversation_id: &ChatConversationId,
+        enabled: bool,
+    ) -> AppResult<()> {
+        if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            workspace.auto_publish_initial_pr_enabled = enabled;
+            workspace.updated_at = Utc::now();
+        }
+        Ok(())
+    }
+
     async fn update_status(
         &self,
         conversation_id: &ChatConversationId,
