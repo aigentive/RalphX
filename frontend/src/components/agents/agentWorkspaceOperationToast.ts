@@ -29,6 +29,7 @@ export interface AgentWorkspaceOperationToastResultOptions {
 }
 
 const OPERATION_TOAST_INTERVAL_MS = 1_000;
+const MAX_OPERATION_ERROR_DETAIL_CHARS = 240;
 export const AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS = 8_000;
 export const AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS = 12_000;
 type ActiveAgentWorkspaceOperationToastOptions =
@@ -79,6 +80,26 @@ export function agentWorkspaceOperationToastDescription(
     .filter((part): part is string => Boolean(part))
     .join(" • ");
   return description || undefined;
+}
+
+export function agentWorkspaceOperationErrorDetail(
+  error: unknown,
+  fallback: string,
+): string {
+  const raw =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : fallback;
+  const withoutRawOutput = raw.replace(/\s*Raw output:\s*[\s\S]*$/i, "");
+  const compact = (withoutRawOutput.trim() || fallback)
+    .replace(/\s+/g, " ")
+    .trim();
+  if (compact.length <= MAX_OPERATION_ERROR_DETAIL_CHARS) {
+    return compact;
+  }
+  return `${compact.slice(0, MAX_OPERATION_ERROR_DETAIL_CHARS - 3).trimEnd()}...`;
 }
 
 function progressDescription(options: ActiveAgentWorkspaceOperationToastOptions): string | undefined {
