@@ -70,6 +70,33 @@ async fn sqlite_repo_persists_links_and_sync_records() {
     let db = SqliteTestDb::new("external-issue-links");
     let repo = SqliteExternalIssueLinkRepository::from_shared(db.shared_conn());
     let link = repo.upsert_link(sample_linear_link()).await.unwrap();
+    let by_id = repo
+        .get_link(&link.id)
+        .await
+        .unwrap()
+        .expect("SQLite repo should read the inserted link by id");
+    assert_eq!(by_id.id, link.id);
+
+    let local_links = repo
+        .list_links_for_local(&ExternalIssueLocalObject::task("task-1"))
+        .await
+        .unwrap();
+    assert_eq!(local_links.len(), 1);
+    assert_eq!(local_links[0].id, link.id);
+
+    let by_external = repo
+        .find_link_by_external_identity("linear", "issue", "lin_123")
+        .await
+        .unwrap()
+        .expect("SQLite repo should read by provider identity");
+    assert_eq!(by_external.id, link.id);
+
+    let by_idempotency = repo
+        .find_link_by_idempotency_key("linear:issue:lin_123:task:task-1")
+        .await
+        .unwrap()
+        .expect("SQLite repo should read by idempotency key");
+    assert_eq!(by_idempotency.id, link.id);
 
     let pending = repo
         .upsert_sync_record(ExternalIssueSyncRecordUpsert {
@@ -99,6 +126,10 @@ async fn sqlite_repo_persists_links_and_sync_records() {
 
     assert_eq!(succeeded.status, ExternalIssueSyncStatus::Succeeded);
     assert_eq!(succeeded.external_version.as_deref(), Some("comment_456"));
+
+    let records = repo.list_sync_records_for_link(&link.id).await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].id, pending.id);
 
     let by_key = repo
         .find_sync_record_by_idempotency_key("linear:comment:task-1:abc123")
@@ -141,6 +172,17 @@ async fn sqlite_repo_persists_links_and_sync_records() {
         .is_none());
     assert!(repo
         .find_sync_record_by_idempotency_key("missing-sync-key")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repo.get_link("missing-link").await.unwrap().is_none());
+    assert!(repo
+        .find_link_by_external_identity("linear", "issue", "missing")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repo
+        .find_link_by_idempotency_key("missing-link-key")
         .await
         .unwrap()
         .is_none());

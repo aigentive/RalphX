@@ -77,6 +77,24 @@ fn issue_payload(timestamp_ms: i64, state_name: &str) -> String {
     .to_string()
 }
 
+fn issue_payload_without_state(timestamp_ms: i64) -> String {
+    serde_json::json!({
+        "action": "update",
+        "type": "Issue",
+        "createdAt": "2026-06-16T18:00:00.000Z",
+        "organizationId": "linear-org",
+        "webhookTimestamp": timestamp_ms,
+        "webhookId": WEBHOOK_ID,
+        "data": {
+            "id": ISSUE_ID,
+            "identifier": "LIN-123",
+            "title": "Example issue",
+            "url": "https://linear.app/acme/issue/LIN-123/example"
+        }
+    })
+    .to_string()
+}
+
 async fn mapped_workflow_repo() -> Arc<dyn WorkflowRepository> {
     let repo = Arc::new(MemoryWorkflowRepository::new());
     let mut workflow = WorkflowSchema::new(
@@ -109,12 +127,38 @@ async fn mapped_workflow_repo() -> Arc<dyn WorkflowRepository> {
     repo
 }
 
+async fn unmapped_workflow_repo() -> Arc<dyn WorkflowRepository> {
+    let repo = Arc::new(MemoryWorkflowRepository::new());
+    repo.create(
+        WorkflowSchema::new(
+            "No Linear Mapping",
+            vec![WorkflowColumn::new("ready", "Ready", InternalStatus::Ready)],
+        )
+        .as_default(),
+    )
+    .await
+    .unwrap();
+    repo
+}
+
 async fn service_with(store: Arc<MemoryLinearWebhookStore>) -> LinearWebhookReconciliationService {
     LinearWebhookReconciliationService::new(
         SIGNING_SECRET.to_string(),
         store,
         mapped_workflow_repo().await,
     )
+}
+
+fn linked_issue() -> ExternalIssueLink {
+    ExternalIssueLink {
+        provider: SyncProvider::Linear,
+        project_id: ProjectId::from_string(PROJECT_ID.to_string()),
+        task_id: Some(TaskId::from_string(TASK_ID.to_string())),
+        external_id: ISSUE_ID.to_string(),
+        external_key: Some("LIN-123".to_string()),
+        external_url: Some("https://linear.app/acme/issue/LIN-123/example".to_string()),
+        last_external_status: None,
+    }
 }
 
 #[tokio::test]
@@ -182,18 +226,7 @@ async fn stale_webhook_timestamp_is_rejected_before_delivery_recording() {
 #[tokio::test]
 async fn duplicate_linear_delivery_is_idempotent_and_does_not_transition_twice() {
     let store = Arc::new(MemoryLinearWebhookStore::new());
-    store
-        .upsert_issue_link(ExternalIssueLink {
-            provider: SyncProvider::Linear,
-            project_id: ProjectId::from_string(PROJECT_ID.to_string()),
-            task_id: Some(TaskId::from_string(TASK_ID.to_string())),
-            external_id: ISSUE_ID.to_string(),
-            external_key: Some("LIN-123".to_string()),
-            external_url: Some("https://linear.app/acme/issue/LIN-123/example".to_string()),
-            last_external_status: None,
-        })
-        .await
-        .unwrap();
+    store.upsert_issue_link(linked_issue()).await.unwrap();
     let service = service_with(Arc::clone(&store)).await;
     let raw_body = issue_payload(Utc::now().timestamp_millis(), "In Progress");
     let signature = signature_for(raw_body.as_bytes(), SIGNING_SECRET);
@@ -222,23 +255,84 @@ async fn duplicate_linear_delivery_is_idempotent_and_does_not_transition_twice()
 }
 
 #[tokio::test]
+async fn issue_webhook_records_unlinked_issue_without_transitioning() {
+    let store = Arc::new(MemoryLinearWebhookStore::new());
+    let service = service_with(Arc::clone(&store)).await;
+    let raw_body = issue_payload(Utc::now().timestamp_millis(), "In Progress");
+    let signature = signature_for(raw_body.as_bytes(), SIGNING_SECRET);
+
+    let outcome = service
+        .handle(request_for(raw_body, Some(signature)), Utc::now())
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.action, LinearWebhookAction::RecordedIssue);
+    assert_eq!(store.delivery_count().await, 1);
+    assert_eq!(store.activity_count().await, 1);
+}
+
+#[tokio::test]
+async fn issue_webhook_without_state_updates_existing_link_but_reports_no_mapped_status() {
+    let store = Arc::new(MemoryLinearWebhookStore::new());
+    store.upsert_issue_link(linked_issue()).await.unwrap();
+    let service = service_with(Arc::clone(&store)).await;
+    let raw_body = issue_payload_without_state(Utc::now().timestamp_millis());
+    let signature = signature_for(raw_body.as_bytes(), SIGNING_SECRET);
+
+    let outcome = service
+        .handle(request_for(raw_body, Some(signature)), Utc::now())
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.action, LinearWebhookAction::NoMappedStatus);
+    assert_eq!(store.activity_count().await, 1);
+}
+
+#[tokio::test]
+async fn issue_webhook_with_unmapped_workflow_reports_no_mapped_status() {
+    let store = Arc::new(MemoryLinearWebhookStore::new());
+    store.upsert_issue_link(linked_issue()).await.unwrap();
+    let service = LinearWebhookReconciliationService::new(
+        SIGNING_SECRET.to_string(),
+        store,
+        unmapped_workflow_repo().await,
+    );
+    let raw_body = issue_payload(Utc::now().timestamp_millis(), "In Progress");
+    let signature = signature_for(raw_body.as_bytes(), SIGNING_SECRET);
+
+    let outcome = service
+        .handle(request_for(raw_body, Some(signature)), Utc::now())
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.action, LinearWebhookAction::NoMappedStatus);
+}
+
+#[tokio::test]
+async fn issue_webhook_with_branchless_link_reports_no_linked_task_after_status_mapping() {
+    let store = Arc::new(MemoryLinearWebhookStore::new());
+    let mut link = linked_issue();
+    link.task_id = None;
+    store.upsert_issue_link(link).await.unwrap();
+    let service = service_with(Arc::clone(&store)).await;
+    let raw_body = issue_payload(Utc::now().timestamp_millis(), "In Progress");
+    let signature = signature_for(raw_body.as_bytes(), SIGNING_SECRET);
+
+    let outcome = service
+        .handle(request_for(raw_body, Some(signature)), Utc::now())
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.action, LinearWebhookAction::NoLinkedTask);
+}
+
+#[tokio::test]
 async fn sqlite_store_uses_generic_external_issue_link_schema_for_issue_transitions() {
     let db = SqliteTestDb::new("linear-webhook-generic-link-schema");
     let store = Arc::new(SqliteLinearWebhookStore::new(DbConnection::from_shared(
         db.shared_conn(),
     )));
-    store
-        .upsert_issue_link(ExternalIssueLink {
-            provider: SyncProvider::Linear,
-            project_id: ProjectId::from_string(PROJECT_ID.to_string()),
-            task_id: Some(TaskId::from_string(TASK_ID.to_string())),
-            external_id: ISSUE_ID.to_string(),
-            external_key: Some("LIN-123".to_string()),
-            external_url: Some("https://linear.app/acme/issue/LIN-123/example".to_string()),
-            last_external_status: None,
-        })
-        .await
-        .unwrap();
+    store.upsert_issue_link(linked_issue()).await.unwrap();
     let webhook_store: Arc<dyn LinearWebhookStore> = store.clone();
     let service = LinearWebhookReconciliationService::new(
         SIGNING_SECRET.to_string(),

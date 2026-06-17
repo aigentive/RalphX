@@ -37,6 +37,7 @@ impl LinearIntegrationSettingsRepository for TestSettingsRepo {
 struct TestLinearClient {
     searches: Mutex<Vec<(String, usize)>>,
     validate_error: Mutex<Option<String>>,
+    fetch_error: Mutex<Option<String>>,
 }
 
 #[derive(Default)]
@@ -101,6 +102,9 @@ impl LinearApiClient for TestLinearClient {
         reference: &ComposerIntegrationReference,
     ) -> Result<LinearIssueContent, String> {
         assert_eq!(auth.api_token, "lin-api-token");
+        if let Some(error) = self.fetch_error.lock().await.clone() {
+            return Err(error);
+        }
         Ok(LinearIssueContent {
             id: reference.id.clone(),
             key: reference.key.clone(),
@@ -113,6 +117,18 @@ impl LinearApiClient for TestLinearClient {
             state_name: Some("In Progress".to_string()),
         })
     }
+}
+
+#[tokio::test]
+async fn search_requires_valid_enabled_settings() {
+    let repo = Arc::new(TestSettingsRepo::default());
+    let secrets = Arc::new(MemorySecretStore::new());
+    let client = Arc::new(TestLinearClient::default());
+    let service = LinearIntegrationService::new(repo, secrets, client);
+
+    let error = service.search_issues("bug", 10).await.unwrap_err();
+
+    assert_eq!(error, "Linear integration is not enabled");
 }
 
 #[tokio::test]
@@ -146,6 +162,28 @@ async fn save_validate_and_search_issues_with_api_token() {
         client.searches.lock().await.as_slice(),
         &[("bug".to_string(), 25)]
     );
+}
+
+#[tokio::test]
+async fn clearing_api_token_deletes_existing_secret_and_marks_not_configured() {
+    let repo = Arc::new(TestSettingsRepo::default());
+    let secrets = Arc::new(RecordingSecretStore::default());
+    let client = Arc::new(TestLinearClient::default());
+    let service = LinearIntegrationService::new(repo, secrets.clone(), client);
+
+    let saved = service
+        .save_settings(Some("lin-api-token".to_string()))
+        .await
+        .unwrap();
+    let secret_ref = saved.token_secret_ref.clone().unwrap();
+    let cleared = service.save_settings(Some("   ".to_string())).await.unwrap();
+
+    assert!(cleared.token_secret_ref.is_none());
+    assert_eq!(
+        cleared.validation_status,
+        IntegrationValidationStatus::NotConfigured
+    );
+    assert_eq!(secrets.deleted.lock().await.as_slice(), &[secret_ref]);
 }
 
 #[tokio::test]
@@ -262,4 +300,47 @@ async fn expands_linear_issue_references_for_prompt() {
     assert!(expanded.contains("<linear_issue"));
     assert!(expanded.contains("LIN-123"));
     assert!(expanded.contains("Issue body"));
+}
+
+#[tokio::test]
+async fn expand_references_skips_non_linear_and_reports_fetch_errors() {
+    let repo = Arc::new(TestSettingsRepo::default());
+    let secrets = Arc::new(MemorySecretStore::new());
+    let client = Arc::new(TestLinearClient::default());
+    *client.fetch_error.lock().await = Some("Linear issue not found".to_string());
+    let service = LinearIntegrationService::new(repo, secrets, client);
+    service
+        .save_settings(Some("lin-api-token".to_string()))
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+
+    let expanded = service
+        .expand_references_for_prompt(
+            "Fix this",
+            &[
+                ComposerIntegrationReference {
+                    provider: "atlassian".to_string(),
+                    kind: "jira".to_string(),
+                    id: "RX-1".to_string(),
+                    key: Some("RX-1".to_string()),
+                    title: Some("Ignored Jira issue".to_string()),
+                    url: None,
+                },
+                ComposerIntegrationReference {
+                    provider: "linear".to_string(),
+                    kind: "linear".to_string(),
+                    id: "issue-id".to_string(),
+                    key: Some("LIN-123".to_string()),
+                    title: Some("Example".to_string()),
+                    url: None,
+                },
+            ],
+        )
+        .await;
+
+    assert!(expanded.contains("ralphx_integration_references"));
+    assert!(expanded.contains("integration_reference_skipped"));
+    assert!(expanded.contains("Linear issue not found"));
+    assert!(!expanded.contains("RX-1"));
 }
