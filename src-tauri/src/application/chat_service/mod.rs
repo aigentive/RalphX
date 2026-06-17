@@ -118,6 +118,11 @@ pub use chat_service_send_background::finalize_assistant_message_for_test;
 pub use chat_service_send_background::finalize_no_output_assistant_message_for_test;
 #[doc(hidden)]
 pub use chat_service_send_background::finalize_structured_assistant_message_for_test;
+pub(crate) use chat_service_send_background::{
+    should_recover_silent_completion, silent_completion_recovery_attempt,
+    silent_completion_recovery_backoff_ms, silent_completion_recovery_max_attempts,
+    silent_completion_recovery_metadata, silent_completion_recovery_prompt,
+};
 pub use chat_service_streaming::process_stream_background;
 pub use chat_service_streaming::{
     is_completion_tool_name, should_kill_on_timeout, ActiveTaskTracker, CompletionSignalTracker,
@@ -264,6 +269,21 @@ fn resume_in_place_requested(metadata: Option<&str>) -> bool {
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
         .and_then(|value| value.get("resume_in_place").and_then(|v| v.as_bool()))
         .unwrap_or(false)
+}
+
+pub(crate) fn message_metadata_hidden_from_ui(metadata: Option<&str>) -> bool {
+    metadata
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .is_some_and(|value| {
+            value
+                .get("hidden_from_ui")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                || value
+                    .get("recovery_context")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+        })
 }
 
 fn strip_resume_in_place_metadata(metadata: Option<String>) -> Option<String> {
@@ -1050,22 +1070,24 @@ impl<R: Runtime> AppChatService<R> {
                 options.composer_artifact_references.clone(),
                 options.attachment_ids.clone(),
             );
-        self.emit_event(
-            "agent:message_queued",
-            AgentMessageQueuedPayload {
-                message_id: queued.id.clone(),
-                content: queued.content.clone(),
-                context_type: context_type.to_string(),
-                context_id: context_id.to_string(),
-                conversation_id,
-                created_at: queued.created_at.clone(),
-                attachment_ids: queued
-                    .attachment_ids
-                    .iter()
-                    .map(|attachment_id| attachment_id.to_string())
-                    .collect(),
-            },
-        );
+        if !message_metadata_hidden_from_ui(queued.metadata_override.as_deref()) {
+            self.emit_event(
+                "agent:message_queued",
+                AgentMessageQueuedPayload {
+                    message_id: queued.id.clone(),
+                    content: queued.content.clone(),
+                    context_type: context_type.to_string(),
+                    context_id: context_id.to_string(),
+                    conversation_id,
+                    created_at: queued.created_at.clone(),
+                    attachment_ids: queued
+                        .attachment_ids
+                        .iter()
+                        .map(|attachment_id| attachment_id.to_string())
+                        .collect(),
+                },
+            );
+        }
         queued
     }
 
@@ -2011,6 +2033,35 @@ impl<R: Runtime> AppChatService<R> {
         Ok(())
     }
 
+    async fn persist_hidden_resume_in_place_marker(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        conversation_id: ChatConversationId,
+        metadata: Option<&str>,
+    ) -> Result<(), ChatServiceError> {
+        let Some(marker_metadata) =
+            chat_service_queue::hidden_resume_in_place_marker_metadata(metadata)
+        else {
+            return Ok(());
+        };
+
+        let mut marker = chat_service_context::create_user_message(
+            context_type,
+            context_id,
+            chat_service_queue::HIDDEN_RESUME_IN_PLACE_MARKER_CONTENT,
+            conversation_id,
+            Some(marker_metadata),
+            None,
+        );
+        marker.role = MessageRole::System;
+        self.chat_message_repo
+            .create(marker)
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+        Ok(())
+    }
+
     /// Create a spawnable Claude CLI command (one-shot mode with `-p`).
     /// Kept for fallback/non-interactive spawn paths (queue resume, retry).
     #[allow(dead_code)]
@@ -2913,6 +2964,14 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                                 render_ready: None,
                             },
                         );
+                    } else {
+                        self.persist_hidden_resume_in_place_marker(
+                            context_type,
+                            context_id,
+                            conversation.id,
+                            options.metadata.as_deref(),
+                        )
+                        .await?;
                     }
 
                     // Emit run_started so frontend shows activity spinner. Reuse the
@@ -3553,6 +3612,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     render_ready: None,
                 },
             );
+        } else if let Err(error) = self
+            .persist_hidden_resume_in_place_marker(
+                context_type,
+                context_id,
+                conversation_id,
+                options.metadata.as_deref(),
+            )
+            .await
+        {
+            cleanup_and_err!(error);
         }
 
         // 6. Resolve working directory
@@ -4060,6 +4129,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             run_chain_id,
             is_retry_attempt: false,
             user_message_content: Some(message.to_string()),
+            turn_metadata: options.metadata.clone(),
             conversation: Some(conversation.clone()),
             agent_name: Some(resolved_agent_name),
             team_mode: runtime_team_mode,
@@ -5106,6 +5176,21 @@ mod agent_workspace_send_tests {
             "src/main.ts"
         );
         assert_eq!(value["composer_project_references"][0]["kind"], "file");
+    }
+
+    #[test]
+    fn message_metadata_hidden_from_ui_accepts_hidden_or_recovery_flags() {
+        assert!(super::message_metadata_hidden_from_ui(Some(
+            r#"{"hidden_from_ui":true}"#,
+        )));
+        assert!(super::message_metadata_hidden_from_ui(Some(
+            r#"{"recovery_context":true}"#,
+        )));
+        assert!(!super::message_metadata_hidden_from_ui(Some(
+            r#"{"hidden_from_ui":false}"#,
+        )));
+        assert!(!super::message_metadata_hidden_from_ui(Some("not-json")));
+        assert!(!super::message_metadata_hidden_from_ui(None));
     }
 
     #[test]

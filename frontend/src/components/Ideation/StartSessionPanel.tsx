@@ -135,7 +135,11 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
       if (cancelled) return;
 
       setStartFromOptions(result.options);
-      setSelectedStartFromKey(result.selectedKey);
+      setSelectedStartFromKey((currentKey) =>
+        currentKey && result.options.some((option) => option.key === currentKey)
+          ? currentKey
+          : result.selectedKey
+      );
       setIsLoadingStartFrom(false);
     }
 
@@ -143,7 +147,11 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
       if (!cancelled) {
         const fallback = fallbackBranchBaseOptions(activeProjectBaseBranch);
         setStartFromOptions(fallback.options);
-        setSelectedStartFromKey(fallback.selectedKey);
+        setSelectedStartFromKey((currentKey) =>
+          currentKey && fallback.options.some((option) => option.key === currentKey)
+            ? currentKey
+            : fallback.selectedKey
+        );
         setIsLoadingStartFrom(false);
       }
     });
@@ -156,6 +164,8 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
   const selectedStartFrom = allStartFromOptions.find(
     (option) => option.key === selectedStartFromKey
   );
+  const requiresStartFromSelection = Boolean(activeProjectWorkingDirectory);
+  const canSubmitStartFrom = !requiresStartFromSelection || Boolean(selectedStartFrom);
 
   const searchPullRequestStartFromOptions = useCallback(
     (query: string) => {
@@ -212,6 +222,11 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
       toast.error("No active project selected");
       return;
     }
+    /* v8 ignore next 3 -- the disabled primary button prevents this UI path; keep the stale-call guard. */
+    if (!canSubmitStartFrom) {
+      toast.error("Base branch is still loading");
+      return;
+    }
 
     setIsCreatingTeamSession(true);
     try {
@@ -236,6 +251,11 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
   };
 
   const handleSeedFromTask = async (task: Task) => {
+    if (!canSubmitStartFrom) {
+      toast.error("Base branch is still loading");
+      return;
+    }
+
     setIsCreatingFromTask(true);
     try {
       const params: Parameters<typeof createSession.mutateAsync>[0] = {
@@ -261,6 +281,8 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
   };
 
   const isCreating = isCreatingTeamSession || createSession.isPending;
+  const startActionDisabled = isCreating || !canSubmitStartFrom;
+  const seedActionDisabled = isCreatingFromTask || !canSubmitStartFrom;
 
   return (
     <>
@@ -403,17 +425,19 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
           {/* Primary Action */}
           <Button
             onClick={handleStartSession}
-            disabled={isCreating}
+            disabled={startActionDisabled}
             className="h-11 px-6 text-[0.875rem] font-semibold tracking-[-0.01em] border-0 transition-colors duration-150 mt-4"
             style={{
-              background: isCreating ? withAlpha("var(--accent-primary)", 60) : "var(--accent-primary)",
+              background: startActionDisabled
+                ? withAlpha("var(--accent-primary)", 60)
+                : "var(--accent-primary)",
               color: "var(--text-on-accent)",
             }}
             onMouseEnter={(e) => {
-              if (!isCreating) e.currentTarget.style.background = withAlpha("var(--accent-primary)", 90);
+              if (!startActionDisabled) e.currentTarget.style.background = withAlpha("var(--accent-primary)", 90);
             }}
             onMouseLeave={(e) => {
-              if (!isCreating) e.currentTarget.style.background = "var(--accent-primary)";
+              if (!startActionDisabled) e.currentTarget.style.background = "var(--accent-primary)";
             }}
           >
             {isCreating ? (
@@ -432,11 +456,11 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
           {/* Secondary Action */}
           <button
             onClick={() => setShowTaskPicker(true)}
-            disabled={isCreatingFromTask}
+            disabled={seedActionDisabled}
             className="flex items-center justify-center gap-2 mx-auto mt-5 text-[0.8125rem] transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ color: "var(--text-secondary)" }}
             onMouseEnter={(e) => {
-              if (!isCreatingFromTask) {
+              if (!seedActionDisabled) {
                 e.currentTarget.style.color = "var(--accent-primary)";
               }
             }}

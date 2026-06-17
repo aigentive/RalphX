@@ -57,7 +57,9 @@ pub use message_queue::{
     ComposerProjectReferenceKind, MessageQueue, QueueKey, QueuedMessage,
 };
 pub use methodology_service::{MethodologyActivationResult, MethodologyService};
-pub use pr_publish_service::{AgentWorkspacePrPublisher, PlanPrPublisher, PrReviewState};
+pub use pr_publish_service::{
+    AgentWorkspacePrPublisher, PlanPrDescriptionDrafter, PlanPrPublisher, PrReviewState,
+};
 pub use research_service::ResearchService;
 pub use rule_ingestion_service::{IngestionResult, RuleIngestionService};
 pub use rule_parser::{MarkdownChunk, ParsedRuleFile, RuleFrontmatter, RuleParser};
