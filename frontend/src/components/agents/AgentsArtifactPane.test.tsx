@@ -1452,8 +1452,14 @@ describe("AgentsArtifactPane", () => {
         expect.stringContaining("Implement the approved plan directly"),
         undefined,
         undefined,
-        { conversationId: "conversation-1" },
+        {
+          conversationId: "conversation-1",
+          suppressUserMessage: true,
+        },
       ),
+    );
+    expect(sendAgentMessageMock.mock.calls[0]?.[2]).not.toContain(
+      "do not create task proposals",
     );
     expect(toastSuccessMock).toHaveBeenCalledWith("Implementation started");
   });

@@ -272,6 +272,21 @@ fn resume_in_place_requested(metadata: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn message_metadata_hidden_from_ui(metadata: Option<&str>) -> bool {
+    metadata
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .is_some_and(|value| {
+            value
+                .get("hidden_from_ui")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                || value
+                    .get("recovery_context")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+        })
+}
+
 fn strip_resume_in_place_metadata(metadata: Option<String>) -> Option<String> {
     let raw = metadata?;
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&raw) else {
@@ -1056,22 +1071,24 @@ impl<R: Runtime> AppChatService<R> {
                 options.composer_artifact_references.clone(),
                 options.attachment_ids.clone(),
             );
-        self.emit_event(
-            "agent:message_queued",
-            AgentMessageQueuedPayload {
-                message_id: queued.id.clone(),
-                content: queued.content.clone(),
-                context_type: context_type.to_string(),
-                context_id: context_id.to_string(),
-                conversation_id,
-                created_at: queued.created_at.clone(),
-                attachment_ids: queued
-                    .attachment_ids
-                    .iter()
-                    .map(|attachment_id| attachment_id.to_string())
-                    .collect(),
-            },
-        );
+        if !message_metadata_hidden_from_ui(queued.metadata_override.as_deref()) {
+            self.emit_event(
+                "agent:message_queued",
+                AgentMessageQueuedPayload {
+                    message_id: queued.id.clone(),
+                    content: queued.content.clone(),
+                    context_type: context_type.to_string(),
+                    context_id: context_id.to_string(),
+                    conversation_id,
+                    created_at: queued.created_at.clone(),
+                    attachment_ids: queued
+                        .attachment_ids
+                        .iter()
+                        .map(|attachment_id| attachment_id.to_string())
+                        .collect(),
+                },
+            );
+        }
         queued
     }
 
@@ -5160,6 +5177,21 @@ mod agent_workspace_send_tests {
             "src/main.ts"
         );
         assert_eq!(value["composer_project_references"][0]["kind"], "file");
+    }
+
+    #[test]
+    fn message_metadata_hidden_from_ui_accepts_hidden_or_recovery_flags() {
+        assert!(super::message_metadata_hidden_from_ui(Some(
+            r#"{"hidden_from_ui":true}"#,
+        )));
+        assert!(super::message_metadata_hidden_from_ui(Some(
+            r#"{"recovery_context":true}"#,
+        )));
+        assert!(!super::message_metadata_hidden_from_ui(Some(
+            r#"{"hidden_from_ui":false}"#,
+        )));
+        assert!(!super::message_metadata_hidden_from_ui(Some("not-json")));
+        assert!(!super::message_metadata_hidden_from_ui(None));
     }
 
     #[test]
