@@ -1,9 +1,9 @@
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription, ChatConversationId,
-    AgentWorkspaceSourcePullRequest, IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
+    AgentWorkspaceSourcePullRequest, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::testing::SqliteTestDb;
@@ -85,6 +85,40 @@ async fn source_pull_request_metadata_round_trips() {
             head_ref_oid: Some("abc123".to_string()),
         })
     );
+}
+
+#[tokio::test]
+async fn linked_ideation_session_lookup_returns_latest_workspace_and_none_for_missing() {
+    let (db, repo, first_id) = setup_repo();
+    let session_id = IdeationSessionId::from_string("ideation-session-1");
+    let mut first = make_workspace(first_id);
+    first.linked_ideation_session_id = Some(session_id.clone());
+    first.branch_name = "ralphx/project/agent-first".to_string();
+    repo.create_or_update(first).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+
+    let second_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    seed_conversation(&db, &second_id);
+    let mut second = make_workspace(second_id.clone());
+    second.linked_ideation_session_id = Some(session_id.clone());
+    second.branch_name = "ralphx/project/agent-second".to_string();
+    second.worktree_path = "/tmp/ralphx/agent-22222222".to_string();
+    repo.create_or_update(second).await.unwrap();
+
+    let loaded = repo
+        .get_by_linked_ideation_session_id(&session_id)
+        .await
+        .unwrap()
+        .expect("latest linked workspace should load");
+    assert_eq!(loaded.conversation_id, second_id);
+    assert_eq!(loaded.branch_name, "ralphx/project/agent-second");
+
+    let missing = repo
+        .get_by_linked_ideation_session_id(&IdeationSessionId::from_string("missing-session"))
+        .await
+        .unwrap();
+    assert!(missing.is_none());
 }
 
 #[tokio::test]
