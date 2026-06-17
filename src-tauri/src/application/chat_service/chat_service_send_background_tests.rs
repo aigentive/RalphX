@@ -115,6 +115,35 @@ fn silent_completion_recovery_triggers_after_tool_without_final_text() {
 }
 
 #[test]
+fn silent_completion_recovery_treats_blank_text_before_tool_as_unfinished() {
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![
+        ContentBlockItem::Text {
+            text: "   ".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("patch-1".to_string()),
+            name: "apply_patch".to_string(),
+            arguments: serde_json::json!({ "file": "src/lib.rs" }),
+            result: Some(serde_json::json!({ "ok": true })),
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+    ];
+
+    assert!(should_recover_silent_completion(
+        ChatContextType::Project,
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+    ));
+}
+
+#[test]
 fn silent_completion_recovery_does_not_trigger_after_final_text() {
     let tool_calls = vec![test_tool_call("apply_patch")];
     let content_blocks = vec![
@@ -320,6 +349,52 @@ fn silent_completion_recovery_enqueues_second_attempt_with_backoff() {
 }
 
 #[test]
+fn silent_completion_recovery_enqueues_first_attempt_for_unrelated_prior_metadata() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let metadata = serde_json::json!({
+        "recovery_reason": "other_recovery_path",
+        "recovery_attempt": 2,
+    })
+    .to_string();
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        Some(&metadata),
+    );
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Queued {
+            attempt: 1,
+            backoff_ms: 1_000,
+        }
+    );
+    let queued = queue.get_queued(ChatContextType::Project, "conversation-1");
+    assert_eq!(queued.len(), 1);
+    let queued_metadata: serde_json::Value =
+        serde_json::from_str(queued[0].metadata_override.as_deref().unwrap()).unwrap();
+    assert_eq!(queued_metadata["recovery_attempt"], 1);
+}
+
+#[test]
 fn silent_completion_recovery_stops_at_max_attempts() {
     let queue = crate::domain::services::MessageQueue::new();
     let metadata = serde_json::json!({
@@ -356,6 +431,39 @@ fn silent_completion_recovery_stops_at_max_attempts() {
         result,
         SilentCompletionRecoveryEnqueue::Exhausted { attempts: 3 }
     );
+    assert!(queue
+        .get_queued(ChatContextType::Project, "conversation-1")
+        .is_empty());
+}
+
+#[test]
+fn silent_completion_recovery_enqueue_skips_without_resumable_session() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        false,
+        None,
+    );
+
+    assert_eq!(result, SilentCompletionRecoveryEnqueue::NotNeeded);
     assert!(queue
         .get_queued(ChatContextType::Project, "conversation-1")
         .is_empty());
