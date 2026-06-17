@@ -83,6 +83,22 @@ describe("resolveAttachedIdeationSessionId", () => {
     expect(result).toBe("planning-session-1");
   });
 
+  it("extracts the cloned session id from a plan-imported v1_start_ideation result", () => {
+    const result = resolveAttachedIdeationSessionId(conversation, [
+      messageWithToolCall(
+        {
+          session_id: "cloned-session-1",
+          plan_imported: true,
+          cloned_plan_artifact_id: "cloned-artifact-1",
+          source_plan_artifact_id: "source-artifact-1",
+        },
+        "v1_start_ideation",
+      ),
+    ]);
+
+    expect(result).toBe("cloned-session-1");
+  });
+
   it("falls back to the linked workspace session when no transcript tool result is available", () => {
     const result = resolveAttachedIdeationSessionId(conversation, [], "session-linked");
 
