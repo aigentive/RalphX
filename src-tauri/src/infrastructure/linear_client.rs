@@ -574,6 +574,30 @@ mod tests {
     }
 
     #[test]
+    fn issue_content_from_node_maps_optional_fields() {
+        let node = serde_json::json!({
+            "id": "issue-id",
+            "identifier": "LIN-456",
+            "title": "Fetched issue",
+            "url": "https://linear.app/acme/issue/LIN-456/fetched",
+            "description": "Fetched issue body",
+            "state": { "name": "Done" }
+        });
+
+        let content = issue_content_from_node(&node).expect("node should parse");
+
+        assert_eq!(content.id, "issue-id");
+        assert_eq!(content.key.as_deref(), Some("LIN-456"));
+        assert_eq!(content.title, "Fetched issue");
+        assert_eq!(
+            content.url.as_deref(),
+            Some("https://linear.app/acme/issue/LIN-456/fetched")
+        );
+        assert_eq!(content.body, "Fetched issue body");
+        assert_eq!(content.state_name.as_deref(), Some("Done"));
+    }
+
+    #[test]
     fn graphql_error_rendering_ignores_entries_without_message() {
         let errors = vec![
             serde_json::json!({ "message": "first" }),
