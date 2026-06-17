@@ -31,10 +31,19 @@ export function getAgentTerminalUnavailableReason(
   if (workspace.status === "missing") {
     return "Terminal unavailable because the workspace is missing";
   }
-  if (workspace.linkedIdeationSessionId || workspace.linkedPlanBranchId) {
+  const hasExternalWorkspaceOwner =
+    Boolean(workspace.linkedPlanBranchId) ||
+    workspaceIsLinkedNonEditWorkspace(workspace);
+  if (hasExternalWorkspaceOwner) {
     return "Terminal disabled while ideation or execution owns this workspace";
   }
   return null;
+}
+
+function workspaceIsLinkedNonEditWorkspace(
+  workspace: AgentConversationWorkspace
+): boolean {
+  return Boolean(workspace.linkedIdeationSessionId && workspace.mode !== "edit");
 }
 
 export function runtimeFromConversation(
