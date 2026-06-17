@@ -351,14 +351,16 @@ function PlanComposerCtaRow({
           {detailsButton}
         </div>
       </div>
-      <div
-        className="mt-2 flex flex-wrap items-center gap-2"
-        role="group"
-        aria-label="Plan actions"
-        data-testid="agents-plan-composer-cta-actions"
-      >
-        {actions.map(renderActionButton)}
-      </div>
+      {actions.length > 0 && (
+        <div
+          className="mt-2 flex flex-wrap items-center gap-2"
+          role="group"
+          aria-label="Plan actions"
+          data-testid="agents-plan-composer-cta-actions"
+        >
+          {actions.map(renderActionButton)}
+        </div>
+      )}
     </div>
   );
 }
@@ -1208,6 +1210,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       return [];
     }
 
+    if (activeWorkspaceFreshness?.hasUncommittedChanges === true) {
+      return [];
+    }
+
     const implementationAction: PlanComposerCtaAction | null =
       canImplementPlanDirectly
         ? {
@@ -1266,6 +1272,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     canCreatePlanProposals,
     canImplementPlanDirectly,
     canVerifyComposerPlan,
+    activeWorkspaceFreshness?.hasUncommittedChanges,
     handleApprovePlanFromQuestion,
     handleCreatePlanProposals,
     handleImplementPlanDirectly,

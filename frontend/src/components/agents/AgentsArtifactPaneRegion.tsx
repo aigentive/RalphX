@@ -4,7 +4,10 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 
-import type { AgentConversationWorkspace } from "@/api/chat";
+import type {
+  AgentConversationWorkspace,
+  AgentConversationWorkspaceFreshness,
+} from "@/api/chat";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { cn } from "@/lib/utils";
 import type {
@@ -41,6 +44,7 @@ interface AgentsArtifactPaneRegionProps {
   conversationId: string;
   conversation: AgentConversation;
   workspace: AgentConversationWorkspace | null;
+  activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   projectBaseBranch: string | null;
   focusedIdeationSessionId: string | null;
   hasAutoOpenArtifacts: boolean;
@@ -63,6 +67,7 @@ export function AgentsArtifactPaneRegion({
   conversationId,
   conversation,
   workspace,
+  activeWorkspaceFreshness,
   projectBaseBranch,
   focusedIdeationSessionId,
   hasAutoOpenArtifacts,
@@ -125,6 +130,7 @@ export function AgentsArtifactPaneRegion({
                   <LazyAgentsArtifactPane
                     conversation={conversation}
                     workspace={workspace}
+                    activeWorkspaceFreshness={activeWorkspaceFreshness}
                     projectBaseBranch={projectBaseBranch}
                     focusedIdeationSessionId={focusedIdeationSessionId}
                     activeTab={artifactState.activeTab}

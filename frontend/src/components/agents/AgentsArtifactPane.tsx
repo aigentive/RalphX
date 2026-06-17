@@ -20,6 +20,7 @@ import { verificationApi } from "@/api/verification";
 import {
   chatApi,
   type AgentConversationWorkspace,
+  type AgentConversationWorkspaceFreshness,
 } from "@/api/chat";
 import { Button } from "@/components/ui/button";
 import {
@@ -177,6 +178,7 @@ function writeSelectedTaskForConversation(
 interface AgentsArtifactPaneProps {
   conversation: AgentConversation | null;
   workspace?: AgentConversationWorkspace | null;
+  activeWorkspaceFreshness?: AgentConversationWorkspaceFreshness | undefined;
   projectBaseBranch?: string | null;
   focusedIdeationSessionId?: string | null;
   activeTab: AgentArtifactTab;
@@ -193,6 +195,7 @@ interface AgentsArtifactPaneProps {
 export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   conversation,
   workspace = null,
+  activeWorkspaceFreshness,
   projectBaseBranch = null,
   focusedIdeationSessionId = null,
   activeTab,
@@ -607,6 +610,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           activeTab={effectiveActiveTab}
           workspace={workspace}
           conversationId={conversationId}
+          activeWorkspaceFreshness={activeWorkspaceFreshness}
           conversationTitle={conversation?.title ?? null}
           projectBaseBranch={projectBaseBranch}
           isLoading={conversationQuery.isLoading || sessionQuery.isLoading}
@@ -640,6 +644,7 @@ type ArtifactContentProps = {
   activeTab: AgentArtifactTab;
   workspace: AgentConversationWorkspace | null;
   conversationId: string | null;
+  activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   conversationTitle: string | null;
   projectBaseBranch: string | null;
   isLoading: boolean;
@@ -672,6 +677,7 @@ function ArtifactContent({
   activeTab,
   workspace,
   conversationId,
+  activeWorkspaceFreshness,
   conversationTitle,
   projectBaseBranch,
   isLoading,
@@ -773,6 +779,7 @@ function ArtifactContent({
     return (
       <AgentPlanPanel
         workspace={workspace}
+        activeWorkspaceFreshness={activeWorkspaceFreshness}
         session={session}
         sessionTitle={sessionTitle}
         planArtifact={planArtifact}
@@ -858,6 +865,7 @@ function ArtifactContent({
 
 function AgentPlanPanel({
   workspace,
+  activeWorkspaceFreshness,
   session,
   sessionTitle,
   planArtifact,
@@ -869,6 +877,7 @@ function AgentPlanPanel({
   onOpenVerification,
 }: {
   workspace: AgentConversationWorkspace | null;
+  activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   session: IdeationSession | null;
   sessionTitle: string | null;
   planArtifact: Artifact | null;
@@ -945,14 +954,22 @@ function AgentPlanPanel({
     : undefined;
   const isPlanApproved = planApprovalStatus === "approved";
   const canApprovePlan = isOwnedCurrentPlan && planApprovalStatus === "draft";
+  const canShowApprovedPlanActions =
+    activeWorkspaceFreshness?.hasUncommittedChanges !== true;
   const isPlanVerificationSatisfied =
     verificationState === "verified" || verificationState === "imported_verified";
   const canVerifyPlan =
-    isOwnedCurrentPlan && isPlanApproved && !isPlanVerificationSatisfied;
-  const canCreateProposals =
-    session !== null && (!isPlanningSession || isPlanApproved);
-  const canImplementDirectly = Boolean(
+    canShowApprovedPlanActions &&
     isOwnedCurrentPlan &&
+    isPlanApproved &&
+    !isPlanVerificationSatisfied;
+  const canCreateProposals =
+    canShowApprovedPlanActions &&
+    session !== null &&
+    (!isPlanningSession || isPlanApproved);
+  const canImplementDirectly = Boolean(
+    canShowApprovedPlanActions &&
+      isOwnedCurrentPlan &&
       isPlanApproved &&
       session?.projectId &&
       workspace?.conversationId,
