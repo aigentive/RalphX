@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Download, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
@@ -7,15 +7,32 @@ import {
   providerCliManagementApi,
   type ManagedProviderCliStatusResponse,
 } from "@/api/provider-cli-management";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { harnessProviderKeys } from "@/hooks/useHarnessProviders";
 import { providerCliManagementKeys } from "@/hooks/useProviderCliManagement";
 import { useUiStore } from "@/stores/uiStore";
 
 const STARTUP_PROVIDER_CLI_CHECK_DELAY_MS = 7_000;
+export const PROVIDER_CLI_DISMISSED_UPDATES_STORAGE_KEY =
+  "ralphx-provider-cli-dismissed-updates";
+
 const PROVIDER_LABELS: Record<string, string> = {
   claude: "Claude",
   codex: "Codex",
 };
+
+interface PendingProviderCliDismiss {
+  notificationKey: string;
+  status: ManagedProviderCliStatusResponse;
+}
 
 function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
@@ -41,10 +58,64 @@ function providerCliToastId(provider: string) {
   return `provider-cli-update:${provider}`;
 }
 
+function providerCliNotificationKey(status: ManagedProviderCliStatusResponse) {
+  return `${status.provider}:${status.latestVersion ?? status.action}`;
+}
+
+function readDismissedProviderCliUpdateKeys(): Set<string> {
+  try {
+    const raw = globalThis.localStorage?.getItem(
+      PROVIDER_CLI_DISMISSED_UPDATES_STORAGE_KEY,
+    );
+    if (!raw) {
+      return new Set();
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return new Set();
+    }
+    return new Set(parsed.filter((item): item is string => typeof item === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function isDismissedProviderCliUpdate(notificationKey: string): boolean {
+  return readDismissedProviderCliUpdateKeys().has(notificationKey);
+}
+
+function rememberDismissedProviderCliUpdate(notificationKey: string): void {
+  try {
+    const keys = readDismissedProviderCliUpdateKeys();
+    keys.add(notificationKey);
+    globalThis.localStorage?.setItem(
+      PROVIDER_CLI_DISMISSED_UPDATES_STORAGE_KEY,
+      JSON.stringify([...keys].sort()),
+    );
+  } catch {
+    // A blocked preference store should not prevent dismissing the current toast.
+  }
+}
+
 export function ProviderCliUpdateChecker() {
   const queryClient = useQueryClient();
   const openModal = useUiStore((state) => state.openModal);
   const notifiedKeys = useRef(new Set<string>());
+  const [pendingDismiss, setPendingDismiss] =
+    useState<PendingProviderCliDismiss | null>(null);
+
+  const handleRemindAgain = useCallback(() => {
+    if (!pendingDismiss) return;
+    toast.dismiss(providerCliToastId(pendingDismiss.status.provider));
+    setPendingDismiss(null);
+  }, [pendingDismiss]);
+
+  const handleDontAskAgain = useCallback(() => {
+    if (!pendingDismiss) return;
+    rememberDismissedProviderCliUpdate(pendingDismiss.notificationKey);
+    toast.dismiss(providerCliToastId(pendingDismiss.status.provider));
+    setPendingDismiss(null);
+  }, [pendingDismiss]);
 
   useEffect(() => {
     let cancelled = false;
@@ -79,8 +150,10 @@ export function ProviderCliUpdateChecker() {
     };
 
     const showManualToast = (status: ManagedProviderCliStatusResponse) => {
-      const versionKey = status.latestVersion ?? status.action;
-      const notificationKey = `${status.provider}:${versionKey}`;
+      const notificationKey = providerCliNotificationKey(status);
+      if (status.updateAvailable && isDismissedProviderCliUpdate(notificationKey)) {
+        return;
+      }
       if (notifiedKeys.current.has(notificationKey)) {
         return;
       }
@@ -138,7 +211,13 @@ export function ProviderCliUpdateChecker() {
               data-testid="provider-cli-update-dismiss-button"
               className="inline-flex h-7 items-center rounded-[6px] px-3 text-xs font-medium"
               style={{ color: "var(--text-muted)" }}
-              onClick={() => toast.dismiss(providerCliToastId(status.provider))}
+              onClick={() => {
+                if (status.updateAvailable) {
+                  setPendingDismiss({ notificationKey, status });
+                  return;
+                }
+                toast.dismiss(providerCliToastId(status.provider));
+              }}
             >
               Dismiss
             </button>
@@ -203,5 +282,66 @@ export function ProviderCliUpdateChecker() {
     };
   }, [openModal, queryClient]);
 
-  return null;
+  return (
+    <ProviderCliDismissPreferenceDialog
+      pendingDismiss={pendingDismiss}
+      onOpenChange={(open) => {
+        if (!open) {
+          setPendingDismiss(null);
+        }
+      }}
+      onRemindAgain={handleRemindAgain}
+      onDontAskAgain={handleDontAskAgain}
+    />
+  );
+}
+
+function ProviderCliDismissPreferenceDialog({
+  pendingDismiss,
+  onDontAskAgain,
+  onOpenChange,
+  onRemindAgain,
+}: {
+  pendingDismiss: PendingProviderCliDismiss | null;
+  onDontAskAgain: () => void;
+  onOpenChange: (open: boolean) => void;
+  onRemindAgain: () => void;
+}) {
+  const status = pendingDismiss?.status ?? null;
+  const label = status ? providerLabel(status.provider) : "Provider";
+  const latestVersion = status?.latestVersion;
+
+  return (
+    <Dialog open={pendingDismiss !== null} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="w-[min(440px,calc(100vw-2rem))] overflow-hidden p-0"
+        data-testid="provider-cli-dismiss-preference-dialog"
+        style={{
+          backgroundColor: "var(--bg-surface)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+        }}
+      >
+        <DialogHeader className="block border-b-0 px-5 pb-3 pt-5">
+          <DialogTitle className="pr-8 text-base leading-6 tracking-normal">
+            {`Dismiss ${label} CLI update?`}
+          </DialogTitle>
+          <DialogDescription className="mt-1.5 text-sm leading-5 text-[var(--text-secondary)]">
+            {latestVersion
+              ? `Remind me again later, or stop showing this ${label} CLI ${latestVersion} update.`
+              : `Remind me again later, or stop showing this ${label} CLI update.`}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter className="gap-2 border-t-0 px-5 pb-5 pt-0 sm:gap-2">
+          <Button type="button" variant="ghost" onClick={onRemindAgain}>
+            Remind me again
+          </Button>
+          <Button type="button" onClick={onDontAskAgain}>
+            Don't ask again
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
