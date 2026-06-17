@@ -1626,6 +1626,7 @@ export interface SendAgentMessageOptions {
   providerHarness?: string | null;
   modelId?: string | null;
   logicalEffort?: string | null;
+  suppressUserMessage?: boolean;
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
   composerArtifactReferences?: ComposerArtifactReference[];
@@ -2059,6 +2060,19 @@ function transformAgentConversationWorkspace(
   };
 }
 
+function sourcePullRequestInvokeInput(
+  sourcePullRequest: AgentConversationSourcePullRequest
+) {
+  return {
+    number: sourcePullRequest.number,
+    url: sourcePullRequest.url ?? null,
+    title: sourcePullRequest.title ?? null,
+    headRefName: sourcePullRequest.headRefName,
+    baseRefName: sourcePullRequest.baseRefName ?? null,
+    headRefOid: sourcePullRequest.headRefOid ?? null,
+  };
+}
+
 function transformAgentSidebarConversationGroups(
   raw: RawAgentSidebarConversationGroups
 ): AgentSidebarConversationGroupsResponse {
@@ -2439,14 +2453,9 @@ export async function startAgentConversation(
               baseDisplayName: input.base.displayName,
               ...(input.base.sourcePullRequest
                 ? {
-                    baseSourcePullRequest: {
-                      number: input.base.sourcePullRequest.number,
-                      url: input.base.sourcePullRequest.url ?? null,
-                      title: input.base.sourcePullRequest.title ?? null,
-                      headRefName: input.base.sourcePullRequest.headRefName,
-                      baseRefName: input.base.sourcePullRequest.baseRefName ?? null,
-                      headRefOid: input.base.sourcePullRequest.headRefOid ?? null,
-                    },
+                    baseSourcePullRequest: sourcePullRequestInvokeInput(
+                      input.base.sourcePullRequest
+                    ),
                   }
                 : {}),
             }
@@ -2487,6 +2496,13 @@ export async function switchAgentConversationMode(
               baseRefKind: input.base.kind,
               baseRef: input.base.ref,
               baseDisplayName: input.base.displayName,
+              ...(input.base.sourcePullRequest
+                ? {
+                    baseSourcePullRequest: sourcePullRequestInvokeInput(
+                      input.base.sourcePullRequest
+                    ),
+                  }
+                : {}),
             }
           : {}),
       },
@@ -2527,6 +2543,7 @@ export async function sendAgentMessage(
         ...(options?.providerHarness ? { providerHarness: options.providerHarness } : {}),
         ...(options?.modelId ? { modelOverride: options.modelId } : {}),
         ...(options?.logicalEffort ? { logicalEffort: options.logicalEffort } : {}),
+        ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
         ...(options?.composerProjectReferences?.length
           ? { composerProjectReferences: options.composerProjectReferences }
           : {}),
