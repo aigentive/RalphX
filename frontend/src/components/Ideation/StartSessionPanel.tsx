@@ -222,6 +222,7 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
       toast.error("No active project selected");
       return;
     }
+    /* v8 ignore next 3 -- the disabled primary button prevents this UI path; keep the stale-call guard. */
     if (!canSubmitStartFrom) {
       toast.error("Base branch is still loading");
       return;

@@ -400,6 +400,20 @@ describe("StartSessionPanel", () => {
 
       expect(mockToastError).toHaveBeenCalledWith("Failed to create session");
     });
+
+    it("applies enabled hover styles to the start action", async () => {
+      render(<StartSessionPanel onNewSession={onNewSession} />);
+      await expectStartFromLabel("Project default (main)");
+      const startButton = screen.getByRole("button", { name: /Start New Session/ });
+
+      fireEvent.mouseEnter(startButton);
+      expect(startButton).toHaveStyle({
+        background: "color-mix(in srgb, var(--accent-primary) 90%, transparent)",
+      });
+
+      fireEvent.mouseLeave(startButton);
+      expect(startButton).toHaveStyle({ background: "var(--accent-primary)" });
+    });
   });
 
   describe("handleSeedFromTask", () => {
@@ -546,6 +560,44 @@ describe("StartSessionPanel", () => {
       });
 
       expect(mockToastError).toHaveBeenCalledWith("Failed to start ideation session");
+    });
+
+    it("keeps seed-from-task guarded if base branch starts reloading while picker is open", async () => {
+      const defaultBranch = deferred<string>();
+      const currentBranch = deferred<string>();
+      const branches = deferred<string[]>();
+      mockGetGitDefaultBranch.mockReturnValueOnce(defaultBranch.promise);
+      mockGetGitCurrentBranch.mockReturnValueOnce(currentBranch.promise);
+      mockGetGitBranches.mockReturnValueOnce(branches.promise);
+
+      render(<StartSessionPanel onNewSession={onNewSession} />);
+      fireEvent.keyDown(window, { key: "d", metaKey: true });
+      await waitFor(() => expect(screen.getByTestId("task-picker")).toBeInTheDocument());
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("pick-task"));
+      });
+
+      expect(mockToastError).toHaveBeenCalledWith("Base branch is still loading");
+      expect(mockMutateAsync).not.toHaveBeenCalled();
+
+      await act(async () => {
+        defaultBranch.resolve("main");
+        currentBranch.resolve("main");
+        branches.resolve(["main"]);
+      });
+    });
+
+    it("applies enabled hover styles to the seed action", async () => {
+      render(<StartSessionPanel onNewSession={onNewSession} />);
+      await expectStartFromLabel("Project default (main)");
+      const seedButton = screen.getByRole("button", { name: "Seed from Draft Task" });
+
+      fireEvent.mouseEnter(seedButton);
+      expect(seedButton).toHaveStyle({ color: "var(--accent-primary)" });
+
+      fireEvent.mouseLeave(seedButton);
+      expect(seedButton).toHaveStyle({ color: "var(--text-secondary)" });
     });
   });
 
