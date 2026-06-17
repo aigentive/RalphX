@@ -154,6 +154,32 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
             .cloned())
     }
 
+    async fn list_recent_resumable_by_context_type(
+        &self,
+        context_type: ChatContextType,
+        limit: u32,
+    ) -> AppResult<Vec<ChatConversation>> {
+        let convos = self.conversations.read().await;
+        let mut filtered: Vec<ChatConversation> = convos
+            .values()
+            .filter(|conversation| {
+                conversation.context_type == context_type
+                    && !conversation.is_archived()
+                    && (conversation.provider_session_id.is_some()
+                        || conversation.claude_session_id.is_some())
+            })
+            .cloned()
+            .collect();
+        filtered.sort_by(|left, right| {
+            right
+                .last_message_at
+                .unwrap_or(right.updated_at)
+                .cmp(&left.last_message_at.unwrap_or(left.updated_at))
+        });
+        filtered.truncate(limit as usize);
+        Ok(filtered)
+    }
+
     async fn update_provider_session_ref(
         &self,
         id: &ChatConversationId,
