@@ -20,10 +20,10 @@ pub const DEFAULT_AGENT_WORKSPACE_PR_TEMPLATE: &str =
     include_str!("../../../.github/PULL_REQUEST_TEMPLATE.md");
 
 const MAX_AGENT_WORKSPACE_PR_BODY_CHARS: usize = 60_000;
-const MAX_PATCH_EXCERPT_CHARS: usize = 42_000;
+pub(crate) const MAX_PATCH_EXCERPT_CHARS: usize = 42_000;
 const MAX_CONVERSATION_CONTEXT_CHARS: usize = 12_000;
-const MAX_NAME_STATUS_CHARS: usize = 16_000;
-const MAX_STAT_CHARS: usize = 8_000;
+pub(crate) const MAX_NAME_STATUS_CHARS: usize = 16_000;
+pub(crate) const MAX_STAT_CHARS: usize = 8_000;
 const MAX_MESSAGE_CHARS: usize = 1_600;
 const MAX_CONTEXT_MESSAGES: usize = 12;
 const MAX_COMMIT_SUMMARIES: usize = 40;
@@ -611,7 +611,7 @@ async fn read_template(repo_path: &Path) -> Option<String> {
     }
 }
 
-async fn run_git_text(repo: &Path, args: &[&str]) -> AppResult<String> {
+pub(crate) async fn run_git_text(repo: &Path, args: &[&str]) -> AppResult<String> {
     let output = git_cmd::run(args, repo).await?;
     if !output.status.success() {
         return Err(AppError::GitOperation(format!(
@@ -731,7 +731,7 @@ fn build_pr_describer_prompt(ctx: PrDescriberPromptContext<'_>) -> String {
     )
 }
 
-fn format_commit_summaries(commits: &[crate::application::git_service::CommitInfo]) -> String {
+pub(crate) fn format_commit_summaries(commits: &[crate::application::git_service::CommitInfo]) -> String {
     if commits.is_empty() {
         return "No commit summaries were available.".to_string();
     }
@@ -762,7 +762,7 @@ fn is_pr_description_commit_noise(message: &str) -> bool {
         || trimmed.starts_with("merged ")
 }
 
-fn format_changed_files(diff_stats: &crate::application::git_service::DiffStats) -> String {
+pub(crate) fn format_changed_files(diff_stats: &crate::application::git_service::DiffStats) -> String {
     if diff_stats.changed_files.is_empty() {
         return "No changed files were reported by git diff.".to_string();
     }
@@ -774,11 +774,11 @@ fn format_changed_files(diff_stats: &crate::application::git_service::DiffStats)
         .join("\n")
 }
 
-fn truncate_chars(text: &str, max_chars: usize) -> String {
+pub(crate) fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
-fn escape_xml_text(value: &str) -> String {
+pub(crate) fn escape_xml_text(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
