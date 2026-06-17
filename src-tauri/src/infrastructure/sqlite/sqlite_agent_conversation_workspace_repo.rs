@@ -480,6 +480,38 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn list_active_pr_poller_recovery_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE status = 'active'
+                       AND publication_pr_number IS NOT NULL
+                       AND auto_publish_enabled = 1
+                       AND COALESCE(publication_push_status, 'pushed') IN ('pushed', 'refreshed')
+                       AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
+                       AND (
+                         (mode = 'edit' AND linked_plan_branch_id IS NULL)
+                         OR (
+                           mode = 'ideation'
+                           AND linked_plan_branch_id IS NOT NULL
+                           AND (pr_autofix_enabled = 1 OR pr_auto_merge_desired = 1)
+                         )
+                       )
+                     ORDER BY updated_at DESC",
+                )?;
+                let rows = stmt.query_map([], row_to_workspace)?;
+                let mut workspaces = Vec::new();
+                for row in rows {
+                    workspaces.push(row?);
+                }
+                Ok(workspaces)
+            })
+            .await
+    }
+
     async fn list_active_needs_agent_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {

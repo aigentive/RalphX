@@ -291,6 +291,8 @@ export function AgentPublishPanel({
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(workspace);
   const isPipelineOwnedWorkspace = isPipelineOwnedAgentWorkspace(workspace);
+  const isPipelinePrAutomationWorkspace =
+    workspace?.mode === "ideation" && isPipelineOwnedWorkspace && hasPublishedPr;
   const freshnessQuery = useQuery({
     queryKey: agentWorkspaceKeys.scopedFreshness(conversationId, "full"),
     queryFn: () =>
@@ -456,6 +458,7 @@ export function AgentPublishPanel({
     Boolean(conversationId) &&
     (!canHydratePublishFacts || publicationEventsQuery.isLoading);
   const hasNoDetectedChanges = reviewQuery.isSuccess && changes.length === 0;
+  const isManagedByTaskPipeline = isPipelineOwnedWorkspace && !isPipelinePrAutomationWorkspace;
   useEffect(() => {
     if (
       !conversationId ||
@@ -577,18 +580,18 @@ export function AgentPublishPanel({
     shouldShowAutoMergeDeferred;
   const publishDisabled =
     !onPublishWorkspace ||
-    isPipelineOwnedWorkspace ||
+    isManagedByTaskPipeline ||
     effectivePublishing ||
     isPrSupervisionSaving ||
     baseBlocked ||
     (isRepairPending && !isPipelineOwnedWorkspace) ||
     isPublishCurrent ||
     Boolean(terminalPublicationStatus) ||
-    hasNoDetectedChanges ||
+    (hasNoDetectedChanges && !isPipelinePrAutomationWorkspace) ||
     workspace.status === "missing";
   const publishButtonLabel =
     terminalPublicationLabel ??
-    (isPipelineOwnedWorkspace
+    (isManagedByTaskPipeline
       ? "Managed by Tasks"
       : isPublishCurrent
         ? "PR is up to date"
@@ -597,8 +600,10 @@ export function AgentPublishPanel({
     hasPublishedPr &&
     !terminalPublicationStatus;
   const isClosingPr = closePrMutation.isPending;
+  const shouldShowPrSupervisionControls =
+    workspace.mode === "edit" || isPipelinePrAutomationWorkspace;
   const canConfigurePrSupervision =
-    workspace.mode === "edit" && workspace.status !== "missing" && !terminalPublicationStatus;
+    shouldShowPrSupervisionControls && workspace.status !== "missing" && !terminalPublicationStatus;
   const canConfigureAutoPublish = canConfigurePrSupervision && hasPublishedPr;
   const prSupervisionStatusLabel = (() => {
     if (terminalPublicationStatus) return null;
@@ -935,7 +940,7 @@ export function AgentPublishPanel({
               )}
             </div>
           </div>
-          {workspace.mode === "edit" && (
+          {shouldShowPrSupervisionControls && (
             <div
               className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs"
               data-testid="agents-pr-supervision-controls"
@@ -953,8 +958,9 @@ export function AgentPublishPanel({
                     <span>Auto Publish</span>
                   </label>
                   <PublishSwitchInfoTooltip label="About Auto Publish">
-                    Controls background publishing for this PR, including publish-after-turn,
-                    stale-base scans, PR autofix publishing, and auto-merge automation.
+                    {isPipelinePrAutomationWorkspace
+                      ? "Controls PR autofix publishing and auto-merge automation for this task-managed PR."
+                      : "Controls background publishing for this PR, including publish-after-turn, stale-base scans, PR autofix publishing, and auto-merge automation."}
                   </PublishSwitchInfoTooltip>
                 </div>
               )}

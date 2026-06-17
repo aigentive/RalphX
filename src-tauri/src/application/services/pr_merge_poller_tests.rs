@@ -346,6 +346,7 @@ fn supervised_agent_workspace_pr_message_includes_fix_context_entrypoint() {
 #[tokio::test]
 async fn supervised_agent_workspace_pr_autofix_routes_failure_to_pr_fixer() {
     let worktree = tempfile::tempdir().expect("worktree path");
+    let poller_working_dir = tempfile::tempdir().expect("poller working dir");
     let workspace = supervised_workspace(
         "autofix-route-conversation",
         "project-route",
@@ -372,7 +373,7 @@ async fn supervised_agent_workspace_pr_autofix_routes_failure_to_pr_fixer() {
 
     let routed = super::route_agent_workspace_pr_autofix_if_needed(
         github.clone() as Arc<dyn GithubServiceTrait>,
-        worktree.path(),
+        poller_working_dir.path(),
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
@@ -393,7 +394,7 @@ async fn supervised_agent_workspace_pr_autofix_routes_failure_to_pr_fixer() {
     );
     assert_eq!(
         options[0].working_directory_override.as_deref(),
-        Some(worktree.path())
+        Some(poller_working_dir.path())
     );
 
     let updated = workspace_repo

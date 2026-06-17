@@ -337,6 +337,7 @@ vi.mock("./AgentComposerSurface", () => ({
     provider,
     model,
     effort,
+    mode,
     showHelperText,
     onSend,
     onForkSession,
@@ -348,6 +349,18 @@ vi.mock("./AgentComposerSurface", () => ({
     };
     model: { value: string; onValueChange: (value: string) => void };
     effort: { value: string; onValueChange: (value: string) => void };
+    mode?: {
+      value: string;
+      disabled?: boolean;
+      onOpen?: () => void;
+      onValueChange: (value: string) => void;
+      options: Array<{
+        id: string;
+        label: string;
+        disabled?: boolean;
+        disabledReason?: string;
+      }>;
+    };
     showHelperText?: boolean;
     onSend: (message: string) => Promise<void> | void;
     onForkSession?: () => Promise<unknown> | void;
@@ -357,6 +370,39 @@ vi.mock("./AgentComposerSurface", () => ({
       <div data-testid="workspace-model-value">{model.value}</div>
       <div data-testid="workspace-effort-value">{effort.value}</div>
       <div data-testid="workspace-helper-enabled">{String(showHelperText !== false)}</div>
+      {mode && (
+        <div>
+          <button
+            type="button"
+            data-testid="agent-composer-mode-chip"
+            disabled={mode.disabled}
+            onClick={() => mode.onOpen?.()}
+          >
+            {mode.value}
+          </button>
+          {mode.options.map((option) => {
+            const disabled = mode.disabled || option.disabled;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                data-testid={`agent-mode-option-${option.id}`}
+                disabled={disabled}
+                onClick={() => {
+                  if (!disabled) {
+                    mode.onValueChange(option.id);
+                  }
+                }}
+              >
+                {option.label}
+                {option.disabledReason ? (
+                  <span>{option.disabledReason}</span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <button
         type="button"
         data-testid="change-workspace-provider"
@@ -662,6 +708,64 @@ describe("AgentsActiveConversationPanel", () => {
       "data-question-session-ids",
       "conversation-1",
     );
+  });
+
+  it("lets an unlocked ideation workspace select Agent mode from the composer", async () => {
+    const user = userEvent.setup();
+    const onActiveConversationModeChange = vi.fn();
+    const onActiveConversationModeMenuOpen = vi.fn();
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "ideation" },
+      activeConversationMode: "ideation",
+      activeConversationModeLocked: false,
+      activeWorkspace: {
+        ...workspace(),
+        mode: "ideation",
+        linkedPlanBranchId: "plan-branch-1",
+        modeSwitchLocked: false,
+      },
+      onActiveConversationModeChange,
+      onActiveConversationModeMenuOpen,
+    });
+
+    await user.click(screen.getByTestId("agent-composer-mode-chip"));
+    const agentOption = screen.getByTestId("agent-mode-option-edit");
+
+    await user.click(agentOption);
+
+    expect(onActiveConversationModeMenuOpen).toHaveBeenCalledTimes(1);
+    expect(onActiveConversationModeChange).toHaveBeenCalledWith("edit");
+  });
+
+  it("disables Agent mode in the composer while ideation execution owns the workspace", async () => {
+    const user = userEvent.setup();
+    const onActiveConversationModeChange = vi.fn();
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "ideation" },
+      activeConversationMode: "ideation",
+      activeConversationModeLocked: true,
+      activeWorkspace: {
+        ...workspace(),
+        mode: "ideation",
+        linkedPlanBranchId: "plan-branch-1",
+        modeSwitchLocked: true,
+        modeSwitchLockReason: "Plan execution is still active",
+      },
+      onActiveConversationModeChange,
+    });
+
+    await user.click(screen.getByTestId("agent-composer-mode-chip"));
+    const agentOption = screen.getByTestId("agent-mode-option-edit");
+    expect(agentOption).toBeDisabled();
+    expect(
+      within(agentOption).getByText("Plan execution is still active"),
+    ).toBeInTheDocument();
+
+    await user.click(agentOption);
+
+    expect(onActiveConversationModeChange).not.toHaveBeenCalled();
   });
 
   it("provides an Approve Plan action for draft Plan-mode sessions", async () => {
