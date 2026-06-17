@@ -1326,6 +1326,9 @@ mod ipc_contract {
         wake_agent_workspace_for_bridge_events_with_service_factory,
     };
     use ralphx_lib::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup;
+    use ralphx_lib::application::chat_service::{
+        should_accept_codex_completion_tool_call, should_record_codex_local_tool_error,
+    };
     use ralphx_lib::application::{AppState, MockChatService, TeamService, TeamStateTracker};
     use ralphx_lib::commands::agent_model_commands::{
         delete_custom_agent_model, list_agent_models, upsert_custom_agent_model,
@@ -1370,6 +1373,26 @@ mod ipc_contract {
             .manage(AppState::new_test())
             .build(mock_context(noop_assets()))
             .expect("mock app should build")
+    }
+
+    #[test]
+    fn ipc_contract_codex_completion_acceptance_suppresses_late_local_tool_errors() {
+        let accepted_completion =
+            should_accept_codex_completion_tool_call("ralphx::execution_complete", true, false);
+
+        assert!(accepted_completion);
+        assert!(!should_record_codex_local_tool_error(accepted_completion));
+        assert!(!should_accept_codex_completion_tool_call(
+            "ralphx::execution_complete",
+            true,
+            true,
+        ));
+        assert!(should_record_codex_local_tool_error(false));
+        assert!(!should_accept_codex_completion_tool_call(
+            "ralphx::get_task_context",
+            true,
+            false,
+        ));
     }
 
     fn sqlite_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {

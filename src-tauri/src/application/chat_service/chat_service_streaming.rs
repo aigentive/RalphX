@@ -171,6 +171,20 @@ pub fn is_completion_tool_name(name: &str) -> bool {
     false
 }
 
+#[doc(hidden)]
+pub fn should_accept_codex_completion_tool_call(
+    tool_name: &str,
+    phase_completed: bool,
+    has_error: bool,
+) -> bool {
+    is_completion_tool_name(tool_name) && phase_completed && !has_error
+}
+
+#[doc(hidden)]
+pub fn should_record_codex_local_tool_error(completion_tool_accepted: bool) -> bool {
+    !completion_tool_accepted
+}
+
 /// Final flush of accumulated content to DB before returning an error.
 ///
 /// Ensures that any content streamed before timeout/cancellation/parse-stall
@@ -3357,6 +3371,11 @@ async fn process_codex_stream_background<R: Runtime>(
                     .as_ref()
                     .and_then(|item| item.error.as_ref())
                     .is_some();
+                let completion_tool_accepted = should_accept_codex_completion_tool_call(
+                    &tool_call.name,
+                    snapshot.phase == CodexToolCallPhase::Completed,
+                    completion_tool_errored,
+                );
 
                 if is_completion_tool {
                     tracing::info!(
@@ -3379,7 +3398,7 @@ async fn process_codex_stream_background<R: Runtime>(
                             tool_name = %tool_call.name,
                             "Completion tool call completed with an error; not enabling shutdown grace period"
                         );
-                    } else {
+                    } else if completion_tool_accepted {
                         completion_signal_tracker.mark_completion_called();
                         tracing::info!(
                             conversation_id = %conversation_id_str,
@@ -3493,7 +3512,9 @@ async fn process_codex_stream_background<R: Runtime>(
             if let Some(command_execution) = extract_codex_command_execution(&event) {
                 if let Some(exit_code) = command_execution.exit_code {
                     if exit_code != 0 {
-                        if completion_signal_tracker.was_called() {
+                        if !should_record_codex_local_tool_error(
+                            completion_signal_tracker.was_called(),
+                        ) {
                             tracing::info!(
                                 conversation_id = %conversation_id_str,
                                 context_id,
@@ -3501,8 +3522,10 @@ async fn process_codex_stream_background<R: Runtime>(
                                 "Ignoring local Codex command failure after accepted completion tool call"
                             );
                         } else {
-                            let error_message =
-                                command_execution.aggregated_output.clone().unwrap_or_else(|| {
+                            let error_message = command_execution
+                                .aggregated_output
+                                .clone()
+                                .unwrap_or_else(|| {
                                     format!(
                                         "Codex command_execution failed with exit code {exit_code}"
                                     )
@@ -3523,7 +3546,9 @@ async fn process_codex_stream_background<R: Runtime>(
                 match error.source {
                     CodexErrorSource::Runtime => runtime_errors.push(error.message),
                     CodexErrorSource::McpTool => {
-                        if completion_signal_tracker.was_called() {
+                        if !should_record_codex_local_tool_error(
+                            completion_signal_tracker.was_called(),
+                        ) {
                             tracing::info!(
                                 conversation_id = %conversation_id_str,
                                 context_id,

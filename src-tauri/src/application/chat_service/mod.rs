@@ -120,8 +120,9 @@ pub use chat_service_send_background::finalize_no_output_assistant_message_for_t
 pub use chat_service_send_background::finalize_structured_assistant_message_for_test;
 pub use chat_service_streaming::process_stream_background;
 pub use chat_service_streaming::{
-    is_completion_tool_name, should_kill_on_timeout, ActiveTaskTracker, CompletionSignalTracker,
-    StreamOutcome, StreamTimeoutConfig,
+    is_completion_tool_name, should_accept_codex_completion_tool_call,
+    should_kill_on_timeout, should_record_codex_local_tool_error, ActiveTaskTracker,
+    CompletionSignalTracker, StreamOutcome, StreamTimeoutConfig,
 };
 pub use chat_service_types::events::AGENT_MESSAGE_QUEUED;
 pub use chat_service_types::{
