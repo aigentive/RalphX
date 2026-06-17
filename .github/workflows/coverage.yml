@@ -341,7 +341,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.run_rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       CARGO_TERM_COLOR: never
       CARGO_BUILD_JOBS: "1"
