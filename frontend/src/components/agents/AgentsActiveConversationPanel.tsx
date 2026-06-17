@@ -1098,6 +1098,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           providerHarness: normalizedActiveRuntime.provider,
           modelId: normalizedActiveRuntime.modelId,
           logicalEffort: normalizedActiveRuntime.effort,
+          suppressUserMessage: true,
         },
       );
       toast.success("Implementation started");

@@ -2189,6 +2189,29 @@ describe("chat api", () => {
     });
   });
 
+  it("sends unified agent message with hidden user-message handoff", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "c1",
+      agent_run_id: "r1",
+      is_new_conversation: false,
+    });
+
+    await sendAgentMessage("project", "p1", "Run internally", undefined, undefined, {
+      conversationId: "c1",
+      suppressUserMessage: true,
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
+      input: {
+        contextType: "project",
+        contextId: "p1",
+        content: "Run internally",
+        conversationId: "c1",
+        suppressUserMessage: true,
+      },
+    });
+  });
+
   it("sends unified agent message with structured composer references", async () => {
     mockInvoke.mockResolvedValue({
       conversation_id: "c1",
