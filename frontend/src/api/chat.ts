@@ -2317,6 +2317,18 @@ export async function updateAgentConversationWorkspaceFromBase(
             baseRefKind: base.kind,
             baseRef: base.ref,
             baseDisplayName: base.displayName,
+            ...(base.sourcePullRequest
+              ? {
+                  baseSourcePullRequest: {
+                    number: base.sourcePullRequest.number,
+                    url: base.sourcePullRequest.url ?? null,
+                    title: base.sourcePullRequest.title ?? null,
+                    headRefName: base.sourcePullRequest.headRefName,
+                    baseRefName: base.sourcePullRequest.baseRefName ?? null,
+                    headRefOid: base.sourcePullRequest.headRefOid ?? null,
+                  },
+                }
+              : {}),
           }
         : {}),
     },
