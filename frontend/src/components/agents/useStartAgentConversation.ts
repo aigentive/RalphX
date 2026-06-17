@@ -40,6 +40,7 @@ interface HandleAutoManagedTitleArgs {
   conversationId: string;
   targetProjectId: string;
   shouldSpawnSessionNamer: boolean;
+  providerHarness?: string | null;
 }
 
 interface UseStartAgentConversationArgs {
@@ -360,6 +361,7 @@ export function useStartAgentConversation({
           conversationId: resolvedConversationId,
           targetProjectId,
           shouldSpawnSessionNamer: true,
+          providerHarness: normalizedRuntime.provider,
         });
       } catch (err) {
         if (seededStoreKey) {

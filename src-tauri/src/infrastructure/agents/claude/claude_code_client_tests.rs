@@ -162,7 +162,7 @@ fn test_build_cli_args_with_resume() {
 }
 
 #[test]
-fn test_build_cli_args_applies_tools_restriction() {
+fn test_build_cli_args_mcp_only_agent_does_not_disable_tools() {
     let client = ClaudeCodeClient::new();
     // Use fully-qualified name as would be used in production
     let config = AgentConfig::worker("Test")
@@ -172,16 +172,18 @@ fn test_build_cli_args_applies_tools_restriction() {
         .build_cli_args(&config, None, false)
         .expect("build_cli_args should succeed in test");
 
-    // ralphx-utility-session-namer has allowed_tools = Some("") meaning no CLI tools
-    // get_allowed_tools strips the ralphx: prefix for AGENT_CONFIGS lookup
-    let tools_idx = args
+    assert!(
+        !args.contains(&"--tools".to_string()),
+        "MCP-only session namer must not pass --tools \"\" because Claude CLI disables all tools, including the required MCP title update"
+    );
+
+    let allowed_tools_idx = args
         .iter()
-        .position(|a| a == "--tools")
-        .expect("--tools flag must be present");
-    assert_eq!(
-        args[tools_idx + 1],
-        "",
-        "ralphx-utility-session-namer should have empty tools (MCP only)"
+        .position(|a| a == "--allowedTools")
+        .expect("--allowedTools flag must preapprove the title update tool");
+    assert!(
+        args[allowed_tools_idx + 1].contains("mcp__ralphx__update_session_title"),
+        "session namer must keep update_session_title preapproved"
     );
 }
 
