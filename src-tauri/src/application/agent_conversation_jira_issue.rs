@@ -107,48 +107,5 @@ pub fn merge_assigned_jira_reference(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn jira_ref(key: &str) -> ComposerIntegrationReference {
-        ComposerIntegrationReference {
-            provider: "atlassian".to_string(),
-            kind: "jira".to_string(),
-            id: key.to_string(),
-            key: Some(key.to_string()),
-            title: Some(format!("{key} title")),
-            url: Some(format!("https://jira.test/browse/{key}")),
-        }
-    }
-
-    #[test]
-    fn merge_assigned_jira_reference_dedupes_same_turn_reference() {
-        let assigned = AgentConversationJiraIssueLink::new(
-            ChatConversationId::from_string("conv-1"),
-            ProjectId::from_string("project-1".to_string()),
-            "RX-42".to_string(),
-            Utc::now(),
-        );
-
-        let merged = merge_assigned_jira_reference(Some(&assigned), &[jira_ref("rx-42")]);
-
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].key.as_deref(), Some("RX-42"));
-    }
-
-    #[test]
-    fn merge_assigned_jira_reference_keeps_different_turn_references() {
-        let assigned = AgentConversationJiraIssueLink::new(
-            ChatConversationId::from_string("conv-1"),
-            ProjectId::from_string("project-1".to_string()),
-            "RX-42".to_string(),
-            Utc::now(),
-        );
-
-        let merged = merge_assigned_jira_reference(Some(&assigned), &[jira_ref("RX-77")]);
-
-        assert_eq!(merged.len(), 2);
-        assert_eq!(merged[0].key.as_deref(), Some("RX-42"));
-        assert_eq!(merged[1].key.as_deref(), Some("RX-77"));
-    }
-}
+#[path = "agent_conversation_jira_issue_tests.rs"]
+mod tests;

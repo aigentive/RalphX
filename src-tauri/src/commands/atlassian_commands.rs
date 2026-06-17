@@ -540,3 +540,7 @@ pub async fn clear_agent_conversation_jira_issue(
         .map_err(|error| error.to_string())?;
     Ok(link_response(None))
 }
+
+#[cfg(test)]
+#[path = "atlassian_commands_tests.rs"]
+mod tests;

@@ -64,3 +64,7 @@ impl AgentConversationJiraIssueRepository for MemoryAgentConversationJiraIssueRe
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "memory_agent_conversation_jira_issue_repo_tests.rs"]
+mod tests;
