@@ -5,6 +5,8 @@ use rusqlite::Connection;
 use crate::error::AppResult;
 
 pub fn migrate(conn: &Connection) -> AppResult<()> {
+    super::v20260616182441_external_issue_links::migrate(conn)?;
+
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS linear_webhook_config (
@@ -20,21 +22,6 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
             event_type TEXT NOT NULL,
             received_at TEXT NOT NULL
         );
-
-        CREATE TABLE IF NOT EXISTS external_issue_links (
-            provider TEXT NOT NULL,
-            external_id TEXT NOT NULL,
-            project_id TEXT NOT NULL,
-            task_id TEXT,
-            external_key TEXT,
-            external_url TEXT,
-            last_external_status TEXT,
-            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')),
-            PRIMARY KEY (provider, external_id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_external_issue_links_task
-            ON external_issue_links(provider, task_id);
 
         CREATE TABLE IF NOT EXISTS external_issue_sync_events (
             id TEXT PRIMARY KEY,

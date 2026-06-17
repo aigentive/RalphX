@@ -2,7 +2,9 @@
 
 use rusqlite::Connection;
 
-use super::v20260616182951_linear_webhook_reconciliation;
+use super::{
+    v20260616182441_external_issue_links, v20260616182951_linear_webhook_reconciliation,
+};
 
 fn setup_test_db() -> Connection {
     Connection::open_in_memory().expect("Failed to create in-memory database")
@@ -63,4 +65,39 @@ fn migration_is_idempotent() {
         })
         .unwrap();
     assert_eq!(config_rows, 1);
+}
+
+#[test]
+fn preserves_generic_external_issue_link_schema_when_run_after_foundation() {
+    let conn = setup_test_db();
+    v20260616182441_external_issue_links::migrate(&conn).unwrap();
+
+    v20260616182951_linear_webhook_reconciliation::migrate(&conn).unwrap();
+
+    let task_id_column_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('external_issue_links') WHERE name = 'task_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(task_id_column_count, 0);
+
+    let local_object_column_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('external_issue_links') WHERE name = 'local_object_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(local_object_column_count, 1);
+
+    let obsolete_index_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_external_issue_links_task'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(obsolete_index_count, 0);
 }
