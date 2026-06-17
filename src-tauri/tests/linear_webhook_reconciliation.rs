@@ -13,6 +13,8 @@ use ralphx_lib::domain::entities::{
 };
 use ralphx_lib::domain::repositories::WorkflowRepository;
 use ralphx_lib::infrastructure::memory::MemoryWorkflowRepository;
+use ralphx_lib::infrastructure::sqlite::{DbConnection, SqliteLinearWebhookStore};
+use ralphx_lib::testing::SqliteTestDb;
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -217,6 +219,77 @@ async fn duplicate_linear_delivery_is_idempotent_and_does_not_transition_twice()
     );
     assert!(second.duplicate);
     assert_eq!(store.delivery_count().await, 1);
+}
+
+#[tokio::test]
+async fn sqlite_store_uses_generic_external_issue_link_schema_for_issue_transitions() {
+    let db = SqliteTestDb::new("linear-webhook-generic-link-schema");
+    let store = Arc::new(SqliteLinearWebhookStore::new(DbConnection::from_shared(
+        db.shared_conn(),
+    )));
+    store
+        .upsert_issue_link(ExternalIssueLink {
+            provider: SyncProvider::Linear,
+            project_id: ProjectId::from_string(PROJECT_ID.to_string()),
+            task_id: Some(TaskId::from_string(TASK_ID.to_string())),
+            external_id: ISSUE_ID.to_string(),
+            external_key: Some("LIN-123".to_string()),
+            external_url: Some("https://linear.app/acme/issue/LIN-123/example".to_string()),
+            last_external_status: None,
+        })
+        .await
+        .unwrap();
+    let webhook_store: Arc<dyn LinearWebhookStore> = store.clone();
+    let service = LinearWebhookReconciliationService::new(
+        SIGNING_SECRET.to_string(),
+        webhook_store,
+        mapped_workflow_repo().await,
+    );
+    let raw_body = issue_payload(Utc::now().timestamp_millis(), "In Progress");
+    let signature = signature_for(raw_body.as_bytes(), SIGNING_SECRET);
+
+    let outcome = service
+        .handle(request_for(raw_body, Some(signature)), Utc::now())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome.action,
+        LinearWebhookAction::TransitionedTask {
+            task_id: TaskId::from_string(TASK_ID.to_string()),
+            target_status: InternalStatus::Executing,
+        }
+    );
+    let link = store
+        .get_issue_link(ISSUE_ID)
+        .await
+        .unwrap()
+        .expect("updated Linear issue link should be readable");
+    assert_eq!(link.task_id, Some(TaskId::from_string(TASK_ID.to_string())));
+    assert_eq!(link.last_external_status.as_deref(), Some("In Progress"));
+    let row = db.with_connection(|conn| {
+        conn.query_row(
+            "SELECT local_object_kind, local_object_id, local_project_id, external_key, local_state
+             FROM external_issue_links
+             WHERE provider = 'linear' AND external_kind = 'issue' AND external_id = ?1",
+            rusqlite::params![ISSUE_ID],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            },
+        )
+        .unwrap()
+    });
+    assert_eq!(row.0, "task");
+    assert_eq!(row.1, TASK_ID);
+    assert_eq!(row.2.as_deref(), Some(PROJECT_ID));
+    assert_eq!(row.3.as_deref(), Some("LIN-123"));
+    assert_eq!(row.4.as_deref(), Some("In Progress"));
 }
 
 #[tokio::test]

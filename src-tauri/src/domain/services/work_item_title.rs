@@ -90,6 +90,37 @@ pub fn primary_jira_reference_from_composer_references(
         .find_map(jira_reference_from_composer_reference)
 }
 
+pub fn primary_linear_issue_from_composer_metadata(
+    metadata: Option<&str>,
+) -> Option<(String, Option<String>, Option<String>)> {
+    let value = serde_json::from_str::<Value>(metadata?).ok()?;
+    let references = value.get("composer_integration_references")?.as_array()?;
+    references.iter().find_map(|reference| {
+        let provider = reference.get("provider")?.as_str()?;
+        let kind = reference.get("kind")?.as_str()?;
+        if provider != "linear" || kind != "linear" {
+            return None;
+        }
+        let id = reference.get("id")?.as_str()?.trim();
+        if id.is_empty() || id.contains('\0') || id.contains('\n') || id.contains('\r') {
+            return None;
+        }
+        let key = reference
+            .get("key")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let url = reference
+            .get("url")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        Some((id.to_string(), key, url))
+    })
+}
+
 pub fn primary_jira_key_from_title(title: &str) -> Option<String> {
     let trimmed = title.trim_start();
     let candidate = if let Some(rest) = trimmed.strip_prefix('[') {
@@ -277,6 +308,30 @@ mod tests {
         assert_eq!(
             primary_jira_key_from_composer_metadata(Some(metadata)),
             None
+        );
+    }
+
+    #[test]
+    fn extracts_primary_linear_issue_from_metadata() {
+        let metadata = r#"{
+            "composer_integration_references": [
+                {
+                    "provider": "linear",
+                    "kind": "linear",
+                    "id": "539068e2-ae88-4d09-bd75-22eb4a59612f",
+                    "key": "LIN-123",
+                    "url": "https://linear.app/acme/issue/LIN-123/example"
+                }
+            ]
+        }"#;
+
+        assert_eq!(
+            primary_linear_issue_from_composer_metadata(Some(metadata)),
+            Some((
+                "539068e2-ae88-4d09-bd75-22eb4a59612f".to_string(),
+                Some("LIN-123".to_string()),
+                Some("https://linear.app/acme/issue/LIN-123/example".to_string())
+            ))
         );
     }
 

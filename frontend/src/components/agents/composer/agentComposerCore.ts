@@ -4,7 +4,8 @@ export type AgentComposerTriggerKind =
   | "skill"
   | "slash-command"
   | "integration";
-export type AgentComposerIntegrationKind = "jira" | "confluence";
+export type AgentComposerIntegrationKind = "jira" | "confluence" | "linear";
+export type AgentComposerIntegrationProvider = "atlassian" | "linear";
 
 export interface AgentComposerTrigger {
   kind: AgentComposerTriggerKind;
@@ -20,7 +21,7 @@ export interface AgentComposerProjectReference {
 }
 
 export interface AgentComposerIntegrationReference {
-  provider: "atlassian";
+  provider: AgentComposerIntegrationProvider;
   kind: AgentComposerIntegrationKind;
   id: string;
   key?: string;
@@ -138,7 +139,9 @@ export function extractComposerSkillTokens(text: string): string[] {
   return [...names];
 }
 
-export function extractComposerPathTokens(text: string): AgentComposerProjectReference[] {
+export function extractComposerPathTokens(
+  text: string,
+): AgentComposerProjectReference[] {
   const references = new Map<string, AgentComposerProjectReference>();
   for (const match of text.matchAll(/@([^\s]+)/g)) {
     const rawPath = match[1]?.replace(/[),.;:]+$/g, "");
@@ -159,22 +162,31 @@ export function extractComposerIntegrationTokens(
   text: string,
 ): AgentComposerIntegrationReference[] {
   const references = new Map<string, AgentComposerIntegrationReference>();
-  for (const match of text.matchAll(/@(jira|confluence|conf):([^\s]+)/gi)) {
+  for (const match of text.matchAll(
+    /@(jira|confluence|conf|linear):([^\s]+)/gi,
+  )) {
     const rawKind = match[1]?.toLowerCase();
     const rawId = match[2]?.replace(/[),.;]+$/g, "");
     if (!rawKind || !rawId || rawId.includes("\0")) {
       continue;
     }
     const kind: AgentComposerIntegrationKind =
-      rawKind === "jira" ? "jira" : "confluence";
-    const id = kind === "jira" ? rawId.toUpperCase() : rawId;
+      rawKind === "jira"
+        ? "jira"
+        : rawKind === "linear"
+          ? "linear"
+          : "confluence";
+    const id =
+      kind === "jira" || kind === "linear" ? rawId.toUpperCase() : rawId;
+    const provider: AgentComposerIntegrationProvider =
+      kind === "linear" ? "linear" : "atlassian";
     const reference: AgentComposerIntegrationReference = {
-      provider: "atlassian",
+      provider,
       kind,
       id,
-      ...(kind === "jira" ? { key: id } : {}),
+      ...(kind === "jira" || kind === "linear" ? { key: id } : {}),
     };
-    references.set(`${kind}:${id}`, reference);
+    references.set(`${provider}:${kind}:${id}`, reference);
   }
   return [...references.values()];
 }
@@ -231,7 +243,8 @@ export function normalizeComposerArtifactReferences(
       continue;
     }
     const version =
-      typeof reference.version === "number" && Number.isFinite(reference.version)
+      typeof reference.version === "number" &&
+      Number.isFinite(reference.version)
         ? reference.version
         : undefined;
     const key = `${kind}:${artifactId}:${version ?? ""}`;
@@ -242,7 +255,9 @@ export function normalizeComposerArtifactReferences(
       artifactId,
       kind,
       ...(reference.title?.trim() ? { title: reference.title.trim() } : {}),
-      ...(reference.sessionId?.trim() ? { sessionId: reference.sessionId.trim() } : {}),
+      ...(reference.sessionId?.trim()
+        ? { sessionId: reference.sessionId.trim() }
+        : {}),
       ...(version !== undefined ? { version } : {}),
       ...(reference.status?.trim() ? { status: reference.status.trim() } : {}),
     });
@@ -256,7 +271,12 @@ export function normalizeComposerProjectReferences(
   const safeReferences = new Map<string, AgentComposerProjectReference>();
   for (const reference of references) {
     const path = reference.path.trim();
-    if (!path || path.includes("\n") || path.includes("\r") || path.includes("\0")) {
+    if (
+      !path ||
+      path.includes("\n") ||
+      path.includes("\r") ||
+      path.includes("\0")
+    ) {
       continue;
     }
     safeReferences.set(
@@ -272,22 +292,27 @@ export function normalizeComposerIntegrationReferences(
 ): AgentComposerIntegrationReference[] {
   const safeReferences = new Map<string, AgentComposerIntegrationReference>();
   for (const reference of references) {
-    if (reference.provider !== "atlassian") {
-      continue;
-    }
+    const provider = reference.provider;
     const id = reference.id.trim();
     if (
       !id ||
       id.includes("\n") ||
       id.includes("\r") ||
       id.includes("\0") ||
-      (reference.kind !== "jira" && reference.kind !== "confluence")
+      (provider === "atlassian" &&
+        reference.kind !== "jira" &&
+        reference.kind !== "confluence") ||
+      (provider === "linear" && reference.kind !== "linear") ||
+      (provider !== "atlassian" && provider !== "linear")
     ) {
       continue;
     }
-    const key = reference.kind === "jira" ? (reference.key ?? id).trim() : undefined;
-    safeReferences.set(`${reference.kind}:${id}`, {
-      provider: "atlassian",
+    const key =
+      reference.kind === "jira" || reference.kind === "linear"
+        ? (reference.key ?? id).trim()
+        : undefined;
+    safeReferences.set(`${provider}:${reference.kind}:${id}`, {
+      provider,
       kind: reference.kind,
       id,
       ...(key ? { key } : {}),
@@ -301,11 +326,17 @@ export function normalizeComposerIntegrationReferences(
 function parseIntegrationTriggerQuery(
   query: string,
 ): { kind: AgentComposerIntegrationKind; query: string } | null {
-  const match = /^(jira|confluence|conf):(.*)$/i.exec(query);
+  const match = /^(jira|confluence|conf|linear):(.*)$/i.exec(query);
   if (!match) {
     return null;
   }
-  const kind = match[1]?.toLowerCase() === "jira" ? "jira" : "confluence";
+  const rawKind = match[1]?.toLowerCase();
+  const kind =
+    rawKind === "jira"
+      ? "jira"
+      : rawKind === "linear"
+        ? "linear"
+        : "confluence";
   return { kind, query: match[2] ?? "" };
 }
 
@@ -318,7 +349,7 @@ function parsePlanTriggerQuery(query: string): { query: string } | null {
 }
 
 function isIntegrationReferenceToken(token: string): boolean {
-  return /^(jira|confluence|conf):/i.test(token);
+  return /^(jira|confluence|conf|linear):/i.test(token);
 }
 
 function isPlanReferenceToken(token: string): boolean {
@@ -330,13 +361,11 @@ function detectIntegrationTriggerInLine(
   lineStart: number,
   safeCursor: number,
 ): AgentComposerTrigger | null {
-  const triggerPattern = /(^|[\s([{`'"])@(jira|confluence|conf):/gi;
-  let lastMatch:
-    | {
-        markerIndex: number;
-        rawKind: string;
-      }
-    | null = null;
+  const triggerPattern = /(^|[\s([{`'"])@(jira|confluence|conf|linear):/gi;
+  let lastMatch: {
+    markerIndex: number;
+    rawKind: string;
+  } | null = null;
 
   for (const match of linePrefix.matchAll(triggerPattern)) {
     const boundary = match[1] ?? "";
@@ -364,7 +393,11 @@ function detectIntegrationTriggerInLine(
   return {
     kind: "integration",
     integrationKind:
-      lastMatch.rawKind.toLowerCase() === "jira" ? "jira" : "confluence",
+      lastMatch.rawKind.toLowerCase() === "jira"
+        ? "jira"
+        : lastMatch.rawKind.toLowerCase() === "linear"
+          ? "linear"
+          : "confluence",
     query,
     rangeStart,
     rangeEnd: safeCursor,

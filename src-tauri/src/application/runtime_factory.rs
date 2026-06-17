@@ -6,7 +6,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use crate::application::chat_service::{AppChatService, StreamingStateCache};
 use crate::application::{
     AgentClientBundle, AppState, AtlassianIntegrationService, InteractiveProcessRegistry,
-    PrPollerRegistry, TaskSchedulerService, TaskTransitionService,
+    LinearIntegrationService, PrPollerRegistry, TaskSchedulerService, TaskTransitionService,
 };
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
@@ -208,6 +208,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     pub streaming_state_cache: Option<StreamingStateCache>,
     pub atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
+    pub linear_integration_service: Option<Arc<LinearIntegrationService>>,
 }
 
 impl ChatRuntimeFactoryDeps {
@@ -257,6 +258,7 @@ impl ChatRuntimeFactoryDeps {
             interactive_process_registry: None,
             streaming_state_cache: None,
             atlassian_integration_service: None,
+            linear_integration_service: None,
         }
     }
 
@@ -370,6 +372,14 @@ impl ChatRuntimeFactoryDeps {
         self
     }
 
+    pub(crate) fn with_linear_integration_service(
+        mut self,
+        service: Arc<LinearIntegrationService>,
+    ) -> Self {
+        self.linear_integration_service = Some(service);
+        self
+    }
+
     pub(crate) fn with_runtime_support(
         mut self,
         execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
@@ -474,6 +484,7 @@ impl ChatRuntimeFactoryDeps {
             Some(state.streaming_state_cache.clone()),
         )
         .with_atlassian_integration_service(Arc::clone(&state.atlassian_integration_service))
+        .with_linear_integration_service(Arc::clone(&state.linear_integration_service))
     }
 }
 
@@ -552,6 +563,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     }
     if let Some(atlassian) = deps.atlassian_integration_service.as_ref() {
         service = service.with_atlassian_integration_service(Arc::clone(atlassian));
+    }
+    if let Some(linear) = deps.linear_integration_service.as_ref() {
+        service = service.with_linear_integration_service(Arc::clone(linear));
     }
 
     service

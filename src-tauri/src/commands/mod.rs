@@ -161,8 +161,11 @@ pub use ideation_commands::{
     ToolCallResultResponse,
 };
 pub use linear_commands::{
-    get_linear_webhook_config, save_linear_webhook_signing_secret,
-    LinearWebhookConfigResponse, SaveLinearWebhookSigningSecretInput,
+    get_linear_integration_settings, get_linear_webhook_config, save_linear_integration_settings,
+    save_linear_webhook_signing_secret, search_linear_issues, validate_linear_integration,
+    LinearIntegrationSettingsResponse, LinearWebhookConfigResponse,
+    SaveLinearIntegrationSettingsInput, SaveLinearWebhookSigningSecretInput,
+    SearchLinearIssuesInput, SearchLinearIssuesResponse,
 };
 pub use merge_pipeline_commands::{
     get_merge_phase_list, get_merge_pipeline, get_merge_progress, MergePipelineResponse,

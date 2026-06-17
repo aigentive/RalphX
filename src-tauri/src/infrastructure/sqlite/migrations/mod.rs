@@ -317,6 +317,9 @@ mod v20260616182951_linear_webhook_reconciliation_tests;
 mod v20260617121800_agent_conversation_jira_issue_links;
 #[cfg(test)]
 mod v20260617121800_agent_conversation_jira_issue_links_tests;
+mod v20260617122100_linear_integration_settings;
+#[cfg(test)]
+mod v20260617122100_linear_integration_settings_tests;
 mod v20260617122430_agent_workspace_initial_auto_publish;
 #[cfg(test)]
 mod v20260617122430_agent_workspace_initial_auto_publish_tests;
@@ -1145,6 +1148,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260617121800,
         name: "agent_conversation_jira_issue_links",
         migrate: v20260617121800_agent_conversation_jira_issue_links::migrate,
+    },
+    Migration {
+        version: 20260617122100,
+        name: "linear_integration_settings",
+        migrate: v20260617122100_linear_integration_settings::migrate,
     },
     Migration {
         version: 20260617122430,

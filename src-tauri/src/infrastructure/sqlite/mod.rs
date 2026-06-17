@@ -47,6 +47,7 @@ pub mod sqlite_ideation_effort_settings_repo;
 pub mod sqlite_ideation_model_settings_repo;
 pub mod sqlite_ideation_session_repo;
 pub mod sqlite_ideation_settings_repo;
+pub mod sqlite_linear_integration_settings_repo;
 pub mod sqlite_linear_webhook_store;
 pub mod sqlite_memory_archive_job_repository;
 #[cfg(test)]
@@ -124,6 +125,7 @@ pub use sqlite_ideation_effort_settings_repo::SqliteIdeationEffortSettingsReposi
 pub use sqlite_ideation_model_settings_repo::SqliteIdeationModelSettingsRepository;
 pub use sqlite_ideation_session_repo::SqliteIdeationSessionRepository;
 pub use sqlite_ideation_settings_repo::SqliteIdeationSettingsRepository;
+pub use sqlite_linear_integration_settings_repo::SqliteLinearIntegrationSettingsRepository;
 pub use sqlite_linear_webhook_store::SqliteLinearWebhookStore;
 pub use sqlite_memory_archive_job_repository::SqliteMemoryArchiveJobRepository;
 pub use sqlite_memory_archive_repo::SqliteMemoryArchiveRepository;

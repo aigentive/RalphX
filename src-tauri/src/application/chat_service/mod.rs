@@ -45,6 +45,7 @@ use crate::application::interactive_process_registry::{
 };
 use crate::application::question_state::QuestionState;
 use crate::application::AtlassianIntegrationService;
+use crate::application::LinearIntegrationService;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
@@ -888,6 +889,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
+    linear_integration_service: Option<Arc<LinearIntegrationService>>,
     ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -965,6 +967,7 @@ impl<R: Runtime> AppChatService<R> {
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
             atlassian_integration_service: None,
+            linear_integration_service: None,
             ideation_effort_settings_repo: None,
             ideation_model_settings_repo: None,
             ideation_session_repo,
@@ -1033,6 +1036,14 @@ impl<R: Runtime> AppChatService<R> {
         service: Arc<AtlassianIntegrationService>,
     ) -> Self {
         self.atlassian_integration_service = Some(service);
+        self
+    }
+
+    pub fn with_linear_integration_service(
+        mut self,
+        service: Arc<LinearIntegrationService>,
+    ) -> Self {
+        self.linear_integration_service = Some(service);
         self
     }
 
@@ -2480,7 +2491,7 @@ impl<R: Runtime> AppChatService<R> {
                 Err(_) => message.to_string(),
             }
         };
-        let with_integration_references = if merged_integration_references.is_empty() {
+        let with_atlassian_references = if merged_integration_references.is_empty() {
             with_project_references
         } else {
             match self.atlassian_integration_service.as_ref() {
@@ -2493,6 +2504,21 @@ impl<R: Runtime> AppChatService<R> {
                         .await
                 }
                 None => with_project_references,
+            }
+        };
+        let with_integration_references = if merged_integration_references.is_empty() {
+            with_atlassian_references
+        } else {
+            match self.linear_integration_service.as_ref() {
+                Some(service) => {
+                    service
+                        .expand_references_for_prompt(
+                            &with_atlassian_references,
+                            &merged_integration_references,
+                        )
+                        .await
+                }
+                None => with_atlassian_references,
             }
         };
         let with_artifact_references =

@@ -155,6 +155,42 @@ async fn service_derives_jira_compatibility_from_metadata_before_title() {
 }
 
 #[tokio::test]
+async fn service_derives_linear_issue_link_from_metadata() {
+    let repo: Arc<dyn ExternalIssueLinkRepository> =
+        Arc::new(MemoryExternalIssueLinkRepository::new());
+    let service = ExternalIssueLinkService::new(Arc::clone(&repo));
+    let metadata = r#"{
+        "composer_integration_references": [
+            {
+                "provider": "linear",
+                "kind": "linear",
+                "id": "539068e2-ae88-4d09-bd75-22eb4a59612f",
+                "key": "LIN-123",
+                "url": "https://linear.app/acme/issue/LIN-123/example"
+            }
+        ]
+    }"#;
+
+    let link = service
+        .ensure_linear_task_link_from_metadata(
+            "task-1",
+            Some("project-1"),
+            Some(metadata),
+            Some("abc123"),
+            Some("executing"),
+        )
+        .await
+        .unwrap()
+        .expect("metadata should create a Linear issue link");
+
+    assert_eq!(link.provider, "linear");
+    assert_eq!(link.external_kind, "issue");
+    assert_eq!(link.external_id, "539068e2-ae88-4d09-bd75-22eb4a59612f");
+    assert_eq!(link.external_key.as_deref(), Some("LIN-123"));
+    assert_eq!(link.local_object, ExternalIssueLocalObject::task("task-1"));
+}
+
+#[tokio::test]
 async fn service_exposes_provider_neutral_read_and_sync_update_apis() {
     let repo: Arc<dyn ExternalIssueLinkRepository> =
         Arc::new(MemoryExternalIssueLinkRepository::new());

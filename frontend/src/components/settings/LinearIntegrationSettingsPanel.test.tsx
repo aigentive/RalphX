@@ -5,64 +5,92 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LinearIntegrationSettingsPanel } from "./LinearIntegrationSettingsPanel";
 
 const linearHook = vi.hoisted(() => ({
-  saveWebhookSigningSecretAsync: vi.fn(),
+  saveSettingsAsync: vi.fn(),
+  validateAsync: vi.fn(),
   state: {
-    webhookConfig: {
+    settings: {
       enabled: false,
-      hasSigningSecret: false,
+      hasApiToken: false,
+      validationStatus: "not_configured",
+      issueSearchAvailable: false,
+      lastValidatedAt: null,
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
     },
     isLoading: false,
     isError: false,
     error: null as Error | null,
-    isSavingWebhookSigningSecret: false,
-    saveWebhookSigningSecretError: null as Error | null,
+    isSavingSettings: false,
+    isValidating: false,
+    saveSettingsError: null as Error | null,
+    validateError: null as Error | null,
   },
 }));
 
 vi.mock("@/hooks/useLinearIntegration", () => ({
   useLinearIntegration: () => ({
     ...linearHook.state,
-    saveWebhookSigningSecretAsync: linearHook.saveWebhookSigningSecretAsync,
+    saveSettingsAsync: linearHook.saveSettingsAsync,
+    validateAsync: linearHook.validateAsync,
   }),
 }));
 
 describe("LinearIntegrationSettingsPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    linearHook.state.webhookConfig = {
+    linearHook.state.settings = {
       enabled: false,
-      hasSigningSecret: false,
+      hasApiToken: false,
+      validationStatus: "not_configured",
+      issueSearchAvailable: false,
+      lastValidatedAt: null,
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
     };
     linearHook.state.isLoading = false;
     linearHook.state.isError = false;
     linearHook.state.error = null;
-    linearHook.state.isSavingWebhookSigningSecret = false;
-    linearHook.state.saveWebhookSigningSecretError = null;
-    linearHook.saveWebhookSigningSecretAsync.mockResolvedValue({
+    linearHook.state.isSavingSettings = false;
+    linearHook.state.isValidating = false;
+    linearHook.state.saveSettingsError = null;
+    linearHook.state.validateError = null;
+    linearHook.saveSettingsAsync.mockResolvedValue({
+      enabled: false,
+      hasApiToken: true,
+      validationStatus: "pending",
+      issueSearchAvailable: false,
+      updatedAt: new Date(0).toISOString(),
+    });
+    linearHook.validateAsync.mockResolvedValue({
       enabled: true,
-      hasSigningSecret: true,
+      hasApiToken: true,
+      validationStatus: "valid",
+      issueSearchAvailable: true,
+      updatedAt: new Date(0).toISOString(),
     });
   });
 
-  it("shows Linear webhook configuration status", () => {
+  it("shows Linear issue reference configuration status", () => {
     render(<LinearIntegrationSettingsPanel />);
 
     expect(screen.getByText("Linear")).toBeInTheDocument();
-    expect(screen.getByText("Not configured")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("/api/integrations/linear/webhook")).toBeInTheDocument();
+    expect(screen.getByText("Issue references not ready")).toBeInTheDocument();
+    expect(screen.queryByText("Webhook path")).not.toBeInTheDocument();
   });
 
-  it("saves the signing secret and enables Linear webhooks", async () => {
+  it("saves and validates the API token", async () => {
     const user = userEvent.setup();
+    linearHook.state.settings.hasApiToken = true;
     render(<LinearIntegrationSettingsPanel />);
 
-    await user.type(screen.getByLabelText("Signing secret"), "lin_secret");
-    await user.click(screen.getByRole("button", { name: "Save and enable" }));
+    await user.type(screen.getByLabelText("API token"), "lin_api_token");
+    await user.click(screen.getByRole("button", { name: /Save API token/ }));
+    await user.click(screen.getByRole("button", { name: "Validate" }));
 
-    expect(linearHook.saveWebhookSigningSecretAsync).toHaveBeenCalledWith({
-      signingSecret: "lin_secret",
-      enabled: true,
+    expect(linearHook.saveSettingsAsync).toHaveBeenCalledWith({
+      apiToken: "lin_api_token",
     });
-    expect(await screen.findByText("Saved")).toBeInTheDocument();
+    expect(linearHook.validateAsync).toHaveBeenCalled();
   });
+
 });

@@ -5,7 +5,7 @@ use crate::application::linear_webhook_reconciliation_service::{
     ExternalIssueLink, LinearDelivery, LinearDeliveryRecord, LinearWebhookStore,
 };
 use crate::domain::entities::{ProjectId, SyncProvider, TaskId};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
 
 pub struct SqliteLinearWebhookStore {
@@ -89,16 +89,22 @@ impl LinearWebhookStore for SqliteLinearWebhookStore {
         self.db
             .query_optional(move |conn| {
                 conn.query_row(
-                    "SELECT project_id, task_id, external_key, external_url, last_external_status
+                    "SELECT local_project_id, local_object_id, external_key, external_url, local_state
                      FROM external_issue_links
-                     WHERE provider = 'linear' AND external_id = ?1",
+                     WHERE provider = 'linear'
+                        AND external_kind = 'issue'
+                        AND external_id = ?1
+                        AND local_object_kind = 'task'
+                     ORDER BY updated_at DESC
+                     LIMIT 1",
                     rusqlite::params![external_issue_id.clone()],
                     |row| {
-                        let task_id: Option<String> = row.get(1)?;
+                        let project_id: Option<String> = row.get(0)?;
+                        let task_id: String = row.get(1)?;
                         Ok(ExternalIssueLink {
                             provider: SyncProvider::Linear,
-                            project_id: ProjectId::from_string(row.get::<_, String>(0)?),
-                            task_id: task_id.map(TaskId::from_string),
+                            project_id: ProjectId::from_string(project_id.unwrap_or_default()),
+                            task_id: Some(TaskId::from_string(task_id)),
                             external_id: external_issue_id.clone(),
                             external_key: row.get(2)?,
                             external_url: row.get(3)?,
@@ -111,26 +117,44 @@ impl LinearWebhookStore for SqliteLinearWebhookStore {
     }
 
     async fn upsert_issue_link(&self, link: ExternalIssueLink) -> AppResult<()> {
+        let Some(task_id) = link
+            .task_id
+            .as_ref()
+            .map(|task_id| task_id.as_str().to_string())
+        else {
+            return Err(AppError::Database(
+                "Linear issue links must be attached to a task before persistence".to_string(),
+            ));
+        };
+        let idempotency_key = format!("linear:issue:{}:task:{task_id}", link.external_id);
+        let id = Uuid::new_v4().to_string();
         self.db
             .run(move |conn| {
                 conn.execute(
                     "INSERT INTO external_issue_links
-                        (provider, external_id, project_id, task_id, external_key, external_url, last_external_status, updated_at)
-                     VALUES ('linear', ?1, ?2, ?3, ?4, ?5, ?6, strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'))
-                     ON CONFLICT(provider, external_id) DO UPDATE SET
-                        project_id = excluded.project_id,
-                        task_id = excluded.task_id,
+                        (id, provider, external_kind, external_id, external_key, external_url,
+                         local_object_kind, local_object_id, local_project_id, local_state,
+                         idempotency_key, metadata_json, created_at, updated_at)
+                     VALUES
+                        (?1, 'linear', 'issue', ?2, ?3, ?4,
+                         'task', ?5, ?6, ?7,
+                         ?8, NULL, strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'), strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'))
+                     ON CONFLICT(provider, external_kind, external_id, local_object_kind, local_object_id)
+                     DO UPDATE SET
                         external_key = excluded.external_key,
                         external_url = excluded.external_url,
-                        last_external_status = excluded.last_external_status,
+                        local_project_id = excluded.local_project_id,
+                        local_state = excluded.local_state,
                         updated_at = excluded.updated_at",
                     rusqlite::params![
+                        id,
                         link.external_id,
-                        link.project_id.as_str(),
-                        link.task_id.as_ref().map(|task_id| task_id.as_str().to_string()),
                         link.external_key,
                         link.external_url,
+                        task_id,
+                        link.project_id.as_str(),
                         link.last_external_status,
+                        idempotency_key,
                     ],
                 )?;
                 Ok(())

@@ -1,7 +1,8 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::application::AppState;
+use crate::application::{AppState, LinearIntegrationSettings, LinearIssueSummary};
 use crate::domain::services::SecretStore;
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
 use crate::infrastructure::sqlite::SqliteLinearWebhookStore;
@@ -24,6 +25,51 @@ pub struct SaveLinearWebhookSigningSecretInput {
     pub enabled: Option<bool>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearIntegrationSettingsResponse {
+    pub enabled: bool,
+    pub has_api_token: bool,
+    pub validation_status: String,
+    pub issue_search_available: bool,
+    pub last_validated_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<LinearIntegrationSettings> for LinearIntegrationSettingsResponse {
+    fn from(settings: LinearIntegrationSettings) -> Self {
+        Self {
+            enabled: settings.enabled,
+            has_api_token: settings.token_secret_ref.is_some(),
+            validation_status: settings.validation_status.as_str().to_string(),
+            issue_search_available: settings.issue_search_available,
+            last_validated_at: settings.last_validated_at,
+            last_error: settings.last_error,
+            updated_at: settings.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveLinearIntegrationSettingsInput {
+    pub api_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchLinearIssuesInput {
+    pub query: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchLinearIssuesResponse {
+    pub issues: Vec<LinearIssueSummary>,
+}
+
 #[tauri::command]
 pub async fn get_linear_webhook_config(
     state: State<'_, AppState>,
@@ -38,6 +84,56 @@ pub async fn get_linear_webhook_config(
         enabled,
         has_signing_secret: signing_secret_ref.is_some(),
     })
+}
+
+#[tauri::command]
+pub async fn get_linear_integration_settings(
+    state: State<'_, AppState>,
+) -> Result<LinearIntegrationSettingsResponse, String> {
+    state
+        .linear_integration_service
+        .get_settings()
+        .await
+        .map(LinearIntegrationSettingsResponse::from)
+}
+
+#[tauri::command]
+pub async fn save_linear_integration_settings(
+    input: SaveLinearIntegrationSettingsInput,
+    state: State<'_, AppState>,
+) -> Result<LinearIntegrationSettingsResponse, String> {
+    state
+        .linear_integration_service
+        .save_settings(input.api_token)
+        .await
+        .map(LinearIntegrationSettingsResponse::from)
+}
+
+#[tauri::command]
+pub async fn validate_linear_integration(
+    state: State<'_, AppState>,
+) -> Result<LinearIntegrationSettingsResponse, String> {
+    state
+        .linear_integration_service
+        .validate_and_enable()
+        .await
+        .map(LinearIntegrationSettingsResponse::from)
+}
+
+#[tauri::command]
+pub async fn search_linear_issues(
+    input: SearchLinearIssuesInput,
+    state: State<'_, AppState>,
+) -> Result<SearchLinearIssuesResponse, String> {
+    let query = input.query.trim();
+    if query.is_empty() {
+        return Ok(SearchLinearIssuesResponse { issues: Vec::new() });
+    }
+    let issues = state
+        .linear_integration_service
+        .search_issues(query, input.limit.unwrap_or(10))
+        .await?;
+    Ok(SearchLinearIssuesResponse { issues })
 }
 
 #[tauri::command]

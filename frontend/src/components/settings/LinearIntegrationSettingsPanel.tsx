@@ -1,5 +1,10 @@
 import { useState } from "react";
-import { CheckCircle2, Loader2, Webhook, XCircle } from "lucide-react";
+import {
+  CheckCircle2,
+  KeyRound,
+  Loader2,
+  XCircle,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,49 +13,66 @@ import { useLinearIntegration } from "@/hooks/useLinearIntegration";
 
 import { ErrorBanner, SectionCard } from "./SettingsView.shared";
 
-const LINEAR_WEBHOOK_PATH = "/api/integrations/linear/webhook";
-
 export function LinearIntegrationSettingsPanel() {
   const {
-    webhookConfig,
+    settings,
     isLoading,
     isError,
     error,
-    saveWebhookSigningSecretAsync,
-    isSavingWebhookSigningSecret,
-    saveWebhookSigningSecretError,
+    saveSettingsAsync,
+    validateAsync,
+    isSavingSettings,
+    isValidating,
+    saveSettingsError,
+    validateError,
   } = useLinearIntegration();
-  const [signingSecret, setSigningSecret] = useState("");
+  const [apiToken, setApiToken] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
   const displayedError =
     localError ??
     (isError && error instanceof Error ? error.message : null) ??
-    (saveWebhookSigningSecretError instanceof Error
-      ? saveWebhookSigningSecretError.message
-      : null);
-  const isConfigured = Boolean(webhookConfig?.enabled && webhookConfig.hasSigningSecret);
+    (saveSettingsError instanceof Error ? saveSettingsError.message : null) ??
+    (validateError instanceof Error ? validateError.message : null);
+  const isApiConfigured = Boolean(
+    settings?.enabled &&
+    settings.hasApiToken &&
+    settings.validationStatus === "valid" &&
+    settings.issueSearchAvailable,
+  );
 
-  const save = async () => {
+  const saveApiToken = async () => {
     setLocalError(null);
     setSaved(false);
-    const trimmed = signingSecret.trim();
+    const trimmed = apiToken.trim();
     if (!trimmed) {
-      setLocalError("Linear webhook signing secret cannot be empty");
+      setLocalError("Linear API token cannot be empty");
       return;
     }
 
     try {
-      await saveWebhookSigningSecretAsync({
-        signingSecret: trimmed,
-        enabled: true,
-      });
-      setSigningSecret("");
+      await saveSettingsAsync({ apiToken: trimmed });
+      setApiToken("");
       setSaved(true);
     } catch (err) {
       setLocalError(
-        err instanceof Error ? err.message : "Failed to save Linear webhook settings",
+        err instanceof Error ? err.message : "Failed to save Linear API token",
+      );
+    }
+  };
+
+  const validate = async () => {
+    setLocalError(null);
+    setSaved(false);
+    try {
+      await validateAsync();
+      setSaved(true);
+    } catch (err) {
+      setLocalError(
+        err instanceof Error
+          ? err.message
+          : "Failed to validate Linear integration",
       );
     }
   };
@@ -58,9 +80,9 @@ export function LinearIntegrationSettingsPanel() {
   if (isLoading) {
     return (
       <SectionCard
-        icon={<Webhook className="h-[18px] w-[18px]" />}
+        icon={<KeyRound className="h-[18px] w-[18px]" />}
         title="Linear"
-        description="Issue status reconciliation from Linear webhooks"
+        description="Linear issue references"
       >
         <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-muted)]">
           Loading Linear settings...
@@ -71,12 +93,15 @@ export function LinearIntegrationSettingsPanel() {
 
   return (
     <SectionCard
-      icon={<Webhook className="h-[18px] w-[18px]" />}
+      icon={<KeyRound className="h-[18px] w-[18px]" />}
       title="Linear"
-      description="Issue status reconciliation from Linear webhooks"
+      description="Linear issue references"
     >
       {displayedError ? (
-        <ErrorBanner error={displayedError} onDismiss={() => setLocalError(null)} />
+        <ErrorBanner
+          error={displayedError}
+          onDismiss={() => setLocalError(null)}
+        />
       ) : null}
 
       <div className="space-y-4">
@@ -84,16 +109,29 @@ export function LinearIntegrationSettingsPanel() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="text-sm font-medium text-[var(--text-primary)]">
-                {isConfigured ? "Enabled" : "Not configured"}
+                {isApiConfigured
+                  ? "Issue references enabled"
+                  : "Issue references not ready"}
               </div>
               <div className="mt-1 flex flex-wrap gap-2 text-xs text-[var(--text-muted)]">
                 <span>
-                  Signing secret {webhookConfig?.hasSigningSecret ? "stored" : "missing"}
+                  API token {settings?.hasApiToken ? "stored" : "missing"}
                 </span>
-                <span>Webhook {webhookConfig?.enabled ? "enabled" : "disabled"}</span>
+                <span>
+                  Status {settings?.validationStatus ?? "not_configured"}
+                </span>
+                <span>
+                  Search{" "}
+                  {settings?.issueSearchAvailable ? "available" : "disabled"}
+                </span>
               </div>
+              {settings?.lastError ? (
+                <div className="mt-1 text-xs text-[var(--status-error)]">
+                  {settings.lastError}
+                </div>
+              ) : null}
             </div>
-            {isConfigured ? (
+            {isApiConfigured ? (
               <CheckCircle2 className="h-5 w-5 text-[var(--status-success)]" />
             ) : (
               <XCircle className="h-5 w-5 text-[var(--text-muted)]" />
@@ -102,37 +140,47 @@ export function LinearIntegrationSettingsPanel() {
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="linear-webhook-url">Webhook path</Label>
-          <Input id="linear-webhook-url" value={LINEAR_WEBHOOK_PATH} readOnly />
-        </div>
-
-        <div className="space-y-1.5">
-          <Label htmlFor="linear-webhook-signing-secret">Signing secret</Label>
+          <Label htmlFor="linear-api-token">API token</Label>
           <Input
-            id="linear-webhook-signing-secret"
+            id="linear-api-token"
             type="password"
-            value={signingSecret}
-            onChange={(event) => setSigningSecret(event.target.value)}
+            value={apiToken}
+            onChange={(event) => setApiToken(event.target.value)}
             placeholder={
-              webhookConfig?.hasSigningSecret ? "Stored secret unchanged" : "Paste signing secret"
+              settings?.hasApiToken
+                ? "Stored token unchanged"
+                : "Paste Linear API token"
             }
-            disabled={isSavingWebhookSigningSecret}
+            disabled={isSavingSettings || isValidating}
           />
           <p className="text-xs leading-relaxed text-[var(--text-muted)]">
-            Use the Linear webhook signing secret for this RalphX endpoint.
+            Used for @linear issue search and prompt context.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <Button
             type="button"
-            disabled={isSavingWebhookSigningSecret}
-            onClick={() => void save()}
+            disabled={isSavingSettings || isValidating}
+            onClick={() => void saveApiToken()}
           >
-            {isSavingWebhookSigningSecret ? (
+            {isSavingSettings ? (
               <Loader2 className="h-4 w-4 animate-spin" />
-            ) : null}
-            Save and enable
+            ) : (
+              <KeyRound className="h-4 w-4" />
+            )}
+            Save API token
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={
+              isSavingSettings || isValidating || !settings?.hasApiToken
+            }
+            onClick={() => void validate()}
+          >
+            {isValidating ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Validate
           </Button>
           {saved ? (
             <span className="text-xs text-[var(--status-success)]">Saved</span>

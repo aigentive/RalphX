@@ -903,6 +903,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.atlassian_integration_service)
             });
+            let linear_integration_service = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<AppState>();
+                Arc::clone(&app_state.linear_integration_service)
+            });
             let agent_conversation_jira_issue_repo = app_handle.as_ref().map(|handle| {
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.agent_conversation_jira_issue_repo)
@@ -941,6 +945,18 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             } else if let Some(service) = atlassian_integration_service.as_ref() {
                 service
                     .expand_references_for_prompt(&runtime_content, &merged_integration_references)
+                    .await
+            } else {
+                runtime_content
+            };
+            let runtime_content = if merged_integration_references.is_empty() {
+                runtime_content
+            } else if let Some(service) = linear_integration_service.as_ref() {
+                service
+                    .expand_references_for_prompt(
+                        &runtime_content,
+                        &merged_integration_references,
+                    )
                     .await
             } else {
                 runtime_content

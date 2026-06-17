@@ -8,6 +8,7 @@ use crate::domain::integrations::{
 };
 use crate::domain::services::{
     primary_jira_key_from_composer_metadata, primary_jira_key_from_title,
+    primary_linear_issue_from_composer_metadata,
 };
 use crate::error::AppResult;
 
@@ -123,6 +124,38 @@ impl ExternalIssueLinkService {
                 local_sha: local_sha.map(str::to_string),
                 local_state: local_state.map(str::to_string),
                 idempotency_key: format!("atlassian:jira:{key}:task:{task_id}"),
+                metadata_json: composer_metadata.map(str::to_string),
+            })
+            .await
+            .map(Some)
+    }
+
+    pub async fn ensure_linear_task_link_from_metadata(
+        &self,
+        task_id: &str,
+        project_id: Option<&str>,
+        composer_metadata: Option<&str>,
+        local_sha: Option<&str>,
+        local_state: Option<&str>,
+    ) -> AppResult<Option<ExternalIssueLink>> {
+        let Some((external_id, external_key, external_url)) =
+            primary_linear_issue_from_composer_metadata(composer_metadata)
+        else {
+            return Ok(None);
+        };
+
+        self.repo
+            .upsert_link(ExternalIssueLinkUpsert {
+                provider: "linear".to_string(),
+                external_kind: "issue".to_string(),
+                external_id: external_id.clone(),
+                external_key,
+                external_url,
+                local_object: ExternalIssueLocalObject::task(task_id),
+                local_project_id: project_id.map(str::to_string),
+                local_sha: local_sha.map(str::to_string),
+                local_state: local_state.map(str::to_string),
+                idempotency_key: format!("linear:issue:{external_id}:task:{task_id}"),
                 metadata_json: composer_metadata.map(str::to_string),
             })
             .await

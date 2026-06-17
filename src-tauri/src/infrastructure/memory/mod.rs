@@ -30,6 +30,7 @@ pub mod memory_ideation_effort_settings_repo;
 pub mod memory_ideation_model_settings_repo;
 pub mod memory_ideation_session_repo;
 pub mod memory_ideation_settings_repo;
+pub mod memory_linear_integration_settings_repo;
 pub mod memory_memory_archive_job_repo;
 pub mod memory_memory_entry_repo;
 pub mod memory_memory_event_repo;
@@ -89,6 +90,7 @@ pub use memory_ideation_effort_settings_repo::MemoryIdeationEffortSettingsReposi
 pub use memory_ideation_model_settings_repo::MemoryIdeationModelSettingsRepository;
 pub use memory_ideation_session_repo::MemoryIdeationSessionRepository;
 pub use memory_ideation_settings_repo::MemoryIdeationSettingsRepository;
+pub use memory_linear_integration_settings_repo::MemoryLinearIntegrationSettingsRepository;
 pub use memory_memory_archive_job_repo::InMemoryMemoryArchiveJobRepository;
 pub use memory_memory_entry_repo::InMemoryMemoryEntryRepository;
 pub use memory_memory_event_repo::InMemoryMemoryEventRepository;
