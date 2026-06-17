@@ -3,11 +3,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::domain::integrations::IntegrationValidationStatus;
 use crate::domain::services::SecretStore;
 
-const LINEAR_API_TOKEN_SECRET_REF: &str = "integrations/linear/default/api-token";
+const LINEAR_API_TOKEN_SECRET_REF_PREFIX: &str = "integrations/linear/default/api-token";
 const MAX_INTEGRATION_REFERENCES: usize = 8;
 const MAX_RESOURCE_BYTES: usize = 64 * 1024;
 const MAX_TOTAL_RESOURCE_BYTES: usize = 192 * 1024;
@@ -206,11 +207,47 @@ impl LinearIntegrationService {
                 }
                 settings.token_secret_ref = None;
             } else {
+                let previous_secret_ref = settings.token_secret_ref.clone();
+                let next_secret_ref =
+                    format!("{}/{}", LINEAR_API_TOKEN_SECRET_REF_PREFIX, Uuid::new_v4());
                 self.secret_store
-                    .put_secret(LINEAR_API_TOKEN_SECRET_REF, &token)
+                    .put_secret(&next_secret_ref, &token)
                     .await
                     .map_err(|error| error.to_string())?;
-                settings.token_secret_ref = Some(LINEAR_API_TOKEN_SECRET_REF.to_string());
+                let stored_token = self
+                    .secret_store
+                    .get_secret(&next_secret_ref)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "Linear API token was saved but could not be read back from secure storage: {error}"
+                        )
+                    })?
+                    .ok_or_else(|| {
+                        "Linear API token was saved but secure storage returned no value"
+                            .to_string()
+                    })?;
+                if stored_token != token {
+                    let _ = self.secret_store.delete_secret(&next_secret_ref).await;
+                    return Err(
+                        "Linear API token was saved but secure storage returned a different value"
+                            .to_string(),
+                    );
+                }
+                if let Some(previous_secret_ref) = previous_secret_ref.as_deref() {
+                    if previous_secret_ref != next_secret_ref {
+                        if let Err(error) =
+                            self.secret_store.delete_secret(previous_secret_ref).await
+                        {
+                            tracing::warn!(
+                                error = %error,
+                                secret_ref = previous_secret_ref,
+                                "failed to delete previous Linear API token secret after replacement"
+                            );
+                        }
+                    }
+                }
+                settings.token_secret_ref = Some(next_secret_ref);
             }
         }
         settings.enabled = false;

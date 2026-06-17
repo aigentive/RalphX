@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use std::collections::HashMap;
+
 use tokio::sync::{Mutex, RwLock};
 
 use super::{
@@ -8,7 +10,7 @@ use super::{
     LinearIntegrationSettingsRepository, LinearIssueContent, LinearIssueSummary,
 };
 use crate::domain::integrations::IntegrationValidationStatus;
-use crate::domain::services::ComposerIntegrationReference;
+use crate::domain::services::{ComposerIntegrationReference, SecretStore, SecretStoreError};
 use crate::infrastructure::memory::MemorySecretStore;
 
 #[derive(Default)]
@@ -35,6 +37,33 @@ impl LinearIntegrationSettingsRepository for TestSettingsRepo {
 struct TestLinearClient {
     searches: Mutex<Vec<(String, usize)>>,
     validate_error: Mutex<Option<String>>,
+}
+
+#[derive(Default)]
+struct RecordingSecretStore {
+    secrets: RwLock<HashMap<String, String>>,
+    deleted: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl SecretStore for RecordingSecretStore {
+    async fn put_secret(&self, key: &str, value: &str) -> Result<(), SecretStoreError> {
+        self.secrets
+            .write()
+            .await
+            .insert(key.to_string(), value.to_string());
+        Ok(())
+    }
+
+    async fn get_secret(&self, key: &str) -> Result<Option<String>, SecretStoreError> {
+        Ok(self.secrets.read().await.get(key).cloned())
+    }
+
+    async fn delete_secret(&self, key: &str) -> Result<(), SecretStoreError> {
+        self.deleted.lock().await.push(key.to_string());
+        self.secrets.write().await.remove(key);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -142,6 +171,66 @@ async fn validation_failure_disables_search() {
         settings.last_error.as_deref(),
         Some("Linear rejected credentials")
     );
+}
+
+#[tokio::test]
+async fn replacing_api_token_uses_fresh_readable_secret_ref() {
+    let repo = Arc::new(TestSettingsRepo::default());
+    let secrets = Arc::new(RecordingSecretStore::default());
+    let client = Arc::new(TestLinearClient::default());
+    let service = LinearIntegrationService::new(repo, secrets.clone(), client);
+
+    let first = service
+        .save_settings(Some("lin-api-token".to_string()))
+        .await
+        .unwrap();
+    let first_ref = first.token_secret_ref.clone().unwrap();
+    let second = service
+        .save_settings(Some("lin-api-token".to_string()))
+        .await
+        .unwrap();
+    let second_ref = second.token_secret_ref.clone().unwrap();
+
+    assert_ne!(first_ref, second_ref);
+    assert_eq!(
+        secrets.get_secret(&second_ref).await.unwrap().as_deref(),
+        Some("lin-api-token")
+    );
+    assert_eq!(secrets.deleted.lock().await.as_slice(), &[first_ref]);
+}
+
+struct UnreadableSecretStore;
+
+#[async_trait]
+impl SecretStore for UnreadableSecretStore {
+    async fn put_secret(&self, _key: &str, _value: &str) -> Result<(), SecretStoreError> {
+        Ok(())
+    }
+
+    async fn get_secret(&self, _key: &str) -> Result<Option<String>, SecretStoreError> {
+        Err(SecretStoreError::Unavailable(
+            "The user name or passphrase you entered is not correct.".to_string(),
+        ))
+    }
+
+    async fn delete_secret(&self, _key: &str) -> Result<(), SecretStoreError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn save_reports_unreadable_secure_storage_before_marking_token_stored() {
+    let repo = Arc::new(TestSettingsRepo::default());
+    let client = Arc::new(TestLinearClient::default());
+    let service = LinearIntegrationService::new(repo, Arc::new(UnreadableSecretStore), client);
+
+    let error = service
+        .save_settings(Some("lin-api-token".to_string()))
+        .await
+        .unwrap_err();
+
+    assert!(error.contains("could not be read back from secure storage"));
+    assert!(error.contains("passphrase"));
 }
 
 #[tokio::test]

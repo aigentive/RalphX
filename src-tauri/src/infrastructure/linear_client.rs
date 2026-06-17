@@ -67,7 +67,7 @@ impl HyperLinearApiClient {
             .map_err(|error| format!("Failed to read Linear response: {error}"))?
             .to_bytes();
         if !status.is_success() {
-            return Err(format!("Linear returned HTTP {}", status.as_u16()));
+            return Err(render_http_error(status.as_u16(), &bytes));
         }
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|error| format!("Failed to parse Linear response: {error}"))?;
@@ -128,30 +128,15 @@ impl LinearApiClient for HyperLinearApiClient {
         let data = self
             .graphql(
                 &auth.api_token,
-                r#"
-                query RalphXLinearIssueSearch($query: String!, $first: Int!) {
-                  issues(search: $query, first: $first) {
-                    nodes {
-                      id
-                      identifier
-                      title
-                      url
-                      description
-                      state {
-                        name
-                      }
-                    }
-                  }
-                }
-                "#,
+                linear_issue_search_query(),
                 serde_json::json!({
-                    "query": query,
+                    "term": query,
                     "first": limit as i64,
                 }),
             )
             .await?;
         let nodes = data
-            .get("issues")
+            .get("searchIssues")
             .and_then(|issues| issues.get("nodes"))
             .and_then(|nodes| nodes.as_array())
             .ok_or_else(|| "Linear search response did not include issues".to_string())?;
@@ -197,6 +182,44 @@ impl LinearApiClient for HyperLinearApiClient {
                 reference.id
             )
         })
+    }
+}
+
+fn linear_issue_search_query() -> &'static str {
+    r#"
+    query RalphXLinearIssueSearch($term: String!, $first: Int!) {
+      searchIssues(term: $term, first: $first) {
+        nodes {
+          id
+          identifier
+          title
+          url
+          description
+          state {
+            name
+          }
+        }
+      }
+    }
+    "#
+}
+
+fn render_http_error(status: u16, bytes: &[u8]) -> String {
+    if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+        if let Some(errors) = value.get("errors").and_then(|value| value.as_array()) {
+            if !errors.is_empty() {
+                return format!(
+                    "Linear returned HTTP {status}: {}",
+                    render_graphql_errors(errors)
+                );
+            }
+        }
+    }
+    let body = String::from_utf8_lossy(bytes).trim().to_string();
+    if body.is_empty() {
+        format!("Linear returned HTTP {status}")
+    } else {
+        format!("Linear returned HTTP {status}: {body}")
     }
 }
 
@@ -259,4 +282,34 @@ fn trim_excerpt(value: &str) -> String {
         end = end.saturating_sub(1);
     }
     format!("{}...", &trimmed[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn issue_search_query_uses_current_linear_search_field() {
+        let query = linear_issue_search_query();
+
+        assert!(query.contains("searchIssues(term: $term, first: $first)"));
+        assert!(!query.contains("issues(search:"));
+        assert!(!query.contains("issueSearch"));
+    }
+
+    #[test]
+    fn http_error_includes_linear_graphql_message() {
+        let body = br#"{
+            "errors": [
+                { "message": "Unknown argument \"search\" on field \"Query.issues\"." }
+            ]
+        }"#;
+
+        let rendered = render_http_error(400, body);
+
+        assert_eq!(
+            rendered,
+            "Linear returned HTTP 400: Unknown argument \"search\" on field \"Query.issues\"."
+        );
+    }
 }
