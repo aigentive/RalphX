@@ -2291,6 +2291,22 @@ fn codex_execution_prompts_avoid_claude_only_team_and_task_syntax() {
     }
 }
 
+#[test]
+fn root_agent_instructions_require_safe_tracker_creation_before_editing() {
+    let agents_md = fs::read_to_string(project_root().join("AGENTS.md"))
+        .expect("root AGENTS.md should be readable");
+
+    assert!(
+        agents_md.contains("create the parent directory and file if absent"),
+        "tracker guidance must require creating the parent directory and file first"
+    );
+    assert!(
+        agents_md.contains("do not run `sed -i`")
+            && agents_md.contains("possibly missing `.artifacts/specs/<slug>/tracker.md`"),
+        "tracker guidance must forbid sed -i against a possibly missing tracker"
+    );
+}
+
 #[cfg(unix)]
 fn symlink_dir(source: impl AsRef<std::path::Path>, target: impl AsRef<std::path::Path>) {
     std::os::unix::fs::symlink(source, target).expect("create directory symlink");

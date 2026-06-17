@@ -138,6 +138,26 @@ async fn spawn_codex_jsonl_process_that_stays_alive(lines: &[&str]) -> tokio::pr
     command.spawn().expect("spawn codex jsonl fixture")
 }
 
+async fn spawn_codex_jsonl_process_that_exits_nonzero(lines: &[&str]) -> tokio::process::Child {
+    let mut payload = String::new();
+    for line in lines {
+        payload.push_str(line);
+        payload.push('\n');
+    }
+
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg("printf '%s' \"$RALPHX_STREAM_LINES\"; exit 1")
+        .env("RALPHX_STREAM_LINES", payload)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    command.spawn().expect("spawn codex jsonl fixture")
+}
+
 async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamError> {
     let child = spawn_jsonl_process(lines).await;
     let conversation_id = ChatConversationId::new();
@@ -230,6 +250,19 @@ async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout
 
 async fn run_codex_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamError> {
     let child = spawn_jsonl_process(lines).await;
+    run_codex_stream_child(child).await
+}
+
+async fn run_codex_stream_lines_with_nonzero_exit(
+    lines: &[&str],
+) -> Result<StreamOutcome, StreamError> {
+    let child = spawn_codex_jsonl_process_that_exits_nonzero(lines).await;
+    run_codex_stream_child(child).await
+}
+
+async fn run_codex_stream_child(
+    child: tokio::process::Child,
+) -> Result<StreamOutcome, StreamError> {
     let conversation_id = ChatConversationId::new();
     let context_id = IdeationSessionId::new();
 
@@ -951,6 +984,42 @@ async fn codex_stream_local_command_failures_are_agent_exit_not_provider_pause()
             assert!(stderr.contains("Codex command_execution failed with exit code 7"));
         }
         other => panic!("expected local command failures to remain AgentExit, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn codex_stream_accepted_completion_ignores_later_local_tracker_sed_failure() {
+    let outcome = run_codex_stream_lines_with_nonzero_exit(
+        &[
+            r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"execution_complete","arguments":{"task_id":"task-1"},"result":{"success":true}}}"#,
+            r#"{"type":"item.completed","item":{"type":"command_execution","id":"cmd-1","command":"sed -i '' 's/Pending/Done/' .artifacts/specs/linear-writeback/tracker.md","status":"failed","aggregated_output":"sed: .artifacts/specs/linear-writeback/tracker.md: No such file or directory","exit_code":1}}"#,
+        ],
+    )
+    .await
+    .expect("post-completion local cleanup failure should not fail accepted execution");
+
+    assert_eq!(outcome.tool_calls.len(), 2);
+    assert_eq!(outcome.tool_calls[0].name, "ralphx::execution_complete");
+    assert_eq!(outcome.tool_calls[1].name, "bash");
+}
+
+#[tokio::test]
+async fn codex_stream_errored_completion_does_not_hide_later_local_failure() {
+    let result = run_codex_stream_lines_with_nonzero_exit(
+        &[
+            r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"execution_complete","arguments":{"task_id":"task-1"},"error":{"message":"execution_complete rejected"}}}"#,
+            r#"{"type":"item.completed","item":{"type":"command_execution","id":"cmd-1","command":"sed -i '' 's/Pending/Done/' .artifacts/specs/linear-writeback/tracker.md","status":"failed","aggregated_output":"sed: .artifacts/specs/linear-writeback/tracker.md: No such file or directory","exit_code":1}}"#,
+        ],
+    )
+    .await
+    .expect_err("rejected completion must preserve the local failure");
+
+    match result {
+        StreamError::AgentExit { stderr, .. } => {
+            assert!(stderr.contains("execution_complete rejected"));
+            assert!(stderr.contains("No such file or directory"));
+        }
+        other => panic!("expected rejected completion to remain AgentExit, got {other:?}"),
     }
 }
 

@@ -3183,7 +3183,10 @@ async fn process_codex_stream_background<R: Runtime>(
     let mut lines_parsed = 0usize;
     let mut stream_seq = 0u64;
     let mut last_parsed_at = std::time::Instant::now();
-    let max_wall_clock = std::time::Duration::from_secs(stream_timeouts().max_wall_clock_secs);
+    let stream_cfg = stream_timeouts();
+    let max_wall_clock = std::time::Duration::from_secs(stream_cfg.max_wall_clock_secs);
+    let completion_grace_duration =
+        std::time::Duration::from_secs(stream_cfg.completion_grace_secs);
     let mut last_activity_at = std::time::Instant::now();
     let mut last_flush = std::time::Instant::now();
     const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -3237,6 +3240,9 @@ async fn process_codex_stream_background<R: Runtime>(
                             (false, true)
                         };
 
+                        let is_completion_grace_period = completion_signal_tracker
+                            .is_in_grace_period(completion_grace_duration);
+
                         if should_kill_on_timeout(
                             last_activity_at.elapsed(),
                             max_wall_clock,
@@ -3245,7 +3251,7 @@ async fn process_codex_stream_background<R: Runtime>(
                             pid_alive,
                             child_exited,
                             false,
-                            false,
+                            is_completion_grace_period,
                         ) {
                             let _ = child.kill().await;
                             flush_content_before_error(
@@ -3343,7 +3349,16 @@ async fn process_codex_stream_background<R: Runtime>(
 
             for snapshot in codex_tool_snapshots {
                 let tool_call = snapshot.tool_call;
-                if is_completion_tool_name(&tool_call.name) {
+                let is_completion_tool = is_completion_tool_name(&tool_call.name);
+                let completion_tool_completed =
+                    snapshot.phase == CodexToolCallPhase::Completed && is_completion_tool;
+                let completion_tool_errored = event
+                    .item
+                    .as_ref()
+                    .and_then(|item| item.error.as_ref())
+                    .is_some();
+
+                if is_completion_tool {
                     tracing::info!(
                         conversation_id = %conversation_id_str,
                         context_id,
@@ -3356,15 +3371,23 @@ async fn process_codex_stream_background<R: Runtime>(
                     &mut content_blocks,
                     tool_call.clone(),
                 );
-                if snapshot.phase == CodexToolCallPhase::Completed
-                    && is_completion_tool_name(&tool_call.name)
-                {
-                    tracing::info!(
-                        conversation_id = %conversation_id_str,
-                        context_id,
-                        tool_name = %tool_call.name,
-                        "Completion tool call observed during Codex streaming; enabling shutdown grace period"
-                    );
+                if completion_tool_completed {
+                    if completion_tool_errored {
+                        tracing::warn!(
+                            conversation_id = %conversation_id_str,
+                            context_id,
+                            tool_name = %tool_call.name,
+                            "Completion tool call completed with an error; not enabling shutdown grace period"
+                        );
+                    } else {
+                        completion_signal_tracker.mark_completion_called();
+                        tracing::info!(
+                            conversation_id = %conversation_id_str,
+                            context_id,
+                            tool_name = %tool_call.name,
+                            "Accepted completion tool call observed during Codex streaming; enabling shutdown grace period"
+                        );
+                    }
                 }
                 let diff_context_value = tool_call
                     .diff_context
@@ -3465,25 +3488,27 @@ async fn process_codex_stream_background<R: Runtime>(
                         let _ = repo.save(event).await;
                     }
                 }
-
-                if is_completion_tool_name(&tool_call.name) {
-                    completion_signal_tracker.mark_completion_called();
-                }
             }
 
             if let Some(command_execution) = extract_codex_command_execution(&event) {
                 if let Some(exit_code) = command_execution.exit_code {
                     if exit_code != 0 {
-                        local_tool_errors.push(
-                            command_execution
-                                .aggregated_output
-                                .clone()
-                                .unwrap_or_else(|| {
+                        if completion_signal_tracker.was_called() {
+                            tracing::info!(
+                                conversation_id = %conversation_id_str,
+                                context_id,
+                                exit_code,
+                                "Ignoring local Codex command failure after accepted completion tool call"
+                            );
+                        } else {
+                            let error_message =
+                                command_execution.aggregated_output.clone().unwrap_or_else(|| {
                                     format!(
                                         "Codex command_execution failed with exit code {exit_code}"
                                     )
-                                }),
-                        );
+                                });
+                            local_tool_errors.push(error_message);
+                        }
                     }
                 }
             }
@@ -3497,7 +3522,17 @@ async fn process_codex_stream_background<R: Runtime>(
                 }
                 match error.source {
                     CodexErrorSource::Runtime => runtime_errors.push(error.message),
-                    CodexErrorSource::McpTool => local_tool_errors.push(error.message),
+                    CodexErrorSource::McpTool => {
+                        if completion_signal_tracker.was_called() {
+                            tracing::info!(
+                                conversation_id = %conversation_id_str,
+                                context_id,
+                                "Ignoring local Codex MCP tool error after accepted completion tool call"
+                            );
+                        } else {
+                            local_tool_errors.push(error.message);
+                        }
+                    }
                 }
             }
 
@@ -3531,6 +3566,16 @@ async fn process_codex_stream_background<R: Runtime>(
                 break;
             }
         } else if lines_seen > 0 && last_parsed_at.elapsed() >= timeout_config.parse_stall_timeout {
+            if completion_signal_tracker.is_in_grace_period(completion_grace_duration) {
+                tracing::info!(
+                    conversation_id = %conversation_id_str,
+                    context_id,
+                    lines_seen,
+                    "Codex parse stall after accepted completion tool call, staying in shutdown grace period"
+                );
+                last_parsed_at = std::time::Instant::now();
+                continue;
+            }
             let _ = child.kill().await;
             flush_content_before_error(
                 &chat_message_repo,
