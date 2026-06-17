@@ -8,18 +8,54 @@ import type {
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 
+function mergeBranchBaseOptions(
+  currentOption: BranchBaseOption,
+  options: BranchBaseOption[] | undefined,
+): BranchBaseOption[] {
+  const mergedOptions = new Map<string, BranchBaseOption>();
+  mergedOptions.set(currentOption.key, currentOption);
+  for (const candidate of options ?? []) {
+    mergedOptions.set(candidate.key, candidate);
+  }
+  return Array.from(mergedOptions.values());
+}
+
 export const AgentConversationBaseLine = memo(function AgentConversationBaseLine({
+  disabled = false,
+  editable = false,
   freshness,
+  isLoading = false,
+  isLoadingPullRequests = false,
+  onIntent,
+  onOpenChange,
+  onPullRequestSearch,
+  onValueChange,
+  options,
+  pullRequestMessage = null,
+  pullRequestOptions,
+  value,
   workspace,
 }: {
+  disabled?: boolean;
+  editable?: boolean;
   freshness?: AgentConversationWorkspaceFreshness;
+  isLoading?: boolean;
+  isLoadingPullRequests?: boolean;
+  onIntent?: () => void;
+  onOpenChange?: (open: boolean) => void;
+  onPullRequestSearch?: (query: string) => void;
+  onValueChange?: (value: string) => void;
+  options?: BranchBaseOption[];
+  pullRequestMessage?: string | null;
+  pullRequestOptions?: BranchBaseOption[];
+  value?: string;
   workspace: AgentConversationWorkspace | null;
 }) {
   if (!workspace) {
     return null;
   }
 
-  if (freshness?.baseStatus === "blocked") {
+  if (freshness?.baseStatus === "blocked" && !editable) {
     return (
       <div
         className="flex min-w-0 justify-end"
@@ -65,6 +101,11 @@ export const AgentConversationBaseLine = memo(function AgentConversationBaseLine
       displayName: baseLabel,
     },
   };
+  const pickerOptions = mergeBranchBaseOptions(option, options);
+  const resolvedValue =
+    value && pickerOptions.some((candidate) => candidate.key === value)
+      ? value
+      : option.key;
 
   return (
     <div
@@ -72,11 +113,22 @@ export const AgentConversationBaseLine = memo(function AgentConversationBaseLine
       data-testid="agents-conversation-base"
     >
       <BranchBasePicker
-        value={option.key}
-        onValueChange={() => undefined}
-        options={[option]}
+        value={resolvedValue}
+        onValueChange={onValueChange ?? (() => undefined)}
+        options={pickerOptions}
         placeholder="Base branch"
-        readOnly
+        readOnly={!editable}
+        disabled={disabled}
+        isLoading={isLoading}
+        enablePullRequests={editable}
+        pullRequestOptions={pullRequestOptions ?? []}
+        isLoadingPullRequests={isLoadingPullRequests}
+        pullRequestMessage={pullRequestMessage}
+        {...(onPullRequestSearch ? { onPullRequestSearch } : {})}
+        testId="agents-conversation-base-picker"
+        ariaLabel={editable ? "Change workspace base branch" : "Workspace base branch"}
+        {...(onIntent ? { onIntent } : {})}
+        {...(onOpenChange ? { onOpenChange } : {})}
       />
     </div>
   );

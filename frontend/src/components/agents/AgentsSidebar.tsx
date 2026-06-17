@@ -27,6 +27,7 @@ import {
   RotateCcw,
   Search,
   SlidersHorizontal,
+  Sparkles,
   X,
 } from "lucide-react";
 import {
@@ -732,6 +733,7 @@ interface AgentsSidebarProps {
   onCreateAgent: () => void;
   onCreateProject: () => void;
   onArchiveProject: (projectId: string) => void | Promise<void>;
+  onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: (conversation: AgentConversation) => void;
   onRestoreConversation: (conversation: AgentConversation) => void;
@@ -752,6 +754,7 @@ export function AgentsSidebar({
   onCreateAgent,
   onCreateProject,
   onArchiveProject,
+  onAutoRenameConversation,
   onRenameConversation,
   onArchiveConversation,
   onRestoreConversation,
@@ -1103,6 +1106,7 @@ export function AgentsSidebar({
             searchQuery={normalizedSearch}
             selectedPublicationStates={selectedPublicationStates}
             onArchiveConversation={onArchiveConversation}
+            onAutoRenameConversation={onAutoRenameConversation}
             onRenameConversation={onRenameConversation}
             onRestoreConversation={onRestoreConversation}
             onForkConversation={handleForkConversation}
@@ -1122,6 +1126,7 @@ export function AgentsSidebar({
               onFocusProject={onFocusProject}
               onSelectConversation={handleSelectVisibleConversation}
               onArchiveProject={onArchiveProject}
+              onAutoRenameConversation={onAutoRenameConversation}
               onRenameConversation={onRenameConversation}
               onArchiveConversation={onArchiveConversation}
               onRestoreConversation={onRestoreConversation}
@@ -1562,6 +1567,7 @@ interface PublicationStateGroupsProps {
   searchQuery: string;
   selectedPublicationStates: AgentSidebarPublicationState[];
   onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
+  onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: (conversation: AgentConversation) => void;
   onRestoreConversation: (conversation: AgentConversation) => void;
@@ -1581,6 +1587,7 @@ function PublicationStateGroups({
   searchQuery,
   selectedPublicationStates,
   onArchiveConversation,
+  onAutoRenameConversation,
   onRenameConversation,
   onRestoreConversation,
   onForkConversation,
@@ -1629,6 +1636,7 @@ function PublicationStateGroups({
           selectedConversationId={selectedConversationId}
           showArchived={showArchived}
           onArchiveConversation={onArchiveConversation}
+          onAutoRenameConversation={onAutoRenameConversation}
           onRenameConversation={onRenameConversation}
           onRestoreConversation={onRestoreConversation}
           onForkConversation={onForkConversation}
@@ -1659,6 +1667,7 @@ interface PublicationStateGroupProps {
   selectedConversationId: string | null;
   showArchived: boolean;
   onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
+  onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: (conversation: AgentConversation) => void;
   onRestoreConversation: (conversation: AgentConversation) => void;
@@ -1686,6 +1695,7 @@ function PublicationStateGroup({
   selectedConversationId,
   showArchived,
   onArchiveConversation,
+  onAutoRenameConversation,
   onRenameConversation,
   onRestoreConversation,
   onForkConversation,
@@ -1737,6 +1747,8 @@ function PublicationStateGroup({
   const [renameDialogConversation, setRenameDialogConversation] =
     useState<AgentConversation | null>(null);
   const [renameDraftTitle, setRenameDraftTitle] = useState("");
+  const [autoRenameDialogConversationId, setAutoRenameDialogConversationId] =
+    useState<string | null>(null);
   const [archiveDialogConversation, setArchiveDialogConversation] =
     useState<AgentConversation | null>(null);
   const [openSessionActionsId, setOpenSessionActionsId] = useState<string | null>(null);
@@ -1756,6 +1768,21 @@ function PublicationStateGroup({
     await onRenameConversation(renameDialogConversation.id, trimmed);
     setRenameDialogConversation(null);
   }, [onRenameConversation, renameDialogConversation, renameDraftTitle]);
+  const handleAutoRenameSubmit = useCallback(async () => {
+    if (!renameDialogConversation) return;
+    setAutoRenameDialogConversationId(renameDialogConversation.id);
+    try {
+      await onAutoRenameConversation(renameDialogConversation);
+      setRenameDialogConversation(null);
+    } catch {
+      // The owning action reports the failure and the dialog stays open.
+    } finally {
+      setAutoRenameDialogConversationId(null);
+    }
+  }, [onAutoRenameConversation, renameDialogConversation]);
+  const isAutoRenamingDialog =
+    renameDialogConversation !== null &&
+    autoRenameDialogConversationId === renameDialogConversation.id;
   const isCurrentPublicationState = expandedPublicationState === publicationState;
   const expanded = searchQuery.length > 0 ? true : isCurrentPublicationState;
   const groupLabel =
@@ -1938,18 +1965,29 @@ function PublicationStateGroup({
               }}
             />
           </div>
-          <DialogFooter>
+          <DialogFooter className="justify-between">
+            <Button
+              type="button"
+              variant="secondary"
+              className="mr-auto"
+              onClick={() => void handleAutoRenameSubmit()}
+              disabled={isAutoRenamingDialog}
+            >
+              <Sparkles className="h-4 w-4" aria-hidden="true" />
+              {isAutoRenamingDialog ? "Starting..." : "Auto rename"}
+            </Button>
             <Button
               type="button"
               variant="outline"
               onClick={() => setRenameDialogConversation(null)}
+              disabled={isAutoRenamingDialog}
             >
               Cancel
             </Button>
             <Button
               type="button"
               onClick={() => void handleRenameSubmit()}
-              disabled={renameDraftTitle.trim().length === 0}
+              disabled={isAutoRenamingDialog || renameDraftTitle.trim().length === 0}
             >
               Rename session
             </Button>
@@ -2262,6 +2300,7 @@ interface ProjectSessionGroupProps {
   onFocusProject: (projectId: string) => void;
   onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
   onArchiveProject: (projectId: string) => void | Promise<void>;
+  onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: (conversation: AgentConversation) => void;
   onRestoreConversation: (conversation: AgentConversation) => void;
@@ -2287,6 +2326,7 @@ function ProjectSessionGroup({
   onFocusProject,
   onSelectConversation,
   onArchiveProject,
+  onAutoRenameConversation,
   onRenameConversation,
   onArchiveConversation,
   onRestoreConversation,
@@ -2309,6 +2349,8 @@ function ProjectSessionGroup({
   const [renameDialogConversation, setRenameDialogConversation] =
     useState<AgentConversation | null>(null);
   const [renameDraftTitle, setRenameDraftTitle] = useState("");
+  const [autoRenameDialogConversationId, setAutoRenameDialogConversationId] =
+    useState<string | null>(null);
   const [archiveDialogConversation, setArchiveDialogConversation] =
     useState<AgentConversation | null>(null);
   const [openSessionActionsId, setOpenSessionActionsId] = useState<string | null>(null);
@@ -2432,6 +2474,23 @@ function ProjectSessionGroup({
     await onRenameConversation(renameDialogConversation.id, trimmed);
     setRenameDialogConversation(null);
   }, [onRenameConversation, renameDialogConversation, renameDraftTitle]);
+  const handleAutoRenameSubmit = useCallback(async () => {
+    if (!renameDialogConversation) {
+      return;
+    }
+    setAutoRenameDialogConversationId(renameDialogConversation.id);
+    try {
+      await onAutoRenameConversation(renameDialogConversation);
+      setRenameDialogConversation(null);
+    } catch {
+      // The owning action reports the failure and the dialog stays open.
+    } finally {
+      setAutoRenameDialogConversationId(null);
+    }
+  }, [onAutoRenameConversation, renameDialogConversation]);
+  const isAutoRenamingDialog =
+    renameDialogConversation !== null &&
+    autoRenameDialogConversationId === renameDialogConversation.id;
   const getProjectRowKey = useCallback(
     (row: AgentSidebarConversationRow) => row.conversation.id,
     []
@@ -2695,18 +2754,29 @@ function ProjectSessionGroup({
                   }}
                 />
               </div>
-              <DialogFooter>
+              <DialogFooter className="justify-between">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="mr-auto"
+                  onClick={() => void handleAutoRenameSubmit()}
+                  disabled={isAutoRenamingDialog}
+                >
+                  <Sparkles className="h-4 w-4" aria-hidden="true" />
+                  {isAutoRenamingDialog ? "Starting..." : "Auto rename"}
+                </Button>
                 <Button
                   type="button"
                   variant="outline"
                   onClick={() => setRenameDialogConversation(null)}
+                  disabled={isAutoRenamingDialog}
                 >
                   Cancel
                 </Button>
                 <Button
                   type="button"
                   onClick={() => void handleRenameSubmit()}
-                  disabled={renameDraftTitle.trim().length === 0}
+                  disabled={isAutoRenamingDialog || renameDraftTitle.trim().length === 0}
                 >
                   Rename session
                 </Button>

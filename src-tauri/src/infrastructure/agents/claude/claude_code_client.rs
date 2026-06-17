@@ -448,7 +448,9 @@ impl AgenticClient for ClaudeCodeClient {
         // Apply CLI tool restrictions from agent_config
         if let Some(agent_name) = &config.agent {
             if let Some(allowed_tools) = get_allowed_tools(agent_name) {
-                args.extend(["--tools".to_string(), allowed_tools]);
+                if !allowed_tools.is_empty() {
+                    args.extend(["--tools".to_string(), allowed_tools]);
+                }
             }
         }
 
@@ -668,11 +670,20 @@ impl ClaudeCodeClient {
 
         // Apply CLI tool restrictions from agent_config
         // Frontmatter tools/disallowedTools only work for subagent spawning,
-        // NOT for direct CLI invocations with --agent -p. We must pass --tools flag.
+        // NOT for direct CLI invocations with --agent -p. Pass --tools only when
+        // there are built-in CLI tools to allow; the Claude CLI treats an empty
+        // value as disabling MCP tools too.
         if let Some(agent_name) = &config.agent {
             if let Some(allowed_tools) = get_allowed_tools(agent_name) {
-                tracing::debug!(agent = %agent_name, tools = if allowed_tools.is_empty() { "(MCP only)" } else { allowed_tools.as_str() }, "Agent restricted to CLI tools");
-                args.extend(["--tools".to_string(), allowed_tools]);
+                if allowed_tools.is_empty() {
+                    tracing::debug!(
+                        agent = %agent_name,
+                        "Agent configured as MCP-only; omitting --tools because Claude CLI treats an empty value as disabling MCP tools"
+                    );
+                } else {
+                    tracing::debug!(agent = %agent_name, tools = allowed_tools.as_str(), "Agent restricted to CLI tools");
+                    args.extend(["--tools".to_string(), allowed_tools]);
+                }
             }
         }
 
