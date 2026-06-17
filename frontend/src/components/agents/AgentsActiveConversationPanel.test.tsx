@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   chatApi,
   type AgentConversationWorkspace,
+  type AgentConversationWorkspaceFreshness,
   type ForkAgentConversationResult,
 } from "@/api/chat";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -458,6 +459,30 @@ function workspace(): AgentConversationWorkspace {
   };
 }
 
+function workspaceFreshness(
+  overrides: Partial<AgentConversationWorkspaceFreshness> = {},
+): AgentConversationWorkspaceFreshness {
+  return {
+    conversationId: "conversation-1",
+    freshnessScope: "local",
+    baseRef: "main",
+    baseDisplayName: "Project default (main)",
+    targetRef: "origin/main",
+    capturedBaseCommit: "base-sha",
+    targetBaseCommit: "base-sha",
+    isBaseAhead: false,
+    hasUncommittedChanges: false,
+    unpublishedCommitCount: null,
+    remoteRefreshed: true,
+    worktreeStatusChecked: true,
+    baseStatus: "valid",
+    effectiveBaseRef: null,
+    effectiveBaseDisplayName: null,
+    baseBlockReason: null,
+    ...overrides,
+  };
+}
+
 function forkResult(): ForkAgentConversationResult {
   return {
     parentConversation: projectConversation() as never,
@@ -841,6 +866,37 @@ describe("AgentsActiveConversationPanel", () => {
       "ideation",
       promotedWorkspace,
     );
+  });
+
+  it("hides approved plan composer CTAs when the workspace has changes", async () => {
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      activeWorkspaceFreshness: workspaceFreshness({
+        hasUncommittedChanges: true,
+      }),
+      attachedIdeationSessionId: "planning-session-1",
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("agents-plan-composer-cta-row")).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole("button", { name: /Verify Plan/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Implement Directly/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Create Proposals/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("hides the composer CTA row while question UI is active", async () => {
