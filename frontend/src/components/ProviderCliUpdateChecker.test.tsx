@@ -6,7 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { providerCliManagementApi } from "@/api/provider-cli-management";
 import { useUiStore } from "@/stores/uiStore";
 
-import { ProviderCliUpdateChecker } from "./ProviderCliUpdateChecker";
+import {
+  PROVIDER_CLI_DISMISSED_UPDATES_STORAGE_KEY,
+  ProviderCliUpdateChecker,
+} from "./ProviderCliUpdateChecker";
 
 const mocks = vi.hoisted(() => ({
   toast: vi.fn(),
@@ -49,10 +52,33 @@ function renderToast() {
   return render(body as React.ReactElement);
 }
 
+function mockUserManagedClaudeUpdate() {
+  vi.mocked(providerCliManagementApi.status).mockResolvedValue({
+    providers: [
+      {
+        provider: "claude",
+        cliManagementMode: "user_managed",
+        autoUpdateEnabled: false,
+        supported: true,
+        installed: true,
+        binaryPath: "/Users/example/.local/bin/claude",
+        currentVersion: "2.1.170",
+        latestVersion: "2.1.175",
+        updateAvailable: true,
+        action: "none",
+        status:
+          "claude CLI 2.1.170 is user-managed; 2.1.175 is available. RX will not update it unless management is enabled.",
+        error: null,
+      },
+    ],
+  });
+}
+
 describe("ProviderCliUpdateChecker", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    localStorage.clear();
     useUiStore.setState({ activeModal: null, modalContext: undefined });
     vi.mocked(providerCliManagementApi.status).mockResolvedValue({
       providers: [
@@ -190,25 +216,7 @@ describe("ProviderCliUpdateChecker", () => {
   });
 
   it("shows a non-mutating startup toast for user-managed outdated CLIs", async () => {
-    vi.mocked(providerCliManagementApi.status).mockResolvedValue({
-      providers: [
-        {
-          provider: "claude",
-          cliManagementMode: "user_managed",
-          autoUpdateEnabled: false,
-          supported: true,
-          installed: true,
-          binaryPath: "/Users/example/.local/bin/claude",
-          currentVersion: "2.1.170",
-          latestVersion: "2.1.175",
-          updateAvailable: true,
-          action: "none",
-          status:
-            "claude CLI 2.1.170 is user-managed; 2.1.175 is available. RX will not update it unless management is enabled.",
-          error: null,
-        },
-      ],
-    });
+    mockUserManagedClaudeUpdate();
 
     renderChecker();
 
@@ -234,5 +242,63 @@ describe("ProviderCliUpdateChecker", () => {
     expect(providerCliManagementApi.installOrUpdate).not.toHaveBeenCalled();
     expect(useUiStore.getState().activeModal).toBe("settings");
     expect(useUiStore.getState().modalContext).toEqual({ section: "providers" });
+  });
+
+  it("asks whether to remind again when dismissing a CLI update toast", async () => {
+    mockUserManagedClaudeUpdate();
+    renderChecker();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+
+    renderToast();
+    fireEvent.click(screen.getByTestId("provider-cli-update-dismiss-button"));
+
+    expect(
+      screen.getByRole("dialog", { name: "Dismiss Claude CLI update?" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remind me again" }));
+
+    expect(mocks.toastDismiss).toHaveBeenCalledWith("provider-cli-update:claude");
+    expect(
+      localStorage.getItem(PROVIDER_CLI_DISMISSED_UPDATES_STORAGE_KEY),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("dialog", { name: "Dismiss Claude CLI update?" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("persists don't-ask-again for the current CLI update version", async () => {
+    mockUserManagedClaudeUpdate();
+    const firstRender = renderChecker();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+
+    const toastRender = renderToast();
+    fireEvent.click(screen.getByTestId("provider-cli-update-dismiss-button"));
+    fireEvent.click(screen.getByRole("button", { name: "Don't ask again" }));
+
+    expect(mocks.toastDismiss).toHaveBeenCalledWith("provider-cli-update:claude");
+    expect(
+      JSON.parse(
+        localStorage.getItem(PROVIDER_CLI_DISMISSED_UPDATES_STORAGE_KEY) ?? "[]",
+      ),
+    ).toEqual(["claude:2.1.175"]);
+
+    firstRender.unmount();
+    toastRender.unmount();
+    mocks.toast.mockClear();
+
+    renderChecker();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+
+    expect(mocks.toast).not.toHaveBeenCalled();
   });
 });
