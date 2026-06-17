@@ -47,7 +47,7 @@ impl QueueProcessingOutcome {
     }
 }
 
-const HIDDEN_RESUME_IN_PLACE_MARKER_CONTENT: &str =
+pub(super) const HIDDEN_RESUME_IN_PLACE_MARKER_CONTENT: &str =
     "RalphX hidden resume-in-place message was delivered.";
 
 pub(super) fn queue_processing_blocked_by_pause(
@@ -75,7 +75,9 @@ fn with_resume_in_place_metadata(metadata_override: Option<String>) -> Option<St
     Some(value.to_string())
 }
 
-fn hidden_resume_in_place_marker_metadata(metadata_override: Option<&str>) -> Option<String> {
+pub(super) fn hidden_resume_in_place_marker_metadata(
+    metadata_override: Option<&str>,
+) -> Option<String> {
     let raw = metadata_override?;
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return None;
@@ -153,6 +155,7 @@ fn queued_created_at_override(queued_msg: &QueuedMessage) -> Option<chrono::Date
 fn provider_switch_send_options_for_queued_message(
     queued_msg: &QueuedMessage,
     conversation_id: ChatConversationId,
+    force_new_provider_session: bool,
 ) -> SendMessageOptions {
     SendMessageOptions {
         metadata: queued_msg.metadata_override.clone(),
@@ -165,9 +168,26 @@ fn provider_switch_send_options_for_queued_message(
         composer_integration_references: queued_msg.composer_integration_references.clone(),
         composer_artifact_references: queued_msg.composer_artifact_references.clone(),
         attachment_ids: queued_msg.attachment_ids.clone(),
-        force_new_provider_session: true,
+        force_new_provider_session,
         ..Default::default()
     }
+}
+
+fn queued_target_harness(
+    queued_msg: &QueuedMessage,
+    fallback_harness: AgentHarnessKind,
+) -> AgentHarnessKind {
+    queued_msg.harness_override.unwrap_or(fallback_harness)
+}
+
+fn can_reuse_fresh_provider_run(
+    queued_msg: &QueuedMessage,
+    fresh_provider_harness: Option<AgentHarnessKind>,
+) -> bool {
+    queued_msg.force_new_provider_session
+        && queued_msg
+            .harness_override
+            .is_some_and(|harness| Some(harness) == fresh_provider_harness)
 }
 
 async fn persist_hidden_resume_in_place_marker(
@@ -346,6 +366,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
 ) -> QueueProcessingOutcome {
     let mut total_processed = 0u32;
     let mut last_run_id: Option<String> = None;
+    let mut fresh_provider_harness: Option<AgentHarnessKind> = None;
 
     // Outer loop: keep processing until queue is stable-empty
     loop {
@@ -425,6 +446,38 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 break;
             }
 
+            if let Some(backoff) =
+                super::chat_service_send_background::silent_completion_recovery_backoff(
+                    queued_msg.metadata_override.as_deref(),
+                )
+            {
+                tracing::info!(
+                    %context_type,
+                    context_id,
+                    queue_context_id,
+                    queued_message_id = %queued_msg.id,
+                    backoff_ms = backoff.as_millis(),
+                    "[QUEUE] Delaying hidden silent-completion recovery"
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {}
+                    _ = cancellation_token.cancelled() => {
+                        message_queue.queue_front_existing(
+                            context_type,
+                            queue_context_id,
+                            queued_msg,
+                        );
+                        tracing::info!(
+                            %context_type,
+                            context_id,
+                            queue_context_id,
+                            "[QUEUE] Cancellation requested during recovery backoff, restored message to queue front"
+                        );
+                        break;
+                    }
+                }
+            }
+
             // Guard: for task execution, verify task is still in Executing/ReExecuting state
             if context_type == ChatContextType::TaskExecution {
                 let task_id = TaskId::from_string(context_id.to_string());
@@ -491,11 +544,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
 
             if queued_message_requires_fresh_provider_session(&queued_msg, harness) {
                 let Some(ref handle) = app_handle else {
-                    message_queue.queue_front_existing(
-                        context_type,
-                        queue_context_id,
-                        queued_msg,
-                    );
+                    message_queue.queue_front_existing(context_type, queue_context_id, queued_msg);
                     tracing::warn!(
                         %context_type,
                         context_id,
@@ -513,6 +562,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     execution_state.as_ref().map(Arc::clone),
                     Some(handle.clone()),
                 );
+                let target_harness = queued_target_harness(&queued_msg, harness);
+                let force_new_provider_session =
+                    !can_reuse_fresh_provider_run(&queued_msg, fresh_provider_harness);
                 let send_result = service
                     .send_message(
                         context_type,
@@ -521,6 +573,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         provider_switch_send_options_for_queued_message(
                             &queued_msg,
                             conversation_id.clone(),
+                            force_new_provider_session,
                         ),
                     )
                     .await;
@@ -531,6 +584,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         if !result.agent_run_id.is_empty() {
                             last_run_id = Some(result.agent_run_id.clone());
                         }
+                        if !result.was_queued {
+                            fresh_provider_harness = Some(target_harness);
+                        }
                         tracing::info!(
                             %context_type,
                             context_id,
@@ -538,12 +594,16 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             queued_message_id = %queued_msg.id,
                             agent_run_id = %result.agent_run_id,
                             was_queued = result.was_queued,
+                            force_new_provider_session,
                             "[QUEUE] Replayed provider-switch queued message through chat service"
                         );
-                        return QueueProcessingOutcome {
-                            total_processed,
-                            last_run_id,
-                        };
+                        if result.was_queued {
+                            return QueueProcessingOutcome {
+                                total_processed,
+                                last_run_id,
+                            };
+                        }
+                        continue;
                     }
                     Err(error) => {
                         let error_string = error.to_string();
@@ -1005,6 +1065,8 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             let blocks = outcome.content_blocks;
                             let provider_session_id = outcome.session_id;
                             let queue_stderr = outcome.stderr_text;
+                            let turns_finalized = outcome.turns_finalized;
+                            let silent_interactive_exit = outcome.silent_interactive_exit;
                             if resume_in_place {
                                 persist_hidden_resume_in_place_marker(
                                     chat_message_repo,
@@ -1045,13 +1107,80 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                 )
                                 .await;
                             }
+                            let recovery_enqueue =
+                                super::chat_service_send_background::enqueue_silent_completion_recovery(
+                                    message_queue.as_ref(),
+                                    context_type,
+                                    queue_context_id,
+                                    &response,
+                                    &tools,
+                                    &blocks,
+                                    turns_finalized,
+                                    silent_interactive_exit,
+                                    cancellation_token.is_cancelled(),
+                                    true,
+                                    queued_msg.metadata_override.as_deref(),
+                                );
+                            let recovery_exhausted = matches!(
+                                recovery_enqueue,
+                                super::chat_service_send_background::SilentCompletionRecoveryEnqueue::Exhausted { .. }
+                            );
+                            match recovery_enqueue {
+                                super::chat_service_send_background::SilentCompletionRecoveryEnqueue::Queued {
+                                    attempt,
+                                    backoff_ms,
+                                } => {
+                                    tracing::warn!(
+                                        %context_type,
+                                        context_id,
+                                        queue_context_id,
+                                        queued_run_id = %queued_run_id,
+                                        attempt,
+                                        backoff_ms,
+                                        "[QUEUE] Requeued hidden silent-completion recovery"
+                                    );
+                                }
+                                super::chat_service_send_background::SilentCompletionRecoveryEnqueue::Exhausted { attempts } => {
+                                    tracing::error!(
+                                        %context_type,
+                                        context_id,
+                                        queue_context_id,
+                                        queued_run_id = %queued_run_id,
+                                        attempts,
+                                        "[QUEUE] Silent-completion recovery attempts exhausted"
+                                    );
+                                    if let Some(ref handle) = app_handle {
+                                        let _ = handle.emit(
+                                            "agent:error",
+                                            AgentErrorPayload {
+                                                conversation_id: Some(conversation_id.as_str().to_string()),
+                                                context_type: context_type.to_string(),
+                                                context_id: context_id.to_string(),
+                                                agent_run_id: Some(queued_run_id.clone()),
+                                                error: "Agent stopped after tool activity without a final response after automated recovery attempts".to_string(),
+                                                stderr: None,
+                                            },
+                                        );
+                                    }
+                                }
+                                super::chat_service_send_background::SilentCompletionRecoveryEnqueue::NotNeeded => {}
+                            }
 
                             // NOTE: Don't emit run_completed here for each queued message.
                             // We emit a single run_completed after ALL queue processing is done,
                             // to prevent UI flickering between messages.
-                            let _ = agent_run_repo
-                                .complete(&AgentRunId::from_string(queued_run_id.clone()))
-                                .await;
+                            if recovery_exhausted {
+                                let _ = agent_run_repo
+                                    .fail(
+                                        &AgentRunId::from_string(queued_run_id.clone()),
+                                        "Agent stopped after automated silent-completion recovery attempts",
+                                    )
+                                    .await;
+                            } else {
+                                let _ = agent_run_repo
+                                    .complete(&AgentRunId::from_string(queued_run_id.clone()))
+                                    .await;
+                            }
                         }
                         Err(e) => {
                             if let crate::application::chat_service::StreamError::ProviderError {
@@ -1276,8 +1405,11 @@ mod tests {
         }];
         message.attachment_ids = vec![attachment_id];
 
-        let options =
-            provider_switch_send_options_for_queued_message(&message, conversation_id.clone());
+        let options = provider_switch_send_options_for_queued_message(
+            &message,
+            conversation_id.clone(),
+            true,
+        );
 
         assert_eq!(options.metadata.as_deref(), Some(r#"{"source":"queue"}"#));
         assert_eq!(
@@ -1305,6 +1437,50 @@ mod tests {
         );
         assert_eq!(options.attachment_ids, message.attachment_ids);
         assert!(options.force_new_provider_session);
+    }
+
+    #[test]
+    fn provider_switch_send_options_can_reuse_fresh_provider_run() {
+        let conversation_id = ChatConversationId::new();
+        let mut message = QueuedMessage::new("second queued provider message".to_string());
+        message.harness_override = Some(AgentHarnessKind::Codex);
+        message.force_new_provider_session = true;
+
+        let options =
+            provider_switch_send_options_for_queued_message(&message, conversation_id, false);
+
+        assert_eq!(options.harness_override, Some(AgentHarnessKind::Codex));
+        assert!(
+            !options.force_new_provider_session,
+            "same-harness queued follow-ups should reuse the freshly started provider run"
+        );
+    }
+
+    #[test]
+    fn fresh_provider_run_reuse_requires_matching_queued_harness() {
+        let mut same_harness = QueuedMessage::new("same harness".to_string());
+        same_harness.harness_override = Some(AgentHarnessKind::Codex);
+        same_harness.force_new_provider_session = true;
+
+        let mut no_harness = QueuedMessage::new("explicit fresh session".to_string());
+        no_harness.force_new_provider_session = true;
+
+        let mut different_harness = QueuedMessage::new("different harness".to_string());
+        different_harness.harness_override = Some(AgentHarnessKind::Claude);
+        different_harness.force_new_provider_session = true;
+
+        assert!(can_reuse_fresh_provider_run(
+            &same_harness,
+            Some(AgentHarnessKind::Codex)
+        ));
+        assert!(!can_reuse_fresh_provider_run(
+            &no_harness,
+            Some(AgentHarnessKind::Codex)
+        ));
+        assert!(!can_reuse_fresh_provider_run(
+            &different_harness,
+            Some(AgentHarnessKind::Codex)
+        ));
     }
 
     #[tokio::test]

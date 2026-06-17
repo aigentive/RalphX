@@ -1626,6 +1626,7 @@ export interface SendAgentMessageOptions {
   providerHarness?: string | null;
   modelId?: string | null;
   logicalEffort?: string | null;
+  suppressUserMessage?: boolean;
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
   composerArtifactReferences?: ComposerArtifactReference[];
@@ -1673,6 +1674,7 @@ export interface AgentConversationWorkspace {
   publicationPrStatus: string | null;
   publicationPushStatus: string | null;
   autoPublishEnabled?: boolean;
+  autoPublishInitialPrEnabled?: boolean;
   autoPublishPausedPrAutofixEnabled?: boolean | null;
   autoPublishPausedPrAutoMergeDesired?: boolean | null;
   prAutofixEnabled?: boolean;
@@ -1845,6 +1847,7 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   publication_pr_status: z.string().nullable(),
   publication_push_status: z.string().nullable(),
   auto_publish_enabled: z.boolean().optional().default(true),
+  auto_publish_initial_pr_enabled: z.boolean().optional().default(false),
   auto_publish_paused_pr_autofix_enabled: z.boolean().nullable().optional().default(null),
   auto_publish_paused_pr_auto_merge_desired: z.boolean().nullable().optional().default(null),
   pr_autofix_enabled: z.boolean().optional().default(false),
@@ -2041,6 +2044,7 @@ function transformAgentConversationWorkspace(
     publicationPrStatus: raw.publication_pr_status,
     publicationPushStatus: raw.publication_push_status,
     autoPublishEnabled: raw.auto_publish_enabled,
+    autoPublishInitialPrEnabled: raw.auto_publish_initial_pr_enabled,
     autoPublishPausedPrAutofixEnabled: raw.auto_publish_paused_pr_autofix_enabled,
     autoPublishPausedPrAutoMergeDesired: raw.auto_publish_paused_pr_auto_merge_desired,
     prAutofixEnabled: raw.pr_autofix_enabled,
@@ -2053,6 +2057,19 @@ function transformAgentConversationWorkspace(
     status: raw.status,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+  };
+}
+
+function sourcePullRequestInvokeInput(
+  sourcePullRequest: AgentConversationSourcePullRequest
+) {
+  return {
+    number: sourcePullRequest.number,
+    url: sourcePullRequest.url ?? null,
+    title: sourcePullRequest.title ?? null,
+    headRefName: sourcePullRequest.headRefName,
+    baseRefName: sourcePullRequest.baseRefName ?? null,
+    headRefOid: sourcePullRequest.headRefOid ?? null,
   };
 }
 
@@ -2436,14 +2453,9 @@ export async function startAgentConversation(
               baseDisplayName: input.base.displayName,
               ...(input.base.sourcePullRequest
                 ? {
-                    baseSourcePullRequest: {
-                      number: input.base.sourcePullRequest.number,
-                      url: input.base.sourcePullRequest.url ?? null,
-                      title: input.base.sourcePullRequest.title ?? null,
-                      headRefName: input.base.sourcePullRequest.headRefName,
-                      baseRefName: input.base.sourcePullRequest.baseRefName ?? null,
-                      headRefOid: input.base.sourcePullRequest.headRefOid ?? null,
-                    },
+                    baseSourcePullRequest: sourcePullRequestInvokeInput(
+                      input.base.sourcePullRequest
+                    ),
                   }
                 : {}),
             }
@@ -2484,6 +2496,13 @@ export async function switchAgentConversationMode(
               baseRefKind: input.base.kind,
               baseRef: input.base.ref,
               baseDisplayName: input.base.displayName,
+              ...(input.base.sourcePullRequest
+                ? {
+                    baseSourcePullRequest: sourcePullRequestInvokeInput(
+                      input.base.sourcePullRequest
+                    ),
+                  }
+                : {}),
             }
           : {}),
       },
@@ -2524,6 +2543,7 @@ export async function sendAgentMessage(
         ...(options?.providerHarness ? { providerHarness: options.providerHarness } : {}),
         ...(options?.modelId ? { modelOverride: options.modelId } : {}),
         ...(options?.logicalEffort ? { logicalEffort: options.logicalEffort } : {}),
+        ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
         ...(options?.composerProjectReferences?.length
           ? { composerProjectReferences: options.composerProjectReferences }
           : {}),

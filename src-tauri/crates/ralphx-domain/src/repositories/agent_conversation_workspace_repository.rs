@@ -21,6 +21,13 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentConversationWorkspace>>;
 
+    async fn get_by_linked_ideation_session_id(
+        &self,
+        _ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(None)
+    }
+
     async fn get_by_project_id(
         &self,
         project_id: &ProjectId,
@@ -109,6 +116,14 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _pr_auto_merge_desired: bool,
         _pr_supervision_status: Option<&str>,
         _pr_supervision_summary: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_auto_publish_initial_pr_preference(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _enabled: bool,
     ) -> AppResult<()> {
         Ok(())
     }

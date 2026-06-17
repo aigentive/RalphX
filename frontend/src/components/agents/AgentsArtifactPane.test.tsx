@@ -303,6 +303,7 @@ const workspace = (
   publicationPrStatus: null,
   publicationPushStatus: null,
   autoPublishEnabled: true,
+  autoPublishInitialPrEnabled: false,
   autoPublishPausedPrAutofixEnabled: null,
   autoPublishPausedPrAutoMergeDesired: null,
   status: "active",
@@ -514,6 +515,7 @@ describe("AgentsArtifactPane", () => {
           publicationPrStatus: "open",
           publicationPushStatus: "pushed",
           autoPublishEnabled: input.autoPublishEnabled,
+          autoPublishInitialPrEnabled: input.autoPublishEnabled,
           prSupervisionStatus: input.autoPublishEnabled ? "monitoring" : "paused",
         })
     );
@@ -733,6 +735,41 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+  });
+
+  it("shows pre-PR Auto Publish without PR automation controls", async () => {
+    renderPane("publish", workspace({ mode: "edit" }));
+
+    expect(await screen.findByTestId("agents-auto-publish-switch")).not.toBeChecked();
+    expect(screen.queryByTestId("agents-pr-autofix-switch")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-pr-auto-merge-switch")).not.toBeInTheDocument();
+  });
+
+  it("confirms enabling pre-PR Auto Publish from the publish pane", async () => {
+    setWorkspaceAutoPublishMock.mockImplementationOnce(
+      async (conversationId: string, input: { autoPublishEnabled: boolean }) =>
+        workspace({
+          mode: "edit",
+          conversationId,
+          autoPublishInitialPrEnabled: input.autoPublishEnabled,
+        })
+    );
+    renderPane("publish", workspace({ mode: "edit" }));
+
+    fireEvent.click(await screen.findByTestId("agents-auto-publish-switch"));
+
+    expect(setWorkspaceAutoPublishMock).not.toHaveBeenCalled();
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Enable Auto Publish",
+      })
+    );
+
+    await waitFor(() =>
+      expect(setWorkspaceAutoPublishMock).toHaveBeenCalledWith("conversation-1", {
+        autoPublishEnabled: true,
+      })
+    );
   });
 
   it("persists PR supervision switches from the publish pane", async () => {
@@ -1440,8 +1477,14 @@ describe("AgentsArtifactPane", () => {
         expect.stringContaining("Implement the approved plan directly"),
         undefined,
         undefined,
-        { conversationId: "conversation-1" },
+        {
+          conversationId: "conversation-1",
+          suppressUserMessage: true,
+        },
       ),
+    );
+    expect(sendAgentMessageMock.mock.calls[0]?.[2]).not.toContain(
+      "do not create task proposals",
     );
     expect(toastSuccessMock).toHaveBeenCalledWith("Implementation started");
   });
@@ -1952,7 +1995,12 @@ describe("AgentsArtifactPane", () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     renderPane(
       "publish",
-      workspace({ mode: "edit" }),
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 42,
+        publicationPrUrl: "https://github.com/acme/project/pull/42",
+        publicationPrStatus: "open",
+      }),
       publish,
       false,
       conversation(),
@@ -1978,7 +2026,12 @@ describe("AgentsArtifactPane", () => {
 
     renderPane(
       "publish",
-      workspace({ mode: "edit" }),
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 42,
+        publicationPrUrl: "https://github.com/acme/project/pull/42",
+        publicationPrStatus: "open",
+      }),
       publish,
       false,
       conversation(),
@@ -2002,6 +2055,9 @@ describe("AgentsArtifactPane", () => {
       supervisionDeferred.resolve(
         workspace({
           mode: "edit",
+          publicationPrNumber: 42,
+          publicationPrUrl: "https://github.com/acme/project/pull/42",
+          publicationPrStatus: "open",
           prAutoMergeDesired: true,
           prAutoMergeMethod: "squash",
           prSupervisionStatus: "monitoring",

@@ -76,12 +76,21 @@ export const AgentConversationBaseLine = memo(function AgentConversationBaseLine
     );
   }
 
+  const baseRef = freshness?.effectiveBaseRef ?? freshness?.baseRef ?? workspace.baseRef;
+  const sourcePullRequest = workspace.sourcePullRequest;
+  const sourcePullRequestTitle = sourcePullRequest?.title?.trim();
+  const sourcePullRequestBranch = sourcePullRequest?.headRefName ?? baseRef;
+  const sourcePullRequestLabel = sourcePullRequest
+    ? `PR #${sourcePullRequest.number}${
+        sourcePullRequestTitle ? `: ${sourcePullRequestTitle}` : ""
+      } (${sourcePullRequestBranch})`
+    : null;
   const baseLabel =
+    sourcePullRequestLabel ??
     freshness?.effectiveBaseDisplayName ??
     freshness?.baseDisplayName ??
     workspace.baseDisplayName ??
     workspace.baseRef;
-  const baseRef = freshness?.effectiveBaseRef ?? freshness?.baseRef ?? workspace.baseRef;
   const baseKind = freshness?.baseStatus === "retargeted"
     ? "project_default"
     : workspace.baseRefKind;
@@ -99,6 +108,7 @@ export const AgentConversationBaseLine = memo(function AgentConversationBaseLine
           : "local_branch",
       ref: baseRef,
       displayName: baseLabel,
+      ...(sourcePullRequest !== undefined ? { sourcePullRequest } : {}),
     },
   };
   const pickerOptions = mergeBranchBaseOptions(option, options);

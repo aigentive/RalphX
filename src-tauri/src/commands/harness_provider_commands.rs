@@ -529,7 +529,14 @@ async fn update_provider_settings_with_probes(
         apply_provider_to_global_lanes(state, &saved).await?;
     }
 
-    read_provider_settings_with_probes(state, probes).await
+    let mut response_probes = probes.clone();
+    if let Some(probe) =
+        crate::application::managed_provider_cli::managed_provider_runtime_probe(&saved)
+    {
+        response_probes.insert(saved.provider, probe);
+    }
+
+    read_provider_settings_with_probes(state, &response_probes).await
 }
 
 #[cfg(test)]

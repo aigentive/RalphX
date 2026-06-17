@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  agentWorkspaceOperationErrorDetail,
   agentWorkspaceOperationToastId,
   publishPipelineToastLabel,
   startAgentWorkspaceOperationToast,
@@ -51,6 +52,28 @@ describe("agentWorkspaceOperationToast", () => {
     ["unknown", "Check workspace"],
   ])("maps publish status %s to %s", (status, label) => {
     expect(publishPipelineToastLabel(status)).toBe(label);
+  });
+
+  it("strips raw agent output from operation error details", () => {
+    expect(
+      agentWorkspaceOperationErrorDetail(
+        new Error(
+          "PR describer agent completed without submitting a PR description. Raw output: ## Summary\n\n" +
+            "A".repeat(2_000),
+        ),
+        "Failed to publish branch",
+      ),
+    ).toBe("PR describer agent completed without submitting a PR description.");
+  });
+
+  it("compacts long operation error details", () => {
+    const detail = agentWorkspaceOperationErrorDetail(
+      "Publish failed: " + "x".repeat(500),
+      "Failed to publish branch",
+    );
+
+    expect(detail).toHaveLength(240);
+    expect(detail.endsWith("...")).toBe(true);
   });
 
   it("keeps one persistent loading toast updated with elapsed time", () => {

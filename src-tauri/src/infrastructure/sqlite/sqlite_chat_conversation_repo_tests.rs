@@ -376,6 +376,63 @@ async fn test_get_active_for_context_not_found() {
 }
 
 #[tokio::test]
+async fn test_list_recent_resumable_by_context_type_filters_and_orders() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let now = Utc::now();
+
+    let mut oldest = make_conversation(ChatContextType::Project, "project-oldest");
+    oldest.provider_session_id = Some("codex-oldest".to_string());
+    oldest.provider_harness = Some(AgentHarnessKind::Codex);
+    oldest.last_message_at = Some(now - chrono::Duration::minutes(5));
+    oldest.updated_at = now - chrono::Duration::minutes(1);
+
+    let mut newest = make_conversation(ChatContextType::Project, "project-newest");
+    newest.claude_session_id = Some("claude-newest".to_string());
+    newest.last_message_at = Some(now - chrono::Duration::minutes(1));
+    newest.updated_at = now - chrono::Duration::minutes(5);
+
+    let mut middle = make_conversation(ChatContextType::Project, "project-middle");
+    middle.provider_session_id = Some("codex-middle".to_string());
+    middle.provider_harness = Some(AgentHarnessKind::Codex);
+    middle.last_message_at = Some(now - chrono::Duration::minutes(3));
+
+    let missing_session = make_conversation(ChatContextType::Project, "project-missing-session");
+
+    let mut archived = make_conversation(ChatContextType::Project, "project-archived");
+    archived.provider_session_id = Some("codex-archived".to_string());
+    archived.provider_harness = Some(AgentHarnessKind::Codex);
+    archived.archived_at = Some(now);
+
+    let mut task = make_conversation(ChatContextType::Task, "task-1");
+    task.provider_session_id = Some("codex-task".to_string());
+    task.provider_harness = Some(AgentHarnessKind::Codex);
+
+    repo.create(oldest.clone()).await.unwrap();
+    repo.create(newest.clone()).await.unwrap();
+    repo.create(middle.clone()).await.unwrap();
+    repo.create(missing_session).await.unwrap();
+    repo.create(archived).await.unwrap();
+    repo.create(task).await.unwrap();
+
+    let resumable = repo
+        .list_recent_resumable_by_context_type(ChatContextType::Project, 2)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resumable
+            .iter()
+            .map(|conversation| conversation.id.as_str().to_string())
+            .collect::<Vec<_>>(),
+        vec![
+            newest.id.as_str().to_string(),
+            middle.id.as_str().to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn test_get_attribution_backfill_summary_counts_legacy_rows() {
     let db = setup_test_db();
     let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());

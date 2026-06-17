@@ -2,6 +2,46 @@ use super::*;
 use crate::domain::agents::AgentRole;
 use crate::infrastructure::agents::claude::build_mcp_config_with_runtime_context;
 
+fn make_temp_project_plugin_dir() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().to_path_buf();
+    let plugin_dir = root.join("plugins/app");
+    std::fs::create_dir_all(plugin_dir.join("ralphx-mcp-server/build")).unwrap();
+    std::fs::write(
+        plugin_dir.join("ralphx-mcp-server/build/index.js"),
+        "// fake",
+    )
+    .unwrap();
+    (dir, root, plugin_dir)
+}
+
+fn write_pr_describer_agent(root: &std::path::Path) {
+    let agent_root = root.join("agents/ralphx-utility-pr-describer");
+    std::fs::create_dir_all(agent_root.join("shared")).unwrap();
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        r#"name: ralphx-utility-pr-describer
+role: pr_describer
+description: "Writes reviewer-focused pull request descriptions"
+capabilities:
+  mcp_tools:
+    - submit_agent_workspace_pr_description
+harnesses:
+  claude:
+    model: haiku
+    tools:
+      mcp_only: true
+    preapproved_cli_tools: []
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        agent_root.join("shared/prompt.md"),
+        "You are a pull request description writer.",
+    )
+    .unwrap();
+}
+
 fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     args.iter()
         .position(|arg| arg == flag)
@@ -141,6 +181,52 @@ fn test_build_cli_args_with_agent() {
 
     assert!(args.contains(&"--agent".to_string()));
     assert!(args.contains(&"worker".to_string()));
+}
+
+#[test]
+fn test_spawn_agent_command_uses_prompt_injection_for_utility_agents() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    write_pr_describer_agent(&root);
+    let client = ClaudeCodeClient::new().with_cli_path("/fake/claude");
+    let config = AgentConfig::worker("Draft a PR description")
+        .with_agent(crate::infrastructure::agents::claude::agent_names::AGENT_PR_DESCRIBER)
+        .with_plugin_dir(plugin_dir)
+        .with_working_dir("/tmp");
+
+    let spawnable = client
+        .build_spawnable_agent_command(&config, None, false)
+        .expect("spawnable utility command");
+    let args = spawnable.get_args_for_test();
+
+    assert!(
+        !args.contains(&"--agent".to_string()),
+        "one-shot utility agents should avoid native --agent mode"
+    );
+    assert!(
+        args.contains(&"--append-system-prompt-file".to_string())
+            || args.contains(&"--append-system-prompt".to_string()),
+        "utility agent behavior should be injected as a system prompt"
+    );
+    assert_eq!(arg_value(&args, "-p"), Some("-"));
+    assert_eq!(
+        spawnable.get_stdin_prompt_for_test(),
+        Some("Draft a PR description")
+    );
+    assert_eq!(arg_value(&args, "--model"), Some("haiku"));
+    assert!(
+        arg_value(&args, "--allowedTools").is_some_and(
+            |tools| tools.contains("mcp__ralphx__submit_agent_workspace_pr_description")
+        ),
+        "PR describer submit tool should stay preapproved"
+    );
+    assert!(
+        args.contains(&"--mcp-config".to_string()),
+        "utility agent should still receive a strict MCP config"
+    );
+    assert!(
+        args.contains(&"--strict-mcp-config".to_string()),
+        "utility agent should keep strict MCP isolation"
+    );
 }
 
 #[test]

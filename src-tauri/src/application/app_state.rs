@@ -338,7 +338,7 @@ impl AppState {
         }
     }
 
-    fn lock_utility_agent_runtime_model(
+    pub(crate) fn lock_utility_agent_runtime_model(
         runtime: ResolvedBackgroundAgentRuntime,
     ) -> ResolvedBackgroundAgentRuntime {
         let harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
@@ -349,35 +349,20 @@ impl AppState {
         }
     }
 
-    fn managed_cli_path_override_for_provider(
+    pub(crate) fn managed_cli_path_override_for_provider(
         provider_settings: &AgentProviderSettings,
         purpose: &str,
     ) -> AppResult<Option<PathBuf>> {
         let Some(launch_path) =
-            crate::application::managed_provider_cli::managed_provider_cli_launch_path(
+            crate::application::managed_provider_cli::checked_managed_provider_cli_launch_path(
                 provider_settings,
+                purpose,
             )
         else {
             return Ok(None);
         };
 
-        let cli_path = launch_path.map_err(AppError::Infrastructure)?;
-        if let Some(probe) =
-            crate::application::managed_provider_cli::managed_provider_runtime_probe(
-                provider_settings,
-            )
-        {
-            if !probe.available {
-                return Err(AppError::Infrastructure(probe.error.unwrap_or_else(|| {
-                    format!(
-                        "{purpose} harness unavailable: {}",
-                        provider_settings.provider
-                    )
-                })));
-            }
-        }
-
-        Ok(Some(cli_path))
+        launch_path.map(Some).map_err(AppError::Infrastructure)
     }
 
     async fn resolve_background_agent_client_and_cli_path_override(
@@ -413,7 +398,7 @@ impl AppState {
         )))
     }
 
-    async fn resolve_background_agent_runtime_for_harness(
+    pub(crate) async fn resolve_background_agent_runtime_for_harness(
         &self,
         harness: AgentHarnessKind,
         purpose: &str,
@@ -493,11 +478,21 @@ impl AppState {
         );
 
         let started_at = Instant::now();
-        let service = build_transition_service_from_deps(app_handle, execution_state, &deps);
+        let mut service = build_transition_service_from_deps(app_handle, execution_state, &deps);
         tracing::info!(
             elapsed_ms = started_at.elapsed().as_millis(),
             "AppState transition service built"
         );
+
+        let drafter = Arc::new(
+            crate::application::plan_pr_description::AppStatePlanPrDescriptionDrafter::new(
+                Arc::clone(&self.agent_conversation_workspace_repo),
+                Arc::clone(&self.agent_provider_settings_repo),
+                self.agent_clients.clone(),
+            ),
+        );
+        service = service.with_plan_pr_description_drafter(drafter);
+
         service
     }
 

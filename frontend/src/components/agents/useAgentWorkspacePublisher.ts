@@ -10,20 +10,11 @@ import type { AgentConversation } from "./agentConversations";
 import {
   AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
   AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS,
+  agentWorkspaceOperationErrorDetail,
   agentWorkspaceOperationToastDescription,
   agentWorkspaceOperationToastId,
 } from "./agentWorkspaceOperationToast";
 import { invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
-
-function getErrorMessage(error: unknown, fallback: string): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (typeof error === "string" && error.trim()) {
-    return error;
-  }
-  return fallback;
-}
 
 interface UseAgentWorkspacePublisherArgs {
   activeWorkspace: AgentConversationWorkspace | null;
@@ -72,7 +63,10 @@ export function useAgentWorkspacePublisher({
             : Promise.resolve(),
         ]).catch(() => undefined);
       } catch (err) {
-        const errorMessage = getErrorMessage(err, "Failed to publish branch");
+        const errorMessage = agentWorkspaceOperationErrorDetail(
+          err,
+          "Failed to publish branch",
+        );
         let refreshedWorkspace: AgentConversationWorkspace | null = null;
         try {
           refreshedWorkspace = await chatApi.getAgentConversationWorkspace(conversationId);

@@ -429,26 +429,12 @@ impl AgenticClientSpawner {
                 .map_err(|error| format!("Failed to read provider settings: {error}"))?;
             if let Some(settings) = settings.as_ref() {
                 if let Some(launch_path) =
-                    crate::application::managed_provider_cli::managed_provider_cli_launch_path(
+                    crate::application::managed_provider_cli::checked_managed_provider_cli_launch_path(
                         settings,
+                        "state-machine agent spawn",
                     )
                 {
-                    let cli_path_override = launch_path?;
-                    let probe =
-                        crate::application::managed_provider_cli::managed_provider_runtime_probe(
-                            settings,
-                        );
-                    if let Some(probe) = probe {
-                        if !probe.available {
-                            return Err(probe.error.unwrap_or_else(|| {
-                                format!(
-                                    "Configured execution harness {} is unavailable for {}",
-                                    harness, agent_type
-                                )
-                            }));
-                        }
-                    }
-                    return Ok((client, Some(cli_path_override)));
+                    return Ok((client, Some(launch_path?)));
                 }
             }
         }

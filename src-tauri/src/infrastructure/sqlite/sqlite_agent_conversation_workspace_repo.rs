@@ -78,6 +78,7 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversati
         publication_pr_status: row.get("publication_pr_status")?,
         publication_push_status: row.get("publication_push_status")?,
         auto_publish_enabled: row.get("auto_publish_enabled")?,
+        auto_publish_initial_pr_enabled: row.get("auto_publish_initial_pr_enabled")?,
         auto_publish_paused_pr_autofix_enabled: row
             .get("auto_publish_paused_pr_autofix_enabled")?,
         auto_publish_paused_pr_auto_merge_desired: row
@@ -216,6 +217,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let publication_pr_status = workspace.publication_pr_status.clone();
         let publication_push_status = workspace.publication_push_status.clone();
         let auto_publish_enabled = workspace.auto_publish_enabled;
+        let auto_publish_initial_pr_enabled = workspace.auto_publish_initial_pr_enabled;
         let auto_publish_paused_pr_autofix_enabled =
             workspace.auto_publish_paused_pr_autofix_enabled;
         let auto_publish_paused_pr_auto_merge_desired =
@@ -245,13 +247,13 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         source_pr_head_ref, source_pr_base_ref, source_pr_head_sha,
                         publication_pr_number, publication_pr_url, publication_pr_status,
                         publication_push_status, auto_publish_enabled,
-                        auto_publish_paused_pr_autofix_enabled,
+                        auto_publish_initial_pr_enabled, auto_publish_paused_pr_autofix_enabled,
                         auto_publish_paused_pr_auto_merge_desired, pr_autofix_enabled,
                         pr_auto_merge_desired, pr_auto_merge_method,
                         pr_auto_merge_current, pr_supervision_status,
                         pr_supervision_summary, pr_supervision_updated_at, status,
                         created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id=excluded.project_id,
                         mode=excluded.mode,
@@ -274,6 +276,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         publication_pr_status=excluded.publication_pr_status,
                         publication_push_status=excluded.publication_push_status,
                         auto_publish_enabled=excluded.auto_publish_enabled,
+                        auto_publish_initial_pr_enabled=excluded.auto_publish_initial_pr_enabled,
                         auto_publish_paused_pr_autofix_enabled=excluded.auto_publish_paused_pr_autofix_enabled,
                         auto_publish_paused_pr_auto_merge_desired=excluded.auto_publish_paused_pr_auto_merge_desired,
                         pr_autofix_enabled=excluded.pr_autofix_enabled,
@@ -308,6 +311,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         publication_pr_status,
                         publication_push_status,
                         auto_publish_enabled,
+                        auto_publish_initial_pr_enabled,
                         auto_publish_paused_pr_autofix_enabled,
                         auto_publish_paused_pr_auto_merge_desired,
                         pr_autofix_enabled,
@@ -371,6 +375,29 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     workspaces.push(row?);
                 }
                 Ok(workspaces)
+            })
+            .await
+    }
+
+    async fn get_by_linked_ideation_session_id(
+        &self,
+        ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        let ideation_session_id = ideation_session_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE linked_ideation_session_id = ?1
+                     ORDER BY updated_at DESC
+                     LIMIT 1",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![ideation_session_id])?;
+                if let Some(row) = rows.next()? {
+                    Ok(Some(row_to_workspace(row)?))
+                } else {
+                    Ok(None)
+                }
             })
             .await
     }
@@ -775,6 +802,27 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         supervision_updated_at,
                         now
                     ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn update_auto_publish_initial_pr_preference(
+        &self,
+        conversation_id: &ChatConversationId,
+        enabled: bool,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET auto_publish_initial_pr_enabled = ?2,
+                         updated_at = ?3
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, enabled, now],
                 )?;
                 Ok(())
             })
