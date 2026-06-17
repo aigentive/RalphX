@@ -63,7 +63,8 @@ use crate::application::chat_service::tool_result_preview::{
     preview_tool_arguments_object, preview_tool_result_object, tool_detail_ref,
 };
 use crate::application::chat_service::{
-    AgentConversationCreatedPayload, AgentRunningState, SendMessageOptions,
+    message_metadata_hidden_from_ui, AgentConversationCreatedPayload, AgentRunningState,
+    SendMessageOptions,
 };
 use crate::application::git_service::{
     git_cmd::{self, GitCommandLane},
@@ -134,6 +135,9 @@ pub struct SendAgentMessageInput {
     pub model_override: Option<String>,
     /// Optional provider-neutral reasoning effort override for the spawned agent.
     pub logical_effort: Option<LogicalEffort>,
+    /// Internal handoff messages should reach the runtime without rendering as user chat.
+    #[serde(default)]
+    pub suppress_user_message: bool,
     /// Structured composer project references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_project_references: Vec<ComposerProjectReference>,
@@ -150,6 +154,17 @@ pub struct SendAgentMessageInput {
     /// When set to a teammate name, the message is routed to that teammate's stdin
     /// instead of the lead's. "lead" or None routes to the lead (default behavior).
     pub target: Option<String>,
+}
+
+fn hidden_user_message_metadata() -> String {
+    serde_json::json!({
+        "source": "hidden_user_message",
+        "resume_in_place": true,
+        "persist_hidden_marker": true,
+        "hidden_from_ui": true,
+        "recovery_context": true,
+    })
+    .to_string()
 }
 
 /// Response from send_agent_message command
@@ -178,7 +193,9 @@ fn parse_chat_attachment_ids(raw_ids: &[String]) -> Result<Vec<ChatAttachmentId>
 
 #[cfg(test)]
 mod chat_attachment_id_parser_tests {
-    use super::{parse_chat_attachment_ids, QueuedMessageResponse};
+    use super::{
+        parse_chat_attachment_ids, visible_queued_message_responses, QueuedMessageResponse,
+    };
     use crate::domain::entities::ChatAttachmentId;
     use crate::domain::services::QueuedMessage;
 
@@ -206,6 +223,18 @@ mod chat_attachment_id_parser_tests {
         let response = QueuedMessageResponse::from(queued);
 
         assert_eq!(response.attachment_ids, vec![attachment_id.to_string()]);
+    }
+
+    #[test]
+    fn visible_queued_message_responses_omits_hidden_messages() {
+        let visible = QueuedMessage::new("visible follow-up".to_string());
+        let mut hidden = QueuedMessage::new("internal handoff".to_string());
+        hidden.metadata_override = Some(r#"{"hidden_from_ui":true}"#.to_string());
+
+        let responses = visible_queued_message_responses(vec![visible, hidden]);
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].content, "visible follow-up");
     }
 }
 
@@ -1595,6 +1624,13 @@ impl From<QueuedMessage> for QueuedMessageResponse {
                 .collect(),
         }
     }
+}
+
+fn visible_queued_message_responses(msgs: Vec<QueuedMessage>) -> Vec<QueuedMessageResponse> {
+    msgs.into_iter()
+        .filter(|msg| !message_metadata_hidden_from_ui(msg.metadata_override.as_deref()))
+        .map(QueuedMessageResponse::from)
+        .collect()
 }
 
 /// Response for conversation listing
@@ -3612,6 +3648,9 @@ pub async fn send_agent_message(
             &input.context_id,
             &input.content,
             SendMessageOptions {
+                metadata: input
+                    .suppress_user_message
+                    .then(hidden_user_message_metadata),
                 harness_override,
                 model_override,
                 logical_effort_override,
@@ -3684,7 +3723,7 @@ pub async fn get_queued_agent_messages(
     service
         .get_queued_messages(context_type, &context_id)
         .await
-        .map(|msgs| msgs.into_iter().map(QueuedMessageResponse::from).collect())
+        .map(visible_queued_message_responses)
         .map_err(|e| e.to_string())
 }
 
@@ -7495,7 +7534,7 @@ mod tests {
         fork_terminal_agent_conversation_for_send, get_agent_conversation_summary_for_app_state,
         get_agent_conversation_timeline_page_for_app_state,
         get_agent_conversation_workspace_freshness,
-        get_agent_timeline_item_tool_call_detail_for_app_state,
+        get_agent_timeline_item_tool_call_detail_for_app_state, hidden_user_message_metadata,
         invalidate_agent_workspace_freshness_cache, list_agent_conversations_page,
         mark_agent_workspace_failure_with_routing_and_action, merge_delegated_snapshot_into_result,
         normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
@@ -7582,6 +7621,18 @@ mod tests {
     use std::time::{Duration, Instant};
     use tauri::test::{mock_builder, mock_context, noop_assets};
     use tauri::Manager;
+
+    #[test]
+    fn hidden_user_message_metadata_suppresses_visible_chat_message() {
+        let metadata: serde_json::Value =
+            serde_json::from_str(&hidden_user_message_metadata()).expect("metadata json");
+
+        assert_eq!(metadata["source"], "hidden_user_message");
+        assert_eq!(metadata["resume_in_place"], true);
+        assert_eq!(metadata["persist_hidden_marker"], true);
+        assert_eq!(metadata["hidden_from_ui"], true);
+        assert_eq!(metadata["recovery_context"], true);
+    }
 
     fn build_send_now_command_app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
         mock_builder()

@@ -994,7 +994,10 @@ function AgentPlanPanel({
         PLAN_IMPLEMENT_DIRECTLY_REQUEST,
         undefined,
         undefined,
-        { conversationId: workspace.conversationId },
+        {
+          conversationId: workspace.conversationId,
+          suppressUserMessage: true,
+        },
       );
       toast.success("Implementation started");
     } catch (err) {

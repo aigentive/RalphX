@@ -1094,7 +1094,11 @@ describe("AgentsActiveConversationPanel", () => {
         providerHarness: "codex",
         modelId: "gpt-5.5",
         logicalEffort: "high",
+        suppressUserMessage: true,
       },
+    );
+    expect(sendAgentMessageMock.mock.calls[0]?.[2]).not.toContain(
+      "do not create task proposals",
     );
     expect(onConversationModeSwitched).toHaveBeenCalledWith(
       "conversation-1",
