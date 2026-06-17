@@ -38,3 +38,34 @@ impl LinearIntegrationSettingsRepository for MemoryLinearIntegrationSettingsRepo
         Ok(current.clone())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::integrations::IntegrationValidationStatus;
+
+    #[tokio::test]
+    async fn stores_and_replaces_linear_integration_settings() {
+        let repo = MemoryLinearIntegrationSettingsRepository::new();
+
+        let default = repo.get().await.unwrap();
+        assert!(!default.enabled);
+        assert_eq!(
+            default.validation_status,
+            IntegrationValidationStatus::NotConfigured
+        );
+
+        let mut settings = LinearIntegrationSettings::default();
+        settings.enabled = true;
+        settings.token_secret_ref = Some("linear-token-ref".to_string());
+        settings.validation_status = IntegrationValidationStatus::Valid;
+        settings.issue_search_available = true;
+
+        let saved = repo.upsert(&settings).await.unwrap();
+        assert!(saved.enabled);
+
+        let stored = repo.get().await.unwrap();
+        assert_eq!(stored.token_secret_ref.as_deref(), Some("linear-token-ref"));
+        assert!(stored.issue_search_available);
+    }
+}

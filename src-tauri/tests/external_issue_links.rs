@@ -56,6 +56,13 @@ async fn memory_repo_upserts_links_and_finds_provider_identity() {
         .unwrap()
         .expect("idempotency key should resolve");
     assert_eq!(by_idempotency.id, created.id);
+
+    assert!(repo.get_link("missing-link").await.unwrap().is_none());
+    assert!(repo
+        .find_link_by_external_identity("linear", "issue", "missing")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -99,6 +106,90 @@ async fn sqlite_repo_persists_links_and_sync_records() {
         .unwrap()
         .expect("sync idempotency key should resolve");
     assert_eq!(by_key.id, pending.id);
+
+    let retried = repo
+        .upsert_sync_record(ExternalIssueSyncRecordUpsert {
+            link_id: link.id.clone(),
+            sync_kind: "comment".to_string(),
+            idempotency_key: "linear:comment:task-1:abc123".to_string(),
+            local_sha: Some("def456".to_string()),
+            local_state: Some("reviewing".to_string()),
+            external_version: Some("comment_456".to_string()),
+            status: ExternalIssueSyncStatus::Failed,
+            error_message: Some("Linear rejected update".to_string()),
+            metadata_json: Some(r#"{"attempt":2}"#.to_string()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(retried.id, pending.id);
+    assert_eq!(retried.status, ExternalIssueSyncStatus::Failed);
+    assert_eq!(
+        retried.error_message.as_deref(),
+        Some("Linear rejected update")
+    );
+    assert!(retried.completed_at.is_some());
+    assert!(repo
+        .update_sync_status(
+            "missing-sync-record",
+            ExternalIssueSyncStatus::Skipped,
+            None,
+            Some("not found"),
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repo
+        .find_sync_record_by_idempotency_key("missing-sync-key")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn memory_repo_updates_sync_records_and_marks_terminal_statuses() {
+    let repo = MemoryExternalIssueLinkRepository::new();
+    let link = repo.upsert_link(sample_linear_link()).await.unwrap();
+    let pending = repo
+        .upsert_sync_record(ExternalIssueSyncRecordUpsert {
+            link_id: link.id.clone(),
+            sync_kind: "status".to_string(),
+            idempotency_key: "linear:status:task-1:abc123".to_string(),
+            local_sha: Some("abc123".to_string()),
+            local_state: Some("executing".to_string()),
+            external_version: None,
+            status: ExternalIssueSyncStatus::Pending,
+            error_message: None,
+            metadata_json: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(pending.completed_at.is_none());
+
+    let skipped = repo
+        .upsert_sync_record(ExternalIssueSyncRecordUpsert {
+            link_id: link.id.clone(),
+            sync_kind: "status".to_string(),
+            idempotency_key: "linear:status:task-1:abc123".to_string(),
+            local_sha: Some("abc123".to_string()),
+            local_state: Some("executing".to_string()),
+            external_version: None,
+            status: ExternalIssueSyncStatus::Skipped,
+            error_message: Some("no mapped status".to_string()),
+            metadata_json: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(skipped.id, pending.id);
+    assert_eq!(skipped.status, ExternalIssueSyncStatus::Skipped);
+    assert!(skipped.completed_at.is_some());
+    assert!(repo
+        .update_sync_status("missing", ExternalIssueSyncStatus::Failed, None, None)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -188,6 +279,41 @@ async fn service_derives_linear_issue_link_from_metadata() {
     assert_eq!(link.external_id, "539068e2-ae88-4d09-bd75-22eb4a59612f");
     assert_eq!(link.external_key.as_deref(), Some("LIN-123"));
     assert_eq!(link.local_object, ExternalIssueLocalObject::task("task-1"));
+
+    let duplicate = service
+        .ensure_linear_task_link_from_metadata(
+            "task-1",
+            Some("project-1"),
+            Some(metadata),
+            Some("def456"),
+            Some("reviewing"),
+        )
+        .await
+        .unwrap()
+        .expect("metadata should update the existing Linear issue link");
+
+    assert_eq!(duplicate.id, link.id);
+    assert_eq!(duplicate.local_sha.as_deref(), Some("def456"));
+}
+
+#[tokio::test]
+async fn service_ignores_missing_linear_metadata() {
+    let repo: Arc<dyn ExternalIssueLinkRepository> =
+        Arc::new(MemoryExternalIssueLinkRepository::new());
+    let service = ExternalIssueLinkService::new(repo);
+
+    let link = service
+        .ensure_linear_task_link_from_metadata(
+            "task-1",
+            Some("project-1"),
+            Some(r#"{"composer_integration_references":[]}"#),
+            Some("abc123"),
+            Some("executing"),
+        )
+        .await
+        .unwrap();
+
+    assert!(link.is_none());
 }
 
 #[tokio::test]

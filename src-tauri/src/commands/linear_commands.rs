@@ -163,3 +163,39 @@ pub async fn save_linear_webhook_signing_secret(
         has_signing_secret: true,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::integrations::IntegrationValidationStatus;
+
+    #[test]
+    fn integration_settings_response_reports_secret_presence_without_secret_value() {
+        let mut settings = LinearIntegrationSettings::default();
+        settings.enabled = true;
+        settings.token_secret_ref = Some("linear-secret-ref".to_string());
+        settings.validation_status = IntegrationValidationStatus::Valid;
+        settings.issue_search_available = true;
+        settings.last_error = Some("previous error".to_string());
+
+        let response = LinearIntegrationSettingsResponse::from(settings);
+
+        assert!(response.enabled);
+        assert!(response.has_api_token);
+        assert_eq!(response.validation_status, "valid");
+        assert!(response.issue_search_available);
+        assert_eq!(response.last_error.as_deref(), Some("previous error"));
+    }
+
+    #[test]
+    fn integration_settings_response_handles_unconfigured_settings() {
+        let response =
+            LinearIntegrationSettingsResponse::from(LinearIntegrationSettings::default());
+
+        assert!(!response.enabled);
+        assert!(!response.has_api_token);
+        assert_eq!(response.validation_status, "not_configured");
+        assert!(!response.issue_search_available);
+        assert!(response.last_error.is_none());
+    }
+}

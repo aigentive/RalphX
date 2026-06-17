@@ -3,9 +3,9 @@ use std::sync::Arc;
 use chrono::{Duration, Utc};
 use hmac::{Hmac, Mac};
 use ralphx_lib::application::linear_webhook_reconciliation_service::{
-    ExternalIssueLink, LinearWebhookAction, LinearWebhookHeaders,
-    LinearWebhookReconciliationService, LinearWebhookRequest, LinearWebhookStore,
-    MemoryLinearWebhookStore,
+    ExternalIssueLink, LinearDelivery, LinearDeliveryRecord, LinearWebhookAction,
+    LinearWebhookHeaders, LinearWebhookReconciliationService, LinearWebhookRequest,
+    LinearWebhookStore, MemoryLinearWebhookStore,
 };
 use ralphx_lib::domain::entities::{
     ConflictResolution, ExternalStatusMapping, ExternalSyncConfig, InternalStatus, ProjectId,
@@ -290,6 +290,83 @@ async fn sqlite_store_uses_generic_external_issue_link_schema_for_issue_transiti
     assert_eq!(row.2.as_deref(), Some(PROJECT_ID));
     assert_eq!(row.3.as_deref(), Some("LIN-123"));
     assert_eq!(row.4.as_deref(), Some("In Progress"));
+}
+
+#[tokio::test]
+async fn sqlite_store_persists_config_deliveries_and_issue_activity_idempotently() {
+    let db = SqliteTestDb::new("linear-webhook-store-config-delivery");
+    let store = SqliteLinearWebhookStore::new(DbConnection::from_shared(db.shared_conn()));
+
+    assert_eq!(store.get_config().await.unwrap(), (false, None));
+    store
+        .set_signing_secret_ref(Some("linear-secret-ref".to_string()), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get_signing_secret_ref().await.unwrap().as_deref(),
+        Some("linear-secret-ref")
+    );
+    assert_eq!(
+        store.get_config().await.unwrap(),
+        (true, Some("linear-secret-ref".to_string()))
+    );
+
+    let delivery = LinearDelivery {
+        delivery_id: DELIVERY_ID.to_string(),
+        webhook_id: Some(WEBHOOK_ID.to_string()),
+        event_type: "Issue".to_string(),
+        received_at: Utc::now(),
+    };
+    assert_eq!(
+        store.record_delivery(delivery.clone()).await.unwrap(),
+        LinearDeliveryRecord::Recorded
+    );
+    assert_eq!(
+        store.record_delivery(delivery).await.unwrap(),
+        LinearDeliveryRecord::Duplicate
+    );
+
+    store
+        .record_issue_activity(DELIVERY_ID, ISSUE_ID, "Comment")
+        .await
+        .unwrap();
+    store
+        .record_issue_activity(DELIVERY_ID, ISSUE_ID, "Comment")
+        .await
+        .unwrap();
+    let event_count = db.with_connection(|conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM external_issue_sync_events
+             WHERE provider = 'linear' AND external_id = ?1 AND delivery_id = ?2 AND event_type = 'Comment'",
+            rusqlite::params![ISSUE_ID, DELIVERY_ID],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+    });
+    assert_eq!(event_count, 1);
+}
+
+#[tokio::test]
+async fn sqlite_store_rejects_branchless_issue_link_persistence() {
+    let db = SqliteTestDb::new("linear-webhook-store-rejects-branchless-link");
+    let store = SqliteLinearWebhookStore::new(DbConnection::from_shared(db.shared_conn()));
+
+    let result = store
+        .upsert_issue_link(ExternalIssueLink {
+            provider: SyncProvider::Linear,
+            project_id: ProjectId::from_string(PROJECT_ID.to_string()),
+            task_id: None,
+            external_id: ISSUE_ID.to_string(),
+            external_key: Some("LIN-123".to_string()),
+            external_url: None,
+            last_external_status: None,
+        })
+        .await;
+
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("must be attached to a task"));
 }
 
 #[tokio::test]

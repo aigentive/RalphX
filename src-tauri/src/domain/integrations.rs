@@ -413,4 +413,73 @@ mod tests {
         );
         assert!(AtlassianAuthMethod::from_str("password").is_err());
     }
+
+    #[test]
+    fn external_issue_local_object_kinds_round_trip_storage_values() {
+        let cases = [
+            (ExternalIssueLocalObjectKind::Task, "task"),
+            (ExternalIssueLocalObjectKind::Proposal, "proposal"),
+            (ExternalIssueLocalObjectKind::Session, "session"),
+            (ExternalIssueLocalObjectKind::PullRequest, "pull_request"),
+            (ExternalIssueLocalObjectKind::Check, "check"),
+            (ExternalIssueLocalObjectKind::Qa, "qa"),
+        ];
+
+        for (kind, value) in cases {
+            assert_eq!(kind.as_str(), value);
+            assert_eq!(ExternalIssueLocalObjectKind::from_str(value).unwrap(), kind);
+        }
+        assert!(ExternalIssueLocalObjectKind::from_str("milestone").is_err());
+    }
+
+    #[test]
+    fn external_issue_local_object_constructors_set_expected_kind() {
+        let cases = [
+            (
+                ExternalIssueLocalObject::task("task-1"),
+                ExternalIssueLocalObjectKind::Task,
+            ),
+            (
+                ExternalIssueLocalObject::proposal("proposal-1"),
+                ExternalIssueLocalObjectKind::Proposal,
+            ),
+            (
+                ExternalIssueLocalObject::session("session-1"),
+                ExternalIssueLocalObjectKind::Session,
+            ),
+            (
+                ExternalIssueLocalObject::pull_request("pr-1"),
+                ExternalIssueLocalObjectKind::PullRequest,
+            ),
+            (
+                ExternalIssueLocalObject::check("check-1"),
+                ExternalIssueLocalObjectKind::Check,
+            ),
+            (
+                ExternalIssueLocalObject::qa("qa-1"),
+                ExternalIssueLocalObjectKind::Qa,
+            ),
+        ];
+
+        for (object, kind) in cases {
+            assert_eq!(object.kind, kind);
+            assert!(object.id.ends_with("-1"));
+        }
+    }
+
+    #[test]
+    fn external_issue_sync_status_round_trips_storage_values() {
+        let cases = [
+            (ExternalIssueSyncStatus::Pending, "pending"),
+            (ExternalIssueSyncStatus::Succeeded, "succeeded"),
+            (ExternalIssueSyncStatus::Failed, "failed"),
+            (ExternalIssueSyncStatus::Skipped, "skipped"),
+        ];
+
+        for (status, value) in cases {
+            assert_eq!(status.as_str(), value);
+            assert_eq!(ExternalIssueSyncStatus::from_str(value).unwrap(), status);
+        }
+        assert!(ExternalIssueSyncStatus::from_str("retrying").is_err());
+    }
 }
