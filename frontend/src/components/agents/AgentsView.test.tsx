@@ -267,6 +267,45 @@ describe("AgentsView", () => {
     );
   });
 
+  it("shows source PR metadata in the conversation base line", async () => {
+    mockAgentViewData();
+    getAgentConversationWorkspaceMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      projectId: "project-1",
+      mode: "chat",
+      baseRefKind: "local_branch",
+      baseRef: "feature/source-pr",
+      baseDisplayName: "feature/source-pr",
+      baseCommit: null,
+      branchName: "ralphx/demo/agent-conversation-1",
+      worktreePath: "/tmp/ralphx/conversation-1",
+      linkedIdeationSessionId: null,
+      linkedPlanBranchId: null,
+      sourcePullRequest: {
+        number: 42,
+        url: "https://github.com/owner/repo/pull/42",
+        title: "Source PR",
+        headRefName: "feature/source-pr",
+        baseRefName: "main",
+        headRefOid: "abc123",
+      },
+      publicationPrNumber: null,
+      publicationPrUrl: null,
+      publicationPrStatus: null,
+      publicationPushStatus: null,
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    const baseLine = await screen.findByTestId("agents-conversation-base");
+    expect(baseLine).toHaveTextContent("PR #42: Source PR");
+    expect(baseLine).toHaveTextContent("feature/source-pr");
+  });
+
   it("preflights workspace freshness on selection without duplicate rapid reselect checks", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     let resolveWorkspace: (

@@ -118,6 +118,11 @@ pub use chat_service_send_background::finalize_assistant_message_for_test;
 pub use chat_service_send_background::finalize_no_output_assistant_message_for_test;
 #[doc(hidden)]
 pub use chat_service_send_background::finalize_structured_assistant_message_for_test;
+pub(crate) use chat_service_send_background::{
+    should_recover_silent_completion, silent_completion_recovery_attempt,
+    silent_completion_recovery_backoff_ms, silent_completion_recovery_max_attempts,
+    silent_completion_recovery_metadata, silent_completion_recovery_prompt,
+};
 pub use chat_service_streaming::process_stream_background;
 pub use chat_service_streaming::{
     is_completion_tool_name, should_kill_on_timeout, ActiveTaskTracker, CompletionSignalTracker,
@@ -1762,12 +1767,9 @@ impl<R: Runtime> AppChatService<R> {
     async fn load_agent_conversation_workspace(
         &self,
         context_type: ChatContextType,
-        conversation_id: &ChatConversationId,
+        context_id: &str,
+        conversation_id: Option<&ChatConversationId>,
     ) -> Result<Option<AgentConversationWorkspace>, ChatServiceError> {
-        if context_type != ChatContextType::Project {
-            return Ok(None);
-        }
-
         let repo = self
             .agent_conversation_workspace_repo
             .lock()
@@ -1777,9 +1779,23 @@ impl<R: Runtime> AppChatService<R> {
             return Ok(None);
         };
 
-        repo.get_by_conversation_id(conversation_id)
-            .await
-            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
+        match context_type {
+            ChatContextType::Project => {
+                let Some(conversation_id) = conversation_id else {
+                    return Ok(None);
+                };
+                repo.get_by_conversation_id(conversation_id)
+                    .await
+                    .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
+            }
+            ChatContextType::Ideation => {
+                let session_id = IdeationSessionId::from_string(context_id.to_string());
+                repo.get_by_linked_ideation_session_id(&session_id)
+                    .await
+                    .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
+            }
+            _ => Ok(None),
+        }
     }
 
     async fn agent_workspace_prompt_context_for_send(
@@ -1788,7 +1804,11 @@ impl<R: Runtime> AppChatService<R> {
         conversation: &ChatConversation,
     ) -> Result<Option<String>, ChatServiceError> {
         let Some(workspace) = self
-            .load_agent_conversation_workspace(context_type, &conversation.id)
+            .load_agent_conversation_workspace(
+                context_type,
+                &conversation.context_id,
+                Some(&conversation.id),
+            )
             .await?
         else {
             return Ok(None);
@@ -2010,6 +2030,35 @@ impl<R: Runtime> AppChatService<R> {
             },
         );
 
+        Ok(())
+    }
+
+    async fn persist_hidden_resume_in_place_marker(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        conversation_id: ChatConversationId,
+        metadata: Option<&str>,
+    ) -> Result<(), ChatServiceError> {
+        let Some(marker_metadata) =
+            chat_service_queue::hidden_resume_in_place_marker_metadata(metadata)
+        else {
+            return Ok(());
+        };
+
+        let mut marker = chat_service_context::create_user_message(
+            context_type,
+            context_id,
+            chat_service_queue::HIDDEN_RESUME_IN_PLACE_MARKER_CONTENT,
+            conversation_id,
+            Some(marker_metadata),
+            None,
+        );
+        marker.role = MessageRole::System;
+        self.chat_message_repo
+            .create(marker)
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
         Ok(())
     }
 
@@ -2286,14 +2335,11 @@ impl<R: Runtime> AppChatService<R> {
         conversation_id_override: Option<&ChatConversationId>,
         working_directory_override: Option<&PathBuf>,
     ) -> String {
-        let agent_workspace = if let Some(conversation_id) = conversation_id_override {
-            self.load_agent_conversation_workspace(context_type, conversation_id)
-                .await
-                .ok()
-                .flatten()
-        } else {
-            None
-        };
+        let agent_workspace = self
+            .load_agent_conversation_workspace(context_type, context_id, conversation_id_override)
+            .await
+            .ok()
+            .flatten();
         let edit_plan_handoff_artifact = self
             .load_edit_mode_plan_handoff_artifact(agent_workspace.as_ref())
             .await;
@@ -2918,6 +2964,14 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                                 render_ready: None,
                             },
                         );
+                    } else {
+                        self.persist_hidden_resume_in_place_marker(
+                            context_type,
+                            context_id,
+                            conversation.id,
+                            options.metadata.as_deref(),
+                        )
+                        .await?;
                     }
 
                     // Emit run_started so frontend shows activity spinner. Reuse the
@@ -3020,7 +3074,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             None
         };
         let agent_workspace = self
-            .load_agent_conversation_workspace(context_type, &conversation.id)
+            .load_agent_conversation_workspace(
+                context_type,
+                &conversation.context_id,
+                Some(&conversation.id),
+            )
             .await?;
         let entity_status = self.get_entity_status(context_type, context_id).await;
         let team_mode_val = self.team_mode.load(Ordering::Relaxed);
@@ -3554,6 +3612,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     render_ready: None,
                 },
             );
+        } else if let Err(error) = self
+            .persist_hidden_resume_in_place_marker(
+                context_type,
+                context_id,
+                conversation_id,
+                options.metadata.as_deref(),
+            )
+            .await
+        {
+            cleanup_and_err!(error);
         }
 
         // 6. Resolve working directory
@@ -4061,6 +4129,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             run_chain_id,
             is_retry_attempt: false,
             user_message_content: Some(message.to_string()),
+            turn_metadata: options.metadata.clone(),
             conversation: Some(conversation.clone()),
             agent_name: Some(resolved_agent_name),
             team_mode: runtime_team_mode,
@@ -5077,8 +5146,10 @@ mod agent_workspace_send_tests {
     use crate::commands::ExecutionState;
     use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
     use crate::domain::entities::{
-        AgentConversationWorkspaceMode, AgentRun, AgentRunStatus, ChatContextType, ChatConversation,
-        ChatAttachment, ChatAttachmentId, MessageRole, Project, ProjectId, TaskId,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode,
+        AgentWorkspaceSourcePullRequest, AgentRun, AgentRunStatus, ChatAttachment,
+        ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+        IdeationAnalysisBaseRefKind, IdeationSession, MessageRole, Project, ProjectId, TaskId,
     };
     use crate::domain::services::{
         ComposerProjectReference, ComposerProjectReferenceKind, RunningAgentKey,
@@ -5155,6 +5226,55 @@ mod agent_workspace_send_tests {
             raw_value["composer_project_references"][0]["path"],
             "src/lib.rs"
         );
+    }
+
+    #[tokio::test]
+    async fn ideation_send_context_resolves_linked_agent_workspace_source_pr_context() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-linked-source-pr".to_string());
+        let session = state
+            .ideation_session_repo
+            .create(IdeationSession::new(project_id.clone()))
+            .await
+            .expect("session should persist");
+        let conversation = ChatConversation::new_ideation(session.id.clone());
+        let mut workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-linked-source-pr"),
+            project_id,
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::LocalBranch,
+            "feature/source-pr".to_string(),
+            Some("PR #321: Source PR".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/project/agent-linked-source-pr".to_string(),
+            "/tmp/agent-linked-source-pr".to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(session.id.clone());
+        workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+            number: 321,
+            url: Some("https://github.com/owner/repo/pull/321".to_string()),
+            title: Some("Source PR".to_string()),
+            head_ref_name: "feature/source-pr".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: Some("abc321".to_string()),
+        });
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+
+        let service = state.build_chat_service();
+        let context = service
+            .agent_workspace_prompt_context_for_send(ChatContextType::Ideation, &conversation)
+            .await
+            .expect("prompt context should resolve")
+            .expect("linked workspace context should be present");
+
+        assert!(context.contains("<source_pull_request>"));
+        assert!(context.contains("<number>321</number>"));
+        assert!(context.contains("<linked_ideation_session_id>"));
+        assert!(context.contains("new pull request targeting branch feature/source-pr"));
     }
 
     #[tokio::test]

@@ -2023,6 +2023,91 @@ describe("chat api", () => {
     expect(result.workspace?.mode).toBe("plan");
   });
 
+  it("sends source pull request metadata when switching mode with a PR base", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation: {
+        id: "conversation-chat",
+        context_type: "project",
+        context_id: "project-1",
+        claude_session_id: null,
+        provider_session_id: null,
+        provider_harness: null,
+        agent_mode: "edit",
+        title: "Chat",
+        message_count: 1,
+        last_message_at: null,
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:02:00Z",
+        archived_at: null,
+      },
+      workspace: {
+        conversation_id: "conversation-chat",
+        project_id: "project-1",
+        mode: "edit",
+        base_ref_kind: "local_branch",
+        base_ref: "feature/source-pr",
+        base_display_name: "PR #42: Source PR",
+        base_commit: null,
+        branch_name: "ralphx/demo/agent-conversation-chat",
+        worktree_path: "/tmp/ralphx/conversation-chat",
+        linked_ideation_session_id: null,
+        linked_plan_branch_id: null,
+        source_pull_request: {
+          number: 42,
+          url: "https://github.com/owner/repo/pull/42",
+          title: "Source PR",
+          head_ref_name: "feature/source-pr",
+          base_ref_name: "main",
+          head_ref_oid: "abc123",
+        },
+        publication_pr_number: null,
+        publication_pr_url: null,
+        publication_pr_status: null,
+        publication_push_status: null,
+        status: "active",
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:02:00Z",
+      },
+    });
+
+    const result = await switchAgentConversationMode({
+      conversationId: "conversation-chat",
+      mode: "edit",
+      base: {
+        kind: "local_branch",
+        ref: "feature/source-pr",
+        displayName: "PR #42: Source PR",
+        sourcePullRequest: {
+          number: 42,
+          url: "https://github.com/owner/repo/pull/42",
+          title: "Source PR",
+          headRefName: "feature/source-pr",
+          baseRefName: "main",
+          headRefOid: "abc123",
+        },
+      },
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("switch_agent_conversation_mode", {
+      input: {
+        conversationId: "conversation-chat",
+        mode: "edit",
+        baseRefKind: "local_branch",
+        baseRef: "feature/source-pr",
+        baseDisplayName: "PR #42: Source PR",
+        baseSourcePullRequest: {
+          number: 42,
+          url: "https://github.com/owner/repo/pull/42",
+          title: "Source PR",
+          headRefName: "feature/source-pr",
+          baseRefName: "main",
+          headRefOid: "abc123",
+        },
+      },
+    });
+    expect(result.workspace?.sourcePullRequest?.number).toBe(42);
+  });
+
   it("forks an agent conversation and transforms child workspace metadata", async () => {
     const conversation = {
       id: "conversation-child",

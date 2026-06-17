@@ -395,6 +395,37 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         }).await
     }
 
+    async fn list_recent_resumable_by_context_type(
+        &self,
+        context_type: ChatContextType,
+        limit: u32,
+    ) -> AppResult<Vec<ChatConversation>> {
+        let context_type_str = context_type.to_string();
+        self.db.run(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, title, message_count, last_message_at, created_at,
+                        updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
+                        attribution_backfill_source, attribution_backfill_source_path,
+                        attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
+                        attribution_backfill_error_summary
+                 FROM chat_conversations
+                 WHERE context_type = ?1
+                   AND archived_at IS NULL
+                   AND (provider_session_id IS NOT NULL OR claude_session_id IS NOT NULL)
+                 ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC
+                 LIMIT ?2",
+            )?;
+            let conversations = stmt
+                .query_map(
+                    rusqlite::params![context_type_str, i64::from(limit)],
+                    row_to_conversation,
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(conversations)
+        }).await
+    }
+
     async fn update_provider_session_ref(
         &self,
         id: &ChatConversationId,
