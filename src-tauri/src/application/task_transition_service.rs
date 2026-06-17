@@ -924,6 +924,8 @@ pub struct TaskTransitionService<R: Runtime = tauri::Wry> {
     /// via build_task_services_common() and to TauriEventEmitter via with_external_events_repo().
     webhook_publisher: Option<Arc<dyn WebhookPublisher>>,
 
+    plan_pr_description_drafter: Option<Arc<dyn crate::domain::services::PlanPrDescriptionDrafter>>,
+
     /// Shared per-session mutex map for serializing concurrent plan:delivered checks.
     /// Shared across all TaskServices instances produced by this service.
     /// ONE Arc shared between both Tauri IPC and HTTP server AppState paths.
@@ -1252,6 +1254,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             pr_poller_registry: None,
             github_service: None,
             webhook_publisher: None,
+            plan_pr_description_drafter: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
             self_arc: std::sync::Mutex::new(None),
         };
@@ -1557,6 +1560,14 @@ impl<R: Runtime> TaskTransitionService<R> {
         svc: Arc<dyn crate::domain::services::GithubServiceTrait>,
     ) -> Self {
         self.github_service = Some(svc);
+        self
+    }
+
+    pub fn with_plan_pr_description_drafter(
+        mut self,
+        drafter: Arc<dyn crate::domain::services::PlanPrDescriptionDrafter>,
+    ) -> Self {
+        self.plan_pr_description_drafter = Some(drafter);
         self
     }
 
@@ -2220,11 +2231,26 @@ impl<R: Runtime> TaskTransitionService<R> {
             .get_by_id(&plan_branch.id)
             .await?
             .unwrap_or_else(|| plan_branch.clone());
-        let publisher = PlanPrPublisher::new(
+
+        let pr_description_override: Option<String> = if let Some(ref drafter) =
+            self.plan_pr_description_drafter
+        {
+            let review_base = crate::domain::state_machine::transition_handler::resolve_plan_branch_pr_base(project, &refreshed_plan_branch);
+            drafter
+                .draft_plan_description(project, &refreshed_plan_branch, &review_base)
+                .await
+        } else {
+            None
+        };
+
+        let mut publisher = PlanPrPublisher::new(
             github_service,
             self.ideation_session_repo.as_ref(),
             self.artifact_repo.as_ref(),
         );
+        if let Some(body) = pr_description_override {
+            publisher = publisher.with_description(body);
+        }
         publisher
             .sync_existing_pr(task, project, &refreshed_plan_branch, PrReviewState::Ready)
             .await
@@ -2704,6 +2730,9 @@ impl<R: Runtime> TaskTransitionService<R> {
 
         if let Some(ref handle) = self._app_handle {
             services = services.try_with_app_handle(handle.clone());
+        }
+        if let Some(ref drafter) = self.plan_pr_description_drafter {
+            services = services.with_plan_pr_description_drafter(Arc::clone(drafter));
         }
         if let Some(ref scheduler) = self.task_scheduler {
             services = services.with_task_scheduler(Arc::clone(scheduler));

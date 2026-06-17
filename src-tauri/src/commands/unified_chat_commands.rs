@@ -88,11 +88,12 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ChatAttachmentId, ChatContextType,
-    ChatConversation, ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem,
-    DelegatedSessionId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession,
-    IdeationSessionFlow, IdeationSessionId, PlanBranch, PlanBranchStatus, Project, ProjectId,
-    TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ArtifactContent,
+    ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
+    ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
+    PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
@@ -6021,7 +6022,12 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .await
         .map_err(|e| e.to_string())?;
 
-    let publisher = AgentWorkspacePrPublisher::new(github);
+    let plan_markdown =
+        resolve_linked_plan_markdown(state, &workspace).await;
+    let mut publisher = AgentWorkspacePrPublisher::new(github);
+    if let Some(markdown) = plan_markdown {
+        publisher = publisher.with_plan_markdown(markdown);
+    }
     let publish_pr_started = Instant::now();
     let pr_result = publisher
         .publish_draft_pr(&worktree_path, &conversation, &workspace, &pr_description)
@@ -6174,6 +6180,35 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         pr_number: Some(outcome.pr_number),
         pr_url: Some(outcome.pr_url),
     })
+}
+
+async fn resolve_linked_plan_markdown(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> Option<String> {
+    let session_id = workspace.linked_ideation_session_id.as_ref()?;
+    let session = state
+        .ideation_session_repo
+        .get_by_id(session_id)
+        .await
+        .ok()
+        .flatten()?;
+    let artifact_id = session.plan_artifact_id?;
+    let artifact = state
+        .artifact_repo
+        .get_by_id(&artifact_id)
+        .await
+        .ok()
+        .flatten()?;
+    let raw = match artifact.content {
+        ArtifactContent::Inline { text } => text,
+        ArtifactContent::File { path } => tokio::fs::read_to_string(path).await.ok()?,
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 async fn mark_agent_workspace_publish_status(

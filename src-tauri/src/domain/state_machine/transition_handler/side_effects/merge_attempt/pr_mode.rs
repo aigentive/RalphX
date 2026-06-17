@@ -79,6 +79,18 @@ impl<'a> TransitionHandler<'a> {
         let working_dir = std::path::PathBuf::from(&project.working_directory);
         let branch_name = plan_branch.branch_name.clone();
 
+        // 5.5. Draft PR description via describer agent (best-effort)
+        let pr_description_override: Option<String> = if let Some(ref drafter) =
+            self.machine.context.services.plan_pr_description_drafter
+        {
+            let review_base = resolve_plan_branch_pr_base(project, &plan_branch);
+            drafter
+                .draft_plan_description(project, &plan_branch, &review_base)
+                .await
+        } else {
+            None
+        };
+
         // 6. Perform PR operation: push branch and mark PR ready (or create PR if missing)
         let pr_op_result: Result<i64, crate::error::AppError> = if let Some(existing_pr_number) = plan_branch.pr_number {
             // Has PR: push latest commits then mark ready
@@ -86,11 +98,14 @@ impl<'a> TransitionHandler<'a> {
             if let Err(e) = push_publish_branch(github_service, &working_dir, &branch_name).await {
                 tracing::warn!(task_id = task_id_str, error = %e, "PR-mode: push failed (proceeding to mark_pr_ready anyway)");
             }
-            let publisher = PlanPrPublisher::new(
+            let mut publisher = PlanPrPublisher::new(
                 github_service,
                 self.machine.context.services.ideation_session_repo.as_ref(),
                 self.machine.context.services.artifact_repo.as_ref(),
             );
+            if let Some(ref body) = pr_description_override {
+                publisher = publisher.with_description(body.clone());
+            }
             if let Err(e) = publisher
                 .sync_existing_pr(task, project, &plan_branch, PrReviewState::Ready)
                 .await
@@ -133,11 +148,14 @@ impl<'a> TransitionHandler<'a> {
                 let _ = push_publish_branch(github_service, &working_dir, &branch_name).await;
                 let mut refreshed_plan_branch = plan_branch.clone();
                 refreshed_plan_branch.pr_number = Some(new_pr_number);
-                let publisher = PlanPrPublisher::new(
+                let mut publisher = PlanPrPublisher::new(
                     github_service,
                     self.machine.context.services.ideation_session_repo.as_ref(),
                     self.machine.context.services.artifact_repo.as_ref(),
                 );
+                if let Some(ref body) = pr_description_override {
+                    publisher = publisher.with_description(body.clone());
+                }
                 if let Err(e) = publisher
                     .sync_existing_pr(task, project, &refreshed_plan_branch, PrReviewState::Ready)
                     .await
@@ -157,11 +175,14 @@ impl<'a> TransitionHandler<'a> {
                 match push_publish_branch(github_service, &working_dir, &branch_name).await {
                     Err(e) => Err(e),
                     Ok(()) => {
-                        let publisher = PlanPrPublisher::new(
+                        let mut publisher = PlanPrPublisher::new(
                             github_service,
                             self.machine.context.services.ideation_session_repo.as_ref(),
                             self.machine.context.services.artifact_repo.as_ref(),
                         );
+                        if let Some(ref body) = pr_description_override {
+                            publisher = publisher.with_description(body.clone());
+                        }
                         match publisher.create_draft_pr(task, project, &plan_branch).await {
                             Err(e) => Err(e),
                             Ok((new_pr_number, pr_url)) => {
