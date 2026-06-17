@@ -3,7 +3,11 @@ import type { Dispatch, SetStateAction } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { chatApi, type AgentConversationWorkspace } from "@/api/chat";
+import {
+  chatApi,
+  type AgentConversationWorkspace,
+  type ChatMessageResponse,
+} from "@/api/chat";
 import { executionApi } from "@/api/execution";
 import { ideationApi } from "@/api/ideation";
 import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
@@ -50,6 +54,19 @@ interface UseAgentConversationActionsArgs {
     projectId: string,
     runtime: AgentRuntimeSelection
   ) => void;
+}
+
+function getFirstUserMessageContent(messages: ChatMessageResponse[]): string | null {
+  for (const message of messages) {
+    if (message.role !== "user") {
+      continue;
+    }
+    const content = message.content.trim();
+    if (content.length > 0) {
+      return content;
+    }
+  }
+  return null;
 }
 
 export function useAgentConversationActions({
@@ -325,7 +342,35 @@ export function useAgentConversationActions({
     ]
   );
 
+  const handleAutoRenameConversation = useCallback(
+    async (conversation: AgentConversation) => {
+      try {
+        const result = await chatApi.getConversation(conversation.id);
+        const firstMessage = getFirstUserMessageContent(result.messages);
+        if (!firstMessage) {
+          throw new Error("No user message is available for auto rename");
+        }
+
+        await chatApi.spawnConversationSessionNamer(
+          conversation.id,
+          firstMessage,
+          conversation.providerHarness ?? result.conversation.providerHarness ?? null
+        );
+        clearAutoManagedTitle(conversation.id);
+        await invalidateProjectConversations(conversation.projectId);
+        toast.success("Auto rename started");
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Failed to start auto rename"
+        );
+        throw error;
+      }
+    },
+    [clearAutoManagedTitle, invalidateProjectConversations]
+  );
+
   return {
+    handleAutoRenameConversation,
     handleArchiveConversation,
     handleArchiveProject,
     handleRenameConversation,

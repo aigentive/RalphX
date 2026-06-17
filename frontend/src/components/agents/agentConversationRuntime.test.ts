@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 
+import type { AgentConversationWorkspace } from "@/api/chat";
+
 import type { AgentConversation } from "./agentConversations";
 import { DEFAULT_AGENT_RUNTIME } from "./agentOptions";
-import { runtimeFromConversation } from "./agentConversationRuntime";
+import {
+  getAgentTerminalUnavailableReason,
+  runtimeFromConversation,
+} from "./agentConversationRuntime";
 
 function projectConversation(
   overrides: Partial<AgentConversation> = {}
@@ -33,6 +38,74 @@ function projectConversation(
     ...overrides,
   };
 }
+
+function agentWorkspace(
+  overrides: Partial<AgentConversationWorkspace> = {}
+): AgentConversationWorkspace {
+  return {
+    conversationId: "conversation-1",
+    projectId: "project-1",
+    mode: "edit",
+    baseRefKind: "project_default",
+    baseRef: "main",
+    baseDisplayName: "Project default (main)",
+    baseCommit: null,
+    branchName: "ralphx/ralphx/agent-conversation-1",
+    worktreePath: "/tmp/project/conversation-1",
+    linkedIdeationSessionId: null,
+    linkedPlanBranchId: null,
+    publicationPrNumber: null,
+    publicationPrUrl: null,
+    publicationPrStatus: null,
+    publicationPushStatus: null,
+    autoPublishEnabled: true,
+    autoPublishPausedPrAutofixEnabled: null,
+    autoPublishPausedPrAutoMergeDesired: null,
+    status: "active",
+    createdAt: "2026-05-22T00:00:00.000Z",
+    updatedAt: "2026-05-22T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("getAgentTerminalUnavailableReason", () => {
+  it("allows terminal access for linked edit workspaces", () => {
+    expect(
+      getAgentTerminalUnavailableReason(
+        projectConversation(),
+        agentWorkspace({
+          mode: "edit",
+          linkedIdeationSessionId: "ideation-session-1",
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps terminal access disabled for linked plan-owned workspaces", () => {
+    expect(
+      getAgentTerminalUnavailableReason(
+        projectConversation(),
+        agentWorkspace({
+          mode: "plan",
+          linkedIdeationSessionId: "ideation-session-1",
+        }),
+      ),
+    ).toBe(
+      "Terminal disabled while ideation or execution owns this workspace",
+    );
+    expect(
+      getAgentTerminalUnavailableReason(
+        projectConversation(),
+        agentWorkspace({
+          mode: "edit",
+          linkedPlanBranchId: "plan-branch-1",
+        }),
+      ),
+    ).toBe(
+      "Terminal disabled while ideation or execution owns this workspace",
+    );
+  });
+});
 
 describe("runtimeFromConversation", () => {
   it("hydrates Claude runtime from conversation attribution", () => {

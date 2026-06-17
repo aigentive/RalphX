@@ -21,8 +21,8 @@ use crate::application::chat_service::{ChatService, SendMessageOptions};
 use crate::application::task_cleanup_service::TaskCleanupService;
 use crate::commands::ideation_commands::{apply_proposals_core, ApplyProposalsInput};
 use crate::domain::entities::{
-    ideation::IdeationSession, task::Task, types::ProjectId, ChatContextType, IdeationSessionId,
-    InternalStatus, SessionOrigin, TaskId,
+    ideation::IdeationSession, task::Task, types::ProjectId, ChatContextType, IdeationSessionFlow,
+    IdeationSessionId, InternalStatus, SessionOrigin, TaskId,
 };
 use crate::domain::services::text_similarity::{jaccard_similarity, tokenize_for_similarity};
 use crate::domain::services::{emit_verification_started, emit_verification_status_changed};

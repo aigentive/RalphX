@@ -626,6 +626,30 @@ impl AppState {
         conversation: &ChatConversation,
         project_id: Option<&str>,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        self.resolve_session_namer_runtime_for_conversation_with_requested_harness(
+            conversation,
+            project_id,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn resolve_session_namer_runtime_for_conversation_with_requested_harness(
+        &self,
+        conversation: &ChatConversation,
+        project_id: Option<&str>,
+        requested_harness: Option<AgentHarnessKind>,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        if let Some(harness) = requested_harness {
+            let runtime = self
+                .resolve_background_agent_runtime_for_harness(
+                    harness,
+                    "session namer requested provider",
+                )
+                .await?;
+            return Ok(Self::lock_utility_agent_runtime_model(runtime));
+        }
+
         if let Some(harness) = conversation.provider_harness {
             let runtime = self
                 .resolve_background_agent_runtime_for_harness(

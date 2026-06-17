@@ -1449,11 +1449,13 @@ export async function updateConversationTitle(
 
 export async function spawnConversationSessionNamer(
   conversationId: string,
-  firstMessage: string
+  firstMessage: string,
+  providerHarness?: string | null
 ): Promise<void> {
   await invoke("spawn_session_namer", {
     conversationId,
     firstMessage,
+    ...(providerHarness ? { providerHarness } : {}),
   });
 }
 
@@ -2315,6 +2317,18 @@ export async function updateAgentConversationWorkspaceFromBase(
             baseRefKind: base.kind,
             baseRef: base.ref,
             baseDisplayName: base.displayName,
+            ...(base.sourcePullRequest
+              ? {
+                  baseSourcePullRequest: {
+                    number: base.sourcePullRequest.number,
+                    url: base.sourcePullRequest.url ?? null,
+                    title: base.sourcePullRequest.title ?? null,
+                    headRefName: base.sourcePullRequest.headRefName,
+                    baseRefName: base.sourcePullRequest.baseRefName ?? null,
+                    headRefOid: base.sourcePullRequest.headRefOid ?? null,
+                  },
+                }
+              : {}),
           }
         : {}),
     },
