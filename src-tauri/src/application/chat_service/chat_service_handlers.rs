@@ -111,11 +111,7 @@ async fn handle_verification_child_completion<R: Runtime>(
             }
         }
         Some(ReconcileVerificationChildCompletion::AutoContinue(request)) => {
-            queue_verification_auto_continue(
-                message_queue,
-                child_id,
-                request.continuation_message,
-            );
+            queue_verification_auto_continue(message_queue, child_id, request.continuation_message);
             tracing::info!(
                 context_id = child_id.as_str(),
                 current_round = request.snapshot.current_round,
@@ -436,6 +432,10 @@ fn build_recovery_retry_background_context<R: Runtime>(
             ideation_effort_settings_repo: ideation_effort_settings_repo.clone(),
             ideation_model_settings_repo: ideation_model_settings_repo.clone(),
             agent_conversation_workspace_repo: None,
+            agent_conversation_jira_issue_repo: app_handle
+                .as_ref()
+                .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                .map(|app_state| Arc::clone(&app_state.agent_conversation_jira_issue_repo)),
             task_proposal_repo: task_proposal_repo.clone(),
             activity_event_repo: Arc::clone(activity_event_repo),
             memory_event_repo: Arc::clone(memory_event_repo),
@@ -630,7 +630,10 @@ fn terminal_tool_result(reason: &str) -> serde_json::Value {
     })
 }
 
-fn seal_unresolved_tool_calls_json(tool_calls_json: Option<String>, reason: &str) -> Option<String> {
+fn seal_unresolved_tool_calls_json(
+    tool_calls_json: Option<String>,
+    reason: &str,
+) -> Option<String> {
     let raw = tool_calls_json?;
     let mut tool_calls: Vec<ToolCall> = match serde_json::from_str(&raw) {
         Ok(parsed) => parsed,
@@ -795,13 +798,8 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             task_id = task_id.as_str(),
                             "Shutdown detected — skipping task execution transition; task stays in Executing for auto-recovery"
                         );
-                        persist_shutdown_interrupted_metadata(
-                            task_repo,
-                            &task,
-                            "execution",
-                            None,
-                        )
-                        .await;
+                        persist_shutdown_interrupted_metadata(task_repo, &task, "execution", None)
+                            .await;
                         return;
                     }
 
@@ -2585,8 +2583,13 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             task_id = task_id.as_str(),
                             "Shutdown detected — skipping review error escalation; task stays in Reviewing for auto-recovery"
                         );
-                        persist_shutdown_interrupted_metadata(task_repo, &task, "review", Some(error))
-                            .await;
+                        persist_shutdown_interrupted_metadata(
+                            task_repo,
+                            &task,
+                            "review",
+                            Some(error),
+                        )
+                        .await;
                         return false;
                     }
 
@@ -2869,39 +2872,40 @@ async fn fetch_parent_verification_state(
         }
     };
 
-    let (terminal_status, in_progress, convergence_reason, current_gaps) = match ideation_session_repo
-        .get_verification_run_snapshot(
-            &parent_session_id,
-            parent_session.verification_generation,
-        )
-        .await
-    {
-        Ok(Some(snapshot)) => (
-            snapshot.status,
-            snapshot.in_progress,
-            snapshot.convergence_reason.clone(),
-            snapshot.current_gaps.clone(),
-        ),
-        Ok(None) => (
-            parent_session.verification_status,
-            parent_session.verification_in_progress,
-            parent_session.verification_convergence_reason.clone(),
-            vec![],
-        ),
-        Err(e) => {
-            tracing::warn!(
-                parent_id = %parent_session_id.as_str(),
-                error = %e,
-                "Gate B: failed to fetch native verification snapshot"
-            );
-            (
+    let (terminal_status, in_progress, convergence_reason, current_gaps) =
+        match ideation_session_repo
+            .get_verification_run_snapshot(
+                &parent_session_id,
+                parent_session.verification_generation,
+            )
+            .await
+        {
+            Ok(Some(snapshot)) => (
+                snapshot.status,
+                snapshot.in_progress,
+                snapshot.convergence_reason.clone(),
+                snapshot.current_gaps.clone(),
+            ),
+            Ok(None) => (
                 parent_session.verification_status,
                 parent_session.verification_in_progress,
                 parent_session.verification_convergence_reason.clone(),
                 vec![],
-            )
-        }
-    };
+            ),
+            Err(e) => {
+                tracing::warn!(
+                    parent_id = %parent_session_id.as_str(),
+                    error = %e,
+                    "Gate B: failed to fetch native verification snapshot"
+                );
+                (
+                    parent_session.verification_status,
+                    parent_session.verification_in_progress,
+                    parent_session.verification_convergence_reason.clone(),
+                    vec![],
+                )
+            }
+        };
 
     Some(ParentVerificationState {
         parent_id: parent_session_id,

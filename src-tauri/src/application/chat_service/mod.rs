@@ -48,13 +48,15 @@ use crate::application::AtlassianIntegrationService;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    AgentRun, AgentRunId, AgentRunStatus, Artifact, ChatAttachment, ChatAttachmentId,
-    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageAttribution,
-    ChatMessageId, IdeationSessionId, InternalStatus, MessageRole, ProjectId, TaskId,
+    AgentConversationJiraIssueLink, AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus, Artifact,
+    ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+    ChatMessage, ChatMessageAttribution, ChatMessageId, IdeationSessionId, InternalStatus,
+    MessageRole, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    ActivityEventRepository, AgentConversationJiraIssueRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
     ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
@@ -897,6 +899,8 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     plan_branch_repo: std::sync::Mutex<Option<Arc<dyn PlanBranchRepository>>>,
     agent_conversation_workspace_repo:
         std::sync::Mutex<Option<Arc<dyn AgentConversationWorkspaceRepository>>>,
+    agent_conversation_jira_issue_repo:
+        std::sync::Mutex<Option<Arc<dyn AgentConversationJiraIssueRepository>>>,
     task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     task_step_repo: Option<Arc<dyn TaskStepRepository>>,
     review_repo: Option<Arc<dyn ReviewRepository>>,
@@ -971,6 +975,7 @@ impl<R: Runtime> AppChatService<R> {
             question_state: None,
             plan_branch_repo: std::sync::Mutex::new(None),
             agent_conversation_workspace_repo: std::sync::Mutex::new(None),
+            agent_conversation_jira_issue_repo: std::sync::Mutex::new(None),
             task_proposal_repo: None,
             task_step_repo: None,
             review_repo: None,
@@ -1182,6 +1187,14 @@ impl<R: Runtime> AppChatService<R> {
         repo: Arc<dyn AgentConversationWorkspaceRepository>,
     ) -> Self {
         *self.agent_conversation_workspace_repo.lock().unwrap() = Some(repo);
+        self
+    }
+
+    pub fn with_agent_conversation_jira_issue_repo(
+        self,
+        repo: Arc<dyn AgentConversationJiraIssueRepository>,
+    ) -> Self {
+        *self.agent_conversation_jira_issue_repo.lock().unwrap() = Some(repo);
         self
     }
 
@@ -1798,6 +1811,83 @@ impl<R: Runtime> AppChatService<R> {
         }
     }
 
+    async fn load_agent_conversation_jira_issue(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> Option<AgentConversationJiraIssueLink> {
+        let repo = self
+            .agent_conversation_jira_issue_repo
+            .lock()
+            .unwrap()
+            .clone()?;
+        repo.get_by_conversation_id(conversation_id)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    conversation_id = %conversation_id.as_str(),
+                    error = %error,
+                    "failed to load agent conversation Jira assignment"
+                );
+                error
+            })
+            .ok()
+            .flatten()
+    }
+
+    async fn auto_assign_primary_jira_issue_from_turn(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        conversation_id: &ChatConversationId,
+        agent_workspace: Option<&AgentConversationWorkspace>,
+        integration_references: &[ComposerIntegrationReference],
+        message_id: &str,
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        if integration_references.is_empty() {
+            return;
+        }
+        let repo = self
+            .agent_conversation_jira_issue_repo
+            .lock()
+            .unwrap()
+            .clone();
+        let Some(repo) = repo else {
+            return;
+        };
+        let project_id = if let Some(workspace) = agent_workspace {
+            Some(workspace.project_id.clone())
+        } else if context_type == ChatContextType::Project {
+            Some(ProjectId::from_string(context_id.to_string()))
+        } else {
+            self.load_agent_conversation_workspace(context_type, context_id, Some(conversation_id))
+                .await
+                .ok()
+                .flatten()
+                .map(|workspace| workspace.project_id)
+        };
+        let Some(project_id) = project_id else {
+            return;
+        };
+        if let Err(error) =
+            crate::application::agent_conversation_jira_issue::assign_primary_jira_issue_if_absent(
+                &repo,
+                conversation_id,
+                &project_id,
+                integration_references,
+                Some(ChatMessageId::from_string(message_id.to_string())),
+                created_at,
+            )
+            .await
+        {
+            tracing::warn!(
+                conversation_id = %conversation_id.as_str(),
+                error = %error,
+                "failed to auto-assign primary Jira issue from composer references"
+            );
+        }
+    }
+
     async fn agent_workspace_prompt_context_for_send(
         &self,
         context_type: ChatContextType,
@@ -2340,6 +2430,16 @@ impl<R: Runtime> AppChatService<R> {
             .await
             .ok()
             .flatten();
+        let assigned_jira_issue = if let Some(conversation_id) = conversation_id_override {
+            self.load_agent_conversation_jira_issue(conversation_id).await
+        } else {
+            None
+        };
+        let merged_integration_references =
+            crate::application::agent_conversation_jira_issue::merge_assigned_jira_reference(
+                assigned_jira_issue.as_ref(),
+                integration_references,
+            );
         let edit_plan_handoff_artifact = self
             .load_edit_mode_plan_handoff_artifact(agent_workspace.as_ref())
             .await;
@@ -2377,7 +2477,7 @@ impl<R: Runtime> AppChatService<R> {
                 Err(_) => message.to_string(),
             }
         };
-        let with_integration_references = if integration_references.is_empty() {
+        let with_integration_references = if merged_integration_references.is_empty() {
             with_project_references
         } else {
             match self.atlassian_integration_service.as_ref() {
@@ -2385,7 +2485,7 @@ impl<R: Runtime> AppChatService<R> {
                     service
                         .expand_references_for_prompt(
                             &with_project_references,
-                            integration_references,
+                            &merged_integration_references,
                         )
                         .await
                 }
@@ -2948,6 +3048,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                                 .touch_updated_at(context_id)
                                 .await;
                         }
+                        self.auto_assign_primary_jira_issue_from_turn(
+                            context_type,
+                            context_id,
+                            &conversation.id,
+                            None,
+                            &options.composer_integration_references,
+                            &user_msg_id,
+                            user_msg.created_at,
+                        )
+                        .await;
 
                         // Emit message_created event for frontend
                         self.emit_event(
@@ -3596,6 +3706,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     "chat_service.send_message linked attachments to user message"
                 );
             }
+            self.auto_assign_primary_jira_issue_from_turn(
+                context_type,
+                context_id,
+                &conversation_id,
+                agent_workspace.as_ref(),
+                &options.composer_integration_references,
+                &user_msg_id,
+                user_msg.created_at,
+            )
+            .await;
 
             // 5. Emit message created event
             self.emit_event(
@@ -4111,6 +4231,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 ideation_model_settings_repo: self.ideation_model_settings_repo.clone(),
                 agent_conversation_workspace_repo: self
                     .agent_conversation_workspace_repo
+                    .lock()
+                    .unwrap()
+                    .clone(),
+                agent_conversation_jira_issue_repo: self
+                    .agent_conversation_jira_issue_repo
                     .lock()
                     .unwrap()
                     .clone(),

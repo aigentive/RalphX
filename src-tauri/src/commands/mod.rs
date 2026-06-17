@@ -91,14 +91,18 @@ pub use artifact_commands::{
     UpdateArtifactInput,
 };
 pub use atlassian_commands::{
-    build_atlassian_oauth_authorization_url, complete_atlassian_oauth_local_callback,
-    exchange_atlassian_oauth_code,
+    assign_agent_conversation_jira_issue, build_atlassian_oauth_authorization_url,
+    clear_agent_conversation_jira_issue, complete_atlassian_oauth_local_callback,
+    exchange_atlassian_oauth_code, get_agent_conversation_jira_issue,
     get_atlassian_integration_settings, save_atlassian_integration_settings,
-    search_atlassian_resources, start_atlassian_oauth_local_callback,
-    validate_atlassian_integration, AtlassianIntegrationSettingsResponse,
-    CompleteAtlassianOAuthLocalCallbackInput, ExchangeAtlassianOAuthCodeInput,
-    SaveAtlassianIntegrationSettingsInput, SearchAtlassianResourcesInput,
-    SearchAtlassianResourcesResponse,
+    refresh_agent_conversation_jira_issue, search_atlassian_resources,
+    start_atlassian_oauth_local_callback, validate_atlassian_integration,
+    AgentConversationJiraIssueLinkResponse, AgentConversationJiraIssueResponse,
+    AssignAgentConversationJiraIssueInput, AtlassianIntegrationSettingsResponse,
+    ClearAgentConversationJiraIssueInput, CompleteAtlassianOAuthLocalCallbackInput,
+    ExchangeAtlassianOAuthCodeInput, GetAgentConversationJiraIssueInput,
+    RefreshAgentConversationJiraIssueInput, SaveAtlassianIntegrationSettingsInput,
+    SearchAtlassianResourcesInput, SearchAtlassianResourcesResponse,
 };
 pub use chat_attachment_commands::{
     delete_chat_attachment, link_attachments_to_message, list_conversation_attachments,
