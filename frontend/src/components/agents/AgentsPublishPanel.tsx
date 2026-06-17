@@ -91,6 +91,7 @@ import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import { mapReviewCommitsToDiffViewerCommits } from "./useAgentWorkspaceChangeSummary";
 import {
   AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
+  agentWorkspaceOperationErrorDetail,
   agentWorkspaceOperationToastId,
   agentWorkspaceOperationToastDescription,
 } from "./agentWorkspaceOperationToast";
@@ -718,7 +719,7 @@ export function AgentPublishPanel({
       .catch((error) => {
         const description = agentWorkspaceOperationToastDescription(
           toastConversationTitle,
-          error instanceof Error ? error.message : "Failed to publish branch",
+          agentWorkspaceOperationErrorDetail(error, "Failed to publish branch"),
         );
         toast.error(
           "Failed to publish branch",
