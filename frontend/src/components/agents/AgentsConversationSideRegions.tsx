@@ -1,6 +1,9 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 
-import type { AgentConversationWorkspace } from "@/api/chat";
+import type {
+  AgentConversationWorkspace,
+  AgentConversationWorkspaceFreshness,
+} from "@/api/chat";
 import type {
   AgentArtifactTab,
   AgentTaskArtifactMode,
@@ -15,6 +18,7 @@ interface AgentsConversationSideRegionsProps {
   activeConversation: AgentConversation | null;
   activeProjectBaseBranch: string | null;
   activeWorkspace: AgentConversationWorkspace | null;
+  activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   artifactWidthCss: string;
   chatDockElement: HTMLDivElement | null;
   focusedIdeationSessionId: string | null;
@@ -40,6 +44,7 @@ export function AgentsConversationSideRegions({
   activeConversation,
   activeProjectBaseBranch,
   activeWorkspace,
+  activeWorkspaceFreshness,
   artifactWidthCss,
   chatDockElement,
   focusedIdeationSessionId,
@@ -67,6 +72,7 @@ export function AgentsConversationSideRegions({
           conversationId={selectedConversationId}
           conversation={activeConversation}
           workspace={activeWorkspace}
+          activeWorkspaceFreshness={activeWorkspaceFreshness}
           projectBaseBranch={activeProjectBaseBranch}
           focusedIdeationSessionId={focusedIdeationSessionId}
           hasAutoOpenArtifacts={hasAutoOpenArtifacts}
