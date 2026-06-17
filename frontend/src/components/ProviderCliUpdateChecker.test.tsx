@@ -215,6 +215,76 @@ describe("ProviderCliUpdateChecker", () => {
     );
   });
 
+  it("dismisses the auto-update progress toast when no managed CLIs changed", async () => {
+    vi.mocked(providerCliManagementApi.status).mockResolvedValue({
+      providers: [
+        {
+          provider: "codex",
+          cliManagementMode: "rx_managed",
+          autoUpdateEnabled: true,
+          supported: true,
+          installed: true,
+          binaryPath: "/mock/codex",
+          currentVersion: "0.137.0",
+          latestVersion: "0.137.0",
+          updateAvailable: true,
+          action: "update",
+          status: "RX-managed codex 0.137.0 can update to 0.137.0.",
+          error: null,
+        },
+      ],
+    });
+    vi.mocked(providerCliManagementApi.autoUpdate).mockResolvedValue({
+      updated: [],
+      skipped: [],
+    });
+
+    renderChecker();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+
+    expect(mocks.toastDismiss).toHaveBeenCalledWith("provider-cli-auto-update");
+  });
+
+  it("shows an error toast when managed CLI auto-update fails", async () => {
+    const error = new Error("installer failed");
+    vi.mocked(providerCliManagementApi.status).mockResolvedValue({
+      providers: [
+        {
+          provider: "codex",
+          cliManagementMode: "rx_managed",
+          autoUpdateEnabled: true,
+          supported: true,
+          installed: true,
+          binaryPath: "/mock/codex",
+          currentVersion: "0.136.0",
+          latestVersion: "0.137.0",
+          updateAvailable: true,
+          action: "update",
+          status: "RX-managed codex 0.136.0 can update to 0.137.0.",
+          error: null,
+        },
+      ],
+    });
+    vi.mocked(providerCliManagementApi.autoUpdate).mockRejectedValue(error);
+
+    renderChecker();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "Failed to update managed CLI tools.",
+      expect.objectContaining({
+        id: "provider-cli-auto-update",
+        description: error.message,
+      }),
+    );
+  });
+
   it("shows a non-mutating startup toast for user-managed outdated CLIs", async () => {
     mockUserManagedClaudeUpdate();
 
@@ -244,6 +314,67 @@ describe("ProviderCliUpdateChecker", () => {
     expect(useUiStore.getState().modalContext).toEqual({ section: "providers" });
   });
 
+  it("does not show a CLI update toast after don't-ask-again was remembered", async () => {
+    mockUserManagedClaudeUpdate();
+    localStorage.setItem(
+      PROVIDER_CLI_DISMISSED_UPDATES_STORAGE_KEY,
+      JSON.stringify(["claude:2.1.175"]),
+    );
+
+    renderChecker();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+
+    expect(mocks.toast).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates repeated provider update statuses during one startup check", async () => {
+    const repeatedStatus = {
+      provider: "codex" as const,
+      cliManagementMode: "rx_managed" as const,
+      autoUpdateEnabled: false,
+      supported: true,
+      installed: true,
+      binaryPath: "/mock/codex",
+      currentVersion: "0.136.0",
+      latestVersion: "0.137.0",
+      updateAvailable: true,
+      action: "update" as const,
+      status: "RX-managed codex 0.136.0 can update to 0.137.0.",
+      error: null,
+    };
+    vi.mocked(providerCliManagementApi.status).mockResolvedValue({
+      providers: [repeatedStatus, repeatedStatus],
+    });
+
+    renderChecker();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+
+    expect(mocks.toast).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs and suppresses toast noise when startup CLI status checks fail", async () => {
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const error = new Error("status unavailable");
+    vi.mocked(providerCliManagementApi.status).mockRejectedValue(error);
+
+    renderChecker();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+
+    expect(mocks.toast).not.toHaveBeenCalled();
+    expect(debugSpy).toHaveBeenCalledWith("Provider CLI update check failed:", error);
+
+    debugSpy.mockRestore();
+  });
+
   it("asks whether to remind again when dismissing a CLI update toast", async () => {
     mockUserManagedClaudeUpdate();
     renderChecker();
@@ -267,6 +398,62 @@ describe("ProviderCliUpdateChecker", () => {
     ).toBeNull();
     expect(
       screen.queryByRole("dialog", { name: "Dismiss Claude CLI update?" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the current toast when the dismiss preference dialog is closed", async () => {
+    mockUserManagedClaudeUpdate();
+    renderChecker();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+
+    renderToast();
+    fireEvent.click(screen.getByTestId("provider-cli-update-dismiss-button"));
+    fireEvent.click(screen.getByTestId("dialog-close"));
+
+    expect(mocks.toastDismiss).not.toHaveBeenCalled();
+    expect(
+      localStorage.getItem(PROVIDER_CLI_DISMISSED_UPDATES_STORAGE_KEY),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("dialog", { name: "Dismiss Claude CLI update?" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("dismisses install toasts directly without the update reminder dialog", async () => {
+    vi.mocked(providerCliManagementApi.status).mockResolvedValue({
+      providers: [
+        {
+          provider: "codex",
+          cliManagementMode: "rx_managed",
+          autoUpdateEnabled: false,
+          supported: true,
+          installed: false,
+          binaryPath: null,
+          currentVersion: null,
+          latestVersion: "0.137.0",
+          updateAvailable: false,
+          action: "install",
+          status: "RX-managed codex is not installed.",
+          error: null,
+        },
+      ],
+    });
+
+    renderChecker();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+
+    renderToast();
+    fireEvent.click(screen.getByTestId("provider-cli-update-dismiss-button"));
+
+    expect(mocks.toastDismiss).toHaveBeenCalledWith("provider-cli-update:codex");
+    expect(
+      screen.queryByRole("dialog", { name: "Dismiss Codex CLI update?" }),
     ).not.toBeInTheDocument();
   });
 
