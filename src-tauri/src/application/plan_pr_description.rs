@@ -5,9 +5,9 @@ use async_trait::async_trait;
 
 use crate::application::agent_client_bundle::AgentClientBundle;
 use crate::application::agent_workspace_pr_description::{
-    escape_xml_text, format_changed_files, format_commit_summaries, run_git_text,
-    truncate_chars, DEFAULT_AGENT_WORKSPACE_PR_TEMPLATE, MAX_NAME_STATUS_CHARS,
-    MAX_PATCH_EXCERPT_CHARS, MAX_STAT_CHARS,
+    escape_xml_text, format_changed_files, format_commit_summaries, run_git_text, truncate_chars,
+    DEFAULT_AGENT_WORKSPACE_PR_TEMPLATE, MAX_NAME_STATUS_CHARS, MAX_PATCH_EXCERPT_CHARS,
+    MAX_STAT_CHARS,
 };
 use crate::application::app_state::ResolvedBackgroundAgentRuntime;
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
@@ -102,9 +102,7 @@ async fn draft_plan_pr_description(
         plan_branch.branch_name.clone(),
         project.working_directory.clone(),
     );
-    workspace_repo
-        .create_or_update(workspace.clone())
-        .await?;
+    workspace_repo.create_or_update(workspace.clone()).await?;
 
     let result = draft_plan_pr_description_inner(
         workspace_repo,
@@ -136,9 +134,7 @@ async fn draft_plan_pr_description_inner(
     synthetic_id: &ChatConversationId,
     _workspace: &AgentConversationWorkspace,
 ) -> AppResult<String> {
-    workspace_repo
-        .clear_pr_description(synthetic_id)
-        .await?;
+    workspace_repo.clear_pr_description(synthetic_id).await?;
 
     let review_range = format!("{review_base}..{}", plan_branch.branch_name);
     let diff_stats_fut =
@@ -239,10 +235,7 @@ async fn draft_plan_pr_description_inner(
         )));
     }
 
-    let Some(description) = workspace_repo
-        .get_pr_description(synthetic_id)
-        .await?
-    else {
+    let Some(description) = workspace_repo.get_pr_description(synthetic_id).await? else {
         return Err(AppError::Infrastructure(
             "plan PR describer agent completed but did not submit a description".to_string(),
         ));
@@ -265,12 +258,10 @@ async fn resolve_plan_pr_describer_runtime(
     agent_clients: &AgentClientBundle,
 ) -> AppResult<ResolvedBackgroundAgentRuntime> {
     let purpose = "plan PR describer default provider";
-    let default_provider = crate::application::resolve_enabled_default_provider(
-        provider_settings_repo,
-        purpose,
-    )
-    .await
-    .map_err(AppError::Infrastructure)?;
+    let default_provider =
+        crate::application::resolve_enabled_default_provider(provider_settings_repo, purpose)
+            .await
+            .map_err(AppError::Infrastructure)?;
 
     let harness = default_provider.provider;
     crate::application::ensure_provider_spawn_enabled(provider_settings_repo, harness, purpose)
@@ -283,22 +274,27 @@ async fn resolve_plan_pr_describer_runtime(
         .map_err(|e| AppError::Infrastructure(e.to_string()))?
         .unwrap_or_else(|| AgentProviderSettings::disabled_defaults(harness));
 
-    let cli_path_override = crate::application::app_state::AppState::managed_cli_path_override_for_provider(
-        &provider_settings,
-        purpose,
-    )?;
+    let cli_path_override =
+        crate::application::app_state::AppState::managed_cli_path_override_for_provider(
+            &provider_settings,
+            purpose,
+        )?;
 
     let client = if harness == agent_clients.default_harness {
         Arc::clone(&agent_clients.default_client)
     } else if cli_path_override.is_some() {
         agent_clients
             .explicit_harness_client(harness)
-            .ok_or_else(|| AppError::Infrastructure(format!("{purpose} harness unavailable: {harness}")))?
+            .ok_or_else(|| {
+                AppError::Infrastructure(format!("{purpose} harness unavailable: {harness}"))
+            })?
     } else {
         agent_clients
             .explicit_available_harness_client(harness)
             .await
-            .ok_or_else(|| AppError::Infrastructure(format!("{purpose} harness unavailable: {harness}")))?
+            .ok_or_else(|| {
+                AppError::Infrastructure(format!("{purpose} harness unavailable: {harness}"))
+            })?
     };
 
     let runtime = ResolvedBackgroundAgentRuntime {
@@ -318,7 +314,7 @@ async fn resolve_plan_pr_describer_runtime(
     Ok(crate::application::app_state::AppState::lock_utility_agent_runtime_model(runtime))
 }
 
-async fn read_pr_template(repo_path: &Path) -> String {
+pub(crate) async fn read_pr_template(repo_path: &Path) -> String {
     let template_path = repo_path.join(".github").join("PULL_REQUEST_TEMPLATE.md");
     match tokio::fs::read_to_string(template_path).await {
         Ok(content) if !content.trim().is_empty() => content.trim().to_string(),
@@ -327,7 +323,7 @@ async fn read_pr_template(repo_path: &Path) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_plan_pr_describer_prompt(
+pub(crate) fn build_plan_pr_describer_prompt(
     synthetic_conversation_id: &ChatConversationId,
     project: &Project,
     plan_branch: &PlanBranch,
