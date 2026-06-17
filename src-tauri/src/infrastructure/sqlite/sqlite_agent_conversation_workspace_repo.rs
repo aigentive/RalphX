@@ -379,6 +379,29 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn get_by_linked_ideation_session_id(
+        &self,
+        ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        let ideation_session_id = ideation_session_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE linked_ideation_session_id = ?1
+                     ORDER BY updated_at DESC
+                     LIMIT 1",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![ideation_session_id])?;
+                if let Some(row) = rows.next()? {
+                    Ok(Some(row_to_workspace(row)?))
+                } else {
+                    Ok(None)
+                }
+            })
+            .await
+    }
+
     async fn get_terminal_local_cleanup_candidates_by_project_id(
         &self,
         project_id: &ProjectId,

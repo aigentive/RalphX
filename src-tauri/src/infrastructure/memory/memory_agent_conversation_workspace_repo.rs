@@ -75,6 +75,22 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .collect())
     }
 
+    async fn get_by_linked_ideation_session_id(
+        &self,
+        ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| {
+                workspace.linked_ideation_session_id.as_ref() == Some(ideation_session_id)
+            })
+            .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
+            .cloned())
+    }
+
     async fn list_active_direct_published_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
@@ -588,7 +604,7 @@ mod tests {
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
         AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
         AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription, ChatConversationId,
-        IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId,
+        IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
 
@@ -723,6 +739,34 @@ mod tests {
         assert_eq!(updated.body, "Patch coverage recovered after rerun.");
         assert!(updated.last_included_at.is_some());
         assert!(updated.last_read_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn linked_ideation_session_lookup_returns_latest_workspace_and_none_for_missing() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let session_id = IdeationSessionId::from_string("ideation-session-1");
+        let mut first = candidate_workspace("linked-first");
+        first.linked_ideation_session_id = Some(session_id.clone());
+        repo.create_or_update(first.clone()).await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+
+        let mut second = candidate_workspace("linked-second");
+        second.linked_ideation_session_id = Some(session_id.clone());
+        repo.create_or_update(second.clone()).await.unwrap();
+
+        let loaded = repo
+            .get_by_linked_ideation_session_id(&session_id)
+            .await
+            .unwrap()
+            .expect("latest linked workspace should load");
+        assert_eq!(loaded.conversation_id, second.conversation_id);
+
+        let missing = repo
+            .get_by_linked_ideation_session_id(&IdeationSessionId::from_string("missing-session"))
+            .await
+            .unwrap();
+        assert!(missing.is_none());
     }
 
     #[tokio::test]

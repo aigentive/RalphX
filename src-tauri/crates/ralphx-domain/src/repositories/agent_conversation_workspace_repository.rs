@@ -21,6 +21,13 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentConversationWorkspace>>;
 
+    async fn get_by_linked_ideation_session_id(
+        &self,
+        _ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(None)
+    }
+
     async fn get_by_project_id(
         &self,
         project_id: &ProjectId,

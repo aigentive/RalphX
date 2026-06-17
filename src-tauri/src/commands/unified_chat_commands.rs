@@ -1039,6 +1039,8 @@ pub struct SwitchAgentConversationModeInput {
     pub base_ref: Option<String>,
     /// Optional user-facing base ref label.
     pub base_display_name: Option<String>,
+    /// Optional source pull request metadata when the selected base came from a PR head branch.
+    pub base_source_pull_request: Option<AgentWorkspaceSourcePullRequestInput>,
 }
 
 /// Response from switch_agent_conversation_mode command.
@@ -2568,6 +2570,14 @@ fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {
     )
 }
 
+fn agent_mode_should_create_workspace(
+    mode: AgentConversationWorkspaceMode,
+    source_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
+) -> bool {
+    agent_mode_requires_workspace(mode)
+        || (mode == AgentConversationWorkspaceMode::Chat && source_pull_request.is_some())
+}
+
 async fn agent_workspace_pr_automation_defaults_for_project(
     state: &AppState,
     project_id: &ProjectId,
@@ -2614,6 +2624,31 @@ mod agent_mode_workspace_tests {
         ));
         assert!(agent_mode_requires_workspace(
             AgentConversationWorkspaceMode::Ideation
+        ));
+    }
+
+    #[test]
+    fn source_pr_backed_chat_mode_creates_workspace() {
+        let source_pull_request = AgentWorkspaceSourcePullRequest {
+            number: 123,
+            url: None,
+            title: None,
+            head_ref_name: "feature/source-pr".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: None,
+        };
+
+        assert!(agent_mode_should_create_workspace(
+            AgentConversationWorkspaceMode::Chat,
+            Some(&source_pull_request),
+        ));
+        assert!(!agent_mode_should_create_workspace(
+            AgentConversationWorkspaceMode::Chat,
+            None,
+        ));
+        assert!(agent_mode_should_create_workspace(
+            AgentConversationWorkspaceMode::Edit,
+            None,
         ));
     }
 
@@ -2867,6 +2902,8 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
         base_ref_kind,
         base_ref.as_deref(),
     )?;
+    let should_create_workspace =
+        agent_mode_should_create_workspace(mode, source_pull_request.as_ref());
     let project_id = ProjectId::from_string(input.project_id.clone());
     log_start_agent_conversation_phase(&input.project_id, None, "parse_input", parse_input_started);
 
@@ -2929,7 +2966,7 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
             "Creating chat",
         );
     }
-    if agent_mode_requires_workspace(mode) {
+    if should_create_workspace {
         emit_start_agent_conversation_progress(
             &app,
             &input.project_id,
@@ -2938,7 +2975,7 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
             "Setup workspace",
         );
     }
-    let workspace = if agent_mode_requires_workspace(mode) {
+    let workspace = if should_create_workspace {
         let pr_automation_defaults =
             agent_workspace_pr_automation_defaults_for_project(&state, &project.id).await?;
         let mut workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
@@ -3210,6 +3247,15 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let target_mode = parse_agent_workspace_mode(Some(input.mode.as_str()))?;
     let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
+    let base_ref = trim_optional_input(input.base_ref);
+    let base_display_name = trim_optional_input(input.base_display_name);
+    let source_pull_request = normalize_agent_workspace_source_pull_request(
+        input.base_source_pull_request,
+        base_ref_kind,
+        base_ref.as_deref(),
+    )?;
+    let should_create_workspace =
+        agent_mode_should_create_workspace(target_mode, source_pull_request.as_ref());
 
     let mut conversation = state
         .chat_conversation_repo
@@ -3301,7 +3347,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             }
         }
         None => {
-            if agent_mode_requires_workspace(target_mode) {
+            if should_create_workspace {
                 let project_id = ProjectId::from_string(conversation.context_id.clone());
                 let project = state
                     .project_repo
@@ -3317,15 +3363,9 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                     target_mode,
                     AgentConversationWorkspaceBaseSelection {
                         kind: base_ref_kind,
-                        base_ref: input
-                            .base_ref
-                            .map(|value| value.trim().to_string())
-                            .filter(|value| !value.is_empty()),
-                        display_name: input
-                            .base_display_name
-                            .map(|value| value.trim().to_string())
-                            .filter(|value| !value.is_empty()),
-                        source_pull_request: None,
+                        base_ref,
+                        display_name: base_display_name,
+                        source_pull_request,
                     },
                     AgentConversationWorkspaceSetupMode::Blocking,
                     pr_automation_defaults,
@@ -12882,6 +12922,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -12942,6 +12983,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -12953,6 +12995,92 @@ mod tests {
         assert_eq!(workspace.mode.as_str(), "edit");
         assert!(workspace.pr_autofix_enabled);
         assert!(workspace.pr_auto_merge_desired);
+    }
+
+    #[tokio::test]
+    async fn switching_branchless_chat_to_edit_persists_source_pull_request_metadata() {
+        let state = AppState::new_test();
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_publish_repo(&repo_path);
+        git(&repo_path, &["checkout", "-b", "feature/source-pr"]);
+        std::fs::write(repo_path.join("README.md"), "source pr\n")
+            .expect("fixture update should be written");
+        git(&repo_path, &["add", "README.md"]);
+        git(&repo_path, &["commit", "-m", "source pr"]);
+        let source_sha = git(&repo_path, &["rev-parse", "HEAD"]);
+        git(&repo_path, &["checkout", "main"]);
+
+        let project_id = ProjectId::from_string("project-source-pr-switch".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
+        let mut project = Project::new(
+            "Mode Switch Source PR".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project persisted");
+        let mut conversation = ChatConversation::new_project(project_id);
+        conversation.id = conversation_id.clone();
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation persisted");
+
+        let response = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "edit".to_string(),
+                base_ref_kind: Some("local_branch".to_string()),
+                base_ref: Some("feature/source-pr".to_string()),
+                base_display_name: Some("PR #456: Source PR".to_string()),
+                base_source_pull_request: Some(AgentWorkspaceSourcePullRequestInput {
+                    number: 456,
+                    url: Some("https://github.com/owner/repo/pull/456".to_string()),
+                    title: Some("Source PR".to_string()),
+                    head_ref_name: "feature/source-pr".to_string(),
+                    base_ref_name: Some("main".to_string()),
+                    head_ref_oid: Some(source_sha.clone()),
+                }),
+            },
+            &state,
+        )
+        .await
+        .expect("edit mode switch should create source PR workspace");
+
+        let workspace = response.workspace.expect("workspace should be returned");
+        assert_eq!(workspace.mode, "edit");
+        assert_eq!(workspace.base_ref, "feature/source-pr");
+        let source = workspace
+            .source_pull_request
+            .expect("source PR metadata should be returned");
+        assert_eq!(source.number, 456);
+        assert_eq!(source.head_ref_name, "feature/source-pr");
+        assert_eq!(source.head_ref_oid.as_deref(), Some(source_sha.as_str()));
+
+        let persisted = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup succeeds")
+            .expect("workspace should persist");
+        assert_eq!(
+            persisted
+                .source_pull_request
+                .as_ref()
+                .map(|source| source.number),
+            Some(456)
+        );
+        assert!(persisted.publication_pr_number.is_none());
     }
 
     #[tokio::test]
@@ -13010,6 +13138,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -13026,6 +13155,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -13141,6 +13271,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -13213,6 +13344,7 @@ mod tests {
                 base_ref_kind: Some("project_default".to_string()),
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -13283,6 +13415,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -13344,6 +13477,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )

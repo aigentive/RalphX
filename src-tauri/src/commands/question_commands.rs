@@ -133,6 +133,7 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
             base_ref_kind: None,
             base_ref: None,
             base_display_name: None,
+            base_source_pull_request: None,
         },
         state,
     )
