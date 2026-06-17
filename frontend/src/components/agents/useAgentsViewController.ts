@@ -723,6 +723,7 @@ export function useAgentsViewController({
       activeConversation,
       activeProjectBaseBranch,
       activeWorkspace,
+      activeWorkspaceFreshness,
       artifactWidthCss,
       chatDockElement: terminalChatDockElement,
       focusedIdeationSessionId: focusedArtifactIdeationSessionId,
