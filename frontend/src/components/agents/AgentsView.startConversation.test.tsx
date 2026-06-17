@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
+import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -28,8 +29,9 @@ import { useStartAgentConversation } from "./useStartAgentConversation";
 const {
   archiveConversationMock,
   createConversationMock,
-  getPlanBranchesMock,
   integratedChatPanelRenderMock,
+  loadBranchBaseOptionsMock,
+  loadPullRequestBaseOptionsMock,
   listAgentConversationWorkspacesByProjectMock,
   listConversationsMock,
   listIdeationSessionsMock,
@@ -42,6 +44,28 @@ const {
 } = getAgentsViewTestMocks();
 
 const providerUpdatedAt = new Date().toISOString();
+
+function prPickerBranchOption(): BranchBaseOption {
+  return {
+    key: "pull_request:42:feature/pr-picker",
+    label: "#42 Add PR picker",
+    detail: "feature/pr-picker -> main",
+    source: "pull_request",
+    selection: {
+      kind: "local_branch",
+      ref: "feature/pr-picker",
+      displayName: "PR #42: Add PR picker",
+      sourcePullRequest: {
+        number: 42,
+        title: "Add PR picker",
+        url: "https://github.com/owner/repo/pull/42",
+        headRefName: "feature/pr-picker",
+        headRefOid: "abc123",
+        baseRefName: "main",
+      },
+    },
+  };
+}
 
 function agentProviderSettings(
   overrides: Partial<AgentProvidersSettingsResponse> = {},
@@ -292,46 +316,18 @@ describe("AgentsView start conversation", () => {
   it("starts a new conversation from a selected pull request head branch", async () => {
     const user = userEvent.setup();
     mockAgentViewData();
-    vi.mocked(invoke).mockImplementation((command, args) => {
-      if (command === "get_git_default_branch") {
-        return Promise.resolve("main");
-      }
-      if (command === "get_git_current_branch") {
-        return Promise.resolve("main");
-      }
-      if (command === "get_git_branches") {
-        return Promise.resolve(["main", "feature/pr-picker"]);
-      }
-      if (command === "search_github_pull_requests") {
-        expect(args).toEqual({
-          input: {
-            projectId: "project-1",
-            query: "",
-            limit: 30,
-          },
-        });
-        return Promise.resolve([
-          {
-            number: 42,
-            title: "Add PR picker",
-            url: "https://github.com/owner/repo/pull/42",
-            headRefName: "feature/pr-picker",
-            headRefOid: "abc123",
-            baseRefName: "main",
-            isDraft: false,
-            updatedAt: "2026-05-21T10:00:00Z",
-            authorLogin: "dev",
-            isCrossRepository: false,
-          },
-        ]);
-      }
-      return Promise.resolve(undefined);
-    });
+    loadPullRequestBaseOptionsMock.mockResolvedValue([prPickerBranchOption()]);
 
     renderAgentsView();
 
     await user.click(await screen.findByTestId("agents-start-base"));
     await user.click(screen.getByRole("tab", { name: /PRs/i }));
+    await waitFor(() =>
+      expect(loadPullRequestBaseOptionsMock).toHaveBeenCalledWith({
+        projectId: "project-1",
+        query: "",
+      })
+    );
     const prOption = await screen.findByText("#42 Add PR picker");
     const prOptionButton = prOption.closest("button");
     expect(prOptionButton).not.toBeNull();
@@ -369,38 +365,11 @@ describe("AgentsView start conversation", () => {
     const user = userEvent.setup();
     let pullRequestSearches = 0;
     mockAgentViewData();
-    vi.mocked(invoke).mockImplementation((command) => {
-      if (command === "get_git_default_branch") {
-        return Promise.resolve("main");
-      }
-      if (command === "get_git_current_branch") {
-        return Promise.resolve("main");
-      }
-      if (command === "get_git_branches") {
-        return Promise.resolve(["main", "feature/pr-picker"]);
-      }
-      if (command === "search_github_pull_requests") {
-        pullRequestSearches += 1;
-        return Promise.resolve(
-          pullRequestSearches === 1
-            ? [
-                {
-                  number: 42,
-                  title: "Add PR picker",
-                  url: "https://github.com/owner/repo/pull/42",
-                  headRefName: "feature/pr-picker",
-                  headRefOid: "abc123",
-                  baseRefName: "main",
-                  isDraft: false,
-                  updatedAt: "2026-05-21T10:00:00Z",
-                  authorLogin: "dev",
-                  isCrossRepository: false,
-                },
-              ]
-            : []
-        );
-      }
-      return Promise.resolve(undefined);
+    loadPullRequestBaseOptionsMock.mockImplementation(() => {
+      pullRequestSearches += 1;
+      return Promise.resolve(
+        pullRequestSearches === 1 ? [prPickerBranchOption()] : []
+      );
     });
 
     renderAgentsView();
@@ -422,21 +391,9 @@ describe("AgentsView start conversation", () => {
   it("shows pull request search failures in the start composer", async () => {
     const user = userEvent.setup();
     mockAgentViewData();
-    vi.mocked(invoke).mockImplementation((command) => {
-      if (command === "get_git_default_branch") {
-        return Promise.resolve("main");
-      }
-      if (command === "get_git_current_branch") {
-        return Promise.resolve("main");
-      }
-      if (command === "get_git_branches") {
-        return Promise.resolve(["main", "feature/pr-picker"]);
-      }
-      if (command === "search_github_pull_requests") {
-        return Promise.reject(new Error("GitHub search failed"));
-      }
-      return Promise.resolve(undefined);
-    });
+    loadPullRequestBaseOptionsMock.mockRejectedValue(
+      new Error("GitHub search failed")
+    );
 
     renderAgentsView();
 
@@ -1278,10 +1235,12 @@ describe("AgentsView start conversation", () => {
 
   it("renders remembered branch base options before hover and refreshes with a loading state on intent", async () => {
     mockAgentViewData();
-    let resolveBranches: ((branches: unknown[]) => void) | null = null;
-    getPlanBranchesMock.mockReturnValue(
+    let resolveBranchOptions:
+      | ((result: { options: BranchBaseOption[]; selectedKey: string }) => void)
+      | null = null;
+    loadBranchBaseOptionsMock.mockReturnValue(
       new Promise((resolve) => {
-        resolveBranches = resolve;
+        resolveBranchOptions = resolve;
       })
     );
     resetAgentSessionState({
@@ -1328,14 +1287,21 @@ describe("AgentsView start conversation", () => {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     expect(screen.getByTestId("agents-start-base")).toHaveTextContent("feature/cached");
-    expect(getPlanBranchesMock).not.toHaveBeenCalled();
+    expect(loadBranchBaseOptionsMock).not.toHaveBeenCalled();
     expect(listIdeationSessionsMock).not.toHaveBeenCalled();
     expect(listConversationsMock).not.toHaveBeenCalled();
     expect(listAgentConversationWorkspacesByProjectMock).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByTestId("agents-start-base"));
 
-    await waitFor(() => expect(getPlanBranchesMock).toHaveBeenCalledWith("project-1"));
+    await waitFor(() =>
+      expect(loadBranchBaseOptionsMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          workingDirectory: "/tmp/ralphx",
+        })
+      )
+    );
     expect(screen.getByText("Refreshing branches...")).toBeInTheDocument();
     expect(screen.getAllByText("feature/cached").length).toBeGreaterThan(0);
 
@@ -1347,7 +1313,22 @@ describe("AgentsView start conversation", () => {
       useAgentSessionStore.getState().branchBaseCacheByProjectId["project-1"]?.selectedKey
     ).toBe("project_default:main");
 
-    resolveBranches?.([]);
+    resolveBranchOptions?.({
+      options: [
+        {
+          key: "project_default:main",
+          label: "Project default (main)",
+          detail: "Configured project base branch",
+          source: "project",
+          selection: {
+            kind: "project_default",
+            ref: "main",
+            displayName: "Project default (main)",
+          },
+        },
+      ],
+      selectedKey: "project_default:main",
+    });
   });
 
   it("starts a chat-mode conversation from the selected base and shows its workspace", async () => {
