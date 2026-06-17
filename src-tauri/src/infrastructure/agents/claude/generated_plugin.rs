@@ -17,13 +17,17 @@ const GENERATED_PLUGIN_DIR_REL_DEBUG: &str = ".artifacts/generated/claude-plugin
 const GENERATED_PLUGIN_DIR_REL_PROD_ROOT: &str = "generated";
 const GENERATED_PLUGIN_DIR_NAME: &str = "claude-plugin";
 const GENERATED_AGENTS_DIR: &str = "agents";
+const HOOKS_ENTRY_NAME: &str = "hooks";
+const HOOKS_CONFIG_FILE: &str = "hooks.json";
+const HOOKS_SCRIPTS_DIR: &str = "scripts";
+const EMPTY_HOOKS_CONFIG: &str = "{\n  \"hooks\": {}\n}\n";
 const INTERNAL_MCP_SERVER_DIR: &str = "ralphx-mcp-server";
 const EXTERNAL_MCP_SERVER_DIR: &str = "ralphx-external-mcp";
 const FALLBACK_RUNTIME_ENTRY_NAMES: &[&str] = &[INTERNAL_MCP_SERVER_DIR, EXTERNAL_MCP_SERVER_DIR];
 const GENERATED_PLUGIN_ENTRY_NAMES: &[&str] = &[
     ".claude-plugin",
     ".mcp.json",
-    "hooks",
+    HOOKS_ENTRY_NAME,
     "memory-framework.md",
     "skills",
     INTERNAL_MCP_SERVER_DIR,
@@ -222,6 +226,11 @@ fn sync_runtime_entries(
     generated_plugin_dir: &Path,
 ) -> Result<(), String> {
     for file_name in GENERATED_PLUGIN_ENTRY_NAMES {
+        if *file_name == HOOKS_ENTRY_NAME {
+            sync_hooks_entry(base_plugin_dir, generated_plugin_dir)?;
+            continue;
+        }
+
         let target = generated_plugin_dir.join(file_name);
         let source =
             expected_runtime_entry_source(base_plugin_dir, runtime_source_plugin_dir, file_name);
@@ -277,6 +286,13 @@ fn generated_plugin_dir_is_current(
     }
 
     for file_name in GENERATED_PLUGIN_ENTRY_NAMES {
+        if *file_name == HOOKS_ENTRY_NAME {
+            if !generated_hooks_entry_is_current(base_plugin_dir, generated_plugin_dir)? {
+                return Ok(false);
+            }
+            continue;
+        }
+
         let target = generated_plugin_dir.join(file_name);
         let expected_source =
             expected_runtime_entry_source(base_plugin_dir, runtime_source_plugin_dir, file_name);
@@ -289,6 +305,140 @@ fn generated_plugin_dir_is_current(
                 return Err(format!(
                     "Failed to inspect generated Claude plugin symlink {}: {error}",
                     target.display()
+                ));
+            }
+        }
+    }
+
+    Ok(true)
+}
+
+fn sync_hooks_entry(base_plugin_dir: &Path, generated_plugin_dir: &Path) -> Result<(), String> {
+    let source_hooks_dir = base_plugin_dir.join(HOOKS_ENTRY_NAME);
+    let target_hooks_dir = generated_plugin_dir.join(HOOKS_ENTRY_NAME);
+    remove_existing_path(&target_hooks_dir)?;
+
+    // codeql[rust/path-injection]
+    fs::create_dir_all(&target_hooks_dir).map_err(|error| {
+        format!(
+            "Failed to create generated Claude hooks dir {}: {error}",
+            target_hooks_dir.display()
+        )
+    })?;
+
+    let hooks_config = read_valid_hooks_config(&source_hooks_dir.join(HOOKS_CONFIG_FILE))?
+        .unwrap_or_else(|| EMPTY_HOOKS_CONFIG.to_string());
+    // codeql[rust/path-injection]
+    fs::write(target_hooks_dir.join(HOOKS_CONFIG_FILE), hooks_config).map_err(|error| {
+        format!(
+            "Failed to write generated Claude hooks config {}: {error}",
+            target_hooks_dir.join(HOOKS_CONFIG_FILE).display()
+        )
+    })?;
+
+    let source_scripts_dir = source_hooks_dir.join(HOOKS_SCRIPTS_DIR);
+    // codeql[rust/path-injection]
+    if source_scripts_dir.exists() {
+        ensure_symlink(
+            &source_scripts_dir,
+            &target_hooks_dir.join(HOOKS_SCRIPTS_DIR),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn read_valid_hooks_config(path: &Path) -> Result<Option<String>, String> {
+    // codeql[rust/path-injection]
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "Failed to read Claude hooks config {}: {error}",
+                path.display()
+            ));
+        }
+    };
+
+    if hooks_config_has_record(&raw) {
+        Ok(Some(raw))
+    } else {
+        warn!(
+            path = %path.display(),
+            "Normalizing generated Claude hooks config to an empty hooks record"
+        );
+        Ok(None)
+    }
+}
+
+fn hooks_config_has_record(raw: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.get("hooks").map(serde_json::Value::is_object))
+        .unwrap_or(false)
+}
+
+fn generated_hooks_entry_is_current(
+    base_plugin_dir: &Path,
+    generated_plugin_dir: &Path,
+) -> Result<bool, String> {
+    let target_hooks_dir = generated_plugin_dir.join(HOOKS_ENTRY_NAME);
+    // codeql[rust/path-injection]
+    match fs::symlink_metadata(&target_hooks_dir) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "Failed to inspect generated Claude hooks dir {}: {error}",
+                target_hooks_dir.display()
+            ));
+        }
+    }
+
+    // codeql[rust/path-injection]
+    let raw = match fs::read_to_string(target_hooks_dir.join(HOOKS_CONFIG_FILE)) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "Failed to read generated Claude hooks config {}: {error}",
+                target_hooks_dir.join(HOOKS_CONFIG_FILE).display()
+            ));
+        }
+    };
+    if !hooks_config_has_record(&raw) {
+        return Ok(false);
+    }
+
+    let source_scripts_dir = base_plugin_dir
+        .join(HOOKS_ENTRY_NAME)
+        .join(HOOKS_SCRIPTS_DIR);
+    let target_scripts_dir = target_hooks_dir.join(HOOKS_SCRIPTS_DIR);
+    // codeql[rust/path-injection]
+    if source_scripts_dir.exists() {
+        // codeql[rust/path-injection]
+        match fs::read_link(&target_scripts_dir) {
+            Ok(existing) if existing == source_scripts_dir => {}
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "Failed to inspect generated Claude hooks scripts symlink {}: {error}",
+                    target_scripts_dir.display()
+                ));
+            }
+        }
+    } else {
+        // codeql[rust/path-injection]
+        match fs::symlink_metadata(&target_scripts_dir) {
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Failed to inspect generated Claude hooks scripts path {}: {error}",
+                    target_scripts_dir.display()
                 ));
             }
         }
@@ -597,7 +747,11 @@ fn build_claude_frontmatter(
                 "  - {}:",
                 yaml_scalar(&internal_mcp_server_name(mcp_server_name))?
             ));
-            push_stdio_mcp_server_frontmatter(&mut lines, agent_name, Some(internal_sidecar_tools))?;
+            push_stdio_mcp_server_frontmatter(
+                &mut lines,
+                agent_name,
+                Some(internal_sidecar_tools),
+            )?;
         }
     }
 
@@ -820,13 +974,19 @@ fn symlink_path(source: &Path, target: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_symlink, expected_runtime_entry_source, generated_plugin_dir_for_base_with_override,
-        generated_plugin_dir_has_only_managed_entries, generated_plugin_dir_is_current,
-        generated_plugin_runtime_profile_component, prune_unmanaged_generated_plugin_entries,
+        ensure_symlink, expected_runtime_entry_source, generated_hooks_entry_is_current,
+        generated_plugin_dir_for_base_with_override, generated_plugin_dir_has_only_managed_entries,
+        generated_plugin_dir_is_current, generated_plugin_runtime_profile_component,
+        prune_unmanaged_generated_plugin_entries, read_valid_hooks_config,
+        render_generated_agent_markdown, sync_runtime_entries,
         trusted_existing_generated_plugin_top_level_path, trusted_generated_plugin_child_path,
-        EXTERNAL_MCP_SERVER_DIR, GENERATED_AGENTS_DIR, GENERATED_PLUGIN_ENTRY_NAMES,
-        INTERNAL_MCP_SERVER_DIR,
+        EMPTY_HOOKS_CONFIG, EXTERNAL_MCP_SERVER_DIR, GENERATED_AGENTS_DIR, HOOKS_CONFIG_FILE,
+        HOOKS_ENTRY_NAME, HOOKS_SCRIPTS_DIR, INTERNAL_MCP_SERVER_DIR,
     };
+    use crate::infrastructure::agents::harness_agent_catalog::{
+        CanonicalAgentDefinition, CanonicalClaudeAgentMetadata,
+    };
+    use crate::utils::path_safety::{checked_exists, validate_absolute_non_root_path};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -891,13 +1051,117 @@ mod tests {
     fn seed_generated_runtime_links(base_plugin_dir: &Path, generated_dir: &Path) {
         fs::create_dir_all(generated_dir.join(GENERATED_AGENTS_DIR))
             .expect("create generated agents dir");
-        for entry_name in GENERATED_PLUGIN_ENTRY_NAMES {
-            ensure_symlink(
-                &base_plugin_dir.join(entry_name),
-                &generated_dir.join(entry_name),
-            )
-            .expect("seed generated runtime symlink");
-        }
+        sync_runtime_entries(base_plugin_dir, base_plugin_dir, generated_dir)
+            .expect("seed generated runtime entries");
+    }
+
+    fn create_test_dir_all(path: impl AsRef<Path>) {
+        let path = validate_absolute_non_root_path(path.as_ref(), "generated plugin test dir")
+            .expect("validate generated plugin test dir");
+
+        // codeql[rust/path-injection]
+        fs::create_dir_all(path).expect("create generated plugin test dir");
+    }
+
+    fn write_test_file(path: impl AsRef<Path>, contents: &str) {
+        let path = validate_absolute_non_root_path(path.as_ref(), "generated plugin test file")
+            .expect("validate generated plugin test file");
+
+        // codeql[rust/path-injection]
+        fs::write(path, contents).expect("write generated plugin test file");
+    }
+
+    fn remove_test_file(path: impl AsRef<Path>) {
+        let path = validate_absolute_non_root_path(path.as_ref(), "generated plugin test removal")
+            .expect("validate generated plugin test removal path");
+
+        // codeql[rust/path-injection]
+        fs::remove_file(path).expect("remove generated plugin test file");
+    }
+
+    fn remove_test_dir_all(path: impl AsRef<Path>) {
+        let path = validate_absolute_non_root_path(path.as_ref(), "generated plugin test removal")
+            .expect("validate generated plugin test removal path");
+
+        // codeql[rust/path-injection]
+        fs::remove_dir_all(path).expect("remove generated plugin test dir");
+    }
+
+    fn test_path_exists(path: impl AsRef<Path>) -> bool {
+        checked_exists(path.as_ref(), "generated plugin test path")
+            .expect("inspect generated plugin test path")
+    }
+
+    #[test]
+    fn generated_plugin_runtime_entries_normalize_empty_hooks_config() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        let base_hooks_dir = base_plugin_dir.join(HOOKS_ENTRY_NAME);
+        fs::create_dir_all(base_hooks_dir.join(HOOKS_SCRIPTS_DIR))
+            .expect("create base hooks scripts dir");
+        fs::create_dir_all(&generated_dir).expect("create generated plugin dir");
+        fs::write(base_hooks_dir.join(HOOKS_CONFIG_FILE), "{}").expect("write stale hooks config");
+
+        sync_runtime_entries(&base_plugin_dir, &base_plugin_dir, &generated_dir)
+            .expect("sync runtime entries");
+
+        assert_eq!(
+            fs::read_to_string(generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_CONFIG_FILE))
+                .expect("read generated hooks config"),
+            EMPTY_HOOKS_CONFIG
+        );
+        assert_eq!(
+            fs::read_link(generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_SCRIPTS_DIR))
+                .expect("read generated hooks scripts symlink"),
+            base_hooks_dir.join(HOOKS_SCRIPTS_DIR)
+        );
+    }
+
+    #[test]
+    fn generated_plugin_runtime_entries_preserve_valid_hooks_config_without_scripts() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        let base_hooks_dir = base_plugin_dir.join(HOOKS_ENTRY_NAME);
+        let valid_hooks_config = "{\n  \"hooks\": {\n    \"PreToolUse\": []\n  }\n}\n";
+        fs::create_dir_all(&base_hooks_dir).expect("create base hooks dir");
+        fs::create_dir_all(&generated_dir).expect("create generated plugin dir");
+        fs::write(base_hooks_dir.join(HOOKS_CONFIG_FILE), valid_hooks_config)
+            .expect("write valid hooks config");
+
+        sync_runtime_entries(&base_plugin_dir, &base_plugin_dir, &generated_dir)
+            .expect("sync runtime entries");
+
+        assert_eq!(
+            fs::read_to_string(generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_CONFIG_FILE))
+                .expect("read generated hooks config"),
+            valid_hooks_config
+        );
+        assert!(!test_path_exists(
+            generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_SCRIPTS_DIR)
+        ));
+    }
+
+    #[test]
+    fn generated_plugin_runtime_entries_use_empty_hooks_config_when_source_hooks_missing() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        create_test_dir_all(&base_plugin_dir);
+        create_test_dir_all(&generated_dir);
+
+        sync_runtime_entries(&base_plugin_dir, &base_plugin_dir, &generated_dir)
+            .expect("sync runtime entries");
+
+        assert_eq!(
+            fs::read_to_string(generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_CONFIG_FILE))
+                .expect("read generated hooks config"),
+            EMPTY_HOOKS_CONFIG
+        );
+        assert!(!test_path_exists(
+            generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_SCRIPTS_DIR)
+        ));
     }
 
     #[test]
@@ -905,8 +1169,8 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("create temp dir");
         let base_plugin_dir = dir.path().join("base/plugins/app");
         let generated_dir = dir.path().join("generated/claude-plugin");
-        fs::create_dir_all(&base_plugin_dir).expect("create base plugin dir");
-        fs::create_dir_all(&generated_dir).expect("create generated plugin dir");
+        create_test_dir_all(&base_plugin_dir);
+        create_test_dir_all(&generated_dir);
 
         assert!(!generated_plugin_dir_is_current(
             &base_plugin_dir,
@@ -935,6 +1199,23 @@ mod tests {
                 .expect("managed entries should be inspectable after prune")
         );
 
+        fs::write(
+            generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_CONFIG_FILE),
+            "{}",
+        )
+        .expect("write stale generated hooks config");
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("invalid generated hooks config should be inspectable"));
+        fs::write(
+            generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_CONFIG_FILE),
+            EMPTY_HOOKS_CONFIG,
+        )
+        .expect("repair generated hooks config");
+
         fs::remove_file(generated_dir.join(INTERNAL_MCP_SERVER_DIR))
             .expect("remove managed runtime symlink");
         assert!(!generated_plugin_dir_is_current(
@@ -956,6 +1237,195 @@ mod tests {
             &generated_dir
         )
         .expect("stale runtime symlink should be inspectable"));
+    }
+
+    #[test]
+    fn generated_plugin_dir_current_validation_rejects_stale_hooks_scripts_entry() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        let base_hooks_dir = base_plugin_dir.join(HOOKS_ENTRY_NAME);
+        fs::create_dir_all(base_hooks_dir.join(HOOKS_SCRIPTS_DIR))
+            .expect("create base hooks scripts dir");
+        fs::create_dir_all(&generated_dir).expect("create generated plugin dir");
+
+        seed_generated_runtime_links(&base_plugin_dir, &generated_dir);
+        assert!(generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("generated plugin should start current"));
+
+        fs::remove_file(generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_SCRIPTS_DIR))
+            .expect("remove generated scripts symlink");
+        ensure_symlink(
+            &dir.path().join("stale/hooks/scripts"),
+            &generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_SCRIPTS_DIR),
+        )
+        .expect("seed stale hooks scripts symlink");
+
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("stale hooks scripts symlink should be inspectable"));
+    }
+
+    #[test]
+    fn generated_plugin_dir_current_validation_rejects_missing_or_file_hooks_entry() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        create_test_dir_all(&base_plugin_dir);
+        create_test_dir_all(&generated_dir);
+
+        seed_generated_runtime_links(&base_plugin_dir, &generated_dir);
+        assert!(generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("generated plugin should start current"));
+
+        remove_test_dir_all(generated_dir.join(HOOKS_ENTRY_NAME));
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("missing hooks dir should be inspectable"));
+
+        write_test_file(generated_dir.join(HOOKS_ENTRY_NAME), "not a directory");
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("file hooks path should be inspectable"));
+    }
+
+    #[test]
+    fn generated_plugin_dir_current_validation_rejects_missing_hooks_config() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        create_test_dir_all(&base_plugin_dir);
+        create_test_dir_all(&generated_dir);
+
+        seed_generated_runtime_links(&base_plugin_dir, &generated_dir);
+        remove_test_file(generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_CONFIG_FILE));
+
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("missing hooks config should be inspectable"));
+    }
+
+    #[test]
+    fn generated_plugin_dir_current_validation_rejects_unexpected_hooks_scripts_entry() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        create_test_dir_all(&base_plugin_dir);
+        create_test_dir_all(&generated_dir);
+
+        seed_generated_runtime_links(&base_plugin_dir, &generated_dir);
+        write_test_file(
+            generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_SCRIPTS_DIR),
+            "unexpected scripts file",
+        );
+
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("unexpected hooks scripts entry should be inspectable"));
+    }
+
+    #[test]
+    fn generated_plugin_hooks_helpers_report_unreadable_shapes() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        create_test_dir_all(&base_plugin_dir);
+
+        let unreadable_config_path = dir.path().join("hooks-config-dir");
+        create_test_dir_all(&unreadable_config_path);
+        let error = read_valid_hooks_config(&unreadable_config_path)
+            .expect_err("directory hooks config path should fail");
+        assert!(error.contains("Failed to read Claude hooks config"));
+
+        let generated_file = dir.path().join("generated-file");
+        write_test_file(&generated_file, "not a directory");
+        let error = generated_hooks_entry_is_current(&base_plugin_dir, &generated_file)
+            .expect_err("file generated root should fail hooks metadata");
+        assert!(error.contains("Failed to inspect generated Claude hooks dir"));
+
+        let generated_bad_config = dir.path().join("generated-bad-config");
+        create_test_dir_all(generated_bad_config.join(HOOKS_ENTRY_NAME));
+        create_test_dir_all(
+            generated_bad_config
+                .join(HOOKS_ENTRY_NAME)
+                .join(HOOKS_CONFIG_FILE),
+        );
+        let error = generated_hooks_entry_is_current(&base_plugin_dir, &generated_bad_config)
+            .expect_err("directory hooks config should fail read");
+        assert!(error.contains("Failed to read generated Claude hooks config"));
+
+        let generated_bad_scripts = dir.path().join("generated-bad-scripts");
+        create_test_dir_all(
+            base_plugin_dir
+                .join(HOOKS_ENTRY_NAME)
+                .join(HOOKS_SCRIPTS_DIR),
+        );
+        create_test_dir_all(generated_bad_scripts.join(HOOKS_ENTRY_NAME));
+        write_test_file(
+            generated_bad_scripts
+                .join(HOOKS_ENTRY_NAME)
+                .join(HOOKS_CONFIG_FILE),
+            EMPTY_HOOKS_CONFIG,
+        );
+        create_test_dir_all(
+            generated_bad_scripts
+                .join(HOOKS_ENTRY_NAME)
+                .join(HOOKS_SCRIPTS_DIR),
+        );
+        let error = generated_hooks_entry_is_current(&base_plugin_dir, &generated_bad_scripts)
+            .expect_err("directory scripts path should fail read_link");
+        assert!(error.contains("Failed to inspect generated Claude hooks scripts symlink"));
+    }
+
+    #[test]
+    fn generated_agent_markdown_includes_internal_sidecar_stdio_tools() {
+        let definition = CanonicalAgentDefinition {
+            name: "ralphx-plan-verifier".to_string(),
+            role: "plan_verifier".to_string(),
+            description: None,
+            capabilities: Default::default(),
+            harnesses: Default::default(),
+            delegation: Default::default(),
+            profiles: Default::default(),
+        };
+        let claude_metadata = CanonicalClaudeAgentMetadata {
+            mcp_transport: Some("external".to_string()),
+            internal_mcp_tools: vec!["list_agent_tasks".to_string()],
+            ..Default::default()
+        };
+
+        let markdown = render_generated_agent_markdown(
+            "ralphx-plan-verifier",
+            &definition,
+            &claude_metadata,
+            "Verifier prompt",
+        )
+        .expect("render generated markdown");
+
+        assert!(markdown.contains("ralphx_internal"));
+        assert!(markdown.contains("--allowed-tools=list_agent_tasks"));
     }
 
     #[test]

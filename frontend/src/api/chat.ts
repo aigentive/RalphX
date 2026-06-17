@@ -1449,11 +1449,13 @@ export async function updateConversationTitle(
 
 export async function spawnConversationSessionNamer(
   conversationId: string,
-  firstMessage: string
+  firstMessage: string,
+  providerHarness?: string | null
 ): Promise<void> {
   await invoke("spawn_session_namer", {
     conversationId,
     firstMessage,
+    ...(providerHarness ? { providerHarness } : {}),
   });
 }
 
