@@ -5175,6 +5175,12 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
 
+    let mut repair_service =
+        state.build_chat_service_with_execution_state(Arc::clone(execution_state));
+    if let Some(team_service) = team_service {
+        repair_service = repair_service.with_team_service(team_service);
+    }
+
     let mut publish_target =
         match resolve_agent_workspace_publish_target(state, &project, &workspace).await {
             Ok(target) => target,
@@ -5187,16 +5193,22 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
                             crate::domain::entities::AgentConversationWorkspaceStatus::Missing,
                         )
                         .await;
+                } else {
+                    let repair_target =
+                        AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+                    mark_agent_workspace_update_failure_with_target(
+                        state,
+                        &workspace,
+                        &error,
+                        None,
+                        &repair_service,
+                        &repair_target,
+                    )
+                    .await;
                 }
                 return Err(error);
             }
         };
-
-    let mut repair_service =
-        state.build_chat_service_with_execution_state(Arc::clone(execution_state));
-    if let Some(team_service) = team_service {
-        repair_service = repair_service.with_team_service(team_service);
-    }
 
     let base_resolution = if let Some(explicit_base) = explicit_base.as_ref() {
         publish_target.base_ref = explicit_base.base_ref.clone();
@@ -11423,7 +11435,10 @@ mod tests {
         .await
         .expect_err("primary checkout plan branch should not be updated in place");
 
-        assert!(error.contains("Refusing to update plan branch"));
+        assert!(
+            error.to_ascii_lowercase().contains("primary checkout"),
+            "unexpected primary checkout refusal: {error}"
+        );
         assert_eq!(
             git(&repo_path, &["branch", "--show-current"]),
             plan_branch_name
