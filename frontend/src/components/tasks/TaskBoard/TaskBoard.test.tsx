@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api } from "@/lib/tauri";
 import { createMockTask } from "@/test/mock-data";
@@ -255,6 +255,30 @@ describe("TaskBoard", () => {
   });
 
   describe("toolbar interactions", () => {
+    it("renders accessible card density controls and toggles mini mode", async () => {
+      vi.mocked(getActiveWorkflowColumns).mockResolvedValue(createMockColumns());
+
+      render(<TaskBoard projectId="p1" />, { wrapper: createWrapper() });
+
+      const densityGroup = await screen.findByRole("group", {
+        name: /kanban card layout/i,
+      });
+      const defaultButton = within(densityGroup).getByRole("button", {
+        name: /default cards/i,
+      });
+      const miniButton = within(densityGroup).getByRole("button", {
+        name: /mini cards/i,
+      });
+
+      expect(defaultButton).toHaveAttribute("aria-pressed", "true");
+      expect(miniButton).toHaveAttribute("aria-pressed", "false");
+
+      fireEvent.click(miniButton);
+
+      expect(defaultButton).toHaveAttribute("aria-pressed", "false");
+      expect(miniButton).toHaveAttribute("aria-pressed", "true");
+    });
+
     it("clears boardSearchQuery when search bar close button is clicked", async () => {
       vi.mocked(getActiveWorkflowColumns).mockResolvedValue(createMockColumns());
 

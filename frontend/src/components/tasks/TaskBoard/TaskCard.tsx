@@ -41,11 +41,14 @@ import { TaskStatusBadge } from "./TaskStatusBadge";
 import { getCardStyles, isDraggableStatus } from "./TaskCard.utils";
 import { getTaskCategoryLabel } from "@/lib/task-category";
 
+export type TaskCardDisplayMode = "default" | "mini";
+
 interface TaskCardProps {
   task: Task;
   isDragging?: boolean;
   isSelected?: boolean;
   isHidden?: boolean;
+  displayMode?: TaskCardDisplayMode;
   reviewStatus?: ReviewStatus;
   /** Whether this task needs QA */
   needsQA?: boolean;
@@ -83,6 +86,7 @@ export function TaskCard({
   isDragging,
   isSelected,
   isHidden,
+  displayMode = "default",
   reviewStatus,
   needsQA,
   prepStatus,
@@ -131,6 +135,7 @@ export function TaskCard({
       ? `PR #${planBranch?.prNumber} was closed`
       : `PR #${planBranch?.prNumber} - waiting for GitHub review or merge`;
   const categoryLabel = getTaskCategoryLabel(task.category);
+  const isMiniDisplay = displayMode === "mini";
 
   // Mutations
   const {
@@ -266,7 +271,7 @@ export function TaskCard({
           onClick={() => {
             handleViewDetails();
           }}
-          className={`group relative px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] ${isArchived ? "opacity-50" : ""} ${!isDraggable ? "cursor-default" : ""}`}
+          className={`group relative px-3 ${isMiniDisplay ? "py-2" : "py-2.5"} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] ${isArchived ? "opacity-50" : ""} ${!isDraggable ? "cursor-default" : ""}`}
           style={{ ...cardStyles, ...dragStyle }}
           tabIndex={0}
         >
@@ -309,7 +314,7 @@ export function TaskCard({
         </div>
 
         {/* Description - 2 line clamp with markdown */}
-        {task.description && (
+        {!isMiniDisplay && task.description && (
           <div
             className="line-clamp-2 [&_*]:!mb-0 [&_*]:!mt-0"
             style={{
@@ -326,7 +331,7 @@ export function TaskCard({
         )}
 
         {/* Blocked reason indicator - yellow pill style */}
-        {task.internalStatus === "blocked" && task.blockedReason && (
+        {!isMiniDisplay && task.internalStatus === "blocked" && task.blockedReason && (
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -350,6 +355,7 @@ export function TaskCard({
         )}
 
         {/* Badge row - simple, muted */}
+        {!isMiniDisplay && (
         <div className="flex flex-wrap items-center gap-1.5">
           <span
             className="inline-flex h-5 items-center rounded-full px-2"
@@ -457,6 +463,7 @@ export function TaskCard({
             </TooltipProvider>
           )}
         </div>
+        )}
 
         {/* Step progress indicator - shown for all post-execution statuses */}
         {(task.internalStatus === "executing" ||
@@ -473,7 +480,7 @@ export function TaskCard({
             <StepProgressBar taskId={task.id} compact={true} internalStatus={task.internalStatus} />
 
             {/* Duration badge - shown when executing */}
-            {(task.internalStatus === "executing" || task.internalStatus === "re_executing") && executionState.duration !== null && (
+            {!isMiniDisplay && (task.internalStatus === "executing" || task.internalStatus === "re_executing") && executionState.duration !== null && (
               <div
                 className="flex items-center gap-1 text-[0.6875rem]"
                 style={{ color: "var(--text-secondary)" }}
