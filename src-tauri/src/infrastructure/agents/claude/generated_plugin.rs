@@ -974,15 +974,19 @@ fn symlink_path(source: &Path, target: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_symlink, expected_runtime_entry_source, generated_plugin_dir_for_base_with_override,
-        generated_plugin_dir_has_only_managed_entries, generated_plugin_dir_is_current,
-        generated_plugin_runtime_profile_component, prune_unmanaged_generated_plugin_entries,
-        sync_runtime_entries, trusted_existing_generated_plugin_top_level_path,
-        trusted_generated_plugin_child_path, EMPTY_HOOKS_CONFIG, EXTERNAL_MCP_SERVER_DIR,
-        GENERATED_AGENTS_DIR, HOOKS_CONFIG_FILE, HOOKS_ENTRY_NAME, HOOKS_SCRIPTS_DIR,
-        INTERNAL_MCP_SERVER_DIR,
+        ensure_symlink, expected_runtime_entry_source, generated_hooks_entry_is_current,
+        generated_plugin_dir_for_base_with_override, generated_plugin_dir_has_only_managed_entries,
+        generated_plugin_dir_is_current, generated_plugin_runtime_profile_component,
+        prune_unmanaged_generated_plugin_entries, read_valid_hooks_config,
+        render_generated_agent_markdown, sync_runtime_entries,
+        trusted_existing_generated_plugin_top_level_path, trusted_generated_plugin_child_path,
+        EMPTY_HOOKS_CONFIG, EXTERNAL_MCP_SERVER_DIR, GENERATED_AGENTS_DIR, HOOKS_CONFIG_FILE,
+        HOOKS_ENTRY_NAME, HOOKS_SCRIPTS_DIR, INTERNAL_MCP_SERVER_DIR,
     };
-    use crate::utils::path_safety::validate_absolute_non_root_path;
+    use crate::infrastructure::agents::harness_agent_catalog::{
+        CanonicalAgentDefinition, CanonicalClaudeAgentMetadata,
+    };
+    use crate::utils::path_safety::{checked_exists, validate_absolute_non_root_path};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -1083,6 +1087,11 @@ mod tests {
         fs::remove_dir_all(path).expect("remove generated plugin test dir");
     }
 
+    fn test_path_exists(path: impl AsRef<Path>) -> bool {
+        checked_exists(path.as_ref(), "generated plugin test path")
+            .expect("inspect generated plugin test path")
+    }
+
     #[test]
     fn generated_plugin_runtime_entries_normalize_empty_hooks_config() {
         let dir = tempfile::TempDir::new().expect("create temp dir");
@@ -1129,13 +1138,9 @@ mod tests {
                 .expect("read generated hooks config"),
             valid_hooks_config
         );
-        assert!(
-            !generated_dir
-                .join(HOOKS_ENTRY_NAME)
-                .join(HOOKS_SCRIPTS_DIR)
-                .exists(),
-            "generated hooks should omit scripts when source hooks has none"
-        );
+        assert!(!test_path_exists(
+            generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_SCRIPTS_DIR)
+        ));
     }
 
     #[test]
@@ -1154,13 +1159,9 @@ mod tests {
                 .expect("read generated hooks config"),
             EMPTY_HOOKS_CONFIG
         );
-        assert!(
-            !generated_dir
-                .join(HOOKS_ENTRY_NAME)
-                .join(HOOKS_SCRIPTS_DIR)
-                .exists(),
-            "generated hooks should not invent a scripts entry"
-        );
+        assert!(!test_path_exists(
+            generated_dir.join(HOOKS_ENTRY_NAME).join(HOOKS_SCRIPTS_DIR)
+        ));
     }
 
     #[test]
@@ -1344,6 +1345,87 @@ mod tests {
             &generated_dir
         )
         .expect("unexpected hooks scripts entry should be inspectable"));
+    }
+
+    #[test]
+    fn generated_plugin_hooks_helpers_report_unreadable_shapes() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        create_test_dir_all(&base_plugin_dir);
+
+        let unreadable_config_path = dir.path().join("hooks-config-dir");
+        create_test_dir_all(&unreadable_config_path);
+        let error = read_valid_hooks_config(&unreadable_config_path)
+            .expect_err("directory hooks config path should fail");
+        assert!(error.contains("Failed to read Claude hooks config"));
+
+        let generated_file = dir.path().join("generated-file");
+        write_test_file(&generated_file, "not a directory");
+        let error = generated_hooks_entry_is_current(&base_plugin_dir, &generated_file)
+            .expect_err("file generated root should fail hooks metadata");
+        assert!(error.contains("Failed to inspect generated Claude hooks dir"));
+
+        let generated_bad_config = dir.path().join("generated-bad-config");
+        create_test_dir_all(generated_bad_config.join(HOOKS_ENTRY_NAME));
+        create_test_dir_all(
+            generated_bad_config
+                .join(HOOKS_ENTRY_NAME)
+                .join(HOOKS_CONFIG_FILE),
+        );
+        let error = generated_hooks_entry_is_current(&base_plugin_dir, &generated_bad_config)
+            .expect_err("directory hooks config should fail read");
+        assert!(error.contains("Failed to read generated Claude hooks config"));
+
+        let generated_bad_scripts = dir.path().join("generated-bad-scripts");
+        create_test_dir_all(
+            base_plugin_dir
+                .join(HOOKS_ENTRY_NAME)
+                .join(HOOKS_SCRIPTS_DIR),
+        );
+        create_test_dir_all(generated_bad_scripts.join(HOOKS_ENTRY_NAME));
+        write_test_file(
+            generated_bad_scripts
+                .join(HOOKS_ENTRY_NAME)
+                .join(HOOKS_CONFIG_FILE),
+            EMPTY_HOOKS_CONFIG,
+        );
+        create_test_dir_all(
+            generated_bad_scripts
+                .join(HOOKS_ENTRY_NAME)
+                .join(HOOKS_SCRIPTS_DIR),
+        );
+        let error = generated_hooks_entry_is_current(&base_plugin_dir, &generated_bad_scripts)
+            .expect_err("directory scripts path should fail read_link");
+        assert!(error.contains("Failed to inspect generated Claude hooks scripts symlink"));
+    }
+
+    #[test]
+    fn generated_agent_markdown_includes_internal_sidecar_stdio_tools() {
+        let definition = CanonicalAgentDefinition {
+            name: "ralphx-plan-verifier".to_string(),
+            role: "plan_verifier".to_string(),
+            description: None,
+            capabilities: Default::default(),
+            harnesses: Default::default(),
+            delegation: Default::default(),
+            profiles: Default::default(),
+        };
+        let claude_metadata = CanonicalClaudeAgentMetadata {
+            mcp_transport: Some("external".to_string()),
+            internal_mcp_tools: vec!["list_agent_tasks".to_string()],
+            ..Default::default()
+        };
+
+        let markdown = render_generated_agent_markdown(
+            "ralphx-plan-verifier",
+            &definition,
+            &claude_metadata,
+            "Verifier prompt",
+        )
+        .expect("render generated markdown");
+
+        assert!(markdown.contains("ralphx_internal"));
+        assert!(markdown.contains("--allowed-tools=list_agent_tasks"));
     }
 
     #[test]

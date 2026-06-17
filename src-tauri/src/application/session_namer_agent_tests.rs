@@ -228,6 +228,38 @@ fn session_namer_extracts_title_from_structured_and_defensive_output_shapes() {
         Some("Name Codex conversations")
     );
 
+    assert_eq!(
+        extract_session_namer_title(r#"{"title":"Direct JSON Title"}"#).as_deref(),
+        Some("Direct JSON Title")
+    );
+
+    assert_eq!(
+        extract_session_namer_title(r#"{"result":"Generated Title: Result JSON Title"}"#)
+            .as_deref(),
+        Some("Result JSON Title")
+    );
+
+    assert_eq!(
+        extract_session_namer_title(
+            r#"{"message":{"content":[{"type":"tool_use","input":{"title":"Tool JSON Title"}}]}}"#
+        )
+        .as_deref(),
+        Some("Tool JSON Title")
+    );
+
+    assert_eq!(
+        extract_session_namer_title(
+            r#"{"message":{"content":[{"type":"text","text":"Title: Text JSON Title"}]}}"#
+        )
+        .as_deref(),
+        Some("Text JSON Title")
+    );
+
+    assert!(extract_session_namer_title(
+        "{\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"\"}]}}\nmore output"
+    )
+    .is_none());
+
     let tool_parameter = r#"<invoke name="update_session_title">
 <parameter name="title">Retry Claude Auto Rename</parameter>
 </invoke>"#;
@@ -240,6 +272,16 @@ fn session_namer_extracts_title_from_structured_and_defensive_output_shapes() {
     assert_eq!(
         extract_session_namer_title(generated_title_without_backticks).as_deref(),
         Some("Repair Claude Rename")
+    );
+
+    assert_eq!(
+        extract_session_namer_title("\nGenerated Title: Title After Blank").as_deref(),
+        Some("Title After Blank")
+    );
+
+    assert_eq!(
+        extract_session_namer_title("\nTitle: Plain Title After Blank").as_deref(),
+        Some("Plain Title After Blank")
     );
 
     let long_title =
