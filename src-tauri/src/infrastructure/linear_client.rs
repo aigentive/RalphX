@@ -312,4 +312,76 @@ mod tests {
             "Linear returned HTTP 400: Unknown argument \"search\" on field \"Query.issues\"."
         );
     }
+
+    #[test]
+    fn http_error_falls_back_to_status_or_body_text() {
+        assert_eq!(render_http_error(401, b""), "Linear returned HTTP 401");
+        assert_eq!(
+            render_http_error(503, b"temporarily unavailable\n"),
+            "Linear returned HTTP 503: temporarily unavailable"
+        );
+    }
+
+    #[test]
+    fn issue_summary_from_node_maps_optional_fields_and_trims_excerpt() {
+        let long_description = format!("{}tail", "a".repeat(240));
+        let node = serde_json::json!({
+            "id": "issue-id",
+            "identifier": "LIN-123",
+            "title": "Example",
+            "url": "https://linear.app/acme/issue/LIN-123/example",
+            "description": long_description,
+            "state": { "name": "In Progress" }
+        });
+
+        let summary = issue_summary_from_node(&node).expect("node should parse");
+
+        assert_eq!(summary.id, "issue-id");
+        assert_eq!(summary.key.as_deref(), Some("LIN-123"));
+        assert_eq!(summary.title, "Example");
+        assert_eq!(
+            summary.url.as_deref(),
+            Some("https://linear.app/acme/issue/LIN-123/example")
+        );
+        assert_eq!(summary.excerpt.as_deref().unwrap().len(), 243);
+        assert!(summary.excerpt.as_deref().unwrap().ends_with("..."));
+        assert_eq!(summary.state_name.as_deref(), Some("In Progress"));
+    }
+
+    #[test]
+    fn issue_summary_from_node_rejects_unreadable_required_fields() {
+        let missing_id = serde_json::json!({
+            "title": "Example"
+        });
+
+        assert!(issue_summary_from_node(&missing_id).is_none());
+    }
+
+    #[test]
+    fn issue_content_from_node_maps_missing_optional_fields_to_empty_body() {
+        let node = serde_json::json!({
+            "id": "issue-id",
+            "title": "Example"
+        });
+
+        let content = issue_content_from_node(&node).expect("node should parse");
+
+        assert_eq!(content.id, "issue-id");
+        assert_eq!(content.title, "Example");
+        assert!(content.key.is_none());
+        assert!(content.url.is_none());
+        assert!(content.body.is_empty());
+        assert!(content.state_name.is_none());
+    }
+
+    #[test]
+    fn graphql_error_rendering_ignores_entries_without_message() {
+        let errors = vec![
+            serde_json::json!({ "message": "first" }),
+            serde_json::json!({ "extensions": { "code": "bad" } }),
+            serde_json::json!({ "message": "second" }),
+        ];
+
+        assert_eq!(render_graphql_errors(&errors), "first; second");
+    }
 }

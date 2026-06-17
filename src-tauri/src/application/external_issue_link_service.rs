@@ -182,3 +182,7 @@ fn first_jira_reference_url(metadata: &str) -> Option<String> {
             }
         })
 }
+
+#[cfg(test)]
+#[path = "external_issue_link_service_tests.rs"]
+mod tests;

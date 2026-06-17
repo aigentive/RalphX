@@ -36,6 +36,10 @@ impl SqliteExternalIssueLinkRepository {
     }
 }
 
+#[cfg(test)]
+#[path = "sqlite_external_issue_link_repo_tests.rs"]
+mod tests;
+
 #[async_trait]
 impl ExternalIssueLinkRepository for SqliteExternalIssueLinkRepository {
     async fn upsert_link(&self, input: ExternalIssueLinkUpsert) -> AppResult<ExternalIssueLink> {

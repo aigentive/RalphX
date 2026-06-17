@@ -56,6 +56,10 @@ impl SqliteLinearWebhookStore {
     }
 }
 
+#[cfg(test)]
+#[path = "sqlite_linear_webhook_store_tests.rs"]
+mod tests;
+
 #[async_trait]
 impl LinearWebhookStore for SqliteLinearWebhookStore {
     async fn record_delivery(&self, delivery: LinearDelivery) -> AppResult<LinearDeliveryRecord> {
