@@ -47,7 +47,7 @@ impl QueueProcessingOutcome {
     }
 }
 
-const HIDDEN_RESUME_IN_PLACE_MARKER_CONTENT: &str =
+pub(super) const HIDDEN_RESUME_IN_PLACE_MARKER_CONTENT: &str =
     "RalphX hidden resume-in-place message was delivered.";
 
 pub(super) fn queue_processing_blocked_by_pause(
@@ -75,7 +75,9 @@ fn with_resume_in_place_metadata(metadata_override: Option<String>) -> Option<St
     Some(value.to_string())
 }
 
-fn hidden_resume_in_place_marker_metadata(metadata_override: Option<&str>) -> Option<String> {
+pub(super) fn hidden_resume_in_place_marker_metadata(
+    metadata_override: Option<&str>,
+) -> Option<String> {
     let raw = metadata_override?;
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return None;
@@ -442,6 +444,38 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             if cancellation_token.is_cancelled() {
                 tracing::info!("[QUEUE] Cancellation requested mid-queue, stopping");
                 break;
+            }
+
+            if let Some(backoff) =
+                super::chat_service_send_background::silent_completion_recovery_backoff(
+                    queued_msg.metadata_override.as_deref(),
+                )
+            {
+                tracing::info!(
+                    %context_type,
+                    context_id,
+                    queue_context_id,
+                    queued_message_id = %queued_msg.id,
+                    backoff_ms = backoff.as_millis(),
+                    "[QUEUE] Delaying hidden silent-completion recovery"
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {}
+                    _ = cancellation_token.cancelled() => {
+                        message_queue.queue_front_existing(
+                            context_type,
+                            queue_context_id,
+                            queued_msg,
+                        );
+                        tracing::info!(
+                            %context_type,
+                            context_id,
+                            queue_context_id,
+                            "[QUEUE] Cancellation requested during recovery backoff, restored message to queue front"
+                        );
+                        break;
+                    }
+                }
             }
 
             // Guard: for task execution, verify task is still in Executing/ReExecuting state
@@ -1031,6 +1065,8 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             let blocks = outcome.content_blocks;
                             let provider_session_id = outcome.session_id;
                             let queue_stderr = outcome.stderr_text;
+                            let turns_finalized = outcome.turns_finalized;
+                            let silent_interactive_exit = outcome.silent_interactive_exit;
                             if resume_in_place {
                                 persist_hidden_resume_in_place_marker(
                                     chat_message_repo,
@@ -1071,13 +1107,80 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                 )
                                 .await;
                             }
+                            let recovery_enqueue =
+                                super::chat_service_send_background::enqueue_silent_completion_recovery(
+                                    message_queue.as_ref(),
+                                    context_type,
+                                    queue_context_id,
+                                    &response,
+                                    &tools,
+                                    &blocks,
+                                    turns_finalized,
+                                    silent_interactive_exit,
+                                    cancellation_token.is_cancelled(),
+                                    true,
+                                    queued_msg.metadata_override.as_deref(),
+                                );
+                            let recovery_exhausted = matches!(
+                                recovery_enqueue,
+                                super::chat_service_send_background::SilentCompletionRecoveryEnqueue::Exhausted { .. }
+                            );
+                            match recovery_enqueue {
+                                super::chat_service_send_background::SilentCompletionRecoveryEnqueue::Queued {
+                                    attempt,
+                                    backoff_ms,
+                                } => {
+                                    tracing::warn!(
+                                        %context_type,
+                                        context_id,
+                                        queue_context_id,
+                                        queued_run_id = %queued_run_id,
+                                        attempt,
+                                        backoff_ms,
+                                        "[QUEUE] Requeued hidden silent-completion recovery"
+                                    );
+                                }
+                                super::chat_service_send_background::SilentCompletionRecoveryEnqueue::Exhausted { attempts } => {
+                                    tracing::error!(
+                                        %context_type,
+                                        context_id,
+                                        queue_context_id,
+                                        queued_run_id = %queued_run_id,
+                                        attempts,
+                                        "[QUEUE] Silent-completion recovery attempts exhausted"
+                                    );
+                                    if let Some(ref handle) = app_handle {
+                                        let _ = handle.emit(
+                                            "agent:error",
+                                            AgentErrorPayload {
+                                                conversation_id: Some(conversation_id.as_str().to_string()),
+                                                context_type: context_type.to_string(),
+                                                context_id: context_id.to_string(),
+                                                agent_run_id: Some(queued_run_id.clone()),
+                                                error: "Agent stopped after tool activity without a final response after automated recovery attempts".to_string(),
+                                                stderr: None,
+                                            },
+                                        );
+                                    }
+                                }
+                                super::chat_service_send_background::SilentCompletionRecoveryEnqueue::NotNeeded => {}
+                            }
 
                             // NOTE: Don't emit run_completed here for each queued message.
                             // We emit a single run_completed after ALL queue processing is done,
                             // to prevent UI flickering between messages.
-                            let _ = agent_run_repo
-                                .complete(&AgentRunId::from_string(queued_run_id.clone()))
-                                .await;
+                            if recovery_exhausted {
+                                let _ = agent_run_repo
+                                    .fail(
+                                        &AgentRunId::from_string(queued_run_id.clone()),
+                                        "Agent stopped after automated silent-completion recovery attempts",
+                                    )
+                                    .await;
+                            } else {
+                                let _ = agent_run_repo
+                                    .complete(&AgentRunId::from_string(queued_run_id.clone()))
+                                    .await;
+                            }
                         }
                         Err(e) => {
                             if let crate::application::chat_service::StreamError::ProviderError {
