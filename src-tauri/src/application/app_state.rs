@@ -354,30 +354,15 @@ impl AppState {
         purpose: &str,
     ) -> AppResult<Option<PathBuf>> {
         let Some(launch_path) =
-            crate::application::managed_provider_cli::managed_provider_cli_launch_path(
+            crate::application::managed_provider_cli::checked_managed_provider_cli_launch_path(
                 provider_settings,
+                purpose,
             )
         else {
             return Ok(None);
         };
 
-        let cli_path = launch_path.map_err(AppError::Infrastructure)?;
-        if let Some(probe) =
-            crate::application::managed_provider_cli::managed_provider_runtime_probe(
-                provider_settings,
-            )
-        {
-            if !probe.available {
-                return Err(AppError::Infrastructure(probe.error.unwrap_or_else(|| {
-                    format!(
-                        "{purpose} harness unavailable: {}",
-                        provider_settings.provider
-                    )
-                })));
-            }
-        }
-
-        Ok(Some(cli_path))
+        launch_path.map(Some).map_err(AppError::Infrastructure)
     }
 
     async fn resolve_background_agent_client_and_cli_path_override(

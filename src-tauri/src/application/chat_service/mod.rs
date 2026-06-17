@@ -2045,8 +2045,9 @@ impl<R: Runtime> AppChatService<R> {
                 .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
             if let Some(settings) = settings.as_ref() {
                 if let Some(path) =
-                    crate::application::managed_provider_cli::managed_provider_cli_launch_path(
+                    crate::application::managed_provider_cli::checked_managed_provider_cli_launch_path(
                         settings,
+                        "chat runtime",
                     )
                 {
                     return path.map_err(ChatServiceError::SpawnFailed);
@@ -4955,13 +4956,20 @@ mod managed_provider_launch_path_tests {
     use crate::domain::agents::{
         AgentHarnessKind, AgentProviderCliManagementMode, AgentProviderSettings,
     };
-    use crate::utils::runtime_log_paths::managed_codex_binary_path;
+    use std::path::Path;
 
     #[tokio::test]
     async fn rx_managed_codex_provider_overrides_chat_launch_cli_path() {
         let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
             .lock()
             .expect("test env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let managed_codex_path = temp_dir.path().join("codex");
+        write_codex_capability_script(&managed_codex_path);
+        let _override =
+            crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests(
+                managed_codex_path.clone(),
+            );
         let app_state = AppState::new_sqlite_test();
         let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
         settings.enabled = true;
@@ -4978,7 +4986,67 @@ mod managed_provider_launch_path_tests {
             .await
             .expect("launch path");
 
-        assert_eq!(path, managed_codex_binary_path());
+        assert_eq!(path, managed_codex_path);
+    }
+
+    #[tokio::test]
+    async fn rx_managed_codex_provider_rejects_missing_chat_launch_cli_path() {
+        let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+            .lock()
+            .expect("test env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let missing_codex_path = temp_dir.path().join("missing-codex");
+        let _override =
+            crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests(
+                missing_codex_path,
+            );
+        let app_state = AppState::new_sqlite_test();
+        let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+        settings.enabled = true;
+        settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
+        app_state
+            .agent_provider_settings_repo
+            .upsert(&settings)
+            .await
+            .expect("save provider settings");
+        let service = app_state.build_chat_service();
+
+        let error = service
+            .resolve_launch_cli_path_for_harness(AgentHarnessKind::Codex)
+            .await
+            .expect_err("missing managed Codex should block launch");
+
+        assert!(error
+            .to_string()
+            .contains("RX-managed Codex is not installed."));
+        assert!(!error.to_string().contains("Codex CLI not found at"));
+    }
+
+    fn write_codex_capability_script(path: &Path) {
+        let parent = path.parent().expect("script parent");
+        std::fs::create_dir_all(parent).expect("script parent directory");
+        std::fs::write(
+            path,
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 0.116.0\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+        )
+        .expect("write fake codex");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake codex");
+        }
     }
 }
 

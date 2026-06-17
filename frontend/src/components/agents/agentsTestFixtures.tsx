@@ -72,6 +72,7 @@ export const conversationWorkspaceFixture = (
   publicationPrStatus: null,
   publicationPushStatus: null,
   autoPublishEnabled: true,
+  autoPublishInitialPrEnabled: false,
   autoPublishPausedPrAutofixEnabled: null,
   autoPublishPausedPrAutoMergeDesired: null,
   status: "active",
