@@ -146,7 +146,14 @@ impl LinearApiClient for HyperLinearApiClient {
                     title
                     url
                     description
+                    updatedAt
                     state {
+                      name
+                    }
+                    assignee {
+                      name
+                    }
+                    creator {
                       name
                     }
                   }
@@ -278,7 +285,22 @@ fn issue_content_from_node(node: &Value) -> Option<LinearIssueContent> {
             .and_then(|state| state.get("name"))
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        assignee: linear_user_name(node.get("assignee")),
+        creator: linear_user_name(node.get("creator")),
+        updated_at: node
+            .get("updatedAt")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
     })
+}
+
+fn linear_user_name(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(|user| user.get("name"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn trim_excerpt(value: &str) -> String {
@@ -451,14 +473,17 @@ mod tests {
     fn issue_content_from_data_maps_issue_and_reports_missing_issue() {
         let content = issue_content_from_data(
             &serde_json::json!({
-                "issue": {
-                    "id": "issue-1",
-                    "identifier": "LIN-1",
-                    "title": "Readable",
-                    "url": "https://linear.app/acme/issue/LIN-1/readable",
-                    "description": "Issue body",
-                    "state": { "name": "In Progress" }
-                }
+            "issue": {
+                "id": "issue-1",
+                "identifier": "LIN-1",
+                "title": "Readable",
+                "url": "https://linear.app/acme/issue/LIN-1/readable",
+                "description": "Issue body",
+                "state": { "name": "In Progress" },
+                "assignee": { "name": "A. User" },
+                "creator": { "name": "C. User" },
+                "updatedAt": "2026-06-18T08:00:00Z"
+            }
             }),
             "issue-1",
         )
@@ -469,6 +494,9 @@ mod tests {
         assert_eq!(content.title, "Readable");
         assert_eq!(content.body, "Issue body");
         assert_eq!(content.state_name.as_deref(), Some("In Progress"));
+        assert_eq!(content.assignee.as_deref(), Some("A. User"));
+        assert_eq!(content.creator.as_deref(), Some("C. User"));
+        assert_eq!(content.updated_at.as_deref(), Some("2026-06-18T08:00:00Z"));
 
         assert_eq!(
             issue_content_from_data(&serde_json::json!({}), "missing").unwrap_err(),
@@ -571,6 +599,9 @@ mod tests {
         assert!(content.url.is_none());
         assert!(content.body.is_empty());
         assert!(content.state_name.is_none());
+        assert!(content.assignee.is_none());
+        assert!(content.creator.is_none());
+        assert!(content.updated_at.is_none());
     }
 
     #[test]
@@ -581,7 +612,10 @@ mod tests {
             "title": "Fetched issue",
             "url": "https://linear.app/acme/issue/LIN-456/fetched",
             "description": "Fetched issue body",
-            "state": { "name": "Done" }
+            "state": { "name": "Done" },
+            "assignee": { "name": "A. User" },
+            "creator": { "name": "C. User" },
+            "updatedAt": "2026-06-18T08:15:00Z"
         });
 
         let content = issue_content_from_node(&node).expect("node should parse");
@@ -595,6 +629,9 @@ mod tests {
         );
         assert_eq!(content.body, "Fetched issue body");
         assert_eq!(content.state_name.as_deref(), Some("Done"));
+        assert_eq!(content.assignee.as_deref(), Some("A. User"));
+        assert_eq!(content.creator.as_deref(), Some("C. User"));
+        assert_eq!(content.updated_at.as_deref(), Some("2026-06-18T08:15:00Z"));
     }
 
     #[test]

@@ -64,6 +64,9 @@ pub struct LinearIssueContent {
     pub url: Option<String>,
     pub body: String,
     pub state_name: Option<String>,
+    pub assignee: Option<String>,
+    pub creator: Option<String>,
+    pub updated_at: Option<String>,
 }
 
 #[async_trait]
@@ -138,6 +141,9 @@ impl LinearApiClient for EmptyLinearApiClient {
             url: reference.url.clone(),
             body: String::new(),
             state_name: None,
+            assignee: Some("A. User".to_string()),
+            creator: Some("C. User".to_string()),
+            updated_at: Some("2026-06-18T08:00:00Z".to_string()),
         })
     }
 }
@@ -396,12 +402,15 @@ fn render_issue_content(content: LinearIssueContent, remaining_budget: &mut usiz
     }
     *remaining_budget = remaining_budget.saturating_sub(body.len());
     format!(
-        "<linear_issue id=\"{}\" key=\"{}\" title=\"{}\" url=\"{}\" state=\"{}\" bytes=\"{}\" truncated=\"{}\">\n```\n{}\n```\n</linear_issue>",
+        "<linear_issue id=\"{}\" key=\"{}\" title=\"{}\" url=\"{}\" state=\"{}\" assignee=\"{}\" creator=\"{}\" updated_at=\"{}\" bytes=\"{}\" truncated=\"{}\">\n```\n{}\n```\n</linear_issue>",
         escape_attr(&content.id),
         escape_attr(content.key.as_deref().unwrap_or("")),
         escape_attr(&content.title),
         escape_attr(content.url.as_deref().unwrap_or("")),
         escape_attr(content.state_name.as_deref().unwrap_or("")),
+        escape_attr(content.assignee.as_deref().unwrap_or("")),
+        escape_attr(content.creator.as_deref().unwrap_or("")),
+        escape_attr(content.updated_at.as_deref().unwrap_or("")),
         original_len,
         truncated,
         body.trim_end()

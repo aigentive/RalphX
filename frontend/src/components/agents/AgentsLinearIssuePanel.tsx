@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Loader2, RefreshCw, Search, Ticket, Unlink } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
@@ -26,6 +26,10 @@ interface AgentsLinearIssuePanelProps {
   conversationId: string | null;
   projectId: string | null;
 }
+
+type RefreshLinearIssueOptions = {
+  silent?: boolean;
+};
 
 export function AgentsLinearIssuePanel({
   conversationId,
@@ -72,18 +76,41 @@ export function AgentsLinearIssuePanel({
     },
   });
   const refreshMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: (_options?: RefreshLinearIssueOptions) =>
       linearApi.refreshAgentConversationLinearIssue({
         conversationId: conversationId!,
       }),
-    onSuccess: (refreshed) => {
+    onSuccess: (refreshed, options) => {
       queryClient.setQueryData(agentLinearIssueKeys.issue(conversationId), refreshed);
+      if (options?.silent) {
+        return;
+      }
       toast.success("Linear issue refreshed");
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : "Failed to refresh Linear issue");
     },
   });
+  const refreshIssue = refreshMutation.mutate;
+
+  useEffect(() => {
+    if (
+      !conversationId ||
+      issue?.conversationId !== conversationId ||
+      issue.refreshStatus !== "not_loaded" ||
+      refreshMutation.isPending
+    ) {
+      return;
+    }
+    refreshIssue({ silent: true });
+  }, [
+    conversationId,
+    issue?.conversationId,
+    issue?.issueId,
+    issue?.refreshStatus,
+    refreshMutation.isPending,
+    refreshIssue,
+  ]);
   const clearMutation = useMutation({
     mutationFn: () =>
       linearApi.clearAgentConversationLinearIssue({
@@ -132,7 +159,7 @@ export function AgentsLinearIssuePanel({
             ) : null}
             <IconButton
               label="Refresh Linear issue"
-              onClick={() => refreshMutation.mutate()}
+              onClick={() => refreshIssue({ silent: false })}
               disabled={refreshMutation.isPending}
             >
               <RefreshCw className={cn("h-4 w-4", refreshMutation.isPending && "animate-spin")} />

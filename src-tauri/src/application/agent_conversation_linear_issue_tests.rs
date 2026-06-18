@@ -4,6 +4,7 @@ use chrono::{DateTime, Duration, Utc};
 
 use super::*;
 use crate::application::AppState;
+use crate::domain::entities::AgentConversationJiraIssueLink;
 use crate::infrastructure::memory::MemoryAgentConversationLinearIssueRepository;
 
 fn assigned_at() -> DateTime<Utc> {
@@ -81,6 +82,44 @@ fn merge_assigned_linear_reference_preserves_cross_provider_references() {
     assert_eq!(merged.len(), 3);
     assert_eq!(merged[0].provider, "linear");
     assert_eq!(merged[1].provider, "atlassian");
+    assert_eq!(merged[2].key.as_deref(), Some("LIN-456"));
+}
+
+#[test]
+fn assigned_jira_and_linear_references_coexist_after_provider_scoped_merges() {
+    let conversation_id = ChatConversationId::new();
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let assigned_jira = AgentConversationJiraIssueLink::new(
+        conversation_id.clone(),
+        project_id.clone(),
+        "RX-42".to_string(),
+        Utc::now(),
+    )
+    .with_reference_metadata(Some("10042".to_string()), None, None);
+    let assigned_linear = AgentConversationLinearIssueLink::new(
+        conversation_id,
+        project_id,
+        "539068e2-ae88-4d09-bd75-22eb4a59612f".to_string(),
+        Utc::now(),
+    )
+    .with_reference_metadata(Some("LIN-123".to_string()), None, None);
+
+    let with_jira =
+        crate::application::agent_conversation_jira_issue::merge_assigned_jira_reference(
+            Some(&assigned_jira),
+            &[
+                jira_ref("RX-42"),
+                linear_ref("639068e2-ae88-4d09-bd75-22eb4a59612f", Some("LIN-456")),
+            ],
+        );
+    let merged = merge_assigned_linear_reference(Some(&assigned_linear), &with_jira);
+
+    assert_eq!(merged.len(), 3);
+    assert_eq!(merged[0].provider, "linear");
+    assert_eq!(merged[0].key.as_deref(), Some("LIN-123"));
+    assert_eq!(merged[1].provider, "atlassian");
+    assert_eq!(merged[1].key.as_deref(), Some("RX-42"));
+    assert_eq!(merged[2].provider, "linear");
     assert_eq!(merged[2].key.as_deref(), Some("LIN-456"));
 }
 
@@ -191,6 +230,12 @@ async fn assign_primary_linear_issue_fetches_details_at_link_time() {
         AgentConversationLinearRefreshStatus::Loaded
     );
     assert_eq!(assigned.title.as_deref(), Some("LIN-123 title"));
+    assert_eq!(assigned.assignee.as_deref(), Some("A. User"));
+    assert_eq!(assigned.reporter.as_deref(), Some("C. User"));
+    assert_eq!(
+        assigned.updated_at_remote.as_deref(),
+        Some("2026-06-18T08:00:00Z")
+    );
     assert!(assigned.last_refreshed_at.is_some());
 }
 

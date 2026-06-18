@@ -415,6 +415,7 @@ mod tests {
     use super::*;
     use tauri::Manager;
 
+    use crate::domain::entities::{ChatConversation, ProjectId};
     use crate::domain::integrations::IntegrationValidationStatus;
 
     fn test_app() -> tauri::App<tauri::test::MockRuntime> {
@@ -509,5 +510,187 @@ mod tests {
         .expect_err("blank signing secrets should be rejected");
 
         assert_eq!(error, "Linear webhook signing secret cannot be empty");
+    }
+
+    #[tokio::test]
+    async fn linear_assignment_commands_validate_empty_or_missing_assignments() {
+        let app = test_app();
+        let conversation_id = ChatConversationId::new();
+
+        let empty_issue_error = assign_agent_conversation_linear_issue(
+            AssignAgentConversationLinearIssueInput {
+                conversation_id: conversation_id.as_str().to_string(),
+                project_id: Some("project-1".to_string()),
+                issue_id: "   ".to_string(),
+                issue_key: None,
+                title: None,
+                issue_url: None,
+                refresh: Some(false),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(empty_issue_error, "Linear issue id is required");
+
+        let missing_assignment_error = refresh_agent_conversation_linear_issue(
+            RefreshAgentConversationLinearIssueInput {
+                conversation_id: conversation_id.as_str().to_string(),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            missing_assignment_error,
+            "No Linear issue is assigned to this conversation"
+        );
+    }
+
+    #[tokio::test]
+    async fn linear_assignment_commands_round_trip_and_refresh_cached_issue() {
+        let app_state = AppState::new_test();
+        app_state
+            .linear_integration_service
+            .save_settings(Some("lin-api-token".to_string()))
+            .await
+            .expect("save Linear settings");
+        app_state
+            .linear_integration_service
+            .validate_and_enable()
+            .await
+            .expect("enable Linear");
+
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let conversation = ChatConversation::new_project(project_id.clone());
+        let conversation_id = conversation.id.clone();
+        app_state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("create conversation");
+        let app = tauri::test::mock_builder()
+            .manage(app_state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+
+        let assigned = assign_agent_conversation_linear_issue(
+            AssignAgentConversationLinearIssueInput {
+                conversation_id: conversation_id.as_str().to_string(),
+                project_id: None,
+                issue_id: " issue-1 ".to_string(),
+                issue_key: Some(" LIN-123 ".to_string()),
+                title: Some(" Fix Linear tab ".to_string()),
+                issue_url: Some(" https://linear.app/acme/issue/LIN-123/fix ".to_string()),
+                refresh: Some(false),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("assign Linear issue")
+        .issue
+        .expect("assigned response");
+
+        assert_eq!(assigned.project_id, project_id.as_str());
+        assert_eq!(assigned.issue_id, "issue-1");
+        assert_eq!(assigned.issue_key.as_deref(), Some("LIN-123"));
+        assert_eq!(assigned.title.as_deref(), Some("Fix Linear tab"));
+        assert_eq!(assigned.refresh_status, "not_loaded");
+        assert!(assigned.manually_assigned);
+
+        let loaded = get_agent_conversation_linear_issue(
+            GetAgentConversationLinearIssueInput {
+                conversation_id: conversation_id.as_str().to_string(),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("get Linear issue")
+        .issue
+        .expect("loaded response");
+        assert_eq!(loaded.issue_id, "issue-1");
+
+        let refreshed = refresh_agent_conversation_linear_issue(
+            RefreshAgentConversationLinearIssueInput {
+                conversation_id: conversation_id.as_str().to_string(),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("refresh Linear issue")
+        .issue
+        .expect("refreshed response");
+        assert_eq!(refreshed.refresh_status, "loaded");
+        assert_eq!(refreshed.title.as_deref(), Some("Fix Linear tab"));
+        assert!(refreshed.last_refreshed_at.is_some());
+
+        let cleared = clear_agent_conversation_linear_issue(
+            ClearAgentConversationLinearIssueInput {
+                conversation_id: conversation_id.as_str().to_string(),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("clear Linear issue");
+        assert!(cleared.issue.is_none());
+    }
+
+    #[tokio::test]
+    async fn linear_refresh_records_error_when_integration_is_disabled_but_clear_still_works() {
+        let app_state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let conversation = ChatConversation::new_project(project_id);
+        let conversation_id = conversation.id.clone();
+        app_state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("create conversation");
+        let app = tauri::test::mock_builder()
+            .manage(app_state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+
+        assign_agent_conversation_linear_issue(
+            AssignAgentConversationLinearIssueInput {
+                conversation_id: conversation_id.as_str().to_string(),
+                project_id: Some("project-1".to_string()),
+                issue_id: "issue-1".to_string(),
+                issue_key: Some("LIN-123".to_string()),
+                title: Some("Fix Linear tab".to_string()),
+                issue_url: None,
+                refresh: Some(false),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("assign Linear issue without API");
+
+        let refreshed = refresh_agent_conversation_linear_issue(
+            RefreshAgentConversationLinearIssueInput {
+                conversation_id: conversation_id.as_str().to_string(),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("refresh records error")
+        .issue
+        .expect("refreshed response");
+
+        assert_eq!(refreshed.refresh_status, "error");
+        assert_eq!(
+            refreshed.refresh_error.as_deref(),
+            Some("Linear integration is not enabled")
+        );
+
+        let cleared = clear_agent_conversation_linear_issue(
+            ClearAgentConversationLinearIssueInput {
+                conversation_id: conversation_id.as_str().to_string(),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("clear still works without Linear API");
+        assert!(cleared.issue.is_none());
     }
 }

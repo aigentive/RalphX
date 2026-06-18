@@ -87,6 +87,9 @@ pub async fn refresh_linear_issue_link(
             link.issue_url = content.url.or(link.issue_url);
             link.title = Some(content.title);
             link.status = content.state_name;
+            link.assignee = content.assignee;
+            link.reporter = content.creator;
+            link.updated_at_remote = content.updated_at;
             link.description_markdown = Some(content.body.clone());
             link.description_text = Some(content.body);
             link.comments_json = "[]".to_string();

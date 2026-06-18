@@ -115,6 +115,9 @@ impl LinearApiClient for TestLinearClient {
             url: reference.url.clone(),
             body: "Issue body".to_string(),
             state_name: Some("In Progress".to_string()),
+            assignee: Some("A. User".to_string()),
+            creator: Some("C. User".to_string()),
+            updated_at: Some("2026-06-18T08:00:00Z".to_string()),
         })
     }
 }
@@ -176,7 +179,10 @@ async fn clearing_api_token_deletes_existing_secret_and_marks_not_configured() {
         .await
         .unwrap();
     let secret_ref = saved.token_secret_ref.clone().unwrap();
-    let cleared = service.save_settings(Some("   ".to_string())).await.unwrap();
+    let cleared = service
+        .save_settings(Some("   ".to_string()))
+        .await
+        .unwrap();
 
     assert!(cleared.token_secret_ref.is_none());
     assert_eq!(
