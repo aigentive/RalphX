@@ -550,11 +550,12 @@ export function AgentComposerSurface({
     selectedIntegrationReferenceList.length > 0 ||
     selectedArtifactReferenceList.length > 0;
 
-  // Collapsed (minimal) resting state. The composer only expands when there is
-  // real content to keep visible: text in the textarea, a live agent,
-  // attachments, references, queued messages, a pending question, or read-only
-  // review. Focus and transient popovers (+, mode, model) intentionally do NOT
-  // expand it, so opening those menus never resizes the chat block.
+  // Collapsed (minimal) resting state. The composer expands when the textarea
+  // is focused (cursor active, even with no text yet) or when there is real
+  // content to keep visible: text, a live agent, attachments, references,
+  // queued messages, a pending question, or read-only review. Transient
+  // popovers (+, mode, model) intentionally do NOT expand it on their own, so
+  // opening a menu on an unfocused composer never resizes the chat block.
   const hasComposerActivity =
     value.trim().length > 0 ||
     isAgentAlive ||
@@ -564,7 +565,7 @@ export function AgentComposerSurface({
     hasQueuedMessages ||
     Boolean(questionMode) ||
     isReadOnly;
-  const isCollapsed = collapsible && !hasComposerActivity;
+  const isCollapsed = collapsible && !isFocused && !hasComposerActivity;
   const isExpanded = !isCollapsed;
   const compact = isCollapsed;
 
@@ -1565,6 +1566,7 @@ function ComposerActionMenu({
           borderColor: "var(--border-subtle)",
           color: "var(--text-primary)",
         }}
+        onOpenAutoFocus={(event) => event.preventDefault()}
         onCloseAutoFocus={onCloseAutoFocus}
       >
         {enableAttachments && (
@@ -1908,6 +1910,7 @@ function ComposerModeChip({
           borderColor: "var(--border-subtle)",
           color: "var(--text-primary)",
         }}
+        onOpenAutoFocus={(event) => event.preventDefault()}
       >
         <ComposerModeMenuSection mode={mode} onDone={() => onOpenChange(false)} />
       </PopoverContent>

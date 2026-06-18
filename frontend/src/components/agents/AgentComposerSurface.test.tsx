@@ -1043,23 +1043,26 @@ describe("AgentComposerSurface", () => {
       );
     });
 
-    it("stays minimal on focus or popover open, expanding only when text exists", () => {
+    it("expands when the textarea is focused even with no text", () => {
       renderComposer({ dataTestId: "agent-composer", collapsible: true });
       const surface = screen.getByTestId("agent-composer");
       const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
 
-      // Focus alone must NOT expand the composer.
       fireEvent.focus(textarea);
-      expect(surface).toHaveAttribute("data-collapsed", "true");
-
-      // Opening the "+" action menu must NOT expand it (no flicker).
-      fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-      expect(surface).toHaveAttribute("data-collapsed", "true");
-
-      // Only text expands it; clearing the text collapses it again.
-      fireEvent.change(textarea, { target: { value: "x" } });
       expect(surface).toHaveAttribute("data-collapsed", "false");
-      fireEvent.change(textarea, { target: { value: "" } });
+
+      // Blur with no text returns to the minimal resting state.
+      fireEvent.blur(textarea);
+      expect(surface).toHaveAttribute("data-collapsed", "true");
+    });
+
+    it("stays minimal when a popover opens on an unfocused composer (no flicker)", () => {
+      renderComposer({ dataTestId: "agent-composer", collapsible: true });
+      const surface = screen.getByTestId("agent-composer");
+
+      // Opening the "+" action menu without focusing the textarea must not
+      // expand the composer.
+      fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
       expect(surface).toHaveAttribute("data-collapsed", "true");
     });
 
