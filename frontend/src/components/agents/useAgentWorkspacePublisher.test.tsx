@@ -1,21 +1,29 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PublishAgentConversationWorkspaceResult } from "@/api/chat";
 import { createTestQueryClient } from "@/test/store-utils";
 
+import {
+  agentWorkspaceOperationToastId,
+  startAgentWorkspaceOperationToast,
+} from "./agentWorkspaceOperationToast";
 import { conversationFixture, conversationWorkspaceFixture } from "./agentsTestFixtures";
 import { useAgentWorkspacePublisher } from "./useAgentWorkspacePublisher";
 
 const {
   getAgentConversationWorkspaceMock,
   publishAgentConversationWorkspaceMock,
+  toastDismissMock,
   toastErrorMock,
+  toastLoadingMock,
   toastSuccessMock,
 } = vi.hoisted(() => ({
   getAgentConversationWorkspaceMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
+  toastDismissMock: vi.fn(),
   toastErrorMock: vi.fn(),
+  toastLoadingMock: vi.fn(),
   toastSuccessMock: vi.fn(),
 }));
 
@@ -35,7 +43,9 @@ vi.mock("@/api/chat", async (importOriginal) => {
 
 vi.mock("sonner", () => ({
   toast: {
+    dismiss: (...args: unknown[]) => toastDismissMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
+    loading: (...args: unknown[]) => toastLoadingMock(...args),
     success: (...args: unknown[]) => toastSuccessMock(...args),
   },
 }));
@@ -51,6 +61,19 @@ function deferred<T>() {
 }
 
 describe("useAgentWorkspacePublisher", () => {
+  beforeEach(() => {
+    getAgentConversationWorkspaceMock.mockReset();
+    publishAgentConversationWorkspaceMock.mockReset();
+    toastDismissMock.mockClear();
+    toastErrorMock.mockClear();
+    toastLoadingMock.mockClear();
+    toastSuccessMock.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("clears the publish loading state once the backend publish command resolves", async () => {
     const queryClient = createTestQueryClient();
     const workspace = conversationWorkspaceFixture({
@@ -122,5 +145,74 @@ describe("useAgentWorkspacePublisher", () => {
     });
 
     expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("settles an active publish progress toast before success so it cannot redraw stale loading", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const queryClient = createTestQueryClient();
+    const workspace = conversationWorkspaceFixture({
+      mode: "edit",
+      publicationPushStatus: "pushing",
+    });
+    const publishedWorkspace = conversationWorkspaceFixture({
+      mode: "edit",
+      publicationPushStatus: "pushed",
+      publicationPrNumber: 404,
+    });
+    const publishDeferred = deferred<PublishAgentConversationWorkspaceResult>();
+    publishAgentConversationWorkspaceMock.mockReturnValue(publishDeferred.promise);
+    const toastId = agentWorkspaceOperationToastId("conversation-1", "publish");
+    const progressToast = startAgentWorkspaceOperationToast({
+      conversationTitle: "Checkout flow fix",
+      detail: "Open draft PR",
+      id: toastId,
+      startedAtMs: 0,
+      title: "Publishing workspace",
+    });
+
+    const { result } = renderHook(() =>
+      useAgentWorkspacePublisher({
+        activeWorkspace: workspace,
+        findConversationById: () =>
+          conversationFixture({
+            agentMode: "edit",
+            title: "Checkout flow fix",
+          }),
+        invalidateProjectConversations: () => Promise.resolve(),
+        optimisticWorkspacesByConversationId: {},
+        queryClient,
+        selectedConversationId: "conversation-1",
+      }),
+    );
+
+    act(() => {
+      void result.current.handlePublishWorkspace("conversation-1");
+    });
+
+    await act(async () => {
+      publishDeferred.resolve({
+        workspace: publishedWorkspace,
+        commitSha: "commit-sha",
+        pushed: true,
+        createdPr: false,
+        prNumber: 404,
+        prUrl: "https://github.com/aigentive/ralphx.app/pull/404",
+      });
+      await publishDeferred.promise;
+      await Promise.resolve();
+    });
+
+    const loadingCallCount = toastLoadingMock.mock.calls.length;
+
+    vi.advanceTimersByTime(1_000);
+    progressToast.update({ detail: "Open draft PR" });
+
+    expect(toastSuccessMock).toHaveBeenCalledWith("Published #404", {
+      description: "Checkout flow fix",
+      duration: 8_000,
+      id: toastId,
+    });
+    expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
   });
 });

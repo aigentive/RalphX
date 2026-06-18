@@ -882,10 +882,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeWorkspace?.modeSwitchLockReason,
   ]);
 
-  const planApprovalSessionId =
-    !isFocusedChildChat && activeConversationMode === "plan"
-      ? attachedIdeationSessionId
-      : null;
+  const canUsePlanComposerActions =
+    !isFocusedChildChat &&
+    activeConversationMode === "plan" &&
+    activeWorkspace?.mode === "plan";
+  const planApprovalSessionId = canUsePlanComposerActions
+    ? attachedIdeationSessionId
+    : null;
   const additionalQuestionSessionIds = useMemo(() => {
     if (isFocusedChildChat || activeConversation.contextType !== "project") {
       return undefined;
@@ -1224,6 +1227,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
 
     if (!isPlanApproved) {
+      return [];
+    }
+
+    if (isCreatingPlanProposals || isImplementingPlanDirectly) {
       return [];
     }
 

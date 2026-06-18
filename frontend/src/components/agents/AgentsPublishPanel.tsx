@@ -94,6 +94,7 @@ import {
   agentWorkspaceOperationErrorDetail,
   agentWorkspaceOperationToastId,
   agentWorkspaceOperationToastDescription,
+  markAgentWorkspaceOperationToastSettled,
 } from "./agentWorkspaceOperationToast";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
 
@@ -251,6 +252,8 @@ export function AgentPublishPanel({
     getAgentWorkspaceTerminalPublicationStatus(workspace);
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(workspace);
+  const inlineDiffDefaultMode =
+    terminalPublicationStatus === "merged" ? "cumulative" : undefined;
   const isPipelineOwnedWorkspace = isPipelineOwnedAgentWorkspace(workspace);
   const isPipelinePrAutomationWorkspace =
     workspace?.mode === "ideation" && isPipelineOwnedWorkspace && hasPublishedPr;
@@ -717,10 +720,15 @@ export function AgentPublishPanel({
     setLocalPublishInFlight(true);
     void Promise.resolve(onPublishWorkspace!(workspace.conversationId))
       .catch((error) => {
+        const publishToastId = agentWorkspaceOperationToastId(
+          workspace.conversationId,
+          "publish",
+        );
         const description = agentWorkspaceOperationToastDescription(
           toastConversationTitle,
           agentWorkspaceOperationErrorDetail(error, "Failed to publish branch"),
         );
+        markAgentWorkspaceOperationToastSettled(publishToastId);
         toast.error(
           "Failed to publish branch",
           {
@@ -728,7 +736,7 @@ export function AgentPublishPanel({
             ...(description ? { description } : {}),
             dismissible: true,
             duration: AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
-            id: agentWorkspaceOperationToastId(workspace.conversationId, "publish"),
+            id: publishToastId,
           },
         );
       })
@@ -1157,6 +1165,7 @@ export function AgentPublishPanel({
               error={reviewQuery.error}
               onOpenInDialog={() => setReviewOpen(true)}
               focusRequest={publishFocusRequest}
+              {...(inlineDiffDefaultMode !== undefined && { defaultMode: inlineDiffDefaultMode })}
               {...(isPublishCurrent && { workspaceChangeLabel: "Published changes" })}
             />
           </section>
