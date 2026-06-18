@@ -50,7 +50,7 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
     name: "update_agent_workspace_from_base",
     description:
       "Update the current agent workspace branch from its configured base through RalphX. " +
-      "If conflicts require repair, RalphX will route the workspace to the repair agent and will not publish automatically.",
+      "If conflicts require repair, RalphX will route the workspace to the repair agent and continue the original publish flow after repair when Auto Publish is enabled.",
     inputSchema: {
       type: "object",
       properties: {
