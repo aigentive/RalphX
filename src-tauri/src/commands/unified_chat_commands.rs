@@ -11466,6 +11466,11 @@ mod tests {
             event.step == "repair_sent"
                 && event.status == "succeeded"
                 && event.summary == "Sent base update failure to workspace agent"
+        }) || events.iter().any(|event| {
+            event.step == "repair_deferred"
+                && event.status == "started"
+                && event.summary
+                    == "Waiting for the active workspace agent turn to finish before sending repair"
         }));
     }
 
