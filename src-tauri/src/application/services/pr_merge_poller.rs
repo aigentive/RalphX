@@ -1301,7 +1301,7 @@ async fn route_agent_workspace_pr_autofix_if_needed(
             SendMessageOptions {
                 conversation_id_override: Some(workspace.conversation_id.clone()),
                 agent_name_override: Some(AGENT_WORKSPACE_PR_FIXER.to_string()),
-                working_directory_override: Some(PathBuf::from(&workspace.worktree_path)),
+                working_directory_override: Some(working_dir.to_path_buf()),
                 ..Default::default()
             },
         )

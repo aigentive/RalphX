@@ -513,6 +513,52 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
 }
 
 #[tokio::test]
+async fn list_active_pr_poller_recovery_workspaces_includes_supervised_ideation_prs() {
+    let (db, repo, conversation_id) = setup_repo();
+    let mut direct = make_workspace(conversation_id);
+    direct.publication_pr_number = Some(72);
+    direct.publication_pr_status = Some("open".to_string());
+    direct.publication_push_status = Some("pushed".to_string());
+    repo.create_or_update(direct.clone()).await.unwrap();
+
+    let ideation_id = ChatConversationId::from_string("10101010-1010-1010-1010-101010101010");
+    seed_conversation(&db, &ideation_id);
+    let mut ideation = make_workspace(ideation_id);
+    ideation.mode = AgentConversationWorkspaceMode::Ideation;
+    ideation.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-branch-1"));
+    ideation.publication_pr_number = Some(73);
+    ideation.publication_pr_status = Some("open".to_string());
+    ideation.publication_push_status = Some("pushed".to_string());
+    ideation.pr_autofix_enabled = true;
+    repo.create_or_update(ideation.clone()).await.unwrap();
+
+    let unsupervised_id = ChatConversationId::from_string("20202020-2020-2020-2020-202020202020");
+    seed_conversation(&db, &unsupervised_id);
+    let mut unsupervised = make_workspace(unsupervised_id);
+    unsupervised.mode = AgentConversationWorkspaceMode::Ideation;
+    unsupervised.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-branch-2"));
+    unsupervised.publication_pr_number = Some(74);
+    unsupervised.publication_pr_status = Some("open".to_string());
+    unsupervised.publication_push_status = Some("pushed".to_string());
+    repo.create_or_update(unsupervised).await.unwrap();
+
+    let workspaces = repo
+        .list_active_pr_poller_recovery_workspaces()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        workspaces
+            .into_iter()
+            .map(|workspace| workspace.conversation_id)
+            .collect::<std::collections::HashSet<_>>(),
+        [direct.conversation_id, ideation.conversation_id]
+            .into_iter()
+            .collect()
+    );
+}
+
+#[tokio::test]
 async fn list_external_pr_reconciliation_candidates_filters_to_reconcilable_edit_workspaces() {
     let (db, repo, conversation_id) = setup_repo();
     let candidate = make_workspace(conversation_id);
