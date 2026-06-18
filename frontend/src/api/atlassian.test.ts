@@ -106,6 +106,7 @@ describe("atlassianApi", () => {
       .mockResolvedValueOnce({ issue: null })
       .mockResolvedValueOnce({ issue: jiraIssue })
       .mockResolvedValueOnce({ issue: jiraIssue })
+      .mockResolvedValueOnce({ issue: jiraIssue })
       .mockResolvedValueOnce({});
 
     await expect(atlassianApi.getAgentConversationJiraIssue(input)).resolves.toBeNull();
@@ -116,6 +117,9 @@ describe("atlassianApi", () => {
       }),
     ).resolves.toEqual(jiraIssue);
     await expect(atlassianApi.refreshAgentConversationJiraIssue(input)).resolves.toEqual(
+      jiraIssue,
+    );
+    await expect(atlassianApi.assignAgentConversationJiraIssueToMe(input)).resolves.toEqual(
       jiraIssue,
     );
     await expect(atlassianApi.clearAgentConversationJiraIssue(input)).resolves.toBeNull();
@@ -140,6 +144,12 @@ describe("atlassianApi", () => {
     );
     expect(typedInvoke).toHaveBeenNthCalledWith(
       4,
+      "assign_agent_conversation_jira_issue_to_me",
+      { input },
+      expect.any(Object),
+    );
+    expect(typedInvoke).toHaveBeenNthCalledWith(
+      5,
       "clear_agent_conversation_jira_issue",
       { input },
       expect.any(Object),

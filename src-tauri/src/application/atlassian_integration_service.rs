@@ -192,6 +192,12 @@ pub trait AtlassianApiClient: Send + Sync {
         reference: &ComposerIntegrationReference,
     ) -> Result<AtlassianResourceContent, String>;
 
+    async fn assign_jira_issue_to_current_user(
+        &self,
+        auth: &AtlassianAuthContext,
+        issue_key: &str,
+    ) -> Result<(), String>;
+
     async fn exchange_oauth_code(
         &self,
         client_id: &str,
@@ -280,6 +286,14 @@ impl AtlassianApiClient for EmptyAtlassianApiClient {
         })
     }
 
+    async fn assign_jira_issue_to_current_user(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     async fn exchange_oauth_code(
         &self,
         _client_id: &str,
@@ -343,6 +357,14 @@ impl AtlassianApiClient for UnavailableAtlassianApiClient {
         _auth: &AtlassianAuthContext,
         _reference: &ComposerIntegrationReference,
     ) -> Result<AtlassianResourceContent, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn assign_jira_issue_to_current_user(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<(), String> {
         Err(self.reason.clone())
     }
 
@@ -693,6 +715,16 @@ impl AtlassianIntegrationService {
     ) -> Result<AtlassianResourceContent, String> {
         let auth = self.enabled_auth_context().await?;
         self.client.fetch(&auth, reference).await
+    }
+
+    pub async fn assign_jira_issue_to_current_user(
+        &self,
+        issue_key: &str,
+    ) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .assign_jira_issue_to_current_user(&auth, issue_key)
+            .await
     }
 
     pub async fn expand_references_for_prompt(

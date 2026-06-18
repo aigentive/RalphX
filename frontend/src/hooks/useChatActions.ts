@@ -72,6 +72,7 @@ interface UseChatActionsProps {
   onUserMessageSent?: ((payload: {
     content: string;
     result: SendAgentMessageResult;
+    composerIntegrationReferences?: ComposerIntegrationReference[];
   }) => void | Promise<void>) | undefined;
 }
 
@@ -290,7 +291,13 @@ export function useChatActions({
           });
         }
         if (sentResult) {
-          void onUserMessageSent?.({ content, result: sentResult });
+          void onUserMessageSent?.({
+            content,
+            result: sentResult,
+            ...(composerOptions?.integrationReferences?.length
+              ? { composerIntegrationReferences: composerOptions.integrationReferences }
+              : {}),
+          });
         }
       } catch (err) {
         if (optimisticMessage) {
