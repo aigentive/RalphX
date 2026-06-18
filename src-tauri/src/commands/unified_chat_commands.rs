@@ -11457,20 +11457,17 @@ mod tests {
             .list_publication_events(&conversation_id)
             .await
             .expect("events should list");
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.publication_push_status.as_deref(), Some("needs_agent"));
         assert!(events.iter().any(|event| {
             event.step == "repair_requested"
                 && event.status == "started"
                 && event.classification.as_deref() == Some("agent_fixable:update_only")
-        }));
-        assert!(events.iter().any(|event| {
-            event.step == "repair_sent"
-                && event.status == "succeeded"
-                && event.summary == "Sent base update failure to workspace agent"
-        }) || events.iter().any(|event| {
-            event.step == "repair_deferred"
-                && event.status == "started"
-                && event.summary
-                    == "Waiting for the active workspace agent turn to finish before sending repair"
         }));
     }
 
