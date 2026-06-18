@@ -424,6 +424,21 @@ function ScrollableAgentSessionList<T>({
       }
     });
   }, [fetchNextPage, hasNextPage, isFetchingNextPage, rowCount]);
+  const fetchNextPageFromScrollPosition = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || scroller.clientHeight <= 0 || scroller.scrollHeight <= 0) {
+      return;
+    }
+    if (scroller.scrollHeight <= scroller.clientHeight) {
+      return;
+    }
+
+    const distanceFromBottom =
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    if (distanceFromBottom <= rowHeight * 2) {
+      fetchNextPageIfNeeded();
+    }
+  }, [fetchNextPageIfNeeded, rowHeight]);
 
   useEffect(() => {
     if (
@@ -562,6 +577,7 @@ function ScrollableAgentSessionList<T>({
     };
     const handleScroll = () => {
       lastScrollTopRef.current = scroller.scrollTop;
+      fetchNextPageFromScrollPosition();
       if (typeof window === "undefined") {
         saveScroll();
         return;
@@ -589,7 +605,7 @@ function ScrollableAgentSessionList<T>({
       }
       scroller.removeEventListener("scroll", handleScroll);
     };
-  }, [saveLatestScrollMemory, scrollerVersion]);
+  }, [fetchNextPageFromScrollPosition, saveLatestScrollMemory, scrollerVersion]);
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;

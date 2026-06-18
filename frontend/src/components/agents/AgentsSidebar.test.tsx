@@ -1161,6 +1161,35 @@ describe("AgentsSidebar", () => {
     expect(fetchNextPage).toHaveBeenCalledTimes(1);
   });
 
+  it("auto-fetches the next project page when the user scrolls the virtual list to the bottom", async () => {
+    const fetchNextPage = vi.fn().mockResolvedValue(undefined);
+    virtuosoMockState.dimensionsByTestId.set("agents-sidebar-session-list-project-1", {
+      clientHeight: 368,
+      scrollHeight: 736,
+    });
+    conversationsByProject.set("project-1", {
+      data: Array.from({ length: 8 }, (_, index) =>
+        conversation({
+          id: `conversation-${index + 1}`,
+          title: `Agent ${index + 1}`,
+        })
+      ),
+      total: 212,
+      isLoading: false,
+      hasNextPage: true,
+      isFetchingNextPage: false,
+      fetchNextPage,
+    });
+
+    renderSidebar();
+
+    const list = screen.getByTestId("agents-sidebar-session-list-project-1");
+    list.scrollTop = 368;
+    fireEvent.scroll(list);
+
+    await waitFor(() => expect(fetchNextPage).toHaveBeenCalledTimes(1));
+  });
+
   it("auto-fills an exact eight-row project page when more pages exist but no scrollbar is present", async () => {
     const fetchNextPage = vi.fn().mockResolvedValue(undefined);
     virtuosoMockState.dimensionsByTestId.set("agents-sidebar-session-list-project-1", {
