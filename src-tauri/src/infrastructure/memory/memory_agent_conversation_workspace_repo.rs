@@ -756,8 +756,11 @@ mod tests {
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
         AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-        AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription, ChatConversationId,
-        IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+        AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
+        AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+        AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
+        AgentWorkspacePrReviewMonitorStatus, ChatConversationId, IdeationAnalysisBaseRefKind,
+        IdeationSessionId, PlanBranchId, ProjectId,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
 
@@ -964,6 +967,143 @@ mod tests {
             .await
             .unwrap();
         assert!(comments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pr_review_monitor_and_actions_round_trip_and_clear_on_delete() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let workspace = candidate_workspace("review");
+        let conversation_id = workspace.conversation_id.clone();
+        repo.create_or_update(workspace).await.unwrap();
+
+        let mut monitor = AgentWorkspacePrReviewMonitor::new(
+            conversation_id.clone(),
+            ProjectId::from_string("project-1".to_string()),
+            411,
+            Some("head-sha-1".to_string()),
+        );
+        monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+        monitor.monitor_enabled = true;
+        monitor.first_review_completed = true;
+        monitor.last_reviewed_head_sha = Some("head-sha-1".to_string());
+        monitor.last_review_outcome = Some("request_changes".to_string());
+        let saved_monitor = repo.upsert_pr_review_monitor(monitor).await.unwrap();
+        assert_eq!(
+            saved_monitor.status,
+            AgentWorkspacePrReviewMonitorStatus::Watching
+        );
+
+        let loaded_monitor = repo
+            .get_pr_review_monitor(&conversation_id)
+            .await
+            .unwrap()
+            .expect("monitor should exist");
+        assert!(loaded_monitor.monitor_enabled);
+        assert_eq!(
+            loaded_monitor.last_reviewed_head_sha.as_deref(),
+            Some("head-sha-1")
+        );
+        assert_eq!(
+            repo.list_active_pr_review_monitors().await.unwrap().len(),
+            1
+        );
+
+        let action = AgentWorkspacePrReviewAction::new(
+            conversation_id.clone(),
+            411,
+            "head-sha-1".to_string(),
+            AgentWorkspacePrReviewActionKind::RequestChanges,
+            "Found blocking issues".to_string(),
+            "Please address the blocking issues.".to_string(),
+            Some(r#"[{"path":"src/lib.rs"}]"#.to_string()),
+            Some("run-1".to_string()),
+        );
+        let saved_action = repo
+            .create_or_update_pr_review_action(action)
+            .await
+            .unwrap();
+
+        let replacement = AgentWorkspacePrReviewAction::new(
+            conversation_id.clone(),
+            411,
+            "head-sha-1".to_string(),
+            AgentWorkspacePrReviewActionKind::Approve,
+            "Looks good now".to_string(),
+            "The follow-up commit fixed the review findings.".to_string(),
+            None,
+            Some("run-2".to_string()),
+        );
+        let updated_action = repo
+            .create_or_update_pr_review_action(replacement)
+            .await
+            .unwrap();
+        assert_eq!(updated_action.id, saved_action.id);
+        assert_eq!(
+            updated_action.proposed_action,
+            AgentWorkspacePrReviewActionKind::Approve
+        );
+        assert_eq!(updated_action.created_by_run_id.as_deref(), Some("run-2"));
+
+        let pending = repo
+            .get_pending_pr_review_action_for_head(&conversation_id, 411, "head-sha-1")
+            .await
+            .unwrap()
+            .expect("pending action should exist");
+        assert_eq!(pending.id, saved_action.id);
+        assert_eq!(
+            repo.list_pr_review_actions(&conversation_id, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        repo.update_pr_review_action_status(
+            &saved_action.id,
+            AgentWorkspacePrReviewActionStatus::Submitted,
+            Some("review-1"),
+        )
+        .await
+        .unwrap();
+        let submitted = repo
+            .get_pr_review_action(&saved_action.id)
+            .await
+            .unwrap()
+            .expect("submitted action should remain queryable");
+        assert_eq!(
+            submitted.status,
+            AgentWorkspacePrReviewActionStatus::Submitted
+        );
+        assert_eq!(submitted.submitted_review_id.as_deref(), Some("review-1"));
+        assert!(submitted.resolved_at.is_some());
+        assert!(repo
+            .get_pending_pr_review_action_for_head(&conversation_id, 411, "head-sha-1")
+            .await
+            .unwrap()
+            .is_none());
+
+        let mut terminal_monitor = loaded_monitor;
+        terminal_monitor.status = AgentWorkspacePrReviewMonitorStatus::Terminal;
+        repo.upsert_pr_review_monitor(terminal_monitor)
+            .await
+            .unwrap();
+        assert!(repo
+            .list_active_pr_review_monitors()
+            .await
+            .unwrap()
+            .is_empty());
+
+        repo.delete(&conversation_id).await.unwrap();
+        assert!(repo
+            .get_pr_review_monitor(&conversation_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .list_pr_review_actions(&conversation_id, 10)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     fn candidate_workspace(id: &str) -> AgentConversationWorkspace {
