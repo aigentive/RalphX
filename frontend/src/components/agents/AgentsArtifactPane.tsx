@@ -303,11 +303,23 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const planArtifactId = shouldLoadIdeationData
     ? sessionData?.session.planArtifactId ?? sessionData?.session.inheritedPlanArtifactId ?? null
     : null;
+  const sessionVerificationStatus =
+    sessionData?.session.verificationStatus ?? "unverified";
+  const hasVerificationEvidence = Boolean(
+    sessionData &&
+      (sessionData.session.verificationInProgress ||
+        sessionVerificationStatus !== "unverified" ||
+        sessionData.session.gapScore != null ||
+        (displayedVerificationStatus !== null &&
+          (displayedVerificationStatus.inProgress ||
+            displayedVerificationStatus.status !== "unverified"))),
+  );
   const availableIdeationTabIds = useMemo(
     () =>
       getVisibleIdeationArtifactTabs({
         hasAttachedIdeationSession: Boolean(sessionData),
         hasPlanArtifact: Boolean(planArtifactId),
+        hasVerificationEvidence,
         hasExecutionTasks: Boolean(
           workspace?.linkedPlanBranchId ||
             sessionData?.session.acceptanceStatus === "accepted" ||
@@ -315,6 +327,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         ),
       }),
     [
+      hasVerificationEvidence,
       planArtifactId,
       sessionData,
       workspace?.linkedPlanBranchId,
@@ -953,9 +966,13 @@ function AgentPlanPanel({
     ? planArtifact?.planApproval?.status ?? "draft"
     : undefined;
   const isPlanApproved = planApprovalStatus === "approved";
-  const canApprovePlan = isOwnedCurrentPlan && planApprovalStatus === "draft";
-  const canShowApprovedPlanActions =
+  const canShowPlanModeControls =
+    workspace?.mode === "plan" &&
     activeWorkspaceFreshness?.hasUncommittedChanges !== true;
+  const canApprovePlan =
+    canShowPlanModeControls && isOwnedCurrentPlan && planApprovalStatus === "draft";
+  const canShowApprovedPlanActions =
+    canShowPlanModeControls && !isImplementingPlanDirectly;
   const isPlanVerificationSatisfied =
     verificationState === "verified" || verificationState === "imported_verified";
   const canVerifyPlan =
@@ -983,7 +1000,12 @@ function AgentPlanPanel({
       planArtifact?.metadata.version,
     ],
     queryFn: () => artifactApi.getPlanComplexityAssessment(session!.id),
-    enabled: Boolean(session && isOwnedCurrentPlan && isPlanApproved),
+    enabled: Boolean(
+      session &&
+        isOwnedCurrentPlan &&
+        isPlanApproved &&
+        canShowApprovedPlanActions,
+    ),
     staleTime: 5_000,
     refetchInterval: (query) => (query.state.data ? false : 4_000),
   });
