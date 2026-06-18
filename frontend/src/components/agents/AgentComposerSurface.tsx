@@ -1447,7 +1447,7 @@ export function AgentComposerSurface({
             <Button
               type="button"
               className={cn(
-                "agent-composer-action-button ml-auto shrink-0 rounded-[12px] text-[0.75rem] font-semibold tracking-[-0.01em] transition-[height,min-width,padding] duration-150 ease-out",
+                "agent-composer-action-button ml-auto shrink-0 rounded-md text-[0.75rem] font-semibold tracking-[-0.01em] transition-[height,min-width,padding] duration-150 ease-out",
                 compact ? "h-8 px-3" : "h-10 px-4",
                 compact
                   ? "min-w-0"
@@ -1553,7 +1553,7 @@ function ComposerActionMenu({
         <button
           type="button"
           className={cn(
-            "agent-composer-plus-trigger flex shrink-0 items-center justify-center rounded-[12px] transition-[height,width,background-color,color] duration-150 ease-out disabled:opacity-40",
+            "agent-composer-plus-trigger flex shrink-0 items-center justify-center rounded-md transition-[height,width,background-color,color] duration-150 ease-out disabled:opacity-40",
             compact ? "h-8 w-8" : "h-10 w-10",
             !hasPersistentActions && "agent-composer-compact-only"
           )}
@@ -1893,7 +1893,7 @@ function ComposerModeChip({
       data-composer-mode-chip="true"
       aria-label={`Mode: ${activeOption?.label ?? mode.value}. Click to change.`}
       className={cn(
-        "inline-flex shrink-0 items-center gap-2 rounded-[12px] border transition-[height,padding,background-color] duration-150 ease-out hover:bg-[var(--bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed",
+        "inline-flex shrink-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out hover:bg-[var(--bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed",
         compact ? "h-8 px-2.5" : "h-10 px-3"
       )}
       style={{
@@ -1901,9 +1901,13 @@ function ComposerModeChip({
         borderColor: "var(--form-border)",
       }}
     >
-      <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
-        Mode
-      </span>
+      {/* Eyebrow label only in the expanded state; the mini/resting composer
+          shows just the value to stay minimal. */}
+      {!compact && (
+        <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+          Mode
+        </span>
+      )}
       <span className="text-[0.8125rem] font-medium text-[var(--text-primary)]">
         {activeOption?.label ?? "—"}
       </span>
@@ -1944,13 +1948,18 @@ function ComposerChatFocusPill({
           }
           aria-label={`Chat focus: ${activeOption?.label ?? chatFocus.value}. Click to change.`}
           className={cn(
-            "flex min-w-0 shrink-0 items-center gap-2 rounded-[12px] border transition-[height,padding,background-color] duration-150 ease-out disabled:opacity-50",
+            "flex min-w-0 shrink-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out disabled:opacity-50",
             compact ? "h-8 px-2.5" : "h-10 px-3"
           )}
           style={triggerStyle}
         >
-          {/* No "CHAT" eyebrow label — the icon + value carry the meaning;
-              the accessible name is provided via aria-label above. */}
+          {/* Eyebrow label only in the expanded state (matches the Mode chip);
+              the mini/resting composer relies on the icon + value. */}
+          {!compact && (
+            <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+              Chat
+            </span>
+          )}
           <span className="flex min-w-0 items-center gap-1.5 text-[0.8125rem] font-medium">
             {ActiveIcon ? <ActiveIcon className="h-3.5 w-3.5" /> : null}
             <span className="truncate">{activeOption?.label ?? "—"}</span>
@@ -2178,7 +2187,14 @@ function ComposerRuntimePill({
     .filter(Boolean)
     .join(" · ");
 
-  if (!providerLabel && !modelLabel && !effortLabel) {
+  // Hide the runtime/model pill entirely when model selection is unavailable —
+  // i.e. there is no model to display and none to pick (no options or disabled).
+  // This avoids an empty/disabled pill in contexts like an unresolved ideation
+  // runtime or a read-only verification child chat.
+  const modelText = (modelLabel ?? "").trim();
+  const modelSelectionAvailable =
+    modelText.length > 0 || (model.options.length > 0 && !model.disabled);
+  if (!modelSelectionAvailable) {
     return null;
   }
 
@@ -2197,7 +2213,7 @@ function ComposerRuntimePill({
           data-testid="agent-composer-runtime-pill"
           aria-label={`Runtime: ${runtimeSummary}. Click to change.`}
           className={cn(
-            "flex min-w-0 items-center gap-2 rounded-[12px] border transition-[height,padding,background-color] duration-150 ease-out",
+            "flex min-w-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out",
             compact ? "h-8 px-2.5" : "h-10 px-3",
             className
           )}

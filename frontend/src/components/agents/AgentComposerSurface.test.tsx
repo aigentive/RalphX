@@ -126,6 +126,35 @@ describe("AgentComposerSurface", () => {
     expect(screen.getByTestId("agent-composer-submit")).toHaveClass("ml-auto");
   });
 
+  it("hides the runtime pill when no model is available to show or select", () => {
+    renderComposer({
+      model: {
+        value: "",
+        onValueChange: vi.fn(),
+        options: [],
+        disabled: true,
+      },
+    });
+
+    expect(
+      screen.queryByTestId("agent-composer-runtime-pill"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the runtime pill when a model is selectable even with no current value", () => {
+    renderComposer({
+      model: {
+        value: "",
+        onValueChange: vi.fn(),
+        options: [{ id: "gpt-5.5", label: "gpt-5.5" }],
+      },
+    });
+
+    expect(
+      screen.getByTestId("agent-composer-runtime-pill"),
+    ).toBeInTheDocument();
+  });
+
   it("keeps Send as the primary action while the agent is waiting for input", () => {
     const onStop = vi.fn();
     renderComposer({
@@ -971,13 +1000,11 @@ describe("AgentComposerSurface", () => {
       );
 
       // Runtime ("GPT") + Mode chips drop to the compact height, and the mode
-      // chip sheds its "Mode" eyebrow label.
+      // chip sheds its "Mode" eyebrow label (eyebrows show only when expanded).
       expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass("h-8");
-      // Compact only shrinks height — the Mode label and model strength
-      // indicator stay visible per product direction.
       const modeChip = screen.getByTestId("agent-composer-mode-chip");
       expect(modeChip).toHaveClass("h-8");
-      expect(modeChip.textContent).toBe("ModeAgent");
+      expect(modeChip.textContent).toBe("Agent");
 
       const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
       expect(textarea.style.height).toBe("38px");
