@@ -4,6 +4,7 @@
 pub mod active_plan_repository;
 pub mod activity_event_repository;
 pub mod agent_conversation_jira_issue_repository;
+pub mod agent_conversation_linear_issue_repository;
 pub mod agent_conversation_workspace_repository;
 pub mod agent_lane_settings_repository;
 pub mod agent_model_registry_repository;
@@ -57,6 +58,7 @@ pub use activity_event_repository::{
     ActivityEventFilter, ActivityEventPage, ActivityEventRepository,
 };
 pub use agent_conversation_jira_issue_repository::AgentConversationJiraIssueRepository;
+pub use agent_conversation_linear_issue_repository::AgentConversationLinearIssueRepository;
 pub use agent_conversation_workspace_repository::AgentConversationWorkspaceRepository;
 pub use agent_lane_settings_repository::AgentLaneSettingsRepository;
 pub use agent_model_registry_repository::AgentModelRegistryRepository;
