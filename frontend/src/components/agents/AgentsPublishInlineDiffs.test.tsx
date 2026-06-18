@@ -1544,6 +1544,39 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.queryByTestId("inline-diffs-loading")).toBeNull();
       expect(screen.queryByTestId("inline-diffs-empty")).toBeNull();
     });
+
+    it("defaults merged workspaces to All commits while preserving manual mode changes", async () => {
+      const user = userEvent.setup();
+      mockGetCumulativeFiles.mockResolvedValue([makeFileChange("src/MergedFile.tsx")]);
+
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-merged"
+            review={makeReview([])}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+            defaultMode="cumulative"
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+        "data-mode",
+        "cumulative",
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-MergedFile.tsx")).toBeInTheDocument(),
+      );
+
+      await user.click(screen.getByRole("button", { name: "Workspace changes" }));
+
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+        "data-mode",
+        "uncommitted",
+      );
+      expect(screen.getByText("No workspace changes")).toBeInTheDocument();
+    });
   });
 
   describe("openInDialog", () => {

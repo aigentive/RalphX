@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -26,6 +26,9 @@ const mockGetStagedFiles = vi.mocked(
 );
 const mockGetUnstagedFiles = vi.mocked(
   diffApi.getAgentConversationWorkspaceUnstagedFileChanges,
+);
+const mockGetCumulativeFiles = vi.mocked(
+  diffApi.getAgentConversationWorkspaceCumulativeFileChanges,
 );
 
 function makeQueryClient() {
@@ -71,6 +74,7 @@ describe("useAgentWorkspaceChangeSummary", () => {
     vi.clearAllMocks();
     mockGetStagedFiles.mockResolvedValue([]);
     mockGetUnstagedFiles.mockResolvedValue([]);
+    mockGetCumulativeFiles.mockResolvedValue([]);
   });
 
   it("uses live unstaged summary totals without hydrating file lists", () => {
@@ -131,5 +135,52 @@ describe("useAgentWorkspaceChangeSummary", () => {
     await waitFor(() => expect(mockGetStagedFiles).toHaveBeenCalledWith("conversation-1"));
     await waitFor(() => expect(result.current.currentFiles).toEqual([stagedFile]));
     expect(mockGetUnstagedFiles).not.toHaveBeenCalled();
+  });
+
+  it("uses the default mode when no user-selected mode exists", async () => {
+    const cumulativeFile: FileChange = {
+      path: "src/merged.ts",
+      status: "modified",
+      additions: 4,
+      deletions: 1,
+      isGenerated: false,
+    };
+    mockGetCumulativeFiles.mockResolvedValue([cumulativeFile]);
+
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspaceChangeSummary({
+          conversationId: "conversation-1",
+          review: makeReview(),
+          defaultMode: "cumulative",
+        }),
+      { wrapper: makeWrapper() },
+    );
+
+    expect(result.current.effectiveMode).toBe("cumulative");
+    expect(result.current.refKind).toEqual({ kind: "cumulative_head" });
+    await waitFor(() => expect(mockGetCumulativeFiles).toHaveBeenCalledWith("conversation-1"));
+    await waitFor(() => expect(result.current.currentFiles).toEqual([cumulativeFile]));
+  });
+
+  it("preserves an explicit user-selected mode over the default mode", () => {
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspaceChangeSummary({
+          conversationId: "conversation-1",
+          review: makeReview(),
+          defaultMode: "cumulative",
+        }),
+      { wrapper: makeWrapper() },
+    );
+
+    expect(result.current.effectiveMode).toBe("cumulative");
+
+    act(() => {
+      result.current.setMode("uncommitted");
+    });
+
+    expect(result.current.effectiveMode).toBe("uncommitted");
+    expect(result.current.refKind).toEqual({ kind: "head" });
   });
 });
