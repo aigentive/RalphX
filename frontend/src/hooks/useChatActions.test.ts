@@ -101,6 +101,7 @@ interface SetupOptions {
   isPending?: boolean;
   messageCount?: number;
   activeConversationId?: string | null | undefined;
+  onUserMessageSent?: Parameters<typeof useChatActions>[0]["onUserMessageSent"];
 }
 
 function setup(opts: SetupOptions = {}) {
@@ -114,6 +115,7 @@ function setup(opts: SetupOptions = {}) {
     isPending = false,
     messageCount = 5,
     activeConversationId = undefined,
+    onUserMessageSent = undefined,
   } = opts;
 
   const mutateAsync = vi.fn().mockResolvedValue({
@@ -135,6 +137,7 @@ function setup(opts: SetupOptions = {}) {
       sendMessage: { isPending, mutateAsync },
       activeConversationId,
       messageCount,
+      onUserMessageSent,
     })
   );
 
@@ -206,6 +209,36 @@ describe("useChatActions", () => {
         "q-with-file",
         ["att-1"]
       );
+    });
+
+    it("passes composer integration references to the post-send callback", async () => {
+      const onUserMessageSent = vi.fn();
+      const jiraReference = {
+        provider: "atlassian",
+        kind: "jira",
+        id: "RX-42",
+        key: "RX-42",
+        title: "Fix composer references",
+      };
+      const { result } = setup({ onUserMessageSent });
+
+      await act(async () => {
+        await result.current.handleSend("work on jira", undefined, undefined, {
+          integrationReferences: [jiraReference],
+        });
+      });
+
+      expect(onUserMessageSent).toHaveBeenCalledWith({
+        content: "work on jira",
+        result: {
+          conversationId: "conv-1",
+          agentRunId: "run-1",
+          isNewConversation: false,
+          wasQueued: false,
+          queuedAsPending: false,
+        },
+        composerIntegrationReferences: [jiraReference],
+      });
     });
 
     it("does not send empty or whitespace-only strings", async () => {

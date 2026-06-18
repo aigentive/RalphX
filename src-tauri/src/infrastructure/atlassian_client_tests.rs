@@ -9,9 +9,9 @@ use crate::application::{AtlassianApiClient, AtlassianAuthContext, AtlassianCred
 use crate::domain::services::ComposerIntegrationReference;
 
 use super::atlassian_client::{
-    build_confluence_search_cql, build_jira_search_jql, confluence_page_id_query, fetch_confluence,
-    fetch_jira, search_confluence, search_jira, AtlassianJsonRequester, HyperAtlassianApiClient,
-    RequestAuth,
+    assign_jira_issue_to_current_user, build_confluence_search_cql, build_jira_search_jql,
+    confluence_page_id_query, fetch_confluence, fetch_jira, search_confluence, search_jira,
+    AtlassianJsonRequester, HyperAtlassianApiClient, RequestAuth,
 };
 
 #[derive(Clone, Debug)]
@@ -234,6 +234,33 @@ async fn jira_search_uses_picker_when_jql_fails_without_exact_key_result() {
     assert_eq!(
         requests[1].url,
         "https://example.atlassian.net/rest/api/3/issue/picker?query=closed%20regression"
+    );
+}
+
+#[tokio::test]
+async fn jira_assign_to_current_user_puts_my_account_id_on_issue() {
+    let requester =
+        FakeAtlassianRequester::new(vec![Ok(json!({ "accountId": "abc-123" })), Ok(Value::Null)]);
+
+    assign_jira_issue_to_current_user(&requester, &auth_context(), " rx-42 ")
+        .await
+        .expect("assign Jira issue");
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, Method::GET);
+    assert_eq!(
+        requests[0].url,
+        "https://example.atlassian.net/rest/api/3/myself"
+    );
+    assert_eq!(requests[1].method, Method::PUT);
+    assert_eq!(
+        requests[1].url,
+        "https://example.atlassian.net/rest/api/3/issue/rx-42/assignee"
+    );
+    assert_eq!(
+        requests[1].body.as_ref(),
+        Some(&json!({ "accountId": "abc-123" }))
     );
 }
 

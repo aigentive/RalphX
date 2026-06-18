@@ -17,6 +17,7 @@ import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
   AgentConversationWorkspaceMode,
+  ComposerIntegrationReference,
   ForkAgentConversationResult,
 } from "@/api/chat";
 import { chatApi } from "@/api/chat";
@@ -398,6 +399,7 @@ interface AgentsActiveConversationPanelProps {
   onAgentUserMessageSent: (event: {
     content: string;
     result: { conversationId: string };
+    composerIntegrationReferences?: ComposerIntegrationReference[];
   }) => void;
   onConversationModeSwitched: (
     conversationId: string,
@@ -1658,6 +1660,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onAgentUserMessageSent({
                       content: trimmedFollowup,
                       result: sendResult,
+                      ...(options?.integrationReferences?.length
+                        ? { composerIntegrationReferences: options.integrationReferences }
+                        : {}),
                     });
                   }
                 } finally {

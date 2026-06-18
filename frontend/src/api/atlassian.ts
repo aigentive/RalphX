@@ -267,6 +267,17 @@ export const atlassianApi = {
     return response.issue ?? null;
   },
 
+  async assignAgentConversationJiraIssueToMe(
+    input: AgentConversationJiraIssueConversationInput,
+  ): Promise<AgentConversationJiraIssue | null> {
+    const response = await typedInvoke(
+      "assign_agent_conversation_jira_issue_to_me",
+      { input },
+      AgentConversationJiraIssueResponseSchema,
+    );
+    return response.issue ?? null;
+  },
+
   async clearAgentConversationJiraIssue(
     input: AgentConversationJiraIssueConversationInput,
   ): Promise<AgentConversationJiraIssue | null> {

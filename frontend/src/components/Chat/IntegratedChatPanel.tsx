@@ -170,6 +170,7 @@ interface IntegratedChatPanelProps {
   onUserMessageSent?: (payload: {
     content: string;
     result: SendAgentMessageResult;
+    composerIntegrationReferences?: ComposerIntegrationReference[];
   }) => void | Promise<void>;
   onQuestionAnswered?: (
     question: AskUserQuestionPayload,

@@ -814,16 +814,19 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         .map(ProjectId::from_string);
                     if let Some(project_id) = assignment_project_id {
                         let repo = Arc::clone(&app_state.agent_conversation_jira_issue_repo);
-                        if let Err(error) = crate::application::agent_conversation_jira_issue::assign_primary_jira_issue_if_absent(
+                        let atlassian_integration_service =
+                            Arc::clone(&app_state.atlassian_integration_service);
+                        let assignment_result = crate::application::agent_conversation_jira_issue::assign_primary_jira_issue_if_absent_and_refresh(
                             &repo,
+                            Some(atlassian_integration_service.as_ref()),
                             &conversation_id,
                             &project_id,
                             &queued_msg.composer_integration_references,
                             Some(ChatMessageId::from_string(user_msg_id.clone())),
                             user_msg.created_at,
                         )
-                        .await
-                        {
+                        .await;
+                        if let Err(error) = assignment_result {
                             tracing::warn!(
                                 conversation_id = %conversation_id.as_str(),
                                 error = %error,
