@@ -974,6 +974,14 @@ fn update_only_repair_pr_supervision_state(
     None
 }
 
+fn should_auto_publish_after_update_only_repair(workspace: &AgentConversationWorkspace) -> bool {
+    if workspace.publication_pr_number.is_some() {
+        workspace.auto_publish_enabled
+    } else {
+        workspace.auto_publish_initial_pr_enabled
+    }
+}
+
 fn publish_in_progress_response(
     workspace: AgentConversationWorkspaceResponse,
 ) -> AgentWorkspacePublishActionResponse {
@@ -1429,7 +1437,9 @@ pub async fn complete_agent_workspace_repair(
                 pr_url,
             )
         }
-    } else if post_repair_action == AgentWorkspacePostRepairAction::UpdateOnly {
+    } else if post_repair_action == AgentWorkspacePostRepairAction::UpdateOnly
+        && !should_auto_publish_after_update_only_repair(&workspace)
+    {
         if let Some((status, summary)) = update_only_repair_pr_supervision_state(&workspace) {
             state
                 .app_state
