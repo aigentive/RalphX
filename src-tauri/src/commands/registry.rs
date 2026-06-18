@@ -129,6 +129,7 @@ macro_rules! register_tauri_commands {
             commands::conversation_stats_commands::get_task_chat_usage_stats,
             // Metrics commands
             commands::metrics_commands::get_project_stats,
+            commands::metrics_commands::get_project_pr_insights,
             commands::metrics_commands::get_project_trends,
             commands::metrics_commands::get_metrics_config,
             commands::metrics_commands::save_metrics_config,

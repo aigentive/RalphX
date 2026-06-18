@@ -19,14 +19,17 @@ use tauri::State;
 
 use crate::application::AppState;
 
-pub use crate::commands::metrics_types::{
-    ColumnDwellTime, ColumnMetric, CycleTimePhase, EmeEstimate, ProjectStats, ProjectTrends,
-    TaskMetrics, WeeklyDataPoint,
-};
+pub use crate::commands::metrics_pr_insights::compute_project_pr_insights;
 pub use crate::commands::metrics_queries::{
     compute_column_metrics, compute_project_stats, compute_task_metrics,
 };
 pub use crate::commands::metrics_trends::compute_project_trends;
+pub use crate::commands::metrics_types::{
+    ColumnDwellTime, ColumnMetric, CycleTimePhase, DeliveryWeeklyThroughputPoint, EmeEstimate,
+    PrInsightItem, PrInsightOriginBreakdown, PrInsightsSummary, PrWeeklyThroughputPoint,
+    ProjectPrInsights, ProjectStats, ProjectTrends, TaskMetrics, WeeklyDataPoint,
+    WorkspaceStateDwellTime,
+};
 
 // ─── Caches ──────────────────────────────────────────────────────────────────
 
@@ -36,6 +39,10 @@ pub static STATS_CACHE: LazyLock<DashMap<String, (Instant, ProjectStats)>> =
 
 /// Global cache: project_id → (insertion instant, trends snapshot)
 static TRENDS_CACHE: LazyLock<DashMap<String, (Instant, ProjectTrends)>> =
+    LazyLock::new(DashMap::new);
+
+/// Global cache: project_id → (insertion instant, PR insights snapshot)
+static PR_INSIGHTS_CACHE: LazyLock<DashMap<String, (Instant, ProjectPrInsights)>> =
     LazyLock::new(DashMap::new);
 
 /// Global cache: project_id → (insertion instant, column metrics snapshot)
@@ -80,6 +87,7 @@ pub fn invalidate_project_stats_cache(project_id: &str) {
     let prefix = format!("{}:", project_id);
     STATS_CACHE.retain(|k, _| !k.starts_with(&prefix));
     TRENDS_CACHE.retain(|k, _| !k.starts_with(&prefix));
+    PR_INSIGHTS_CACHE.retain(|k, _| !k.starts_with(&prefix));
     // Column metrics are not keyed by week_start_day
     COLUMN_METRICS_CACHE.remove(project_id);
 }
@@ -173,6 +181,44 @@ pub async fn get_project_trends(
 
     TRENDS_CACHE.insert(cache_key, (Instant::now(), trends.clone()));
     Ok(trends)
+}
+
+/// Return PR and agent-workspace performance metrics for a project.
+///
+/// Results are cached in memory for up to 60 seconds per project. The cache
+/// is evicted whenever any task in the project changes state; PR-specific
+/// workspace changes currently refresh on TTL.
+///
+/// # Errors
+/// Returns a string error if the database query fails.
+#[tauri::command]
+pub async fn get_project_pr_insights(
+    project_id: String,
+    week_start_day: Option<u8>,
+    tz_offset_minutes: Option<i32>,
+    state: State<'_, AppState>,
+) -> Result<ProjectPrInsights, String> {
+    let wsd = week_start_day.unwrap_or(0);
+    let tz = validate_tz_offset(tz_offset_minutes)?;
+    let cache_key = format!("{}:{}:{}", project_id, wsd, tz);
+
+    if let Some(entry) = PR_INSIGHTS_CACHE.get(&cache_key) {
+        let (ts, insights) = &*entry;
+        if ts.elapsed().as_secs() < CACHE_TTL_SECS {
+            return Ok(insights.clone());
+        }
+    }
+
+    let pid = project_id.clone();
+    let insights = state
+        .db
+        .clone()
+        .run(move |conn| compute_project_pr_insights(conn, &pid, wsd, tz))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    PR_INSIGHTS_CACHE.insert(cache_key, (Instant::now(), insights.clone()));
+    Ok(insights)
 }
 
 /// Return the current EME calibration config for a project (or defaults).

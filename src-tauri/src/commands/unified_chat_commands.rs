@@ -67,9 +67,7 @@ use crate::application::publish_resilience::{
     push_publish_branch, remote_tracking_ref_for_publish, review_base_for_publish,
     PublishBranchFreshnessOutcome, PublishBranchFreshnessStatus, PublishFailureClass,
 };
-use crate::application::services::pr_merge_poller::{
-    sync_agent_workspace_auto_merge_preference_for_workspace,
-};
+use crate::application::services::pr_merge_poller::sync_agent_workspace_auto_merge_preference_for_workspace;
 use crate::application::{AppChatService, AppState, ChatService, ChatServiceError, SendResult};
 use crate::commands::agent_model_commands::load_agent_model_registry;
 use crate::commands::ExecutionState;
@@ -9340,8 +9338,7 @@ mod tests {
     async fn publish_workspace_records_waiting_when_auto_merge_sync_fails() {
         let github = Arc::new(MockGithubService::new());
         let (_temp, state, conversation_id, github) =
-            setup_publish_command_state("auto-merge-publish-waiting", true, None, github)
-                .await;
+            setup_publish_command_state("auto-merge-publish-waiting", true, None, github).await;
         let project = state
             .project_repo
             .get_all()

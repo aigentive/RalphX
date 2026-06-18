@@ -55,6 +55,7 @@ function detectExperienceLevel(config: MetricsConfig): ExperienceLevel {
 interface EffortEstimationPanelProps {
   lowHours: number;
   highHours: number;
+  scopeLabel?: string;
   taskCount: number;
   earliestTaskDate: string | null;
   latestTaskDate: string | null;
@@ -92,7 +93,7 @@ function computeCalendarWeeks(earliest: string | null, latest: string | null): n
   return Math.max(1, Math.round(diffDays / 7));
 }
 
-export function EffortEstimationPanel({ lowHours, highHours, taskCount, earliestTaskDate, latestTaskDate, projectId }: EffortEstimationPanelProps) {
+export function EffortEstimationPanel({ lowHours, highHours, scopeLabel, taskCount, earliestTaskDate, latestTaskDate, projectId }: EffortEstimationPanelProps) {
   const { data: config } = useMetricsConfig(projectId);
   const { mutate: saveConfig } = useSaveMetricsConfig(projectId);
   const [methodologyOpen, setMethodologyOpen] = useState(false);
@@ -182,7 +183,7 @@ export function EffortEstimationPanel({ lowHours, highHours, taskCount, earliest
             className="text-[0.6875rem] font-semibold uppercase tracking-wider text-text-muted"
             style={{ letterSpacing: "0.08em" }}
           >
-            Equivalent Developer Effort
+            {scopeLabel ?? "Task Pipeline"} Equivalent Developer Effort
           </span>
           {!isDefault && (
             <span

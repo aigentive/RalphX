@@ -1,7 +1,15 @@
 import { z } from "zod";
 import { typedInvoke } from "@/lib/tauri";
-import { ProjectStatsSchema, ProjectTrendsSchema } from "@/types/project-stats";
-import type { ProjectStats, ProjectTrends } from "@/types/project-stats";
+import {
+  ProjectPrInsightsSchema,
+  ProjectStatsSchema,
+  ProjectTrendsSchema,
+} from "@/types/project-stats";
+import type {
+  ProjectPrInsights,
+  ProjectStats,
+  ProjectTrends,
+} from "@/types/project-stats";
 
 export interface ScopeUsageTotals {
   inputTokens: number;
@@ -171,6 +179,22 @@ export async function getProjectTrends(
       ...(tzOffsetMinutes !== undefined && { tzOffsetMinutes }),
     },
     ProjectTrendsSchema,
+  );
+}
+
+export async function getProjectPrInsights(
+  projectId: string,
+  weekStartDay?: number,
+  tzOffsetMinutes?: number,
+): Promise<ProjectPrInsights> {
+  return typedInvoke(
+    "get_project_pr_insights",
+    {
+      projectId,
+      ...(weekStartDay !== undefined && { weekStartDay }),
+      ...(tzOffsetMinutes !== undefined && { tzOffsetMinutes }),
+    },
+    ProjectPrInsightsSchema,
   );
 }
 

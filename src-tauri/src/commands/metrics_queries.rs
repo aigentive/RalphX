@@ -48,7 +48,11 @@ pub(crate) fn query_tasks_completed(
     );
     let (today, week, month) = conn
         .query_row(&sql, params![project_id], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         })
         .map_err(|e| AppError::Database(e.to_string()))?;
     Ok((today, week, month))
@@ -219,16 +223,21 @@ pub(crate) fn query_eme(
     let earliest = task_rows.first().and_then(|r| r.2.clone());
     let latest = task_rows.last().and_then(|r| r.2.clone());
 
-    let (low_total, high_total) = task_rows.iter().fold((0.0f64, 0.0f64), |acc, (steps, reviews, _)| {
-        let (_weight, base_hours) = complexity_tier(*steps, *reviews, config);
-        let low = base_hours;
-        let high = base_hours * config.calendar_factor;
-        (acc.0 + low, acc.1 + high)
-    });
+    let (low_total, high_total) =
+        task_rows
+            .iter()
+            .fold((0.0f64, 0.0f64), |acc, (steps, reviews, _)| {
+                let (_weight, base_hours) = complexity_tier(*steps, *reviews, config);
+                let low = base_hours;
+                let high = base_hours * config.calendar_factor;
+                (acc.0 + low, acc.1 + high)
+            });
 
     Ok(Some(EmeEstimate {
         low_hours: (low_total * 10.0).round() / 10.0,
         high_hours: (high_total * 10.0).round() / 10.0,
+        scope: "task_pipeline".to_string(),
+        scope_label: "Task pipeline".to_string(),
         task_count: task_rows.len() as i64,
         earliest_task_date: earliest,
         latest_task_date: latest,
@@ -317,7 +326,8 @@ pub(crate) fn query_column_dwell_times(
 
     let mut dwell_times = Vec::new();
     for row in rows {
-        let (col_id, avg_minutes, sample_size) = row.map_err(|e| AppError::Database(e.to_string()))?;
+        let (col_id, avg_minutes, sample_size) =
+            row.map_err(|e| AppError::Database(e.to_string()))?;
         let col_name = column_names
             .iter()
             .find(|(id, _)| *id == col_id)
@@ -495,10 +505,7 @@ pub fn compute_column_metrics(
 }
 
 /// Compute per-task metrics from task_steps, reviews, and task_state_history.
-pub fn compute_task_metrics(
-    conn: &rusqlite::Connection,
-    task_id: &str,
-) -> AppResult<TaskMetrics> {
+pub fn compute_task_metrics(conn: &rusqlite::Connection, task_id: &str) -> AppResult<TaskMetrics> {
     let (step_count, completed_step_count) = conn
         .query_row(
             "SELECT
