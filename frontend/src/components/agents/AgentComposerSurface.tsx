@@ -307,6 +307,7 @@ export function AgentComposerSurface({
   const restoreTextareaFocusCursorRef = useRef<number | null>(null);
   const value = isControlled ? controlledValue : internalValue;
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const isAgentAlive = agentStatus !== "idle";
   const isAgentGenerating = agentStatus === "generating";
   const canQueue = !isReadOnly && isAgentAlive;
@@ -555,6 +556,7 @@ export function AgentComposerSurface({
     value.trim().length > 0 ||
     isAgentAlive ||
     actionMenuOpen ||
+    modeMenuOpen ||
     attachments.length > 0 ||
     attachmentsUploading ||
     hasSelectedReferences ||
@@ -1409,7 +1411,6 @@ export function AgentComposerSurface({
                 focusTextareaAtComposerCursor(cursorPosition);
               }}
               compact={compact}
-              {...(mode ? { mode } : {})}
             />
 
             {/* Control order per product direction: mode → model → chat focus.
@@ -1418,16 +1419,9 @@ export function AgentComposerSurface({
             {mode && (
               <ComposerModeChip
                 mode={mode}
+                open={modeMenuOpen}
+                onOpenChange={setModeMenuOpen}
                 compact={compact}
-                onClick={() =>
-                  setActionMenuOpen((prev) => {
-                    const nextOpen = !prev;
-                    if (nextOpen) {
-                      void mode.onOpen?.();
-                    }
-                    return nextOpen;
-                  })
-                }
               />
             )}
 
@@ -1506,7 +1500,6 @@ export function AgentComposerSurface({
 
 function ComposerActionMenu({
   project,
-  mode,
   enableAttachments,
   attachmentDisabled,
   onOpenAttachmentPicker,
@@ -1520,7 +1513,6 @@ function ComposerActionMenu({
   compact = false,
 }: {
   project: ProjectFieldConfig;
-  mode?: ModeFieldConfig;
   enableAttachments: boolean;
   attachmentDisabled: boolean;
   onOpenAttachmentPicker: () => void;
@@ -1537,21 +1529,11 @@ function ComposerActionMenu({
   const hasPrimaryActions =
     enableAttachments ||
     Boolean(project.endAction) ||
-    Boolean(mode) ||
     Boolean(onForkSession);
   const setOpen = onOpenChange;
-  const handleOpenChange = useCallback(
-    (nextOpen: boolean) => {
-      if (nextOpen) {
-        void mode?.onOpen?.();
-      }
-      setOpen(nextOpen);
-    },
-    [mode, setOpen],
-  );
 
   return (
-    <Popover open={open} onOpenChange={handleOpenChange}>
+    <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -1583,12 +1565,6 @@ function ComposerActionMenu({
           color: "var(--text-primary)",
         }}
         onCloseAutoFocus={onCloseAutoFocus}
-        onInteractOutside={(event) => {
-          const target = event.target as HTMLElement | null;
-          if (target?.closest("[data-composer-mode-chip='true']")) {
-            event.preventDefault();
-          }
-        }}
       >
         {enableAttachments && (
           <button
@@ -1615,18 +1591,9 @@ function ComposerActionMenu({
           </>
         )}
 
-        {mode && (
-          <>
-            {(enableAttachments || project.endAction) && (
-              <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
-            )}
-            <ComposerModeMenuSection mode={mode} onDone={() => setOpen(false)} />
-          </>
-        )}
-
         {onForkSession && (
           <>
-            {(enableAttachments || project.endAction || mode) && (
+            {(enableAttachments || project.endAction) && (
               <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
             )}
             <button
@@ -1879,42 +1846,71 @@ function shortReferenceId(id: string): string {
 
 function ComposerModeChip({
   mode,
-  onClick,
+  open,
+  onOpenChange,
   compact = false,
 }: {
   mode: ModeFieldConfig;
-  onClick?: () => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   compact?: boolean;
 }) {
   const activeOption = mode.options.find((o) => o.id === mode.value);
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      if (next) {
+        void mode.onOpen?.();
+      }
+      onOpenChange(next);
+    },
+    [mode, onOpenChange],
+  );
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={mode.disabled}
-      data-testid={mode.testId ? `${mode.testId}-chip` : "agent-composer-mode-chip"}
-      data-composer-mode-chip="true"
-      aria-label={`Mode: ${activeOption?.label ?? mode.value}. Click to change.`}
-      className={cn(
-        "inline-flex shrink-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out hover:bg-[var(--bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed",
-        compact ? "h-8 px-2.5" : "h-10 px-3"
-      )}
-      style={{
-        background: "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
-        borderColor: "var(--form-border)",
-      }}
-    >
-      {/* Eyebrow label only in the expanded state; the mini/resting composer
-          shows just the value to stay minimal. */}
-      {!compact && (
-        <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
-          Mode
-        </span>
-      )}
-      <span className="text-[0.8125rem] font-medium text-[var(--text-primary)]">
-        {activeOption?.label ?? "—"}
-      </span>
-    </button>
+    <Popover open={open} onOpenChange={handleOpenChange}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          disabled={mode.disabled}
+          data-testid={mode.testId ? `${mode.testId}-chip` : "agent-composer-mode-chip"}
+          data-composer-mode-chip="true"
+          aria-label={`Mode: ${activeOption?.label ?? mode.value}. Click to change.`}
+          className={cn(
+            "inline-flex shrink-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out hover:bg-[var(--bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed",
+            compact ? "h-8 px-2.5" : "h-10 px-3"
+          )}
+          style={{
+            background: "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
+            borderColor: "var(--form-border)",
+          }}
+        >
+          {/* Eyebrow label only in the expanded state; the mini/resting composer
+              shows just the value to stay minimal. */}
+          {!compact && (
+            <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+              Mode
+            </span>
+          )}
+          <span className="text-[0.8125rem] font-medium text-[var(--text-primary)]">
+            {activeOption?.label ?? "—"}
+          </span>
+        </button>
+      </PopoverTrigger>
+      {/* The mode chip owns its own popover with ONLY the workflow modes; the
+          "+" action menu carries everything else (attachments, references…). */}
+      <PopoverContent
+        align="start"
+        side="top"
+        sideOffset={8}
+        className="w-56 rounded-xl p-1.5"
+        style={{
+          backgroundColor: "var(--bg-elevated)",
+          borderColor: "var(--border-subtle)",
+          color: "var(--text-primary)",
+        }}
+      >
+        <ComposerModeMenuSection mode={mode} onDone={() => onOpenChange(false)} />
+      </PopoverContent>
+    </Popover>
   );
 }
 
