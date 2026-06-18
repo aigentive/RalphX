@@ -86,10 +86,17 @@ export function useAgentsAttachedIdeation({
         attachedIdeationSession?.acceptanceStatus === "accepted" ||
         attachedIdeationSession?.convertedAt,
     );
+    const hasVerificationEvidence = Boolean(
+      attachedIdeationSession?.verificationInProgress ||
+        (attachedIdeationSession?.verificationStatus ?? "unverified") !==
+          "unverified" ||
+        attachedIdeationSession?.gapScore != null,
+    );
 
     return getVisibleIdeationArtifactTabs({
       hasAttachedIdeationSession: Boolean(attachedIdeationSession),
       hasPlanArtifact,
+      hasVerificationEvidence,
       hasExecutionTasks,
     });
   }, [activeWorkspace?.linkedPlanBranchId, attachedIdeationSession]);

@@ -28,7 +28,7 @@ export function AgentsPublishProgressToast({
 
   useEffect(() => {
     if (!active || !toastId) {
-      progressToastRef.current?.dispose();
+      progressToastRef.current?.dismiss();
       progressToastRef.current = null;
       return;
     }
@@ -54,7 +54,7 @@ export function AgentsPublishProgressToast({
 
   useEffect(
     () => () => {
-      progressToastRef.current?.dispose();
+      progressToastRef.current?.dismiss();
       progressToastRef.current = null;
     },
     [],

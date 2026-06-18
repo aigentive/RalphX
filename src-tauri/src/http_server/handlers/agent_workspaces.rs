@@ -363,7 +363,13 @@ pub async fn publish_agent_workspace(
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace =
         load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
-    if let Some(response) = publish_action_response_for_existing_workspace_state(workspace) {
+    if let Some(response) = publish_action_response_for_existing_workspace_state(
+        state.app_state.as_ref(),
+        &conversation_id,
+        workspace,
+    )
+    .await?
+    {
         return Ok(Json(response));
     }
 
@@ -968,6 +974,14 @@ fn update_only_repair_pr_supervision_state(
     None
 }
 
+fn should_auto_publish_after_update_only_repair(workspace: &AgentConversationWorkspace) -> bool {
+    if workspace.publication_pr_number.is_some() {
+        workspace.auto_publish_enabled
+    } else {
+        workspace.auto_publish_initial_pr_enabled
+    }
+}
+
 fn publish_in_progress_response(
     workspace: AgentConversationWorkspaceResponse,
 ) -> AgentWorkspacePublishActionResponse {
@@ -991,8 +1005,24 @@ fn publish_in_progress_response(
     }
 }
 
+fn repair_queued_from_publication_events(
+    events: &[AgentConversationWorkspacePublicationEventResponse],
+) -> bool {
+    match events.iter().rev().find(|event| {
+        matches!(
+            event.step.as_str(),
+            "repair_requested" | "repair_deferred" | "repair_sent"
+        )
+    }) {
+        Some(event) if event.step == "repair_sent" => event.status == "succeeded",
+        Some(event) => matches!(event.status.as_str(), "started" | "succeeded"),
+        None => false,
+    }
+}
+
 fn needs_agent_repair_response(
     workspace: AgentConversationWorkspaceResponse,
+    repair_queued: bool,
 ) -> AgentWorkspacePublishActionResponse {
     let pr_number = workspace.publication_pr_number;
     let pr_url = workspace.publication_pr_url.clone();
@@ -1000,7 +1030,7 @@ fn needs_agent_repair_response(
         success: true,
         status: "needs_agent_repair".to_string(),
         message: "Workspace needs agent repair before publishing can continue".to_string(),
-        repair_queued: true,
+        repair_queued,
         workspace: Some(workspace),
         freshness: None,
         updated: None,
@@ -1014,13 +1044,23 @@ fn needs_agent_repair_response(
     }
 }
 
-fn publish_action_response_for_existing_workspace_state(
+async fn publish_action_response_for_existing_workspace_state(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
     workspace: AgentConversationWorkspaceResponse,
-) -> Option<AgentWorkspacePublishActionResponse> {
+) -> Result<Option<AgentWorkspacePublishActionResponse>, JsonError> {
     match workspace.publication_push_status.as_deref() {
-        status if is_publish_in_progress(status) => Some(publish_in_progress_response(workspace)),
-        Some("needs_agent") => Some(needs_agent_repair_response(workspace)),
-        _ => None,
+        status if is_publish_in_progress(status) => {
+            Ok(Some(publish_in_progress_response(workspace)))
+        }
+        Some("needs_agent") => {
+            let events = load_agent_workspace_publication_events(state, conversation_id).await?;
+            Ok(Some(needs_agent_repair_response(
+                workspace,
+                repair_queued_from_publication_events(&events),
+            )))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -1063,6 +1103,8 @@ async fn action_response_for_needs_repair(
     if workspace.publication_push_status.as_deref() != Some("needs_agent") {
         return Err(json_error(StatusCode::CONFLICT, error, None));
     }
+    let events = load_agent_workspace_publication_events(state, conversation_id).await?;
+    let repair_queued = repair_queued_from_publication_events(&events);
 
     let freshness = get_agent_conversation_workspace_freshness_for_app_state(
         conversation_id,
@@ -1075,7 +1117,7 @@ async fn action_response_for_needs_repair(
         success: true,
         status: "needs_agent_repair".to_string(),
         message: error,
-        repair_queued: true,
+        repair_queued,
         workspace: Some(workspace),
         freshness,
         updated: None,
@@ -1395,7 +1437,9 @@ pub async fn complete_agent_workspace_repair(
                 pr_url,
             )
         }
-    } else if post_repair_action == AgentWorkspacePostRepairAction::UpdateOnly {
+    } else if post_repair_action == AgentWorkspacePostRepairAction::UpdateOnly
+        && !should_auto_publish_after_update_only_repair(&workspace)
+    {
         if let Some((status, summary)) = update_only_repair_pr_supervision_state(&workspace) {
             state
                 .app_state
@@ -2031,7 +2075,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn needs_repair_action_response_preserves_error_payload() {
+    async fn needs_repair_action_response_preserves_error_payload_without_implying_queue() {
         let app_state = Arc::new(AppState::new_test());
         let conversation_id = ChatConversationId::new();
         let mut workspace = test_workspace(conversation_id.clone());
@@ -2055,10 +2099,46 @@ mod tests {
         assert!(response.success);
         assert_eq!(response.status, "needs_agent_repair");
         assert_eq!(response.message, "merge conflict");
-        assert!(response.repair_queued);
+        assert!(!response.repair_queued);
         assert!(response.freshness.is_none());
         assert_eq!(response.pr_number, None);
         assert_eq!(response.pr_url, None);
+    }
+
+    #[tokio::test]
+    async fn needs_repair_action_response_reports_queue_from_repair_events() {
+        let app_state = Arc::new(AppState::new_test());
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        app_state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "repair_requested",
+                "started",
+                "Workspace agent repair requested before the base update can complete",
+                Some("agent_fixable:update_only".to_string()),
+            ))
+            .await
+            .unwrap();
+
+        let Json(response) = action_response_for_needs_repair(
+            app_state.as_ref(),
+            &conversation_id,
+            "merge conflict".to_string(),
+        )
+        .await
+        .expect("needs-agent response should be returned");
+
+        assert!(response.success);
+        assert_eq!(response.status, "needs_agent_repair");
+        assert!(response.repair_queued);
     }
 
     #[tokio::test]
@@ -2144,7 +2224,7 @@ mod tests {
 
         assert!(response.success);
         assert_eq!(response.status, "needs_agent_repair");
-        assert!(response.repair_queued);
+        assert!(!response.repair_queued);
     }
 
     #[tokio::test]
