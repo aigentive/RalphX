@@ -104,6 +104,19 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .collect())
     }
 
+    async fn list_active_pr_poller_recovery_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Ok(self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| is_active_pr_poller_recovery_workspace(workspace))
+            .cloned()
+            .collect())
+    }
+
     async fn list_active_needs_agent_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
@@ -517,6 +530,21 @@ fn is_active_direct_published_workspace(workspace: &AgentConversationWorkspace) 
         && !workspace.has_terminal_publication_pr_status()
 }
 
+fn is_active_pr_poller_recovery_workspace(workspace: &AgentConversationWorkspace) -> bool {
+    if is_active_direct_published_workspace(workspace) {
+        return true;
+    }
+
+    workspace.status == AgentConversationWorkspaceStatus::Active
+        && workspace.mode == AgentConversationWorkspaceMode::Ideation
+        && workspace.linked_plan_branch_id.is_some()
+        && workspace.publication_pr_number.is_some()
+        && workspace.auto_publish_enabled
+        && workspace.has_pr_status_pollable_push_status()
+        && (workspace.pr_autofix_enabled || workspace.pr_auto_merge_desired)
+        && !workspace.has_terminal_publication_pr_status()
+}
+
 fn is_active_direct_external_pr_reconciliation_candidate(
     workspace: &AgentConversationWorkspace,
 ) -> bool {
@@ -826,6 +854,51 @@ mod tests {
         assert!(workspaces
             .iter()
             .any(|workspace| workspace.conversation_id == refreshed.conversation_id));
+    }
+
+    #[tokio::test]
+    async fn pr_poller_recovery_workspaces_include_supervised_ideation_prs() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let mut direct = candidate_workspace("direct");
+        direct.publication_pr_number = Some(12);
+        direct.publication_pr_status = Some("open".to_string());
+        direct.publication_push_status = Some("pushed".to_string());
+
+        let mut ideation = candidate_workspace("ideation");
+        ideation.mode = AgentConversationWorkspaceMode::Ideation;
+        ideation.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-1"));
+        ideation.publication_pr_number = Some(13);
+        ideation.publication_pr_status = Some("open".to_string());
+        ideation.publication_push_status = Some("pushed".to_string());
+        ideation.pr_autofix_enabled = true;
+
+        let mut unsupervised_ideation = candidate_workspace("unsupervised-ideation");
+        unsupervised_ideation.mode = AgentConversationWorkspaceMode::Ideation;
+        unsupervised_ideation.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-2"));
+        unsupervised_ideation.publication_pr_number = Some(14);
+        unsupervised_ideation.publication_pr_status = Some("open".to_string());
+        unsupervised_ideation.publication_push_status = Some("pushed".to_string());
+
+        for workspace in [
+            direct.clone(),
+            ideation.clone(),
+            unsupervised_ideation.clone(),
+        ] {
+            repo.create_or_update(workspace).await.unwrap();
+        }
+
+        let workspaces = repo
+            .list_active_pr_poller_recovery_workspaces()
+            .await
+            .unwrap();
+
+        assert_eq!(workspaces.len(), 2);
+        assert!(workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == direct.conversation_id));
+        assert!(workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == ideation.conversation_id));
     }
 
     #[tokio::test]
