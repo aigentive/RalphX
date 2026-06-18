@@ -550,20 +550,21 @@ export function AgentComposerSurface({
     selectedIntegrationReferenceList.length > 0 ||
     selectedArtifactReferenceList.length > 0;
 
-  // Collapsed (minimal) resting state: only when explicitly opted in and there
-  // is nothing the user would lose sight of. Any pending activity keeps it open.
+  // Collapsed (minimal) resting state. The composer only expands when there is
+  // real content to keep visible: text in the textarea, a live agent,
+  // attachments, references, queued messages, a pending question, or read-only
+  // review. Focus and transient popovers (+, mode, model) intentionally do NOT
+  // expand it, so opening those menus never resizes the chat block.
   const hasComposerActivity =
     value.trim().length > 0 ||
     isAgentAlive ||
-    actionMenuOpen ||
-    modeMenuOpen ||
     attachments.length > 0 ||
     attachmentsUploading ||
     hasSelectedReferences ||
     hasQueuedMessages ||
     Boolean(questionMode) ||
     isReadOnly;
-  const isCollapsed = collapsible && !isFocused && !hasComposerActivity;
+  const isCollapsed = collapsible && !hasComposerActivity;
   const isExpanded = !isCollapsed;
   const compact = isCollapsed;
 

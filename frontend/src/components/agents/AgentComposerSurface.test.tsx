@@ -1010,11 +1010,11 @@ describe("AgentComposerSurface", () => {
       expect(textarea.style.height).toBe("38px");
     });
 
-    it("expands synchronously on focus and reveals the helper + full chips", () => {
+    it("expands when text is entered and reveals the helper + full chips", () => {
       renderComposer({ dataTestId: "agent-composer", collapsible: true });
 
       const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
-      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "hello" } });
 
       const surface = screen.getByTestId("agent-composer");
       expect(surface).toHaveAttribute("data-collapsed", "false");
@@ -1043,20 +1043,24 @@ describe("AgentComposerSurface", () => {
       );
     });
 
-    it("collapses again after blur once the prompt is empty", () => {
+    it("stays minimal on focus or popover open, expanding only when text exists", () => {
       renderComposer({ dataTestId: "agent-composer", collapsible: true });
-
+      const surface = screen.getByTestId("agent-composer");
       const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+
+      // Focus alone must NOT expand the composer.
       fireEvent.focus(textarea);
-      expect(screen.getByTestId("agent-composer")).toHaveAttribute(
-        "data-collapsed",
-        "false",
-      );
-      fireEvent.blur(textarea);
-      expect(screen.getByTestId("agent-composer")).toHaveAttribute(
-        "data-collapsed",
-        "true",
-      );
+      expect(surface).toHaveAttribute("data-collapsed", "true");
+
+      // Opening the "+" action menu must NOT expand it (no flicker).
+      fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+      expect(surface).toHaveAttribute("data-collapsed", "true");
+
+      // Only text expands it; clearing the text collapses it again.
+      fireEvent.change(textarea, { target: { value: "x" } });
+      expect(surface).toHaveAttribute("data-collapsed", "false");
+      fireEvent.change(textarea, { target: { value: "" } });
+      expect(surface).toHaveAttribute("data-collapsed", "true");
     });
 
     it("keeps the composer expanded while the agent is generating", () => {
