@@ -1971,7 +1971,7 @@ describe("AgentsArtifactPane", () => {
     });
   });
 
-  it("focuses the newest verification child when the verification tab opens", async () => {
+  it("keeps the parent plan conversation focused when the verification tab opens", async () => {
     const onFocusVerificationSession = vi.fn();
     getIdeationSessionMock.mockResolvedValue({
       session: {
@@ -2067,15 +2067,12 @@ describe("AgentsArtifactPane", () => {
       { onFocusVerificationSession },
     );
 
-    await waitFor(() =>
-      expect(getIdeationChildrenMock).toHaveBeenCalledWith("session-1", "verification")
+    await waitFor(() => expect(useVerificationStatusMock).toHaveBeenCalled());
+    expect(getIdeationChildrenMock).not.toHaveBeenCalledWith(
+      "session-1",
+      "verification",
     );
-    await waitFor(() =>
-      expect(onFocusVerificationSession).toHaveBeenCalledWith(
-        "session-1",
-        "verification-new",
-      )
-    );
+    expect(onFocusVerificationSession).not.toHaveBeenCalled();
   });
 
   it("hides plan-derived tabs until the attached ideation run has a plan", async () => {

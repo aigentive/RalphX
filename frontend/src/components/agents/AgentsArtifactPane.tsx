@@ -49,7 +49,6 @@ import {
   getVisibleIdeationArtifactTabs,
   type IdeationArtifactTab,
 } from "./agentArtifactTabs";
-import { getLatestIdeationChildId } from "./agentIdeationChildren";
 import { resolveAttachedIdeationSessionId } from "./attachedIdeationSession";
 import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDetailSheet";
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
@@ -382,12 +381,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const verificationQuery = useVerificationStatus(
     shouldLoadVerificationData ? attachedSessionId ?? undefined : undefined,
   );
-  const verificationChildrenQuery = useQuery({
-    queryKey: ["childSessions", attachedSessionId, "verification"],
-    queryFn: () => ideationApi.sessions.getChildren(attachedSessionId!, "verification"),
-    enabled: shouldLoadVerificationData && !!attachedSessionId,
-    staleTime: 4_000,
-  });
   const dependencyQuery = useDependencyGraph(
     shouldLoadDependencyGraph ? attachedSessionId ?? "" : "",
   );
@@ -407,25 +400,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     verificationData?.inProgress ??
     sessionData?.session.verificationInProgress ??
     false;
-  const latestVerificationChildId = useMemo(
-    () => getLatestIdeationChildId(verificationChildrenQuery.data),
-    [verificationChildrenQuery.data],
-  );
-  useEffect(() => {
-    if (
-      effectiveActiveTab !== "verification" ||
-      !attachedSessionId ||
-      !latestVerificationChildId
-    ) {
-      return;
-    }
-    onFocusVerificationSession?.(attachedSessionId, latestVerificationChildId);
-  }, [
-    attachedSessionId,
-    effectiveActiveTab,
-    latestVerificationChildId,
-    onFocusVerificationSession,
-  ]);
   const handlePlanUpdated = useCallback(
     (updatedPlan: Artifact) => {
       queryClient.setQueryData(["agents", "artifact", updatedPlan.id], updatedPlan);
