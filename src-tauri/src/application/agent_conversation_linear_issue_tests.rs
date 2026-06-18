@@ -1,11 +1,77 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
+use tokio::sync::RwLock;
 
 use super::*;
-use crate::application::AppState;
+use crate::application::{
+    LinearApiClient, LinearAuthContext, LinearIntegrationService, LinearIntegrationSettings,
+    LinearIntegrationSettingsRepository, LinearIssueContent, LinearIssueSummary,
+};
 use crate::domain::entities::AgentConversationJiraIssueLink;
-use crate::infrastructure::memory::MemoryAgentConversationLinearIssueRepository;
+use crate::infrastructure::memory::{
+    MemoryAgentConversationLinearIssueRepository, MemorySecretStore,
+};
+
+#[derive(Default)]
+struct TestLinearSettingsRepo {
+    settings: RwLock<LinearIntegrationSettings>,
+}
+
+#[async_trait]
+impl LinearIntegrationSettingsRepository for TestLinearSettingsRepo {
+    async fn get(&self) -> Result<LinearIntegrationSettings, Box<dyn std::error::Error>> {
+        Ok(self.settings.read().await.clone())
+    }
+
+    async fn upsert(
+        &self,
+        settings: &LinearIntegrationSettings,
+    ) -> Result<LinearIntegrationSettings, Box<dyn std::error::Error>> {
+        *self.settings.write().await = settings.clone();
+        Ok(settings.clone())
+    }
+}
+
+struct RichLinearClient;
+
+#[async_trait]
+impl LinearApiClient for RichLinearClient {
+    async fn validate(&self, _auth: &LinearAuthContext) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn search_issues(
+        &self,
+        _auth: &LinearAuthContext,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<LinearIssueSummary>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn fetch_issue(
+        &self,
+        _auth: &LinearAuthContext,
+        reference: &ComposerIntegrationReference,
+    ) -> Result<LinearIssueContent, String> {
+        Ok(LinearIssueContent {
+            id: reference.id.clone(),
+            key: reference.key.clone(),
+            title: reference
+                .title
+                .clone()
+                .unwrap_or_else(|| reference.id.clone()),
+            url: reference.url.clone(),
+            body: "Issue body".to_string(),
+            state_name: Some("In Progress".to_string()),
+            assignee: Some("A. User".to_string()),
+            creator: Some("C. User".to_string()),
+            updated_at: Some("2026-06-18T08:00:00Z".to_string()),
+        })
+    }
+}
 
 fn assigned_at() -> DateTime<Utc> {
     DateTime::parse_from_rfc3339("2026-06-18T18:14:05Z")
@@ -193,14 +259,16 @@ async fn assign_primary_linear_issue_uses_first_linear_reference_once() {
 
 #[tokio::test]
 async fn assign_primary_linear_issue_fetches_details_at_link_time() {
-    let state = AppState::new_test();
-    state
-        .linear_integration_service
+    let linear_integration_service = LinearIntegrationService::new(
+        Arc::new(TestLinearSettingsRepo::default()),
+        Arc::new(MemorySecretStore::new()),
+        Arc::new(RichLinearClient),
+    );
+    linear_integration_service
         .save_settings(Some("lin-api-token".to_string()))
         .await
         .expect("save Linear settings");
-    state
-        .linear_integration_service
+    linear_integration_service
         .validate_and_enable()
         .await
         .expect("validate Linear settings");
@@ -211,7 +279,7 @@ async fn assign_primary_linear_issue_fetches_details_at_link_time() {
 
     let assigned = assign_primary_linear_issue_if_absent_and_refresh(
         &repo,
-        Some(state.linear_integration_service.as_ref()),
+        Some(&linear_integration_service),
         &conversation_id,
         &project_id,
         &[linear_ref(

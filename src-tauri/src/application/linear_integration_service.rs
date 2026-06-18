@@ -141,9 +141,9 @@ impl LinearApiClient for EmptyLinearApiClient {
             url: reference.url.clone(),
             body: String::new(),
             state_name: None,
-            assignee: Some("A. User".to_string()),
-            creator: Some("C. User".to_string()),
-            updated_at: Some("2026-06-18T08:00:00Z".to_string()),
+            assignee: None,
+            creator: None,
+            updated_at: None,
         })
     }
 }
