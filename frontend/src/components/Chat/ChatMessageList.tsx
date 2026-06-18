@@ -1465,14 +1465,21 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
     }, [markUserScrollingAwayFromBottom]);
 
-    const handleScrollerWheel = useCallback(
-      (event: WheelEvent) => {
+    const markManualWheelScroll = useCallback(
+      (deltaY: number, el: HTMLElement | null) => {
         hasUserScrollInputRef.current = true;
-        if (event.deltaY < 0) {
+        if (deltaY < 0 || (deltaY > 0 && (!el || !isScrollElementVisuallyAtBottom(el)))) {
           markUserScrollingAwayFromBottom();
         }
       },
       [markUserScrollingAwayFromBottom],
+    );
+
+    const handleScrollerWheel = useCallback(
+      (event: WheelEvent) => {
+        markManualWheelScroll(event.deltaY, scrollerElRef.current);
+      },
+      [markManualWheelScroll],
     );
 
     const handleScrollerPointerDown = useCallback(
@@ -1887,10 +1894,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }
 
         event.preventDefault();
+        markManualWheelScroll(event.deltaY, el);
         scrollElementByDelta(el, event.deltaX, event.deltaY);
         handleScrollReconcile();
       },
-      [handleScrollReconcile, isTestEnv, shouldShowScrollToBottom],
+      [handleScrollReconcile, isTestEnv, markManualWheelScroll, shouldShowScrollToBottom],
     );
 
     const handleRangeChanged = useCallback(
