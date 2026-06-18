@@ -64,11 +64,15 @@ const CODEX_DELEGATION_GUIDE_AGENTS: &[&str] = &[
     "ralphx-qa-executor",
     "ralphx-research-deep-researcher",
 ];
-const CLAUDE_ONLY_CANONICAL_AGENTS: &[(&str, &str, &str)] = &[(
-    "ralphx-execution-team-lead",
-    "worker_team_lead",
-    "ralphx-execution-team-lead",
-)];
+const CLAUDE_ONLY_CANONICAL_AGENTS: &[(&str, &str, &str)] = &[
+    (
+        "ralphx-execution-team-lead",
+        "worker_team_lead",
+        "ralphx-execution-team-lead",
+    ),
+    ("ralphx-pr-reviewer", "pr_reviewer", "ralphx-pr-reviewer"),
+];
+const CLAUDE_ONLY_SHARED_PROMPT_AGENTS: &[&str] = &["ralphx-pr-reviewer"];
 
 const CROSS_HARNESS_VERIFICATION_AGENTS: &[(&str, &str, &str)] = &[
     (
@@ -227,6 +231,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-general-worker",
     "ralphx-agent-workspace-repair",
     "ralphx-agent-workspace-pr-fixer",
+    "ralphx-pr-reviewer",
     "ralphx-ideation",
     "ralphx-ideation-readonly",
     "ralphx-execution-worker",
@@ -306,6 +311,7 @@ const CANONICAL_CLAUDE_DISALLOWED_TOOL_OWNED_AGENTS: &[(&str, &[&str])] = &[
         "ralphx-plan-critic-implementation-feasibility",
         &["Write", "Edit", "NotebookEdit", "Bash"],
     ),
+    ("ralphx-pr-reviewer", &["Write", "Edit", "NotebookEdit"]),
     ("ralphx-qa-prep", &["Write", "Edit", "Bash", "NotebookEdit"]),
     (
         "ralphx-ideation-specialist-backend",
@@ -358,6 +364,7 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
     "ralphx-general-worker",
     "ralphx-agent-workspace-repair",
     "ralphx-agent-workspace-pr-fixer",
+    "ralphx-pr-reviewer",
     "ralphx-execution-worker",
     "ralphx-execution-coder",
     "ralphx-execution-merger",
@@ -412,6 +419,7 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-general-worker", "sonnet"),
     ("ralphx-agent-workspace-repair", "opus"),
     ("ralphx-agent-workspace-pr-fixer", "opus"),
+    ("ralphx-pr-reviewer", "sonnet"),
     ("ralphx-utility-session-namer", "haiku"),
     ("ralphx-utility-plan-complexity", "haiku"),
     ("ralphx-chat-task", "sonnet"),
@@ -471,6 +479,7 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
         &["Edit"],
         false,
     ),
+    ("ralphx-pr-reviewer", "readonly_tools", &["Bash"], false),
     ("ralphx-chat-task", "base_tools", &["Task"], false),
     ("ralphx-chat-project", "readonly_tools", &[], false),
     ("ralphx-review-chat", "base_tools", &["Task"], false),
@@ -1492,16 +1501,28 @@ fn pilot_agent_prompt_paths_exist_for_both_harnesses() {
     );
 
     for (agent_name, _, _) in CLAUDE_ONLY_CANONICAL_AGENTS {
+        let claude_path =
+            resolve_harness_agent_prompt_path(&root, agent_name, AgentPromptHarness::Claude);
+        let codex_path =
+            resolve_harness_agent_prompt_path(&root, agent_name, AgentPromptHarness::Codex);
         assert!(
-            resolve_harness_agent_prompt_path(&root, agent_name, AgentPromptHarness::Claude)
-                .is_some(),
+            claude_path.is_some(),
             "expected claude prompt path for {agent_name}"
         );
-        assert!(
-            resolve_harness_agent_prompt_path(&root, agent_name, AgentPromptHarness::Codex)
-                .is_none(),
-            "{agent_name} should remain claude-only until a codex prompt exists"
-        );
+
+        if CLAUDE_ONLY_SHARED_PROMPT_AGENTS.contains(agent_name) {
+            assert!(
+                codex_path.as_ref().is_some_and(
+                    |path| path.ends_with(format!("agents/{agent_name}/shared/prompt.md"))
+                ),
+                "expected {agent_name} codex path lookup to resolve through shared/prompt.md"
+            );
+        } else {
+            assert!(
+                codex_path.is_none(),
+                "{agent_name} should remain without a codex prompt path until one exists"
+            );
+        }
     }
 
     for (agent_name, _, _) in CROSS_HARNESS_VERIFICATION_AGENTS {
