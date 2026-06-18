@@ -1163,15 +1163,24 @@ describe("AgentsSidebar", () => {
 
   it("auto-fetches the next project page when the user scrolls the virtual list to the bottom", async () => {
     const fetchNextPage = vi.fn().mockResolvedValue(undefined);
-    virtuosoMockState.dimensionsByTestId.set("agents-sidebar-session-list-project-1", {
-      clientHeight: 368,
-      scrollHeight: 736,
+    const paginationProject = project({
+      id: "project-pagination",
+      name: "pagination",
     });
-    conversationsByProject.set("project-1", {
+    virtuosoMockState.dimensionsByTestId.set(
+      "agents-sidebar-session-list-project-pagination",
+      {
+        clientHeight: 368,
+        scrollHeight: 736,
+      }
+    );
+    conversationsByProject.set("project-pagination", {
       data: Array.from({ length: 8 }, (_, index) =>
         conversation({
           id: `conversation-${index + 1}`,
           title: `Agent ${index + 1}`,
+          projectId: "project-pagination",
+          contextId: "project-pagination",
         })
       ),
       total: 212,
@@ -1181,9 +1190,11 @@ describe("AgentsSidebar", () => {
       fetchNextPage,
     });
 
-    renderSidebar();
+    renderSidebar([paginationProject], { focusedProjectId: "project-pagination" });
 
-    const list = screen.getByTestId("agents-sidebar-session-list-project-1");
+    const list = screen.getByTestId(
+      "agents-sidebar-session-list-project-pagination"
+    );
     list.scrollTop = 368;
     fireEvent.scroll(list);
 
