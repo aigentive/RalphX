@@ -3,6 +3,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, Utc};
 
 use super::*;
+use crate::application::AppState;
+use crate::domain::integrations::AtlassianAuthMethod;
 use crate::infrastructure::memory::MemoryAgentConversationJiraIssueRepository;
 
 fn assigned_at() -> DateTime<Utc> {
@@ -124,6 +126,62 @@ async fn assign_primary_jira_issue_uses_first_jira_reference_once() {
             .as_ref()
             .map(ChatMessageId::as_str),
         Some("msg-1")
+    );
+}
+
+#[tokio::test]
+async fn assign_primary_jira_issue_fetches_details_at_link_time() {
+    let state = AppState::new_test();
+    state
+        .atlassian_integration_service
+        .save_settings(
+            Some(AtlassianAuthMethod::ApiToken),
+            Some("https://example.atlassian.net".to_string()),
+            Some("dev@example.com".to_string()),
+            Some("token".to_string()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("save Atlassian settings");
+    state
+        .atlassian_integration_service
+        .validate_and_enable()
+        .await
+        .expect("enable Atlassian");
+    let conversation_id = ChatConversationId::new();
+    let project_id = ProjectId::from_string("project-1".to_string());
+
+    let assigned = assign_primary_jira_issue_if_absent_and_refresh(
+        &state.agent_conversation_jira_issue_repo,
+        Some(state.atlassian_integration_service.as_ref()),
+        &conversation_id,
+        &project_id,
+        &[jira_ref("RX-42")],
+        Some(ChatMessageId::from_string("msg-1")),
+        assigned_at(),
+    )
+    .await
+    .expect("assign primary")
+    .expect("assigned link");
+
+    assert_eq!(assigned.issue_key, "RX-42");
+    assert_eq!(
+        assigned.refresh_status,
+        AgentConversationJiraRefreshStatus::Loaded
+    );
+    assert_eq!(assigned.title.as_deref(), Some("RX-42 title"));
+    assert!(assigned.last_refreshed_at.is_some());
+    let stored = state
+        .agent_conversation_jira_issue_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load stored")
+        .expect("stored link");
+    assert_eq!(
+        stored.refresh_status,
+        AgentConversationJiraRefreshStatus::Loaded
     );
 }
 

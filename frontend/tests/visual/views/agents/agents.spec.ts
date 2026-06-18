@@ -626,15 +626,22 @@ test.describe("Agents View", () => {
     });
   });
 
-  test("starter composer and action menu match visual contract", async ({ page }) => {
+  test("starter composer mode and action menus are separated", async ({ page }) => {
     await setupAgentsView(page);
     await expect(page.getByTestId("agents-start-composer")).toBeVisible();
 
-    await page.getByTestId("agent-composer-actions-menu").click();
+    // Workflow modes live on the Mode chip popover only.
+    await page.getByTestId("agents-start-mode-chip").click();
     await expect(page.getByTestId("agents-start-mode-edit")).toBeVisible();
     await expect(page.getByTestId("agents-start-mode-chat")).toBeVisible();
     await expect(page.getByTestId("agents-start-mode-ideation")).toBeVisible();
     await expect(page.getByText("Build, change, and review code in a branch.")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("agents-start-mode-edit")).toHaveCount(0);
+
+    // The "+" action menu keeps everything except mode switching.
+    await page.getByTestId("agent-composer-actions-menu").click();
+    await expect(page.getByTestId("agents-start-mode-edit")).toHaveCount(0);
 
     await expect(page).toHaveScreenshot("agents-start-composer-actions.png", {
       fullPage: false,

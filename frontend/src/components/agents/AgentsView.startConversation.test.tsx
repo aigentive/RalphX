@@ -24,6 +24,7 @@ import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
+import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
 import { useStartAgentConversation } from "./useStartAgentConversation";
 
 const {
@@ -135,9 +136,12 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agent-composer-runtime-pill")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-start-new-project")).not.toBeInTheDocument();
     await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-    expect(screen.getByTestId("agents-start-mode-edit")).toBeInTheDocument();
     expect(screen.getByTestId("agents-start-new-project")).toBeInTheDocument();
     expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    // Workflow modes live on the Mode chip popover, not the "+" action menu.
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    expect(screen.getByTestId("agents-start-mode-edit")).toBeInTheDocument();
   });
 
   it("restores a persisted selected conversation even when it is outside the first sidebar page", async () => {
@@ -1048,6 +1052,84 @@ describe("AgentsView start conversation", () => {
     await startPromise;
   });
 
+  it("invalidates the resolved Jira issue query after starting with a Jira reference", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const seededConversation = conversation({
+      id: "conversation-with-jira",
+      contextId: "project-1",
+      title: null,
+    });
+    createConversationMock.mockResolvedValue(seededConversation);
+    startAgentConversationMock.mockResolvedValue({
+      conversation: seededConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-with-jira",
+      }),
+      sendResult: {
+        conversationId: "conversation-with-jira",
+        agentRunId: "run-with-jira",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const onJiraLinked = vi.fn();
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation: vi.fn(),
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+          onJiraLinked,
+        }),
+      { wrapper }
+    );
+
+    await result.current({
+      projectId: "project-1",
+      content: "start with jira",
+      runtime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "xhigh",
+      },
+      mode: "edit",
+      base: null,
+      files: [],
+      composerIntegrationReferences: [
+        {
+          provider: "atlassian",
+          kind: "jira",
+          id: "RX-42",
+          key: "RX-42",
+          title: "Fix composer references",
+        },
+      ],
+    });
+
+    expect(invalidateQueriesSpy).toHaveBeenCalledWith({
+      queryKey: agentJiraIssueKeys.issue("conversation-with-jira"),
+    });
+    expect(onJiraLinked).toHaveBeenCalledWith("conversation-with-jira");
+  });
+
   it("clears optimistic running state when the seeded agent start fails", async () => {
     const queryClient = new QueryClient({
       defaultOptions: {
@@ -1372,7 +1454,7 @@ describe("AgentsView start conversation", () => {
 
     renderAgentsView();
 
-    await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
     await userEvent.click(screen.getByTestId("agents-start-mode-chat"));
     expect(screen.getByTestId("agents-start-base")).toBeInTheDocument();
 

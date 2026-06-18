@@ -22,6 +22,7 @@ macro_rules! register_tauri_commands {
             commands::atlassian_commands::get_agent_conversation_jira_issue,
             commands::atlassian_commands::assign_agent_conversation_jira_issue,
             commands::atlassian_commands::refresh_agent_conversation_jira_issue,
+            commands::atlassian_commands::assign_agent_conversation_jira_issue_to_me,
             commands::atlassian_commands::clear_agent_conversation_jira_issue,
             commands::task_commands::query::list_tasks,
             commands::task_commands::query::get_task,

@@ -204,6 +204,14 @@ export interface AgentComposerSurfaceProps {
   isReadOnly?: boolean;
   autoFocus?: boolean;
   showHelperText?: boolean;
+  /**
+   * Collapse the composer into a minimal one-row resting state when it is idle
+   * (not focused, empty, no agent activity / attachments / references / queue).
+   * Focusing — or any pending activity — expands it with a soft animation.
+   * Defaults to false so the new-conversation / start composer keeps its
+   * always-expanded layout.
+   */
+  collapsible?: boolean;
   questionMode?: AgentComposerQuestionMode;
   hasQueuedMessages?: boolean;
   onEditLastQueued?: (() => void) | undefined;
@@ -227,6 +235,15 @@ export interface AgentComposerSurfaceProps {
   className?: string;
 }
 
+/** Textarea min-height (px) for the default, always-expanded composer. */
+const COMPOSER_MIN_HEIGHT = 56;
+/** Textarea min-height (px) when a collapsible composer is resting/idle. */
+const COMPOSER_COLLAPSED_MIN_HEIGHT = 38;
+/** Textarea min-height (px) when a collapsible composer is active/expanded (~3 rows). */
+const COMPOSER_EXPANDED_MIN_HEIGHT = 92;
+/** Textarea growth ceiling (px) before it scrolls internally. */
+const COMPOSER_MAX_HEIGHT = 220;
+
 export function AgentComposerSurface({
   project,
   provider,
@@ -243,6 +260,7 @@ export function AgentComposerSurface({
   isReadOnly = false,
   autoFocus = false,
   showHelperText = true,
+  collapsible = false,
   questionMode,
   hasQueuedMessages = false,
   onEditLastQueued,
@@ -289,6 +307,7 @@ export function AgentComposerSurface({
   const restoreTextareaFocusCursorRef = useRef<number | null>(null);
   const value = isControlled ? controlledValue : internalValue;
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const isAgentAlive = agentStatus !== "idle";
   const isAgentGenerating = agentStatus === "generating";
   const canQueue = !isReadOnly && isAgentAlive;
@@ -351,21 +370,13 @@ export function AgentComposerSurface({
   });
 
   useEffect(() => {
-    if (autoFocus && textareaRef.current) {
+    // A collapsible composer must load in its minimal/resting state, so it never
+    // auto-focuses on mount (focusing would expand it). The user expands it by
+    // clicking. Non-collapsible composers (e.g. the start composer) keep autofocus.
+    if (autoFocus && !collapsible && textareaRef.current) {
       textareaRef.current.focus();
     }
-  }, [autoFocus]);
-
-  useEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) {
-      return;
-    }
-
-    textarea.style.height = "auto";
-    const nextHeight = Math.min(textarea.scrollHeight, 220);
-    textarea.style.height = `${Math.max(nextHeight, 56)}px`;
-  }, [value]);
+  }, [autoFocus, collapsible]);
 
   const matchOptionsFromInput = useCallback(
     (input: string) => {
@@ -538,6 +549,44 @@ export function AgentComposerSurface({
     selectedProjectReferenceList.length > 0 ||
     selectedIntegrationReferenceList.length > 0 ||
     selectedArtifactReferenceList.length > 0;
+
+  // Collapsed (minimal) resting state. The composer expands when the textarea
+  // is focused (cursor active, even with no text yet) or when there is real
+  // content to keep visible: text, a live agent, attachments, references,
+  // queued messages, a pending question, or read-only review. Transient
+  // popovers (+, mode, model) intentionally do NOT expand it on their own, so
+  // opening a menu on an unfocused composer never resizes the chat block.
+  const hasComposerActivity =
+    value.trim().length > 0 ||
+    isAgentAlive ||
+    attachments.length > 0 ||
+    attachmentsUploading ||
+    hasSelectedReferences ||
+    hasQueuedMessages ||
+    Boolean(questionMode) ||
+    isReadOnly;
+  const isCollapsed = collapsible && !isFocused && !hasComposerActivity;
+  const isExpanded = !isCollapsed;
+  const compact = isCollapsed;
+
+  // Auto-resize the textarea to its content, floored at a min-height that
+  // depends on the collapsed/expanded state and capped before it scrolls.
+  // Re-runs on collapse changes so focus/blur animates the 1-row ↔ 3-row swap.
+  const textareaMinHeight = collapsible
+    ? isExpanded
+      ? COMPOSER_EXPANDED_MIN_HEIGHT
+      : COMPOSER_COLLAPSED_MIN_HEIGHT
+    : COMPOSER_MIN_HEIGHT;
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    textarea.style.height = "auto";
+    const nextHeight = Math.min(textarea.scrollHeight, COMPOSER_MAX_HEIGHT);
+    textarea.style.height = `${Math.max(nextHeight, textareaMinHeight)}px`;
+  }, [value, textareaMinHeight]);
   const slashCommandItems = useMemo<AgentComposerMenuItem[]>(() => {
     const items: AgentComposerMenuItem[] = [];
     if (mode && !mode.disabled) {
@@ -1187,6 +1236,8 @@ export function AgentComposerSurface({
     <div
       ref={surfaceRef}
       data-testid={dataTestId}
+      data-collapsible={collapsible ? "true" : "false"}
+      data-collapsed={isCollapsed ? "true" : "false"}
       className={cn("agent-composer-surface relative mx-auto w-full max-w-full", className)}
       {...attachmentDropProps}
     >
@@ -1228,7 +1279,11 @@ export function AgentComposerSurface({
           }}
           disabled={isReadOnly || (isSubmitting && !canQueue)}
           placeholder={effectivePlaceholder}
-          className="block min-h-[56px] w-full resize-none border-0 bg-transparent px-5 pb-2 pt-4 text-[0.9375rem] leading-[1.5] shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-[1rem]"
+          className={cn(
+            "agent-composer-textarea block w-full resize-none border-0 bg-transparent px-5 text-[0.9375rem] leading-[1.5] shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-[1rem]",
+            collapsible && "transition-[height] duration-150 ease-out",
+            compact ? "pb-2 pt-2" : "pb-2 pt-4"
+          )}
           style={{
             color: "var(--text-primary)",
             boxShadow: "none",
@@ -1239,7 +1294,7 @@ export function AgentComposerSurface({
           aria-label="Message input"
         />
 
-        {(attachments.length > 0 || hasSelectedReferences || attachmentsUploading || helperText) && (
+        {(attachments.length > 0 || hasSelectedReferences || attachmentsUploading) && (
           <div className="px-5 pb-3">
             {attachments.length > 0 && (
               <div className="pb-3">
@@ -1263,18 +1318,41 @@ export function AgentComposerSurface({
                 />
               </div>
             )}
+          </div>
+        )}
+
+        {/* Keyboard helper stays mounted but reveals only when active so the
+            resting composer reclaims that vertical space (collapsible hosts). */}
+        {helperText && (
+          <div
+            data-testid="agent-composer-helper-reveal"
+            data-visible={isExpanded ? "true" : "false"}
+            aria-hidden={isExpanded ? undefined : true}
+            className={cn(
+              "overflow-hidden px-5 transition-all duration-150 ease-out",
+              isExpanded ? "max-h-20 pb-3 opacity-100" : "pointer-events-none max-h-0 pb-0 opacity-0"
+            )}
+          >
             {helperText}
           </div>
         )}
 
         <div
-          className="border-t px-3.5 py-2"
+          className={cn(
+            "border-t px-3.5 transition-[padding] duration-150 ease-out",
+            compact ? "py-1.5" : "py-2"
+          )}
           style={{
             borderColor: "var(--overlay-faint)",
             background: "color-mix(in srgb, var(--bg-base) 16%, var(--bg-surface) 84%)",
           }}
         >
-          <div className="agent-composer-control-row flex flex-wrap items-center gap-2">
+          <div
+            className={cn(
+              "agent-composer-control-row flex flex-wrap items-center transition-[gap] duration-150 ease-out",
+              compact ? "gap-1.5" : "gap-2"
+            )}
+          >
             {enableAttachments && (
               <input
                 ref={fileInputRef}
@@ -1334,28 +1412,19 @@ export function AgentComposerSurface({
                 event.preventDefault();
                 focusTextareaAtComposerCursor(cursorPosition);
               }}
-              {...(mode ? { mode } : {})}
+              compact={compact}
             />
 
+            {/* Control order per product direction: mode → model → chat focus.
+                The chat-focus (workspace) selector sits inline to the right of
+                the model/runtime pill rather than wrapping to its own row. */}
             {mode && (
               <ComposerModeChip
                 mode={mode}
-                onClick={() =>
-                  setActionMenuOpen((prev) => {
-                    const nextOpen = !prev;
-                    if (nextOpen) {
-                      void mode.onOpen?.();
-                    }
-                    return nextOpen;
-                  })
-                }
+                open={modeMenuOpen}
+                onOpenChange={setModeMenuOpen}
+                compact={compact}
               />
-            )}
-
-            {chatFocus && chatFocus.options.length > 1 && (
-              <div className="agent-composer-chat-focus-slot flex min-w-0 shrink-0">
-                <ComposerChatFocusPill chatFocus={chatFocus} />
-              </div>
             )}
 
             <div className="flex min-w-0 flex-[0_1_auto] items-stretch gap-2">
@@ -1363,15 +1432,27 @@ export function AgentComposerSurface({
                 provider={provider}
                 model={model}
                 effort={effort}
+                compact={compact}
                 className="max-w-[34rem]"
               />
             </div>
 
+            {chatFocus && chatFocus.options.length > 1 && (
+              <div className="agent-composer-chat-focus-slot flex min-w-0 shrink-0">
+                <ComposerChatFocusPill chatFocus={chatFocus} compact={compact} />
+              </div>
+            )}
+
             <Button
               type="button"
               className={cn(
-                "agent-composer-action-button ml-auto h-10 shrink-0 rounded-[12px] px-4 text-[0.75rem] font-semibold tracking-[-0.01em]",
-                shouldShowStop ? "min-w-[100px]" : "min-w-[118px]"
+                "agent-composer-action-button ml-auto shrink-0 rounded-full text-[0.75rem] font-semibold tracking-[-0.01em] transition-[height,min-width,padding] duration-150 ease-out",
+                compact ? "h-8 px-3" : "h-10 px-4",
+                compact
+                  ? "min-w-0"
+                  : shouldShowStop
+                    ? "min-w-[100px]"
+                    : "min-w-[118px]"
               )}
               style={{
                 background:
@@ -1421,7 +1502,6 @@ export function AgentComposerSurface({
 
 function ComposerActionMenu({
   project,
-  mode,
   enableAttachments,
   attachmentDisabled,
   onOpenAttachmentPicker,
@@ -1432,9 +1512,9 @@ function ComposerActionMenu({
   onInsertIntegrationTrigger,
   onInsertPlanTrigger,
   onCloseAutoFocus,
+  compact = false,
 }: {
   project: ProjectFieldConfig;
-  mode?: ModeFieldConfig;
   enableAttachments: boolean;
   attachmentDisabled: boolean;
   onOpenAttachmentPicker: () => void;
@@ -1445,31 +1525,23 @@ function ComposerActionMenu({
   onInsertIntegrationTrigger: (kind: AgentComposerIntegrationKind) => void;
   onInsertPlanTrigger: () => void;
   onCloseAutoFocus?: (event: Event) => void;
+  compact?: boolean;
 }) {
   const hasPersistentActions = true;
   const hasPrimaryActions =
     enableAttachments ||
     Boolean(project.endAction) ||
-    Boolean(mode) ||
     Boolean(onForkSession);
   const setOpen = onOpenChange;
-  const handleOpenChange = useCallback(
-    (nextOpen: boolean) => {
-      if (nextOpen) {
-        void mode?.onOpen?.();
-      }
-      setOpen(nextOpen);
-    },
-    [mode, setOpen],
-  );
 
   return (
-    <Popover open={open} onOpenChange={handleOpenChange}>
+    <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
           className={cn(
-            "agent-composer-plus-trigger flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] transition-colors disabled:opacity-40",
+            "agent-composer-plus-trigger flex shrink-0 items-center justify-center rounded-md transition-[height,width,background-color,color] duration-150 ease-out disabled:opacity-40",
+            compact ? "h-8 w-8" : "h-10 w-10",
             !hasPersistentActions && "agent-composer-compact-only"
           )}
           style={{
@@ -1494,13 +1566,8 @@ function ComposerActionMenu({
           borderColor: "var(--border-subtle)",
           color: "var(--text-primary)",
         }}
+        onOpenAutoFocus={(event) => event.preventDefault()}
         onCloseAutoFocus={onCloseAutoFocus}
-        onInteractOutside={(event) => {
-          const target = event.target as HTMLElement | null;
-          if (target?.closest("[data-composer-mode-chip='true']")) {
-            event.preventDefault();
-          }
-        }}
       >
         {enableAttachments && (
           <button
@@ -1527,18 +1594,9 @@ function ComposerActionMenu({
           </>
         )}
 
-        {mode && (
-          <>
-            {(enableAttachments || project.endAction) && (
-              <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
-            )}
-            <ComposerModeMenuSection mode={mode} onDone={() => setOpen(false)} />
-          </>
-        )}
-
         {onForkSession && (
           <>
-            {(enableAttachments || project.endAction || mode) && (
+            {(enableAttachments || project.endAction) && (
               <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
             )}
             <button
@@ -1791,37 +1849,82 @@ function shortReferenceId(id: string): string {
 
 function ComposerModeChip({
   mode,
-  onClick,
+  open,
+  onOpenChange,
+  compact = false,
 }: {
   mode: ModeFieldConfig;
-  onClick?: () => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  compact?: boolean;
 }) {
   const activeOption = mode.options.find((o) => o.id === mode.value);
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      if (next) {
+        void mode.onOpen?.();
+      }
+      onOpenChange(next);
+    },
+    [mode, onOpenChange],
+  );
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={mode.disabled}
-      data-testid={mode.testId ? `${mode.testId}-chip` : "agent-composer-mode-chip"}
-      data-composer-mode-chip="true"
-      aria-label={`Mode: ${activeOption?.label ?? mode.value}. Click to change.`}
-      className="inline-flex h-10 shrink-0 items-center gap-2 rounded-[12px] border px-3 transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
-      style={{
-        background: "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
-        borderColor: "var(--form-border)",
-      }}
-    >
-      <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
-        Mode
-      </span>
-      <span className="text-[0.8125rem] font-medium text-[var(--text-primary)]">
-        {activeOption?.label ?? "—"}
-      </span>
-    </button>
+    <Popover open={open} onOpenChange={handleOpenChange}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          disabled={mode.disabled}
+          data-testid={mode.testId ? `${mode.testId}-chip` : "agent-composer-mode-chip"}
+          data-composer-mode-chip="true"
+          aria-label={`Mode: ${activeOption?.label ?? mode.value}. Click to change.`}
+          className={cn(
+            "inline-flex shrink-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out hover:bg-[var(--bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed",
+            compact ? "h-8 px-2.5" : "h-10 px-3"
+          )}
+          style={{
+            background: "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
+            borderColor: "var(--form-border)",
+          }}
+        >
+          {/* Eyebrow label only in the expanded state; the mini/resting composer
+              shows just the value to stay minimal. */}
+          {!compact && (
+            <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+              Mode
+            </span>
+          )}
+          <span className="text-[0.8125rem] font-medium text-[var(--text-primary)]">
+            {activeOption?.label ?? "—"}
+          </span>
+        </button>
+      </PopoverTrigger>
+      {/* The mode chip owns its own popover with ONLY the workflow modes; the
+          "+" action menu carries everything else (attachments, references…). */}
+      <PopoverContent
+        align="start"
+        side="top"
+        sideOffset={8}
+        className="w-56 rounded-xl p-1.5"
+        style={{
+          backgroundColor: "var(--bg-elevated)",
+          borderColor: "var(--border-subtle)",
+          color: "var(--text-primary)",
+        }}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+      >
+        <ComposerModeMenuSection mode={mode} onDone={() => onOpenChange(false)} />
+      </PopoverContent>
+    </Popover>
   );
 }
 
-function ComposerChatFocusPill({ chatFocus }: { chatFocus: ChatFocusFieldConfig }) {
+function ComposerChatFocusPill({
+  chatFocus,
+  compact = false,
+}: {
+  chatFocus: ChatFocusFieldConfig;
+  compact?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const activeOption =
     chatFocus.options.find((o) => o.id === chatFocus.value) ?? chatFocus.options[0];
@@ -1847,12 +1950,19 @@ function ComposerChatFocusPill({ chatFocus }: { chatFocus: ChatFocusFieldConfig 
             chatFocus.testId ? `${chatFocus.testId}-pill` : "agent-composer-chat-focus-pill"
           }
           aria-label={`Chat focus: ${activeOption?.label ?? chatFocus.value}. Click to change.`}
-          className="flex h-10 min-w-0 shrink-0 items-center gap-2 rounded-[12px] border px-3 transition-colors disabled:opacity-50"
+          className={cn(
+            "flex min-w-0 shrink-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out disabled:opacity-50",
+            compact ? "h-8 px-2.5" : "h-10 px-3"
+          )}
           style={triggerStyle}
         >
-          <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
-            Chat
-          </span>
+          {/* Eyebrow label only in the expanded state (matches the Mode chip);
+              the mini/resting composer relies on the icon + value. */}
+          {!compact && (
+            <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+              Chat
+            </span>
+          )}
           <span className="flex min-w-0 items-center gap-1.5 text-[0.8125rem] font-medium">
             {ActiveIcon ? <ActiveIcon className="h-3.5 w-3.5" /> : null}
             <span className="truncate">{activeOption?.label ?? "—"}</span>
@@ -2055,11 +2165,13 @@ function ComposerRuntimePill({
   provider,
   model,
   effort,
+  compact = false,
   className,
 }: {
   provider: ProviderFieldConfig;
   model: ModelFieldConfig;
   effort: EffortFieldConfig;
+  compact?: boolean;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -2078,7 +2190,14 @@ function ComposerRuntimePill({
     .filter(Boolean)
     .join(" · ");
 
-  if (!providerLabel && !modelLabel && !effortLabel) {
+  // Hide the runtime/model pill entirely when model selection is unavailable —
+  // i.e. there is no model to display and none to pick (no options or disabled).
+  // This avoids an empty/disabled pill in contexts like an unresolved ideation
+  // runtime or a read-only verification child chat.
+  const modelText = (modelLabel ?? "").trim();
+  const modelSelectionAvailable =
+    modelText.length > 0 || (model.options.length > 0 && !model.disabled);
+  if (!modelSelectionAvailable) {
     return null;
   }
 
@@ -2097,7 +2216,8 @@ function ComposerRuntimePill({
           data-testid="agent-composer-runtime-pill"
           aria-label={`Runtime: ${runtimeSummary}. Click to change.`}
           className={cn(
-            "flex h-10 min-w-0 items-center gap-2 rounded-[12px] border px-3 transition-colors",
+            "flex min-w-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out",
+            compact ? "h-8 px-2.5" : "h-10 px-3",
             className
           )}
           style={{
