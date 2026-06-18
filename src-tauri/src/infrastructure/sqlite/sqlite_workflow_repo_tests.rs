@@ -247,15 +247,15 @@ async fn test_from_shared_connection() {
 // ==================== SEEDING TESTS ====================
 
 #[tokio::test]
-async fn test_seed_builtin_workflows_creates_both() {
+async fn test_seed_builtin_workflows_creates_all_builtins() {
     let db = setup_test_db();
     let repo = SqliteWorkflowRepository::from_shared(db.shared_conn());
 
     let count = repo.seed_builtin_workflows().await.unwrap();
-    assert_eq!(count, 2);
+    assert_eq!(count, 3);
 
     let all = repo.get_all().await.unwrap();
-    assert_eq!(all.len(), 2);
+    assert_eq!(all.len(), 3);
 }
 
 #[tokio::test]
@@ -284,6 +284,27 @@ async fn test_seed_builtin_workflows_creates_jira() {
 }
 
 #[tokio::test]
+async fn test_seed_builtin_workflows_creates_linear_with_external_sync() {
+    let db = setup_test_db();
+    let repo = SqliteWorkflowRepository::from_shared(db.shared_conn());
+
+    repo.seed_builtin_workflows().await.unwrap();
+
+    let linear_id = crate::domain::entities::WorkflowId::from_string("linear-compat");
+    let linear = repo.get_by_id(&linear_id).await.unwrap().unwrap();
+    let sync = linear.external_sync.as_ref().unwrap();
+
+    assert_eq!(linear.name, "Linear Compatible");
+    assert_eq!(sync.provider, crate::domain::entities::SyncProvider::Linear);
+    assert_eq!(
+        sync.mapping
+            .get("In Progress")
+            .map(|mapping| mapping.column_id.as_str()),
+        Some("in_progress")
+    );
+}
+
+#[tokio::test]
 async fn test_seed_builtin_workflows_is_idempotent() {
     let db = setup_test_db();
     let repo = SqliteWorkflowRepository::from_shared(db.shared_conn());
@@ -292,13 +313,13 @@ async fn test_seed_builtin_workflows_is_idempotent() {
     let count1 = repo.seed_builtin_workflows().await.unwrap();
     let count2 = repo.seed_builtin_workflows().await.unwrap();
 
-    // First seed creates 2, second creates 0
-    assert_eq!(count1, 2);
+    // First seed creates all built-ins, second creates 0.
+    assert_eq!(count1, 3);
     assert_eq!(count2, 0);
 
-    // Still only 2 workflows
+    // Still only the built-in workflows.
     let all = repo.get_all().await.unwrap();
-    assert_eq!(all.len(), 2);
+    assert_eq!(all.len(), 3);
 }
 
 #[tokio::test]
@@ -313,9 +334,9 @@ async fn test_seed_builtin_workflows_preserves_existing() {
     // Seed built-ins
     repo.seed_builtin_workflows().await.unwrap();
 
-    // Should have 3 workflows total
+    // Should have the custom workflow plus all built-ins.
     let all = repo.get_all().await.unwrap();
-    assert_eq!(all.len(), 3);
+    assert_eq!(all.len(), 4);
 }
 
 #[tokio::test]
@@ -327,10 +348,26 @@ async fn test_seed_builtin_workflows_skips_existing_builtin() {
     let default = WorkflowSchema::default_ralphx();
     repo.create(default).await.unwrap();
 
-    // Seed should only create Jira (skip default since it exists)
+    // Seed should only create Jira and Linear (skip default since it exists)
     let count = repo.seed_builtin_workflows().await.unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(count, 2);
 
     let all = repo.get_all().await.unwrap();
-    assert_eq!(all.len(), 2);
+    assert_eq!(all.len(), 3);
+}
+
+#[tokio::test]
+async fn test_seed_builtin_workflows_preserves_default_and_jira_ids() {
+    let db = setup_test_db();
+    let repo = SqliteWorkflowRepository::from_shared(db.shared_conn());
+
+    repo.seed_builtin_workflows().await.unwrap();
+
+    let default_id = crate::domain::entities::WorkflowId::from_string("ralphx-default");
+    let jira_id = crate::domain::entities::WorkflowId::from_string("jira-compat");
+    let linear_id = crate::domain::entities::WorkflowId::from_string("linear-compat");
+
+    assert!(repo.get_by_id(&default_id).await.unwrap().is_some());
+    assert!(repo.get_by_id(&jira_id).await.unwrap().is_some());
+    assert!(repo.get_by_id(&linear_id).await.unwrap().is_some());
 }

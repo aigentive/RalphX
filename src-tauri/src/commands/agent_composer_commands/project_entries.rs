@@ -257,7 +257,7 @@ fn score_entry(entry: &IndexedEntry, query: &str) -> Option<i32> {
 
 fn normalize_query(raw: &str) -> String {
     raw.trim()
-        .trim_start_matches(|ch| matches!(ch, '@' | '/' | '.'))
+        .trim_start_matches(['@', '/', '.'])
         .chars()
         .take(MAX_QUERY_LEN)
         .collect::<String>()

@@ -489,7 +489,7 @@ pub fn render_agent_runtime_profile_context(
 
     Some(format!(
         "<agent_runtime_profile>\n<agent_name>{}</agent_name>\n<profile_slug>{}</profile_slug>\n<profile_role>{}</profile_role>\n</agent_runtime_profile>",
-        escape_prompt_context_text(&agent_name),
+        escape_prompt_context_text(agent_name),
         escape_prompt_context_text(trusted_profile_name),
         escape_prompt_context_text(&definition.role)
     ))
@@ -1089,7 +1089,7 @@ fn build_generated_agent_task_appendix(
             .collect()
     };
     let tool_name = |name: &'static str| -> Option<&'static str> {
-        tools.iter().any(|tool| *tool == name).then_some(name)
+        tools.contains(&name).then_some(name)
     };
     let create_tool = tool_name("create_agent_task");
     let get_tool = tool_name("get_agent_task");

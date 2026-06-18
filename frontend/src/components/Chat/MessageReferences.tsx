@@ -41,14 +41,19 @@ export function MessageReferences({
       })}
       {integrationReferences.map((reference) => {
         const isJira = reference.kind === "jira";
-        const label = isJira ? reference.key ?? reference.id : reference.title ?? reference.id;
-        const description = isJira ? reference.title : reference.id;
+        const isLinear = reference.kind === "linear";
+        const label =
+          isJira || isLinear
+            ? (reference.key ?? reference.id)
+            : (reference.title ?? reference.id);
+        const description = isJira || isLinear ? reference.title : reference.id;
+        const typeLabel = isLinear ? "Linear" : isJira ? "Jira" : "Confluence";
         return (
           <ReferenceChip
-            key={`integration:${reference.kind}:${reference.id}`}
+            key={`integration:${reference.provider}:${reference.kind}:${reference.id}`}
             testId={`message-reference-integration:${reference.kind}:${reference.id}`}
-            icon={isJira ? Ticket : BookOpen}
-            typeLabel={isJira ? "Jira" : "Confluence"}
+            icon={isJira || isLinear ? Ticket : BookOpen}
+            typeLabel={typeLabel}
             label={label}
             {...(description && description !== label ? { description } : {})}
             {...(reference.url ? { url: reference.url } : {})}
@@ -58,7 +63,9 @@ export function MessageReferences({
       {artifactReferences.map((reference) => {
         const label = reference.title ?? shortReferenceId(reference.artifactId);
         const description = [
-          reference.status ? formatArtifactReferenceStatus(reference.status) : null,
+          reference.status
+            ? formatArtifactReferenceStatus(reference.status)
+            : null,
           reference.version ? `v${reference.version}` : null,
         ]
           .filter(Boolean)
@@ -129,7 +136,9 @@ function ReferenceChip({
           {description}
         </span>
       ) : null}
-      {url ? <ExternalLink className="h-3 w-3 shrink-0 text-[var(--text-muted)]" /> : null}
+      {url ? (
+        <ExternalLink className="h-3 w-3 shrink-0 text-[var(--text-muted)]" />
+      ) : null}
     </>
   );
   const className =
@@ -160,7 +169,12 @@ function ReferenceChip({
   }
 
   return (
-    <span data-testid={testId} className={className} style={style} title={label}>
+    <span
+      data-testid={testId}
+      className={className}
+      style={style}
+      title={label}
+    >
       {content}
     </span>
   );

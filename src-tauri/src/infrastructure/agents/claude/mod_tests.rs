@@ -849,8 +849,7 @@ harnesses:
         .filter_map(|arg| arg.as_str())
         .collect::<Vec<_>>();
     assert!(
-        args.iter()
-            .any(|arg| *arg == "--allowed-tools=create_agent_task,list_agent_tasks"),
+        args.contains(&"--allowed-tools=create_agent_task,list_agent_tasks"),
         "internal sidecar should be narrowed to declared internal tools: {args:?}"
     );
 }

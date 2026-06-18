@@ -1,5 +1,6 @@
 pub mod activity_event;
 pub mod agent_conversation_jira_issue;
+pub mod agent_conversation_linear_issue;
 pub mod agent_conversation_workspace;
 pub mod agent_run;
 pub mod agent_task;
@@ -42,6 +43,9 @@ pub use activity_event::{
 };
 pub use agent_conversation_jira_issue::{
     AgentConversationJiraIssueLink, AgentConversationJiraRefreshStatus,
+};
+pub use agent_conversation_linear_issue::{
+    AgentConversationLinearIssueLink, AgentConversationLinearRefreshStatus,
 };
 pub use agent_conversation_workspace::{
     is_pr_status_pollable_push_status, is_terminal_publication_pr_status, pr_comment_body_excerpt,

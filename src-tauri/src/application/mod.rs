@@ -5,6 +5,7 @@ pub mod agent_lane_settings_bootstrap;
 pub mod agent_lane_resolution;
 pub mod agent_conversation_fork;
 pub mod agent_conversation_jira_issue;
+pub mod agent_conversation_linear_issue;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
 pub(crate) mod agent_planning_session_titles;
@@ -35,6 +36,7 @@ pub mod chat_service;
 pub mod dependency_service;
 pub mod event_cleanup_service;
 pub mod execution_settings_bootstrap;
+pub mod external_issue_link_service;
 pub mod ideation_effort_bootstrap;
 pub mod ideation_model_bootstrap;
 pub mod diff_service;
@@ -43,6 +45,8 @@ pub(crate) mod git_artifact_cleanup;
 pub mod harness_runtime_registry;
 pub mod ideation_service;
 pub mod interactive_process_registry;
+pub mod linear_integration_service;
+pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
@@ -130,6 +134,7 @@ pub use event_cleanup_service::EventCleanupService;
 pub use execution_settings_bootstrap::{
     load_or_seed_execution_settings_defaults, ExecutionSettingsBootstrapResult,
 };
+pub use external_issue_link_service::ExternalIssueLinkService;
 pub use diff_service::{
     ConflictDiff, DiffHunk, DiffLine, DiffLineKind, DiffPageRow, DiffRefKind, DiffService,
     DiffSide, FileChange, FileChangeStatus, FileDiff, FileDiffPage, RangeLine,
@@ -139,9 +144,19 @@ pub use git_service::{
     MergeResult, RebaseResult,
 };
 pub use interactive_process_registry::{InteractiveProcessKey, InteractiveProcessRegistry};
+pub use linear_integration_service::{
+    EmptyLinearApiClient, LinearApiClient, LinearAuthContext, LinearIntegrationService,
+    LinearIntegrationSettings, LinearIntegrationSettingsRepository, LinearIssueContent,
+    LinearIssueSummary, UnavailableLinearApiClient,
+};
 pub use ideation_service::{
     CreateProposalOptions, IdeationService, SessionStats, SessionWithData, UpdateProposalOptions,
     UpdateSource,
+};
+pub use linear_webhook_reconciliation_service::{
+    ExternalIssueLink, LinearWebhookAction, LinearWebhookError, LinearWebhookHeaders,
+    LinearWebhookOutcome, LinearWebhookReconciliationService, LinearWebhookRequest,
+    LinearWebhookStore, MemoryLinearWebhookStore,
 };
 pub use memory_archive_service::MemoryArchiveService;
 pub use permission_state::{PendingPermissionInfo, PermissionDecision, PermissionState};
