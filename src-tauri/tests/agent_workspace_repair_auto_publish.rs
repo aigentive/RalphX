@@ -172,7 +172,7 @@ async fn complete_repair_attempts_publish_without_waiting_for_user_click() {
 }
 
 #[tokio::test]
-async fn complete_update_only_repair_rearms_pr_supervision_without_auto_publish() {
+async fn complete_update_only_repair_auto_publishes_when_enabled() {
     let repo = tempfile::TempDir::new().expect("repo tempdir");
     let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
 
@@ -280,9 +280,12 @@ async fn complete_update_only_repair_rearms_pr_supervision_without_auto_publish(
     .expect("update-only repair completion should succeed")
     .0;
 
-    assert_eq!(response.new_status, "refreshed");
-    assert_eq!(response.auto_publish_status.as_deref(), Some("skipped"));
-    assert_eq!(response.auto_publish_error, None);
+    assert_eq!(response.new_status, "failed");
+    assert_eq!(response.auto_publish_status.as_deref(), Some("failed"));
+    assert!(response
+        .auto_publish_error
+        .as_deref()
+        .is_some_and(|error| error.contains("GitHub integration is not available")));
     assert_eq!(response.pr_number, Some(391));
     assert_eq!(
         response.pr_url.as_deref(),
@@ -296,14 +299,8 @@ async fn complete_update_only_repair_rearms_pr_supervision_without_auto_publish(
         .await
         .expect("query workspace")
         .expect("workspace exists");
-    assert_eq!(
-        refreshed.publication_push_status.as_deref(),
-        Some("refreshed")
-    );
-    assert_eq!(
-        refreshed.pr_supervision_status.as_deref(),
-        Some("monitoring")
-    );
+    assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+    assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("fixing"));
     assert_eq!(refreshed.pr_auto_merge_current, Some(true));
 
     let events = state
@@ -315,7 +312,7 @@ async fn complete_update_only_repair_rearms_pr_supervision_without_auto_publish(
     assert!(events
         .iter()
         .any(|event| event.step == "repair_completed" && event.status == "succeeded"));
-    assert!(!events.iter().any(|event| {
+    assert!(events.iter().any(|event| {
         event.step == "failed"
             && event
                 .summary
@@ -342,6 +339,7 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
     git(repo.path(), &["add", "plan.txt"]);
     git(repo.path(), &["commit", "-m", "repair linked plan"]);
     let repair_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+    git(repo.path(), &["checkout", "main"]);
 
     let conversation_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
     let mut project = Project::new(

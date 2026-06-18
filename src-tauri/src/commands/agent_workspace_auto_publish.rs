@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -588,7 +587,7 @@ mod tests {
         ArtifactId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId,
         ProjectId,
     };
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
     use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 
