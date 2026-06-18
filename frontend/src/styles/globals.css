@@ -618,6 +618,15 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   }
 }
 
+/* Collapsible composer: honor reduced-motion by swapping the resting ↔ active
+   state instantly instead of animating the height/padding/opacity transitions. */
+@media (prefers-reduced-motion: reduce) {
+  .agent-composer-surface[data-collapsible="true"],
+  .agent-composer-surface[data-collapsible="true"] * {
+    transition-duration: 0.01ms !important;
+  }
+}
+
 /* Task card state highlights — consume semantic status tokens */
 .task-card-executing {
   border-color: var(--accent-primary);

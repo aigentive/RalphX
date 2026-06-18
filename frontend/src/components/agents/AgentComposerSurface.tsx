@@ -204,6 +204,14 @@ export interface AgentComposerSurfaceProps {
   isReadOnly?: boolean;
   autoFocus?: boolean;
   showHelperText?: boolean;
+  /**
+   * Collapse the composer into a minimal one-row resting state when it is idle
+   * (not focused, empty, no agent activity / attachments / references / queue).
+   * Focusing — or any pending activity — expands it with a soft animation.
+   * Defaults to false so the new-conversation / start composer keeps its
+   * always-expanded layout.
+   */
+  collapsible?: boolean;
   questionMode?: AgentComposerQuestionMode;
   hasQueuedMessages?: boolean;
   onEditLastQueued?: (() => void) | undefined;
@@ -227,6 +235,15 @@ export interface AgentComposerSurfaceProps {
   className?: string;
 }
 
+/** Textarea min-height (px) for the default, always-expanded composer. */
+const COMPOSER_MIN_HEIGHT = 56;
+/** Textarea min-height (px) when a collapsible composer is resting/idle. */
+const COMPOSER_COLLAPSED_MIN_HEIGHT = 38;
+/** Textarea min-height (px) when a collapsible composer is active/expanded (~3 rows). */
+const COMPOSER_EXPANDED_MIN_HEIGHT = 92;
+/** Textarea growth ceiling (px) before it scrolls internally. */
+const COMPOSER_MAX_HEIGHT = 220;
+
 export function AgentComposerSurface({
   project,
   provider,
@@ -243,6 +260,7 @@ export function AgentComposerSurface({
   isReadOnly = false,
   autoFocus = false,
   showHelperText = true,
+  collapsible = false,
   questionMode,
   hasQueuedMessages = false,
   onEditLastQueued,
@@ -355,17 +373,6 @@ export function AgentComposerSurface({
       textareaRef.current.focus();
     }
   }, [autoFocus]);
-
-  useEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) {
-      return;
-    }
-
-    textarea.style.height = "auto";
-    const nextHeight = Math.min(textarea.scrollHeight, 220);
-    textarea.style.height = `${Math.max(nextHeight, 56)}px`;
-  }, [value]);
 
   const matchOptionsFromInput = useCallback(
     (input: string) => {
@@ -538,6 +545,41 @@ export function AgentComposerSurface({
     selectedProjectReferenceList.length > 0 ||
     selectedIntegrationReferenceList.length > 0 ||
     selectedArtifactReferenceList.length > 0;
+
+  // Collapsed (minimal) resting state: only when explicitly opted in and there
+  // is nothing the user would lose sight of. Any pending activity keeps it open.
+  const hasComposerActivity =
+    value.trim().length > 0 ||
+    isAgentAlive ||
+    actionMenuOpen ||
+    attachments.length > 0 ||
+    attachmentsUploading ||
+    hasSelectedReferences ||
+    hasQueuedMessages ||
+    Boolean(questionMode) ||
+    isReadOnly;
+  const isCollapsed = collapsible && !isFocused && !hasComposerActivity;
+  const isExpanded = !isCollapsed;
+  const compact = isCollapsed;
+
+  // Auto-resize the textarea to its content, floored at a min-height that
+  // depends on the collapsed/expanded state and capped before it scrolls.
+  // Re-runs on collapse changes so focus/blur animates the 1-row ↔ 3-row swap.
+  const textareaMinHeight = collapsible
+    ? isExpanded
+      ? COMPOSER_EXPANDED_MIN_HEIGHT
+      : COMPOSER_COLLAPSED_MIN_HEIGHT
+    : COMPOSER_MIN_HEIGHT;
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    textarea.style.height = "auto";
+    const nextHeight = Math.min(textarea.scrollHeight, COMPOSER_MAX_HEIGHT);
+    textarea.style.height = `${Math.max(nextHeight, textareaMinHeight)}px`;
+  }, [value, textareaMinHeight]);
   const slashCommandItems = useMemo<AgentComposerMenuItem[]>(() => {
     const items: AgentComposerMenuItem[] = [];
     if (mode && !mode.disabled) {
@@ -1187,6 +1229,8 @@ export function AgentComposerSurface({
     <div
       ref={surfaceRef}
       data-testid={dataTestId}
+      data-collapsible={collapsible ? "true" : "false"}
+      data-collapsed={isCollapsed ? "true" : "false"}
       className={cn("agent-composer-surface relative mx-auto w-full max-w-full", className)}
       {...attachmentDropProps}
     >
@@ -1228,7 +1272,11 @@ export function AgentComposerSurface({
           }}
           disabled={isReadOnly || (isSubmitting && !canQueue)}
           placeholder={effectivePlaceholder}
-          className="block min-h-[56px] w-full resize-none border-0 bg-transparent px-5 pb-2 pt-4 text-[0.9375rem] leading-[1.5] shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-[1rem]"
+          className={cn(
+            "agent-composer-textarea block w-full resize-none border-0 bg-transparent px-5 text-[0.9375rem] leading-[1.5] shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-[1rem]",
+            collapsible && "transition-[height] duration-150 ease-out",
+            compact ? "pb-2 pt-2" : "pb-2 pt-4"
+          )}
           style={{
             color: "var(--text-primary)",
             boxShadow: "none",
@@ -1239,7 +1287,7 @@ export function AgentComposerSurface({
           aria-label="Message input"
         />
 
-        {(attachments.length > 0 || hasSelectedReferences || attachmentsUploading || helperText) && (
+        {(attachments.length > 0 || hasSelectedReferences || attachmentsUploading) && (
           <div className="px-5 pb-3">
             {attachments.length > 0 && (
               <div className="pb-3">
@@ -1263,18 +1311,41 @@ export function AgentComposerSurface({
                 />
               </div>
             )}
+          </div>
+        )}
+
+        {/* Keyboard helper stays mounted but reveals only when active so the
+            resting composer reclaims that vertical space (collapsible hosts). */}
+        {helperText && (
+          <div
+            data-testid="agent-composer-helper-reveal"
+            data-visible={isExpanded ? "true" : "false"}
+            aria-hidden={isExpanded ? undefined : true}
+            className={cn(
+              "overflow-hidden px-5 transition-all duration-150 ease-out",
+              isExpanded ? "max-h-20 pb-3 opacity-100" : "pointer-events-none max-h-0 pb-0 opacity-0"
+            )}
+          >
             {helperText}
           </div>
         )}
 
         <div
-          className="border-t px-3.5 py-2"
+          className={cn(
+            "border-t px-3.5 transition-[padding] duration-150 ease-out",
+            compact ? "py-1.5" : "py-2"
+          )}
           style={{
             borderColor: "var(--overlay-faint)",
             background: "color-mix(in srgb, var(--bg-base) 16%, var(--bg-surface) 84%)",
           }}
         >
-          <div className="agent-composer-control-row flex flex-wrap items-center gap-2">
+          <div
+            className={cn(
+              "agent-composer-control-row flex flex-wrap items-center transition-[gap] duration-150 ease-out",
+              compact ? "gap-1.5" : "gap-2"
+            )}
+          >
             {enableAttachments && (
               <input
                 ref={fileInputRef}
@@ -1334,12 +1405,14 @@ export function AgentComposerSurface({
                 event.preventDefault();
                 focusTextareaAtComposerCursor(cursorPosition);
               }}
+              compact={compact}
               {...(mode ? { mode } : {})}
             />
 
             {mode && (
               <ComposerModeChip
                 mode={mode}
+                compact={compact}
                 onClick={() =>
                   setActionMenuOpen((prev) => {
                     const nextOpen = !prev;
@@ -1354,7 +1427,7 @@ export function AgentComposerSurface({
 
             {chatFocus && chatFocus.options.length > 1 && (
               <div className="agent-composer-chat-focus-slot flex min-w-0 shrink-0">
-                <ComposerChatFocusPill chatFocus={chatFocus} />
+                <ComposerChatFocusPill chatFocus={chatFocus} compact={compact} />
               </div>
             )}
 
@@ -1363,6 +1436,7 @@ export function AgentComposerSurface({
                 provider={provider}
                 model={model}
                 effort={effort}
+                compact={compact}
                 className="max-w-[34rem]"
               />
             </div>
@@ -1370,8 +1444,13 @@ export function AgentComposerSurface({
             <Button
               type="button"
               className={cn(
-                "agent-composer-action-button ml-auto h-10 shrink-0 rounded-[12px] px-4 text-[0.75rem] font-semibold tracking-[-0.01em]",
-                shouldShowStop ? "min-w-[100px]" : "min-w-[118px]"
+                "agent-composer-action-button ml-auto shrink-0 rounded-[12px] text-[0.75rem] font-semibold tracking-[-0.01em] transition-[height,min-width,padding] duration-150 ease-out",
+                compact ? "h-8 px-3" : "h-10 px-4",
+                compact
+                  ? "min-w-0"
+                  : shouldShowStop
+                    ? "min-w-[100px]"
+                    : "min-w-[118px]"
               )}
               style={{
                 background:
@@ -1432,6 +1511,7 @@ function ComposerActionMenu({
   onInsertIntegrationTrigger,
   onInsertPlanTrigger,
   onCloseAutoFocus,
+  compact = false,
 }: {
   project: ProjectFieldConfig;
   mode?: ModeFieldConfig;
@@ -1445,6 +1525,7 @@ function ComposerActionMenu({
   onInsertIntegrationTrigger: (kind: AgentComposerIntegrationKind) => void;
   onInsertPlanTrigger: () => void;
   onCloseAutoFocus?: (event: Event) => void;
+  compact?: boolean;
 }) {
   const hasPersistentActions = true;
   const hasPrimaryActions =
@@ -1469,7 +1550,8 @@ function ComposerActionMenu({
         <button
           type="button"
           className={cn(
-            "agent-composer-plus-trigger flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] transition-colors disabled:opacity-40",
+            "agent-composer-plus-trigger flex shrink-0 items-center justify-center rounded-[12px] transition-[height,width,background-color,color] duration-150 ease-out disabled:opacity-40",
+            compact ? "h-8 w-8" : "h-10 w-10",
             !hasPersistentActions && "agent-composer-compact-only"
           )}
           style={{
@@ -1792,9 +1874,11 @@ function shortReferenceId(id: string): string {
 function ComposerModeChip({
   mode,
   onClick,
+  compact = false,
 }: {
   mode: ModeFieldConfig;
   onClick?: () => void;
+  compact?: boolean;
 }) {
   const activeOption = mode.options.find((o) => o.id === mode.value);
   return (
@@ -1805,15 +1889,20 @@ function ComposerModeChip({
       data-testid={mode.testId ? `${mode.testId}-chip` : "agent-composer-mode-chip"}
       data-composer-mode-chip="true"
       aria-label={`Mode: ${activeOption?.label ?? mode.value}. Click to change.`}
-      className="inline-flex h-10 shrink-0 items-center gap-2 rounded-[12px] border px-3 transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
+      className={cn(
+        "inline-flex shrink-0 items-center gap-2 rounded-[12px] border transition-[height,padding,background-color] duration-150 ease-out hover:bg-[var(--bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed",
+        compact ? "h-8 px-2.5" : "h-10 px-3"
+      )}
       style={{
         background: "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
         borderColor: "var(--form-border)",
       }}
     >
-      <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
-        Mode
-      </span>
+      {!compact && (
+        <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+          Mode
+        </span>
+      )}
       <span className="text-[0.8125rem] font-medium text-[var(--text-primary)]">
         {activeOption?.label ?? "—"}
       </span>
@@ -1821,7 +1910,13 @@ function ComposerModeChip({
   );
 }
 
-function ComposerChatFocusPill({ chatFocus }: { chatFocus: ChatFocusFieldConfig }) {
+function ComposerChatFocusPill({
+  chatFocus,
+  compact = false,
+}: {
+  chatFocus: ChatFocusFieldConfig;
+  compact?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const activeOption =
     chatFocus.options.find((o) => o.id === chatFocus.value) ?? chatFocus.options[0];
@@ -1847,12 +1942,17 @@ function ComposerChatFocusPill({ chatFocus }: { chatFocus: ChatFocusFieldConfig 
             chatFocus.testId ? `${chatFocus.testId}-pill` : "agent-composer-chat-focus-pill"
           }
           aria-label={`Chat focus: ${activeOption?.label ?? chatFocus.value}. Click to change.`}
-          className="flex h-10 min-w-0 shrink-0 items-center gap-2 rounded-[12px] border px-3 transition-colors disabled:opacity-50"
+          className={cn(
+            "flex min-w-0 shrink-0 items-center gap-2 rounded-[12px] border transition-[height,padding,background-color] duration-150 ease-out disabled:opacity-50",
+            compact ? "h-8 px-2.5" : "h-10 px-3"
+          )}
           style={triggerStyle}
         >
-          <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
-            Chat
-          </span>
+          {!compact && (
+            <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+              Chat
+            </span>
+          )}
           <span className="flex min-w-0 items-center gap-1.5 text-[0.8125rem] font-medium">
             {ActiveIcon ? <ActiveIcon className="h-3.5 w-3.5" /> : null}
             <span className="truncate">{activeOption?.label ?? "—"}</span>
@@ -2055,11 +2155,13 @@ function ComposerRuntimePill({
   provider,
   model,
   effort,
+  compact = false,
   className,
 }: {
   provider: ProviderFieldConfig;
   model: ModelFieldConfig;
   effort: EffortFieldConfig;
+  compact?: boolean;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -2097,7 +2199,8 @@ function ComposerRuntimePill({
           data-testid="agent-composer-runtime-pill"
           aria-label={`Runtime: ${runtimeSummary}. Click to change.`}
           className={cn(
-            "flex h-10 min-w-0 items-center gap-2 rounded-[12px] border px-3 transition-colors",
+            "flex min-w-0 items-center gap-2 rounded-[12px] border transition-[height,padding,background-color] duration-150 ease-out",
+            compact ? "h-8 px-2.5" : "h-10 px-3",
             className
           )}
           style={{
@@ -2114,7 +2217,7 @@ function ComposerRuntimePill({
           <span className="truncate text-[0.8125rem] font-medium text-[var(--text-primary)]">
             {modelLabel}
           </span>
-          {effort.options.length > 0 && (
+          {!compact && effort.options.length > 0 && (
             <Tooltip delayDuration={300}>
               <TooltipTrigger asChild>
                 <span className="inline-flex shrink-0">

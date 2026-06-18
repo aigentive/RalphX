@@ -928,4 +928,117 @@ describe("AgentComposerSurface", () => {
     expect(onFilesSelected).not.toHaveBeenCalled();
     expect(screen.queryByTestId("chat-composer-drop-overlay")).not.toBeInTheDocument();
   });
+
+  describe("collapsible resting state", () => {
+    it("rests in a minimal one-row state when idle and empty", () => {
+      renderComposer({ dataTestId: "agent-composer", collapsible: true });
+
+      const surface = screen.getByTestId("agent-composer");
+      expect(surface).toHaveAttribute("data-collapsed", "true");
+
+      // Helper line is hidden (reveals on focus) so the resting bar is compact.
+      expect(screen.getByTestId("agent-composer-helper-reveal")).toHaveAttribute(
+        "data-visible",
+        "false",
+      );
+
+      // Runtime ("GPT") + Mode chips drop to the compact height, and the mode
+      // chip sheds its "Mode" eyebrow label.
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass("h-8");
+      const modeChip = screen.getByTestId("agent-composer-mode-chip");
+      expect(modeChip).toHaveClass("h-8");
+      expect(modeChip.textContent).toBe("Agent");
+
+      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+      expect(textarea.style.height).toBe("38px");
+    });
+
+    it("expands synchronously on focus and reveals the helper + full chips", () => {
+      renderComposer({ dataTestId: "agent-composer", collapsible: true });
+
+      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+      fireEvent.focus(textarea);
+
+      const surface = screen.getByTestId("agent-composer");
+      expect(surface).toHaveAttribute("data-collapsed", "false");
+      expect(screen.getByTestId("agent-composer-helper-reveal")).toHaveAttribute(
+        "data-visible",
+        "true",
+      );
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass("h-10");
+      const modeChip = screen.getByTestId("agent-composer-mode-chip");
+      expect(modeChip).toHaveClass("h-10");
+      expect(modeChip.textContent).toBe("ModeAgent");
+      expect(textarea.style.height).toBe("92px");
+    });
+
+    it("stays expanded after blur while the prompt has content", () => {
+      renderComposer({ dataTestId: "agent-composer", collapsible: true });
+
+      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "draft message" } });
+      fireEvent.blur(textarea);
+
+      expect(screen.getByTestId("agent-composer")).toHaveAttribute(
+        "data-collapsed",
+        "false",
+      );
+    });
+
+    it("collapses again after blur once the prompt is empty", () => {
+      renderComposer({ dataTestId: "agent-composer", collapsible: true });
+
+      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+      fireEvent.focus(textarea);
+      expect(screen.getByTestId("agent-composer")).toHaveAttribute(
+        "data-collapsed",
+        "false",
+      );
+      fireEvent.blur(textarea);
+      expect(screen.getByTestId("agent-composer")).toHaveAttribute(
+        "data-collapsed",
+        "true",
+      );
+    });
+
+    it("keeps the composer expanded while the agent is generating", () => {
+      renderComposer({
+        dataTestId: "agent-composer",
+        collapsible: true,
+        agentStatus: "generating",
+      });
+
+      // No focus, empty prompt — but live agent activity must keep it open.
+      expect(screen.getByTestId("agent-composer")).toHaveAttribute(
+        "data-collapsed",
+        "false",
+      );
+    });
+
+    it("still sends on Enter from the collapsible composer", () => {
+      const onSend = vi.fn();
+      renderComposer({ dataTestId: "agent-composer", collapsible: true, onSend });
+
+      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "ship it" } });
+      fireEvent.keyDown(textarea, { key: "Enter" });
+
+      expect(onSend).toHaveBeenCalledWith("ship it");
+    });
+
+    it("never collapses when collapsible is not opted in (start composer)", () => {
+      renderComposer({ dataTestId: "agent-composer" });
+
+      const surface = screen.getByTestId("agent-composer");
+      expect(surface).toHaveAttribute("data-collapsible", "false");
+      expect(surface).toHaveAttribute("data-collapsed", "false");
+      expect(screen.getByTestId("agent-composer-helper-reveal")).toHaveAttribute(
+        "data-visible",
+        "true",
+      );
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass("h-10");
+    });
+  });
 });
