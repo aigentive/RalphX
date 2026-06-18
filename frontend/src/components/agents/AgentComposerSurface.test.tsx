@@ -126,6 +126,35 @@ describe("AgentComposerSurface", () => {
     expect(screen.getByTestId("agent-composer-submit")).toHaveClass("ml-auto");
   });
 
+  it("hides the runtime pill when no model is available to show or select", () => {
+    renderComposer({
+      model: {
+        value: "",
+        onValueChange: vi.fn(),
+        options: [],
+        disabled: true,
+      },
+    });
+
+    expect(
+      screen.queryByTestId("agent-composer-runtime-pill"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the runtime pill when a model is selectable even with no current value", () => {
+    renderComposer({
+      model: {
+        value: "",
+        onValueChange: vi.fn(),
+        options: [{ id: "gpt-5.5", label: "gpt-5.5" }],
+      },
+    });
+
+    expect(
+      screen.getByTestId("agent-composer-runtime-pill"),
+    ).toBeInTheDocument();
+  });
+
   it("keeps Send as the primary action while the agent is waiting for input", () => {
     const onStop = vi.fn();
     renderComposer({
@@ -927,5 +956,173 @@ describe("AgentComposerSurface", () => {
 
     expect(onFilesSelected).not.toHaveBeenCalled();
     expect(screen.queryByTestId("chat-composer-drop-overlay")).not.toBeInTheDocument();
+  });
+
+  it("orders the footer controls mode → model → chat focus", () => {
+    renderComposer({
+      chatFocus: {
+        value: "workspace",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "workspace", label: "Workspace" },
+          { id: "verification", label: "Verification" },
+        ],
+      },
+    });
+
+    const modeChip = screen.getByTestId("agent-composer-mode-chip");
+    const runtimePill = screen.getByTestId("agent-composer-runtime-pill");
+    const chatPill = screen.getByTestId("agent-composer-chat-focus-pill");
+
+    // mode precedes model
+    expect(
+      modeChip.compareDocumentPosition(runtimePill) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // model precedes chat focus
+    expect(
+      runtimePill.compareDocumentPosition(chatPill) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  describe("collapsible resting state", () => {
+    it("rests in a minimal one-row state when idle and empty", () => {
+      renderComposer({ dataTestId: "agent-composer", collapsible: true });
+
+      const surface = screen.getByTestId("agent-composer");
+      expect(surface).toHaveAttribute("data-collapsed", "true");
+
+      // Helper line is hidden (reveals on focus) so the resting bar is compact.
+      expect(screen.getByTestId("agent-composer-helper-reveal")).toHaveAttribute(
+        "data-visible",
+        "false",
+      );
+
+      // Runtime ("GPT") + Mode chips drop to the compact height, and the mode
+      // chip sheds its "Mode" eyebrow label (eyebrows show only when expanded).
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass("h-8");
+      const modeChip = screen.getByTestId("agent-composer-mode-chip");
+      expect(modeChip).toHaveClass("h-8");
+      expect(modeChip.textContent).toBe("Agent");
+
+      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+      expect(textarea.style.height).toBe("38px");
+    });
+
+    it("expands when text is entered and reveals the helper + full chips", () => {
+      renderComposer({ dataTestId: "agent-composer", collapsible: true });
+
+      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "hello" } });
+
+      const surface = screen.getByTestId("agent-composer");
+      expect(surface).toHaveAttribute("data-collapsed", "false");
+      expect(screen.getByTestId("agent-composer-helper-reveal")).toHaveAttribute(
+        "data-visible",
+        "true",
+      );
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass("h-10");
+      const modeChip = screen.getByTestId("agent-composer-mode-chip");
+      expect(modeChip).toHaveClass("h-10");
+      expect(modeChip.textContent).toBe("ModeAgent");
+      expect(textarea.style.height).toBe("92px");
+    });
+
+    it("stays expanded after blur while the prompt has content", () => {
+      renderComposer({ dataTestId: "agent-composer", collapsible: true });
+
+      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "draft message" } });
+      fireEvent.blur(textarea);
+
+      expect(screen.getByTestId("agent-composer")).toHaveAttribute(
+        "data-collapsed",
+        "false",
+      );
+    });
+
+    it("expands when the textarea is focused even with no text", () => {
+      renderComposer({ dataTestId: "agent-composer", collapsible: true });
+      const surface = screen.getByTestId("agent-composer");
+      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+
+      fireEvent.focus(textarea);
+      expect(surface).toHaveAttribute("data-collapsed", "false");
+
+      // Blur with no text returns to the minimal resting state.
+      fireEvent.blur(textarea);
+      expect(surface).toHaveAttribute("data-collapsed", "true");
+    });
+
+    it("stays minimal when a popover opens on an unfocused composer (no flicker)", () => {
+      renderComposer({ dataTestId: "agent-composer", collapsible: true });
+      const surface = screen.getByTestId("agent-composer");
+
+      // Opening the "+" action menu without focusing the textarea must not
+      // expand the composer.
+      fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+      expect(surface).toHaveAttribute("data-collapsed", "true");
+    });
+
+    it("keeps the composer expanded while the agent is generating", () => {
+      renderComposer({
+        dataTestId: "agent-composer",
+        collapsible: true,
+        agentStatus: "generating",
+      });
+
+      // No focus, empty prompt — but live agent activity must keep it open.
+      expect(screen.getByTestId("agent-composer")).toHaveAttribute(
+        "data-collapsed",
+        "false",
+      );
+    });
+
+    it("still sends on Enter from the collapsible composer", () => {
+      const onSend = vi.fn();
+      renderComposer({ dataTestId: "agent-composer", collapsible: true, onSend });
+
+      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "ship it" } });
+      fireEvent.keyDown(textarea, { key: "Enter" });
+
+      expect(onSend).toHaveBeenCalledWith("ship it");
+    });
+
+    it("never collapses when collapsible is not opted in (start composer)", () => {
+      renderComposer({ dataTestId: "agent-composer" });
+
+      const surface = screen.getByTestId("agent-composer");
+      expect(surface).toHaveAttribute("data-collapsible", "false");
+      expect(surface).toHaveAttribute("data-collapsed", "false");
+      expect(screen.getByTestId("agent-composer-helper-reveal")).toHaveAttribute(
+        "data-visible",
+        "true",
+      );
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass("h-10");
+    });
+
+    it("loads minimal: does not auto-focus or expand on mount even with autoFocus", () => {
+      renderComposer({
+        dataTestId: "agent-composer",
+        collapsible: true,
+        autoFocus: true,
+      });
+
+      expect(screen.getByTestId("agent-composer")).toHaveAttribute(
+        "data-collapsed",
+        "true",
+      );
+      expect(screen.getByLabelText("Message input")).not.toHaveFocus();
+    });
+
+    it("still auto-focuses a non-collapsible composer on mount", () => {
+      renderComposer({ dataTestId: "agent-composer", autoFocus: true });
+
+      expect(screen.getByLabelText("Message input")).toHaveFocus();
+    });
   });
 });
