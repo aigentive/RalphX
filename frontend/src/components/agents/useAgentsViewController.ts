@@ -5,6 +5,7 @@ import {
   chatApi,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceMode,
+  type ComposerIntegrationReference,
   type ConversationListPageResponse,
 } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
@@ -27,6 +28,8 @@ import { useAgentConversationActions } from "./useAgentConversationActions";
 import { useAgentArtifactActions } from "./useAgentArtifactActions";
 import { useAgentConversationInvalidation } from "./useAgentConversationInvalidation";
 import { useAgentUserMessageAutoTitle } from "./useAgentUserMessageAutoTitle";
+import { useAgentUserMessageJiraInvalidation } from "./useAgentUserMessageJiraInvalidation";
+import { hasJiraIntegrationReference } from "./agentJiraIssueQueries";
 import { useAgentsSessionBindings } from "./useAgentsSessionBindings";
 import { useSyncedAgentProjectFocus } from "./useSyncedAgentProjectFocus";
 import { useAgentsOptimisticState } from "./useAgentsOptimisticState";
@@ -444,6 +447,12 @@ export function useAgentsViewController({
     findConversationById,
     invalidateProjectConversations,
   });
+  const openJiraTabForConversation = useCallback(
+    (conversationId: string) => {
+      openArtifactTab(conversationId, "jira");
+    },
+    [openArtifactTab],
+  );
 
   const handleStartAgentConversation = useStartAgentConversation({
     handleAutoManagedTitle,
@@ -456,6 +465,7 @@ export function useAgentsViewController({
     setOptimisticSelectedConversationId,
     setOptimisticWorkspacesByConversationId,
     setRuntimeForConversation,
+    onJiraLinked: openJiraTabForConversation,
   });
 
   const {
@@ -591,12 +601,34 @@ export function useAgentsViewController({
   // chat-focus pill.
   const handleSelectArtifactWithChatFocus = handleSelectArtifact;
 
-  const handleAgentUserMessageSent = useAgentUserMessageAutoTitle({
+  const handleAgentUserMessageAutoTitle = useAgentUserMessageAutoTitle({
     activeProjectId,
     findConversationById,
     handleAutoManagedTitle,
     selectedConversationId,
   });
+  const invalidateAgentUserMessageJira = useAgentUserMessageJiraInvalidation({
+    queryClient,
+    selectedConversationId,
+  });
+  const handleAgentUserMessageSent = useCallback(
+    (event: {
+      content: string;
+      result: { conversationId: string };
+      composerIntegrationReferences?: ComposerIntegrationReference[];
+    }) => {
+      handleAgentUserMessageAutoTitle(event);
+      invalidateAgentUserMessageJira(event);
+      if (hasJiraIntegrationReference(event.composerIntegrationReferences)) {
+        openJiraTabForConversation(event.result.conversationId);
+      }
+    },
+    [
+      handleAgentUserMessageAutoTitle,
+      invalidateAgentUserMessageJira,
+      openJiraTabForConversation,
+    ],
+  );
   const handleStartRuntimePreferenceChange = useCallback(
     (targetProjectId: string, runtime: AgentRuntimeSelection) => {
       setLastRuntimeForProject(

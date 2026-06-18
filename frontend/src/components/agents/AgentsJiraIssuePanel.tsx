@@ -8,13 +8,16 @@ import {
   Search,
   Ticket,
   Unlink,
+  UserCheck,
 } from "lucide-react";
 import {
   useCallback,
+  useEffect,
   useMemo,
   useState,
   type ComponentType,
   type CSSProperties,
+  type HTMLAttributes,
   type ReactNode,
 } from "react";
 import ReactMarkdown from "react-markdown";
@@ -37,8 +40,144 @@ import {
 import { cn } from "@/lib/utils";
 import { useAgentComposerIntegrationResources } from "@/hooks/useAgentComposerResources";
 
-const jiraIssueKey = (conversationId: string | null) =>
-  ["agents", "jira-issue", conversationId] as const;
+import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
+
+type RefreshJiraIssueOptions = {
+  silent?: boolean;
+};
+
+const jiraMarkdownComponents = {
+  ...markdownComponents,
+  p: ({ children, ...props }: HTMLAttributes<HTMLParagraphElement>) => (
+    <p
+      className="mb-3 last:mb-0 leading-relaxed"
+      style={{ color: "var(--text-primary)" }}
+      {...props}
+    >
+      {children}
+    </p>
+  ),
+  h1: ({ children, ...props }: HTMLAttributes<HTMLHeadingElement>) => (
+    <h1
+      className="mb-3 mt-0 text-lg font-semibold"
+      style={{ color: "var(--text-primary)" }}
+      {...props}
+    >
+      {children}
+    </h1>
+  ),
+  h2: ({ children, ...props }: HTMLAttributes<HTMLHeadingElement>) => (
+    <h2
+      className="mb-2 mt-4 text-base font-semibold first:mt-0"
+      style={{ color: "var(--text-primary)" }}
+      {...props}
+    >
+      {children}
+    </h2>
+  ),
+  h3: ({ children, ...props }: HTMLAttributes<HTMLHeadingElement>) => (
+    <h3
+      className="mb-2 mt-4 text-sm font-semibold first:mt-0"
+      style={{ color: "var(--text-primary)" }}
+      {...props}
+    >
+      {children}
+    </h3>
+  ),
+  h4: ({ children, ...props }: HTMLAttributes<HTMLHeadingElement>) => (
+    <h4
+      className="mb-1.5 mt-3 text-[0.8125rem] font-semibold first:mt-0"
+      style={{ color: "var(--text-primary)" }}
+      {...props}
+    >
+      {children}
+    </h4>
+  ),
+  ul: ({ children, ...props }: HTMLAttributes<HTMLUListElement>) => (
+    <ul
+      className="mb-3 list-disc space-y-1 pl-5 last:mb-0"
+      style={{ color: "var(--text-primary)" }}
+      {...props}
+    >
+      {children}
+    </ul>
+  ),
+  ol: ({ children, ...props }: HTMLAttributes<HTMLOListElement>) => (
+    <ol
+      className="mb-3 list-decimal space-y-1 pl-5 last:mb-0"
+      style={{ color: "var(--text-primary)" }}
+      {...props}
+    >
+      {children}
+    </ol>
+  ),
+  li: ({ children, ...props }: HTMLAttributes<HTMLLIElement>) => (
+    <li className="pl-1 leading-relaxed" style={{ color: "var(--text-primary)" }} {...props}>
+      {children}
+    </li>
+  ),
+  strong: ({ children, ...props }: HTMLAttributes<HTMLElement>) => (
+    <strong className="font-semibold" style={{ color: "var(--text-primary)" }} {...props}>
+      {children}
+    </strong>
+  ),
+  code: ({
+    className,
+    children,
+    style: _style,
+    ...props
+  }: HTMLAttributes<HTMLElement>) => {
+    const content = String(children);
+    const isBlock = Boolean(className?.includes("language-")) || content.includes("\n");
+    if (isBlock) {
+      return (
+        <code
+          className="block min-w-full px-4 py-3 text-[0.78125rem] leading-relaxed"
+          style={{
+            color: "var(--text-primary)",
+            fontFamily: "var(--font-mono)",
+            whiteSpace: "pre",
+          }}
+          {...props}
+        >
+          {children}
+        </code>
+      );
+    }
+    return (
+      <code
+        className="break-words rounded px-1 py-px text-[0.75rem]"
+        style={{
+          backgroundColor: "var(--overlay-faint)",
+          color: "var(--text-primary)",
+          fontFamily: "var(--font-mono)",
+        }}
+        {...props}
+      >
+        {children}
+      </code>
+    );
+  },
+  pre: ({
+    children,
+    className: _className,
+    style: _style,
+    ...props
+  }: HTMLAttributes<HTMLPreElement>) => (
+    <pre
+      className="my-3 overflow-x-auto rounded-md text-left"
+      style={{
+        backgroundColor: "var(--bg-surface)",
+        borderColor: "var(--border-subtle)",
+        borderStyle: "solid",
+        borderWidth: 1,
+      }}
+      {...props}
+    >
+      {children}
+    </pre>
+  ),
+};
 
 interface AgentsJiraIssuePanelProps {
   conversationId: string | null;
@@ -53,7 +192,7 @@ export function AgentsJiraIssuePanel({
   const [query, setQuery] = useState("");
   const [isReassigning, setIsReassigning] = useState(false);
   const issueQuery = useQuery({
-    queryKey: jiraIssueKey(conversationId),
+    queryKey: agentJiraIssueKeys.issue(conversationId),
     queryFn: () =>
       atlassianApi.getAgentConversationJiraIssue({
         conversationId: conversationId!,
@@ -79,7 +218,7 @@ export function AgentsJiraIssuePanel({
         issueUrl: resource.url ?? null,
       }),
     onSuccess: (assigned) => {
-      queryClient.setQueryData(jiraIssueKey(conversationId), assigned);
+      queryClient.setQueryData(agentJiraIssueKeys.issue(conversationId), assigned);
       setIsReassigning(false);
       setQuery("");
       toast.success("Jira issue assigned");
@@ -89,12 +228,15 @@ export function AgentsJiraIssuePanel({
     },
   });
   const refreshMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: (_options?: RefreshJiraIssueOptions) =>
       atlassianApi.refreshAgentConversationJiraIssue({
         conversationId: conversationId!,
       }),
-    onSuccess: (refreshed) => {
-      queryClient.setQueryData(jiraIssueKey(conversationId), refreshed);
+    onSuccess: (refreshed, options) => {
+      queryClient.setQueryData(agentJiraIssueKeys.issue(conversationId), refreshed);
+      if (options?.silent) {
+        return;
+      }
       if (refreshed?.refreshStatus === "error") {
         toast.error(refreshed.refreshError ?? "Failed to refresh Jira issue");
       } else {
@@ -105,13 +247,26 @@ export function AgentsJiraIssuePanel({
       toast.error(err instanceof Error ? err.message : "Failed to refresh Jira issue");
     },
   });
+  const assignToMeMutation = useMutation({
+    mutationFn: () =>
+      atlassianApi.assignAgentConversationJiraIssueToMe({
+        conversationId: conversationId!,
+      }),
+    onSuccess: (assigned) => {
+      queryClient.setQueryData(agentJiraIssueKeys.issue(conversationId), assigned);
+      toast.success("Jira issue assigned to you");
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to assign Jira issue to you");
+    },
+  });
   const clearMutation = useMutation({
     mutationFn: () =>
       atlassianApi.clearAgentConversationJiraIssue({
         conversationId: conversationId!,
       }),
     onSuccess: () => {
-      queryClient.setQueryData(jiraIssueKey(conversationId), null);
+      queryClient.setQueryData(agentJiraIssueKeys.issue(conversationId), null);
       setIsReassigning(false);
       toast.success("Jira issue unlinked");
     },
@@ -120,8 +275,32 @@ export function AgentsJiraIssuePanel({
     },
   });
 
+  const refreshIssue = refreshMutation.mutate;
+  const isRefreshingIssue = refreshMutation.isPending;
   const isMutating =
-    assignMutation.isPending || refreshMutation.isPending || clearMutation.isPending;
+    assignMutation.isPending ||
+    isRefreshingIssue ||
+    assignToMeMutation.isPending ||
+    clearMutation.isPending;
+
+  useEffect(() => {
+    if (
+      !conversationId ||
+      issue?.conversationId !== conversationId ||
+      issue.refreshStatus !== "not_loaded" ||
+      isRefreshingIssue
+    ) {
+      return;
+    }
+    refreshIssue({ silent: true });
+  }, [
+    conversationId,
+    issue?.conversationId,
+    issue?.issueKey,
+    issue?.refreshStatus,
+    isRefreshingIssue,
+    refreshIssue,
+  ]);
 
   const handleAssign = useCallback(
     (resource: AtlassianResourceSummary) => {
@@ -137,14 +316,14 @@ export function AgentsJiraIssuePanel({
         className="flex min-h-14 items-center gap-3 border-b px-4 py-3"
         style={{
           borderColor: "var(--border-subtle)",
-          background: "var(--bg-surface)",
+          backgroundColor: "var(--bg-surface)",
         }}
       >
         <div
           className="flex h-9 w-9 items-center justify-center rounded-md border"
           style={{
             borderColor: "var(--border-subtle)",
-            background: "var(--bg-base)",
+            backgroundColor: "var(--bg-base)",
             color: "var(--accent-primary)",
           }}
         >
@@ -159,7 +338,7 @@ export function AgentsJiraIssuePanel({
               <span
                 className="shrink-0 rounded-full px-2 py-0.5 text-[0.6875rem] font-medium"
                 style={{
-                  background: "var(--accent-muted)",
+                  backgroundColor: "var(--accent-muted)",
                   color: "var(--accent-primary)",
                 }}
               >
@@ -190,9 +369,9 @@ export function AgentsJiraIssuePanel({
             <IconAction
               label="Refresh Jira issue"
               disabled={!conversationId || isMutating}
-              onClick={() => refreshMutation.mutate()}
+              onClick={() => refreshIssue({ silent: false })}
             >
-              <RefreshCw className={cn("h-4 w-4", refreshMutation.isPending && "animate-spin")} />
+              <RefreshCw className={cn("h-4 w-4", isRefreshingIssue && "animate-spin")} />
             </IconAction>
             <IconAction
               label="Reassign Jira issue"
@@ -233,7 +412,16 @@ export function AgentsJiraIssuePanel({
           />
         )}
 
-        {issue && <JiraIssueDetails issue={issue} />}
+        {issue && (
+          <JiraIssueDetails
+            issue={issue}
+            isAssigningToMe={assignToMeMutation.isPending}
+            onAssignToMe={() => {
+              if (!conversationId || isMutating) return;
+              assignToMeMutation.mutate();
+            }}
+          />
+        )}
       </div>
     </div>
   );
@@ -327,20 +515,29 @@ function SearchEmpty({ text, busy = false }: { text: string; busy?: boolean }) {
   );
 }
 
-function JiraIssueDetails({ issue }: { issue: AgentConversationJiraIssue }) {
+function JiraIssueDetails({
+  issue,
+  isAssigningToMe,
+  onAssignToMe,
+}: {
+  issue: AgentConversationJiraIssue;
+  isAssigningToMe: boolean;
+  onAssignToMe: () => void;
+}) {
   const sections = useMemo(
-    () => [
-      {
-        title: "Description",
-        markdown: issue.descriptionMarkdown,
-        text: issue.descriptionText,
-      },
-      {
-        title: "Acceptance Criteria",
-        markdown: issue.acceptanceCriteriaMarkdown,
-        text: issue.acceptanceCriteriaText,
-      },
-    ],
+    () =>
+      [
+        {
+          title: "Description",
+          markdown: issue.descriptionMarkdown,
+          text: issue.descriptionText,
+        },
+        {
+          title: "Acceptance Criteria",
+          markdown: issue.acceptanceCriteriaMarkdown,
+          text: issue.acceptanceCriteriaText,
+        },
+      ].filter((section) => hasRichText(section.markdown, section.text)),
     [
       issue.acceptanceCriteriaMarkdown,
       issue.acceptanceCriteriaText,
@@ -354,11 +551,18 @@ function JiraIssueDetails({ issue }: { issue: AgentConversationJiraIssue }) {
       {issue.refreshStatus === "error" && issue.refreshError && (
         <PanelNotice title="Refresh failed" detail={issue.refreshError} tone="warning" />
       )}
-      <div className="grid gap-2 text-xs sm:grid-cols-2">
-        <Meta label="Assignee" value={issue.assignee} />
-        <Meta label="Reporter" value={issue.reporter} />
-        <Meta label="Updated" value={formatDate(issue.updatedAtRemote)} />
-        <Meta label="Refreshed" value={formatDate(issue.lastRefreshedAt)} />
+      <div
+        aria-label="Jira issue metadata"
+        className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs"
+      >
+        <AssigneeMeta
+          value={issue.assignee}
+          isAssigningToMe={isAssigningToMe}
+          onAssignToMe={onAssignToMe}
+        />
+        <InlineMeta label="Reporter" value={issue.reporter} />
+        <InlineMeta label="Updated" value={formatDate(issue.updatedAtRemote)} />
+        <InlineMeta label="Refreshed" value={formatDate(issue.lastRefreshedAt)} />
       </div>
       {sections.map((section) => (
         <RichSection
@@ -368,13 +572,9 @@ function JiraIssueDetails({ issue }: { issue: AgentConversationJiraIssue }) {
           text={section.text}
         />
       ))}
-      <section className="space-y-2">
-        <SectionHeader icon={MessageSquare} title={`Comments (${issue.comments.length})`} />
-        {issue.comments.length === 0 ? (
-          <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-            No comments cached.
-          </p>
-        ) : (
+      {issue.comments.length > 0 && (
+        <section className="space-y-2">
+          <SectionHeader icon={MessageSquare} title={`Comments (${issue.comments.length})`} />
           <div className="space-y-2">
             {issue.comments.map((comment, index) => (
               <div
@@ -382,7 +582,7 @@ function JiraIssueDetails({ issue }: { issue: AgentConversationJiraIssue }) {
                 className="rounded-md border p-3"
                 style={{
                   borderColor: "var(--border-subtle)",
-                  background: "var(--bg-surface)",
+                  backgroundColor: "var(--bg-surface)",
                 }}
               >
                 <div className="mb-2 flex items-center justify-between gap-3 text-xs">
@@ -397,15 +597,11 @@ function JiraIssueDetails({ issue }: { issue: AgentConversationJiraIssue }) {
               </div>
             ))}
           </div>
-        )}
-      </section>
-      <section className="space-y-2">
-        <SectionHeader icon={Paperclip} title={`Attachments (${issue.attachments.length})`} />
-        {issue.attachments.length === 0 ? (
-          <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-            No attachments cached.
-          </p>
-        ) : (
+        </section>
+      )}
+      {issue.attachments.length > 0 && (
+        <section className="space-y-2">
+          <SectionHeader icon={Paperclip} title={`Attachments (${issue.attachments.length})`} />
           <div
             className="overflow-hidden rounded-md border"
             style={{ borderColor: "var(--border-subtle)" }}
@@ -432,8 +628,8 @@ function JiraIssueDetails({ issue }: { issue: AgentConversationJiraIssue }) {
               </a>
             ))}
           </div>
-        )}
-      </section>
+        </section>
+      )}
     </div>
   );
 }
@@ -447,18 +643,22 @@ function RichSection({
   markdown?: string | null | undefined;
   text?: string | null | undefined;
 }) {
+  if (!hasRichText(markdown, text)) {
+    return null;
+  }
   return (
     <section className="space-y-2">
       <SectionHeader icon={Ticket} title={title} />
-      {markdown || text ? (
-        <MarkdownBody markdown={markdown} fallback={text} />
-      ) : (
-        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          Not cached.
-        </p>
-      )}
+      <MarkdownBody markdown={markdown} fallback={text} />
     </section>
   );
+}
+
+function hasRichText(
+  markdown?: string | null | undefined,
+  text?: string | null | undefined,
+): boolean {
+  return Boolean((markdown ?? text ?? "").trim());
 }
 
 function MarkdownBody({
@@ -474,7 +674,7 @@ function MarkdownBody({
       className="prose prose-sm max-w-none text-[0.8125rem] leading-relaxed prose-code:before:content-none prose-code:after:content-none"
       style={{ color: "var(--text-primary)" }}
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={jiraMarkdownComponents}>
         {content}
       </ReactMarkdown>
     </div>
@@ -498,7 +698,7 @@ function SectionHeader({
   );
 }
 
-function Meta({
+function InlineMeta({
   label,
   value,
 }: {
@@ -506,21 +706,59 @@ function Meta({
   value?: string | null | undefined;
 }) {
   return (
-    <div
-      className="rounded-md border px-3 py-2"
-      style={{
-        borderColor: "var(--border-subtle)",
-        background: "var(--bg-surface)",
-      }}
-    >
-      <div className="text-[0.6875rem] uppercase" style={{ color: "var(--text-muted)" }}>
+    <div className="inline-flex min-w-0 items-center gap-1.5">
+      <span className="shrink-0 text-[0.6875rem] uppercase" style={{ color: "var(--text-muted)" }}>
         {label}
-      </div>
-      <div className="mt-1 truncate font-medium" style={{ color: "var(--text-primary)" }}>
+      </span>
+      <span className="truncate font-medium" style={{ color: "var(--text-primary)" }}>
         {value || "Unknown"}
-      </div>
+      </span>
     </div>
   );
+}
+
+function AssigneeMeta({
+  value,
+  isAssigningToMe,
+  onAssignToMe,
+}: {
+  value?: string | null | undefined;
+  isAssigningToMe: boolean;
+  onAssignToMe: () => void;
+}) {
+  const isUnassigned = isUnassignedAssignee(value);
+  return (
+    <div className="inline-flex min-w-0 items-center gap-1.5">
+      <span className="shrink-0 text-[0.6875rem] uppercase" style={{ color: "var(--text-muted)" }}>
+        Assignee
+      </span>
+      <span className="truncate font-medium" style={{ color: "var(--text-primary)" }}>
+        {isUnassigned ? "Unassigned" : value?.trim()}
+      </span>
+      {isUnassigned && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-6 gap-1 px-1.5 text-xs"
+          disabled={isAssigningToMe}
+          onClick={onAssignToMe}
+        >
+          {isAssigningToMe ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <UserCheck className="h-3.5 w-3.5" />
+          )}
+          Assign to me
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function isUnassignedAssignee(value?: string | null | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return !normalized || normalized === "unknown" || normalized === "unassigned";
 }
 
 function IconAction({
@@ -573,7 +811,7 @@ function PanelNotice({
       style={{
         borderColor:
           tone === "warning" ? "var(--status-warning)" : "var(--border-subtle)",
-        background: "var(--bg-surface)",
+        backgroundColor: "var(--bg-surface)",
       }}
     >
       <div className="flex items-center gap-2 text-sm font-medium" style={{ color: "var(--text-primary)" }}>

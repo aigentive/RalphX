@@ -8,8 +8,7 @@ use crate::application::{
     AtlassianResourceKind, AtlassianResourceSummary,
 };
 use crate::domain::entities::{
-    AgentConversationJiraIssueLink, AgentConversationJiraRefreshStatus, ChatContextType,
-    ChatConversationId, ProjectId,
+    AgentConversationJiraIssueLink, ChatContextType, ChatConversationId, ProjectId,
 };
 use crate::domain::integrations::{AtlassianAuthMethod, AtlassianIntegrationSettings};
 use crate::domain::services::ComposerJiraReferenceMetadata;
@@ -123,6 +122,12 @@ pub struct AssignAgentConversationJiraIssueInput {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RefreshAgentConversationJiraIssueInput {
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignAgentConversationJiraIssueToMeInput {
     pub conversation_id: String,
 }
 
@@ -281,58 +286,6 @@ fn link_response(
     AgentConversationJiraIssueResponse {
         issue: link.map(AgentConversationJiraIssueLinkResponse::from),
     }
-}
-
-async fn refresh_jira_issue_link(
-    state: &AppState,
-    mut link: AgentConversationJiraIssueLink,
-) -> Result<AgentConversationJiraIssueLink, String> {
-    let reference =
-        crate::application::agent_conversation_jira_issue::assigned_issue_to_composer_reference(
-            &link,
-        );
-    let now = Utc::now();
-    match state
-        .atlassian_integration_service
-        .fetch_resource_content(&reference)
-        .await
-    {
-        Ok(content) => {
-            link.issue_key = content
-                .key
-                .clone()
-                .unwrap_or_else(|| link.issue_key.clone())
-                .to_ascii_uppercase();
-            link.issue_url = content.url.or(link.issue_url);
-            link.title = Some(content.title);
-            link.status = content.status;
-            link.assignee = content.assignee;
-            link.reporter = content.reporter;
-            link.updated_at_remote = content.updated_at_remote;
-            link.description_markdown = content.description_markdown;
-            link.description_text = content.description_text;
-            link.acceptance_criteria_markdown = content.acceptance_criteria_markdown;
-            link.acceptance_criteria_text = content.acceptance_criteria_text;
-            link.comments_json =
-                serde_json::to_string(&content.comments).unwrap_or_else(|_| "[]".to_string());
-            link.attachments_json =
-                serde_json::to_string(&content.attachments).unwrap_or_else(|_| "[]".to_string());
-            link.last_refreshed_at = Some(now);
-            link.refresh_status = AgentConversationJiraRefreshStatus::Loaded;
-            link.refresh_error = None;
-            link.updated_at = now;
-        }
-        Err(error) => {
-            link.refresh_status = AgentConversationJiraRefreshStatus::Error;
-            link.refresh_error = Some(error);
-            link.updated_at = now;
-        }
-    }
-    state
-        .agent_conversation_jira_issue_repo
-        .upsert(link)
-        .await
-        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -504,7 +457,13 @@ pub async fn assign_agent_conversation_jira_issue(
         .await
         .map_err(|error| error.to_string())?;
     let link = if input.refresh.unwrap_or(true) {
-        refresh_jira_issue_link(state.inner(), link).await?
+        crate::application::agent_conversation_jira_issue::refresh_jira_issue_link(
+            &state.agent_conversation_jira_issue_repo,
+            state.atlassian_integration_service.as_ref(),
+            link,
+        )
+        .await
+        .map_err(|error| error.to_string())?
     } else {
         link
     };
@@ -523,7 +482,39 @@ pub async fn refresh_agent_conversation_jira_issue(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "No Jira issue is assigned to this conversation".to_string())?;
-    let link = refresh_jira_issue_link(state.inner(), link).await?;
+    let link = crate::application::agent_conversation_jira_issue::refresh_jira_issue_link(
+        &state.agent_conversation_jira_issue_repo,
+        state.atlassian_integration_service.as_ref(),
+        link,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(link_response(Some(link)))
+}
+
+#[tauri::command]
+pub async fn assign_agent_conversation_jira_issue_to_me(
+    input: AssignAgentConversationJiraIssueToMeInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationJiraIssueResponse, String> {
+    let conversation_id = parse_conversation_id(&input.conversation_id)?;
+    let link = state
+        .agent_conversation_jira_issue_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "No Jira issue is assigned to this conversation".to_string())?;
+    state
+        .atlassian_integration_service
+        .assign_jira_issue_to_current_user(&link.issue_key)
+        .await?;
+    let link = crate::application::agent_conversation_jira_issue::refresh_jira_issue_link(
+        &state.agent_conversation_jira_issue_repo,
+        state.atlassian_integration_service.as_ref(),
+        link,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     Ok(link_response(Some(link)))
 }
 
