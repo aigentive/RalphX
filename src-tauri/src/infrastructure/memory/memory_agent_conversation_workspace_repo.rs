@@ -8,8 +8,9 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
-    AgentWorkspacePrDescription, ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
+    AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus, ChatConversationId,
+    IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::AppResult;
@@ -20,6 +21,8 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     publication_events:
         RwLock<HashMap<ChatConversationId, Vec<AgentConversationWorkspacePublicationEvent>>>,
     pr_comment_evidence: RwLock<HashMap<(String, i64, String), AgentWorkspacePrCommentEvidence>>,
+    pr_review_monitors: RwLock<HashMap<ChatConversationId, AgentWorkspacePrReviewMonitor>>,
+    pr_review_actions: RwLock<HashMap<String, AgentWorkspacePrReviewAction>>,
 }
 
 impl MemoryAgentConversationWorkspaceRepository {
@@ -29,6 +32,8 @@ impl MemoryAgentConversationWorkspaceRepository {
             pr_descriptions: RwLock::new(HashMap::new()),
             publication_events: RwLock::new(HashMap::new()),
             pr_comment_evidence: RwLock::new(HashMap::new()),
+            pr_review_monitors: RwLock::new(HashMap::new()),
+            pr_review_actions: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -504,6 +509,137 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(())
     }
 
+    async fn upsert_pr_review_monitor(
+        &self,
+        mut monitor: AgentWorkspacePrReviewMonitor,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        let mut monitors = self.pr_review_monitors.write().await;
+        if let Some(existing) = monitors.get(&monitor.conversation_id) {
+            monitor.created_at = existing.created_at;
+        }
+        monitor.updated_at = Utc::now();
+        monitors.insert(monitor.conversation_id, monitor.clone());
+        Ok(monitor)
+    }
+
+    async fn get_pr_review_monitor(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePrReviewMonitor>> {
+        Ok(self
+            .pr_review_monitors
+            .read()
+            .await
+            .get(conversation_id)
+            .cloned())
+    }
+
+    async fn list_active_pr_review_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspacePrReviewMonitor>> {
+        let mut monitors = self
+            .pr_review_monitors
+            .read()
+            .await
+            .values()
+            .filter(|monitor| {
+                monitor.monitor_enabled
+                    && !matches!(
+                        monitor.status,
+                        AgentWorkspacePrReviewMonitorStatus::Terminal
+                    )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        monitors.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        Ok(monitors)
+    }
+
+    async fn create_or_update_pr_review_action(
+        &self,
+        mut action: AgentWorkspacePrReviewAction,
+    ) -> AppResult<AgentWorkspacePrReviewAction> {
+        let mut actions = self.pr_review_actions.write().await;
+        if let Some(existing) = actions.values_mut().find(|existing| {
+            existing.conversation_id == action.conversation_id
+                && existing.pr_number == action.pr_number
+                && existing.head_sha == action.head_sha
+                && existing.status == AgentWorkspacePrReviewActionStatus::Pending
+        }) {
+            existing.proposed_action = action.proposed_action;
+            existing.summary = action.summary;
+            existing.review_body = action.review_body;
+            existing.findings_json = action.findings_json;
+            existing.created_by_run_id = action.created_by_run_id;
+            existing.updated_at = Utc::now();
+            return Ok(existing.clone());
+        }
+
+        action.updated_at = Utc::now();
+        actions.insert(action.id.clone(), action.clone());
+        Ok(action)
+    }
+
+    async fn get_pr_review_action(
+        &self,
+        action_id: &str,
+    ) -> AppResult<Option<AgentWorkspacePrReviewAction>> {
+        Ok(self.pr_review_actions.read().await.get(action_id).cloned())
+    }
+
+    async fn get_pending_pr_review_action_for_head(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: i64,
+        head_sha: &str,
+    ) -> AppResult<Option<AgentWorkspacePrReviewAction>> {
+        Ok(self
+            .pr_review_actions
+            .read()
+            .await
+            .values()
+            .find(|action| {
+                action.conversation_id == *conversation_id
+                    && action.pr_number == pr_number
+                    && action.head_sha == head_sha
+                    && action.status == AgentWorkspacePrReviewActionStatus::Pending
+            })
+            .cloned())
+    }
+
+    async fn list_pr_review_actions(
+        &self,
+        conversation_id: &ChatConversationId,
+        limit: usize,
+    ) -> AppResult<Vec<AgentWorkspacePrReviewAction>> {
+        let mut actions = self
+            .pr_review_actions
+            .read()
+            .await
+            .values()
+            .filter(|action| action.conversation_id == *conversation_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        actions.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        actions.truncate(limit);
+        Ok(actions)
+    }
+
+    async fn update_pr_review_action_status(
+        &self,
+        action_id: &str,
+        status: AgentWorkspacePrReviewActionStatus,
+        submitted_review_id: Option<&str>,
+    ) -> AppResult<()> {
+        if let Some(action) = self.pr_review_actions.write().await.get_mut(action_id) {
+            action.status = status;
+            action.submitted_review_id = submitted_review_id.map(str::to_string);
+            action.updated_at = Utc::now();
+            action.resolved_at = pr_review_action_terminal_status(status).then(Utc::now);
+        }
+        Ok(())
+    }
+
     async fn delete(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
         self.workspaces.write().await.remove(conversation_id);
         self.publication_events
@@ -516,8 +652,25 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .write()
             .await
             .retain(|(id, _, _), _| id != &conversation_key);
+        self.pr_review_monitors
+            .write()
+            .await
+            .remove(conversation_id);
+        self.pr_review_actions
+            .write()
+            .await
+            .retain(|_, action| action.conversation_id != *conversation_id);
         Ok(())
     }
+}
+
+fn pr_review_action_terminal_status(status: AgentWorkspacePrReviewActionStatus) -> bool {
+    matches!(
+        status,
+        AgentWorkspacePrReviewActionStatus::Skipped
+            | AgentWorkspacePrReviewActionStatus::Submitted
+            | AgentWorkspacePrReviewActionStatus::Failed
+    )
 }
 
 fn is_active_direct_published_workspace(workspace: &AgentConversationWorkspace) -> bool {

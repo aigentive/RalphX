@@ -2604,6 +2604,7 @@ fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {
         AgentConversationWorkspaceMode::Edit
             | AgentConversationWorkspaceMode::Plan
             | AgentConversationWorkspaceMode::Ideation
+            | AgentConversationWorkspaceMode::ReviewPr
     )
 }
 
@@ -2700,12 +2701,23 @@ mod agent_mode_workspace_tests {
     }
 
     #[test]
+    fn review_pr_agent_conversation_mode_round_trips_through_api_string() {
+        let mode = "review_pr"
+            .parse::<AgentConversationWorkspaceMode>()
+            .expect("review_pr mode should parse");
+
+        assert_eq!(mode, AgentConversationWorkspaceMode::ReviewPr);
+        assert_eq!(mode.to_string(), "review_pr");
+    }
+
+    #[test]
     fn active_agent_conversations_support_expected_valid_mode_transition_matrix() {
         let modes = [
             AgentConversationWorkspaceMode::Chat,
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceMode::Plan,
             AgentConversationWorkspaceMode::Ideation,
+            AgentConversationWorkspaceMode::ReviewPr,
         ];
 
         for current_mode in modes {
@@ -2729,6 +2741,7 @@ mod agent_mode_workspace_tests {
             AgentConversationWorkspaceMode::Chat,
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceMode::Plan,
+            AgentConversationWorkspaceMode::ReviewPr,
         ] {
             let error = validate_agent_conversation_mode_transition(
                 AgentConversationWorkspaceMode::Ideation,
@@ -2747,6 +2760,7 @@ mod agent_mode_workspace_tests {
             AgentConversationWorkspaceMode::Chat,
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceMode::Plan,
+            AgentConversationWorkspaceMode::ReviewPr,
         ] {
             let error = validate_agent_conversation_mode_transition(
                 AgentConversationWorkspaceMode::Chat,

@@ -525,13 +525,12 @@ fn test_review_outcome_approved_no_changes_serde_roundtrip() {
 #[test]
 fn test_review_note_is_positive_for_approved_no_changes() {
     let task_id = TaskId::from_string("task-test".to_string());
-    let note = ReviewNote::new(
-        task_id,
-        ReviewerType::Ai,
-        ReviewOutcome::ApprovedNoChanges,
-    );
+    let note = ReviewNote::new(task_id, ReviewerType::Ai, ReviewOutcome::ApprovedNoChanges);
     assert!(note.is_positive(), "ApprovedNoChanges should be positive");
-    assert!(!note.is_negative(), "ApprovedNoChanges should not be negative");
+    assert!(
+        !note.is_negative(),
+        "ApprovedNoChanges should not be negative"
+    );
 }
 
 #[test]
@@ -544,10 +543,6 @@ fn test_review_note_is_positive_still_true_for_approved() {
 #[test]
 fn test_review_note_is_negative_false_for_approved_no_changes() {
     let task_id = TaskId::from_string("task-test3".to_string());
-    let note = ReviewNote::new(
-        task_id,
-        ReviewerType::Ai,
-        ReviewOutcome::ApprovedNoChanges,
-    );
+    let note = ReviewNote::new(task_id, ReviewerType::Ai, ReviewOutcome::ApprovedNoChanges);
     assert!(!note.is_negative());
 }

@@ -82,7 +82,9 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
                    status, merge_task_id, created_at, merged_at, execution_plan_id
             FROM plan_branches;",
         )
-        .map_err(|e| AppError::Database(format!("v51: failed to copy plan_branches (11-col): {}", e)))?;
+        .map_err(|e| {
+            AppError::Database(format!("v51: failed to copy plan_branches (11-col): {}", e))
+        })?;
     } else {
         // Dev DB (old v49 removed the column): copy 10 columns, execution_plan_id defaults to NULL
         conn.execute_batch(
@@ -93,7 +95,9 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
                    status, merge_task_id, created_at, merged_at
             FROM plan_branches;",
         )
-        .map_err(|e| AppError::Database(format!("v51: failed to copy plan_branches (10-col): {}", e)))?;
+        .map_err(|e| {
+            AppError::Database(format!("v51: failed to copy plan_branches (10-col): {}", e))
+        })?;
     }
 
     conn.execute_batch(
@@ -168,7 +172,9 @@ fn backfill_execution_plans(conn: &Connection) -> AppResult<()> {
         .query_map([], |row| row.get::<_, String>(0))
         .map_err(|e| AppError::Database(format!("v51 backfill: failed to query sessions: {}", e)))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| AppError::Database(format!("v51 backfill: failed to collect sessions: {}", e)))?;
+        .map_err(|e| {
+            AppError::Database(format!("v51 backfill: failed to collect sessions: {}", e))
+        })?;
 
     drop(stmt);
 

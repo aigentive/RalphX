@@ -6,16 +6,11 @@
 
 use rusqlite::Connection;
 
-use crate::error::AppResult;
 use super::helpers;
+use crate::error::AppResult;
 
 pub fn migrate(conn: &Connection) -> AppResult<()> {
-    helpers::add_column_if_not_exists(
-        conn,
-        "tasks",
-        "merge_pipeline_active",
-        "TEXT DEFAULT NULL",
-    )?;
+    helpers::add_column_if_not_exists(conn, "tasks", "merge_pipeline_active", "TEXT DEFAULT NULL")?;
 
     tracing::info!("v53: added merge_pipeline_active column to tasks table");
 

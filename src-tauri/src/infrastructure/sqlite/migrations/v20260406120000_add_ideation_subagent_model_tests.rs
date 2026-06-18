@@ -35,7 +35,10 @@ fn test_migration_adds_ideation_subagent_model_column() {
         )
         .expect("Failed to query ideation_subagent_model column");
 
-    assert_eq!(value, "inherit", "ideation_subagent_model should default to 'inherit'");
+    assert_eq!(
+        value, "inherit",
+        "ideation_subagent_model should default to 'inherit'"
+    );
 }
 
 #[test]

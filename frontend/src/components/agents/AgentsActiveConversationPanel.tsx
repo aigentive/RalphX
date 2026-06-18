@@ -68,6 +68,7 @@ import {
   type ChatFocusFieldConfig,
 } from "./AgentComposerSurface";
 import { AgentConversationBaseLine } from "./AgentConversationBaseLine";
+import { AgentWorkspacePrReviewCard } from "./AgentWorkspacePrReviewCard";
 import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceChangesCard";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import { AgentWorkspaceFileLinkProvider } from "./AgentWorkspaceFileLinkProvider";
@@ -900,6 +901,20 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     isFocusedChildChat,
     selectedConversationId,
   ]);
+  const reviewPrContextQuery = useQuery({
+    queryKey: agentWorkspaceKeys.prReview(activeWorkspace?.conversationId),
+    queryFn: () =>
+      chatApi.getAgentWorkspacePrReviewContext(activeWorkspace!.conversationId),
+    enabled: Boolean(
+      !isFocusedChildChat &&
+        activeConversation.contextType === "project" &&
+        activeWorkspace?.conversationId &&
+        activeWorkspace.mode === "review_pr",
+    ),
+    staleTime: 5_000,
+    refetchInterval: (query) =>
+      query.state.data?.pendingAction ? false : 5_000,
+  });
   const planApprovalQuery = useQuery({
     queryKey: ["agents", "plan-approval", planApprovalSessionId],
     queryFn: () => artifactApi.getSessionPlan(planApprovalSessionId!),
@@ -1694,6 +1709,17 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
 
               return (
                 <>
+                  {!isFocusedChildChat &&
+                    activeWorkspace?.mode === "review_pr" &&
+                    activeWorkspace.conversationId && (
+                      <AgentWorkspacePrReviewCard
+                        conversationId={activeWorkspace.conversationId}
+                        context={reviewPrContextQuery.data}
+                        isLoading={reviewPrContextQuery.isLoading}
+                        isFetching={reviewPrContextQuery.isFetching}
+                        error={reviewPrContextQuery.error}
+                      />
+                    )}
                   <AgentsComposerWorkspaceChangesCard
                     conversationId={selectedConversationId}
                     projectId={activeProjectId}

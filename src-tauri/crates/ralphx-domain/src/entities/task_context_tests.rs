@@ -226,22 +226,14 @@ fn test_create_artifact_content_preview_handles_inline_and_file_content() {
         "Short content"
     );
 
-    let long_artifact = Artifact::new_inline(
-        "Long",
-        ArtifactType::Specification,
-        "x".repeat(600),
-        "user",
-    );
+    let long_artifact =
+        Artifact::new_inline("Long", ArtifactType::Specification, "x".repeat(600), "user");
     let long_preview = create_artifact_content_preview(&long_artifact);
     assert_eq!(long_preview.len(), 503);
     assert!(long_preview.ends_with("..."));
 
-    let file_artifact = Artifact::new_file(
-        "File",
-        ArtifactType::Specification,
-        "/tmp/plan.md",
-        "user",
-    );
+    let file_artifact =
+        Artifact::new_file("File", ArtifactType::Specification, "/tmp/plan.md", "user");
     assert_eq!(
         create_artifact_content_preview(&file_artifact),
         "[File artifact at: /tmp/plan.md]"
@@ -280,9 +272,15 @@ fn test_generate_task_context_hints_prioritizes_dependency_and_branch_context() 
     );
     assert!(hints.iter().any(|hint| hint.contains("Downstream impact")));
     assert!(hints.iter().any(|hint| hint.contains("GIT BRANCH")));
-    assert!(hints.iter().any(|hint| hint.contains("acceptance criteria")));
-    assert!(hints.iter().any(|hint| hint.contains("Implementation plan available")));
-    assert!(hints.iter().any(|hint| hint.contains("2 related artifacts")));
+    assert!(hints
+        .iter()
+        .any(|hint| hint.contains("acceptance criteria")));
+    assert!(hints
+        .iter()
+        .any(|hint| hint.contains("Implementation plan available")));
+    assert!(hints
+        .iter()
+        .any(|hint| hint.contains("2 related artifacts")));
     assert!(hints.iter().any(|hint| hint.contains("3 steps")));
     assert!(hints.iter().any(|hint| hint.contains("description")));
 }

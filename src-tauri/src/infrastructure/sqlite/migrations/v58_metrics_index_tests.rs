@@ -107,10 +107,26 @@ fn test_task_state_history_has_required_columns() {
     )
     .unwrap();
 
-    assert!(helpers::column_exists(&conn, "task_state_history", "task_id"));
-    assert!(helpers::column_exists(&conn, "task_state_history", "from_status")); // plan called this "from_state"
-    assert!(helpers::column_exists(&conn, "task_state_history", "to_status")); // plan called this "to_state"
-    assert!(helpers::column_exists(&conn, "task_state_history", "created_at"));
+    assert!(helpers::column_exists(
+        &conn,
+        "task_state_history",
+        "task_id"
+    ));
+    assert!(helpers::column_exists(
+        &conn,
+        "task_state_history",
+        "from_status"
+    )); // plan called this "from_state"
+    assert!(helpers::column_exists(
+        &conn,
+        "task_state_history",
+        "to_status"
+    )); // plan called this "to_state"
+    assert!(helpers::column_exists(
+        &conn,
+        "task_state_history",
+        "created_at"
+    ));
 }
 
 #[test]
@@ -180,5 +196,8 @@ fn test_index_covers_window_function_ordering() {
         )
         .unwrap();
 
-    assert_eq!(count, 3, "should retrieve all 3 state transitions ordered by created_at");
+    assert_eq!(
+        count, 3,
+        "should retrieve all 3 state transitions ordered by created_at"
+    );
 }

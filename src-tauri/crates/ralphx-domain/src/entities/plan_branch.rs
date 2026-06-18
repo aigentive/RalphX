@@ -308,7 +308,9 @@ impl PlanBranch {
                 .unwrap_or(None)
                 .and_then(|s| PrPushStatus::from_db_string(&s).ok())
                 .unwrap_or_default(),
-            merge_commit_sha: row.get::<_, Option<String>>("merge_commit_sha").unwrap_or(None),
+            merge_commit_sha: row
+                .get::<_, Option<String>>("merge_commit_sha")
+                .unwrap_or(None),
             pr_draft: row
                 .get::<_, Option<i64>>("pr_draft")
                 .unwrap_or(None)

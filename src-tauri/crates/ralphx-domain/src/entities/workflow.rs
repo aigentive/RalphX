@@ -257,7 +257,10 @@ impl WorkflowSchema {
                     StateGroup::new(
                         "needs_attention",
                         "Escalated",
-                        vec![InternalStatus::MergeIncomplete, InternalStatus::MergeConflict],
+                        vec![
+                            InternalStatus::MergeIncomplete,
+                            InternalStatus::MergeConflict,
+                        ],
                     )
                     .with_icon("AlertTriangle")
                     .with_accent_color("hsl(var(--warning))")

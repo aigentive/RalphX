@@ -12,18 +12,8 @@ use super::helpers;
 
 pub fn migrate(conn: &Connection) -> AppResult<()> {
     helpers::add_column_if_not_exists(conn, "ideation_sessions", "source_task_id", "TEXT")?;
-    helpers::add_column_if_not_exists(
-        conn,
-        "ideation_sessions",
-        "source_context_type",
-        "TEXT",
-    )?;
-    helpers::add_column_if_not_exists(
-        conn,
-        "ideation_sessions",
-        "source_context_id",
-        "TEXT",
-    )?;
+    helpers::add_column_if_not_exists(conn, "ideation_sessions", "source_context_type", "TEXT")?;
+    helpers::add_column_if_not_exists(conn, "ideation_sessions", "source_context_id", "TEXT")?;
     helpers::add_column_if_not_exists(conn, "ideation_sessions", "spawn_reason", "TEXT")?;
 
     tracing::info!(

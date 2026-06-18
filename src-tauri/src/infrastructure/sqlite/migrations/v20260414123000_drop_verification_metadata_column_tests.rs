@@ -24,7 +24,11 @@ fn setup_test_db() -> Connection {
 fn test_drop_verification_metadata_column_removes_dead_column() {
     let conn = setup_test_db();
     v57_plan_verification::migrate(&conn).unwrap();
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "verification_metadata"));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "verification_metadata"
+    ));
 
     v20260414123000_drop_verification_metadata_column::migrate(&conn).unwrap();
 

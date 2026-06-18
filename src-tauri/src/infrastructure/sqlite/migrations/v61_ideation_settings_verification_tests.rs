@@ -1,5 +1,5 @@
-use rusqlite::Connection;
 use crate::infrastructure::sqlite::migrations::v61_ideation_settings_verification::migrate;
+use rusqlite::Connection;
 
 fn setup_base_table(conn: &Connection) {
     conn.execute_batch(

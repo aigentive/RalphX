@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::entities::types::ApiKeyId;
+use serde::{Deserialize, Serialize};
 
 /// A single entry from the API audit log
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -164,8 +164,7 @@ impl ReviewScopeMetadata {
         let value: serde_json::Value = serde_json::from_str(json_str)?;
 
         if let Some(review_scope) = value.get("review_scope") {
-            let review_scope: ReviewScopeMetadata =
-                serde_json::from_value(review_scope.clone())?;
+            let review_scope: ReviewScopeMetadata = serde_json::from_value(review_scope.clone())?;
             Ok(Some(review_scope))
         } else {
             Ok(None)
@@ -827,8 +826,7 @@ impl ValidationCacheMetadata {
         let value: serde_json::Value = serde_json::from_str(json_str)?;
 
         if let Some(validation_cache) = value.get("validation_cache") {
-            let cache: ValidationCacheMetadata =
-                serde_json::from_value(validation_cache.clone())?;
+            let cache: ValidationCacheMetadata = serde_json::from_value(validation_cache.clone())?;
             Ok(Some(cache))
         } else {
             Ok(None)

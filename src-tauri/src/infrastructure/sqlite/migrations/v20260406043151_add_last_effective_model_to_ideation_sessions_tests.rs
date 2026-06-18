@@ -79,5 +79,8 @@ fn test_migration_existing_rows_get_null_default() {
         )
         .expect("Failed to count rows");
 
-    assert_eq!(count, 2, "All existing rows should have NULL last_effective_model");
+    assert_eq!(
+        count, 2,
+        "All existing rows should have NULL last_effective_model"
+    );
 }
