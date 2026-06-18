@@ -929,8 +929,9 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByText("PR #90")).toBeInTheDocument();
   });
 
-  it("does not directly publish pipeline-owned ideation workspaces", async () => {
+  it("allows Commit & Publish for linked pipeline-owned ideation PRs", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
     renderPane(
       "publish",
       workspace({
@@ -946,17 +947,25 @@ describe("AgentsArtifactPane", () => {
     );
 
     const publishButton = screen.getByTestId("agents-publish-confirm");
-    expect(publishButton).toHaveTextContent("Managed by Tasks");
-    expect(publishButton).toBeDisabled();
+    expect(publishButton).toHaveTextContent("Commit & Publish");
+    expect(publishButton).toBeEnabled();
+    expect(
+      screen.getByRole("switch", { name: "Autofix CI & Reviews" })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "GitHub auto-merge" })
+    ).toBeInTheDocument();
 
-    fireEvent.click(publishButton);
-
+    await user.click(publishButton);
     expect(publish).not.toHaveBeenCalled();
-    expect(screen.getByTestId("agents-publish-actions-menu")).toBeEnabled();
+    const dialog = await screen.findByRole("dialog", {
+      name: "Commit and publish workspace?",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Commit & Publish" })
+    );
 
-    await userEvent.click(screen.getByTestId("agents-publish-actions-menu"));
-
-    expect(await screen.findByTestId("agents-close-pr")).toHaveTextContent("Close PR");
+    await waitFor(() => expect(publish).toHaveBeenCalledWith("conversation-1"));
   });
 
   it("allows PR maintenance actions for pipeline-owned ideation workspaces", async () => {
