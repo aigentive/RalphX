@@ -86,6 +86,7 @@ const mockAtlassianIntegrationSettings = {
 };
 
 const mockAgentConversationJiraIssues = new Map<string, unknown>();
+const mockAgentConversationLinearIssues = new Map<string, unknown>();
 
 function mockJiraIssue(input: {
   conversationId: string;
@@ -139,6 +140,46 @@ const mockLinearIntegrationSettings = {
   lastError: null as string | null,
   updatedAt: new Date(0).toISOString(),
 };
+
+function mockLinearIssue(input: {
+  conversationId: string;
+  projectId?: string | null;
+  issueId: string;
+  issueKey?: string | null;
+  title?: string | null;
+  issueUrl?: string | null;
+}) {
+  const now = new Date(0).toISOString();
+  return {
+    conversationId: input.conversationId,
+    projectId: input.projectId ?? "mock-project",
+    provider: "linear",
+    issueId: input.issueId,
+    issueKey: input.issueKey ?? null,
+    issueUrl:
+      input.issueUrl ??
+      (input.issueKey
+        ? `https://linear.app/mock/issue/${input.issueKey}/mock`
+        : null),
+    title: input.title ?? `Mock issue ${input.issueKey ?? input.issueId}`,
+    status: "Todo",
+    assignee: null,
+    reporter: "Mock Creator",
+    updatedAtRemote: now,
+    descriptionMarkdown: "Mock Linear description.",
+    descriptionText: "Mock Linear description.",
+    comments: [],
+    attachments: [],
+    lastRefreshedAt: now,
+    refreshStatus: "loaded",
+    refreshError: null,
+    assignedAt: now,
+    assignedFromMessageId: null,
+    manuallyAssigned: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
 
 const mockAgentProviderSettings = {
   providers: [
@@ -818,6 +859,81 @@ const commandHandlers: Record<
       ],
     };
   },
+  get_linear_integration_settings: async () => mockLinearIntegrationSettings,
+  save_linear_integration_settings: async (args) => {
+    const input = args.input as { apiToken?: string | null };
+    mockLinearIntegrationSettings.hasApiToken =
+      Boolean(input.apiToken?.trim()) ||
+      mockLinearIntegrationSettings.hasApiToken;
+    mockLinearIntegrationSettings.enabled = false;
+    mockLinearIntegrationSettings.validationStatus =
+      mockLinearIntegrationSettings.hasApiToken ? "pending" : "not_configured";
+    mockLinearIntegrationSettings.issueSearchAvailable = false;
+    mockLinearIntegrationSettings.lastError = null;
+    mockLinearIntegrationSettings.updatedAt = new Date(0).toISOString();
+    return mockLinearIntegrationSettings;
+  },
+  validate_linear_integration: async () => {
+    Object.assign(mockLinearIntegrationSettings, {
+      enabled: true,
+      validationStatus: "valid",
+      issueSearchAvailable: true,
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+    return mockLinearIntegrationSettings;
+  },
+  search_linear_issues: async () => ({ issues: [] }),
+  get_agent_conversation_linear_issue: async (args) => {
+    const input = args.input as { conversationId: string };
+    return {
+      issue: mockAgentConversationLinearIssues.get(input.conversationId) ?? null,
+    };
+  },
+  assign_agent_conversation_linear_issue: async (args) => {
+    const input = args.input as {
+      conversationId: string;
+      projectId?: string | null;
+      issueId: string;
+      issueKey?: string | null;
+      title?: string | null;
+      issueUrl?: string | null;
+    };
+    const issue = mockLinearIssue(input);
+    mockAgentConversationLinearIssues.set(input.conversationId, issue);
+    return { issue };
+  },
+  refresh_agent_conversation_linear_issue: async (args) => {
+    const input = args.input as { conversationId: string };
+    const existing = mockAgentConversationLinearIssues.get(input.conversationId);
+    if (!existing || typeof existing !== "object") {
+      return { issue: null };
+    }
+    const issue = {
+      ...existing,
+      lastRefreshedAt: new Date(0).toISOString(),
+      refreshStatus: "loaded",
+      refreshError: null,
+    };
+    mockAgentConversationLinearIssues.set(input.conversationId, issue);
+    return { issue };
+  },
+  clear_agent_conversation_linear_issue: async (args) => {
+    const input = args.input as { conversationId: string };
+    mockAgentConversationLinearIssues.delete(input.conversationId);
+    return { issue: null };
+  },
+  get_linear_webhook_config: async () => mockLinearWebhookConfig,
+  save_linear_webhook_signing_secret: async (args) => {
+    const input = args.input as { signingSecret?: string; enabled?: boolean };
+    if (!input.signingSecret?.trim()) {
+      throw new Error("Linear webhook signing secret cannot be empty");
+    }
+    mockLinearWebhookConfig.enabled = input.enabled ?? true;
+    mockLinearWebhookConfig.hasSigningSecret = true;
+    return mockLinearWebhookConfig;
+  },
   get_agent_conversation_jira_issue: async (args) => {
     const input = args.input as { conversationId: string };
     return {
@@ -856,42 +972,6 @@ const commandHandlers: Record<
     const input = args.input as { conversationId: string };
     mockAgentConversationJiraIssues.delete(input.conversationId);
     return { issue: null };
-  },
-  get_linear_integration_settings: async () => mockLinearIntegrationSettings,
-  save_linear_integration_settings: async (args) => {
-    const input = args.input as { apiToken?: string | null };
-    mockLinearIntegrationSettings.hasApiToken =
-      Boolean(input.apiToken?.trim()) ||
-      mockLinearIntegrationSettings.hasApiToken;
-    mockLinearIntegrationSettings.enabled = false;
-    mockLinearIntegrationSettings.validationStatus =
-      mockLinearIntegrationSettings.hasApiToken ? "pending" : "not_configured";
-    mockLinearIntegrationSettings.issueSearchAvailable = false;
-    mockLinearIntegrationSettings.lastError = null;
-    mockLinearIntegrationSettings.updatedAt = new Date(0).toISOString();
-    return mockLinearIntegrationSettings;
-  },
-  validate_linear_integration: async () => {
-    Object.assign(mockLinearIntegrationSettings, {
-      enabled: true,
-      validationStatus: "valid",
-      issueSearchAvailable: true,
-      lastValidatedAt: new Date(0).toISOString(),
-      lastError: null,
-      updatedAt: new Date(0).toISOString(),
-    });
-    return mockLinearIntegrationSettings;
-  },
-  search_linear_issues: async () => ({ issues: [] }),
-  get_linear_webhook_config: async () => mockLinearWebhookConfig,
-  save_linear_webhook_signing_secret: async (args) => {
-    const input = args.input as { signingSecret?: string; enabled?: boolean };
-    if (!input.signingSecret?.trim()) {
-      throw new Error("Linear webhook signing secret cannot be empty");
-    }
-    mockLinearWebhookConfig.enabled = input.enabled ?? true;
-    mockLinearWebhookConfig.hasSigningSecret = true;
-    return mockLinearWebhookConfig;
   },
   update_agent_provider_settings: async (args) => {
     const input = args.input as Partial<

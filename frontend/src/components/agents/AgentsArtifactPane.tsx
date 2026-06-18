@@ -15,6 +15,7 @@ import { toast } from "sonner";
 
 import { artifactApi } from "@/api/artifact";
 import { atlassianApi } from "@/api/atlassian";
+import { linearApi } from "@/api/linear";
 import { ideationApi, toTaskProposal } from "@/api/ideation";
 import { verificationApi } from "@/api/verification";
 import {
@@ -116,6 +117,11 @@ const LazyAgentsJiraIssuePanel = lazy(() =>
     default: module.AgentsJiraIssuePanel,
   })),
 );
+const LazyAgentsLinearIssuePanel = lazy(() =>
+  import("@/components/agents/AgentsLinearIssuePanel").then((module) => ({
+    default: module.AgentsLinearIssuePanel,
+  })),
+);
 
 const ARTIFACT_TABS: Array<{
   id: IdeationArtifactTab;
@@ -137,6 +143,12 @@ const PUBLISH_TAB = {
 const JIRA_TAB = {
   id: "jira" as const,
   label: "Jira",
+  icon: Ticket,
+};
+
+const LINEAR_TAB = {
+  id: "linear" as const,
+  label: "Linear",
   icon: Ticket,
 };
 
@@ -258,6 +270,15 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     atlassianSettingsQuery.data?.enabled &&
       atlassianSettingsQuery.data?.jiraAvailable,
   );
+  const linearSettingsQuery = useQuery({
+    queryKey: ["linear", "settings"],
+    queryFn: () => linearApi.getSettings(),
+    staleTime: 30_000,
+  });
+  const showLinearTab = Boolean(
+    linearSettingsQuery.data?.enabled &&
+      linearSettingsQuery.data?.issueSearchAvailable,
+  );
   const [displayedVerificationStatus, setDisplayedVerificationStatus] = useState<{
     status: VerificationStatus;
     inProgress: boolean;
@@ -336,9 +357,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     () => [
       ...ARTIFACT_TABS.filter((tab) => availableIdeationTabIds.includes(tab.id)),
       ...(showJiraTab ? [JIRA_TAB] : []),
+      ...(showLinearTab ? [LINEAR_TAB] : []),
       ...(showPublishTab ? [PUBLISH_TAB] : []),
     ],
-    [availableIdeationTabIds, showJiraTab, showPublishTab],
+    [availableIdeationTabIds, showJiraTab, showLinearTab, showPublishTab],
   );
   const effectiveActiveTab =
     visibleTabs.some((tab) => tab.id === activeTab)
@@ -347,7 +369,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         ? "publish"
         : showJiraTab
           ? "jira"
-          : "plan";
+          : showLinearTab
+            ? "linear"
+            : "plan";
   const shouldLoadVerificationData =
     shouldLoadIdeationData && effectiveActiveTab === "verification";
   const shouldLoadDependencyGraph =
@@ -742,6 +766,17 @@ function ArtifactContent({
     return (
       <Suspense fallback={<EmptyArtifactState title="Loading Jira..." />}>
         <LazyAgentsJiraIssuePanel
+          conversationId={conversationId}
+          projectId={projectId}
+        />
+      </Suspense>
+    );
+  }
+
+  if (activeTab === "linear") {
+    return (
+      <Suspense fallback={<EmptyArtifactState title="Loading Linear..." />}>
+        <LazyAgentsLinearIssuePanel
           conversationId={conversationId}
           projectId={projectId}
         />

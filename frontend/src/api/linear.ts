@@ -41,8 +41,42 @@ export const LinearIssueSummarySchema = z.object({
 
 export type LinearIssueSummary = z.infer<typeof LinearIssueSummarySchema>;
 
+export const AgentConversationLinearIssueSchema = z.object({
+  conversationId: z.string(),
+  projectId: z.string(),
+  provider: z.literal("linear"),
+  issueId: z.string(),
+  issueKey: z.string().nullable().optional(),
+  issueUrl: z.string().nullable().optional(),
+  title: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+  assignee: z.string().nullable().optional(),
+  reporter: z.string().nullable().optional(),
+  updatedAtRemote: z.string().nullable().optional(),
+  descriptionMarkdown: z.string().nullable().optional(),
+  descriptionText: z.string().nullable().optional(),
+  comments: z.array(z.unknown()).default([]),
+  attachments: z.array(z.unknown()).default([]),
+  lastRefreshedAt: z.string().nullable().optional(),
+  refreshStatus: z.enum(["not_loaded", "loaded", "error"]),
+  refreshError: z.string().nullable().optional(),
+  assignedAt: z.string(),
+  assignedFromMessageId: z.string().nullable().optional(),
+  manuallyAssigned: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export type AgentConversationLinearIssue = z.infer<
+  typeof AgentConversationLinearIssueSchema
+>;
+
 export const SearchLinearIssuesResponseSchema = z.object({
   issues: z.array(LinearIssueSummarySchema),
+});
+
+export const AgentConversationLinearIssueResponseSchema = z.object({
+  issue: AgentConversationLinearIssueSchema.nullable().optional(),
 });
 
 export interface SaveLinearWebhookSigningSecretInput {
@@ -57,6 +91,20 @@ export interface SaveLinearIntegrationSettingsInput {
 export interface SearchLinearIssuesInput {
   query: string;
   limit?: number;
+}
+
+export interface AgentConversationLinearIssueConversationInput {
+  conversationId: string;
+}
+
+export interface AssignAgentConversationLinearIssueInput {
+  conversationId: string;
+  projectId?: string | null;
+  issueId: string;
+  issueKey?: string | null;
+  title?: string | null;
+  issueUrl?: string | null;
+  refresh?: boolean;
 }
 
 export const linearApi = {
@@ -95,6 +143,50 @@ export const linearApi = {
       SearchLinearIssuesResponseSchema,
     );
     return response.issues;
+  },
+
+  async getAgentConversationLinearIssue(
+    input: AgentConversationLinearIssueConversationInput,
+  ): Promise<AgentConversationLinearIssue | null> {
+    const response = await typedInvoke(
+      "get_agent_conversation_linear_issue",
+      { input },
+      AgentConversationLinearIssueResponseSchema,
+    );
+    return response.issue ?? null;
+  },
+
+  async assignAgentConversationLinearIssue(
+    input: AssignAgentConversationLinearIssueInput,
+  ): Promise<AgentConversationLinearIssue | null> {
+    const response = await typedInvoke(
+      "assign_agent_conversation_linear_issue",
+      { input },
+      AgentConversationLinearIssueResponseSchema,
+    );
+    return response.issue ?? null;
+  },
+
+  async refreshAgentConversationLinearIssue(
+    input: AgentConversationLinearIssueConversationInput,
+  ): Promise<AgentConversationLinearIssue | null> {
+    const response = await typedInvoke(
+      "refresh_agent_conversation_linear_issue",
+      { input },
+      AgentConversationLinearIssueResponseSchema,
+    );
+    return response.issue ?? null;
+  },
+
+  async clearAgentConversationLinearIssue(
+    input: AgentConversationLinearIssueConversationInput,
+  ): Promise<AgentConversationLinearIssue | null> {
+    const response = await typedInvoke(
+      "clear_agent_conversation_linear_issue",
+      { input },
+      AgentConversationLinearIssueResponseSchema,
+    );
+    return response.issue ?? null;
   },
 
   getWebhookConfig(): Promise<LinearWebhookConfig> {
