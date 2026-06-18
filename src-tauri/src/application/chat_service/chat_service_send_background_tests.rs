@@ -1,6 +1,6 @@
 use super::{
-    attribution_from_message, build_assistant_transcript_segments, session_changed_after_resume,
-    enqueue_silent_completion_recovery, should_process_stream_queue,
+    attribution_from_message, build_assistant_transcript_segments,
+    enqueue_silent_completion_recovery, session_changed_after_resume, should_process_stream_queue,
     should_recover_silent_completion, should_warn_missing_agent_task_ledger,
     silent_completion_recovery_backoff, SilentCompletionRecoveryEnqueue,
 };
@@ -606,9 +606,15 @@ fn message_attribution_preserves_provider_metadata() {
 
     let attribution = attribution_from_message(&message);
 
-    assert_eq!(attribution.attribution_source.as_deref(), Some("native_runtime"));
+    assert_eq!(
+        attribution.attribution_source.as_deref(),
+        Some("native_runtime")
+    );
     assert_eq!(attribution.provider_harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(attribution.provider_session_id.as_deref(), Some("codex-session"));
+    assert_eq!(
+        attribution.provider_session_id.as_deref(),
+        Some("codex-session")
+    );
     assert_eq!(attribution.upstream_provider.as_deref(), Some("openai"));
     assert_eq!(attribution.provider_profile.as_deref(), Some("ideation"));
     assert_eq!(attribution.logical_model.as_deref(), Some("gpt-5.5"));
@@ -1195,6 +1201,9 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         )),
         agent_conversation_jira_issue_repo: Some(Arc::clone(
             &state.agent_conversation_jira_issue_repo,
+        )),
+        agent_conversation_linear_issue_repo: Some(Arc::clone(
+            &state.agent_conversation_linear_issue_repo,
         )),
         task_proposal_repo: Some(Arc::clone(&state.task_proposal_repo)),
         activity_event_repo: Arc::clone(&state.activity_event_repo),

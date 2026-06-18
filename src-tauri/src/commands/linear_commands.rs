@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::application::{AppState, LinearIntegrationSettings, LinearIssueSummary};
+use crate::domain::entities::{
+    AgentConversationLinearIssueLink, ChatContextType, ChatConversationId, ProjectId,
+};
 use crate::domain::services::SecretStore;
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
 use crate::infrastructure::sqlite::SqliteLinearWebhookStore;
@@ -70,6 +73,151 @@ pub struct SearchLinearIssuesResponse {
     pub issues: Vec<LinearIssueSummary>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetAgentConversationLinearIssueInput {
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignAgentConversationLinearIssueInput {
+    pub conversation_id: String,
+    pub project_id: Option<String>,
+    pub issue_id: String,
+    pub issue_key: Option<String>,
+    pub title: Option<String>,
+    pub issue_url: Option<String>,
+    #[serde(default)]
+    pub refresh: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshAgentConversationLinearIssueInput {
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearAgentConversationLinearIssueInput {
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationLinearIssueResponse {
+    pub issue: Option<AgentConversationLinearIssueLinkResponse>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationLinearIssueLinkResponse {
+    pub conversation_id: String,
+    pub project_id: String,
+    pub provider: String,
+    pub issue_id: String,
+    pub issue_key: Option<String>,
+    pub issue_url: Option<String>,
+    pub title: Option<String>,
+    pub status: Option<String>,
+    pub assignee: Option<String>,
+    pub reporter: Option<String>,
+    pub updated_at_remote: Option<String>,
+    pub description_markdown: Option<String>,
+    pub description_text: Option<String>,
+    pub comments: Vec<serde_json::Value>,
+    pub attachments: Vec<serde_json::Value>,
+    pub last_refreshed_at: Option<DateTime<Utc>>,
+    pub refresh_status: String,
+    pub refresh_error: Option<String>,
+    pub assigned_at: DateTime<Utc>,
+    pub assigned_from_message_id: Option<String>,
+    pub manually_assigned: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<AgentConversationLinearIssueLink> for AgentConversationLinearIssueLinkResponse {
+    fn from(link: AgentConversationLinearIssueLink) -> Self {
+        Self {
+            conversation_id: link.conversation_id.as_str().to_string(),
+            project_id: link.project_id.as_str().to_string(),
+            provider: link.provider,
+            issue_id: link.issue_id,
+            issue_key: link.issue_key,
+            issue_url: link.issue_url,
+            title: link.title,
+            status: link.status,
+            assignee: link.assignee,
+            reporter: link.reporter,
+            updated_at_remote: link.updated_at_remote,
+            description_markdown: link.description_markdown,
+            description_text: link.description_text,
+            comments: serde_json::from_str(&link.comments_json).unwrap_or_default(),
+            attachments: serde_json::from_str(&link.attachments_json).unwrap_or_default(),
+            last_refreshed_at: link.last_refreshed_at,
+            refresh_status: link.refresh_status.to_string(),
+            refresh_error: link.refresh_error,
+            assigned_at: link.assigned_at,
+            assigned_from_message_id: link
+                .assigned_from_message_id
+                .map(|message_id| message_id.as_str().to_string()),
+            manually_assigned: link.manually_assigned,
+            created_at: link.created_at,
+            updated_at: link.updated_at,
+        }
+    }
+}
+
+fn parse_conversation_id(raw: &str) -> Result<ChatConversationId, String> {
+    raw.parse::<ChatConversationId>()
+        .map_err(|_| "Invalid conversationId".to_string())
+}
+
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+async fn resolve_assignment_project_id(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    explicit_project_id: Option<String>,
+) -> Result<ProjectId, String> {
+    if let Some(project_id) = non_empty(explicit_project_id) {
+        return Ok(ProjectId::from_string(project_id));
+    }
+    if let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(workspace.project_id);
+    }
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Conversation not found".to_string())?;
+    if conversation.context_type == ChatContextType::Project {
+        return Ok(ProjectId::from_string(conversation.context_id));
+    }
+    Err("Unable to resolve project for Linear assignment".to_string())
+}
+
+fn link_response(
+    link: Option<AgentConversationLinearIssueLink>,
+) -> AgentConversationLinearIssueResponse {
+    AgentConversationLinearIssueResponse {
+        issue: link.map(AgentConversationLinearIssueLinkResponse::from),
+    }
+}
+
 #[tauri::command]
 pub async fn get_linear_webhook_config(
     state: State<'_, AppState>,
@@ -134,6 +282,104 @@ pub async fn search_linear_issues(
         .search_issues(query, input.limit.unwrap_or(10))
         .await?;
     Ok(SearchLinearIssuesResponse { issues })
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_linear_issue(
+    input: GetAgentConversationLinearIssueInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationLinearIssueResponse, String> {
+    let conversation_id = parse_conversation_id(&input.conversation_id)?;
+    let link = state
+        .agent_conversation_linear_issue_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(link_response(link))
+}
+
+#[tauri::command]
+pub async fn assign_agent_conversation_linear_issue(
+    input: AssignAgentConversationLinearIssueInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationLinearIssueResponse, String> {
+    let conversation_id = parse_conversation_id(&input.conversation_id)?;
+    let issue_id = input.issue_id.trim();
+    if issue_id.is_empty()
+        || issue_id.contains('\0')
+        || issue_id.contains('\n')
+        || issue_id.contains('\r')
+    {
+        return Err("Linear issue id is required".to_string());
+    }
+    let project_id =
+        resolve_assignment_project_id(state.inner(), &conversation_id, input.project_id).await?;
+    let reference =
+        crate::application::agent_conversation_linear_issue::ComposerLinearReferenceMetadata {
+            issue_id: issue_id.to_string(),
+            issue_key: non_empty(input.issue_key),
+            title: non_empty(input.title),
+            url: non_empty(input.issue_url),
+        };
+    let link = crate::application::agent_conversation_linear_issue::manual_link_from_reference(
+        &conversation_id,
+        &project_id,
+        reference,
+        Utc::now(),
+    );
+    let link = state
+        .agent_conversation_linear_issue_repo
+        .upsert(link)
+        .await
+        .map_err(|error| error.to_string())?;
+    let link = if input.refresh.unwrap_or(true) {
+        crate::application::agent_conversation_linear_issue::refresh_linear_issue_link(
+            &state.agent_conversation_linear_issue_repo,
+            state.linear_integration_service.as_ref(),
+            link,
+        )
+        .await
+        .map_err(|error| error.to_string())?
+    } else {
+        link
+    };
+    Ok(link_response(Some(link)))
+}
+
+#[tauri::command]
+pub async fn refresh_agent_conversation_linear_issue(
+    input: RefreshAgentConversationLinearIssueInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationLinearIssueResponse, String> {
+    let conversation_id = parse_conversation_id(&input.conversation_id)?;
+    let link = state
+        .agent_conversation_linear_issue_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "No Linear issue is assigned to this conversation".to_string())?;
+    let link = crate::application::agent_conversation_linear_issue::refresh_linear_issue_link(
+        &state.agent_conversation_linear_issue_repo,
+        state.linear_integration_service.as_ref(),
+        link,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(link_response(Some(link)))
+}
+
+#[tauri::command]
+pub async fn clear_agent_conversation_linear_issue(
+    input: ClearAgentConversationLinearIssueInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationLinearIssueResponse, String> {
+    let conversation_id = parse_conversation_id(&input.conversation_id)?;
+    state
+        .agent_conversation_linear_issue_repo
+        .clear(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(link_response(None))
 }
 
 #[tauri::command]
