@@ -298,6 +298,14 @@ impl LinearIntegrationService {
             .await
     }
 
+    pub async fn fetch_issue_content(
+        &self,
+        reference: &crate::domain::services::ComposerIntegrationReference,
+    ) -> Result<LinearIssueContent, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.fetch_issue(&auth, reference).await
+    }
+
     pub async fn expand_references_for_prompt(
         &self,
         message: &str,
