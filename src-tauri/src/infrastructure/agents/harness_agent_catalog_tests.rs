@@ -1204,6 +1204,59 @@ fn canonical_mcp_tools_match_runtime_yaml_for_current_owned_agents() {
 }
 
 #[test]
+fn plan_verifier_canonical_grant_includes_all_verifier_helpers() {
+    let root = project_root();
+    let definition = load_canonical_agent_definition(&root, "ralphx-plan-verifier")
+        .expect("expected canonical definition for ralphx-plan-verifier");
+    let runtime_config = get_agent_config("ralphx-plan-verifier")
+        .expect("expected runtime config for ralphx-plan-verifier");
+
+    // Every verifier-owned helper the MCP verification runtime and tool-recovery
+    // path expect the verifier to be able to call. `report_verification_round`
+    // was previously missing here, so the MCP server filtered it out of the
+    // verifier surface and the verifier hit "No such tool available" at runtime,
+    // leaving the parent plan unverified with zero rounds recorded.
+    for required_tool in [
+        "get_parent_session_context",
+        "get_plan_verification",
+        "get_session_plan",
+        "run_verification_enrichment",
+        "run_verification_round",
+        "report_verification_round",
+        "complete_plan_verification",
+        "update_plan_artifact",
+        "edit_plan_artifact",
+    ] {
+        assert!(
+            definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == required_tool),
+            "ralphx-plan-verifier canonical capabilities.mcp_tools must include {required_tool}"
+        );
+        assert!(
+            runtime_config
+                .allowed_mcp_tools
+                .iter()
+                .any(|tool| tool == required_tool),
+            "ralphx-plan-verifier runtime --allowed-tools surface must include {required_tool}"
+        );
+    }
+
+    // No verifier self-nudges: the verifier must never be able to message itself,
+    // its delegates, or the parent session to keep the loop alive.
+    assert!(
+        !definition
+            .capabilities
+            .mcp_tools
+            .iter()
+            .any(|tool| tool == "send_ideation_session_message"),
+        "ralphx-plan-verifier must not be granted send_ideation_session_message (no-self-nudge rule)"
+    );
+}
+
+#[test]
 fn chat_and_edit_agents_expose_plan_mode_proposal_contract() {
     let root = project_root();
 

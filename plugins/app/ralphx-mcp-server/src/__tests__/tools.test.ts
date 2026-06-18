@@ -522,6 +522,7 @@ describe('getFilteredTools', () => {
     expect(toolNames).toContain('fs_glob');
     expect(toolNames).toContain('run_verification_enrichment');
     expect(toolNames).toContain('run_verification_round');
+    expect(toolNames).toContain('report_verification_round');
     expect(toolNames).toContain('complete_plan_verification');
     expect(toolNames).toContain('get_plan_verification');
     expect(toolNames).not.toContain('send_ideation_session_message');
@@ -1942,10 +1943,12 @@ describe('verification round helper tools', () => {
   it('plan verifier should only expose the high-level verification helpers', () => {
     expect(toolsByAgent()[PLAN_VERIFIER]).toContain('run_verification_enrichment');
     expect(toolsByAgent()[PLAN_VERIFIER]).toContain('run_verification_round');
+    expect(toolsByAgent()[PLAN_VERIFIER]).toContain('report_verification_round');
     setAgentType(PLAN_VERIFIER);
     const toolNames = getFilteredTools().map((tool) => tool.name);
     expect(toolNames).toContain('run_verification_enrichment');
     expect(toolNames).toContain('run_verification_round');
+    expect(toolNames).toContain('report_verification_round');
     expect(toolNames).toContain('complete_plan_verification');
     expect(toolNames).not.toContain('assess_verification_round');
     expect(toolNames).not.toContain('run_required_verification_critic_round');
