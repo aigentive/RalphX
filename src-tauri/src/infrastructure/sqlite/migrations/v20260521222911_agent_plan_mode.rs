@@ -12,17 +12,20 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
     conn.execute("PRAGMA legacy_alter_table = ON", [])
         .map_err(|error| AppError::Database(error.to_string()))?;
 
-    widen_plan_mode_check(
+    rewrite_table_check_constraint(
         conn,
         "chat_conversations",
+        "'plan'",
         &[(
             "CHECK(agent_mode IN ('chat', 'edit', 'ideation'))",
             "CHECK(agent_mode IN ('chat', 'edit', 'plan', 'ideation'))",
         )],
+        "agent Plan mode",
     )?;
-    widen_plan_mode_check(
+    rewrite_table_check_constraint(
         conn,
         "agent_conversation_workspaces",
+        "'plan'",
         &[
             (
                 "CHECK (mode IN ('chat', 'edit', 'ideation'))",
@@ -37,6 +40,7 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
                 "CHECK (mode IN ('edit', 'ideation', 'chat', 'plan'))",
             ),
         ],
+        "agent Plan mode",
     )?;
 
     conn.execute(
@@ -60,31 +64,33 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
-fn foreign_keys_enabled(conn: &Connection) -> AppResult<bool> {
+pub(super) fn foreign_keys_enabled(conn: &Connection) -> AppResult<bool> {
     conn.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
         .map(|value| value != 0)
         .map_err(|error| AppError::Database(error.to_string()))
 }
 
-fn legacy_alter_table_enabled(conn: &Connection) -> AppResult<bool> {
+pub(super) fn legacy_alter_table_enabled(conn: &Connection) -> AppResult<bool> {
     conn.query_row("PRAGMA legacy_alter_table", [], |row| row.get::<_, i64>(0))
         .map(|value| value != 0)
         .map_err(|error| AppError::Database(error.to_string()))
 }
 
-fn widen_plan_mode_check(
+pub(super) fn rewrite_table_check_constraint(
     conn: &Connection,
     table_name: &'static str,
+    already_allowed_value: &str,
     replacements: &[(&str, &str)],
+    error_label: &str,
 ) -> AppResult<()> {
     let create_sql = table_create_sql(conn, table_name)?;
-    if create_sql.contains("'plan'") {
+    if create_sql.contains(already_allowed_value) {
         return Ok(());
     }
 
     let replacement_sql = apply_replacements(&create_sql, replacements).ok_or_else(|| {
         AppError::Database(format!(
-            "Could not find agent Plan mode CHECK constraint for {table_name}"
+            "Could not find {error_label} CHECK constraint for {table_name}"
         ))
     })?;
     let new_table_name = format!("{table_name}_new_plan_mode");

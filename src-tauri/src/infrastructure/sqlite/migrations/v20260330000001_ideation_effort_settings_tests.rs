@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::infrastructure::sqlite::migrations::{run_migrations};
     use crate::infrastructure::sqlite::connection::open_memory_connection;
+    use crate::infrastructure::sqlite::migrations::run_migrations;
 
     #[test]
     fn test_migration_creates_table() {
@@ -26,7 +26,10 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("query index existence");
-        assert_eq!(idx_count, 1, "idx_ideation_effort_project index should exist");
+        assert_eq!(
+            idx_count, 1,
+            "idx_ideation_effort_project index should exist"
+        );
 
         // Verify we can insert a global row (project_id IS NULL)
         conn.execute(

@@ -7,7 +7,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::Row;
 use serde::{Deserialize, Serialize};
 
-use super::types::{IdeationSessionId, ExecutionPlanId};
+use super::types::{ExecutionPlanId, IdeationSessionId};
 
 /// Status of an execution plan
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

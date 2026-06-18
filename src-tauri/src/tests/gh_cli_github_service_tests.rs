@@ -8,11 +8,11 @@ use crate::error::AppError;
 use crate::infrastructure::services::gh_cli_github_service::{
     parse_check_run_annotations_output, parse_check_runs_output,
     parse_code_scanning_alert_annotations_output, parse_pr_annotation_head_sha_output,
-    parse_pr_create_output, parse_pr_create_plain_output,
-    parse_pr_health_output, parse_pr_review_comment_annotations_output,
-    parse_pr_review_decision_output, parse_pr_review_feedback_output, parse_pr_search_output,
-    parse_pr_status_output, parse_pr_sync_state_output, sanitize_stderr_line, scrub_token_urls,
-    CheckRunAnnotationSource,
+    parse_pr_create_output, parse_pr_create_plain_output, parse_pr_health_output,
+    parse_pr_review_comment_annotations_output, parse_pr_review_decision_output,
+    parse_pr_review_feedback_output, parse_pr_search_output, parse_pr_status_output,
+    parse_pr_sync_state_output, parse_submit_pr_review_output, sanitize_stderr_line,
+    scrub_token_urls, CheckRunAnnotationSource,
 };
 
 // ── parse_pr_create_output ─────────────────────────────────────────────────
@@ -265,13 +265,19 @@ fn parse_pr_health_collects_rollup_comments_and_auto_merge() {
 
     let health = parse_pr_health_output(view_json, comments_json).unwrap();
 
-    assert_eq!(health.sync_state.merge_state_status, Some(PrMergeStateStatus::Unstable));
+    assert_eq!(
+        health.sync_state.merge_state_status,
+        Some(PrMergeStateStatus::Unstable)
+    );
     assert_eq!(health.review_decision.as_deref(), Some("CHANGES_REQUESTED"));
     assert_eq!(health.checks.len(), 2);
     assert_eq!(health.checks[0].name, "CodeQL");
     assert_eq!(health.checks[1].name, "codecov/project");
     assert_eq!(
-        health.auto_merge_request.as_ref().and_then(|request| request.merge_method.as_deref()),
+        health
+            .auto_merge_request
+            .as_ref()
+            .and_then(|request| request.merge_method.as_deref()),
         Some("squash")
     );
     assert_eq!(health.issue_comments.len(), 1);
@@ -283,6 +289,20 @@ fn parse_pr_review_decision_detects_requested_changes() {
     assert!(parse_pr_review_decision_output(r#"{"reviewDecision":"CHANGES_REQUESTED"}"#).unwrap());
     assert!(!parse_pr_review_decision_output(r#"{"reviewDecision":"APPROVED"}"#).unwrap());
     assert!(!parse_pr_review_decision_output(r#"{"reviewDecision":""}"#).unwrap());
+}
+
+#[test]
+fn parse_submit_pr_review_output_returns_id_and_url() {
+    let submitted = parse_submit_pr_review_output(
+        r#"{"id": 12345, "html_url": "https://github.com/owner/repo/pull/68#pullrequestreview-12345"}"#,
+    )
+    .unwrap();
+
+    assert_eq!(submitted.id, "12345");
+    assert_eq!(
+        submitted.url.as_deref(),
+        Some("https://github.com/owner/repo/pull/68#pullrequestreview-12345")
+    );
 }
 
 #[test]
@@ -717,7 +737,7 @@ mod mock_roundtrip {
     use async_trait::async_trait;
 
     use crate::domain::services::github_service::{
-        GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrStatus,
+        GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrReviewSubmissionEvent, PrStatus,
     };
     use crate::error::AppError;
     use crate::infrastructure::services::gh_cli_github_service::{
@@ -971,7 +991,7 @@ mod mock_roundtrip {
             vec![vec!["pr", "edit", "68", "--base", "main"]
                 .into_iter()
                 .map(str::to_string)
-            .collect::<Vec<_>>()]
+                .collect::<Vec<_>>()]
         );
     }
 
@@ -1136,6 +1156,42 @@ mod mock_roundtrip {
     }
 
     #[tokio::test]
+    async fn submit_pr_review_uses_summary_review_api() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            r#"{"id": 321, "html_url": "https://github.com/owner/repo/pull/68#pullrequestreview-321"}"#.to_string(),
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let submitted = service
+            .submit_pr_review(
+                Path::new("/tmp"),
+                68,
+                PrReviewSubmissionEvent::RequestChanges,
+                "Please fix the failing case.",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(submitted.id, "321");
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec![
+                "api",
+                "repos/{owner}/{repo}/pulls/68/reviews",
+                "-X",
+                "POST",
+                "-f",
+                "event=REQUEST_CHANGES",
+                "-f",
+                "body=Please fix the failing case.",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()]
+        );
+    }
+
+    #[tokio::test]
     async fn fetch_pr_health_uses_view_and_issue_comments_api() {
         let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![
             Ok(vec![r#"{
@@ -1148,12 +1204,16 @@ mod mock_roundtrip {
                 "statusCheckRollup": [],
                 "autoMergeRequest": null,
                 "reviewDecision": "APPROVED"
-            }"#.to_string()]),
+            }"#
+            .to_string()]),
             Ok(vec!["[]".to_string()]),
         ]));
         let service = GhCliGithubService::with_runner(runner.clone());
 
-        let health = service.fetch_pr_health(Path::new("/tmp"), 68).await.unwrap();
+        let health = service
+            .fetch_pr_health(Path::new("/tmp"), 68)
+            .await
+            .unwrap();
 
         assert_eq!(health.sync_state.head_ref_name, "feature");
         assert_eq!(health.review_decision.as_deref(), Some("APPROVED"));
@@ -1187,7 +1247,10 @@ mod mock_roundtrip {
 
     #[tokio::test]
     async fn auto_merge_commands_use_selected_method() {
-        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![]), Ok(vec![])]));
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![
+            Ok(vec![]),
+            Ok(vec![]),
+        ]));
         let service = GhCliGithubService::with_runner(runner.clone());
 
         service

@@ -24,11 +24,30 @@ fn test_verification_run_store_tables_created() {
     assert!(helpers::table_exists(&conn, "verification_runs"));
     assert!(helpers::table_exists(&conn, "verification_rounds"));
     assert!(helpers::table_exists(&conn, "verification_round_gaps"));
-    assert!(helpers::table_exists(&conn, "verification_run_current_gaps"));
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "verification_current_round"));
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "verification_max_rounds"));
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "verification_gap_count"));
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "verification_gap_score"));
+    assert!(helpers::table_exists(
+        &conn,
+        "verification_run_current_gaps"
+    ));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "verification_current_round"
+    ));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "verification_max_rounds"
+    ));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "verification_gap_count"
+    ));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "verification_gap_score"
+    ));
     assert!(helpers::column_exists(
         &conn,
         "ideation_sessions",
@@ -73,11 +92,30 @@ fn test_verification_run_store_idempotent() {
     assert!(helpers::table_exists(&conn, "verification_runs"));
     assert!(helpers::table_exists(&conn, "verification_rounds"));
     assert!(helpers::table_exists(&conn, "verification_round_gaps"));
-    assert!(helpers::table_exists(&conn, "verification_run_current_gaps"));
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "verification_current_round"));
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "verification_max_rounds"));
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "verification_gap_count"));
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "verification_gap_score"));
+    assert!(helpers::table_exists(
+        &conn,
+        "verification_run_current_gaps"
+    ));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "verification_current_round"
+    ));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "verification_max_rounds"
+    ));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "verification_gap_count"
+    ));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "verification_gap_score"
+    ));
     assert!(helpers::column_exists(
         &conn,
         "ideation_sessions",

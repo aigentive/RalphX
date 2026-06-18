@@ -344,6 +344,26 @@ pub async fn start_http_server(
             get(get_agent_workspace_pr_fix_context),
         )
         .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-context",
+            get(get_agent_workspace_pr_review_context),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-actions",
+            post(propose_agent_workspace_pr_review_action),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/complete-pr-review-run",
+            post(complete_agent_workspace_pr_review_run),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-actions/:action_id/submit",
+            post(submit_agent_workspace_pr_review_action),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-actions/:action_id/skip",
+            post(skip_agent_workspace_pr_review_action),
+        )
+        .route(
             "/api/agent-workspaces/:conversation_id/pr-comments/:comment_id",
             get(read_agent_workspace_pr_comment),
         )

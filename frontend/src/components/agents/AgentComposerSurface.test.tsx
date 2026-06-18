@@ -391,6 +391,21 @@ describe("AgentComposerSurface", () => {
     expect(onSend).toHaveBeenCalledWith("1");
   });
 
+  it("submits the configured empty message when the textarea is blank", () => {
+    const onSend = vi.fn();
+    renderComposer({
+      onSend,
+      emptySubmitMessage: "Review this PR.",
+    });
+
+    const action = screen.getByTestId("agent-composer-submit");
+    expect(action).toBeEnabled();
+
+    fireEvent.click(action);
+
+    expect(onSend).toHaveBeenCalledWith("Review this PR.");
+  });
+
   it("bounds slash command suggestions to five visible rows", async () => {
     renderComposer({
       mode: {

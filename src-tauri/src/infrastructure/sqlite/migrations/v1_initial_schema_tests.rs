@@ -53,7 +53,10 @@ fn test_run_migrations_repairs_skipped_external_session_reliability_columns() {
     let conn = open_memory_connection().unwrap();
     create_migrations_table(&conn).unwrap();
 
-    for migration in MIGRATIONS.iter().filter(|migration| migration.version <= 78) {
+    for migration in MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version <= 78)
+    {
         (migration.migrate)(&conn).unwrap();
         set_schema_version(&conn, migration.version).unwrap();
     }
@@ -64,7 +67,11 @@ fn test_run_migrations_repairs_skipped_external_session_reliability_columns() {
     set_schema_version(&conn, 79).unwrap();
     set_schema_version(&conn, 80).unwrap();
 
-    assert!(!helpers::column_exists(&conn, "ideation_sessions", "api_key_id"));
+    assert!(!helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "api_key_id"
+    ));
     assert!(!helpers::column_exists(
         &conn,
         "ideation_sessions",
@@ -89,7 +96,11 @@ fn test_run_migrations_repairs_skipped_external_session_reliability_columns() {
     run_migrations(&conn).unwrap();
 
     assert_eq!(get_schema_version(&conn).unwrap(), SCHEMA_VERSION);
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "api_key_id"));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "api_key_id"
+    ));
     assert!(helpers::column_exists(
         &conn,
         "ideation_sessions",
@@ -148,10 +159,7 @@ fn test_run_migrations_applies_missing_registered_versions_below_current_max() {
         "session_flow"
     ));
     assert!(helpers::table_exists(&conn, "plan_artifact_approvals"));
-    assert!(helpers::table_exists(
-        &conn,
-        "plan_complexity_assessments"
-    ));
+    assert!(helpers::table_exists(&conn, "plan_complexity_assessments"));
 
     let chat_conversations_sql: String = conn
         .query_row(

@@ -14,6 +14,7 @@ export const AGENT_CONVERSATION_MODE_OPTIONS: Array<{
   { id: "edit", label: "Agent", description: "Build, change, and review code in a branch." },
   { id: "plan", label: "Plan", description: "Draft and refine a plan before execution." },
   { id: "ideation", label: "Ideation", description: "Plan work before creating tasks." },
+  { id: "review_pr", label: "Review PR", description: "Review a linked pull request." },
 ];
 
 export function resolveConversationAgentMode(

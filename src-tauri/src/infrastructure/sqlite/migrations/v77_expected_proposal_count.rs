@@ -19,19 +19,9 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
         "INTEGER",
     )?;
 
-    helpers::add_column_if_not_exists(
-        conn,
-        "ideation_sessions",
-        "auto_accept_status",
-        "TEXT",
-    )?;
+    helpers::add_column_if_not_exists(conn, "ideation_sessions", "auto_accept_status", "TEXT")?;
 
-    helpers::add_column_if_not_exists(
-        conn,
-        "ideation_sessions",
-        "auto_accept_started_at",
-        "TEXT",
-    )?;
+    helpers::add_column_if_not_exists(conn, "ideation_sessions", "auto_accept_started_at", "TEXT")?;
 
     tracing::info!(
         "v77: added expected_proposal_count, auto_accept_status, auto_accept_started_at columns to ideation_sessions"

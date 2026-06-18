@@ -137,7 +137,10 @@ fn test_existing_sessions_unaffected() {
         )
         .unwrap();
 
-    assert_eq!(title, "Old Session", "existing session data should be preserved");
+    assert_eq!(
+        title, "Old Session",
+        "existing session data should be preserved"
+    );
 
     let src_proj: Option<String> = conn
         .query_row(
@@ -147,7 +150,10 @@ fn test_existing_sessions_unaffected() {
         )
         .unwrap();
 
-    assert!(src_proj.is_none(), "existing session source_project_id should be NULL");
+    assert!(
+        src_proj.is_none(),
+        "existing session source_project_id should be NULL"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +195,14 @@ fn test_migration_idempotent() {
     v66_cross_project_import::migrate(&conn).unwrap();
     v66_cross_project_import::migrate(&conn).unwrap();
 
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "source_project_id"));
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "source_session_id"));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "source_project_id"
+    ));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "source_session_id"
+    ));
 }

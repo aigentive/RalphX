@@ -2,8 +2,11 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
-    AgentWorkspaceSourcePullRequest, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::testing::SqliteTestDb;
@@ -431,6 +434,178 @@ async fn delete_removes_pr_comment_evidence_for_conversation() {
         .await
         .unwrap();
     assert!(comments.is_empty());
+}
+
+#[tokio::test]
+async fn pr_review_monitor_round_trips_and_active_listing_filters_terminal_rows() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+        267,
+        Some("head-sha-1".to_string()),
+    );
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+    monitor.monitor_enabled = true;
+    monitor.first_review_completed = true;
+    monitor.last_reviewed_head_sha = Some("head-sha-1".to_string());
+    monitor.last_review_outcome = Some("request_changes".to_string());
+
+    let saved = repo
+        .upsert_pr_review_monitor(monitor.clone())
+        .await
+        .unwrap();
+    assert_eq!(saved.status, AgentWorkspacePrReviewMonitorStatus::Watching);
+    assert_eq!(saved.last_seen_head_sha.as_deref(), Some("head-sha-1"));
+
+    let loaded = repo
+        .get_pr_review_monitor(&conversation_id)
+        .await
+        .unwrap()
+        .expect("monitor should exist");
+    assert!(loaded.monitor_enabled);
+    assert!(loaded.first_review_completed);
+
+    let active = repo.list_active_pr_review_monitors().await.unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].conversation_id, conversation_id);
+
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Terminal;
+    repo.upsert_pr_review_monitor(monitor).await.unwrap();
+    assert!(repo
+        .list_active_pr_review_monitors()
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn pr_review_actions_update_existing_pending_action_for_same_head() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let action = AgentWorkspacePrReviewAction::new(
+        conversation_id.clone(),
+        267,
+        "head-sha-1".to_string(),
+        AgentWorkspacePrReviewActionKind::RequestChanges,
+        "Found blocking issues".to_string(),
+        "Please address the blocking issues.".to_string(),
+        Some(r#"[{"path":"src/lib.rs"}]"#.to_string()),
+        Some("run-1".to_string()),
+    );
+    let saved = repo
+        .create_or_update_pr_review_action(action)
+        .await
+        .unwrap();
+
+    let replacement = AgentWorkspacePrReviewAction::new(
+        conversation_id.clone(),
+        267,
+        "head-sha-1".to_string(),
+        AgentWorkspacePrReviewActionKind::Approve,
+        "Looks good now".to_string(),
+        "The requested changes were addressed.".to_string(),
+        None,
+        Some("run-2".to_string()),
+    );
+    let updated = repo
+        .create_or_update_pr_review_action(replacement)
+        .await
+        .unwrap();
+
+    assert_eq!(updated.id, saved.id);
+    assert_eq!(
+        updated.proposed_action,
+        AgentWorkspacePrReviewActionKind::Approve
+    );
+    assert_eq!(updated.summary, "Looks good now");
+    assert_eq!(updated.created_by_run_id.as_deref(), Some("run-2"));
+
+    let pending = repo
+        .get_pending_pr_review_action_for_head(&conversation_id, 267, "head-sha-1")
+        .await
+        .unwrap()
+        .expect("pending action should exist");
+    assert_eq!(pending.id, saved.id);
+
+    let actions = repo
+        .list_pr_review_actions(&conversation_id, 10)
+        .await
+        .unwrap();
+    assert_eq!(actions.len(), 1);
+
+    repo.update_pr_review_action_status(
+        &saved.id,
+        AgentWorkspacePrReviewActionStatus::Submitted,
+        Some("review-1"),
+    )
+    .await
+    .unwrap();
+
+    let submitted = repo
+        .get_pr_review_action(&saved.id)
+        .await
+        .unwrap()
+        .expect("action should still exist");
+    assert_eq!(
+        submitted.status,
+        AgentWorkspacePrReviewActionStatus::Submitted
+    );
+    assert_eq!(submitted.submitted_review_id.as_deref(), Some("review-1"));
+    assert!(submitted.resolved_at.is_some());
+    assert!(repo
+        .get_pending_pr_review_action_for_head(&conversation_id, 267, "head-sha-1")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn delete_removes_pr_review_state_for_conversation() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    let monitor = AgentWorkspacePrReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+        267,
+        Some("head-sha-1".to_string()),
+    );
+    repo.upsert_pr_review_monitor(monitor).await.unwrap();
+    let action = AgentWorkspacePrReviewAction::new(
+        conversation_id.clone(),
+        267,
+        "head-sha-1".to_string(),
+        AgentWorkspacePrReviewActionKind::RequestChanges,
+        "Found blocking issues".to_string(),
+        "Please address the blocking issues.".to_string(),
+        None,
+        None,
+    );
+    repo.create_or_update_pr_review_action(action)
+        .await
+        .unwrap();
+
+    repo.delete(&conversation_id).await.unwrap();
+
+    assert!(repo
+        .get_pr_review_monitor(&conversation_id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repo
+        .list_pr_review_actions(&conversation_id, 10)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

@@ -10,18 +10,8 @@ use crate::error::AppResult;
 use crate::infrastructure::sqlite::migrations::helpers;
 
 pub fn migrate(conn: &Connection) -> AppResult<()> {
-    helpers::add_column_if_not_exists(
-        conn,
-        "task_proposals",
-        "migrated_from_session_id",
-        "TEXT",
-    )?;
-    helpers::add_column_if_not_exists(
-        conn,
-        "task_proposals",
-        "migrated_from_proposal_id",
-        "TEXT",
-    )?;
+    helpers::add_column_if_not_exists(conn, "task_proposals", "migrated_from_session_id", "TEXT")?;
+    helpers::add_column_if_not_exists(conn, "task_proposals", "migrated_from_proposal_id", "TEXT")?;
 
     tracing::info!(
         "v73: added migrated_from_session_id and migrated_from_proposal_id columns to task_proposals"

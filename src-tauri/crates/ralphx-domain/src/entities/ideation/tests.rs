@@ -1,7 +1,5 @@
 use super::*;
-use crate::entities::{
-    ChatMessageId, IdeationSessionId, ProjectId, TaskId, TaskProposalId,
-};
+use crate::entities::{ChatMessageId, IdeationSessionId, ProjectId, TaskId, TaskProposalId};
 
 // ===== IdeationSessionStatus Tests =====
 
@@ -2525,7 +2523,10 @@ fn dependency_graph_roundtrip_serialization() {
 
 #[test]
 fn verification_status_default_is_unverified() {
-    assert_eq!(VerificationStatus::default(), VerificationStatus::Unverified);
+    assert_eq!(
+        VerificationStatus::default(),
+        VerificationStatus::Unverified
+    );
 }
 
 #[test]
@@ -2623,7 +2624,10 @@ fn verification_run_snapshot_serde_roundtrip() {
     assert_eq!(restored.rounds[0].gap_score, 13);
     assert!(restored.rounds[0].parse_failed);
     assert_eq!(restored.current_gaps[0].severity, "critical");
-    assert_eq!(restored.convergence_reason, Some("zero_blocking".to_string()));
+    assert_eq!(
+        restored.convergence_reason,
+        Some("zero_blocking".to_string())
+    );
 }
 
 // ===== VerificationError Tests =====
@@ -2636,8 +2640,14 @@ fn verification_error_display_not_verified() {
 
 #[test]
 fn verification_error_display_in_progress() {
-    let err = VerificationError::InProgress { round: 2, max_rounds: 5 };
-    assert_eq!(err.to_string(), "Plan verification is in progress (round 2/5)");
+    let err = VerificationError::InProgress {
+        round: 2,
+        max_rounds: 5,
+    };
+    assert_eq!(
+        err.to_string(),
+        "Plan verification is in progress (round 2/5)"
+    );
 }
 
 #[test]
@@ -2649,7 +2659,10 @@ fn verification_error_display_has_unresolved_gaps() {
 #[test]
 fn verification_error_display_skipped_cannot_update() {
     let err = VerificationError::SkippedCannotUpdate;
-    assert_eq!(err.to_string(), "Verification was skipped — cannot update from critic");
+    assert_eq!(
+        err.to_string(),
+        "Verification was skipped — cannot update from critic"
+    );
 }
 
 #[test]

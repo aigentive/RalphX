@@ -42,7 +42,11 @@ fn test_migration_drops_fallback_harness_column_and_preserves_rows() {
 
     v20260413043153_drop_agent_lane_settings_fallback_harness::migrate(&conn).unwrap();
 
-    assert!(!column_exists(&conn, "agent_lane_settings", "fallback_harness"));
+    assert!(!column_exists(
+        &conn,
+        "agent_lane_settings",
+        "fallback_harness"
+    ));
     assert!(index_exists(&conn, "idx_agent_lane_settings_scope_lane"));
     assert!(index_exists(&conn, "idx_agent_lane_settings_scope"));
 
@@ -84,5 +88,9 @@ fn test_migration_is_noop_when_column_already_absent() {
 
     v20260413043153_drop_agent_lane_settings_fallback_harness::migrate(&conn).unwrap();
 
-    assert!(!column_exists(&conn, "agent_lane_settings", "fallback_harness"));
+    assert!(!column_exists(
+        &conn,
+        "agent_lane_settings",
+        "fallback_harness"
+    ));
 }

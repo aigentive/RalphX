@@ -257,7 +257,10 @@ async fn resolve_plan_import(
         .get_by_id(&source_artifact_id)
         .await
         .map_err(|e| {
-            error!("Failed to load source plan artifact {}: {}", plan_ref.artifact_id, e);
+            error!(
+                "Failed to load source plan artifact {}: {}",
+                plan_ref.artifact_id, e
+            );
             HttpError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 message: Some("Failed to load source plan artifact".to_string()),
@@ -286,7 +289,9 @@ async fn resolve_plan_import(
     let source_session = state
         .app_state
         .ideation_session_repo
-        .get_by_id(&IdeationSessionId::from_string(source_session_id.to_string()))
+        .get_by_id(&IdeationSessionId::from_string(
+            source_session_id.to_string(),
+        ))
         .await
         .map_err(|e| {
             error!("Failed to load source session {}: {}", source_session_id, e);
@@ -358,7 +363,10 @@ async fn clone_plan_artifact(
 
     let relation = ArtifactRelation::derived_from(created.id.clone(), source.id.clone());
     if let Err(e) = state.app_state.artifact_repo.add_relation(relation).await {
-        tracing::warn!("Failed to record derived_from relation for cloned artifact: {}", e);
+        tracing::warn!(
+            "Failed to record derived_from relation for cloned artifact: {}",
+            e
+        );
     }
 
     Ok(created)
@@ -463,12 +471,8 @@ pub async fn start_ideation_http(
         })?;
 
     let parent_conversation_id = parent_conversation_id_from_headers(&headers);
-    let parent_workspace_binding = resolve_parent_workspace_binding(
-        &state,
-        &project,
-        parent_conversation_id.clone(),
-    )
-    .await?;
+    let parent_workspace_binding =
+        resolve_parent_workspace_binding(&state, &project, parent_conversation_id.clone()).await?;
 
     let plan_import = match parent_conversation_id.as_ref() {
         Some(conv_id) if is_tauri_mcp_request(&headers) => {
@@ -903,12 +907,14 @@ pub async fn start_ideation_http(
         workspace_branch: parent_workspace_binding
             .as_ref()
             .map(|binding| binding.workspace.branch_name.clone()),
-        plan_imported: if plan_import.is_some() { Some(true) } else { None },
+        plan_imported: if plan_import.is_some() {
+            Some(true)
+        } else {
+            None
+        },
         source_plan_artifact_id: plan_import
             .as_ref()
             .map(|import| import.source_artifact.id.as_str().to_string()),
-        cloned_plan_artifact_id: cloned_artifact
-            .as_ref()
-            .map(|a| a.id.as_str().to_string()),
+        cloned_plan_artifact_id: cloned_artifact.as_ref().map(|a| a.id.as_str().to_string()),
     }))
 }
