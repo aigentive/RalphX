@@ -1003,6 +1003,34 @@ describe("AgentsActiveConversationPanel", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("hides plan composer CTAs once the workspace has switched to edit mode", async () => {
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "edit",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("agents-plan-composer-cta-row")).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole("button", { name: /Verify Plan/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Implement Directly/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Create Proposals/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("hides the composer CTA row while question UI is active", async () => {
     composerQuestionModeRef.current = {
       optionCount: 3,
