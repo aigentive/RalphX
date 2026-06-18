@@ -72,6 +72,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   listAgentTasksMock: vi.fn(),
   listAgentTaskListsMock: vi.fn(),
   listAgentTaskListTasksMock: vi.fn(),
+  toastDismissMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastInfoMock: vi.fn(),
   toastLoadingMock: vi.fn(),
@@ -183,6 +184,7 @@ const {
   listAgentTasksMock,
   listAgentTaskListsMock,
   listAgentTaskListTasksMock,
+  toastDismissMock,
   toastErrorMock,
   toastInfoMock,
   toastLoadingMock,
@@ -741,6 +743,7 @@ vi.mock("@/api/agent-tasks", () => ({
 
 vi.mock("sonner", () => ({
   toast: {
+    dismiss: (...args: unknown[]) => toastDismissMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
     info: (...args: unknown[]) => toastInfoMock(...args),
     loading: (...args: unknown[]) => toastLoadingMock(...args),
@@ -1244,6 +1247,7 @@ export function setupAgentsViewTest() {
   listAgentTaskListsMock.mockReset();
   listAgentTaskListTasksMock.mockReset();
   precomputePrDescriptionMock.mockReset();
+  toastDismissMock.mockReset();
   toastErrorMock.mockReset();
   toastInfoMock.mockReset();
   toastLoadingMock.mockReset();

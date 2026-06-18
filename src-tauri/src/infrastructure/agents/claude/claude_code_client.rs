@@ -690,8 +690,9 @@ impl ClaudeCodeClient {
             args.extend(["--max-tokens".to_string(), max_tokens.to_string()]);
         }
 
-        // Permission handling from config/harnesses/claude.yaml.
-        append_claude_permission_args(&mut args, config.agent.as_deref());
+        // Permission handling from config/harnesses/claude.yaml. This base-agent path
+        // builds MCP config without a profile, so resolve permissions with no profile.
+        append_claude_permission_args(&mut args, config.agent.as_deref(), None);
         // Optional settings JSON passed to claude CLI via --settings.
         // Agent-specific profile overrides global profile when configured.
         if let Some(s) = get_effective_settings(config.agent.as_deref()) {
@@ -993,7 +994,7 @@ impl ClaudeCodeClient {
             ]);
         }
 
-        append_claude_permission_args(&mut args, Some(&config.agent_type));
+        append_claude_permission_args(&mut args, Some(&config.agent_type), None);
 
         // Optional settings JSON passed to claude CLI via --settings.
         // Uses agent_type for profile lookup, same as task agents.
