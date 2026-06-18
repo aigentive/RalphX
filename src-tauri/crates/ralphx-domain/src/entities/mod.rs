@@ -1,4 +1,5 @@
 pub mod activity_event;
+pub mod agent_conversation_jira_issue;
 pub mod agent_run;
 pub mod agent_conversation_workspace;
 pub mod agent_task;
@@ -38,6 +39,9 @@ pub mod workflow;
 pub use activity_event::{
     ActivityEvent, ActivityEventId, ActivityEventRole, ActivityEventType,
     ParseActivityEventRoleError, ParseActivityEventTypeError,
+};
+pub use agent_conversation_jira_issue::{
+    AgentConversationJiraIssueLink, AgentConversationJiraRefreshStatus,
 };
 pub use agent_run::{
     AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,

@@ -12,8 +12,9 @@ use tokio_util::bytes::Bytes;
 
 use crate::application::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
-    AtlassianOAuthResource, AtlassianOAuthTokenResponse, AtlassianResourceContent,
-    AtlassianResourceKind, AtlassianResourceSummary,
+    AtlassianJiraAttachment, AtlassianJiraComment, AtlassianOAuthResource,
+    AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
+    AtlassianResourceSummary,
 };
 use crate::domain::services::ComposerIntegrationReference;
 
@@ -663,7 +664,7 @@ pub(crate) async fn fetch_jira<C: AtlassianJsonRequester + ?Sized>(
                 auth,
                 AtlassianResourceKind::Jira,
                 &format!(
-                    "/rest/api/3/issue/{}?fields=summary,status,description,assignee,reporter,updated,comment",
+                    "/rest/api/3/issue/{}?fields=summary,status,description,assignee,reporter,updated,comment,attachment",
                 percent_encode_path_segment(key)
                 ),
             ),
@@ -679,34 +680,75 @@ pub(crate) async fn fetch_jira<C: AtlassianJsonRequester + ?Sized>(
         .or(reference.title.as_deref())
         .unwrap_or(key)
         .to_string();
-    let mut body = Vec::new();
-    push_field(&mut body, "Key", key);
-    push_field(&mut body, "Summary", &title);
-    if let Some(status) = fields
+    let status = fields
         .get("status")
         .and_then(|status| status.get("name"))
         .and_then(Value::as_str)
-    {
-        push_field(&mut body, "Status", status);
-    }
-    if let Some(updated) = fields.get("updated").and_then(Value::as_str) {
-        push_field(&mut body, "Updated", updated);
-    }
-    if let Some(description) = fields.get("description").filter(|value| !value.is_null()) {
-        body.push("Description:".to_string());
-        body.push(render_jsonish(description));
-    }
-    if let Some(comments) = fields
+        .map(str::to_string);
+    let assignee = jira_user_display_name(fields.get("assignee"));
+    let reporter = jira_user_display_name(fields.get("reporter"));
+    let updated_at_remote = fields
+        .get("updated")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let description = fields
+        .get("description")
+        .filter(|value| !value.is_null())
+        .map(jira_rich_text);
+    let description_markdown = description
+        .as_ref()
+        .map(|content| content.markdown.clone())
+        .filter(|value| !value.trim().is_empty());
+    let description_text = description
+        .as_ref()
+        .map(|content| content.text.clone())
+        .filter(|value| !value.trim().is_empty());
+    let acceptance_criteria_markdown = description_markdown
+        .as_deref()
+        .and_then(extract_acceptance_criteria);
+    let acceptance_criteria_text = description_text
+        .as_deref()
+        .and_then(extract_acceptance_criteria);
+    let comments = fields
         .get("comment")
         .and_then(|comment| comment.get("comments"))
         .and_then(Value::as_array)
-    {
-        for comment in comments.iter().rev().take(3).rev() {
-            if let Some(content) = comment.get("body") {
-                body.push("Comment:".to_string());
-                body.push(render_jsonish(content));
-            }
-        }
+        .map(|comments| {
+            comments
+                .iter()
+                .rev()
+                .take(10)
+                .rev()
+                .filter_map(jira_comment_from_value)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let attachments = fields
+        .get("attachment")
+        .and_then(Value::as_array)
+        .map(|attachments| {
+            attachments
+                .iter()
+                .filter_map(jira_attachment_from_value)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut body = Vec::new();
+    push_field(&mut body, "Key", key);
+    push_field(&mut body, "Summary", &title);
+    if let Some(status) = status.as_deref() {
+        push_field(&mut body, "Status", status);
+    }
+    if let Some(updated) = updated_at_remote.as_deref() {
+        push_field(&mut body, "Updated", updated);
+    }
+    if let Some(description) = description_markdown.as_deref() {
+        body.push("Description:".to_string());
+        body.push(description.to_string());
+    }
+    for comment in comments.iter().rev().take(3).rev() {
+        body.push("Comment:".to_string());
+        body.push(comment.body_markdown.clone());
     }
     Ok(AtlassianResourceContent {
         kind: AtlassianResourceKind::Jira,
@@ -715,6 +757,16 @@ pub(crate) async fn fetch_jira<C: AtlassianJsonRequester + ?Sized>(
         title,
         url: Some(format!("{site_url}/browse/{key}")),
         body: body.join("\n"),
+        status,
+        assignee,
+        reporter,
+        updated_at_remote,
+        description_markdown,
+        description_text,
+        acceptance_criteria_markdown,
+        acceptance_criteria_text,
+        comments,
+        attachments,
     })
 }
 
@@ -765,6 +817,16 @@ pub(crate) async fn fetch_confluence<C: AtlassianJsonRequester + ?Sized>(
         title,
         url,
         body,
+        status: None,
+        assignee: None,
+        reporter: None,
+        updated_at_remote: None,
+        description_markdown: None,
+        description_text: None,
+        acceptance_criteria_markdown: None,
+        acceptance_criteria_text: None,
+        comments: Vec::new(),
+        attachments: Vec::new(),
     })
 }
 
@@ -772,6 +834,303 @@ fn push_field(lines: &mut Vec<String>, label: &str, value: &str) {
     if !value.trim().is_empty() {
         lines.push(format!("{label}: {}", value.trim()));
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JiraRichText {
+    markdown: String,
+    text: String,
+}
+
+fn jira_rich_text(value: &Value) -> JiraRichText {
+    let markdown = value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| adf_node_to_markdown(value, 0));
+    let markdown = normalize_markdown(&markdown);
+    JiraRichText {
+        text: markdown_to_plain_text(&markdown),
+        markdown,
+    }
+}
+
+fn jira_user_display_name(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(|user| user.get("displayName"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn jira_comment_from_value(value: &Value) -> Option<AtlassianJiraComment> {
+    let body = value.get("body").map(jira_rich_text)?;
+    if body.markdown.trim().is_empty() && body.text.trim().is_empty() {
+        return None;
+    }
+    Some(AtlassianJiraComment {
+        id: value.get("id").and_then(Value::as_str).map(str::to_string),
+        author: jira_user_display_name(value.get("author")),
+        body_markdown: body.markdown,
+        body_text: body.text,
+        created_at: value
+            .get("created")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        updated_at: value
+            .get("updated")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+fn jira_attachment_from_value(value: &Value) -> Option<AtlassianJiraAttachment> {
+    let filename = value
+        .get("filename")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    Some(AtlassianJiraAttachment {
+        id: value.get("id").and_then(Value::as_str).map(str::to_string),
+        filename,
+        mime_type: value
+            .get("mimeType")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        size: value.get("size").and_then(Value::as_i64),
+        author: jira_user_display_name(value.get("author")),
+        content_url: value
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        thumbnail_url: value
+            .get("thumbnail")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        created_at: value
+            .get("created")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+fn adf_node_to_markdown(value: &Value, depth: usize) -> String {
+    let node_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match node_type {
+        "doc" => adf_content_to_markdown(value, depth),
+        "paragraph" => adf_inline_content_to_markdown(value),
+        "text" => adf_text_node_to_markdown(value),
+        "hardBreak" => "\n".to_string(),
+        "heading" => {
+            let level = value
+                .get("attrs")
+                .and_then(|attrs| attrs.get("level"))
+                .and_then(Value::as_u64)
+                .unwrap_or(2)
+                .clamp(1, 6) as usize;
+            format!(
+                "{} {}",
+                "#".repeat(level),
+                adf_inline_content_to_markdown(value).trim()
+            )
+        }
+        "bulletList" => adf_list_to_markdown(value, depth, false),
+        "orderedList" => adf_list_to_markdown(value, depth, true),
+        "listItem" => adf_content_to_markdown(value, depth),
+        "blockquote" => adf_content_to_markdown(value, depth)
+            .lines()
+            .map(|line| format!("> {line}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "codeBlock" => format!(
+            "```\n{}\n```",
+            adf_content_to_markdown(value, depth).trim_matches('\n')
+        ),
+        "inlineCard" | "blockCard" => value
+            .get("attrs")
+            .and_then(|attrs| attrs.get("url"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        "mention" => value
+            .get("attrs")
+            .and_then(|attrs| {
+                attrs
+                    .get("text")
+                    .or_else(|| attrs.get("displayName"))
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or_default()
+            .to_string(),
+        "emoji" => value
+            .get("attrs")
+            .and_then(|attrs| attrs.get("shortName"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        _ => {
+            let rendered = adf_content_to_markdown(value, depth);
+            if rendered.trim().is_empty() {
+                render_jsonish(value)
+            } else {
+                rendered
+            }
+        }
+    }
+}
+
+fn adf_content_to_markdown(value: &Value, depth: usize) -> String {
+    value
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|content| {
+            content
+                .iter()
+                .map(|child| adf_node_to_markdown(child, depth))
+                .filter(|child| !child.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+fn adf_inline_content_to_markdown(value: &Value) -> String {
+    value
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|content| {
+            content
+                .iter()
+                .map(|child| adf_node_to_markdown(child, 0))
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default()
+}
+
+fn adf_text_node_to_markdown(value: &Value) -> String {
+    let mut text = value
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if let Some(marks) = value.get("marks").and_then(Value::as_array) {
+        for mark in marks {
+            match mark.get("type").and_then(Value::as_str) {
+                Some("code") => text = format!("`{text}`"),
+                Some("strong") => text = format!("**{text}**"),
+                Some("em") => text = format!("*{text}*"),
+                Some("link") => {
+                    if let Some(href) = mark
+                        .get("attrs")
+                        .and_then(|attrs| attrs.get("href"))
+                        .and_then(Value::as_str)
+                    {
+                        text = format!("[{text}]({href})");
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    text
+}
+
+fn adf_list_to_markdown(value: &Value, depth: usize, ordered: bool) -> String {
+    let indent = "  ".repeat(depth);
+    value
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let bullet = if ordered {
+                        format!("{}.", index + 1)
+                    } else {
+                        "-".to_string()
+                    };
+                    let item_body = adf_node_to_markdown(item, depth + 1);
+                    let mut lines = item_body.lines();
+                    let first = lines.next().unwrap_or_default();
+                    let mut rendered = format!("{indent}{bullet} {first}");
+                    for line in lines {
+                        rendered.push('\n');
+                        rendered.push_str(&format!("{indent}  {line}"));
+                    }
+                    rendered
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+fn normalize_markdown(value: &str) -> String {
+    value
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .split("\n\n\n")
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .trim()
+        .to_string()
+}
+
+fn markdown_to_plain_text(value: &str) -> String {
+    value
+        .replace("**", "")
+        .replace('`', "")
+        .lines()
+        .map(|line| {
+            line.trim_start()
+                .trim_start_matches('#')
+                .trim_start_matches("- ")
+                .trim_start()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn extract_acceptance_criteria(value: &str) -> Option<String> {
+    let mut collecting = false;
+    let mut lines = Vec::new();
+    for line in value.lines() {
+        let normalized = line
+            .trim()
+            .trim_start_matches('#')
+            .trim()
+            .trim_end_matches(':')
+            .to_ascii_lowercase();
+        if collecting {
+            if is_likely_heading(line) && !normalized.contains("acceptance criteria") {
+                break;
+            }
+            lines.push(line.to_string());
+        } else if normalized == "acceptance criteria" || normalized == "acceptance criterias" {
+            collecting = true;
+        }
+    }
+    let rendered = lines.join("\n").trim().to_string();
+    (!rendered.is_empty()).then_some(rendered)
+}
+
+fn is_likely_heading(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('#')
+        || (trimmed.ends_with(':')
+            && trimmed.len() <= 80
+            && !trimmed.starts_with('-')
+            && !trimmed.chars().any(|ch| ch == '.'))
 }
 
 fn render_jsonish(value: &Value) -> String {

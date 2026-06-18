@@ -4,6 +4,7 @@
 pub mod agent_lane_settings_bootstrap;
 pub mod agent_lane_resolution;
 pub mod agent_conversation_fork;
+pub mod agent_conversation_jira_issue;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
 pub(crate) mod agent_planning_session_titles;
@@ -115,9 +116,10 @@ pub use apply_service::{
 };
 pub use atlassian_integration_service::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
-    AtlassianIntegrationService, AtlassianOAuthAuthorization, AtlassianOAuthResource,
-    AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
-    AtlassianResourceSummary, EmptyAtlassianApiClient, UnavailableAtlassianApiClient,
+    AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraComment,
+    AtlassianOAuthAuthorization, AtlassianOAuthResource, AtlassianOAuthTokenResponse,
+    AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
+    EmptyAtlassianApiClient, UnavailableAtlassianApiClient,
 };
 pub use chat_attachment_service::ChatAttachmentService;
 pub use agent_terminal::AgentTerminalService;

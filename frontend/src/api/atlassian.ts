@@ -51,6 +51,66 @@ export const SearchAtlassianResourcesResponseSchema = z.object({
   resources: z.array(AtlassianResourceSummarySchema),
 });
 
+export const AtlassianJiraCommentSchema = z.object({
+  id: z.string().nullable().optional(),
+  author: z.string().nullable().optional(),
+  bodyMarkdown: z.string(),
+  bodyText: z.string(),
+  createdAt: z.string().nullable().optional(),
+  updatedAt: z.string().nullable().optional(),
+});
+
+export type AtlassianJiraComment = z.infer<typeof AtlassianJiraCommentSchema>;
+
+export const AtlassianJiraAttachmentSchema = z.object({
+  id: z.string().nullable().optional(),
+  filename: z.string(),
+  mimeType: z.string().nullable().optional(),
+  size: z.number().nullable().optional(),
+  author: z.string().nullable().optional(),
+  contentUrl: z.string().nullable().optional(),
+  thumbnailUrl: z.string().nullable().optional(),
+  createdAt: z.string().nullable().optional(),
+});
+
+export type AtlassianJiraAttachment = z.infer<typeof AtlassianJiraAttachmentSchema>;
+
+export const AgentConversationJiraIssueSchema = z.object({
+  conversationId: z.string(),
+  projectId: z.string(),
+  provider: z.string(),
+  issueKey: z.string(),
+  issueId: z.string().nullable().optional(),
+  issueUrl: z.string().nullable().optional(),
+  title: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+  assignee: z.string().nullable().optional(),
+  reporter: z.string().nullable().optional(),
+  updatedAtRemote: z.string().nullable().optional(),
+  descriptionMarkdown: z.string().nullable().optional(),
+  descriptionText: z.string().nullable().optional(),
+  acceptanceCriteriaMarkdown: z.string().nullable().optional(),
+  acceptanceCriteriaText: z.string().nullable().optional(),
+  comments: z.array(AtlassianJiraCommentSchema),
+  attachments: z.array(AtlassianJiraAttachmentSchema),
+  lastRefreshedAt: z.string().nullable().optional(),
+  refreshStatus: z.enum(["not_loaded", "loaded", "error"]),
+  refreshError: z.string().nullable().optional(),
+  assignedAt: z.string(),
+  assignedFromMessageId: z.string().nullable().optional(),
+  manuallyAssigned: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export type AgentConversationJiraIssue = z.infer<
+  typeof AgentConversationJiraIssueSchema
+>;
+
+export const AgentConversationJiraIssueResponseSchema = z.object({
+  issue: AgentConversationJiraIssueSchema.nullable().optional(),
+});
+
 export const AtlassianOAuthAuthorizationSchema = z.object({
   authorizationUrl: z.string(),
   state: z.string(),
@@ -84,6 +144,20 @@ export interface SearchAtlassianResourcesInput {
   kind: AtlassianResourceKind;
   query: string;
   limit?: number;
+}
+
+export interface AgentConversationJiraIssueConversationInput {
+  conversationId: string;
+}
+
+export interface AssignAgentConversationJiraIssueInput {
+  conversationId: string;
+  projectId?: string | null;
+  issueKey: string;
+  issueId?: string | null;
+  title?: string | null;
+  issueUrl?: string | null;
+  refresh?: boolean;
 }
 
 export const atlassianApi = {
@@ -158,5 +232,49 @@ export const atlassianApi = {
       SearchAtlassianResourcesResponseSchema,
     );
     return response.resources;
+  },
+
+  async getAgentConversationJiraIssue(
+    input: AgentConversationJiraIssueConversationInput,
+  ): Promise<AgentConversationJiraIssue | null> {
+    const response = await typedInvoke(
+      "get_agent_conversation_jira_issue",
+      { input },
+      AgentConversationJiraIssueResponseSchema,
+    );
+    return response.issue ?? null;
+  },
+
+  async assignAgentConversationJiraIssue(
+    input: AssignAgentConversationJiraIssueInput,
+  ): Promise<AgentConversationJiraIssue | null> {
+    const response = await typedInvoke(
+      "assign_agent_conversation_jira_issue",
+      { input },
+      AgentConversationJiraIssueResponseSchema,
+    );
+    return response.issue ?? null;
+  },
+
+  async refreshAgentConversationJiraIssue(
+    input: AgentConversationJiraIssueConversationInput,
+  ): Promise<AgentConversationJiraIssue | null> {
+    const response = await typedInvoke(
+      "refresh_agent_conversation_jira_issue",
+      { input },
+      AgentConversationJiraIssueResponseSchema,
+    );
+    return response.issue ?? null;
+  },
+
+  async clearAgentConversationJiraIssue(
+    input: AgentConversationJiraIssueConversationInput,
+  ): Promise<AgentConversationJiraIssue | null> {
+    const response = await typedInvoke(
+      "clear_agent_conversation_jira_issue",
+      { input },
+      AgentConversationJiraIssueResponseSchema,
+    );
+    return response.issue ?? null;
   },
 } as const;
