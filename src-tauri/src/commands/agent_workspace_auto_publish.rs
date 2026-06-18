@@ -589,7 +589,7 @@ mod tests {
         ArtifactId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId,
         ProjectId,
     };
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::process::Command;
     use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 
