@@ -1713,6 +1713,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   <AgentComposerSurface
                     dataTestId="agents-conversation-composer"
                     actionTestId="agents-conversation-submit"
+                    collapsible
                     onSend={handleComposerSend}
                     onStop={composerProps.onStop}
                     agentStatus={composerProps.agentStatus}
