@@ -143,6 +143,56 @@ fn jira_compatible_has_external_sync() {
     assert_eq!(sync.conflict_resolution, ConflictResolution::ExternalWins);
 }
 
+#[test]
+fn linear_compatible_workflow_has_expected_columns() {
+    let workflow = WorkflowSchema::linear_compatible();
+    assert_eq!(workflow.id.as_str(), "linear-compat");
+    assert_eq!(workflow.name, "Linear Compatible");
+    assert_eq!(workflow.columns.len(), 6);
+    assert!(!workflow.is_default);
+
+    let column_mappings: Vec<_> = workflow
+        .columns
+        .iter()
+        .map(|column| (&column.id, column.maps_to))
+        .collect();
+    assert!(column_mappings
+        .iter()
+        .any(|(id, status)| *id == "todo" && *status == InternalStatus::Ready));
+    assert!(column_mappings
+        .iter()
+        .any(|(id, status)| *id == "in_review" && *status == InternalStatus::PendingReview));
+    assert!(column_mappings
+        .iter()
+        .any(|(id, status)| *id == "canceled" && *status == InternalStatus::Cancelled));
+}
+
+#[test]
+fn linear_compatible_external_sync_roundtrips() {
+    let workflow = WorkflowSchema::linear_compatible();
+    let json = serde_json::to_string(&workflow).unwrap();
+    let parsed: WorkflowSchema = serde_json::from_str(&json).unwrap();
+    let sync = parsed.external_sync.as_ref().unwrap();
+
+    assert_eq!(parsed.id.as_str(), "linear-compat");
+    assert_eq!(sync.provider, SyncProvider::Linear);
+    assert_eq!(sync.sync.direction, SyncDirection::Bidirectional);
+    assert_eq!(sync.sync.webhook, Some(true));
+    assert_eq!(sync.conflict_resolution, ConflictResolution::ExternalWins);
+    assert_eq!(
+        sync.mapping
+            .get("In Progress")
+            .map(|mapping| (mapping.internal_status, mapping.column_id.as_str())),
+        Some((InternalStatus::Executing, "in_progress"))
+    );
+    assert_eq!(
+        sync.mapping
+            .get("Done")
+            .map(|mapping| (mapping.internal_status, mapping.column_id.as_str())),
+        Some((InternalStatus::Approved, "done"))
+    );
+}
+
 // ===== WorkflowColumn Tests =====
 
 #[test]
@@ -503,6 +553,8 @@ fn sync_provider_deserializes() {
 fn sync_provider_display() {
     assert_eq!(SyncProvider::Jira.to_string(), "jira");
     assert_eq!(SyncProvider::Github.to_string(), "github");
+    assert_eq!(SyncProvider::Linear.to_string(), "linear");
+    assert_eq!(SyncProvider::Notion.to_string(), "notion");
 }
 
 // ===== SyncDirection Tests =====

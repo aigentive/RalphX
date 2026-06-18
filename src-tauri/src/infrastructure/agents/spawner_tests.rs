@@ -1054,6 +1054,7 @@ async fn test_spawn_uses_codex_client_when_execution_lane_resolves_to_codex() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_spawn_uses_rx_managed_codex_cli_path_override() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()

@@ -9,6 +9,7 @@ pub mod sqlite_active_plan_repo;
 pub mod sqlite_activity_event_repo;
 pub mod sqlite_agent_lane_settings_repo;
 pub mod sqlite_agent_conversation_jira_issue_repo;
+pub mod sqlite_agent_conversation_linear_issue_repo;
 pub mod sqlite_agent_conversation_workspace_repo;
 pub mod sqlite_agent_model_registry_repo;
 pub mod sqlite_agent_profile_repo;
@@ -42,10 +43,13 @@ pub mod sqlite_external_events_repo;
 #[cfg(test)]
 mod sqlite_execution_plan_repo_tests;
 pub mod sqlite_execution_settings_repo;
+pub mod sqlite_external_issue_link_repo;
 pub mod sqlite_ideation_effort_settings_repo;
 pub mod sqlite_ideation_model_settings_repo;
 pub mod sqlite_ideation_session_repo;
 pub mod sqlite_ideation_settings_repo;
+pub mod sqlite_linear_integration_settings_repo;
+pub mod sqlite_linear_webhook_store;
 pub mod sqlite_memory_archive_job_repository;
 #[cfg(test)]
 mod sqlite_memory_archive_job_repository_tests;
@@ -96,6 +100,7 @@ pub use sqlite_active_plan_repo::SqliteActivePlanRepository;
 pub use sqlite_activity_event_repo::SqliteActivityEventRepository;
 pub use sqlite_agent_lane_settings_repo::SqliteAgentLaneSettingsRepository;
 pub use sqlite_agent_conversation_jira_issue_repo::SqliteAgentConversationJiraIssueRepository;
+pub use sqlite_agent_conversation_linear_issue_repo::SqliteAgentConversationLinearIssueRepository;
 pub use sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
 pub use sqlite_agent_model_registry_repo::SqliteAgentModelRegistryRepository;
 pub use sqlite_agent_profile_repo::SqliteAgentProfileRepository;
@@ -117,10 +122,13 @@ pub use sqlite_external_events_repo::SqliteExternalEventsRepository;
 pub use sqlite_execution_settings_repo::{
     SqliteExecutionSettingsRepository, SqliteGlobalExecutionSettingsRepository,
 };
+pub use sqlite_external_issue_link_repo::SqliteExternalIssueLinkRepository;
 pub use sqlite_ideation_effort_settings_repo::SqliteIdeationEffortSettingsRepository;
 pub use sqlite_ideation_model_settings_repo::SqliteIdeationModelSettingsRepository;
 pub use sqlite_ideation_session_repo::SqliteIdeationSessionRepository;
 pub use sqlite_ideation_settings_repo::SqliteIdeationSettingsRepository;
+pub use sqlite_linear_integration_settings_repo::SqliteLinearIntegrationSettingsRepository;
+pub use sqlite_linear_webhook_store::SqliteLinearWebhookStore;
 pub use sqlite_memory_archive_job_repository::SqliteMemoryArchiveJobRepository;
 pub use sqlite_memory_archive_repo::SqliteMemoryArchiveRepository;
 pub use sqlite_memory_entry_repo::SqliteMemoryEntryRepository;

@@ -18,6 +18,7 @@ export type AgentArtifactTab =
   | "proposal"
   | "tasks"
   | "jira"
+  | "linear"
   | "publish";
 export type AgentTaskArtifactMode = "graph" | "kanban";
 export type AgentProjectSort = "latest" | "az" | "za";

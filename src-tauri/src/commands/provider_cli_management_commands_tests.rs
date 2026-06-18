@@ -257,6 +257,7 @@ fn provider_parsing_and_default_settings_are_provider_specific() {
 
 #[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn provider_observations_probe_fake_clis_without_latest_lookup() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
@@ -336,6 +337,7 @@ async fn provider_observations_probe_fake_clis_without_latest_lookup() {
 
 #[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn status_readers_use_provider_settings_and_probe_without_latest_lookup() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
@@ -411,6 +413,7 @@ async fn status_readers_use_provider_settings_and_probe_without_latest_lookup() 
 
 #[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn provider_observations_report_missing_and_probe_errors() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
@@ -648,6 +651,7 @@ async fn install_or_update_rejects_active_managed_claude_provider() {
 
 #[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn managed_claude_install_or_update_uses_existing_native_cli_update() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
@@ -682,6 +686,7 @@ async fn managed_claude_install_or_update_uses_existing_native_cli_update() {
 
 #[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn managed_codex_installer_runs_fake_installer_with_rx_owned_env() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
@@ -717,6 +722,7 @@ async fn managed_codex_installer_runs_fake_installer_with_rx_owned_env() {
 
 #[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn managed_claude_installer_runs_fake_native_installer() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()

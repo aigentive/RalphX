@@ -11,6 +11,8 @@ import {
   type AtlassianResourceKind,
   type AtlassianResourceSummary,
 } from "@/api/atlassian";
+import { linearApi, type LinearIssueSummary } from "@/api/linear";
+import type { AgentComposerIntegrationKind } from "@/components/agents/composer/agentComposerCore";
 
 export const agentComposerKeys = {
   all: ["agent-composer"] as const,
@@ -25,7 +27,11 @@ export const agentComposerKeys = {
       { projectId, conversationId: conversationId ?? null, query },
     ] as const,
   planReferences: (projectId: string, query: string) =>
-    [...agentComposerKeys.all, "plan-references", { projectId, query }] as const,
+    [
+      ...agentComposerKeys.all,
+      "plan-references",
+      { projectId, query },
+    ] as const,
   skills: (
     projectId: string,
     conversationId: string | null | undefined,
@@ -42,8 +48,15 @@ export const agentComposerKeys = {
         mode: mode ?? null,
       },
     ] as const,
-  integrations: (kind: AtlassianResourceKind | null | undefined, query: string) =>
-    [...agentComposerKeys.all, "integrations", { kind: kind ?? null, query }] as const,
+  integrations: (
+    kind: AgentComposerIntegrationKind | null | undefined,
+    query: string,
+  ) =>
+    [
+      ...agentComposerKeys.all,
+      "integrations",
+      { kind: kind ?? null, query },
+    ] as const,
 };
 
 export function useAgentComposerEntries({
@@ -59,7 +72,11 @@ export function useAgentComposerEntries({
 }) {
   const normalizedQuery = query.trim();
   return useQuery({
-    queryKey: agentComposerKeys.entries(projectId, conversationId, normalizedQuery),
+    queryKey: agentComposerKeys.entries(
+      projectId,
+      conversationId,
+      normalizedQuery,
+    ),
     queryFn: () =>
       agentComposerApi.searchEntries({
         projectId,
@@ -70,7 +87,10 @@ export function useAgentComposerEntries({
     enabled: enabled && projectId.length > 0,
     staleTime: 15_000,
     gcTime: 60_000,
-    placeholderData: { entries: [] satisfies AgentComposerEntry[], truncated: false },
+    placeholderData: {
+      entries: [] satisfies AgentComposerEntry[],
+      truncated: false,
+    },
   });
 }
 
@@ -116,7 +136,12 @@ export function useAgentComposerSkills({
   enabled: boolean;
 }) {
   return useQuery({
-    queryKey: agentComposerKeys.skills(projectId, conversationId, providerHarness, mode),
+    queryKey: agentComposerKeys.skills(
+      projectId,
+      conversationId,
+      providerHarness,
+      mode,
+    ),
     queryFn: () =>
       agentComposerApi.listSkills({
         projectId,
@@ -136,19 +161,28 @@ export function useAgentComposerIntegrationResources({
   query,
   enabled,
 }: {
-  kind?: AtlassianResourceKind | null;
+  kind?: AgentComposerIntegrationKind | null;
   query: string;
   enabled: boolean;
 }) {
   const normalizedQuery = query.trim();
   return useQuery({
     queryKey: agentComposerKeys.integrations(kind, normalizedQuery),
-    queryFn: () =>
-      atlassianApi.searchResources({
-        kind: kind ?? "jira",
+    queryFn: async (): Promise<
+      Array<AtlassianResourceSummary | LinearIssueSummary>
+    > => {
+      if (kind === "linear") {
+        return linearApi.searchIssues({
+          query: normalizedQuery,
+          limit: 12,
+        });
+      }
+      return atlassianApi.searchResources({
+        kind: (kind ?? "jira") as AtlassianResourceKind,
         query: normalizedQuery,
         limit: 12,
-      }),
+      });
+    },
     enabled: enabled && kind !== null && kind !== undefined,
     staleTime: 10_000,
     gcTime: 60_000,

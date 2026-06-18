@@ -413,6 +413,7 @@ async fn test_resolve_ideation_background_agent_runtime_uses_registered_harness_
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_resolve_background_agent_runtime_uses_rx_managed_codex_override() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()

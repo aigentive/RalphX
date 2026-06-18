@@ -3415,7 +3415,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| format!("Project not found: {}", conversation.context_id))?;
                 let pr_automation_defaults =
-                    agent_workspace_pr_automation_defaults_for_project(&state, &project.id).await?;
+                    agent_workspace_pr_automation_defaults_for_project(state, &project.id).await?;
                 let workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
                     &project,
                     &conversation.id,
@@ -9359,15 +9359,16 @@ mod tests {
             .unwrap_or_default()
             .contains("auto-merge is enabled"));
 
-        let github_state = github.state();
-        assert_eq!(github_state.mark_pr_ready_calls, 1);
-        assert_eq!(github_state.last_mark_pr_ready_number, Some(251));
-        assert_eq!(github_state.enable_pr_auto_merge_calls, 1);
-        assert_eq!(
-            github_state.last_enable_pr_auto_merge_args.as_ref(),
-            Some(&(251, "rebase".to_string()))
-        );
-        drop(github_state);
+        {
+            let github_state = github.state();
+            assert_eq!(github_state.mark_pr_ready_calls, 1);
+            assert_eq!(github_state.last_mark_pr_ready_number, Some(251));
+            assert_eq!(github_state.enable_pr_auto_merge_calls, 1);
+            assert_eq!(
+                github_state.last_enable_pr_auto_merge_args.as_ref(),
+                Some(&(251, "rebase".to_string()))
+            );
+        }
 
         let events = state
             .agent_conversation_workspace_repo
@@ -9537,9 +9538,10 @@ mod tests {
             .unwrap_or_default()
             .contains("could not be enabled yet"));
 
-        let github_state = github.state();
-        assert_eq!(github_state.enable_pr_auto_merge_calls, 1);
-        drop(github_state);
+        {
+            let github_state = github.state();
+            assert_eq!(github_state.enable_pr_auto_merge_calls, 1);
+        }
 
         let events = state
             .agent_conversation_workspace_repo
@@ -9603,10 +9605,11 @@ mod tests {
             .unwrap_or_default()
             .contains("auto-merge is disabled"));
 
-        let github_state = github.state();
-        assert_eq!(github_state.disable_pr_auto_merge_calls, 1);
-        assert_eq!(github_state.last_disable_pr_auto_merge_number, Some(252));
-        drop(github_state);
+        {
+            let github_state = github.state();
+            assert_eq!(github_state.disable_pr_auto_merge_calls, 1);
+            assert_eq!(github_state.last_disable_pr_auto_merge_number, Some(252));
+        }
 
         let events = state
             .agent_conversation_workspace_repo
@@ -9664,9 +9667,10 @@ mod tests {
             .unwrap_or_default()
             .contains("could not be disabled yet"));
 
-        let github_state = github.state();
-        assert_eq!(github_state.disable_pr_auto_merge_calls, 1);
-        drop(github_state);
+        {
+            let github_state = github.state();
+            assert_eq!(github_state.disable_pr_auto_merge_calls, 1);
+        }
 
         let events = state
             .agent_conversation_workspace_repo

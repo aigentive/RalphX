@@ -32,7 +32,10 @@ import {
 import { mockReviewsApi } from "@/api-mock/reviews";
 import { mockIdeationApi } from "@/api-mock/ideation";
 import { mockExecutionApi } from "@/api-mock/execution";
-import { mockPlanBranchApi, toSnakeCasePlanBranch } from "@/api-mock/plan-branch";
+import {
+  mockPlanBranchApi,
+  toSnakeCasePlanBranch,
+} from "@/api-mock/plan-branch";
 import { mockPlanApi } from "@/api-mock/plan";
 import type { IdeationSessionResponse } from "@/api/ideation.types";
 import type { ContextType } from "@/types/chat-conversation";
@@ -83,6 +86,7 @@ const mockAtlassianIntegrationSettings = {
 };
 
 const mockAgentConversationJiraIssues = new Map<string, unknown>();
+const mockAgentConversationLinearIssues = new Map<string, unknown>();
 
 function mockJiraIssue(input: {
   conversationId: string;
@@ -109,6 +113,61 @@ function mockJiraIssue(input: {
     descriptionText: "Mock Jira description.",
     acceptanceCriteriaMarkdown: null,
     acceptanceCriteriaText: null,
+    comments: [],
+    attachments: [],
+    lastRefreshedAt: now,
+    refreshStatus: "loaded",
+    refreshError: null,
+    assignedAt: now,
+    assignedFromMessageId: null,
+    manuallyAssigned: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+const mockLinearWebhookConfig = {
+  enabled: false,
+  hasSigningSecret: false,
+};
+
+const mockLinearIntegrationSettings = {
+  enabled: false,
+  hasApiToken: false,
+  validationStatus: "not_configured",
+  issueSearchAvailable: false,
+  lastValidatedAt: null as string | null,
+  lastError: null as string | null,
+  updatedAt: new Date(0).toISOString(),
+};
+
+function mockLinearIssue(input: {
+  conversationId: string;
+  projectId?: string | null;
+  issueId: string;
+  issueKey?: string | null;
+  title?: string | null;
+  issueUrl?: string | null;
+}) {
+  const now = new Date(0).toISOString();
+  return {
+    conversationId: input.conversationId,
+    projectId: input.projectId ?? "mock-project",
+    provider: "linear",
+    issueId: input.issueId,
+    issueKey: input.issueKey ?? null,
+    issueUrl:
+      input.issueUrl ??
+      (input.issueKey
+        ? `https://linear.app/mock/issue/${input.issueKey}/mock`
+        : null),
+    title: input.title ?? `Mock issue ${input.issueKey ?? input.issueId}`,
+    status: "Todo",
+    assignee: null,
+    reporter: "Mock Creator",
+    updatedAtRemote: now,
+    descriptionMarkdown: "Mock Linear description.",
+    descriptionText: "Mock Linear description.",
     comments: [],
     attachments: [],
     lastRefreshedAt: now,
@@ -451,16 +510,18 @@ function toSnakeIdeationSession(session: IdeationSessionResponse) {
 }
 
 function mockGitAuthDiagnostics(): GitAuthDiagnostics {
-  return window.__mockGitAuthDiagnostics ?? {
-    fetchUrl: "git@github.com:mock/project.git",
-    pushUrl: "git@github.com:mock/project.git",
-    fetchKind: "SSH",
-    pushKind: "SSH",
-    mixedAuthModes: false,
-    githubHttpsCredentialHelperConfigured: false,
-    canSwitchToSsh: false,
-    suggestedSshUrl: null,
-  };
+  return (
+    window.__mockGitAuthDiagnostics ?? {
+      fetchUrl: "git@github.com:mock/project.git",
+      pushUrl: "git@github.com:mock/project.git",
+      fetchKind: "SSH",
+      pushKind: "SSH",
+      mixedAuthModes: false,
+      githubHttpsCredentialHelperConfigured: false,
+      canSwitchToSsh: false,
+      suggestedSshUrl: null,
+    }
+  );
 }
 
 async function getMockConversationPayload(conversationId: string) {
@@ -577,7 +638,11 @@ const commandHandlers: Record<
         kind: "file",
         parentPath: "src/components/agents",
       },
-      { path: "src-tauri/src/lib.rs", kind: "file", parentPath: "src-tauri/src" },
+      {
+        path: "src-tauri/src/lib.rs",
+        kind: "file",
+        parentPath: "src-tauri/src",
+      },
     ].filter((entry) => entry.path.toLowerCase().includes(query));
     return {
       entries: entries.slice(0, input?.limit ?? 80),
@@ -658,7 +723,9 @@ const commandHandlers: Record<
       (entry) => entry.provider === input.provider,
     );
     if (!status || !status.supported) {
-      throw new Error("Managed CLI installs are not available for this provider.");
+      throw new Error(
+        "Managed CLI installs are not available for this provider.",
+      );
     }
     Object.assign(status, {
       cliManagementMode: "rx_managed",
@@ -680,7 +747,8 @@ const commandHandlers: Record<
     updated: [],
     skipped: mockManagedProviderCliStatuses.providers,
   }),
-  get_atlassian_integration_settings: async () => mockAtlassianIntegrationSettings,
+  get_atlassian_integration_settings: async () =>
+    mockAtlassianIntegrationSettings,
   save_atlassian_integration_settings: async (args) => {
     const input = args.input as {
       authMethod?: "api_token" | "oauth";
@@ -697,8 +765,10 @@ const commandHandlers: Record<
     mockAtlassianIntegrationSettings.email = input.email ?? null;
     mockAtlassianIntegrationSettings.hasApiToken =
       Boolean(input.apiToken) || mockAtlassianIntegrationSettings.hasApiToken;
-    mockAtlassianIntegrationSettings.oauthClientId = input.oauthClientId ?? null;
-    mockAtlassianIntegrationSettings.oauthRedirectUri = input.oauthRedirectUri ?? null;
+    mockAtlassianIntegrationSettings.oauthClientId =
+      input.oauthClientId ?? null;
+    mockAtlassianIntegrationSettings.oauthRedirectUri =
+      input.oauthRedirectUri ?? null;
     mockAtlassianIntegrationSettings.hasOauthClientSecret =
       Boolean(input.oauthClientSecret) ||
       mockAtlassianIntegrationSettings.hasOauthClientSecret;
@@ -714,8 +784,8 @@ const commandHandlers: Record<
         : mockAtlassianIntegrationSettings.siteUrl &&
             mockAtlassianIntegrationSettings.email &&
             mockAtlassianIntegrationSettings.hasApiToken
-        ? "pending"
-        : "not_configured";
+          ? "pending"
+          : "not_configured";
     return mockAtlassianIntegrationSettings;
   },
   build_atlassian_oauth_authorization_url: async () => ({
@@ -789,6 +859,81 @@ const commandHandlers: Record<
       ],
     };
   },
+  get_linear_integration_settings: async () => mockLinearIntegrationSettings,
+  save_linear_integration_settings: async (args) => {
+    const input = args.input as { apiToken?: string | null };
+    mockLinearIntegrationSettings.hasApiToken =
+      Boolean(input.apiToken?.trim()) ||
+      mockLinearIntegrationSettings.hasApiToken;
+    mockLinearIntegrationSettings.enabled = false;
+    mockLinearIntegrationSettings.validationStatus =
+      mockLinearIntegrationSettings.hasApiToken ? "pending" : "not_configured";
+    mockLinearIntegrationSettings.issueSearchAvailable = false;
+    mockLinearIntegrationSettings.lastError = null;
+    mockLinearIntegrationSettings.updatedAt = new Date(0).toISOString();
+    return mockLinearIntegrationSettings;
+  },
+  validate_linear_integration: async () => {
+    Object.assign(mockLinearIntegrationSettings, {
+      enabled: true,
+      validationStatus: "valid",
+      issueSearchAvailable: true,
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+    return mockLinearIntegrationSettings;
+  },
+  search_linear_issues: async () => ({ issues: [] }),
+  get_agent_conversation_linear_issue: async (args) => {
+    const input = args.input as { conversationId: string };
+    return {
+      issue: mockAgentConversationLinearIssues.get(input.conversationId) ?? null,
+    };
+  },
+  assign_agent_conversation_linear_issue: async (args) => {
+    const input = args.input as {
+      conversationId: string;
+      projectId?: string | null;
+      issueId: string;
+      issueKey?: string | null;
+      title?: string | null;
+      issueUrl?: string | null;
+    };
+    const issue = mockLinearIssue(input);
+    mockAgentConversationLinearIssues.set(input.conversationId, issue);
+    return { issue };
+  },
+  refresh_agent_conversation_linear_issue: async (args) => {
+    const input = args.input as { conversationId: string };
+    const existing = mockAgentConversationLinearIssues.get(input.conversationId);
+    if (!existing || typeof existing !== "object") {
+      return { issue: null };
+    }
+    const issue = {
+      ...existing,
+      lastRefreshedAt: new Date(0).toISOString(),
+      refreshStatus: "loaded",
+      refreshError: null,
+    };
+    mockAgentConversationLinearIssues.set(input.conversationId, issue);
+    return { issue };
+  },
+  clear_agent_conversation_linear_issue: async (args) => {
+    const input = args.input as { conversationId: string };
+    mockAgentConversationLinearIssues.delete(input.conversationId);
+    return { issue: null };
+  },
+  get_linear_webhook_config: async () => mockLinearWebhookConfig,
+  save_linear_webhook_signing_secret: async (args) => {
+    const input = args.input as { signingSecret?: string; enabled?: boolean };
+    if (!input.signingSecret?.trim()) {
+      throw new Error("Linear webhook signing secret cannot be empty");
+    }
+    mockLinearWebhookConfig.enabled = input.enabled ?? true;
+    mockLinearWebhookConfig.hasSigningSecret = true;
+    return mockLinearWebhookConfig;
+  },
   get_agent_conversation_jira_issue: async (args) => {
     const input = args.input as { conversationId: string };
     return {
@@ -849,7 +994,9 @@ const commandHandlers: Record<
   },
   list_agent_models: async () => mockAgentModels,
   get_agent_lane_settings: async (args) =>
-    mockAgentLaneSettings((args.projectId as string | null | undefined) ?? null),
+    mockAgentLaneSettings(
+      (args.projectId as string | null | undefined) ?? null,
+    ),
   get_agent_harness_availability: async (args) => {
     const input = args.input as { projectId?: string | null } | undefined;
     return mockAgentHarnessAvailability(
@@ -878,9 +1025,12 @@ const commandHandlers: Record<
     };
   },
   get_project: async (args) => mockProjectsApi.get(args.projectId as string),
-  get_git_branches: async (args) => mockGetGitBranches(args.workingDirectory as string),
-  get_git_current_branch: async (args) => mockGetGitCurrentBranch(args.workingDirectory as string),
-  get_git_default_branch: async (args) => mockGetGitDefaultBranch(args.workingDirectory as string),
+  get_git_branches: async (args) =>
+    mockGetGitBranches(args.workingDirectory as string),
+  get_git_current_branch: async (args) =>
+    mockGetGitCurrentBranch(args.workingDirectory as string),
+  get_git_default_branch: async (args) =>
+    mockGetGitDefaultBranch(args.workingDirectory as string),
   get_git_remote_url: async () => mockGitAuthDiagnostics().fetchUrl,
   get_git_auth_diagnostics: async () => mockGitAuthDiagnostics(),
   switch_git_origin_to_ssh: async () => {
@@ -921,16 +1071,21 @@ const commandHandlers: Record<
   update_github_pr_enabled: async () => null,
 
   // Plan commands
-  get_active_plan: async (args) => mockPlanApi.getActivePlan(args.projectId as string),
+  get_active_plan: async (args) =>
+    mockPlanApi.getActivePlan(args.projectId as string),
   set_active_plan: async (args) =>
     mockPlanApi.setActivePlan(
       args.projectId as string,
       args.ideationSessionId as string,
-      args.source as Parameters<typeof mockPlanApi.setActivePlan>[2]
+      args.source as Parameters<typeof mockPlanApi.setActivePlan>[2],
     ),
-  clear_active_plan: async (args) => mockPlanApi.clearActivePlan(args.projectId as string),
+  clear_active_plan: async (args) =>
+    mockPlanApi.clearActivePlan(args.projectId as string),
   list_plan_selector_candidates: async (args) =>
-    mockPlanApi.listCandidates(args.projectId as string, args.query as string | undefined),
+    mockPlanApi.listCandidates(
+      args.projectId as string,
+      args.query as string | undefined,
+    ),
   get_active_execution_plan: async (args) =>
     // In web-mode mocks, execution-plan filtering reuses the active plan id as the stable filter key.
     mockPlanApi.getActivePlan(args.projectId as string),
@@ -948,10 +1103,12 @@ const commandHandlers: Record<
       executionPlanId?: string | null;
     } = { projectId: args.projectId as string };
 
-    if (args.statuses !== undefined) params.statuses = args.statuses as string[];
+    if (args.statuses !== undefined)
+      params.statuses = args.statuses as string[];
     if (args.offset !== undefined) params.offset = args.offset as number;
     if (args.limit !== undefined) params.limit = args.limit as number;
-    if (args.includeArchived !== undefined) params.includeArchived = args.includeArchived as boolean;
+    if (args.includeArchived !== undefined)
+      params.includeArchived = args.includeArchived as boolean;
     if (args.ideationSessionId !== undefined) {
       params.ideationSessionId = args.ideationSessionId as string | null;
     }
@@ -986,7 +1143,9 @@ const commandHandlers: Record<
     };
   },
   get_tasks_awaiting_review: async (args) => {
-    const response = await mockTasksApi.getTasksAwaitingReview(args.project_id as string);
+    const response = await mockTasksApi.getTasksAwaitingReview(
+      args.project_id as string,
+    );
     // Convert to snake_case for Tauri response
     return response.map((task) => ({
       id: task.id,
@@ -1008,13 +1167,13 @@ const commandHandlers: Record<
       typeof window !== "undefined" ? window.__mockChatApi : undefined;
     const conversations = controller
       ? await controller.listConversations(
-        args.contextType as ContextType,
-        args.contextId as string
-      )
+          args.contextType as ContextType,
+          args.contextId as string,
+        )
       : await mockListConversations(
-        args.contextType as ContextType,
-        args.contextId as string
-      );
+          args.contextType as ContextType,
+          args.contextId as string,
+        );
 
     return conversations.map((conversation) => ({
       id: conversation.id,
@@ -1039,23 +1198,23 @@ const commandHandlers: Record<
       typeof window !== "undefined" ? window.__mockChatApi : undefined;
     const response = controller
       ? await controller.listConversationsPage(
-        args.contextType as ContextType,
-        args.contextId as string,
-        args.limit as number,
-        (args.offset as number | undefined) ?? 0,
-        (args.includeArchived as boolean | undefined) ?? false,
-        args.search as string | undefined,
-        (args.archivedOnly as boolean | undefined) ?? false
-      )
+          args.contextType as ContextType,
+          args.contextId as string,
+          args.limit as number,
+          (args.offset as number | undefined) ?? 0,
+          (args.includeArchived as boolean | undefined) ?? false,
+          args.search as string | undefined,
+          (args.archivedOnly as boolean | undefined) ?? false,
+        )
       : await mockListConversationsPage(
-        args.contextType as ContextType,
-        args.contextId as string,
-        args.limit as number,
-        (args.offset as number | undefined) ?? 0,
-        (args.includeArchived as boolean | undefined) ?? false,
-        args.search as string | undefined,
-        (args.archivedOnly as boolean | undefined) ?? false
-      );
+          args.contextType as ContextType,
+          args.contextId as string,
+          args.limit as number,
+          (args.offset as number | undefined) ?? 0,
+          (args.includeArchived as boolean | undefined) ?? false,
+          args.search as string | undefined,
+          (args.archivedOnly as boolean | undefined) ?? false,
+        );
 
     return {
       conversations: response.conversations.map((conversation) => ({
@@ -1118,13 +1277,17 @@ const commandHandlers: Record<
   get_agent_conversation: async (args) =>
     getMockConversationPayload(args.conversationId as string),
   get_agent_conversation_summary: async (args) => {
-    const payload = await getMockConversationPayload(args.conversationId as string);
+    const payload = await getMockConversationPayload(
+      args.conversationId as string,
+    );
     return payload.conversation;
   },
   get_agent_conversation_messages_page: async (args) => {
     const limit = (args.limit as number | undefined) ?? 50;
     const offset = (args.offset as number | undefined) ?? 0;
-    const payload = await getMockConversationPayload(args.conversationId as string);
+    const payload = await getMockConversationPayload(
+      args.conversationId as string,
+    );
     const messages = payload.messages.slice(offset, offset + limit);
     return {
       conversation: payload.conversation,
@@ -1149,12 +1312,12 @@ const commandHandlers: Record<
       ? await controller.getConversationTimelinePage(
           args.conversationId as string,
           limit,
-          beforeSequence
+          beforeSequence,
         )
       : await mockGetConversationTimelinePage(
           args.conversationId as string,
           limit,
-          beforeSequence
+          beforeSequence,
         );
     return {
       conversation: toSnakeConversation(payload.conversation),
@@ -1168,7 +1331,9 @@ const commandHandlers: Record<
     };
   },
   get_agent_conversation_workspace: async (args) => {
-    const workspace = await mockGetAgentConversationWorkspace(args.conversationId as string);
+    const workspace = await mockGetAgentConversationWorkspace(
+      args.conversationId as string,
+    );
     if (!workspace) {
       return null;
     }
@@ -1203,7 +1368,7 @@ const commandHandlers: Record<
   },
   list_agent_conversation_workspace_publication_events: async (args) => {
     const events = await mockListAgentConversationWorkspacePublicationEvents(
-      args.conversationId as string
+      args.conversationId as string,
     );
     return events.map((event) => ({
       id: event.id,
@@ -1216,11 +1381,15 @@ const commandHandlers: Record<
     }));
   },
   reconcile_agent_conversation_workspace_publication: async (args) => {
-    await mockReconcileAgentConversationWorkspacePublication(args.conversationId as string);
+    await mockReconcileAgentConversationWorkspacePublication(
+      args.conversationId as string,
+    );
     return undefined;
   },
   publish_agent_conversation_workspace: async (args) => {
-    const result = await mockPublishAgentConversationWorkspace(args.conversationId as string);
+    const result = await mockPublishAgentConversationWorkspace(
+      args.conversationId as string,
+    );
     const workspace = result.workspace;
     return {
       workspace: workspace
@@ -1286,7 +1455,7 @@ const commandHandlers: Record<
     const conversation = await mockCreateConversation(
       input.contextType,
       input.contextId,
-      input.title
+      input.title,
     );
     return {
       id: conversation.id,
@@ -1307,7 +1476,9 @@ const commandHandlers: Record<
     };
   },
   start_agent_conversation: async (args) => {
-    const input = args.input as Parameters<typeof mockStartAgentConversation>[0];
+    const input = args.input as Parameters<
+      typeof mockStartAgentConversation
+    >[0];
     const result = await mockStartAgentConversation(input);
     const conversation = result.conversation;
     const workspace = result.workspace;
@@ -1370,7 +1541,9 @@ const commandHandlers: Record<
     };
   },
   switch_agent_conversation_mode: async (args) => {
-    const input = args.input as Parameters<typeof mockSwitchAgentConversationMode>[0];
+    const input = args.input as Parameters<
+      typeof mockSwitchAgentConversationMode
+    >[0];
     const result = await mockSwitchAgentConversationMode(input);
     const conversation = result.conversation;
     const workspace = result.workspace;
@@ -1456,7 +1629,8 @@ const commandHandlers: Record<
       effective_usage_totals: toSnakeUsage(stats.effectiveUsageTotals),
       usage_coverage: {
         provider_message_count: stats.usageCoverage.providerMessageCount,
-        provider_messages_with_usage: stats.usageCoverage.providerMessagesWithUsage,
+        provider_messages_with_usage:
+          stats.usageCoverage.providerMessagesWithUsage,
         run_count: stats.usageCoverage.runCount,
         runs_with_usage: stats.usageCoverage.runsWithUsage,
         effective_totals_source: stats.usageCoverage.effectiveTotalsSource,
@@ -1526,7 +1700,9 @@ const commandHandlers: Record<
 
   // Ideation commands
   list_ideation_sessions: async (args) => {
-    const sessions = await mockIdeationApi.sessions.list(args.projectId as string);
+    const sessions = await mockIdeationApi.sessions.list(
+      args.projectId as string,
+    );
     return sessions.map(toSnakeIdeationSession);
   },
   get_ideation_session: async (args) => {
@@ -1565,7 +1741,9 @@ const commandHandlers: Record<
     };
   },
   list_session_proposals: async (args) => {
-    const proposals = await mockIdeationApi.proposals.list(args.session_id as string);
+    const proposals = await mockIdeationApi.proposals.list(
+      args.session_id as string,
+    );
     // Transform to snake_case as backend would return
     return proposals.map((p) => ({
       id: p.id,
@@ -1592,7 +1770,8 @@ const commandHandlers: Record<
   },
 
   // Review commands
-  list_reviews: async (args) => mockReviewsApi.getPending(args.projectId as string),
+  list_reviews: async (args) =>
+    mockReviewsApi.getPending(args.projectId as string),
 
   // Task graph commands
   get_task_dependency_graph: async (args) =>
@@ -1600,20 +1779,22 @@ const commandHandlers: Record<
       args.projectId as string,
       args.includeArchived as boolean | undefined,
       (args.executionPlanId as string | null | undefined) ?? null,
-      (args.sessionId as string | null | undefined)
-        ?? (args.ideationSessionId as string | null | undefined)
-        ?? null
+      (args.sessionId as string | null | undefined) ??
+        (args.ideationSessionId as string | null | undefined) ??
+        null,
     ),
   get_task_timeline_events: async (args) =>
     mockTaskGraphApi.getTimelineEvents(
       args.projectId as string,
       (args.limit as number | undefined) ?? 50,
-      (args.offset as number | undefined) ?? 0
+      (args.offset as number | undefined) ?? 0,
     ),
 
   // Execution commands (Phase 82)
   get_execution_status: async (args) => {
-    const status = await mockExecutionApi.getStatus(args.projectId as string | undefined);
+    const status = await mockExecutionApi.getStatus(
+      args.projectId as string | undefined,
+    );
     // Transform to snake_case as backend would return
     return {
       is_paused: status.isPaused,
@@ -1626,7 +1807,9 @@ const commandHandlers: Record<
     };
   },
   pause_execution: async (args) => {
-    const response = await mockExecutionApi.pause(args.projectId as string | undefined);
+    const response = await mockExecutionApi.pause(
+      args.projectId as string | undefined,
+    );
     return {
       success: response.success,
       status: {
@@ -1641,7 +1824,9 @@ const commandHandlers: Record<
     };
   },
   resume_execution: async (args) => {
-    const response = await mockExecutionApi.resume(args.projectId as string | undefined);
+    const response = await mockExecutionApi.resume(
+      args.projectId as string | undefined,
+    );
     return {
       success: response.success,
       status: {
@@ -1656,7 +1841,9 @@ const commandHandlers: Record<
     };
   },
   stop_execution: async (args) => {
-    const response = await mockExecutionApi.stop(args.projectId as string | undefined);
+    const response = await mockExecutionApi.stop(
+      args.projectId as string | undefined,
+    );
     return {
       success: response.success,
       status: {
@@ -1671,15 +1858,19 @@ const commandHandlers: Record<
     };
   },
   get_execution_settings: async (args) => {
-    const settings = await mockExecutionApi.getSettings(args.projectId as string | undefined);
+    const settings = await mockExecutionApi.getSettings(
+      args.projectId as string | undefined,
+    );
     // Transform to snake_case as backend would return
     return {
       max_concurrent_tasks: settings.maxConcurrentTasks,
       project_ideation_max: settings.projectIdeationMax,
       auto_commit: settings.autoCommit,
       pause_on_failure: settings.pauseOnFailure,
-      agent_workspace_pr_autofix_default: settings.agentWorkspacePrAutofixDefault,
-      agent_workspace_pr_auto_merge_default: settings.agentWorkspacePrAutoMergeDefault,
+      agent_workspace_pr_autofix_default:
+        settings.agentWorkspacePrAutofixDefault,
+      agent_workspace_pr_auto_merge_default:
+        settings.agentWorkspacePrAutoMergeDefault,
     };
   },
   update_execution_settings: async (args) => {
@@ -1691,25 +1882,34 @@ const commandHandlers: Record<
       agent_workspace_pr_autofix_default: boolean;
       agent_workspace_pr_auto_merge_default: boolean;
     };
-    const settings = await mockExecutionApi.updateSettings({
-      maxConcurrentTasks: input.max_concurrent_tasks,
-      projectIdeationMax: input.project_ideation_max,
-      autoCommit: input.auto_commit,
-      pauseOnFailure: input.pause_on_failure,
-      agentWorkspacePrAutofixDefault: input.agent_workspace_pr_autofix_default,
-      agentWorkspacePrAutoMergeDefault: input.agent_workspace_pr_auto_merge_default,
-    }, args.projectId as string | undefined);
+    const settings = await mockExecutionApi.updateSettings(
+      {
+        maxConcurrentTasks: input.max_concurrent_tasks,
+        projectIdeationMax: input.project_ideation_max,
+        autoCommit: input.auto_commit,
+        pauseOnFailure: input.pause_on_failure,
+        agentWorkspacePrAutofixDefault:
+          input.agent_workspace_pr_autofix_default,
+        agentWorkspacePrAutoMergeDefault:
+          input.agent_workspace_pr_auto_merge_default,
+      },
+      args.projectId as string | undefined,
+    );
     return {
       max_concurrent_tasks: settings.maxConcurrentTasks,
       project_ideation_max: settings.projectIdeationMax,
       auto_commit: settings.autoCommit,
       pause_on_failure: settings.pauseOnFailure,
-      agent_workspace_pr_autofix_default: settings.agentWorkspacePrAutofixDefault,
-      agent_workspace_pr_auto_merge_default: settings.agentWorkspacePrAutoMergeDefault,
+      agent_workspace_pr_autofix_default:
+        settings.agentWorkspacePrAutofixDefault,
+      agent_workspace_pr_auto_merge_default:
+        settings.agentWorkspacePrAutoMergeDefault,
     };
   },
   set_active_project: async (args) => {
-    await mockExecutionApi.setActiveProject(args.projectId as string | undefined);
+    await mockExecutionApi.setActiveProject(
+      args.projectId as string | undefined,
+    );
   },
   get_global_execution_settings: async () => {
     const settings = await mockExecutionApi.getGlobalSettings();
@@ -1717,7 +1917,8 @@ const commandHandlers: Record<
     return {
       global_max_concurrent: settings.globalMaxConcurrent,
       global_ideation_max: settings.globalIdeationMax,
-      allow_ideation_borrow_idle_execution: settings.allowIdeationBorrowIdleExecution,
+      allow_ideation_borrow_idle_execution:
+        settings.allowIdeationBorrowIdleExecution,
     };
   },
   update_global_execution_settings: async (args) => {
@@ -1729,12 +1930,14 @@ const commandHandlers: Record<
     const settings = await mockExecutionApi.updateGlobalSettings({
       globalMaxConcurrent: input.global_max_concurrent,
       globalIdeationMax: input.global_ideation_max,
-      allowIdeationBorrowIdleExecution: input.allow_ideation_borrow_idle_execution,
+      allowIdeationBorrowIdleExecution:
+        input.allow_ideation_borrow_idle_execution,
     });
     return {
       global_max_concurrent: settings.globalMaxConcurrent,
       global_ideation_max: settings.globalIdeationMax,
-      allow_ideation_borrow_idle_execution: settings.allowIdeationBorrowIdleExecution,
+      allow_ideation_borrow_idle_execution:
+        settings.allowIdeationBorrowIdleExecution,
     };
   },
   get_review_settings: async () => ({ ...mockReviewSettings }),
@@ -1774,24 +1977,34 @@ const commandHandlers: Record<
       mockExternalMcpConfig.host = input.host;
     }
     if (input.authToken !== undefined) {
-      mockExternalMcpConfig.authToken = input.authToken === "" ? null : input.authToken;
+      mockExternalMcpConfig.authToken =
+        input.authToken === "" ? null : input.authToken;
     }
     if (input.nodePath !== undefined) {
-      mockExternalMcpConfig.nodePath = input.nodePath === "" ? null : input.nodePath;
+      mockExternalMcpConfig.nodePath =
+        input.nodePath === "" ? null : input.nodePath;
     }
   },
 
   // Plan branch commands
   get_plan_branch: async (args) => {
-    const branch = await mockPlanBranchApi.getByPlan(args.planArtifactId as string);
+    const branch = await mockPlanBranchApi.getByPlan(
+      args.planArtifactId as string,
+    );
     return branch ? toSnakeCasePlanBranch(branch) : null;
   },
   get_project_plan_branches: async (args) => {
-    const branches = await mockPlanBranchApi.getByProject(args.projectId as string);
+    const branches = await mockPlanBranchApi.getByProject(
+      args.projectId as string,
+    );
     return branches.map(toSnakeCasePlanBranch);
   },
   enable_feature_branch: async (args) => {
-    const input = args.input as { plan_artifact_id: string; session_id: string; project_id: string };
+    const input = args.input as {
+      plan_artifact_id: string;
+      session_id: string;
+      project_id: string;
+    };
     const branch = await mockPlanBranchApi.enable({
       planArtifactId: input.plan_artifact_id,
       sessionId: input.session_id,
@@ -1805,7 +2018,7 @@ const commandHandlers: Record<
 
 function mockAgentTerminalSnapshot(
   conversationId: string,
-  terminalId = "default"
+  terminalId = "default",
 ) {
   return {
     conversationId,
@@ -1830,10 +2043,11 @@ function mockAgentTerminalSnapshot(
  */
 export async function invoke<T>(
   cmd: string,
-  args?: Record<string, unknown>
+  args?: Record<string, unknown>,
 ): Promise<T> {
   // Add delay if configured (for testing loading states)
-  const delay = (window as Window & { __mockInvokeDelay?: number }).__mockInvokeDelay;
+  const delay = (window as Window & { __mockInvokeDelay?: number })
+    .__mockInvokeDelay;
   if (delay && delay > 0) {
     await new Promise((resolve) => setTimeout(resolve, delay));
   }
@@ -1847,10 +2061,12 @@ export async function invoke<T>(
   }
 
   // Unknown command - log warning and return sensible defaults
-  console.debug(`[mock] invoke("${cmd}", ${JSON.stringify(args)}) - no handler`);
+  console.debug(
+    `[mock] invoke("${cmd}", ${JSON.stringify(args)}) - no handler`,
+  );
   console.warn(
     `[web-mode] No mock handler for "${cmd}". ` +
-      `Add handler to tauri-api-core.ts or use api.* methods.`
+      `Add handler to tauri-api-core.ts or use api.* methods.`,
   );
 
   // Return empty arrays for list commands, null otherwise
@@ -1865,7 +2081,7 @@ export async function invoke<T>(
  */
 export function transformCallback<T>(
   callback?: (response: T) => void,
-  _once?: boolean
+  _once?: boolean,
 ): number {
   if (callback) {
     console.debug("[mock] transformCallback registered");
@@ -1923,7 +2139,9 @@ export class PluginListener {
   }
 
   async unregister(): Promise<void> {
-    console.debug(`[mock] PluginListener.unregister(${this.plugin}:${this.event})`);
+    console.debug(
+      `[mock] PluginListener.unregister(${this.plugin}:${this.event})`,
+    );
   }
 }
 
@@ -1933,7 +2151,7 @@ export class PluginListener {
 export async function addPluginListener<T>(
   plugin: string,
   event: string,
-  _handler: (payload: T) => void
+  _handler: (payload: T) => void,
 ): Promise<PluginListener> {
   console.debug(`[mock] addPluginListener(${plugin}, ${event})`);
   return new PluginListener(plugin, event, 0);

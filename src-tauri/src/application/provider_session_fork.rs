@@ -394,7 +394,7 @@ fn claude_project_dir_name_for_cwd(working_directory: &Path) -> AppResult<String
             "Claude project working directory is empty".to_string(),
         ));
     }
-    Ok(value.replace('/', "-").replace('\\', "-"))
+    Ok(value.replace(['/', '\\'], "-"))
 }
 
 fn copy_rewritten_jsonl<F>(

@@ -833,6 +833,26 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                 "[QUEUE] failed to auto-assign primary Jira issue from composer references"
                             );
                         }
+                        let repo = Arc::clone(&app_state.agent_conversation_linear_issue_repo);
+                        let linear_integration_service =
+                            Arc::clone(&app_state.linear_integration_service);
+                        let assignment_result = crate::application::agent_conversation_linear_issue::assign_primary_linear_issue_if_absent_and_refresh(
+                            &repo,
+                            Some(linear_integration_service.as_ref()),
+                            &conversation_id,
+                            &project_id,
+                            &queued_msg.composer_integration_references,
+                            Some(ChatMessageId::from_string(user_msg_id.clone())),
+                            user_msg.created_at,
+                        )
+                        .await;
+                        if let Err(error) = assignment_result {
+                            tracing::warn!(
+                                conversation_id = %conversation_id.as_str(),
+                                error = %error,
+                                "[QUEUE] failed to auto-assign primary Linear issue from composer references"
+                            );
+                        }
                     }
                 }
 
@@ -903,9 +923,17 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.atlassian_integration_service)
             });
+            let linear_integration_service = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<AppState>();
+                Arc::clone(&app_state.linear_integration_service)
+            });
             let agent_conversation_jira_issue_repo = app_handle.as_ref().map(|handle| {
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.agent_conversation_jira_issue_repo)
+            });
+            let agent_conversation_linear_issue_repo = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<AppState>();
+                Arc::clone(&app_state.agent_conversation_linear_issue_repo)
             });
             let assigned_jira_issue =
                 if let Some(repo) = agent_conversation_jira_issue_repo.as_ref() {
@@ -924,10 +952,32 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 } else {
                     None
                 };
-            let merged_integration_references =
+            let assigned_linear_issue =
+                if let Some(repo) = agent_conversation_linear_issue_repo.as_ref() {
+                    repo.get_by_conversation_id(&conversation_id)
+                        .await
+                        .map_err(|error| {
+                            tracing::warn!(
+                                conversation_id = %conversation_id.as_str(),
+                                error = %error,
+                                "[QUEUE] failed to load agent conversation Linear assignment"
+                            );
+                            error
+                        })
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
+            let merged_jira_references =
                 crate::application::agent_conversation_jira_issue::merge_assigned_jira_reference(
                     assigned_jira_issue.as_ref(),
                     &queued_msg.composer_integration_references,
+                );
+            let merged_integration_references =
+                crate::application::agent_conversation_linear_issue::merge_assigned_linear_reference(
+                    assigned_linear_issue.as_ref(),
+                    &merged_jira_references,
                 );
 
             let runtime_content =
@@ -941,6 +991,18 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             } else if let Some(service) = atlassian_integration_service.as_ref() {
                 service
                     .expand_references_for_prompt(&runtime_content, &merged_integration_references)
+                    .await
+            } else {
+                runtime_content
+            };
+            let runtime_content = if merged_integration_references.is_empty() {
+                runtime_content
+            } else if let Some(service) = linear_integration_service.as_ref() {
+                service
+                    .expand_references_for_prompt(
+                        &runtime_content,
+                        &merged_integration_references,
+                    )
                     .await
             } else {
                 runtime_content
