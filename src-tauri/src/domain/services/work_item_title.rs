@@ -1,6 +1,22 @@
 use serde_json::Value;
 
+use super::message_queue::ComposerIntegrationReference;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposerJiraReferenceMetadata {
+    pub issue_key: String,
+    pub issue_id: Option<String>,
+    pub title: Option<String>,
+    pub url: Option<String>,
+}
+
 pub fn primary_jira_key_from_composer_metadata(metadata: Option<&str>) -> Option<String> {
+    primary_jira_reference_from_composer_metadata(metadata).map(|reference| reference.issue_key)
+}
+
+pub fn primary_jira_reference_from_composer_metadata(
+    metadata: Option<&str>,
+) -> Option<ComposerJiraReferenceMetadata> {
     let value = serde_json::from_str::<Value>(metadata?).ok()?;
     let references = value.get("composer_integration_references")?.as_array()?;
     references.iter().find_map(|reference| {
@@ -13,8 +29,65 @@ pub fn primary_jira_key_from_composer_metadata(metadata: Option<&str>) -> Option
             .get("key")
             .and_then(Value::as_str)
             .or_else(|| reference.get("id").and_then(Value::as_str))?;
-        normalize_jira_key(raw_key)
+        let issue_key = normalize_jira_key(raw_key)?;
+        let issue_id = reference
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let title = reference
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let url = reference
+            .get("url")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        Some(ComposerJiraReferenceMetadata {
+            issue_key,
+            issue_id,
+            title,
+            url,
+        })
     })
+}
+
+pub fn jira_reference_from_composer_reference(
+    reference: &ComposerIntegrationReference,
+) -> Option<ComposerJiraReferenceMetadata> {
+    if reference.provider != "atlassian" || reference.kind != "jira" {
+        return None;
+    }
+    let raw_key = reference.key.as_deref().unwrap_or(reference.id.as_str());
+    Some(ComposerJiraReferenceMetadata {
+        issue_key: normalize_jira_key(raw_key)?,
+        issue_id: Some(reference.id.trim().to_string()).filter(|value| !value.is_empty()),
+        title: reference
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        url: reference
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+    })
+}
+
+pub fn primary_jira_reference_from_composer_references(
+    references: &[ComposerIntegrationReference],
+) -> Option<ComposerJiraReferenceMetadata> {
+    references
+        .iter()
+        .find_map(jira_reference_from_composer_reference)
 }
 
 pub fn primary_jira_key_from_title(title: &str) -> Option<String> {
@@ -110,6 +183,72 @@ mod tests {
             primary_jira_key_from_composer_metadata(Some(metadata)).as_deref(),
             Some("RX-42")
         );
+    }
+
+    #[test]
+    fn extracts_primary_jira_reference_details_from_metadata() {
+        let metadata = r#"{
+            "composer_integration_references": [
+                {
+                    "provider": "atlassian",
+                    "kind": "jira",
+                    "id": "10042",
+                    "key": "rx-42",
+                    "title": " Fix composer ",
+                    "url": "https://example.atlassian.net/browse/RX-42"
+                }
+            ]
+        }"#;
+
+        let reference = primary_jira_reference_from_composer_metadata(Some(metadata)).unwrap();
+        assert_eq!(reference.issue_key, "RX-42");
+        assert_eq!(reference.issue_id.as_deref(), Some("10042"));
+        assert_eq!(reference.title.as_deref(), Some("Fix composer"));
+        assert_eq!(
+            reference.url.as_deref(),
+            Some("https://example.atlassian.net/browse/RX-42")
+        );
+    }
+
+    #[test]
+    fn extracts_first_jira_reference_from_multi_reference_metadata() {
+        let metadata = r#"{
+            "composer_integration_references": [
+                { "provider": "atlassian", "kind": "confluence", "id": "RX-1" },
+                { "provider": "atlassian", "kind": "jira", "id": "RX-42" },
+                { "provider": "atlassian", "kind": "jira", "id": "RX-77" }
+            ]
+        }"#;
+
+        let reference = primary_jira_reference_from_composer_metadata(Some(metadata)).unwrap();
+        assert_eq!(reference.issue_key, "RX-42");
+    }
+
+    #[test]
+    fn extracts_primary_jira_reference_from_structured_references() {
+        let references = vec![
+            ComposerIntegrationReference {
+                provider: "atlassian".to_string(),
+                kind: "confluence".to_string(),
+                id: "RX-1".to_string(),
+                key: None,
+                title: None,
+                url: None,
+            },
+            ComposerIntegrationReference {
+                provider: "atlassian".to_string(),
+                kind: "jira".to_string(),
+                id: "10042".to_string(),
+                key: Some("rx-42".to_string()),
+                title: Some(" Fix composer ".to_string()),
+                url: Some("https://jira.test/browse/RX-42".to_string()),
+            },
+        ];
+
+        let reference = primary_jira_reference_from_composer_references(&references).unwrap();
+        assert_eq!(reference.issue_key, "RX-42");
+        assert_eq!(reference.issue_id.as_deref(), Some("10042"));
+        assert_eq!(reference.title.as_deref(), Some("Fix composer"));
     }
 
     #[test]

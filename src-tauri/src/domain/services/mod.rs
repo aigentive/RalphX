@@ -57,7 +57,9 @@ pub use message_queue::{
     ComposerProjectReferenceKind, MessageQueue, QueueKey, QueuedMessage,
 };
 pub use methodology_service::{MethodologyActivationResult, MethodologyService};
-pub use pr_publish_service::{AgentWorkspacePrPublisher, PlanPrPublisher, PrReviewState};
+pub use pr_publish_service::{
+    AgentWorkspacePrPublisher, PlanPrDescriptionDrafter, PlanPrPublisher, PrReviewState,
+};
 pub use research_service::ResearchService;
 pub use rule_ingestion_service::{IngestionResult, RuleIngestionService};
 pub use rule_parser::{MarkdownChunk, ParsedRuleFile, RuleFrontmatter, RuleParser};
@@ -73,8 +75,10 @@ pub use running_agent_registry::{
 };
 pub use secret_store::{SecretStore, SecretStoreError};
 pub use work_item_title::{
-    normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
-    primary_jira_key_from_title,
+    jira_reference_from_composer_reference, normalize_title_with_jira_key,
+    primary_jira_key_from_composer_metadata, primary_jira_key_from_title,
+    primary_jira_reference_from_composer_metadata, primary_jira_reference_from_composer_references,
+    ComposerJiraReferenceMetadata,
 };
 pub use workflow_service::{
     AppliedColumn, AppliedWorkflow, ColumnMappingError, ValidationResult, WorkflowService,

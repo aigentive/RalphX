@@ -4,11 +4,13 @@
 pub mod agent_lane_settings_bootstrap;
 pub mod agent_lane_resolution;
 pub mod agent_conversation_fork;
+pub mod agent_conversation_jira_issue;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
 pub(crate) mod agent_planning_session_titles;
 pub mod agent_workspace_pr_description;
 pub mod agent_workspace_external_pr_reconciliation;
+pub(crate) mod plan_pr_description;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_bridge;
@@ -114,9 +116,10 @@ pub use apply_service::{
 };
 pub use atlassian_integration_service::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
-    AtlassianIntegrationService, AtlassianOAuthAuthorization, AtlassianOAuthResource,
-    AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
-    AtlassianResourceSummary, EmptyAtlassianApiClient, UnavailableAtlassianApiClient,
+    AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraComment,
+    AtlassianOAuthAuthorization, AtlassianOAuthResource, AtlassianOAuthTokenResponse,
+    AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
+    EmptyAtlassianApiClient, UnavailableAtlassianApiClient,
 };
 pub use chat_attachment_service::ChatAttachmentService;
 pub use agent_terminal::AgentTerminalService;
@@ -199,6 +202,8 @@ mod harness_runtime_registry_tests;
 #[cfg(test)]
 mod ideation_harness_availability_tests;
 #[cfg(test)]
+mod ideation_workspace_tests;
+#[cfg(test)]
 mod orphan_worktree_cleanup_tests;
 #[cfg(test)]
 mod pr_startup_recovery_tests;
@@ -214,6 +219,8 @@ mod prune_engine_tests;
 mod publish_resilience_tests;
 #[cfg(test)]
 mod plan_complexity_assessment_tests;
+#[cfg(test)]
+mod plan_pr_description_tests;
 #[cfg(test)]
 mod session_export_service_tests;
 #[cfg(test)]

@@ -5,7 +5,10 @@ import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
-import type { AgentConversationWorkspace } from "@/api/chat";
+import type {
+  AgentConversationWorkspace,
+  AgentConversationWorkspaceFreshness,
+} from "@/api/chat";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import { createTestQueryClient } from "@/test/store-utils";
@@ -306,6 +309,28 @@ const workspace = (
   status: "active",
   createdAt: "2026-04-23T09:00:00Z",
   updatedAt: "2026-04-23T09:00:00Z",
+  ...overrides,
+});
+
+const workspaceFreshness = (
+  overrides: Partial<AgentConversationWorkspaceFreshness> = {},
+): AgentConversationWorkspaceFreshness => ({
+  conversationId: "conversation-1",
+  freshnessScope: "local",
+  baseRef: "main",
+  baseDisplayName: "Project default (main)",
+  targetRef: "origin/main",
+  capturedBaseCommit: "base-sha",
+  targetBaseCommit: "base-sha",
+  isBaseAhead: false,
+  hasUncommittedChanges: false,
+  unpublishedCommitCount: null,
+  remoteRefreshed: true,
+  worktreeStatusChecked: true,
+  baseStatus: "valid",
+  effectiveBaseRef: null,
+  effectiveBaseDisplayName: null,
+  baseBlockReason: null,
   ...overrides,
 });
 
@@ -1452,8 +1477,14 @@ describe("AgentsArtifactPane", () => {
         expect.stringContaining("Implement the approved plan directly"),
         undefined,
         undefined,
-        { conversationId: "conversation-1" },
+        {
+          conversationId: "conversation-1",
+          suppressUserMessage: true,
+        },
       ),
+    );
+    expect(sendAgentMessageMock.mock.calls[0]?.[2]).not.toContain(
+      "do not create task proposals",
     );
     expect(toastSuccessMock).toHaveBeenCalledWith("Implementation started");
   });
@@ -1634,6 +1665,85 @@ describe("AgentsArtifactPane", () => {
     expect(toastSuccessMock).toHaveBeenCalledWith("Plan verification started");
     expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
     expect(sendAgentMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("hides right-side approved plan CTAs when the workspace has changes", async () => {
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Planning session",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: null,
+      },
+      proposals: [],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: "2026-04-23T09:30:00Z",
+      },
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+      {
+        activeWorkspaceFreshness: workspaceFreshness({
+          hasUncommittedChanges: true,
+        }),
+      },
+    );
+
+    expect(await screen.findByText("Plan Approved")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Verify Plan/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Implement Directly/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Create Proposals/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("uses the focused ideation session as the artifact data source", async () => {

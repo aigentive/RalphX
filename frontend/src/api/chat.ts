@@ -1626,6 +1626,7 @@ export interface SendAgentMessageOptions {
   providerHarness?: string | null;
   modelId?: string | null;
   logicalEffort?: string | null;
+  suppressUserMessage?: boolean;
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
   composerArtifactReferences?: ComposerArtifactReference[];
@@ -2542,6 +2543,7 @@ export async function sendAgentMessage(
         ...(options?.providerHarness ? { providerHarness: options.providerHarness } : {}),
         ...(options?.modelId ? { modelOverride: options.modelId } : {}),
         ...(options?.logicalEffort ? { logicalEffort: options.logicalEffort } : {}),
+        ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
         ...(options?.composerProjectReferences?.length
           ? { composerProjectReferences: options.composerProjectReferences }
           : {}),
