@@ -53,6 +53,7 @@ const {
   loginGhWithBrowserMock,
   resumeDeferredGitStartupMock,
   openUrlMock,
+  toastDismissMock,
   toastErrorMock,
   toastInfoMock,
   toastLoadingMock,
@@ -94,6 +95,7 @@ const {
   loginGhWithBrowserMock: vi.fn(),
   resumeDeferredGitStartupMock: vi.fn(),
   openUrlMock: vi.fn(),
+  toastDismissMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastInfoMock: vi.fn(),
   toastLoadingMock: vi.fn(),
@@ -277,6 +279,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 
 vi.mock("sonner", () => ({
   toast: {
+    dismiss: (...args: unknown[]) => toastDismissMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
     info: (...args: unknown[]) => toastInfoMock(...args),
     loading: (...args: unknown[]) => toastLoadingMock(...args),
@@ -618,6 +621,7 @@ describe("AgentsArtifactPane", () => {
       refetch: vi.fn(),
     });
     openUrlMock.mockResolvedValue(undefined);
+    toastDismissMock.mockClear();
     toastErrorMock.mockClear();
     toastInfoMock.mockClear();
     toastLoadingMock.mockClear();
