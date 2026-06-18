@@ -56,7 +56,10 @@ fn test_existing_proposals_have_null_target_project() {
         )
         .unwrap();
 
-    assert!(val.is_none(), "existing proposals should have NULL target_project");
+    assert!(
+        val.is_none(),
+        "existing proposals should have NULL target_project"
+    );
 }
 
 #[test]
@@ -88,5 +91,9 @@ fn test_migration_idempotent() {
     v71_add_target_project_to_proposals::migrate(&conn).unwrap();
     v71_add_target_project_to_proposals::migrate(&conn).unwrap();
 
-    assert!(helpers::column_exists(&conn, "task_proposals", "target_project"));
+    assert!(helpers::column_exists(
+        &conn,
+        "task_proposals",
+        "target_project"
+    ));
 }

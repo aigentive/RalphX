@@ -8,7 +8,10 @@ import type {
   AgentRun,
   ContextType,
 } from "../types/chat-conversation";
-import { normalizeConversationProviderMetadata } from "../types/chat-conversation";
+import {
+  AgentConversationModeSchema,
+  normalizeConversationProviderMetadata,
+} from "../types/chat-conversation";
 import type { ToolCall } from "../components/Chat/ToolCallIndicator";
 import type { ToolCallDetailRef } from "../components/Chat/tool-widgets/shared.constants";
 import type { ContentBlockItem } from "../components/Chat/MessageItem";
@@ -618,7 +621,7 @@ const ChatConversationResponseSchema = z.object({
   effective_model_id: z.string().nullable().optional(),
   logical_effort: z.string().nullable().optional(),
   effective_effort: z.string().nullable().optional(),
-  agent_mode: z.enum(["chat", "edit", "plan", "ideation"]).nullable().optional(),
+  agent_mode: AgentConversationModeSchema.nullable().optional(),
   parent_conversation_id: z.string().nullable().optional(),
   title: z.string().nullable(),
   message_count: z.number(),
@@ -1559,6 +1562,9 @@ export const chatApi = {
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
   closeAgentWorkspacePr,
+  getAgentWorkspacePrReviewContext,
+  submitAgentWorkspacePrReviewAction,
+  skipAgentWorkspacePrReviewAction,
   getAgentRunStatus,
   getAgentRunningStates,
   getBulkWorkspacePublicationStates,
@@ -1804,6 +1810,91 @@ export interface SetAgentConversationWorkspaceAutoPublishInput {
   autoPublishEnabled: boolean;
 }
 
+export type AgentWorkspacePrReviewMonitorStatus =
+  | "idle"
+  | "reviewing"
+  | "awaiting_user"
+  | "watching"
+  | "submitting"
+  | "blocked"
+  | "terminal";
+
+export type AgentWorkspacePrReviewActionKind =
+  | "request_changes"
+  | "approve"
+  | "comment";
+
+export type AgentWorkspacePrReviewActionStatus =
+  | "pending"
+  | "approved"
+  | "skipped"
+  | "submitting"
+  | "submitted"
+  | "failed";
+
+export interface AgentWorkspacePrReviewMonitor {
+  conversationId: string;
+  projectId: string;
+  prNumber: number;
+  status: AgentWorkspacePrReviewMonitorStatus;
+  monitorEnabled: boolean;
+  firstReviewCompleted: boolean;
+  lastSeenHeadSha: string | null;
+  lastReviewedHeadSha: string | null;
+  lastReviewRunId: string | null;
+  lastReviewOutcome: string | null;
+  lastSubmittedReviewId: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentWorkspacePrReviewAction {
+  id: string;
+  conversationId: string;
+  prNumber: number;
+  headSha: string;
+  proposedAction: AgentWorkspacePrReviewActionKind;
+  summary: string;
+  reviewBody: string;
+  findingsJson: string | null;
+  status: AgentWorkspacePrReviewActionStatus;
+  submittedReviewId: string | null;
+  createdByRunId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
+export interface AgentWorkspacePrReviewContext {
+  success: boolean;
+  workspace: AgentConversationWorkspace;
+  events: AgentConversationWorkspacePublicationEvent[];
+  prNumber: number;
+  prUrl: string | null;
+  currentHeadSha: string | null;
+  health: unknown | null;
+  reviewFeedback: unknown | null;
+  monitor: AgentWorkspacePrReviewMonitor | null;
+  pendingAction: AgentWorkspacePrReviewAction | null;
+  recentActions: AgentWorkspacePrReviewAction[];
+  issueCommentEvidence: unknown[];
+}
+
+export interface SubmitAgentWorkspacePrReviewActionResult {
+  success: boolean;
+  monitor: AgentWorkspacePrReviewMonitor;
+  action: AgentWorkspacePrReviewAction;
+  submittedReviewId: string;
+  submittedReviewUrl: string | null;
+}
+
+export interface SkipAgentWorkspacePrReviewActionResult {
+  success: boolean;
+  monitor: AgentWorkspacePrReviewMonitor;
+  action: AgentWorkspacePrReviewAction;
+}
+
 const SendAgentMessageResponseSchema = z.object({
   conversation_id: z.string(),
   agent_run_id: z.string(),
@@ -1921,6 +2012,79 @@ const AgentConversationWorkspaceFreshnessResponseSchema = z.object({
   effective_base_display_name: z.string().nullable().optional().default(null),
   base_block_reason: z.string().nullable().optional().default(null),
 });
+const AgentWorkspacePrReviewMonitorResponseSchema = z.object({
+  conversation_id: z.string(),
+  project_id: z.string(),
+  pr_number: z.number(),
+  status: z.enum([
+    "idle",
+    "reviewing",
+    "awaiting_user",
+    "watching",
+    "submitting",
+    "blocked",
+    "terminal",
+  ]),
+  monitor_enabled: z.boolean(),
+  first_review_completed: z.boolean(),
+  last_seen_head_sha: z.string().nullable(),
+  last_reviewed_head_sha: z.string().nullable(),
+  last_review_run_id: z.string().nullable(),
+  last_review_outcome: z.string().nullable(),
+  last_submitted_review_id: z.string().nullable(),
+  last_error: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+const AgentWorkspacePrReviewActionResponseSchema = z.object({
+  id: z.string(),
+  conversation_id: z.string(),
+  pr_number: z.number(),
+  head_sha: z.string(),
+  proposed_action: z.enum(["request_changes", "approve", "comment"]),
+  summary: z.string(),
+  review_body: z.string(),
+  findings_json: z.string().nullable(),
+  status: z.enum([
+    "pending",
+    "approved",
+    "skipped",
+    "submitting",
+    "submitted",
+    "failed",
+  ]),
+  submitted_review_id: z.string().nullable(),
+  created_by_run_id: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  resolved_at: z.string().nullable(),
+});
+const AgentWorkspacePrReviewContextResponseSchema = z.object({
+  success: z.boolean(),
+  workspace: AgentConversationWorkspaceResponseSchema,
+  events: AgentConversationWorkspacePublicationEventListResponseSchema,
+  pr_number: z.number(),
+  pr_url: z.string().nullable(),
+  current_head_sha: z.string().nullable(),
+  health: z.unknown().nullable(),
+  review_feedback: z.unknown().nullable(),
+  monitor: AgentWorkspacePrReviewMonitorResponseSchema.nullable(),
+  pending_action: AgentWorkspacePrReviewActionResponseSchema.nullable(),
+  recent_actions: z.array(AgentWorkspacePrReviewActionResponseSchema),
+  issue_comment_evidence: z.array(z.unknown()),
+});
+const SubmitAgentWorkspacePrReviewActionResponseSchema = z.object({
+  success: z.boolean(),
+  monitor: AgentWorkspacePrReviewMonitorResponseSchema,
+  action: AgentWorkspacePrReviewActionResponseSchema,
+  submitted_review_id: z.string(),
+  submitted_review_url: z.string().nullable(),
+});
+const SkipAgentWorkspacePrReviewActionResponseSchema = z.object({
+  success: z.boolean(),
+  monitor: AgentWorkspacePrReviewMonitorResponseSchema,
+  action: AgentWorkspacePrReviewActionResponseSchema,
+});
 const WorkspaceOpenTargetResponseSchema = z.object({
   id: z.string(),
   label: z.string(),
@@ -1999,6 +2163,21 @@ type RawAgentConversationWorkspaceFreshness = z.infer<
 >;
 type RawUpdateAgentConversationWorkspaceFromBaseResponse = z.infer<
   typeof UpdateAgentConversationWorkspaceFromBaseResponseSchema
+>;
+type RawAgentWorkspacePrReviewMonitor = z.infer<
+  typeof AgentWorkspacePrReviewMonitorResponseSchema
+>;
+type RawAgentWorkspacePrReviewAction = z.infer<
+  typeof AgentWorkspacePrReviewActionResponseSchema
+>;
+type RawAgentWorkspacePrReviewContext = z.infer<
+  typeof AgentWorkspacePrReviewContextResponseSchema
+>;
+type RawSubmitAgentWorkspacePrReviewActionResponse = z.infer<
+  typeof SubmitAgentWorkspacePrReviewActionResponseSchema
+>;
+type RawSkipAgentWorkspacePrReviewActionResponse = z.infer<
+  typeof SkipAgentWorkspacePrReviewActionResponseSchema
 >;
 
 function transformSendAgentMessageResponse(raw: RawSendAgentMessageResponse): SendAgentMessageResult {
@@ -2189,6 +2368,93 @@ function transformAgentConversationWorkspaceFreshness(
   };
 }
 
+function transformAgentWorkspacePrReviewMonitor(
+  raw: RawAgentWorkspacePrReviewMonitor
+): AgentWorkspacePrReviewMonitor {
+  return {
+    conversationId: raw.conversation_id,
+    projectId: raw.project_id,
+    prNumber: raw.pr_number,
+    status: raw.status,
+    monitorEnabled: raw.monitor_enabled,
+    firstReviewCompleted: raw.first_review_completed,
+    lastSeenHeadSha: raw.last_seen_head_sha,
+    lastReviewedHeadSha: raw.last_reviewed_head_sha,
+    lastReviewRunId: raw.last_review_run_id,
+    lastReviewOutcome: raw.last_review_outcome,
+    lastSubmittedReviewId: raw.last_submitted_review_id,
+    lastError: raw.last_error,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
+  };
+}
+
+function transformAgentWorkspacePrReviewAction(
+  raw: RawAgentWorkspacePrReviewAction
+): AgentWorkspacePrReviewAction {
+  return {
+    id: raw.id,
+    conversationId: raw.conversation_id,
+    prNumber: raw.pr_number,
+    headSha: raw.head_sha,
+    proposedAction: raw.proposed_action,
+    summary: raw.summary,
+    reviewBody: raw.review_body,
+    findingsJson: raw.findings_json,
+    status: raw.status,
+    submittedReviewId: raw.submitted_review_id,
+    createdByRunId: raw.created_by_run_id,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
+    resolvedAt: raw.resolved_at,
+  };
+}
+
+function transformAgentWorkspacePrReviewContext(
+  raw: RawAgentWorkspacePrReviewContext
+): AgentWorkspacePrReviewContext {
+  return {
+    success: raw.success,
+    workspace: transformAgentConversationWorkspace(raw.workspace),
+    events: raw.events.map(transformAgentConversationWorkspacePublicationEvent),
+    prNumber: raw.pr_number,
+    prUrl: raw.pr_url,
+    currentHeadSha: raw.current_head_sha,
+    health: raw.health,
+    reviewFeedback: raw.review_feedback,
+    monitor: raw.monitor
+      ? transformAgentWorkspacePrReviewMonitor(raw.monitor)
+      : null,
+    pendingAction: raw.pending_action
+      ? transformAgentWorkspacePrReviewAction(raw.pending_action)
+      : null,
+    recentActions: raw.recent_actions.map(transformAgentWorkspacePrReviewAction),
+    issueCommentEvidence: raw.issue_comment_evidence,
+  };
+}
+
+function transformSubmitAgentWorkspacePrReviewActionResponse(
+  raw: RawSubmitAgentWorkspacePrReviewActionResponse
+): SubmitAgentWorkspacePrReviewActionResult {
+  return {
+    success: raw.success,
+    monitor: transformAgentWorkspacePrReviewMonitor(raw.monitor),
+    action: transformAgentWorkspacePrReviewAction(raw.action),
+    submittedReviewId: raw.submitted_review_id,
+    submittedReviewUrl: raw.submitted_review_url,
+  };
+}
+
+function transformSkipAgentWorkspacePrReviewActionResponse(
+  raw: RawSkipAgentWorkspacePrReviewActionResponse
+): SkipAgentWorkspacePrReviewActionResult {
+  return {
+    success: raw.success,
+    monitor: transformAgentWorkspacePrReviewMonitor(raw.monitor),
+    action: transformAgentWorkspacePrReviewAction(raw.action),
+  };
+}
+
 function transformUpdateAgentConversationWorkspaceFromBaseResponse(
   raw: RawUpdateAgentConversationWorkspaceFromBaseResponse
 ): UpdateAgentConversationWorkspaceFromBaseResult {
@@ -2294,6 +2560,77 @@ export async function listAgentConversationWorkspacePublicationEvents(
     AgentConversationWorkspacePublicationEventListResponseSchema
   );
   return raw.map(transformAgentConversationWorkspacePublicationEvent);
+}
+
+async function fetchAgentWorkspaceJson<T>(
+  path: string,
+  schema: z.ZodType<T>,
+  init?: RequestInit
+): Promise<T> {
+  const response = await fetch(backendApiUrl(path), init);
+  if (!response.ok) {
+    let detail: string | null = null;
+    try {
+      const raw = (await response.json()) as {
+        error?: string;
+        message?: string;
+        detail?: string;
+      };
+      detail = raw.detail ?? raw.message ?? raw.error ?? null;
+    } catch {
+      detail = null;
+    }
+    throw new Error(
+      detail
+        ? `${response.status} ${response.statusText}: ${detail}`
+        : `${response.status} ${response.statusText}`
+    );
+  }
+  return schema.parse(await response.json());
+}
+
+export async function getAgentWorkspacePrReviewContext(
+  conversationId: string
+): Promise<AgentWorkspacePrReviewContext> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/pr-review-context`,
+    AgentWorkspacePrReviewContextResponseSchema
+  );
+  return transformAgentWorkspacePrReviewContext(raw);
+}
+
+export async function submitAgentWorkspacePrReviewAction(
+  conversationId: string,
+  actionId: string,
+  actionKind?: AgentWorkspacePrReviewActionKind | null
+): Promise<SubmitAgentWorkspacePrReviewActionResult> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/pr-review-actions/${encodeURIComponent(actionId)}/submit`,
+    SubmitAgentWorkspacePrReviewActionResponseSchema,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action_kind: actionKind ?? null }),
+    }
+  );
+  return transformSubmitAgentWorkspacePrReviewActionResponse(raw);
+}
+
+export async function skipAgentWorkspacePrReviewAction(
+  conversationId: string,
+  actionId: string,
+  reason?: string | null
+): Promise<SkipAgentWorkspacePrReviewActionResult> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/pr-review-actions/${encodeURIComponent(actionId)}/skip`,
+    SkipAgentWorkspacePrReviewActionResponseSchema,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: reason ?? null }),
+    }
+  );
+  return transformSkipAgentWorkspacePrReviewActionResponse(raw);
 }
 
 export async function getAgentConversationWorkspaceFreshness(

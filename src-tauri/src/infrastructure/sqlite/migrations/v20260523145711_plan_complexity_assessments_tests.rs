@@ -7,11 +7,8 @@ use super::v20260523145711_plan_complexity_assessments;
 
 fn setup_test_db() -> Connection {
     let conn = Connection::open_in_memory().expect("Failed to create in-memory database");
-    conn.execute(
-        "CREATE TABLE ideation_sessions (id TEXT PRIMARY KEY)",
-        [],
-    )
-    .expect("create ideation_sessions table");
+    conn.execute("CREATE TABLE ideation_sessions (id TEXT PRIMARY KEY)", [])
+        .expect("create ideation_sessions table");
     conn.execute("CREATE TABLE artifacts (id TEXT PRIMARY KEY)", [])
         .expect("create artifacts table");
     conn

@@ -98,7 +98,10 @@ fn test_existing_sessions_get_default_true() {
         )
         .unwrap();
 
-    assert_eq!(title, "Old Session", "existing session data should be preserved");
+    assert_eq!(
+        title, "Old Session",
+        "existing session data should be preserved"
+    );
 
     let checked: i64 = conn
         .query_row(
@@ -135,7 +138,10 @@ fn test_can_set_cross_project_checked_to_false() {
         )
         .unwrap();
 
-    assert_eq!(val, 0, "cross_project_checked should be settable to 0 (false)");
+    assert_eq!(
+        val, 0,
+        "cross_project_checked should be settable to 0 (false)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -149,5 +155,9 @@ fn test_migration_idempotent() {
     v72_cross_project_check::migrate(&conn).unwrap();
     v72_cross_project_check::migrate(&conn).unwrap();
 
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "cross_project_checked"));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "cross_project_checked"
+    ));
 }

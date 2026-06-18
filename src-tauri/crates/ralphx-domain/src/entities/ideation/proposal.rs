@@ -219,7 +219,9 @@ impl TaskProposal {
             archived_at: row
                 .get::<_, Option<String>>("archived_at")?
                 .map(parse_datetime_helper),
-            target_project: row.get::<_, Option<String>>("target_project").unwrap_or(None),
+            target_project: row
+                .get::<_, Option<String>>("target_project")
+                .unwrap_or(None),
             migrated_from_session_id: row
                 .get::<_, Option<String>>("migrated_from_session_id")
                 .unwrap_or(None),

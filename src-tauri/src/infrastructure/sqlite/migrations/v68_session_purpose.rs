@@ -5,8 +5,8 @@
 
 use rusqlite::Connection;
 
-use crate::error::AppResult;
 use super::helpers;
+use crate::error::AppResult;
 
 pub fn migrate(conn: &Connection) -> AppResult<()> {
     helpers::add_column_if_not_exists(

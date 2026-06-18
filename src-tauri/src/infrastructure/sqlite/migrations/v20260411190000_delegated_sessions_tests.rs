@@ -10,7 +10,9 @@ fn test_delegated_sessions_migration_creates_table_and_columns() {
 
     v20260411190000_delegated_sessions::migrate(&conn).unwrap();
 
-    let mut stmt = conn.prepare("PRAGMA table_info(delegated_sessions)").unwrap();
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(delegated_sessions)")
+        .unwrap();
     let columns: Vec<String> = stmt
         .query_map([], |row| row.get::<_, String>(1))
         .unwrap()

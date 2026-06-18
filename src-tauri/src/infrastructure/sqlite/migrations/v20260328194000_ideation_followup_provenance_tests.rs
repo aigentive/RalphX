@@ -30,7 +30,12 @@ fn test_migration_adds_provenance_columns() {
     )
     .expect("Insert with provenance fields should succeed");
 
-    let row: (Option<String>, Option<String>, Option<String>, Option<String>) = conn
+    let row: (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = conn
         .query_row(
             "SELECT source_task_id, source_context_type, source_context_id, spawn_reason
              FROM ideation_sessions WHERE id = 's1'",

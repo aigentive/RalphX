@@ -84,6 +84,7 @@ interface AgentsStartComposerProps {
 
 const MAX_FILES = 5;
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const REVIEW_PR_DEFAULT_PROMPT = "Review this PR.";
 const STARTER_TYPING_WORDS = [
   "agent",
   "project",
@@ -107,6 +108,7 @@ const AGENT_MODE_OPTIONS: Array<{
   description: string;
 }> = [
   { id: "edit", label: "Agent", description: "Build, change, and review code in a branch." },
+  { id: "review_pr", label: "Review PR", description: "Review a linked pull request." },
   { id: "plan", label: "Plan", description: "Draft and refine a plan before execution." },
   { id: "chat", label: "Chat", description: "Ask read-only questions about the project." },
   { id: "ideation", label: "Ideation", description: "Plan work before creating tasks." },
@@ -269,6 +271,8 @@ export function AgentsStartComposer({
   );
   const selectedStartFrom =
     allStartFromOptions.find((option) => option.key === selectedStartFromKey) ?? null;
+  const reviewPrDefaultPrompt =
+    mode === "review_pr" ? REVIEW_PR_DEFAULT_PROMPT : undefined;
   const isExecutionHalted = executionHaltState !== null;
   const executionHaltTitle =
     executionHaltState === "stopped" ? "Execution is stopped" : "Execution is paused";
@@ -753,7 +757,11 @@ export function AgentsStartComposer({
             value={content}
             onChange={setContent}
             onSend={handleSubmit}
-            placeholder="Ask the agent to plan, build, debug, or review something"
+            placeholder={
+              mode === "review_pr"
+                ? REVIEW_PR_DEFAULT_PROMPT
+                : "Ask the agent to plan, build, debug, or review something"
+            }
             isSubmitting={isSubmitting}
             autoFocus
             attachments={attachments}
@@ -763,6 +771,9 @@ export function AgentsStartComposer({
             attachmentsUploading={isSubmitting && attachments.length > 0}
             submitLabel={isExecutionHalted ? "Queue Prompt" : "Start Agent"}
             submittingLabel={isExecutionHalted ? "Queuing..." : "Starting..."}
+            {...(reviewPrDefaultPrompt
+              ? { emptySubmitMessage: reviewPrDefaultPrompt }
+              : {})}
             mode={{
               value: mode,
               onValueChange: (value) => setMode(value as AgentConversationWorkspaceMode),

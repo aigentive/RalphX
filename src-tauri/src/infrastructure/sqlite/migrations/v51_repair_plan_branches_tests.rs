@@ -290,7 +290,10 @@ fn test_fresh_db_backfill_is_noop_when_v49_already_ran() {
     let count: i32 = conn
         .query_row("SELECT COUNT(*) FROM execution_plans", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 1, "v51 should not create duplicate execution_plans when v49 already ran");
+    assert_eq!(
+        count, 1,
+        "v51 should not create duplicate execution_plans when v49 already ran"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -423,17 +426,32 @@ fn test_dev_db_backfill_creates_execution_plans() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(ep_count, 1, "v51 backfill should create execution_plan for accepted session on dev DB");
+    assert_eq!(
+        ep_count, 1,
+        "v51 backfill should create execution_plan for accepted session on dev DB"
+    );
 
     // Task linked
     let ep_id: String = conn
-        .query_row("SELECT id FROM execution_plans WHERE session_id = 's1'", [], |row| row.get(0))
+        .query_row(
+            "SELECT id FROM execution_plans WHERE session_id = 's1'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
 
     let task_ep: Option<String> = conn
-        .query_row("SELECT execution_plan_id FROM tasks WHERE id = 't1'", [], |row| row.get(0))
+        .query_row(
+            "SELECT execution_plan_id FROM tasks WHERE id = 't1'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert_eq!(task_ep, Some(ep_id.clone()), "task should be linked to execution_plan");
+    assert_eq!(
+        task_ep,
+        Some(ep_id.clone()),
+        "task should be linked to execution_plan"
+    );
 
     // Plan branch linked
     let pb_ep: Option<String> = conn
@@ -443,7 +461,11 @@ fn test_dev_db_backfill_creates_execution_plans() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(pb_ep, Some(ep_id), "plan_branch should be linked to execution_plan");
+    assert_eq!(
+        pb_ep,
+        Some(ep_id),
+        "plan_branch should be linked to execution_plan"
+    );
 }
 
 #[test]
@@ -470,7 +492,11 @@ fn test_dev_db_backfill_links_active_plan() {
     v51_repair_plan_branches::migrate(&conn).unwrap();
 
     let ep_id: String = conn
-        .query_row("SELECT id FROM execution_plans WHERE session_id = 's1'", [], |row| row.get(0))
+        .query_row(
+            "SELECT id FROM execution_plans WHERE session_id = 's1'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
 
     let active_ep: Option<String> = conn
@@ -536,8 +562,14 @@ fn test_dev_db_indexes_created_after_migration() {
     v51_repair_plan_branches::migrate(&conn).unwrap();
 
     assert!(helpers::index_exists(&conn, "idx_plan_branches_session_id"));
-    assert!(helpers::index_exists(&conn, "idx_plan_branches_plan_artifact_id"));
-    assert!(helpers::index_exists(&conn, "idx_plan_branches_execution_plan"));
+    assert!(helpers::index_exists(
+        &conn,
+        "idx_plan_branches_plan_artifact_id"
+    ));
+    assert!(helpers::index_exists(
+        &conn,
+        "idx_plan_branches_execution_plan"
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -590,7 +622,10 @@ fn test_multiple_sessions_share_plan_artifact_id_after_migration() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(count, 2, "Both plan_branches with shared artifact should exist");
+    assert_eq!(
+        count, 2,
+        "Both plan_branches with shared artifact should exist"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -621,12 +656,18 @@ fn test_migration_idempotent_on_fresh_db() {
     let count: i32 = conn
         .query_row("SELECT COUNT(*) FROM plan_branches", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 1, "plan_branches data should survive double migration");
+    assert_eq!(
+        count, 1,
+        "plan_branches data should survive double migration"
+    );
 
     let ep_count: i32 = conn
         .query_row("SELECT COUNT(*) FROM execution_plans", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(ep_count, 1, "should have exactly 1 execution_plan after double migration");
+    assert_eq!(
+        ep_count, 1,
+        "should have exactly 1 execution_plan after double migration"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -201,6 +201,32 @@ impl PrDiffAnnotations {
     }
 }
 
+/// Summary-level GitHub pull request review event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrReviewSubmissionEvent {
+    Approve,
+    RequestChanges,
+    Comment,
+}
+
+impl std::fmt::Display for PrReviewSubmissionEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Approve => write!(f, "APPROVE"),
+            Self::RequestChanges => write!(f, "REQUEST_CHANGES"),
+            Self::Comment => write!(f, "COMMENT"),
+        }
+    }
+}
+
+/// Result from submitting a GitHub pull request review.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrSubmittedReview {
+    pub id: String,
+    pub url: Option<String>,
+}
+
 /// Abstraction over GitHub operations (production: `gh` CLI, tests: mock)
 #[async_trait]
 pub trait GithubServiceTrait: Send + Sync {
@@ -256,6 +282,19 @@ pub trait GithubServiceTrait: Send + Sync {
         pr_number: i64,
     ) -> AppResult<PrDiffAnnotations> {
         Ok(PrDiffAnnotations::empty(pr_number))
+    }
+
+    /// Submit a summary-level GitHub pull request review.
+    async fn submit_pr_review(
+        &self,
+        _working_dir: &Path,
+        _pr_number: i64,
+        _event: PrReviewSubmissionEvent,
+        _body: &str,
+    ) -> AppResult<PrSubmittedReview> {
+        Err(crate::error::AppError::Infrastructure(
+            "GitHub review submission is unavailable for this runtime".to_string(),
+        ))
     }
 
     /// Fetch lightweight PR health for background supervision.

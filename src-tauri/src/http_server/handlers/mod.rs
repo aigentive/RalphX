@@ -2,8 +2,8 @@ use crate::application::chat_service::chat_service_context::build_initial_prompt
 use crate::domain::entities::ChatContextType;
 use crate::infrastructure::agents::claude::format_stream_json_input;
 
-pub mod agent_workspaces;
 pub mod agent_tasks;
+pub mod agent_workspaces;
 pub mod api_keys;
 pub mod artifacts;
 pub mod conversations;
@@ -28,8 +28,8 @@ pub mod teams;
 pub mod verification;
 pub mod worker;
 
-pub use agent_workspaces::*;
 pub use agent_tasks::*;
+pub use agent_workspaces::*;
 pub use api_keys::*;
 pub use artifacts::*;
 pub use conversations::*;

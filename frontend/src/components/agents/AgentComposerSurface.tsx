@@ -230,6 +230,7 @@ export interface AgentComposerSurfaceProps {
   actionTestId?: string;
   submitLabel?: string;
   submittingLabel?: string;
+  emptySubmitMessage?: string;
   sendDisabledReason?: string | null;
   conversationId?: string | null;
   className?: string;
@@ -279,6 +280,7 @@ export function AgentComposerSurface({
   actionTestId,
   submitLabel = "Send",
   submittingLabel = "Sending...",
+  emptySubmitMessage,
   sendDisabledReason = null,
   conversationId = null,
   className,
@@ -312,8 +314,10 @@ export function AgentComposerSurface({
   const isAgentGenerating = agentStatus === "generating";
   const canQueue = !isReadOnly && isAgentAlive;
   const shouldShowStop = Boolean(onStop) && isAgentGenerating && value.trim().length === 0;
+  const emptySubmitValue = emptySubmitMessage?.trim() ?? "";
+  const hasSubmittableValue = value.trim().length > 0 || emptySubmitValue.length > 0;
   const canSubmit =
-    value.trim().length > 0 &&
+    hasSubmittableValue &&
     !isReadOnly &&
     !sendDisabledReason &&
     (!isSubmitting || canQueue);
@@ -1067,7 +1071,8 @@ export function AgentComposerSurface({
 
   const handleSend = useCallback(async () => {
     const trimmedValue = value.trim();
-    if (!trimmedValue) {
+    const messageValue = trimmedValue || emptySubmitValue;
+    if (!messageValue) {
       if (shouldShowStop) {
         await onStop?.();
       }
@@ -1078,8 +1083,8 @@ export function AgentComposerSurface({
       return;
     }
 
-    addHistoryEntry(trimmedValue);
-    const outgoing = prepareMessageForSend(trimmedValue);
+    addHistoryEntry(messageValue);
+    const outgoing = prepareMessageForSend(messageValue);
 
     const sendOutgoing = () =>
       outgoing.options
@@ -1105,6 +1110,7 @@ export function AgentComposerSurface({
     addHistoryEntry,
     canQueue,
     clearValue,
+    emptySubmitValue,
     isControlled,
     isReadOnly,
     isSubmitting,

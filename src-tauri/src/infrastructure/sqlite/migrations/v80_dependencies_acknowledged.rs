@@ -19,9 +19,7 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
         "BOOLEAN NOT NULL DEFAULT 0",
     )?;
 
-    tracing::info!(
-        "v80: added dependencies_acknowledged column to ideation_sessions"
-    );
+    tracing::info!("v80: added dependencies_acknowledged column to ideation_sessions");
 
     Ok(())
 }
