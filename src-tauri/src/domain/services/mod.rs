@@ -75,8 +75,10 @@ pub use running_agent_registry::{
 };
 pub use secret_store::{SecretStore, SecretStoreError};
 pub use work_item_title::{
-    normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
-    primary_jira_key_from_title,
+    jira_reference_from_composer_reference, normalize_title_with_jira_key,
+    primary_jira_key_from_composer_metadata, primary_jira_key_from_title,
+    primary_jira_reference_from_composer_metadata, primary_jira_reference_from_composer_references,
+    ComposerJiraReferenceMetadata,
 };
 pub use workflow_service::{
     AppliedColumn, AppliedWorkflow, ColumnMappingError, ValidationResult, WorkflowService,

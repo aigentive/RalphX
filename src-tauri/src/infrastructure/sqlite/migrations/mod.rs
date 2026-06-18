@@ -396,6 +396,9 @@ mod v20260611191722_agent_workspace_pr_automation_defaults_tests;
 mod v20260612124826_provider_cli_management_policy;
 #[cfg(test)]
 mod v20260612124826_provider_cli_management_policy_tests;
+mod v20260617121800_agent_conversation_jira_issue_links;
+#[cfg(test)]
+mod v20260617121800_agent_conversation_jira_issue_links_tests;
 mod v20260617122430_agent_workspace_initial_auto_publish;
 #[cfg(test)]
 mod v20260617122430_agent_workspace_initial_auto_publish_tests;
@@ -1115,6 +1118,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260612124826,
         name: "provider_cli_management_policy",
         migrate: v20260612124826_provider_cli_management_policy::migrate,
+    },
+    Migration {
+        version: 20260617121800,
+        name: "agent_conversation_jira_issue_links",
+        migrate: v20260617121800_agent_conversation_jira_issue_links::migrate,
     },
     Migration {
         version: 20260617122430,

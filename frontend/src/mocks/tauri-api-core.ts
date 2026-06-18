@@ -82,6 +82,46 @@ const mockAtlassianIntegrationSettings = {
   updatedAt: new Date(0).toISOString(),
 };
 
+const mockAgentConversationJiraIssues = new Map<string, unknown>();
+
+function mockJiraIssue(input: {
+  conversationId: string;
+  projectId?: string | null;
+  issueKey: string;
+  issueId?: string | null;
+  title?: string | null;
+  issueUrl?: string | null;
+}) {
+  const now = new Date(0).toISOString();
+  return {
+    conversationId: input.conversationId,
+    projectId: input.projectId ?? "mock-project",
+    provider: "atlassian",
+    issueKey: input.issueKey,
+    issueId: input.issueId ?? input.issueKey,
+    issueUrl: input.issueUrl ?? `https://example.atlassian.net/browse/${input.issueKey}`,
+    title: input.title ?? `Mock issue ${input.issueKey}`,
+    status: "To Do",
+    assignee: null,
+    reporter: "Mock Reporter",
+    updatedAtRemote: now,
+    descriptionMarkdown: "Mock Jira description.",
+    descriptionText: "Mock Jira description.",
+    acceptanceCriteriaMarkdown: null,
+    acceptanceCriteriaText: null,
+    comments: [],
+    attachments: [],
+    lastRefreshedAt: now,
+    refreshStatus: "loaded",
+    refreshError: null,
+    assignedAt: now,
+    assignedFromMessageId: null,
+    manuallyAssigned: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 const mockAgentProviderSettings = {
   providers: [
     {
@@ -729,7 +769,65 @@ const commandHandlers: Record<
     });
     return mockAtlassianIntegrationSettings;
   },
-  search_atlassian_resources: async () => ({ resources: [] }),
+  search_atlassian_resources: async (args) => {
+    const input = args.input as { kind?: string; query?: string };
+    const query = input.query?.trim() ?? "";
+    if (input.kind !== "jira" || query.length === 0) {
+      return { resources: [] };
+    }
+    const key = /^[a-z]+-\d+$/i.test(query) ? query.toUpperCase() : "RX-42";
+    return {
+      resources: [
+        {
+          kind: "jira",
+          id: key,
+          key,
+          title: `Mock issue for ${query}`,
+          url: `https://example.atlassian.net/browse/${key}`,
+          excerpt: "Mock Jira search result",
+        },
+      ],
+    };
+  },
+  get_agent_conversation_jira_issue: async (args) => {
+    const input = args.input as { conversationId: string };
+    return {
+      issue: mockAgentConversationJiraIssues.get(input.conversationId) ?? null,
+    };
+  },
+  assign_agent_conversation_jira_issue: async (args) => {
+    const input = args.input as {
+      conversationId: string;
+      projectId?: string | null;
+      issueKey: string;
+      issueId?: string | null;
+      title?: string | null;
+      issueUrl?: string | null;
+    };
+    const issue = mockJiraIssue(input);
+    mockAgentConversationJiraIssues.set(input.conversationId, issue);
+    return { issue };
+  },
+  refresh_agent_conversation_jira_issue: async (args) => {
+    const input = args.input as { conversationId: string };
+    const existing = mockAgentConversationJiraIssues.get(input.conversationId);
+    if (!existing || typeof existing !== "object") {
+      return { issue: null };
+    }
+    const issue = {
+      ...existing,
+      lastRefreshedAt: new Date(0).toISOString(),
+      refreshStatus: "loaded",
+      refreshError: null,
+    };
+    mockAgentConversationJiraIssues.set(input.conversationId, issue);
+    return { issue };
+  },
+  clear_agent_conversation_jira_issue: async (args) => {
+    const input = args.input as { conversationId: string };
+    mockAgentConversationJiraIssues.delete(input.conversationId);
+    return { issue: null };
+  },
   update_agent_provider_settings: async (args) => {
     const input = args.input as Partial<
       (typeof mockAgentProviderSettings.providers)[number]

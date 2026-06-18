@@ -936,6 +936,38 @@ fn is_publish_in_progress(push_status: Option<&str>) -> bool {
     )
 }
 
+fn update_only_repair_pr_supervision_state(
+    workspace: &AgentConversationWorkspace,
+) -> Option<(&'static str, &'static str)> {
+    if workspace.publication_pr_number.is_none()
+        || matches!(
+            workspace.publication_pr_status.as_deref(),
+            Some("merged" | "closed")
+        )
+    {
+        return None;
+    }
+
+    if !workspace.auto_publish_enabled {
+        return Some((
+            "paused",
+            "Agent workspace repair verified; Auto Publish is paused.",
+        ));
+    }
+
+    if workspace.pr_autofix_enabled
+        || workspace.pr_auto_merge_desired
+        || workspace.pr_auto_merge_current.is_some()
+    {
+        return Some((
+            "monitoring",
+            "Agent workspace repair verified; RalphX is monitoring the pull request.",
+        ));
+    }
+
+    None
+}
+
 fn publish_in_progress_response(
     workspace: AgentConversationWorkspaceResponse,
 ) -> AgentWorkspacePublishActionResponse {
@@ -1364,6 +1396,21 @@ pub async fn complete_agent_workspace_repair(
             )
         }
     } else if post_repair_action == AgentWorkspacePostRepairAction::UpdateOnly {
+        if let Some((status, summary)) = update_only_repair_pr_supervision_state(&workspace) {
+            state
+                .app_state
+                .agent_conversation_workspace_repo
+                .update_pr_auto_merge_state(
+                    &conversation_id,
+                    workspace.pr_auto_merge_current,
+                    Some(status),
+                    Some(summary),
+                )
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?;
+        }
         (
             "Agent workspace repair verified".to_string(),
             "refreshed".to_string(),

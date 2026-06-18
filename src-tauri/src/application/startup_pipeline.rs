@@ -21,7 +21,8 @@ use crate::application::{
 };
 use crate::commands::{ActiveProjectState, ExecutionState};
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    ActivityEventRepository, AgentConversationJiraIssueRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentProviderSettingsRepository, AgentRunRepository, AppStateRepository, ArtifactRepository,
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
     ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
@@ -58,6 +59,7 @@ pub(crate) struct StartupPipelineDeps {
     pub artifact_repo: Arc<dyn ArtifactRepository>,
     pub conversation_repo: Arc<dyn ChatConversationRepository>,
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    pub agent_conversation_jira_issue_repo: Arc<dyn AgentConversationJiraIssueRepository>,
     pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
     pub ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -167,6 +169,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         artifact_repo,
         conversation_repo,
         agent_conversation_workspace_repo,
+        agent_conversation_jira_issue_repo,
         orphan_worktree_cleanup_marker_repo,
         agent_run_repo,
         ideation_session_repo,
@@ -370,6 +373,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&memory_event_repo),
     )
     .with_agent_conversation_workspace_repo(Some(Arc::clone(&agent_conversation_workspace_repo)))
+    .with_agent_conversation_jira_issue_repo(Some(Arc::clone(&agent_conversation_jira_issue_repo)))
     .with_runtime_support(
         Some(Arc::clone(&execution_settings_repo)),
         Some(Arc::clone(&agent_lane_settings_repo)),
