@@ -131,6 +131,64 @@ fn test_get_preapproved_tools_project_chat_mixes_external_and_internal_mcp_prefi
 }
 
 #[test]
+fn test_permission_request_tool_external_with_internal_uses_internal_server() {
+    assert_eq!(
+        permission_request_tool_for_transport(true, true, "ralphx"),
+        Some("mcp__ralphx_internal__permission_request".to_string())
+    );
+}
+
+#[test]
+fn test_permission_request_tool_external_without_internal_is_none() {
+    // No permission_request tool is injected, so there is nothing for the flag to name.
+    assert_eq!(
+        permission_request_tool_for_transport(true, false, "ralphx"),
+        None
+    );
+}
+
+#[test]
+fn test_permission_request_tool_internal_transport_uses_primary_server() {
+    assert_eq!(
+        permission_request_tool_for_transport(false, false, "ralphx"),
+        Some("mcp__ralphx__permission_request".to_string())
+    );
+}
+
+#[test]
+fn test_resolve_permission_prompt_tool_external_agent_matches_injected_tool() {
+    // ralphx-chat-project uses external transport with an internal sidecar, so the
+    // permission-prompt tool must point at the internal server — and must equal the
+    // permission_request tool injected into its pre-approved tool surface.
+    let resolved = resolve_permission_prompt_tool(
+        Some("ralphx-chat-project"),
+        "mcp__ralphx__permission_request",
+    );
+    assert_eq!(resolved, "mcp__ralphx_internal__permission_request");
+
+    let preapproved = get_preapproved_tools("ralphx-chat-project").unwrap();
+    let tool_list: HashSet<_> = preapproved.split(',').collect();
+    assert!(tool_list.contains(resolved.as_str()));
+}
+
+#[test]
+fn test_resolve_permission_prompt_tool_non_external_agent_uses_default() {
+    let resolved = resolve_permission_prompt_tool(
+        Some("ralphx-execution-worker"),
+        "mcp__ralphx__permission_request",
+    );
+    assert_eq!(resolved, "mcp__ralphx__permission_request");
+}
+
+#[test]
+fn test_resolve_permission_prompt_tool_no_agent_returns_default() {
+    assert_eq!(
+        resolve_permission_prompt_tool(None, "mcp__ralphx__permission_request"),
+        "mcp__ralphx__permission_request"
+    );
+}
+
+#[test]
 fn test_default_base_tool_set_present_in_worker() {
     let tools = get_allowed_tools("ralphx-execution-worker").unwrap();
     for t in super::tool_sets::canonical_claude_tool_sets()

@@ -1905,15 +1905,15 @@ pub fn get_preapproved_tools_for_profile(
         let mut seen = HashSet::new();
         tools.retain(|t| seen.insert(t.clone()));
 
-        // Always inject permission_request when an internal server is present — required
-        // infrastructure tool, not agent-scoped.
-        if !uses_external_transport || !internal_tools.is_empty() {
-            let permission_server = if uses_external_transport {
-                internal_server.as_str()
-            } else {
-                mcp_server.as_str()
-            };
-            let permission_tool = format!("mcp__{}__permission_request", permission_server);
+        // Inject permission_request on the transport that actually exposes it. This
+        // must stay in lockstep with `resolve_permission_prompt_tool` so the
+        // `--permission-prompt-tool` flag never names a tool absent from this surface
+        // (the Claude CLI aborts before any MCP call when it does).
+        if let Some(permission_tool) = permission_request_tool_for_transport(
+            uses_external_transport,
+            !internal_tools.is_empty(),
+            mcp_server,
+        ) {
             if !seen.contains(&permission_tool) {
                 tools.push(permission_tool);
             }
@@ -1925,6 +1925,64 @@ pub fn get_preapproved_tools_for_profile(
             Some(tools.join(","))
         }
     })
+}
+
+/// Returns the fully-qualified `permission_request` MCP tool name exposed by an
+/// agent's active tool surface for its transport, or `None` when no
+/// `permission_request` tool is injected (external transport with no internal
+/// sidecar tools).
+///
+/// This is the single source of truth shared by [`get_preapproved_tools_for_profile`]
+/// (which injects the tool into `--allowed-tools`) and [`resolve_permission_prompt_tool`]
+/// (which feeds `--permission-prompt-tool`). Keeping both paths on this helper
+/// guarantees the flag never references a server the surface does not expose, which
+/// would make the Claude CLI abort before any MCP tool can run.
+fn permission_request_tool_for_transport(
+    uses_external_transport: bool,
+    has_internal_tools: bool,
+    mcp_server: &str,
+) -> Option<String> {
+    if uses_external_transport {
+        has_internal_tools.then(|| {
+            format!(
+                "mcp__{}__permission_request",
+                internal_mcp_server_name(mcp_server)
+            )
+        })
+    } else {
+        Some(format!("mcp__{mcp_server}__permission_request"))
+    }
+}
+
+/// Resolves the `--permission-prompt-tool` value for `agent_name` so it matches the
+/// `permission_request` tool injected into that agent's `--allowed-tools` surface by
+/// [`get_preapproved_tools_for_profile`].
+///
+/// Falls back to `default` (the configured global permission-prompt tool) when the
+/// agent injects no `permission_request` tool — external transport without internal
+/// sidecar tools — or when no agent is specified.
+pub(crate) fn resolve_permission_prompt_tool(agent_name: Option<&str>, default: &str) -> String {
+    let Some(agent_name) = agent_name else {
+        return default.to_string();
+    };
+    let mcp_server = &claude_runtime_config().mcp_server_name;
+    let lookup_name = super::canonical_short_agent_name(agent_name);
+    let metadata = try_load_canonical_claude_metadata_for_profile(
+        &canonical_agent_project_root(),
+        lookup_name,
+        None,
+    )
+    .ok();
+    let uses_external_transport = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.mcp_transport.as_deref())
+        == Some("external");
+    let has_internal_tools = metadata
+        .as_ref()
+        .map(|metadata| !metadata.internal_mcp_tools.is_empty())
+        .unwrap_or(false);
+    permission_request_tool_for_transport(uses_external_transport, has_internal_tools, mcp_server)
+        .unwrap_or_else(|| default.to_string())
 }
 
 #[cfg(test)]

@@ -463,7 +463,13 @@ pub(crate) fn resolve_claude_permission_cli_options(
         .ok()
         .and_then(|guard| guard.clone());
     ClaudePermissionCliOptions {
-        permission_prompt_tool: runtime.permission_prompt_tool.clone(),
+        // Transport-aware: external-transport agents whose private tools live on the
+        // internal sidecar must point `--permission-prompt-tool` at that sidecar
+        // server so the flag matches the injected `--allowed-tools` permission entry.
+        permission_prompt_tool: agent_config::resolve_permission_prompt_tool(
+            agent_type,
+            &runtime.permission_prompt_tool,
+        ),
         permission_mode: resolve_permission_mode(agent_type),
         dangerously_skip_permissions: override_settings
             .as_ref()
@@ -2192,6 +2198,34 @@ mod tests {
     use crate::utils::path_safety::{checked_exists, checked_read_to_string};
     use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
+
+    /// Regression: the `--permission-prompt-tool` flag for an external-transport agent
+    /// (mixed external + internal MCP) must name the internal sidecar server, matching
+    /// the `permission_request` tool injected into `--allowed-tools`. Otherwise the
+    /// Claude CLI aborts before any MCP tool (e.g. ideation start) can run.
+    #[test]
+    fn test_resolve_claude_permission_cli_options_external_agent_uses_internal_server() {
+        let options = resolve_claude_permission_cli_options(Some("ralphx-chat-project"));
+        assert_eq!(
+            options.permission_prompt_tool,
+            "mcp__ralphx_internal__permission_request"
+        );
+
+        // The flag value must be present in the agent's pre-approved tool surface.
+        let preapproved = get_preapproved_tools("ralphx-chat-project").unwrap();
+        let tool_list: std::collections::HashSet<_> = preapproved.split(',').collect();
+        assert!(tool_list.contains(options.permission_prompt_tool.as_str()));
+    }
+
+    /// Non-external agents keep the primary-server permission-prompt tool unchanged.
+    #[test]
+    fn test_resolve_claude_permission_cli_options_worker_uses_primary_server() {
+        let options = resolve_claude_permission_cli_options(Some("ralphx-execution-worker"));
+        assert_eq!(
+            options.permission_prompt_tool,
+            "mcp__ralphx__permission_request"
+        );
+    }
 
     struct EnvGuard {
         key: &'static str,
