@@ -581,6 +581,8 @@ fn begin_auto_publish(conversation_id: &ChatConversationId) -> Option<AutoPublis
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
     use crate::domain::entities::{
