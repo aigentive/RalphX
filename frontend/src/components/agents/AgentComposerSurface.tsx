@@ -1409,22 +1409,6 @@ export function AgentComposerSurface({
               {...(mode ? { mode } : {})}
             />
 
-            {mode && (
-              <ComposerModeChip
-                mode={mode}
-                compact={compact}
-                onClick={() =>
-                  setActionMenuOpen((prev) => {
-                    const nextOpen = !prev;
-                    if (nextOpen) {
-                      void mode.onOpen?.();
-                    }
-                    return nextOpen;
-                  })
-                }
-              />
-            )}
-
             {chatFocus && chatFocus.options.length > 1 && (
               <div className="agent-composer-chat-focus-slot flex min-w-0 shrink-0">
                 <ComposerChatFocusPill chatFocus={chatFocus} compact={compact} />
@@ -1440,6 +1424,24 @@ export function AgentComposerSurface({
                 className="max-w-[34rem]"
               />
             </div>
+
+            {/* Workflow (mode) selector sits to the right of the model/runtime
+                pill per product direction. */}
+            {mode && (
+              <ComposerModeChip
+                mode={mode}
+                compact={compact}
+                onClick={() =>
+                  setActionMenuOpen((prev) => {
+                    const nextOpen = !prev;
+                    if (nextOpen) {
+                      void mode.onOpen?.();
+                    }
+                    return nextOpen;
+                  })
+                }
+              />
+            )}
 
             <Button
               type="button"
