@@ -456,6 +456,7 @@ pub(crate) struct ClaudePermissionCliOptions {
 
 pub(crate) fn resolve_claude_permission_cli_options(
     agent_type: Option<&str>,
+    agent_profile: Option<&str>,
 ) -> ClaudePermissionCliOptions {
     let runtime = claude_runtime_config();
     let override_settings = claude_permission_runtime_override()
@@ -463,11 +464,13 @@ pub(crate) fn resolve_claude_permission_cli_options(
         .ok()
         .and_then(|guard| guard.clone());
     ClaudePermissionCliOptions {
-        // Transport-aware: external-transport agents whose private tools live on the
-        // internal sidecar must point `--permission-prompt-tool` at that sidecar
-        // server so the flag matches the injected `--allowed-tools` permission entry.
+        // Transport-aware (and profile-aware): external-transport agents whose private
+        // tools live on the internal sidecar must point `--permission-prompt-tool` at
+        // that sidecar server so the flag matches the injected `--allowed-tools`
+        // permission entry resolved under the same profile.
         permission_prompt_tool: agent_config::resolve_permission_prompt_tool(
             agent_type,
+            agent_profile,
             &runtime.permission_prompt_tool,
         ),
         permission_mode: resolve_permission_mode(agent_type),
@@ -482,8 +485,12 @@ pub(crate) fn resolve_claude_permission_cli_options(
     }
 }
 
-pub(crate) fn append_claude_permission_args(args: &mut Vec<String>, agent_type: Option<&str>) {
-    let options = resolve_claude_permission_cli_options(agent_type);
+pub(crate) fn append_claude_permission_args(
+    args: &mut Vec<String>,
+    agent_type: Option<&str>,
+    agent_profile: Option<&str>,
+) {
+    let options = resolve_claude_permission_cli_options(agent_type, agent_profile);
     args.extend([
         "--permission-prompt-tool".to_string(),
         options.permission_prompt_tool,
@@ -498,8 +505,12 @@ pub(crate) fn append_claude_permission_args(args: &mut Vec<String>, agent_type: 
     }
 }
 
-fn apply_claude_permission_args(cmd: &mut Command, agent_type: Option<&str>) {
-    let options = resolve_claude_permission_cli_options(agent_type);
+fn apply_claude_permission_args(
+    cmd: &mut Command,
+    agent_type: Option<&str>,
+    agent_profile: Option<&str>,
+) {
+    let options = resolve_claude_permission_cli_options(agent_type, agent_profile);
     cmd.args([
         "--permission-prompt-tool",
         &options.permission_prompt_tool,
@@ -637,7 +648,7 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
     }
 
     // Configure permission handling from config/harnesses/claude.yaml.
-    apply_claude_permission_args(&mut cmd, agent_type);
+    apply_claude_permission_args(&mut cmd, agent_type, agent_profile);
     // Optional settings JSON passed to claude CLI via --settings.
     // Agent-specific profile overrides global profile when configured.
     if let Some(s) = get_effective_settings(agent_type) {
@@ -2205,7 +2216,7 @@ mod tests {
     /// Claude CLI aborts before any MCP tool (e.g. ideation start) can run.
     #[test]
     fn test_resolve_claude_permission_cli_options_external_agent_uses_internal_server() {
-        let options = resolve_claude_permission_cli_options(Some("ralphx-chat-project"));
+        let options = resolve_claude_permission_cli_options(Some("ralphx-chat-project"), None);
         assert_eq!(
             options.permission_prompt_tool,
             "mcp__ralphx_internal__permission_request"
@@ -2220,7 +2231,7 @@ mod tests {
     /// Non-external agents keep the primary-server permission-prompt tool unchanged.
     #[test]
     fn test_resolve_claude_permission_cli_options_worker_uses_primary_server() {
-        let options = resolve_claude_permission_cli_options(Some("ralphx-execution-worker"));
+        let options = resolve_claude_permission_cli_options(Some("ralphx-execution-worker"), None);
         assert_eq!(
             options.permission_prompt_tool,
             "mcp__ralphx__permission_request"

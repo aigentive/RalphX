@@ -131,27 +131,29 @@ fn test_get_preapproved_tools_project_chat_mixes_external_and_internal_mcp_prefi
 }
 
 #[test]
-fn test_permission_request_tool_external_with_internal_uses_internal_server() {
+fn test_internal_sidecar_permission_tool_external_with_internal_uses_internal_server() {
     assert_eq!(
-        permission_request_tool_for_transport(true, true, "ralphx"),
+        internal_sidecar_permission_request_tool(true, true, "ralphx"),
         Some("mcp__ralphx_internal__permission_request".to_string())
     );
 }
 
 #[test]
-fn test_permission_request_tool_external_without_internal_is_none() {
+fn test_internal_sidecar_permission_tool_external_without_internal_is_none() {
     // No permission_request tool is injected, so there is nothing for the flag to name.
     assert_eq!(
-        permission_request_tool_for_transport(true, false, "ralphx"),
+        internal_sidecar_permission_request_tool(true, false, "ralphx"),
         None
     );
 }
 
 #[test]
-fn test_permission_request_tool_internal_transport_uses_primary_server() {
+fn test_internal_sidecar_permission_tool_non_external_is_none() {
+    // Non-external agents expose permission_request on the primary server, not the
+    // sidecar; the shared helper returns None so the flag keeps its configured default.
     assert_eq!(
-        permission_request_tool_for_transport(false, false, "ralphx"),
-        Some("mcp__ralphx__permission_request".to_string())
+        internal_sidecar_permission_request_tool(false, false, "ralphx"),
+        None
     );
 }
 
@@ -162,6 +164,7 @@ fn test_resolve_permission_prompt_tool_external_agent_matches_injected_tool() {
     // permission_request tool injected into its pre-approved tool surface.
     let resolved = resolve_permission_prompt_tool(
         Some("ralphx-chat-project"),
+        None,
         "mcp__ralphx__permission_request",
     );
     assert_eq!(resolved, "mcp__ralphx_internal__permission_request");
@@ -172,20 +175,43 @@ fn test_resolve_permission_prompt_tool_external_agent_matches_injected_tool() {
 }
 
 #[test]
-fn test_resolve_permission_prompt_tool_non_external_agent_uses_default() {
-    let resolved = resolve_permission_prompt_tool(
-        Some("ralphx-execution-worker"),
-        "mcp__ralphx__permission_request",
-    );
-    assert_eq!(resolved, "mcp__ralphx__permission_request");
+fn test_resolve_permission_prompt_tool_non_external_agent_preserves_custom_default() {
+    // Non-external agents must NOT have a transport-local tool inferred over an explicit
+    // configured default — including fully-qualified custom values the config preserves.
+    let custom_default = "mcp__custom_server__custom_permission_request";
+    let resolved =
+        resolve_permission_prompt_tool(Some("ralphx-execution-worker"), None, custom_default);
+    assert_eq!(resolved, custom_default);
 }
 
 #[test]
 fn test_resolve_permission_prompt_tool_no_agent_returns_default() {
+    let custom_default = "mcp__custom_server__custom_permission_request";
     assert_eq!(
-        resolve_permission_prompt_tool(None, "mcp__ralphx__permission_request"),
-        "mcp__ralphx__permission_request"
+        resolve_permission_prompt_tool(None, None, custom_default),
+        custom_default
     );
+}
+
+#[test]
+fn test_resolve_permission_prompt_tool_is_profile_aware_and_matches_surface() {
+    // The resolver loads transport metadata through the same profile-aware path as
+    // get_preapproved_tools_for_profile, so the flag stays consistent with the
+    // profile's actual MCP surface for each profile (base + the `plan` profile).
+    for profile in [None, Some("plan")] {
+        let resolved = resolve_permission_prompt_tool(
+            Some("ralphx-ideation"),
+            profile,
+            "mcp__ralphx__permission_request",
+        );
+        let preapproved =
+            get_preapproved_tools_for_profile("ralphx-ideation", profile).unwrap();
+        let tool_list: HashSet<_> = preapproved.split(',').collect();
+        assert!(
+            tool_list.contains(resolved.as_str()),
+            "profile {profile:?}: resolved {resolved} not in pre-approved surface"
+        );
+    }
 }
 
 #[test]
