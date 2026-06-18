@@ -399,6 +399,65 @@ describe("ChatMessageList - Scroll Behavior", () => {
       }
     });
 
+    it("does not run initial-load bottom pins after manual downward wheel input", () => {
+      vi.useFakeTimers();
+      vi.stubEnv("VITEST", "");
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+      const originalResizeObserver = globalThis.ResizeObserver;
+
+      class QuietResizeObserver implements ResizeObserver {
+        disconnect = vi.fn();
+        observe = vi.fn();
+        unobserve = vi.fn();
+      }
+
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        value: QuietResizeObserver,
+        configurable: true,
+        writable: true,
+      });
+
+      try {
+        render(<ChatMessageList {...defaultProps} />);
+        const scroller = screen.getByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 620,
+          scrollTop: 60,
+        });
+        act(() => {
+          scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 80 }));
+          scroller.scrollTop = 90;
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        scrollToMock.mockClear();
+
+        act(() => {
+          vi.advanceTimersByTime(800);
+        });
+
+        expect(scrollToMock).not.toHaveBeenCalled();
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        if (originalResizeObserver === undefined) {
+          Reflect.deleteProperty(globalThis, "ResizeObserver");
+        } else {
+          Object.defineProperty(globalThis, "ResizeObserver", {
+            value: originalResizeObserver,
+            configurable: true,
+            writable: true,
+          });
+        }
+        vi.unstubAllEnvs();
+        vi.useRealTimers();
+      }
+    });
+
     it("does not treat Virtuoso pre-settle measurement scroll as user scroll-away", () => {
       vi.useFakeTimers();
       vi.stubEnv("VITEST", "");
@@ -2987,7 +3046,7 @@ describe("ChatMessageList - Scroll Behavior", () => {
         setMockScrollerGeometry(scroller, {
           clientHeight: 500,
           scrollHeight: 1000,
-          scrollTop: 420,
+          scrollTop: 480,
         });
         const followOutput = expectMockVirtuosoCallback<(atBottom: boolean) => "smooth" | "auto" | false>(
           "followOutput",
@@ -3182,6 +3241,62 @@ describe("ChatMessageList - Scroll Behavior", () => {
           queuedRafs.shift()?.(0);
         });
         expect(scrollToMock).toHaveBeenCalledWith({ top: 530, behavior: "auto" });
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("does not pin total-list growth after manual downward wheel input near bottom", async () => {
+      vi.stubEnv("VITEST", "");
+      const queuedRafs: FrameRequestCallback[] = [];
+      let nextRafId = 1;
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        queuedRafs.push(cb);
+        return nextRafId++;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      try {
+        mockIsAtBottom = true;
+        mockIsAtBottomRef.current = true;
+        render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={createMessages(4)}
+          />
+        );
+
+        const scroller = screen.getByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 420,
+        });
+        const rangeChanged = expectMockVirtuosoCallback<(range: { startIndex: number; endIndex: number }) => void>(
+          "rangeChanged",
+        );
+        const totalListHeightChanged = expectMockVirtuosoCallback<(height: number) => void>(
+          "totalListHeightChanged",
+        );
+        act(() => {
+          rangeChanged({ startIndex: 0, endIndex: 3 });
+        });
+        queuedRafs.length = 0;
+        scrollToMock.mockClear();
+
+        act(() => {
+          scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 120 }));
+          totalListHeightChanged(1000);
+        });
+        act(() => {
+          while (queuedRafs.length > 0) {
+            queuedRafs.shift()?.(0);
+          }
+        });
+
+        expect(scrollToMock).not.toHaveBeenCalled();
       } finally {
         rafSpy.mockRestore();
         cancelSpy.mockRestore();
@@ -3760,6 +3875,62 @@ describe("ChatMessageList - Scroll Behavior", () => {
       }
     });
 
+    it("does not pin a streaming footer update after manual downward wheel input", async () => {
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+      const pendingTool: ToolCall = {
+        id: "toolu-read-1",
+        name: "Read",
+        arguments: { file_path: "src/app.ts" },
+      };
+      const completedTool: ToolCall = {
+        ...pendingTool,
+        result: "     1→const app = true;",
+      };
+
+      try {
+        const { rerender } = render(
+          <ChatMessageList
+            {...defaultProps}
+            isAgentRunning={true}
+            streamingToolCalls={[pendingTool]}
+            streamingContentBlocks={[{ type: "tool_use", toolCall: pendingTool }]}
+          />
+        );
+
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 420,
+        });
+        act(() => {
+          scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 120 }));
+          scroller.scrollTop = 460;
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        scrollToMock.mockClear();
+
+        rerender(
+          <ChatMessageList
+            {...defaultProps}
+            isAgentRunning={true}
+            streamingToolCalls={[completedTool]}
+            streamingContentBlocks={[{ type: "tool_use", toolCall: completedTool }]}
+          />
+        );
+        await act(async () => {});
+
+        expect(scrollToMock).not.toHaveBeenCalled();
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+      }
+    });
+
     it("pins to true bottom when an existing child task tool receives a result", async () => {
       const childTool: ToolCall = {
         id: "toolu-child-read",
@@ -4129,7 +4300,7 @@ describe("ChatMessageList - Scroll Behavior", () => {
         setMockScrollerGeometry(scroller, {
           clientHeight: 500,
           scrollHeight: 1000,
-          scrollTop: 480,
+          scrollTop: 420,
         });
         queuedRafs.length = 0;
         act(() => {
@@ -4353,6 +4524,80 @@ describe("ChatMessageList - Scroll Behavior", () => {
         });
         act(() => {
           scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+
+        act(() => {
+          while (queuedRafs.length > 0) {
+            queuedRafs.shift()?.(0);
+          }
+        });
+
+        expect(scrollToMock).not.toHaveBeenCalled();
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("does not run a pending scheduled bottom pin after manual downward wheel input", async () => {
+      vi.stubEnv("VITEST", "");
+      const queuedRafs: FrameRequestCallback[] = [];
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        queuedRafs.push(cb);
+        return queuedRafs.length;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      try {
+        mockIsAtBottom = true;
+        mockIsAtBottomRef.current = true;
+        const initialMessages = createMessages(2);
+        const { rerender } = render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={initialMessages}
+          />
+        );
+
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 420,
+        });
+        queuedRafs.length = 0;
+        act(() => {
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        act(() => {
+          queuedRafs.shift()?.(0);
+        });
+        queuedRafs.length = 0;
+        scrollToMock.mockClear();
+
+        rerender(
+          <ChatMessageList
+            {...defaultProps}
+            messages={[
+              ...initialMessages,
+              {
+                id: "assistant-appended",
+                role: "assistant",
+                content: "Assistant appended after initial render",
+                createdAt: new Date(2026, 0, 1, 12, 30).toISOString(),
+                toolCalls: null,
+                contentBlocks: null,
+              },
+            ]}
+          />
+        );
+        expect(queuedRafs.length).toBeGreaterThan(0);
+
+        act(() => {
+          scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 120 }));
+          scroller.scrollTop = 460;
           scroller.dispatchEvent(new Event("scroll"));
         });
 
