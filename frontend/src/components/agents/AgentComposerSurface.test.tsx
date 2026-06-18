@@ -945,9 +945,11 @@ describe("AgentComposerSurface", () => {
       // Runtime ("GPT") + Mode chips drop to the compact height, and the mode
       // chip sheds its "Mode" eyebrow label.
       expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass("h-8");
+      // Compact only shrinks height — the Mode label and model strength
+      // indicator stay visible per product direction.
       const modeChip = screen.getByTestId("agent-composer-mode-chip");
       expect(modeChip).toHaveClass("h-8");
-      expect(modeChip.textContent).toBe("Agent");
+      expect(modeChip.textContent).toBe("ModeAgent");
 
       const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
       expect(textarea.style.height).toBe("38px");

@@ -1900,11 +1900,9 @@ function ComposerModeChip({
         borderColor: "var(--form-border)",
       }}
     >
-      {!compact && (
-        <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
-          Mode
-        </span>
-      )}
+      <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+        Mode
+      </span>
       <span className="text-[0.8125rem] font-medium text-[var(--text-primary)]">
         {activeOption?.label ?? "—"}
       </span>
@@ -2219,7 +2217,7 @@ function ComposerRuntimePill({
           <span className="truncate text-[0.8125rem] font-medium text-[var(--text-primary)]">
             {modelLabel}
           </span>
-          {!compact && effort.options.length > 0 && (
+          {effort.options.length > 0 && (
             <Tooltip delayDuration={300}>
               <TooltipTrigger asChild>
                 <span className="inline-flex shrink-0">
