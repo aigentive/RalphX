@@ -3,7 +3,9 @@ use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
 use super::*;
-use crate::domain::entities::{ChatConversation, ChatMessageId};
+use crate::domain::entities::{
+    AgentConversationJiraRefreshStatus, ChatConversation, ChatMessageId,
+};
 
 fn assigned_at() -> DateTime<Utc> {
     DateTime::parse_from_rfc3339("2026-06-17T12:00:00Z")
@@ -123,9 +125,13 @@ async fn resolve_assignment_project_id_uses_project_conversation_when_explicit_m
 async fn refresh_jira_issue_link_records_error_when_integration_disabled() {
     let state = AppState::new_test();
 
-    let refreshed = refresh_jira_issue_link(&state, link())
-        .await
-        .expect("refresh stores error");
+    let refreshed = crate::application::agent_conversation_jira_issue::refresh_jira_issue_link(
+        &state.agent_conversation_jira_issue_repo,
+        state.atlassian_integration_service.as_ref(),
+        link(),
+    )
+    .await
+    .expect("refresh stores error");
 
     assert_eq!(
         refreshed.refresh_status,
@@ -177,6 +183,19 @@ async fn jira_assignment_commands_return_validation_errors_for_empty_or_missing_
     .unwrap_err();
     assert_eq!(
         missing_assignment_error,
+        "No Jira issue is assigned to this conversation"
+    );
+
+    let missing_assign_to_me_error = assign_agent_conversation_jira_issue_to_me(
+        AssignAgentConversationJiraIssueToMeInput {
+            conversation_id: conversation_id.as_str(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        missing_assign_to_me_error,
         "No Jira issue is assigned to this conversation"
     );
 }
@@ -239,6 +258,20 @@ async fn jira_assignment_commands_round_trip_and_refresh_cached_issue() {
     assert_eq!(assigned.title.as_deref(), Some("Fix Jira tab"));
     assert_eq!(assigned.refresh_status, "not_loaded");
     assert!(assigned.manually_assigned);
+
+    let assigned_to_me = assign_agent_conversation_jira_issue_to_me(
+        AssignAgentConversationJiraIssueToMeInput {
+            conversation_id: conversation_id.as_str(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("assign Jira issue to current user")
+    .issue
+    .expect("assigned-to-me response");
+    assert_eq!(assigned_to_me.issue_key, "RX-42");
+    assert_eq!(assigned_to_me.refresh_status, "loaded");
+    assert!(assigned_to_me.last_refreshed_at.is_some());
 
     let loaded = get_agent_conversation_jira_issue(
         GetAgentConversationJiraIssueInput {

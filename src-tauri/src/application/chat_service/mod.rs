@@ -1869,17 +1869,18 @@ impl<R: Runtime> AppChatService<R> {
         let Some(project_id) = project_id else {
             return;
         };
-        if let Err(error) =
-            crate::application::agent_conversation_jira_issue::assign_primary_jira_issue_if_absent(
+        let assignment_result =
+            crate::application::agent_conversation_jira_issue::assign_primary_jira_issue_if_absent_and_refresh(
                 &repo,
+                self.atlassian_integration_service.as_deref(),
                 conversation_id,
                 &project_id,
                 integration_references,
                 Some(ChatMessageId::from_string(message_id.to_string())),
                 created_at,
             )
-            .await
-        {
+            .await;
+        if let Err(error) = assignment_result {
             tracing::warn!(
                 conversation_id = %conversation_id.as_str(),
                 error = %error,

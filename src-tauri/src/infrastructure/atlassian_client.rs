@@ -218,6 +218,14 @@ impl AtlassianApiClient for HyperAtlassianApiClient {
         }
     }
 
+    async fn assign_jira_issue_to_current_user(
+        &self,
+        auth: &AtlassianAuthContext,
+        issue_key: &str,
+    ) -> Result<(), String> {
+        assign_jira_issue_to_current_user(self, auth, issue_key).await
+    }
+
     async fn exchange_oauth_code(
         &self,
         client_id: &str,
@@ -768,6 +776,51 @@ pub(crate) async fn fetch_jira<C: AtlassianJsonRequester + ?Sized>(
         comments,
         attachments,
     })
+}
+
+pub(crate) async fn assign_jira_issue_to_current_user<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    issue_key: &str,
+) -> Result<(), String> {
+    let issue_key = issue_key.trim();
+    if issue_key.is_empty() {
+        return Err("Jira issue key is required".to_string());
+    }
+    let myself = client
+        .request_json(
+            Method::GET,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                "/rest/api/3/myself",
+            ),
+            request_auth(auth),
+            None,
+        )
+        .await?;
+    let account_id = myself
+        .get("accountId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Atlassian current user response did not include accountId".to_string())?;
+    client
+        .request_json(
+            Method::PUT,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                &format!(
+                    "/rest/api/3/issue/{}/assignee",
+                    percent_encode_path_segment(issue_key)
+                ),
+            ),
+            request_auth(auth),
+            Some(serde_json::json!({ "accountId": account_id })),
+        )
+        .await?;
+    Ok(())
 }
 
 pub(crate) async fn fetch_confluence<C: AtlassianJsonRequester + ?Sized>(

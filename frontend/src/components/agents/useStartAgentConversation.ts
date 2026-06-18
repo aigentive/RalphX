@@ -32,6 +32,10 @@ import {
   toProjectAgentConversation,
   type AgentConversation,
 } from "./agentConversations";
+import {
+  hasJiraIntegrationReference,
+  invalidateAgentConversationJiraIssue,
+} from "./agentJiraIssueQueries";
 import { normalizeRuntimeSelection } from "./agentOptions";
 import { uploadDraftAttachment } from "./chatAttachmentUpload";
 
@@ -60,6 +64,7 @@ interface UseStartAgentConversationArgs {
     projectId: string,
     runtime: AgentRuntimeSelection
   ) => void;
+  onJiraLinked?: (conversationId: string) => void;
 }
 
 export function useStartAgentConversation({
@@ -73,6 +78,7 @@ export function useStartAgentConversation({
   setOptimisticSelectedConversationId,
   setOptimisticWorkspacesByConversationId,
   setRuntimeForConversation,
+  onJiraLinked,
 }: UseStartAgentConversationArgs) {
   const { registry: modelRegistry } = useAgentModels();
   const queueMessage = useChatStore((s) => s.queueMessage);
@@ -355,6 +361,13 @@ export function useStartAgentConversation({
         }
         setSending(resolvedStoreKey, false);
         invalidateConversationDataQueries(queryClient, resolvedConversationId);
+        if (hasJiraIntegrationReference(composerIntegrationReferences)) {
+          onJiraLinked?.(resolvedConversationId);
+          await invalidateAgentConversationJiraIssue(
+            queryClient,
+            resolvedConversationId,
+          );
+        }
         await invalidateProjectConversations(targetProjectId);
         handleAutoManagedTitle({
           content,
@@ -389,6 +402,7 @@ export function useStartAgentConversation({
       setOptimisticSelectedConversationId,
       setOptimisticWorkspacesByConversationId,
       setRuntimeForConversation,
+      onJiraLinked,
       setSending,
     ]
   );
