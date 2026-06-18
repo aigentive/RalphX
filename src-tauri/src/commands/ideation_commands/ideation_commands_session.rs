@@ -7,6 +7,10 @@ use tauri::{Emitter, State};
 
 use ralphx_domain::entities::EventType;
 
+use crate::application::agent_planning_session_titles::{
+    hydrate_agent_conversation_planning_session_title,
+    hydrate_agent_conversation_planning_session_titles,
+};
 use crate::application::git_service::GitService;
 use crate::application::ideation_workspace::{
     prepare_ideation_analysis_state, IdeationAnalysisBaseSelection,
@@ -166,12 +170,18 @@ pub async fn get_ideation_session(
     state: State<'_, AppState>,
 ) -> Result<Option<IdeationSessionResponse>, String> {
     let session_id = IdeationSessionId::from_string(id);
-    state
+    let session = state
         .ideation_session_repo
         .get_by_id(&session_id)
         .await
-        .map(|opt| opt.map(IdeationSessionResponse::from))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    match session {
+        Some(session) => hydrate_agent_conversation_planning_session_title(&state, session)
+            .await
+            .map(|session| Some(IdeationSessionResponse::from(session)))
+            .map_err(|e| e.to_string()),
+        None => Ok(None),
+    }
 }
 
 /// Get session with proposals and messages
@@ -192,6 +202,9 @@ pub async fn get_ideation_session_with_data(
         Some(s) => s,
         None => return Ok(None),
     };
+    let session = hydrate_agent_conversation_planning_session_title(&state, session)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Get proposals
     let proposals = state
@@ -228,20 +241,26 @@ pub async fn list_ideation_sessions(
     state: State<'_, AppState>,
 ) -> Result<Vec<IdeationSessionResponse>, String> {
     let project_id = ProjectId::from_string(project_id);
-    state
+    let sessions = state
         .ideation_session_repo
         .get_by_project(&project_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let sessions = sessions
+        .into_iter()
+        .filter(|s| {
+            if let Some(ref p) = purpose {
+                s.session_purpose.to_string() == p.as_str()
+            } else {
+                true
+            }
+        })
+        .collect();
+    hydrate_agent_conversation_planning_session_titles(&state, sessions)
         .await
         .map(|sessions| {
             sessions
                 .into_iter()
-                .filter(|s| {
-                    if let Some(ref p) = purpose {
-                        s.session_purpose.to_string() == p.as_str()
-                    } else {
-                        true
-                    }
-                })
                 .map(IdeationSessionResponse::from)
                 .collect()
         })
@@ -569,11 +588,23 @@ pub async fn spawn_session_namer(
     session_id: Option<String>,
     conversation_id: Option<String>,
     first_message: String,
+    provider_harness: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let target =
-        SessionNamerTarget::from_initial_request(session_id, conversation_id, first_message)
-            .map_err(str::to_string)?;
+    let requested_harness = provider_harness
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::parse)
+        .transpose()
+        .map_err(|error| format!("Invalid provider harness for session namer: {error}"))?;
+    let target = SessionNamerTarget::from_initial_request(
+        session_id,
+        conversation_id,
+        first_message,
+        requested_harness,
+    )
+    .map_err(str::to_string)?;
     spawn_session_namer_agent(&state, target)
         .await
         .map_err(|error| error.to_string())

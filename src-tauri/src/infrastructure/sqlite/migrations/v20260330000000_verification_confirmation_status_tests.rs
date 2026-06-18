@@ -65,11 +65,7 @@ fn test_sessions_can_store_all_states() {
     let conn = setup_test_db();
     v20260330000000_verification_confirmation_status::migrate(&conn).unwrap();
 
-    for (id, state) in [
-        ("s1", "pending"),
-        ("s2", "accepted"),
-        ("s3", "rejected"),
-    ] {
+    for (id, state) in [("s1", "pending"), ("s2", "accepted"), ("s3", "rejected")] {
         conn.execute(
             "INSERT INTO ideation_sessions (id, title, verification_confirmation_status) VALUES (?1, ?2, ?3)",
             rusqlite::params![id, format!("Session {id}"), state],

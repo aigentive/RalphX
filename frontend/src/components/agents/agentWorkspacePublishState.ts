@@ -69,8 +69,34 @@ export function isAgentWorkspaceAutoMergeRequestPending({
       hasPublishedPr &&
       autoMergeCurrent !== true &&
       !terminalPublicationStatus &&
-      (normalizedSupervisionStatus === null ||
-        normalizedSupervisionStatus === "waiting"),
+      normalizedSupervisionStatus === null,
+  );
+}
+
+export function isAgentWorkspaceAutoMergeDeferred({
+  autoMergeCurrent,
+  autoMergeDesired,
+  hasPublishedPr,
+  prSupervisionStatus,
+  publicationPushStatus,
+  terminalPublicationStatus,
+}: {
+  autoMergeCurrent?: boolean | null;
+  autoMergeDesired?: boolean;
+  hasPublishedPr?: boolean;
+  prSupervisionStatus?: string | null;
+  publicationPushStatus?: string | null;
+  terminalPublicationStatus?: string | null;
+}): boolean {
+  const normalizedSupervisionStatus =
+    prSupervisionStatus?.trim().toLowerCase() || null;
+  return Boolean(
+    autoMergeDesired &&
+      publicationPushStatus === "pushed" &&
+      hasPublishedPr &&
+      autoMergeCurrent !== true &&
+      !terminalPublicationStatus &&
+      normalizedSupervisionStatus === "waiting",
   );
 }
 
@@ -82,7 +108,7 @@ export function shouldShowAgentWorkspacePublishSurface(
   }
 
   if (workspace.mode === "edit") {
-    return !workspace.linkedIdeationSessionId && !workspace.linkedPlanBranchId;
+    return true;
   }
 
   if (workspace.mode === "ideation") {

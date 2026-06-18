@@ -20,10 +20,12 @@ pub mod research_service;
 pub mod rule_ingestion_service;
 pub mod rule_parser;
 pub mod running_agent_registry;
+pub mod secret_store;
 pub mod text_similarity;
 pub mod verification_events;
 pub mod verification_gate;
 pub mod verification_state;
+pub mod work_item_title;
 pub mod workflow_service;
 pub mod worktree_guard;
 
@@ -32,7 +34,8 @@ pub use artifact_service::ArtifactService;
 pub use bucket_classifier::BucketClassifier;
 pub use gap_fingerprint::{gap_fingerprint, gap_score, jaccard_similarity};
 pub use github_service::{
-    GithubServiceTrait, PrBranchMatch, PrMergeStateStatus, PrMergeableState, PrStatus, PrSyncState,
+    GithubServiceTrait, PrBranchMatch, PrMergeStateStatus, PrMergeableState, PrSearchResult,
+    PrStatus, PrSyncState,
 };
 pub use index_rewriter::{IndexRewriter, RewriteResult};
 pub use verification_events::{
@@ -50,10 +53,13 @@ pub use verification_state::{
 };
 // Unified message queue - keyed by (context_type, context_id)
 pub use message_queue::{
-    ComposerProjectReference, ComposerProjectReferenceKind, MessageQueue, QueueKey, QueuedMessage,
+    ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
+    ComposerProjectReferenceKind, MessageQueue, QueueKey, QueuedMessage,
 };
 pub use methodology_service::{MethodologyActivationResult, MethodologyService};
-pub use pr_publish_service::{AgentWorkspacePrPublisher, PlanPrPublisher, PrReviewState};
+pub use pr_publish_service::{
+    AgentWorkspacePrPublisher, PlanPrDescriptionDrafter, PlanPrPublisher, PrReviewState,
+};
 pub use research_service::ResearchService;
 pub use rule_ingestion_service::{IngestionResult, RuleIngestionService};
 pub use rule_parser::{MarkdownChunk, ParsedRuleFile, RuleFrontmatter, RuleParser};
@@ -66,6 +72,13 @@ pub use running_agent_registry::{
     is_process_alive, kill_process, kill_process_immediate, kill_worktree_processes,
     kill_worktree_processes_async, MemoryRunningAgentRegistry, RunningAgentInfo, RunningAgentKey,
     RunningAgentRegistry,
+};
+pub use secret_store::{SecretStore, SecretStoreError};
+pub use work_item_title::{
+    jira_reference_from_composer_reference, normalize_title_with_jira_key,
+    primary_jira_key_from_composer_metadata, primary_jira_key_from_title,
+    primary_jira_reference_from_composer_metadata, primary_jira_reference_from_composer_references,
+    ComposerJiraReferenceMetadata,
 };
 pub use workflow_service::{
     AppliedColumn, AppliedWorkflow, ColumnMappingError, ValidationResult, WorkflowService,

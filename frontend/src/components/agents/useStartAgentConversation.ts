@@ -7,12 +7,15 @@ import {
   type AgentConversationBaseSelection,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceMode,
+  type ComposerArtifactReference,
+  type ComposerIntegrationReference,
   type ComposerProjectReference,
   type ChatMessageResponse,
   type ConversationMessagesPageResponse,
   type ConversationTimelinePageResponse,
 } from "@/api/chat";
 import type { MessageAttachment } from "@/components/Chat/MessageAttachments";
+import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
 import {
   chatKeys,
   createOptimisticConversationId,
@@ -29,6 +32,10 @@ import {
   toProjectAgentConversation,
   type AgentConversation,
 } from "./agentConversations";
+import {
+  hasJiraIntegrationReference,
+  invalidateAgentConversationJiraIssue,
+} from "./agentJiraIssueQueries";
 import { normalizeRuntimeSelection } from "./agentOptions";
 import { uploadDraftAttachment } from "./chatAttachmentUpload";
 
@@ -37,6 +44,7 @@ interface HandleAutoManagedTitleArgs {
   conversationId: string;
   targetProjectId: string;
   shouldSpawnSessionNamer: boolean;
+  providerHarness?: string | null;
 }
 
 interface UseStartAgentConversationArgs {
@@ -56,6 +64,7 @@ interface UseStartAgentConversationArgs {
     projectId: string,
     runtime: AgentRuntimeSelection
   ) => void;
+  onJiraLinked?: (conversationId: string) => void;
 }
 
 export function useStartAgentConversation({
@@ -69,6 +78,7 @@ export function useStartAgentConversation({
   setOptimisticSelectedConversationId,
   setOptimisticWorkspacesByConversationId,
   setRuntimeForConversation,
+  onJiraLinked,
 }: UseStartAgentConversationArgs) {
   const { registry: modelRegistry } = useAgentModels();
   const queueMessage = useChatStore((s) => s.queueMessage);
@@ -84,6 +94,8 @@ export function useStartAgentConversation({
       mode,
       base,
       files,
+      composerArtifactReferences,
+      composerIntegrationReferences,
       composerProjectReferences,
     }: {
       projectId: string;
@@ -92,6 +104,8 @@ export function useStartAgentConversation({
       mode: AgentConversationWorkspaceMode;
       base: AgentConversationBaseSelection | null;
       files: File[];
+      composerArtifactReferences?: ComposerArtifactReference[] | undefined;
+      composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
       composerProjectReferences?: ComposerProjectReference[] | undefined;
     }) => {
       const normalizedRuntime = normalizeRuntimeSelection(runtime, modelRegistry);
@@ -190,6 +204,11 @@ export function useStartAgentConversation({
       };
 
       const now = new Date().toISOString();
+      const optimisticReferenceMetadata = serializeComposerReferencesMetadata({
+        projectReferences: composerProjectReferences,
+        integrationReferences: composerIntegrationReferences,
+        artifactReferences: composerArtifactReferences,
+      });
       const initialConversation: ChatConversation = {
         id: createOptimisticConversationId(),
         contextType: "project",
@@ -212,6 +231,9 @@ export function useStartAgentConversation({
         conversation: initialConversation,
         content,
         runtime: normalizedRuntime,
+        ...(optimisticReferenceMetadata
+          ? { metadata: optimisticReferenceMetadata }
+          : {}),
         ...(optimisticAttachments ? { attachments: optimisticAttachments } : {}),
       });
       const optimisticStoreKey = seedConversationState(initialConversation, null, [
@@ -245,6 +267,9 @@ export function useStartAgentConversation({
           conversation: seededConversation,
           content,
           runtime: normalizedRuntime,
+          ...(optimisticReferenceMetadata
+            ? { metadata: optimisticReferenceMetadata }
+            : {}),
           ...(optimisticAttachments ? { attachments: optimisticAttachments } : {}),
         });
         seedConversationState(seededConversation, null, [seededOptimisticUserMessage]);
@@ -257,10 +282,12 @@ export function useStartAgentConversation({
         setAgentRunning(storeKey, true);
         setSending(storeKey, true);
 
+        let uploadedAttachmentIds: string[] = [];
         if (files.length > 0) {
-          await Promise.all(
+          const uploadedAttachments = await Promise.all(
             files.map((file) => uploadDraftAttachment(seededConversation.id, file))
           );
+          uploadedAttachmentIds = uploadedAttachments.map((attachment) => attachment.id);
           setAgentActivityLabel(storeKey, "Setup workspace");
         }
 
@@ -274,6 +301,12 @@ export function useStartAgentConversation({
           mode,
           ...(composerProjectReferences?.length
             ? { composerProjectReferences }
+            : {}),
+          ...(composerIntegrationReferences?.length
+            ? { composerIntegrationReferences }
+            : {}),
+          ...(composerArtifactReferences?.length
+            ? { composerArtifactReferences }
             : {}),
           ...(base ? { base } : {}),
         });
@@ -291,6 +324,9 @@ export function useStartAgentConversation({
                 conversation: resolvedConversation,
                 content,
                 runtime: normalizedRuntime,
+                ...(optimisticReferenceMetadata
+                  ? { metadata: optimisticReferenceMetadata }
+                  : {}),
                 ...(optimisticAttachments ? { attachments: optimisticAttachments } : {}),
               });
         seedConversationState(
@@ -316,7 +352,8 @@ export function useStartAgentConversation({
           queueMessage(
             resolvedStoreKey,
             content,
-            result.sendResult.queuedMessageId
+            result.sendResult.queuedMessageId,
+            uploadedAttachmentIds.length > 0 ? uploadedAttachmentIds : undefined
           );
         }
         if (result.sendResult.wasQueued || result.sendResult.queuedAsPending) {
@@ -324,12 +361,20 @@ export function useStartAgentConversation({
         }
         setSending(resolvedStoreKey, false);
         invalidateConversationDataQueries(queryClient, resolvedConversationId);
+        if (hasJiraIntegrationReference(composerIntegrationReferences)) {
+          onJiraLinked?.(resolvedConversationId);
+          await invalidateAgentConversationJiraIssue(
+            queryClient,
+            resolvedConversationId,
+          );
+        }
         await invalidateProjectConversations(targetProjectId);
         handleAutoManagedTitle({
           content,
           conversationId: resolvedConversationId,
           targetProjectId,
           shouldSpawnSessionNamer: true,
+          providerHarness: normalizedRuntime.provider,
         });
       } catch (err) {
         if (seededStoreKey) {
@@ -357,6 +402,7 @@ export function useStartAgentConversation({
       setOptimisticSelectedConversationId,
       setOptimisticWorkspacesByConversationId,
       setRuntimeForConversation,
+      onJiraLinked,
       setSending,
     ]
   );
@@ -368,11 +414,13 @@ function buildOptimisticUserMessage({
   conversation,
   content,
   runtime,
+  metadata,
   attachments,
 }: {
   conversation: ChatConversation;
   content: string;
   runtime: AgentRuntimeSelection;
+  metadata?: string | null;
   attachments?: MessageAttachment[];
 }): ChatMessageResponse {
   return {
@@ -382,7 +430,7 @@ function buildOptimisticUserMessage({
     taskId: null,
     role: "user",
     content,
-    metadata: null,
+    metadata: metadata ?? null,
     parentMessageId: null,
     conversationId: conversation.id,
     toolCalls: null,

@@ -133,9 +133,23 @@ pub struct AgentTaskList {
     pub project_id: Option<ProjectId>,
     pub scope_type: String,
     pub scope_id: String,
+    pub list_sequence: i64,
     pub name: Option<String>,
     pub created_by_agent: Option<String>,
     pub next_task_number: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTaskListSummary {
+    pub list_id: AgentTaskListId,
+    pub list_sequence: i64,
+    pub task_count: i64,
+    pub open_count: i64,
+    pub active_count: i64,
+    pub done_count: i64,
+    pub dropped_count: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

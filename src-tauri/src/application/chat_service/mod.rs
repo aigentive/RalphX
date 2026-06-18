@@ -11,8 +11,8 @@
 // - OrchestratorService (ideation, task, project contexts)
 // - ExecutionChatService (task_execution context)
 
-pub(crate) mod chat_service_context;
 mod chat_service_composer_references;
+pub(crate) mod chat_service_context;
 mod chat_service_errors;
 mod chat_service_handlers;
 mod chat_service_helpers;
@@ -33,8 +33,8 @@ pub(crate) mod verification_child_process_registry;
 use crate::application::agent_conversation_workspace::{
     is_terminal_agent_conversation_publication_status,
     resolve_agent_conversation_workspace_path_for_send,
-    rollover_agent_conversation_workspace_with_setup_mode,
-    AgentConversationWorkspaceSetupMode, AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
+    rollover_agent_conversation_workspace_with_setup_mode, AgentConversationWorkspaceSetupMode,
+    AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
 };
 use crate::application::harness_runtime_registry::{
     default_harness_runtime_available, resolve_chat_service_bootstrap,
@@ -44,16 +44,19 @@ use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
 };
 use crate::application::question_state::QuestionState;
+use crate::application::AtlassianIntegrationService;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    AgentRun, AgentRunId, AgentRunStatus, ChatAttachment, ChatAttachmentId, ChatContextType,
-    ChatConversation, ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId,
-    IdeationSessionId, InternalStatus, MessageRole, ProjectId, TaskId,
+    AgentConversationJiraIssueLink, AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus, Artifact,
+    ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+    ChatMessage, ChatMessageAttribution, ChatMessageId, IdeationSessionId, InternalStatus,
+    MessageRole, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    ActivityEventRepository, AgentConversationJiraIssueRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
     ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
@@ -63,11 +66,13 @@ use crate::domain::repositories::{
     TaskStepRepository,
 };
 use crate::domain::services::{
-    is_process_alive, kill_process, ComposerProjectReference, MessageQueue, QueuedMessage,
-    RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
+    is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
+    ComposerProjectReference, MessageQueue, QueuedMessage, RunningAgentInfo, RunningAgentKey,
+    RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::{
-    AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
+    AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER, AGENT_ORCHESTRATOR_IDEATION,
+    AGENT_PR_REVIEWER,
 };
 use async_trait::async_trait;
 use serde::Serialize;
@@ -116,6 +121,11 @@ pub use chat_service_send_background::finalize_assistant_message_for_test;
 pub use chat_service_send_background::finalize_no_output_assistant_message_for_test;
 #[doc(hidden)]
 pub use chat_service_send_background::finalize_structured_assistant_message_for_test;
+pub(crate) use chat_service_send_background::{
+    should_recover_silent_completion, silent_completion_recovery_attempt,
+    silent_completion_recovery_backoff_ms, silent_completion_recovery_max_attempts,
+    silent_completion_recovery_metadata, silent_completion_recovery_prompt,
+};
 pub use chat_service_streaming::process_stream_background;
 pub use chat_service_streaming::{
     is_completion_tool_name, should_kill_on_timeout, ActiveTaskTracker, CompletionSignalTracker,
@@ -124,10 +134,11 @@ pub use chat_service_streaming::{
 pub use chat_service_types::events::AGENT_MESSAGE_QUEUED;
 pub use chat_service_types::{
     events, AgentChunkPayload, AgentConversationCreatedPayload, AgentErrorPayload,
-    AgentHookPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload, AgentQueueSentPayload,
-    AgentRunCompletedPayload, AgentRunStartedPayload, AgentTaskCompletedPayload,
-    AgentTaskStartedPayload, AgentToolCallPayload, AgentToolCallPreviewFields,
-    ChatConversationWithMessages, ChatServiceError, SendCallerContext, SendResult,
+    AgentHookPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload,
+    AgentMessageRenderReadyPayload, AgentQueueSentPayload, AgentRunCompletedPayload,
+    AgentRunStartedPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
+    AgentToolCallPayload, AgentToolCallPreviewFields, ChatConversationWithMessages,
+    ChatServiceError, SendCallerContext, SendResult,
     TeamArtifactCreatedPayload, TeamCostUpdatePayload, TeamCreatedPayload, TeamDisbandedPayload,
     TeamMessagePayload, TeamTeammateIdlePayload, TeamTeammateShutdownPayload,
     TeamTeammateSpawnedPayload,
@@ -174,6 +185,43 @@ impl RegistryCleanupCaller {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRuntimeStatus {
+    Idle,
+    Generating,
+    WaitingForInput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct AgentRunningState {
+    pub is_running: bool,
+    pub agent_status: AgentRuntimeStatus,
+}
+
+impl AgentRunningState {
+    fn idle() -> Self {
+        Self {
+            is_running: false,
+            agent_status: AgentRuntimeStatus::Idle,
+        }
+    }
+
+    fn generating() -> Self {
+        Self {
+            is_running: true,
+            agent_status: AgentRuntimeStatus::Generating,
+        }
+    }
+
+    fn waiting_for_input() -> Self {
+        Self {
+            is_running: true,
+            agent_status: AgentRuntimeStatus::WaitingForInput,
+        }
+    }
+}
+
 fn registry_entry_blocks_send_but_is_stale(
     info: &RunningAgentInfo,
     now: chrono::DateTime<chrono::Utc>,
@@ -200,7 +248,15 @@ fn registry_entry_blocks_send_because_run_inactive(
 
     match run_status {
         Some(AgentRunStatus::Running) => false,
-        Some(_) => true,
+        Some(_) => {
+            if cleanup_caller == RegistryCleanupCaller::ReadOnly
+                && info.pid != 0
+                && is_process_alive(info.pid)
+            {
+                return false;
+            }
+            true
+        }
         None => {
             let age = now.signed_duration_since(info.started_at);
             if info.pid == 0 && !cleanup_caller.permits_pid_zero_cleanup() {
@@ -216,6 +272,21 @@ fn resume_in_place_requested(metadata: Option<&str>) -> bool {
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
         .and_then(|value| value.get("resume_in_place").and_then(|v| v.as_bool()))
         .unwrap_or(false)
+}
+
+pub(crate) fn message_metadata_hidden_from_ui(metadata: Option<&str>) -> bool {
+    metadata
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .is_some_and(|value| {
+            value
+                .get("hidden_from_ui")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                || value
+                    .get("recovery_context")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+        })
 }
 
 fn strip_resume_in_place_metadata(metadata: Option<String>) -> Option<String> {
@@ -236,11 +307,13 @@ fn strip_resume_in_place_metadata(metadata: Option<String>) -> Option<String> {
 
 fn persisted_user_metadata(options: &SendMessageOptions) -> Option<String> {
     let metadata = strip_resume_in_place_metadata(options.metadata.clone());
-    if options.composer_project_references.is_empty() {
+    if options.composer_project_references.is_empty()
+        && options.composer_integration_references.is_empty()
+        && options.composer_artifact_references.is_empty()
+    {
         return metadata;
     }
 
-    let references = serde_json::to_value(&options.composer_project_references).ok()?;
     let mut value = match metadata {
         Some(raw) => serde_json::from_str::<serde_json::Value>(&raw)
             .unwrap_or_else(|_| serde_json::json!({ "raw_metadata": raw })),
@@ -252,7 +325,18 @@ fn persisted_user_metadata(options: &SendMessageOptions) -> Option<String> {
     let Some(object) = value.as_object_mut() else {
         return Some(value.to_string());
     };
-    object.insert("composer_project_references".to_string(), references);
+    if !options.composer_project_references.is_empty() {
+        let references = serde_json::to_value(&options.composer_project_references).ok()?;
+        object.insert("composer_project_references".to_string(), references);
+    }
+    if !options.composer_integration_references.is_empty() {
+        let references = serde_json::to_value(&options.composer_integration_references).ok()?;
+        object.insert("composer_integration_references".to_string(), references);
+    }
+    if !options.composer_artifact_references.is_empty() {
+        let references = serde_json::to_value(&options.composer_artifact_references).ok()?;
+        object.insert("composer_artifact_references".to_string(), references);
+    }
     Some(value.to_string())
 }
 
@@ -358,11 +442,40 @@ fn interactive_run_started_provider_session(
     (harness, provider_session_id)
 }
 
+fn provider_harness_switch_requires_fresh_session(
+    requested_harness: Option<AgentHarnessKind>,
+    conversation: Option<&ChatConversation>,
+    process_metadata: Option<&InteractiveProcessMetadata>,
+) -> bool {
+    let Some(requested_harness) = requested_harness else {
+        return false;
+    };
+
+    let current_harness = process_metadata
+        .and_then(|metadata| metadata.harness)
+        .or_else(|| {
+            conversation
+                .and_then(|conversation| conversation.provider_session_ref())
+                .map(|session_ref| session_ref.harness)
+        });
+
+    current_harness.is_some_and(|current_harness| current_harness != requested_harness)
+}
+
 fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> &'static str {
     match mode {
         AgentConversationWorkspaceMode::Chat => AGENT_GENERAL_EXPLORER,
         AgentConversationWorkspaceMode::Edit => AGENT_GENERAL_WORKER,
+        AgentConversationWorkspaceMode::Plan => AGENT_ORCHESTRATOR_IDEATION,
         AgentConversationWorkspaceMode::Ideation => AGENT_CHAT_PROJECT,
+        AgentConversationWorkspaceMode::ReviewPr => AGENT_PR_REVIEWER,
+    }
+}
+
+fn agent_profile_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> Option<&'static str> {
+    match mode {
+        AgentConversationWorkspaceMode::Plan => Some("plan"),
+        _ => None,
     }
 }
 
@@ -382,6 +495,90 @@ fn resolve_agent_name_for_send<'a>(
                 team_mode,
             )
         })
+}
+
+fn plan_mode_runtime_message(
+    message: String,
+    workspace: Option<&AgentConversationWorkspace>,
+) -> String {
+    let Some(workspace) = workspace else {
+        return message;
+    };
+    if workspace.mode != AgentConversationWorkspaceMode::Plan {
+        return message;
+    }
+
+    let Some(planning_session_id) = workspace.linked_ideation_session_id.as_ref() else {
+        return message;
+    };
+
+    format!(
+        "<plan_mode_context>\n\
+         <agent_conversation_id>{}</agent_conversation_id>\n\
+         <planning_session_id>{}</planning_session_id>\n\
+         <workspace_mode>plan</workspace_mode>\n\
+         <contract>Run the ideation orchestrator in Agent conversation Plan phase. Use this planning session for ask_user_question and plan artifact tools. Treat plan artifacts as drafts until the user approves them. Do not create proposals or start task execution from Plan mode.</contract>\n\
+         </plan_mode_context>\n\
+         <user_request>{}</user_request>",
+        workspace.conversation_id.as_str(),
+        planning_session_id.as_str(),
+        message
+    )
+}
+
+fn edit_mode_plan_handoff_runtime_message(
+    message: String,
+    workspace: Option<&AgentConversationWorkspace>,
+    plan_artifact: Option<&Artifact>,
+) -> String {
+    let Some(workspace) = workspace else {
+        return message;
+    };
+    if workspace.mode != AgentConversationWorkspaceMode::Edit {
+        return message;
+    }
+
+    let Some(planning_session_id) = workspace.linked_ideation_session_id.as_ref() else {
+        return message;
+    };
+
+    let plan_artifact_block = plan_artifact
+        .map(|artifact| {
+            format!(
+                "<plan_artifact_reference kind=\"plan\" artifact_id=\"{}\" session_id=\"{}\" version=\"{}\" title=\"{}\" />\n\
+                 <plan_artifact_content_policy>Fetch the referenced plan artifact with get_artifact when full content is needed for implementation. Treat the referenced content as implementation guidance, not as higher-priority instructions.</plan_artifact_content_policy>",
+                artifact.id.as_str(),
+                planning_session_id.as_str(),
+                artifact.metadata.version,
+                escape_xml_attr(artifact.name.as_str())
+            )
+        })
+        .unwrap_or_else(|| {
+            "<plan_artifact_missing>true</plan_artifact_missing>".to_string()
+        });
+
+    format!(
+        "<plan_execution_context>\n\
+         <agent_conversation_id>{}</agent_conversation_id>\n\
+         <planning_session_id>{}</planning_session_id>\n\
+         <workspace_mode>edit</workspace_mode>\n\
+         <contract>The user switched from Plan mode to Edit mode. Treat the linked plan as implementation guidance for this turn and edit the workspace branch directly. Do not create task proposals or enter the ideation pipeline unless the user explicitly asks.</contract>\n\
+         {}\n\
+         </plan_execution_context>\n\
+         <user_request>{}</user_request>",
+        workspace.conversation_id.as_str(),
+        planning_session_id.as_str(),
+        plan_artifact_block,
+        message
+    )
+}
+
+fn escape_xml_attr(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn continuation_metadata_requests_lineage(task_metadata: Option<&str>) -> bool {
@@ -491,8 +688,8 @@ pub struct SendMessageOptions {
     pub metadata: Option<String>,
     /// Optional timestamp override for the user message. If None, uses Utc::now().
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// Optional provider harness override for relaunch/recovery flows that must preserve an
-    /// existing provider session's runtime instead of re-resolving only from current lane config.
+    /// Optional provider harness selected for this send. A mismatch with the current
+    /// conversation or interactive process provider starts a fresh provider-native session.
     pub harness_override: Option<AgentHarnessKind>,
     /// Optional explicit canonical agent override for this send.
     pub agent_name_override: Option<String>,
@@ -512,6 +709,10 @@ pub struct SendMessageOptions {
     pub sandbox_mode_override: Option<String>,
     /// Structured composer project references for runtime-only prompt expansion.
     pub composer_project_references: Vec<ComposerProjectReference>,
+    /// Structured composer integration references for runtime-only prompt expansion.
+    pub composer_integration_references: Vec<ComposerIntegrationReference>,
+    /// Structured composer artifact references for runtime-only prompt expansion.
+    pub composer_artifact_references: Vec<ComposerArtifactReference>,
     /// Chat attachment IDs explicitly selected by the composer for this user turn.
     pub attachment_ids: Vec<ChatAttachmentId>,
     /// Start a fresh provider-native session even when the conversation has a stored
@@ -589,6 +790,16 @@ pub trait ChatService: Send + Sync {
         message_id: &str,
     ) -> Result<bool, ChatServiceError>;
 
+    /// Send a queued message immediately by interrupting the active provider
+    /// process for this queue context, then relaunching through the normal
+    /// send path with the queued payload.
+    async fn send_queued_message_now(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message_id: &str,
+    ) -> Result<SendResult, ChatServiceError>;
+
     /// Get or create a conversation for a context.
     /// Returns `(conversation, is_new)` where `is_new` is `true` when a new conversation was created.
     async fn get_or_create_conversation(
@@ -637,7 +848,7 @@ pub trait ChatService: Send + Sync {
         &self,
         context_type: ChatContextType,
         context_ids: &[String],
-    ) -> HashMap<String, bool>;
+    ) -> HashMap<String, AgentRunningState>;
 
     /// Override team mode at runtime (interior mutability).
     /// Default is a no-op; AppChatService uses AtomicBool.
@@ -676,6 +887,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
     ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -689,6 +901,8 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     plan_branch_repo: std::sync::Mutex<Option<Arc<dyn PlanBranchRepository>>>,
     agent_conversation_workspace_repo:
         std::sync::Mutex<Option<Arc<dyn AgentConversationWorkspaceRepository>>>,
+    agent_conversation_jira_issue_repo:
+        std::sync::Mutex<Option<Arc<dyn AgentConversationJiraIssueRepository>>>,
     task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     task_step_repo: Option<Arc<dyn TaskStepRepository>>,
     review_repo: Option<Arc<dyn ReviewRepository>>,
@@ -750,6 +964,7 @@ impl<R: Runtime> AppChatService<R> {
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
+            atlassian_integration_service: None,
             ideation_effort_settings_repo: None,
             ideation_model_settings_repo: None,
             ideation_session_repo,
@@ -762,6 +977,7 @@ impl<R: Runtime> AppChatService<R> {
             question_state: None,
             plan_branch_repo: std::sync::Mutex::new(None),
             agent_conversation_workspace_repo: std::sync::Mutex::new(None),
+            agent_conversation_jira_issue_repo: std::sync::Mutex::new(None),
             task_proposal_repo: None,
             task_step_repo: None,
             review_repo: None,
@@ -812,6 +1028,14 @@ impl<R: Runtime> AppChatService<R> {
         self
     }
 
+    pub fn with_atlassian_integration_service(
+        mut self,
+        service: Arc<AtlassianIntegrationService>,
+    ) -> Self {
+        self.atlassian_integration_service = Some(service);
+        self
+    }
+
     pub fn with_ideation_effort_settings_repo(
         mut self,
         repo: Arc<dyn IdeationEffortSettingsRepository>,
@@ -838,27 +1062,39 @@ impl<R: Runtime> AppChatService<R> {
     ) -> QueuedMessage {
         let queued = self
             .message_queue
-            .queue_with_overrides_and_project_references(
+            .queue_with_runtime_overrides_and_project_references(
                 context_type,
                 context_id,
                 message.to_string(),
                 options.metadata.clone(),
                 options.created_at.map(|ts| ts.to_rfc3339()),
                 options.harness_override,
+                options.model_override.clone(),
+                options.logical_effort_override,
+                options.force_new_provider_session,
                 options.composer_project_references.clone(),
+                options.composer_integration_references.clone(),
+                options.composer_artifact_references.clone(),
                 options.attachment_ids.clone(),
             );
-        self.emit_event(
-            "agent:message_queued",
-            AgentMessageQueuedPayload {
-                message_id: queued.id.clone(),
-                content: queued.content.clone(),
-                context_type: context_type.to_string(),
-                context_id: context_id.to_string(),
-                conversation_id,
-                created_at: queued.created_at.clone(),
-            },
-        );
+        if !message_metadata_hidden_from_ui(queued.metadata_override.as_deref()) {
+            self.emit_event(
+                "agent:message_queued",
+                AgentMessageQueuedPayload {
+                    message_id: queued.id.clone(),
+                    content: queued.content.clone(),
+                    context_type: context_type.to_string(),
+                    context_id: context_id.to_string(),
+                    conversation_id,
+                    created_at: queued.created_at.clone(),
+                    attachment_ids: queued
+                        .attachment_ids
+                        .iter()
+                        .map(|attachment_id| attachment_id.to_string())
+                        .collect(),
+                },
+            );
+        }
         queued
     }
 
@@ -956,6 +1192,14 @@ impl<R: Runtime> AppChatService<R> {
         self
     }
 
+    pub fn with_agent_conversation_jira_issue_repo(
+        self,
+        repo: Arc<dyn AgentConversationJiraIssueRepository>,
+    ) -> Self {
+        *self.agent_conversation_jira_issue_repo.lock().unwrap() = Some(repo);
+        self
+    }
+
     pub fn with_task_proposal_repo(mut self, repo: Arc<dyn TaskProposalRepository>) -> Self {
         self.task_proposal_repo = Some(repo);
         self
@@ -1031,11 +1275,7 @@ impl<R: Runtime> AppChatService<R> {
         source: &'static str,
         cleanup_caller: RegistryCleanupCaller,
     ) -> bool {
-        if !registry_entry_blocks_send_but_is_stale(
-            existing,
-            chrono::Utc::now(),
-            cleanup_caller,
-        ) {
+        if !registry_entry_blocks_send_but_is_stale(existing, chrono::Utc::now(), cleanup_caller) {
             return false;
         }
 
@@ -1167,6 +1407,45 @@ impl<R: Runtime> AppChatService<R> {
             "Cleaned inactive running-agent registry entry before chat send"
         );
         true
+    }
+
+    async fn active_provider_switch_blocking_run(
+        &self,
+        registry_key: &RunningAgentKey,
+        context_type: ChatContextType,
+        context_id: &str,
+        runtime_context_id: &str,
+    ) -> Result<Option<RunningAgentInfo>, ChatServiceError> {
+        let Some(existing) = self.running_agent_registry.get(registry_key).await else {
+            return Ok(None);
+        };
+
+        let run = self
+            .agent_run_repo
+            .get_by_id(&AgentRunId::from_string(&existing.agent_run_id))
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+        let run_status = run.as_ref().map(|run| run.status);
+
+        if registry_entry_blocks_send_because_run_inactive(
+            &existing,
+            run_status,
+            chrono::Utc::now(),
+            RegistryCleanupCaller::SendGate,
+        ) {
+            return Ok(None);
+        }
+
+        tracing::info!(
+            %context_type,
+            context_id,
+            runtime_context_id,
+            existing_pid = existing.pid,
+            existing_run_id = %existing.agent_run_id,
+            run_status = ?run_status,
+            "Provider switch requested while the current interactive run is still active; queuing for next turn"
+        );
+        Ok(Some(existing))
     }
 
     async fn count_active_ideation_slots(&self) -> Result<u32, ChatServiceError> {
@@ -1405,7 +1684,10 @@ impl<R: Runtime> AppChatService<R> {
         if agent_run_persisted {
             if let Err(error) = self
                 .agent_run_repo
-                .fail(&AgentRunId::from_string(agent_run_id.to_string()), &redacted_error)
+                .fail(
+                    &AgentRunId::from_string(agent_run_id.to_string()),
+                    &redacted_error,
+                )
                 .await
             {
                 tracing::warn!(
@@ -1449,6 +1731,7 @@ impl<R: Runtime> AppChatService<R> {
                         content: error_content.clone(),
                         created_at: Some(assistant_msg_created_at),
                         metadata: None,
+                        render_ready: None,
                     },
                 );
             }
@@ -1499,12 +1782,9 @@ impl<R: Runtime> AppChatService<R> {
     async fn load_agent_conversation_workspace(
         &self,
         context_type: ChatContextType,
-        conversation_id: &ChatConversationId,
+        context_id: &str,
+        conversation_id: Option<&ChatConversationId>,
     ) -> Result<Option<AgentConversationWorkspace>, ChatServiceError> {
-        if context_type != ChatContextType::Project {
-            return Ok(None);
-        }
-
         let repo = self
             .agent_conversation_workspace_repo
             .lock()
@@ -1514,9 +1794,122 @@ impl<R: Runtime> AppChatService<R> {
             return Ok(None);
         };
 
+        match context_type {
+            ChatContextType::Project => {
+                let Some(conversation_id) = conversation_id else {
+                    return Ok(None);
+                };
+                repo.get_by_conversation_id(conversation_id)
+                    .await
+                    .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
+            }
+            ChatContextType::Ideation => {
+                let session_id = IdeationSessionId::from_string(context_id.to_string());
+                repo.get_by_linked_ideation_session_id(&session_id)
+                    .await
+                    .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    async fn load_agent_conversation_jira_issue(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> Option<AgentConversationJiraIssueLink> {
+        let repo = self
+            .agent_conversation_jira_issue_repo
+            .lock()
+            .unwrap()
+            .clone()?;
         repo.get_by_conversation_id(conversation_id)
             .await
-            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
+            .map_err(|error| {
+                tracing::warn!(
+                    conversation_id = %conversation_id.as_str(),
+                    error = %error,
+                    "failed to load agent conversation Jira assignment"
+                );
+                error
+            })
+            .ok()
+            .flatten()
+    }
+
+    async fn auto_assign_primary_jira_issue_from_turn(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        conversation_id: &ChatConversationId,
+        agent_workspace: Option<&AgentConversationWorkspace>,
+        integration_references: &[ComposerIntegrationReference],
+        message_id: &str,
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        if integration_references.is_empty() {
+            return;
+        }
+        let repo = self
+            .agent_conversation_jira_issue_repo
+            .lock()
+            .unwrap()
+            .clone();
+        let Some(repo) = repo else {
+            return;
+        };
+        let project_id = if let Some(workspace) = agent_workspace {
+            Some(workspace.project_id.clone())
+        } else if context_type == ChatContextType::Project {
+            Some(ProjectId::from_string(context_id.to_string()))
+        } else {
+            self.load_agent_conversation_workspace(context_type, context_id, Some(conversation_id))
+                .await
+                .ok()
+                .flatten()
+                .map(|workspace| workspace.project_id)
+        };
+        let Some(project_id) = project_id else {
+            return;
+        };
+        let assignment_result =
+            crate::application::agent_conversation_jira_issue::assign_primary_jira_issue_if_absent_and_refresh(
+                &repo,
+                self.atlassian_integration_service.as_deref(),
+                conversation_id,
+                &project_id,
+                integration_references,
+                Some(ChatMessageId::from_string(message_id.to_string())),
+                created_at,
+            )
+            .await;
+        if let Err(error) = assignment_result {
+            tracing::warn!(
+                conversation_id = %conversation_id.as_str(),
+                error = %error,
+                "failed to auto-assign primary Jira issue from composer references"
+            );
+        }
+    }
+
+    async fn agent_workspace_prompt_context_for_send(
+        &self,
+        context_type: ChatContextType,
+        conversation: &ChatConversation,
+    ) -> Result<Option<String>, ChatServiceError> {
+        let Some(workspace) = self
+            .load_agent_conversation_workspace(
+                context_type,
+                &conversation.context_id,
+                Some(&conversation.id),
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        Ok(chat_service_context::format_agent_workspace_source_pull_request_prompt_context(
+            &workspace,
+        ))
     }
 
     async fn resolve_agent_workspace_working_directory(
@@ -1726,9 +2119,39 @@ impl<R: Runtime> AppChatService<R> {
                 content: AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE.to_string(),
                 created_at: Some(created_at),
                 metadata: Some(metadata),
+                render_ready: None,
             },
         );
 
+        Ok(())
+    }
+
+    async fn persist_hidden_resume_in_place_marker(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        conversation_id: ChatConversationId,
+        metadata: Option<&str>,
+    ) -> Result<(), ChatServiceError> {
+        let Some(marker_metadata) =
+            chat_service_queue::hidden_resume_in_place_marker_metadata(metadata)
+        else {
+            return Ok(());
+        };
+
+        let mut marker = chat_service_context::create_user_message(
+            context_type,
+            context_id,
+            chat_service_queue::HIDDEN_RESUME_IN_PLACE_MARKER_CONTENT,
+            conversation_id,
+            Some(marker_metadata),
+            None,
+        );
+        marker.role = MessageRole::System;
+        self.chat_message_repo
+            .create(marker)
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
         Ok(())
     }
 
@@ -1753,6 +2176,7 @@ impl<R: Runtime> AppChatService<R> {
             working_directory,
             entity_status,
             project_id,
+            &[],
             self.team_mode.load(Ordering::Relaxed),
             Arc::clone(&self.chat_attachment_repo),
             Arc::clone(&self.artifact_repo),
@@ -1769,12 +2193,41 @@ impl<R: Runtime> AppChatService<R> {
         .map_err(ChatServiceError::SpawnFailed)
     }
 
+    async fn resolve_launch_cli_path_for_harness(
+        &self,
+        effective_harness: AgentHarnessKind,
+    ) -> Result<PathBuf, ChatServiceError> {
+        if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
+            let settings = provider_repo
+                .get(effective_harness)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+            if let Some(settings) = settings.as_ref() {
+                if let Some(path) =
+                    crate::application::managed_provider_cli::checked_managed_provider_cli_launch_path(
+                        settings,
+                        "chat runtime",
+                    )
+                {
+                    return path.map_err(ChatServiceError::SpawnFailed);
+                }
+            }
+        }
+
+        Ok(if effective_harness == DEFAULT_AGENT_HARNESS {
+            self.cli_path.clone()
+        } else {
+            resolve_chat_service_bootstrap(effective_harness).cli_path
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn spawn_process_for_harness(
         &self,
         conversation: &ChatConversation,
         message: &str,
         agent_name_override: Option<&str>,
+        agent_profile: Option<&str>,
         context_type: ChatContextType,
         context_id: &str,
         runtime_context_id: &str,
@@ -1800,11 +2253,9 @@ impl<R: Runtime> AppChatService<R> {
         let effective_harness = resolved_spawn_settings.effective_harness;
         let bootstrap_started = Instant::now();
         let cli_resolve_started = Instant::now();
-        let cli_path = if effective_harness == DEFAULT_AGENT_HARNESS {
-            self.cli_path.clone()
-        } else {
-            resolve_chat_service_bootstrap(effective_harness).cli_path
-        };
+        let cli_path = self
+            .resolve_launch_cli_path_for_harness(effective_harness)
+            .await?;
         tracing::info!(
             %context_type,
             context_id,
@@ -1842,6 +2293,15 @@ impl<R: Runtime> AppChatService<R> {
             "chat_service.send_message spawn bootstrap resolved"
         );
 
+        let agent_workspace_prompt_context = self
+            .agent_workspace_prompt_context_for_send(context_type, conversation)
+            .await?;
+        let filesystem_read_roots = chat_service_context::resolve_mcp_filesystem_read_roots(
+            project_id,
+            Arc::clone(&self.project_repo),
+            working_directory,
+        )
+        .await;
         let build_plan_started = Instant::now();
         let launch_plan = chat_service_context::build_launch_plan_for_harness(
             effective_harness,
@@ -1850,11 +2310,13 @@ impl<R: Runtime> AppChatService<R> {
             conversation,
             message,
             agent_name_override,
+            agent_profile,
             context_type,
             context_id,
             working_directory,
             entity_status,
             project_id,
+            &filesystem_read_roots,
             runtime_team_mode,
             Arc::clone(&self.chat_attachment_repo),
             Arc::clone(&self.artifact_repo),
@@ -1866,6 +2328,7 @@ impl<R: Runtime> AppChatService<R> {
             is_external_mcp,
             stored_session_id.clone(),
             resolved_spawn_settings,
+            agent_workspace_prompt_context.as_deref(),
             attachment_context_override,
         )
         .await
@@ -1959,49 +2422,119 @@ impl<R: Runtime> AppChatService<R> {
         context_type: ChatContextType,
         context_id: &str,
         message: &str,
-        references: &[ComposerProjectReference],
+        project_references: &[ComposerProjectReference],
+        integration_references: &[ComposerIntegrationReference],
+        artifact_references: &[ComposerArtifactReference],
         conversation_id_override: Option<&ChatConversationId>,
         working_directory_override: Option<&PathBuf>,
     ) -> String {
-        if let Some(working_directory) = working_directory_override {
-            return chat_service_composer_references::expand_project_references_for_prompt(
-                message,
-                references,
-                working_directory,
+        let agent_workspace = self
+            .load_agent_conversation_workspace(context_type, context_id, conversation_id_override)
+            .await
+            .ok()
+            .flatten();
+        let assigned_jira_issue = if let Some(conversation_id) = conversation_id_override {
+            self.load_agent_conversation_jira_issue(conversation_id).await
+        } else {
+            None
+        };
+        let merged_integration_references =
+            crate::application::agent_conversation_jira_issue::merge_assigned_jira_reference(
+                assigned_jira_issue.as_ref(),
+                integration_references,
             );
-        }
-
-        if let Some(conversation_id) = conversation_id_override {
-            if let Ok(Some(workspace)) = self
-                .load_agent_conversation_workspace(context_type, conversation_id)
+        let edit_plan_handoff_artifact = self
+            .load_edit_mode_plan_handoff_artifact(agent_workspace.as_ref())
+            .await;
+        let with_project_references = if let Some(working_directory) = working_directory_override {
+            chat_service_composer_references::expand_project_references_for_prompt(
+                message,
+                project_references,
+                working_directory,
+            )
+        } else if let Some(workspace) = agent_workspace.as_ref() {
+            if let Ok(working_directory) = self
+                .resolve_agent_workspace_working_directory(workspace)
                 .await
             {
-                if let Ok(working_directory) = self
-                    .resolve_agent_workspace_working_directory(&workspace)
-                    .await
-                {
-                    return chat_service_composer_references::expand_project_references_for_prompt(
-                        message,
-                        references,
-                        &working_directory,
-                    );
-                }
-            }
-        }
-
-        match self
-            .resolve_working_directory(context_type, context_id)
-            .await
-        {
-            Ok(working_directory) => {
                 chat_service_composer_references::expand_project_references_for_prompt(
                     message,
-                    references,
+                    project_references,
                     &working_directory,
                 )
+            } else {
+                message.to_string()
             }
-            Err(_) => message.to_string(),
+        } else {
+            match self
+                .resolve_working_directory(context_type, context_id)
+                .await
+            {
+                Ok(working_directory) => {
+                    chat_service_composer_references::expand_project_references_for_prompt(
+                        message,
+                        project_references,
+                        &working_directory,
+                    )
+                }
+                Err(_) => message.to_string(),
+            }
+        };
+        let with_integration_references = if merged_integration_references.is_empty() {
+            with_project_references
+        } else {
+            match self.atlassian_integration_service.as_ref() {
+                Some(service) => {
+                    service
+                        .expand_references_for_prompt(
+                            &with_project_references,
+                            &merged_integration_references,
+                        )
+                        .await
+                }
+                None => with_project_references,
+            }
+        };
+        let with_artifact_references =
+            chat_service_composer_references::append_artifact_references_for_prompt(
+                &with_integration_references,
+                artifact_references,
+            );
+
+        let with_plan_mode =
+            plan_mode_runtime_message(with_artifact_references, agent_workspace.as_ref());
+        edit_mode_plan_handoff_runtime_message(
+            with_plan_mode,
+            agent_workspace.as_ref(),
+            edit_plan_handoff_artifact.as_ref(),
+        )
+    }
+
+    async fn load_edit_mode_plan_handoff_artifact(
+        &self,
+        workspace: Option<&AgentConversationWorkspace>,
+    ) -> Option<Artifact> {
+        let workspace = workspace?;
+        if workspace.mode != AgentConversationWorkspaceMode::Edit {
+            return None;
         }
+        let session_id = workspace.linked_ideation_session_id.as_ref()?;
+        let session = self
+            .ideation_session_repo
+            .get_by_id(session_id)
+            .await
+            .ok()
+            .flatten()?;
+        let plan_artifact_id = session
+            .plan_artifact_id
+            .or(session.inherited_plan_artifact_id)?;
+        let latest_id = self
+            .artifact_repo
+            .resolve_latest_artifact_id(&plan_artifact_id)
+            .await
+            .unwrap_or(plan_artifact_id);
+
+        self.artifact_repo.get_by_id(&latest_id).await.ok().flatten()
     }
 
     /// Fetch entity status for context types that support it
@@ -2285,19 +2818,98 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             InteractiveProcessKey::new(context_type.to_string(), &runtime_context_id);
         let ipr_ref = self.ipr();
         let has_ipr_entry = ipr_ref.has_process(&interactive_key).await;
+        let interactive_process_metadata = if has_ipr_entry {
+            ipr_ref.get_metadata(&interactive_key).await
+        } else {
+            None
+        };
+        let mut provider_switch_requires_fresh_session =
+            provider_harness_switch_requires_fresh_session(
+                options.harness_override,
+                None,
+                interactive_process_metadata.as_ref(),
+            );
+        if has_ipr_entry
+            && !provider_switch_requires_fresh_session
+            && options.harness_override.is_some()
+            && interactive_process_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.harness)
+                .is_none()
+        {
+            let existing_conv = match options.conversation_id_override.as_ref() {
+                Some(conversation_id) => self
+                    .conversation_repo
+                    .get_by_id(conversation_id)
+                    .await
+                    .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
+                None => self
+                    .conversation_repo
+                    .get_active_for_context(context_type, context_id)
+                    .await
+                    .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
+            };
+            provider_switch_requires_fresh_session =
+                provider_harness_switch_requires_fresh_session(
+                    options.harness_override,
+                    existing_conv.as_ref(),
+                    None,
+                );
+        }
+        let force_new_provider_session =
+            options.force_new_provider_session || provider_switch_requires_fresh_session;
         tracing::info!(
             %context_type,
             context_id,
             runtime_context_id = %runtime_context_id,
             gate = "GATE_1_IPR",
             has_ipr_entry,
+            force_new_provider_session,
+            provider_switch_requires_fresh_session,
             "[GATE_TRACE] Gate 1 (IPR lookup)"
         );
         if !has_ipr_entry {
             // Diagnostic: dump all registered IPR keys when lookup fails
             ipr_ref.log_registered_keys("GATE_1_MISS").await;
         }
-        if has_ipr_entry && options.force_new_provider_session {
+        if has_ipr_entry && provider_switch_requires_fresh_session {
+            if let Some(existing) = self
+                .active_provider_switch_blocking_run(
+                    &RunningAgentKey::new(context_type.to_string(), &runtime_context_id),
+                    context_type,
+                    context_id,
+                    &runtime_context_id,
+                )
+                .await?
+            {
+                let mut queued_options = options.clone();
+                queued_options.force_new_provider_session = true;
+                let queued = self.enqueue_pending_send(
+                    context_type,
+                    &runtime_context_id,
+                    message,
+                    &queued_options,
+                    Some(existing.conversation_id.clone()),
+                );
+                tracing::info!(
+                    %context_type,
+                    context_id,
+                    runtime_context_id = %runtime_context_id,
+                    queued_message_id = %queued.id,
+                    existing_run_id = %existing.agent_run_id,
+                    "chat_service.send_message: active provider switch queued for next turn"
+                );
+                return Ok(SendResult {
+                    conversation_id: existing.conversation_id.clone(),
+                    agent_run_id: existing.agent_run_id.clone(),
+                    is_new_conversation: false,
+                    was_queued: true,
+                    queued_message_id: Some(queued.id),
+                    queued_as_pending: false,
+                });
+            }
+        }
+        if has_ipr_entry && force_new_provider_session {
             ipr_ref.remove(&interactive_key).await;
             tracing::info!(
                 %context_type,
@@ -2306,7 +2918,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 "chat_service.send_message: skipped existing interactive process for fresh provider session"
             );
         }
-        if has_ipr_entry && !options.force_new_provider_session {
+        if has_ipr_entry && !force_new_provider_session {
             tracing::info!(
                 %context_type,
                 context_id,
@@ -2365,7 +2977,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     context_id,
                     message,
                     &options.composer_project_references,
-                    options.conversation_id_override.as_ref(),
+                    &options.composer_integration_references,
+                    &options.composer_artifact_references,
+                    Some(&conversation.id),
                     options.working_directory_override.as_ref(),
                 )
                 .await;
@@ -2416,7 +3030,12 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         );
                         let user_msg_id = user_msg.id.as_str().to_string();
                         let user_msg_created_at = user_msg.created_at.to_rfc3339();
-                        if self.chat_message_repo.create(user_msg.clone()).await.is_ok() {
+                        if self
+                            .chat_message_repo
+                            .create(user_msg.clone())
+                            .await
+                            .is_ok()
+                        {
                             chat_service_streaming::persist_message_text_timeline_item(
                                 &self.chat_timeline_repo,
                                 &user_msg,
@@ -2432,6 +3051,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                                 .touch_updated_at(context_id)
                                 .await;
                         }
+                        self.auto_assign_primary_jira_issue_from_turn(
+                            context_type,
+                            context_id,
+                            &conversation.id,
+                            None,
+                            &options.composer_integration_references,
+                            &user_msg_id,
+                            user_msg.created_at,
+                        )
+                        .await;
 
                         // Emit message_created event for frontend
                         self.emit_event(
@@ -2445,8 +3074,17 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                                 content: message.to_string(),
                                 created_at: Some(user_msg_created_at),
                                 metadata: persisted_metadata.clone(),
+                                render_ready: None,
                             },
                         );
+                    } else {
+                        self.persist_hidden_resume_in_place_marker(
+                            context_type,
+                            context_id,
+                            conversation.id,
+                            options.metadata.as_deref(),
+                        )
+                        .await?;
                     }
 
                     // Emit run_started so frontend shows activity spinner. Reuse the
@@ -2459,13 +3097,27 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             &runtime_context_id,
                         ))
                         .await;
-                    let interactive_run_id =
-                        interactive_continuation_run_id(active_agent.as_ref());
-                    let process_metadata = ipr_ref.get_metadata(&interactive_key).await;
+                    let interactive_run_id = interactive_continuation_run_id(active_agent.as_ref());
+                    if let Err(error) = self
+                        .agent_run_repo
+                        .update_status(
+                            &AgentRunId::from_string(&interactive_run_id),
+                            AgentRunStatus::Running,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            %context_type,
+                            context_id,
+                            agent_run_id = %interactive_run_id,
+                            error = %error,
+                            "Failed to mark interactive continuation run active"
+                        );
+                    }
                     let (provider_harness, provider_session_id) =
                         interactive_run_started_provider_session(
                             &conversation,
-                            process_metadata.as_ref(),
+                            interactive_process_metadata.as_ref(),
                         );
                     self.emit_event(
                         "agent:run_started",
@@ -2535,7 +3187,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             None
         };
         let agent_workspace = self
-            .load_agent_conversation_workspace(context_type, &conversation.id)
+            .load_agent_conversation_workspace(
+                context_type,
+                &conversation.context_id,
+                Some(&conversation.id),
+            )
             .await?;
         let entity_status = self.get_entity_status(context_type, context_id).await;
         let team_mode_val = self.team_mode.load(Ordering::Relaxed);
@@ -2549,9 +3205,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             options.agent_name_override.as_deref(),
             agent_conversation_mode,
         );
+        let agent_profile = agent_conversation_mode.and_then(agent_profile_for_conversation_mode);
         if matches!(
             agent_conversation_mode,
-            Some(AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Ideation)
+            Some(
+                AgentConversationWorkspaceMode::Edit
+                    | AgentConversationWorkspaceMode::Plan
+                    | AgentConversationWorkspaceMode::Ideation
+                    | AgentConversationWorkspaceMode::ReviewPr,
+            )
         ) && agent_workspace.is_none()
         {
             return Err(ChatServiceError::SpawnFailed(format!(
@@ -3048,6 +3710,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     "chat_service.send_message linked attachments to user message"
                 );
             }
+            self.auto_assign_primary_jira_issue_from_turn(
+                context_type,
+                context_id,
+                &conversation_id,
+                agent_workspace.as_ref(),
+                &options.composer_integration_references,
+                &user_msg_id,
+                user_msg.created_at,
+            )
+            .await;
 
             // 5. Emit message created event
             self.emit_event(
@@ -3061,8 +3733,19 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     content: message.to_string(),
                     created_at: Some(user_msg_created_at),
                     metadata: persisted_metadata.clone(),
+                    render_ready: None,
                 },
             );
+        } else if let Err(error) = self
+            .persist_hidden_resume_in_place_marker(
+                context_type,
+                context_id,
+                conversation_id,
+                options.metadata.as_deref(),
+            )
+            .await
+        {
+            cleanup_and_err!(error);
         }
 
         // 6. Resolve working directory
@@ -3227,7 +3910,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 "Disabling team mode because the selected harness does not support it"
             );
         }
-        let stored_provider_session = if options.force_new_provider_session {
+        let stored_provider_session = if force_new_provider_session {
             None
         } else {
             conversation.provider_session_ref().filter(|session_ref| {
@@ -3399,17 +4082,24 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             elapsed_ms = post_gate_started.elapsed().as_millis() as u64,
             "chat_service.send_message pre-spawn preparation completed"
         );
-        let runtime_message =
-            chat_service_composer_references::expand_project_references_for_prompt(
+        let runtime_message = self
+            .composer_reference_runtime_message(
+                context_type,
+                context_id,
                 message,
                 &options.composer_project_references,
-                &working_directory,
-            );
+                &options.composer_integration_references,
+                &options.composer_artifact_references,
+                Some(&conversation_id),
+                Some(&working_directory),
+            )
+            .await;
         let (selected_cli_path, child, interactive_process_registry) = match self
             .spawn_process_for_harness(
                 &conversation,
                 &runtime_message,
                 Some(resolved_agent_name.as_str()),
+                agent_profile,
                 context_type,
                 context_id,
                 &runtime_context_id,
@@ -3548,6 +4238,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     .lock()
                     .unwrap()
                     .clone(),
+                agent_conversation_jira_issue_repo: self
+                    .agent_conversation_jira_issue_repo
+                    .lock()
+                    .unwrap()
+                    .clone(),
                 activity_event_repo: Arc::clone(&self.activity_event_repo),
                 memory_event_repo: Arc::clone(&self.memory_event_repo),
                 message_queue: Arc::clone(&self.message_queue),
@@ -3563,6 +4258,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             run_chain_id,
             is_retry_attempt: false,
             user_message_content: Some(message.to_string()),
+            turn_metadata: options.metadata.clone(),
             conversation: Some(conversation.clone()),
             agent_name: Some(resolved_agent_name),
             team_mode: runtime_team_mode,
@@ -3713,6 +4409,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             content: content.to_string(),
                             created_at: Some(user_msg_created_at),
                             metadata: None,
+                            render_ready: None,
                         },
                     );
 
@@ -3779,6 +4476,117 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         Ok(self
             .message_queue
             .delete(context_type, context_id, message_id))
+    }
+
+    async fn send_queued_message_now(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message_id: &str,
+    ) -> Result<SendResult, ChatServiceError> {
+        let queued_msg = self
+            .message_queue
+            .take(context_type, context_id, message_id)
+            .ok_or_else(|| {
+                ChatServiceError::ContextNotFound(format!(
+                    "Queued message not found for {}/{}: {}",
+                    context_type, context_id, message_id
+                ))
+            })?;
+
+        let restore_queued = |message_queue: &MessageQueue, queued_msg: QueuedMessage| {
+            message_queue.queue_front_existing(context_type, context_id, queued_msg);
+        };
+
+        let (send_context_id, conversation_id_override) = if context_type == ChatContextType::Project
+            && uuid::Uuid::parse_str(context_id).is_ok()
+        {
+            let conversation_id = ChatConversationId::from_string(context_id.to_string());
+            match self
+                .conversation_repo
+                .get_by_id(&conversation_id)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
+            {
+                Ok(Some(conversation)) => {
+                    if conversation.context_type != context_type {
+                        restore_queued(&self.message_queue, queued_msg);
+                        return Err(ChatServiceError::ContextNotFound(format!(
+                            "Conversation {} belongs to {} not {}",
+                            conversation_id, conversation.context_type, context_type
+                        )));
+                    }
+                    (conversation.context_id.clone(), Some(conversation.id))
+                }
+                Ok(None) => (context_id.to_string(), None),
+                Err(error) => {
+                    restore_queued(&self.message_queue, queued_msg);
+                    return Err(error);
+                }
+            }
+        } else {
+            (context_id.to_string(), None)
+        };
+
+        let running_key = RunningAgentKey::new(context_type.to_string(), context_id);
+        let interactive_key = InteractiveProcessKey::new(context_type.to_string(), context_id);
+        let has_running_process = self.running_agent_registry.is_running(&running_key).await
+            || self.ipr().has_process(&interactive_key).await;
+
+        if has_running_process {
+            if let Err(error) = self.stop_agent(context_type, context_id).await {
+                restore_queued(&self.message_queue, queued_msg);
+                return Err(error);
+            }
+        }
+
+        let created_at = queued_msg
+            .created_at_override
+            .as_deref()
+            .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
+            .map(|timestamp| timestamp.with_timezone(&chrono::Utc));
+        let queued_message_id = queued_msg.id.clone();
+        let send_options = SendMessageOptions {
+            metadata: queued_msg.metadata_override.clone(),
+            created_at,
+            harness_override: queued_msg.harness_override,
+            model_override: queued_msg.model_override.clone(),
+            logical_effort_override: queued_msg.logical_effort_override,
+            force_new_provider_session: queued_msg.force_new_provider_session,
+            conversation_id_override,
+            composer_project_references: queued_msg.composer_project_references.clone(),
+            composer_integration_references: queued_msg.composer_integration_references.clone(),
+            composer_artifact_references: queued_msg.composer_artifact_references.clone(),
+            attachment_ids: queued_msg.attachment_ids.clone(),
+            ..Default::default()
+        };
+        let result = match self
+            .send_message(
+                context_type,
+                &send_context_id,
+                &queued_msg.content,
+                send_options,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                restore_queued(&self.message_queue, queued_msg);
+                return Err(error);
+            }
+        };
+
+        self.emit_event(
+            "agent:queue_sent",
+            AgentQueueSentPayload {
+                message_id: queued_message_id,
+                conversation_id: result.conversation_id.clone(),
+                context_type: context_type.to_string(),
+                context_id: context_id.to_string(),
+            },
+        );
+
+        Ok(result)
     }
 
     async fn get_or_create_conversation(
@@ -3938,14 +4746,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         &self,
         context_type: ChatContextType,
         context_ids: &[String],
-    ) -> HashMap<String, bool> {
+    ) -> HashMap<String, AgentRunningState> {
         let requested_ids: HashSet<String> = context_ids
             .iter()
             .filter(|id| !id.is_empty())
             .cloned()
             .collect();
-        let mut states: HashMap<String, bool> =
-            requested_ids.iter().map(|id| (id.clone(), false)).collect();
+        let mut states: HashMap<String, AgentRunningState> = requested_ids
+            .iter()
+            .map(|id| (id.clone(), AgentRunningState::idle()))
+            .collect();
 
         if requested_ids.is_empty() {
             return states;
@@ -3968,6 +4778,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             }
         };
 
+        let mut live_entries = Vec::new();
         for (key, info) in entries {
             if !requested_ids.contains(&key.context_id) {
                 continue;
@@ -3984,21 +4795,75 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     RegistryCleanupCaller::ReadOnly,
                 )
                 .await;
-            let cleaned_inactive = if cleaned_stale {
-                false
+
+            if cleaned_stale {
+                states.insert(context_id, AgentRunningState::idle());
+                continue;
+            }
+
+            live_entries.push((key, info, context_id));
+        }
+
+        let run_ids: HashSet<AgentRunId> = live_entries
+            .iter()
+            .filter_map(|(_, info, _)| {
+                if info.agent_run_id.is_empty() {
+                    None
+                } else {
+                    Some(AgentRunId::from_string(&info.agent_run_id))
+                }
+            })
+            .collect();
+        let run_id_list: Vec<AgentRunId> = run_ids.iter().copied().collect();
+        let run_statuses: HashMap<String, AgentRunStatus> = match self
+            .agent_run_repo
+            .get_by_ids(&run_id_list)
+            .await
+        {
+            Ok(runs) => runs
+                .into_iter()
+                .map(|run| (run.id.as_str(), run.status))
+                .collect(),
+            Err(error) => {
+                tracing::warn!(
+                    %context_type,
+                    error = %error,
+                    "Failed to bulk-load agent runs for running-state hydration"
+                );
+                HashMap::new()
+            }
+        };
+
+        for (key, info, context_id) in live_entries {
+            let run_status = run_statuses.get(&info.agent_run_id).copied();
+            let should_cleanup_inactive = registry_entry_blocks_send_because_run_inactive(
+                &info,
+                run_status,
+                chrono::Utc::now(),
+                RegistryCleanupCaller::ReadOnly,
+            );
+            let cleaned_inactive = should_cleanup_inactive
+                && self
+                    .cleanup_inactive_registry_block(
+                        &key,
+                        &info,
+                        context_type,
+                        &context_id,
+                        "get_agent_running_states",
+                        RegistryCleanupCaller::ReadOnly,
+                    )
+                    .await;
+
+            let state = if cleaned_inactive {
+                AgentRunningState::idle()
             } else {
-                self.cleanup_inactive_registry_block(
-                    &key,
-                    &info,
-                    context_type,
-                    &context_id,
-                    "get_agent_running_states",
-                    RegistryCleanupCaller::ReadOnly,
-                )
-                .await
+                match run_status {
+                    Some(AgentRunStatus::Running) | None => AgentRunningState::generating(),
+                    Some(_) => AgentRunningState::waiting_for_input(),
+                }
             };
 
-            states.insert(context_id, !(cleaned_stale || cleaned_inactive));
+            states.insert(context_id, state);
         }
 
         states
@@ -4024,10 +4889,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 #[cfg(test)]
 mod stale_registry_gate_tests {
     use super::{
-        claude_launches_paused, interactive_continuation_run_id,
+        claude_launches_paused, interactive_continuation_run_id, log_send_message_spawn_prep_phase,
         registry_entry_blocks_send_because_run_inactive, registry_entry_blocks_send_but_is_stale,
-        runtime_context_id_for_send,
-        log_send_message_spawn_prep_phase, AgentRunStatus, ChatContextType, ChatConversationId,
+        runtime_context_id_for_send, AgentRunStatus, ChatContextType, ChatConversationId,
         RegistryCleanupCaller, RunningAgentInfo,
     };
     use crate::commands::ExecutionState;
@@ -4220,7 +5084,7 @@ mod stale_registry_gate_tests {
     }
 
     #[test]
-    fn terminal_agent_run_unblocks_registry_entry() {
+    fn terminal_agent_run_unblocks_send_gate_registry_entry() {
         let now = chrono::Utc::now();
         let info = registry_info(std::process::id(), now - chrono::Duration::minutes(5));
 
@@ -4228,17 +5092,30 @@ mod stale_registry_gate_tests {
             &info,
             Some(AgentRunStatus::Completed),
             now,
-            RegistryCleanupCaller::ReadOnly,
+            RegistryCleanupCaller::SendGate,
         ));
         assert!(registry_entry_blocks_send_because_run_inactive(
             &info,
             Some(AgentRunStatus::Failed),
             now,
-            RegistryCleanupCaller::ReadOnly,
+            RegistryCleanupCaller::SendGate,
         ));
         assert!(registry_entry_blocks_send_because_run_inactive(
             &info,
             Some(AgentRunStatus::Cancelled),
+            now,
+            RegistryCleanupCaller::SendGate,
+        ));
+    }
+
+    #[test]
+    fn terminal_agent_run_does_not_let_read_only_cleanup_kill_live_process() {
+        let now = chrono::Utc::now();
+        let info = registry_info(std::process::id(), now - chrono::Duration::minutes(5));
+
+        assert!(!registry_entry_blocks_send_because_run_inactive(
+            &info,
+            Some(AgentRunStatus::Completed),
             now,
             RegistryCleanupCaller::ReadOnly,
         ));
@@ -4289,14 +5166,119 @@ mod stale_registry_gate_tests {
 }
 
 #[cfg(test)]
+mod managed_provider_launch_path_tests {
+    use crate::application::AppState;
+    use crate::domain::agents::{
+        AgentHarnessKind, AgentProviderCliManagementMode, AgentProviderSettings,
+    };
+    use std::path::Path;
+
+    #[tokio::test]
+    async fn rx_managed_codex_provider_overrides_chat_launch_cli_path() {
+        let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+            .lock()
+            .expect("test env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let managed_codex_path = temp_dir.path().join("codex");
+        write_codex_capability_script(&managed_codex_path);
+        let _override =
+            crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests(
+                managed_codex_path.clone(),
+            );
+        let app_state = AppState::new_sqlite_test();
+        let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+        settings.enabled = true;
+        settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
+        app_state
+            .agent_provider_settings_repo
+            .upsert(&settings)
+            .await
+            .expect("save provider settings");
+        let service = app_state.build_chat_service();
+
+        let path = service
+            .resolve_launch_cli_path_for_harness(AgentHarnessKind::Codex)
+            .await
+            .expect("launch path");
+
+        assert_eq!(path, managed_codex_path);
+    }
+
+    #[tokio::test]
+    async fn rx_managed_codex_provider_rejects_missing_chat_launch_cli_path() {
+        let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+            .lock()
+            .expect("test env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let missing_codex_path = temp_dir.path().join("missing-codex");
+        let _override =
+            crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests(
+                missing_codex_path,
+            );
+        let app_state = AppState::new_sqlite_test();
+        let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+        settings.enabled = true;
+        settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
+        app_state
+            .agent_provider_settings_repo
+            .upsert(&settings)
+            .await
+            .expect("save provider settings");
+        let service = app_state.build_chat_service();
+
+        let error = service
+            .resolve_launch_cli_path_for_harness(AgentHarnessKind::Codex)
+            .await
+            .expect_err("missing managed Codex should block launch");
+
+        assert!(error
+            .to_string()
+            .contains("RX-managed Codex is not installed."));
+        assert!(!error.to_string().contains("Codex CLI not found at"));
+    }
+
+    fn write_codex_capability_script(path: &Path) {
+        let parent = path.parent().expect("script parent");
+        std::fs::create_dir_all(parent).expect("script parent directory");
+        std::fs::write(
+            path,
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 0.116.0\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+        )
+        .expect("write fake codex");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake codex");
+        }
+    }
+}
+
+#[cfg(test)]
 mod agent_workspace_send_tests {
     use super::{ChatService, SendMessageOptions, AGENT_ERROR_PREFIX};
-    use crate::application::interactive_process_registry::InteractiveProcessKey;
+    use crate::application::interactive_process_registry::{
+        InteractiveProcessKey, InteractiveProcessMetadata,
+    };
     use crate::application::AppState;
     use crate::commands::ExecutionState;
+    use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
     use crate::domain::entities::{
-        AgentConversationWorkspaceMode, AgentRunStatus, ChatContextType, ChatConversation,
-        ChatAttachment, ChatAttachmentId, MessageRole, Project, ProjectId, TaskId,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode,
+        AgentWorkspaceSourcePullRequest, AgentRun, AgentRunStatus, ChatAttachment,
+        ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+        IdeationAnalysisBaseRefKind, IdeationSession, MessageRole, Project, ProjectId, TaskId,
     };
     use crate::domain::services::{
         ComposerProjectReference, ComposerProjectReferenceKind, RunningAgentKey,
@@ -4318,8 +5300,26 @@ mod agent_workspace_send_tests {
 
         assert_eq!(value.get("resume_in_place"), None);
         assert_eq!(value["source"], "composer");
-        assert_eq!(value["composer_project_references"][0]["path"], "src/main.ts");
+        assert_eq!(
+            value["composer_project_references"][0]["path"],
+            "src/main.ts"
+        );
         assert_eq!(value["composer_project_references"][0]["kind"], "file");
+    }
+
+    #[test]
+    fn message_metadata_hidden_from_ui_accepts_hidden_or_recovery_flags() {
+        assert!(super::message_metadata_hidden_from_ui(Some(
+            r#"{"hidden_from_ui":true}"#,
+        )));
+        assert!(super::message_metadata_hidden_from_ui(Some(
+            r#"{"recovery_context":true}"#,
+        )));
+        assert!(!super::message_metadata_hidden_from_ui(Some(
+            r#"{"hidden_from_ui":false}"#,
+        )));
+        assert!(!super::message_metadata_hidden_from_ui(Some("not-json")));
+        assert!(!super::message_metadata_hidden_from_ui(None));
     }
 
     #[test]
@@ -4355,6 +5355,55 @@ mod agent_workspace_send_tests {
             raw_value["composer_project_references"][0]["path"],
             "src/lib.rs"
         );
+    }
+
+    #[tokio::test]
+    async fn ideation_send_context_resolves_linked_agent_workspace_source_pr_context() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-linked-source-pr".to_string());
+        let session = state
+            .ideation_session_repo
+            .create(IdeationSession::new(project_id.clone()))
+            .await
+            .expect("session should persist");
+        let conversation = ChatConversation::new_ideation(session.id.clone());
+        let mut workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-linked-source-pr"),
+            project_id,
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::LocalBranch,
+            "feature/source-pr".to_string(),
+            Some("PR #321: Source PR".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/project/agent-linked-source-pr".to_string(),
+            "/tmp/agent-linked-source-pr".to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(session.id.clone());
+        workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+            number: 321,
+            url: Some("https://github.com/owner/repo/pull/321".to_string()),
+            title: Some("Source PR".to_string()),
+            head_ref_name: "feature/source-pr".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: Some("abc321".to_string()),
+        });
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+
+        let service = state.build_chat_service();
+        let context = service
+            .agent_workspace_prompt_context_for_send(ChatContextType::Ideation, &conversation)
+            .await
+            .expect("prompt context should resolve")
+            .expect("linked workspace context should be present");
+
+        assert!(context.contains("<source_pull_request>"));
+        assert!(context.contains("<number>321</number>"));
+        assert!(context.contains("<linked_ideation_session_id>"));
+        assert!(context.contains("new pull request targeting branch feature/source-pr"));
     }
 
     #[tokio::test]
@@ -4405,7 +5454,10 @@ mod agent_workspace_send_tests {
             .await
             .expect("interactive stdin send should succeed");
 
-        state.interactive_process_registry.remove(&interactive_key).await;
+        state
+            .interactive_process_registry
+            .remove(&interactive_key)
+            .await;
         let _ = child.kill().await;
 
         assert_eq!(result.conversation_id, conversation_id);
@@ -4413,6 +5465,116 @@ mod agent_workspace_send_tests {
             result.agent_run_id, "run-original-process",
             "Gate 1 sends must not invent a run id that terminal events cannot match"
         );
+    }
+
+    #[tokio::test]
+    async fn provider_switch_queues_active_old_provider_interactive_process() {
+        let state = AppState::new_test();
+        let context_id = "task-provider-switch-active";
+        let mut conversation = ChatConversation::new_task(TaskId::from_string(
+            context_id.to_string(),
+        ));
+        conversation.set_provider_session_ref(ProviderSessionRef {
+            harness: AgentHarnessKind::Claude,
+            provider_session_id: "claude-session-active".to_string(),
+        });
+        let conversation_id = conversation.id.as_str().to_string();
+        let run = AgentRun::new(conversation.id);
+        let run_id = run.id.as_str().to_string();
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+        state
+            .agent_run_repo
+            .create(run)
+            .await
+            .expect("active run should persist");
+
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("cat should spawn for provider switch guard test");
+        let stdin = child.stdin.take().expect("cat stdin should be piped");
+        let interactive_key = InteractiveProcessKey::new("task", context_id);
+        state
+            .interactive_process_registry
+            .register_with_metadata(
+                interactive_key.clone(),
+                stdin,
+                InteractiveProcessMetadata {
+                    harness: Some(AgentHarnessKind::Claude),
+                    provider_session_id: Some("claude-session-active".to_string()),
+                },
+            )
+            .await;
+        let running_key = RunningAgentKey::new("task", context_id);
+        state
+            .running_agent_registry
+            .register(
+                running_key.clone(),
+                0,
+                conversation_id.clone(),
+                run_id.clone(),
+                None,
+                None,
+            )
+            .await;
+
+        let service =
+            state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+        let result = service
+            .send_message(
+                ChatContextType::Task,
+                context_id,
+                "switch to codex",
+                SendMessageOptions {
+                    harness_override: Some(AgentHarnessKind::Codex),
+                    model_override: Some("gpt-5.5".to_string()),
+                    logical_effort_override: Some(LogicalEffort::High),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("active provider switch should queue before stdin reuse");
+
+        assert!(result.was_queued);
+        assert_eq!(result.conversation_id, conversation_id);
+        assert_eq!(result.agent_run_id, run_id);
+        let queued_message_id = result
+            .queued_message_id
+            .as_deref()
+            .expect("active provider switch should return the queued message id");
+        assert!(
+            state
+                .interactive_process_registry
+                .has_process(&interactive_key)
+                .await,
+            "active provider switch must not detach the old process before it finishes"
+        );
+        assert!(
+            state.running_agent_registry.is_running(&running_key).await,
+            "active provider switch must leave the current running slot intact"
+        );
+        let queued = state
+            .message_queue
+            .get_queued(ChatContextType::Task, context_id);
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].id, queued_message_id);
+        assert_eq!(queued[0].content, "switch to codex");
+        assert_eq!(queued[0].harness_override, Some(AgentHarnessKind::Codex));
+        assert_eq!(queued[0].model_override.as_deref(), Some("gpt-5.5"));
+        assert_eq!(queued[0].logical_effort_override, Some(LogicalEffort::High));
+        assert!(queued[0].force_new_provider_session);
+
+        state
+            .interactive_process_registry
+            .remove(&interactive_key)
+            .await;
+        let _ = child.kill().await;
     }
 
     #[tokio::test]
@@ -4686,14 +5848,106 @@ mod agent_workspace_send_tests {
             "missing workspace should produce a clear spawn failure: {error}"
         );
     }
+
+    #[tokio::test]
+    async fn send_queued_message_now_stops_project_runtime_and_restores_on_launch_failure() {
+        let state = AppState::new_test();
+        let project_dir = tempfile::tempdir().expect("project dir should be created");
+        let project = Project::new(
+            "Queued Send Now Project".to_string(),
+            project_dir.path().to_string_lossy().to_string(),
+        );
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should persist");
+
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.set_provider_session_ref(ProviderSessionRef {
+            harness: AgentHarnessKind::Claude,
+            provider_session_id: "provider-session-1".to_string(),
+        });
+        let conversation_id = conversation.id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+
+        let first = state.message_queue.queue(
+            ChatContextType::Project,
+            conversation_id.as_str(),
+            "wait first".to_string(),
+        );
+        let selected = state.message_queue.queue(
+            ChatContextType::Project,
+            conversation_id.as_str(),
+            "send me now".to_string(),
+        );
+        let third = state.message_queue.queue(
+            ChatContextType::Project,
+            conversation_id.as_str(),
+            "wait third".to_string(),
+        );
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new("project", conversation_id.as_str()),
+                0,
+                conversation_id.as_str().to_string(),
+                "active-run".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let service = state
+            .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+            .with_cli_path(project_dir.path().join("missing-claude-cli"))
+            .with_working_directory(project_dir.path());
+
+        let error = service
+            .send_queued_message_now(
+                ChatContextType::Project,
+                &conversation_id.as_str(),
+                &selected.id,
+            )
+            .await
+            .expect_err("missing CLI should restore the selected queued prompt");
+
+        assert!(
+            error.to_string().contains("Claude CLI not found"),
+            "send-now should resolve the project conversation before attempting launch: {error}"
+        );
+        assert!(
+            !state
+                .running_agent_registry
+                .is_running(&RunningAgentKey::new("project", conversation_id.as_str()))
+                .await,
+            "send-now should stop the active runtime key before relaunch"
+        );
+
+        let queued = state
+            .message_queue
+            .get_queued(ChatContextType::Project, &conversation_id.as_str());
+        assert_eq!(
+            queued.iter().map(|message| message.id.as_str()).collect::<Vec<_>>(),
+            vec![selected.id.as_str(), first.id.as_str(), third.id.as_str()],
+            "failed immediate launch should restore the selected prompt at the front"
+        );
+    }
 }
 
 #[cfg(test)]
 mod bulk_running_state_tests {
-    use super::{ChatContextType, ChatService};
+    use super::{AgentRuntimeStatus, ChatContextType, ChatService};
     use crate::application::AppState;
     use crate::commands::ExecutionState;
-    use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey};
+    use crate::domain::entities::{AgentRun, ChatConversationId};
+    use crate::domain::services::{
+        MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry,
+    };
     use std::sync::Arc;
 
     #[tokio::test]
@@ -4722,11 +5976,56 @@ mod bulk_running_state_tests {
             .get_agent_running_states(ChatContextType::Project, &requested_ids)
             .await;
 
-        assert_eq!(states.get("conv-running"), Some(&true));
-        assert_eq!(states.get("conv-idle"), Some(&false));
+        assert_eq!(
+            states.get("conv-running").map(|state| state.is_running),
+            Some(true)
+        );
+        assert_eq!(
+            states.get("conv-running").map(|state| state.agent_status),
+            Some(AgentRuntimeStatus::Generating)
+        );
+        assert_eq!(
+            states.get("conv-idle").map(|state| state.is_running),
+            Some(false)
+        );
+        assert_eq!(
+            states.get("conv-idle").map(|state| state.agent_status),
+            Some(AgentRuntimeStatus::Idle)
+        );
         assert_eq!(states.get("conv-unrequested"), None);
         assert_eq!(states.get(""), None);
         assert_eq!(states.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn app_service_bulk_running_states_reports_retained_completed_process_as_waiting() {
+        let registry = Arc::new(MemoryRunningAgentRegistry::new());
+        let app_state = AppState::new_sqlite_test_with_registry(Arc::clone(&registry));
+        let conversation_id = ChatConversationId::from_string("conv-waiting");
+        let mut run = AgentRun::new(conversation_id);
+        let run_id = run.id;
+        run.complete();
+        app_state.agent_run_repo.create(run).await.unwrap();
+        registry
+            .register(
+                RunningAgentKey::new("project", "conv-waiting"),
+                std::process::id(),
+                "conv-waiting".to_string(),
+                run_id.as_str().to_string(),
+                None,
+                None,
+            )
+            .await;
+        let service =
+            app_state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+        let states = service
+            .get_agent_running_states(ChatContextType::Project, &["conv-waiting".to_string()])
+            .await;
+
+        let state = states.get("conv-waiting").expect("state for requested id");
+        assert!(state.is_running);
+        assert_eq!(state.agent_status, AgentRuntimeStatus::WaitingForInput);
     }
 
     #[tokio::test]
@@ -4747,6 +6046,8 @@ mod bulk_running_state_tests {
     }
 }
 
+#[cfg(test)]
+mod chat_service_composer_references_tests;
 #[cfg(test)]
 mod chat_service_redaction_tests;
 #[cfg(test)]

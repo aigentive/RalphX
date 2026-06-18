@@ -22,7 +22,7 @@ import { getTraceLogPath, safeError, safeTrace } from "./redact.js";
 import { getFilteredTools, isToolAllowed, getAllowedToolNames, parseAllowedToolsFromArgs, formatToolErrorMessage, logAllTools, getToolsByAgent, setAgentType, } from "./tools.js";
 import { FILESYSTEM_TOOL_NAMES, formatFilesystemToolError, handleFilesystemToolCall, } from "./filesystem-tools.js";
 import { permissionRequestTool, handlePermissionRequest, } from "./permission-handler.js";
-import { handleAskUserQuestion } from "./question-handler.js";
+import { handleAskUserQuestion, handleProposePlanMode, } from "./question-handler.js";
 import { handleRequestTeamPlan } from "./team-plan-handler.js";
 import { hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runtime-context.js";
 import { createVerificationRuntime } from "./verification-runtime.js";
@@ -336,6 +336,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         try {
             const result = await handleAskUserQuestion(args);
+            safeTrace("tool.success", {
+                name,
+                result: summarizeResult(result),
+            });
+            return result;
+        }
+        catch (error) {
+            safeTrace("tool.error", {
+                name,
+                error: error instanceof Error ? error.message : String(error),
+            });
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{ type: "text", text: `ERROR: Unexpected error: ${message}` }],
+                isError: true,
+            };
+        }
+    }
+    // Special handling for propose_plan_mode (register + long-poll through question UI)
+    if (name === "propose_plan_mode") {
+        // Still check authorization (must be in agent's allowlist)
+        if (!isToolAllowed(name)) {
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `ERROR: Tool "${name}" is not available for agent type "${AGENT_TYPE}".`,
+                    },
+                ],
+                isError: true,
+            };
+        }
+        try {
+            const result = await handleProposePlanMode(args);
             safeTrace("tool.success", {
                 name,
                 result: summarizeResult(result),

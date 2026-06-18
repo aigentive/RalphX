@@ -1,6 +1,6 @@
 //! Agent workspace HTTP handlers.
 
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 use axum::{
     extract::{Path, State},
@@ -30,9 +30,13 @@ use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::{
     pr_comment_body_excerpt, AgentConversationWorkspace,
     AgentConversationWorkspacePublicationEvent, AgentWorkspacePrCommentEvidence,
-    AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind,
+    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePrReviewMonitorStatus, ChatConversationId, IdeationAnalysisBaseRefKind,
 };
-use crate::domain::services::github_service::{PrHealth, PrReviewFeedback, PrStatus};
+use crate::domain::services::github_service::{
+    GithubServiceTrait, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent, PrStatus,
+};
 
 #[derive(Debug, serde::Deserialize)]
 pub struct CompleteAgentWorkspaceRepairRequest {
@@ -215,6 +219,158 @@ pub struct CompleteAgentWorkspacePrFixResponse {
     pub pr_url: Option<String>,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspacePrReviewMonitorResponse {
+    pub conversation_id: String,
+    pub project_id: String,
+    pub pr_number: i64,
+    pub status: String,
+    pub monitor_enabled: bool,
+    pub first_review_completed: bool,
+    pub last_seen_head_sha: Option<String>,
+    pub last_reviewed_head_sha: Option<String>,
+    pub last_review_run_id: Option<String>,
+    pub last_review_outcome: Option<String>,
+    pub last_submitted_review_id: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<AgentWorkspacePrReviewMonitor> for AgentWorkspacePrReviewMonitorResponse {
+    fn from(value: AgentWorkspacePrReviewMonitor) -> Self {
+        Self {
+            conversation_id: value.conversation_id.as_str(),
+            project_id: value.project_id.as_str().to_string(),
+            pr_number: value.pr_number,
+            status: value.status.to_string(),
+            monitor_enabled: value.monitor_enabled,
+            first_review_completed: value.first_review_completed,
+            last_seen_head_sha: value.last_seen_head_sha,
+            last_reviewed_head_sha: value.last_reviewed_head_sha,
+            last_review_run_id: value.last_review_run_id,
+            last_review_outcome: value.last_review_outcome,
+            last_submitted_review_id: value.last_submitted_review_id,
+            last_error: value.last_error,
+            created_at: value.created_at.to_rfc3339(),
+            updated_at: value.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspacePrReviewActionResponse {
+    pub id: String,
+    pub conversation_id: String,
+    pub pr_number: i64,
+    pub head_sha: String,
+    pub proposed_action: String,
+    pub summary: String,
+    pub review_body: String,
+    pub findings_json: Option<String>,
+    pub status: String,
+    pub submitted_review_id: Option<String>,
+    pub created_by_run_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub resolved_at: Option<String>,
+}
+
+impl From<AgentWorkspacePrReviewAction> for AgentWorkspacePrReviewActionResponse {
+    fn from(value: AgentWorkspacePrReviewAction) -> Self {
+        Self {
+            id: value.id,
+            conversation_id: value.conversation_id.as_str(),
+            pr_number: value.pr_number,
+            head_sha: value.head_sha,
+            proposed_action: value.proposed_action.to_string(),
+            summary: value.summary,
+            review_body: value.review_body,
+            findings_json: value.findings_json,
+            status: value.status.to_string(),
+            submitted_review_id: value.submitted_review_id,
+            created_by_run_id: value.created_by_run_id,
+            created_at: value.created_at.to_rfc3339(),
+            updated_at: value.updated_at.to_rfc3339(),
+            resolved_at: value.resolved_at.map(|value| value.to_rfc3339()),
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspacePrReviewContextResponse {
+    pub success: bool,
+    pub workspace: AgentConversationWorkspaceResponse,
+    pub events: Vec<AgentConversationWorkspacePublicationEventResponse>,
+    pub pr_number: i64,
+    pub pr_url: Option<String>,
+    pub current_head_sha: Option<String>,
+    pub health: Option<PrHealth>,
+    pub review_feedback: Option<PrReviewFeedback>,
+    pub monitor: Option<AgentWorkspacePrReviewMonitorResponse>,
+    pub pending_action: Option<AgentWorkspacePrReviewActionResponse>,
+    pub recent_actions: Vec<AgentWorkspacePrReviewActionResponse>,
+    pub issue_comment_evidence: Vec<AgentWorkspacePrCommentEvidenceResponse>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ProposeAgentWorkspacePrReviewActionRequest {
+    pub head_sha: String,
+    pub proposed_action: String,
+    pub summary: String,
+    pub review_body: String,
+    pub findings_json: Option<String>,
+    pub created_by_run_id: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ProposeAgentWorkspacePrReviewActionResponse {
+    pub success: bool,
+    pub monitor: AgentWorkspacePrReviewMonitorResponse,
+    pub action: AgentWorkspacePrReviewActionResponse,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct CompleteAgentWorkspacePrReviewRunRequest {
+    pub head_sha: Option<String>,
+    pub outcome: Option<String>,
+    pub summary: String,
+    pub blocker: Option<String>,
+    pub created_by_run_id: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CompleteAgentWorkspacePrReviewRunResponse {
+    pub success: bool,
+    pub monitor: AgentWorkspacePrReviewMonitorResponse,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SubmitAgentWorkspacePrReviewActionRequest {
+    pub action_kind: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SubmitAgentWorkspacePrReviewActionResponse {
+    pub success: bool,
+    pub monitor: AgentWorkspacePrReviewMonitorResponse,
+    pub action: AgentWorkspacePrReviewActionResponse,
+    pub submitted_review_id: String,
+    pub submitted_review_url: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SkipAgentWorkspacePrReviewActionRequest {
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SkipAgentWorkspacePrReviewActionResponse {
+    pub success: bool,
+    pub monitor: AgentWorkspacePrReviewMonitorResponse,
+    pub action: AgentWorkspacePrReviewActionResponse,
+}
+
 /// POST /api/agent-workspaces/{conversation_id}/pr-description
 ///
 /// Called by the dedicated PR describer agent after it writes the body for an
@@ -312,6 +468,7 @@ pub async fn update_agent_workspace_from_base(
             .map_err(|error| json_error(StatusCode::BAD_REQUEST, error, None))?,
         base_ref: req.base_ref,
         display_name: req.base_display_name,
+        source_pull_request: None,
     };
     match update_agent_conversation_workspace_from_base_for_app_state(
         state.app_state.as_ref(),
@@ -362,7 +519,13 @@ pub async fn publish_agent_workspace(
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace =
         load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
-    if let Some(response) = publish_action_response_for_existing_workspace_state(workspace) {
+    if let Some(response) = publish_action_response_for_existing_workspace_state(
+        state.app_state.as_ref(),
+        &conversation_id,
+        workspace,
+    )
+    .await?
+    {
         return Ok(Json(response));
     }
 
@@ -486,6 +649,473 @@ pub async fn get_agent_workspace_pr_fix_context(
         health,
         review_feedback,
         issue_comment_evidence,
+    }))
+}
+
+/// GET /api/agent-workspaces/{conversation_id}/pr-review-context
+pub async fn get_agent_workspace_pr_review_context(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<AgentWorkspacePrReviewContextResponse>, JsonError> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let workspace_response =
+        agent_workspace_response_for_state(state.app_state.as_ref(), workspace.clone())
+            .await
+            .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
+    let events =
+        load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
+    let pr_number = review_pr_number(&workspace).ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "Review PR mode requires a linked pull request",
+            None,
+        )
+    })?;
+    let pr_url = review_pr_url(&workspace);
+    let source_head_sha = review_pr_head_sha(&workspace);
+    let (mut health, review_feedback) =
+        fetch_review_pr_remote_context(state.app_state.as_ref(), &workspace, pr_number).await?;
+    let current_head_sha = health
+        .as_ref()
+        .and_then(|health| health.sync_state.head_ref_oid.clone())
+        .or(source_head_sha);
+    if let Some(health) = health.as_mut() {
+        truncate_pr_health_issue_comments(health);
+    }
+    let issue_comment_evidence = load_agent_workspace_pr_comment_evidence(
+        state.app_state.as_ref(),
+        &conversation_id,
+        pr_number,
+    )
+    .await?;
+    let monitor = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let pending_action = match current_head_sha.as_deref() {
+        Some(head_sha) => state
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_pending_pr_review_action_for_head(&conversation_id, pr_number, head_sha)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?,
+        None => None,
+    };
+    let recent_actions = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .list_pr_review_actions(&conversation_id, 20)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+
+    Ok(Json(AgentWorkspacePrReviewContextResponse {
+        success: true,
+        workspace: workspace_response,
+        events,
+        pr_number,
+        pr_url,
+        current_head_sha,
+        health,
+        review_feedback,
+        monitor: monitor.map(AgentWorkspacePrReviewMonitorResponse::from),
+        pending_action: pending_action.map(AgentWorkspacePrReviewActionResponse::from),
+        recent_actions: recent_actions
+            .into_iter()
+            .map(AgentWorkspacePrReviewActionResponse::from)
+            .collect(),
+        issue_comment_evidence,
+    }))
+}
+
+/// POST /api/agent-workspaces/{conversation_id}/pr-review-actions
+pub async fn propose_agent_workspace_pr_review_action(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<ProposeAgentWorkspacePrReviewActionRequest>,
+) -> Result<Json<ProposeAgentWorkspacePrReviewActionResponse>, JsonError> {
+    let head_sha = non_empty_string(req.head_sha, "head_sha")?;
+    let summary = non_empty_string(req.summary, "summary")?;
+    let review_body = non_empty_string(req.review_body, "review_body")?;
+    let proposed_action = AgentWorkspacePrReviewActionKind::from_str(req.proposed_action.trim())
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, error, None))?;
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let pr_number = review_pr_number(&workspace).ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "Review PR mode requires a linked pull request",
+            None,
+        )
+    })?;
+
+    let action = AgentWorkspacePrReviewAction::new(
+        conversation_id.clone(),
+        pr_number,
+        head_sha.clone(),
+        proposed_action,
+        summary,
+        review_body,
+        req.findings_json,
+        req.created_by_run_id.clone(),
+    );
+    let action = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update_pr_review_action(action)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let mut monitor = load_or_create_pr_review_monitor(
+        state.app_state.as_ref(),
+        &workspace,
+        pr_number,
+        Some(head_sha),
+    )
+    .await?;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
+    monitor.first_review_completed = true;
+    monitor.last_reviewed_head_sha = Some(action.head_sha.clone());
+    monitor.last_review_run_id = req.created_by_run_id;
+    monitor.last_review_outcome = Some(proposed_action.to_string());
+    monitor.last_error = None;
+    let monitor = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+
+    Ok(Json(ProposeAgentWorkspacePrReviewActionResponse {
+        success: true,
+        monitor: AgentWorkspacePrReviewMonitorResponse::from(monitor),
+        action: AgentWorkspacePrReviewActionResponse::from(action),
+    }))
+}
+
+/// POST /api/agent-workspaces/{conversation_id}/complete-pr-review-run
+pub async fn complete_agent_workspace_pr_review_run(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<CompleteAgentWorkspacePrReviewRunRequest>,
+) -> Result<Json<CompleteAgentWorkspacePrReviewRunResponse>, JsonError> {
+    let summary = non_empty_string(req.summary, "summary")?;
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let pr_number = review_pr_number(&workspace).ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "Review PR mode requires a linked pull request",
+            None,
+        )
+    })?;
+    let head_sha = req.head_sha.or_else(|| review_pr_head_sha(&workspace));
+    let mut monitor = load_or_create_pr_review_monitor(
+        state.app_state.as_ref(),
+        &workspace,
+        pr_number,
+        head_sha.clone(),
+    )
+    .await?;
+    monitor.first_review_completed = true;
+    monitor.last_seen_head_sha = head_sha.clone().or(monitor.last_seen_head_sha);
+    monitor.last_reviewed_head_sha = head_sha.or(monitor.last_reviewed_head_sha);
+    monitor.last_review_run_id = req.created_by_run_id;
+    monitor.last_review_outcome = req.outcome.or_else(|| Some("no_action".to_string()));
+    monitor.last_error = req.blocker.or_else(|| {
+        if summary.trim().is_empty() {
+            Some("Review run completed without a summary".to_string())
+        } else {
+            None
+        }
+    });
+    monitor.status = if monitor.last_error.is_some() {
+        AgentWorkspacePrReviewMonitorStatus::Blocked
+    } else if monitor.monitor_enabled {
+        AgentWorkspacePrReviewMonitorStatus::Watching
+    } else {
+        AgentWorkspacePrReviewMonitorStatus::Terminal
+    };
+    let monitor = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+
+    Ok(Json(CompleteAgentWorkspacePrReviewRunResponse {
+        success: true,
+        monitor: AgentWorkspacePrReviewMonitorResponse::from(monitor),
+    }))
+}
+
+/// POST /api/agent-workspaces/{conversation_id}/pr-review-actions/{action_id}/submit
+pub async fn submit_agent_workspace_pr_review_action(
+    State(state): State<HttpServerState>,
+    Path((conversation_id, action_id)): Path<(String, String)>,
+    Json(req): Json<SubmitAgentWorkspacePrReviewActionRequest>,
+) -> Result<Json<SubmitAgentWorkspacePrReviewActionResponse>, JsonError> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let action = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_pr_review_action(&action_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "PR review action not found", None))?;
+    if action.conversation_id != conversation_id {
+        return Err(json_error(
+            StatusCode::NOT_FOUND,
+            "PR review action not found for this workspace",
+            None,
+        ));
+    }
+    if action.status != AgentWorkspacePrReviewActionStatus::Pending {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "PR review action is no longer pending",
+            None,
+        ));
+    }
+    let override_kind = req
+        .action_kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(AgentWorkspacePrReviewActionKind::from_str)
+        .transpose()
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, error, None))?;
+    let action_kind = override_kind.unwrap_or(action.proposed_action);
+    let event = pr_review_submission_event(action_kind);
+    let pr_number = review_pr_number(&workspace).ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "Review PR mode requires a linked pull request",
+            None,
+        )
+    })?;
+    if action.pr_number != pr_number {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "PR review action belongs to a different pull request",
+            None,
+        ));
+    }
+    let github = state.app_state.github_service.as_ref().ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "GitHub review submission is unavailable",
+            None,
+        )
+    })?;
+    let current_head_sha = fetch_current_review_pr_head_sha(
+        state.app_state.as_ref(),
+        &workspace,
+        pr_number,
+        github.as_ref(),
+    )
+    .await?;
+    if current_head_sha.as_deref() != Some(action.head_sha.as_str()) {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Pull request head changed; run a fresh review before submitting",
+            None,
+        ));
+    }
+
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .update_pr_review_action_status(
+            &action.id,
+            AgentWorkspacePrReviewActionStatus::Submitting,
+            None,
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let mut monitor = load_or_create_pr_review_monitor(
+        state.app_state.as_ref(),
+        &workspace,
+        pr_number,
+        Some(action.head_sha.clone()),
+    )
+    .await?;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Submitting;
+    monitor.last_error = None;
+    let monitor = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let submitted = match github
+        .submit_pr_review(
+            std::path::Path::new(&workspace.worktree_path),
+            pr_number,
+            event,
+            &action.review_body,
+        )
+        .await
+    {
+        Ok(submitted) => submitted,
+        Err(error) => {
+            let mut failed_monitor = monitor_for_submission_failure(monitor, error.to_string());
+            failed_monitor.last_seen_head_sha = Some(action.head_sha.clone());
+            let _ = state
+                .app_state
+                .agent_conversation_workspace_repo
+                .upsert_pr_review_monitor(failed_monitor)
+                .await;
+            let _ = state
+                .app_state
+                .agent_conversation_workspace_repo
+                .update_pr_review_action_status(
+                    &action.id,
+                    AgentWorkspacePrReviewActionStatus::Failed,
+                    None,
+                )
+                .await;
+            return Err(json_error(
+                StatusCode::BAD_GATEWAY,
+                "Failed to submit GitHub PR review",
+                Some(error.to_string()),
+            ));
+        }
+    };
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .update_pr_review_action_status(
+            &action.id,
+            AgentWorkspacePrReviewActionStatus::Submitted,
+            Some(&submitted.id),
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let mut monitor = load_or_create_pr_review_monitor(
+        state.app_state.as_ref(),
+        &workspace,
+        pr_number,
+        Some(action.head_sha.clone()),
+    )
+    .await?;
+    monitor.first_review_completed = true;
+    monitor.last_seen_head_sha = Some(action.head_sha.clone());
+    monitor.last_reviewed_head_sha = Some(action.head_sha.clone());
+    monitor.last_review_outcome = Some(action_kind.to_string());
+    monitor.last_submitted_review_id = Some(submitted.id.clone());
+    monitor.last_error = None;
+    if action_kind == AgentWorkspacePrReviewActionKind::RequestChanges {
+        monitor.monitor_enabled = true;
+        monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+    } else {
+        monitor.status = if monitor.monitor_enabled {
+            AgentWorkspacePrReviewMonitorStatus::Watching
+        } else {
+            AgentWorkspacePrReviewMonitorStatus::Terminal
+        };
+    }
+    let monitor = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let action = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_pr_review_action(&action.id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "PR review action not found", None))?;
+
+    Ok(Json(SubmitAgentWorkspacePrReviewActionResponse {
+        success: true,
+        monitor: AgentWorkspacePrReviewMonitorResponse::from(monitor),
+        action: AgentWorkspacePrReviewActionResponse::from(action),
+        submitted_review_id: submitted.id,
+        submitted_review_url: submitted.url,
+    }))
+}
+
+/// POST /api/agent-workspaces/{conversation_id}/pr-review-actions/{action_id}/skip
+pub async fn skip_agent_workspace_pr_review_action(
+    State(state): State<HttpServerState>,
+    Path((conversation_id, action_id)): Path<(String, String)>,
+    Json(req): Json<SkipAgentWorkspacePrReviewActionRequest>,
+) -> Result<Json<SkipAgentWorkspacePrReviewActionResponse>, JsonError> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let action = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_pr_review_action(&action_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "PR review action not found", None))?;
+    if action.conversation_id != conversation_id {
+        return Err(json_error(
+            StatusCode::NOT_FOUND,
+            "PR review action not found for this workspace",
+            None,
+        ));
+    }
+    if action.status != AgentWorkspacePrReviewActionStatus::Pending {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "PR review action is no longer pending",
+            None,
+        ));
+    }
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .update_pr_review_action_status(
+            &action.id,
+            AgentWorkspacePrReviewActionStatus::Skipped,
+            None,
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let mut monitor = load_or_create_pr_review_monitor(
+        state.app_state.as_ref(),
+        &workspace,
+        action.pr_number,
+        Some(action.head_sha.clone()),
+    )
+    .await?;
+    monitor.first_review_completed = true;
+    monitor.last_seen_head_sha = Some(action.head_sha.clone());
+    monitor.last_reviewed_head_sha = Some(action.head_sha.clone());
+    monitor.last_review_outcome = Some("skipped".to_string());
+    monitor.last_error = req.reason;
+    monitor.status = if monitor.monitor_enabled {
+        AgentWorkspacePrReviewMonitorStatus::Watching
+    } else {
+        AgentWorkspacePrReviewMonitorStatus::Terminal
+    };
+    let monitor = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let action = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_pr_review_action(&action.id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "PR review action not found", None))?;
+
+    Ok(Json(SkipAgentWorkspacePrReviewActionResponse {
+        success: true,
+        monitor: AgentWorkspacePrReviewMonitorResponse::from(monitor),
+        action: AgentWorkspacePrReviewActionResponse::from(action),
     }))
 }
 
@@ -665,6 +1295,16 @@ pub async fn complete_agent_workspace_pr_fix(
         }));
     }
 
+    if !workspace.auto_publish_enabled {
+        return complete_pr_fix_for_paused_auto_publish(
+            state.app_state.as_ref(),
+            &conversation_id,
+            &workspace,
+            summary,
+        )
+        .await;
+    }
+
     state
         .app_state
         .agent_conversation_workspace_repo
@@ -830,19 +1470,72 @@ async fn complete_pr_fix_for_terminal_pr(
     }))
 }
 
+async fn complete_pr_fix_for_paused_auto_publish(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    summary: &str,
+) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
+    let message = "PR fix completed, but Auto Publish is paused. Manual Commit & Publish is required to update the pull request.";
+    state
+        .agent_conversation_workspace_repo
+        .update_pr_auto_merge_state(
+            conversation_id,
+            workspace.pr_auto_merge_current,
+            Some("paused"),
+            Some(message),
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix_publish_skipped",
+            "skipped",
+            format!("{message} Fix summary: {summary}"),
+            Some("auto_publish_paused".to_string()),
+        ))
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let workspace_response = load_agent_workspace_response(state, conversation_id).await?;
+    let pr_number = workspace_response.publication_pr_number;
+    let pr_url = workspace_response.publication_pr_url.clone();
+    Ok(Json(CompleteAgentWorkspacePrFixResponse {
+        success: true,
+        status: "publish_paused".to_string(),
+        message: message.to_string(),
+        workspace: Some(workspace_response),
+        publish_status: Some("skipped".to_string()),
+        publish_error: None,
+        commit_sha: None,
+        pushed: None,
+        created_pr: None,
+        pr_number,
+        pr_url,
+    }))
+}
+
 async fn load_agent_workspace_response(
     state: &AppState,
     conversation_id: &ChatConversationId,
 ) -> Result<AgentConversationWorkspaceResponse, JsonError> {
-    let workspace = state
+    let workspace = load_agent_workspace_entity(state, conversation_id).await?;
+    agent_workspace_response_for_state(state, workspace)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))
+}
+
+async fn load_agent_workspace_entity(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Result<AgentConversationWorkspace, JsonError> {
+    state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(conversation_id)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
-        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Agent workspace not found", None))?;
-    agent_workspace_response_for_state(state, workspace)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Agent workspace not found", None))
 }
 
 async fn load_agent_workspace_publication_events(
@@ -862,6 +1555,158 @@ async fn load_agent_workspace_publication_events(
         })
 }
 
+async fn load_agent_workspace_pr_comment_evidence(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+) -> Result<Vec<AgentWorkspacePrCommentEvidenceResponse>, JsonError> {
+    let comments = state
+        .agent_conversation_workspace_repo
+        .list_pr_comment_evidence(conversation_id, pr_number, 20)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let comment_ids = comments
+        .iter()
+        .map(|comment| comment.comment_id.clone())
+        .collect::<Vec<_>>();
+    state
+        .agent_conversation_workspace_repo
+        .mark_pr_comments_included(conversation_id, pr_number, &comment_ids)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    Ok(comments
+        .into_iter()
+        .map(AgentWorkspacePrCommentEvidenceResponse::from_evidence)
+        .collect())
+}
+
+fn review_pr_number(workspace: &AgentConversationWorkspace) -> Option<i64> {
+    workspace
+        .source_pull_request
+        .as_ref()
+        .map(|pull_request| pull_request.number)
+        .or(workspace.publication_pr_number)
+}
+
+fn review_pr_url(workspace: &AgentConversationWorkspace) -> Option<String> {
+    workspace
+        .source_pull_request
+        .as_ref()
+        .and_then(|pull_request| pull_request.url.clone())
+        .or_else(|| workspace.publication_pr_url.clone())
+}
+
+fn review_pr_head_sha(workspace: &AgentConversationWorkspace) -> Option<String> {
+    workspace
+        .source_pull_request
+        .as_ref()
+        .and_then(|pull_request| pull_request.head_ref_oid.clone())
+}
+
+async fn fetch_review_pr_remote_context(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    pr_number: i64,
+) -> Result<(Option<PrHealth>, Option<PrReviewFeedback>), JsonError> {
+    let Some(github) = state.github_service.as_ref() else {
+        return Ok((None, None));
+    };
+    let working_dir = std::path::Path::new(&workspace.worktree_path);
+    let health = github.fetch_pr_health(working_dir, pr_number).await.ok();
+    if let Some(health) = health.as_ref() {
+        import_agent_workspace_pr_comment_evidence(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            &workspace.conversation_id,
+            pr_number,
+            health,
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    }
+    let review_feedback = github
+        .check_pr_review_feedback(working_dir, pr_number)
+        .await
+        .ok()
+        .flatten();
+    Ok((health, review_feedback))
+}
+
+async fn fetch_current_review_pr_head_sha(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    pr_number: i64,
+    github: &dyn GithubServiceTrait,
+) -> Result<Option<String>, JsonError> {
+    let working_dir = std::path::Path::new(&workspace.worktree_path);
+    let remote_head = github
+        .fetch_pr_health(working_dir, pr_number)
+        .await
+        .ok()
+        .and_then(|health| health.sync_state.head_ref_oid);
+    let head_sha = remote_head.or_else(|| review_pr_head_sha(workspace));
+    if head_sha.is_none() {
+        tracing::warn!(
+            conversation_id = workspace.conversation_id.as_str(),
+            pr_number,
+            "Review PR submit could not resolve current head SHA"
+        );
+    }
+    let _ = state;
+    Ok(head_sha)
+}
+
+async fn load_or_create_pr_review_monitor(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    pr_number: i64,
+    head_sha: Option<String>,
+) -> Result<AgentWorkspacePrReviewMonitor, JsonError> {
+    let existing = state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&workspace.conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    Ok(existing.unwrap_or_else(|| {
+        AgentWorkspacePrReviewMonitor::new(
+            workspace.conversation_id.clone(),
+            workspace.project_id.clone(),
+            pr_number,
+            head_sha,
+        )
+    }))
+}
+
+fn pr_review_submission_event(
+    action_kind: AgentWorkspacePrReviewActionKind,
+) -> PrReviewSubmissionEvent {
+    match action_kind {
+        AgentWorkspacePrReviewActionKind::RequestChanges => PrReviewSubmissionEvent::RequestChanges,
+        AgentWorkspacePrReviewActionKind::Approve => PrReviewSubmissionEvent::Approve,
+        AgentWorkspacePrReviewActionKind::Comment => PrReviewSubmissionEvent::Comment,
+    }
+}
+
+fn monitor_for_submission_failure(
+    mut monitor: AgentWorkspacePrReviewMonitor,
+    error: String,
+) -> AgentWorkspacePrReviewMonitor {
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Blocked;
+    monitor.last_error = Some(error);
+    monitor
+}
+
+fn non_empty_string(value: String, field: &str) -> Result<String, JsonError> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            format!("{field} must not be empty"),
+            None,
+        ));
+    }
+    Ok(value)
+}
+
 fn parse_update_base_kind(
     value: Option<&str>,
 ) -> Result<Option<IdeationAnalysisBaseRefKind>, String> {
@@ -877,6 +1722,46 @@ fn is_publish_in_progress(push_status: Option<&str>) -> bool {
         push_status,
         Some("checking" | "committing" | "refreshing" | "describing" | "pushing")
     )
+}
+
+fn update_only_repair_pr_supervision_state(
+    workspace: &AgentConversationWorkspace,
+) -> Option<(&'static str, &'static str)> {
+    if workspace.publication_pr_number.is_none()
+        || matches!(
+            workspace.publication_pr_status.as_deref(),
+            Some("merged" | "closed")
+        )
+    {
+        return None;
+    }
+
+    if !workspace.auto_publish_enabled {
+        return Some((
+            "paused",
+            "Agent workspace repair verified; Auto Publish is paused.",
+        ));
+    }
+
+    if workspace.pr_autofix_enabled
+        || workspace.pr_auto_merge_desired
+        || workspace.pr_auto_merge_current.is_some()
+    {
+        return Some((
+            "monitoring",
+            "Agent workspace repair verified; RalphX is monitoring the pull request.",
+        ));
+    }
+
+    None
+}
+
+fn should_auto_publish_after_update_only_repair(workspace: &AgentConversationWorkspace) -> bool {
+    if workspace.publication_pr_number.is_some() {
+        workspace.auto_publish_enabled
+    } else {
+        workspace.auto_publish_initial_pr_enabled
+    }
 }
 
 fn publish_in_progress_response(
@@ -902,8 +1787,24 @@ fn publish_in_progress_response(
     }
 }
 
+fn repair_queued_from_publication_events(
+    events: &[AgentConversationWorkspacePublicationEventResponse],
+) -> bool {
+    match events.iter().rev().find(|event| {
+        matches!(
+            event.step.as_str(),
+            "repair_requested" | "repair_deferred" | "repair_sent"
+        )
+    }) {
+        Some(event) if event.step == "repair_sent" => event.status == "succeeded",
+        Some(event) => matches!(event.status.as_str(), "started" | "succeeded"),
+        None => false,
+    }
+}
+
 fn needs_agent_repair_response(
     workspace: AgentConversationWorkspaceResponse,
+    repair_queued: bool,
 ) -> AgentWorkspacePublishActionResponse {
     let pr_number = workspace.publication_pr_number;
     let pr_url = workspace.publication_pr_url.clone();
@@ -911,7 +1812,7 @@ fn needs_agent_repair_response(
         success: true,
         status: "needs_agent_repair".to_string(),
         message: "Workspace needs agent repair before publishing can continue".to_string(),
-        repair_queued: true,
+        repair_queued,
         workspace: Some(workspace),
         freshness: None,
         updated: None,
@@ -925,13 +1826,23 @@ fn needs_agent_repair_response(
     }
 }
 
-fn publish_action_response_for_existing_workspace_state(
+async fn publish_action_response_for_existing_workspace_state(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
     workspace: AgentConversationWorkspaceResponse,
-) -> Option<AgentWorkspacePublishActionResponse> {
+) -> Result<Option<AgentWorkspacePublishActionResponse>, JsonError> {
     match workspace.publication_push_status.as_deref() {
-        status if is_publish_in_progress(status) => Some(publish_in_progress_response(workspace)),
-        Some("needs_agent") => Some(needs_agent_repair_response(workspace)),
-        _ => None,
+        status if is_publish_in_progress(status) => {
+            Ok(Some(publish_in_progress_response(workspace)))
+        }
+        Some("needs_agent") => {
+            let events = load_agent_workspace_publication_events(state, conversation_id).await?;
+            Ok(Some(needs_agent_repair_response(
+                workspace,
+                repair_queued_from_publication_events(&events),
+            )))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -974,6 +1885,8 @@ async fn action_response_for_needs_repair(
     if workspace.publication_push_status.as_deref() != Some("needs_agent") {
         return Err(json_error(StatusCode::CONFLICT, error, None));
     }
+    let events = load_agent_workspace_publication_events(state, conversation_id).await?;
+    let repair_queued = repair_queued_from_publication_events(&events);
 
     let freshness = get_agent_conversation_workspace_freshness_for_app_state(
         conversation_id,
@@ -986,7 +1899,7 @@ async fn action_response_for_needs_repair(
         success: true,
         status: "needs_agent_repair".to_string(),
         message: error,
-        repair_queued: true,
+        repair_queued,
         workspace: Some(workspace),
         freshness,
         updated: None,
@@ -1306,9 +2219,64 @@ pub async fn complete_agent_workspace_repair(
                 pr_url,
             )
         }
-    } else if post_repair_action == AgentWorkspacePostRepairAction::UpdateOnly {
+    } else if post_repair_action == AgentWorkspacePostRepairAction::UpdateOnly
+        && !should_auto_publish_after_update_only_repair(&workspace)
+    {
+        if let Some((status, summary)) = update_only_repair_pr_supervision_state(&workspace) {
+            state
+                .app_state
+                .agent_conversation_workspace_repo
+                .update_pr_auto_merge_state(
+                    &conversation_id,
+                    workspace.pr_auto_merge_current,
+                    Some(status),
+                    Some(summary),
+                )
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?;
+        }
         (
             "Agent workspace repair verified".to_string(),
+            "refreshed".to_string(),
+            freshness.target_base_commit.clone(),
+            Some("skipped".to_string()),
+            None,
+            workspace.publication_pr_number,
+            workspace.publication_pr_url.clone(),
+        )
+    } else if !workspace.auto_publish_enabled {
+        let message = "Agent workspace repair verified; Auto Publish is paused. Manual Commit & Publish is required to update the pull request.";
+        state
+            .app_state
+            .agent_conversation_workspace_repo
+            .update_pr_auto_merge_state(
+                &conversation_id,
+                workspace.pr_auto_merge_current,
+                Some("paused"),
+                Some(message),
+            )
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+        state
+            .app_state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id,
+                "repair_publish_skipped",
+                "skipped",
+                message,
+                Some("auto_publish_paused".to_string()),
+            ))
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+        (
+            message.to_string(),
             "refreshed".to_string(),
             freshness.target_base_commit.clone(),
             Some("skipped".to_string()),
@@ -1546,6 +2514,28 @@ pub struct FileContentRangeQuery {
     pub to: u32,
 }
 
+fn parse_diff_ref_kind(
+    ref_kind: &str,
+    sha: Option<String>,
+) -> Result<crate::application::DiffRefKind, String> {
+    match ref_kind {
+        "head" => Ok(crate::application::DiffRefKind::Head),
+        "staged" => Ok(crate::application::DiffRefKind::Staged),
+        "unstaged" => Ok(crate::application::DiffRefKind::Unstaged),
+        "commit" => {
+            let sha = sha.ok_or_else(|| {
+                "ref_kind 'commit' requires 'sha' query parameter".to_string()
+            })?;
+            Ok(crate::application::DiffRefKind::Commit { sha })
+        }
+        "cumulative_base" => Ok(crate::application::DiffRefKind::CumulativeBase),
+        "cumulative_head" => Ok(crate::application::DiffRefKind::CumulativeHead),
+        other => Err(format!(
+            "Invalid ref_kind '{other}': expected head|staged|unstaged|commit|cumulative_base|cumulative_head"
+        )),
+    }
+}
+
 impl FileContentRangeQuery {
     fn into_service_params(
         self,
@@ -1564,25 +2554,32 @@ impl FileContentRangeQuery {
             "new" => crate::application::DiffSide::New,
             other => return Err(format!("Invalid side '{other}': expected 'old' or 'new'")),
         };
-        let ref_kind = match self.ref_kind.as_str() {
-            "head" => crate::application::DiffRefKind::Head,
-            "staged" => crate::application::DiffRefKind::Staged,
-            "unstaged" => crate::application::DiffRefKind::Unstaged,
-            "commit" => {
-                let sha = self.sha.ok_or_else(|| {
-                    "ref_kind 'commit' requires 'sha' query parameter".to_string()
-                })?;
-                crate::application::DiffRefKind::Commit { sha }
-            }
-            "cumulative_base" => crate::application::DiffRefKind::CumulativeBase,
-            "cumulative_head" => crate::application::DiffRefKind::CumulativeHead,
-            other => {
-                return Err(format!(
-                    "Invalid ref_kind '{other}': expected head|staged|unstaged|commit|cumulative_base|cumulative_head"
-                ))
-            }
-        };
+        let ref_kind = parse_diff_ref_kind(&self.ref_kind, self.sha)?;
         Ok((side, self.path, ref_kind, self.from, self.to))
+    }
+}
+
+/// Query parameters for the file diff page endpoint.
+#[derive(Debug, serde::Deserialize)]
+pub struct FileDiffPageQuery {
+    /// Relative file path within the workspace
+    pub path: String,
+    /// "head" | "staged" | "unstaged" | "commit" | "cumulative_head"
+    pub ref_kind: String,
+    /// Commit SHA — required when ref_kind == "commit"
+    pub sha: Option<String>,
+    /// Flattened diff-row offset
+    pub offset: usize,
+    /// Maximum number of rows to fetch
+    pub limit: usize,
+}
+
+impl FileDiffPageQuery {
+    fn into_service_params(
+        self,
+    ) -> Result<(String, crate::application::DiffRefKind, usize, usize), String> {
+        let ref_kind = parse_diff_ref_kind(&self.ref_kind, self.sha)?;
+        Ok((self.path, ref_kind, self.offset, self.limit))
     }
 }
 
@@ -1608,6 +2605,44 @@ pub async fn get_agent_workspace_file_content_range(
         ref_kind,
         from,
         to,
+    )
+    .await
+    .map(Json)
+    .map_err(|e| {
+        let status = if e.to_string().to_lowercase().contains("validation")
+            || e.to_string().to_lowercase().contains("unsafe")
+            || e.to_string().to_lowercase().contains("relative")
+            || e.to_string().to_lowercase().contains("too large")
+        {
+            axum::http::StatusCode::BAD_REQUEST
+        } else {
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        };
+        json_error(status, e.to_string(), None)
+    })
+}
+
+/// GET /api/agent-workspaces/{conversation_id}/file-diff-page
+///
+/// Fetch a bounded page of flattened diff rows for one workspace file.
+///
+/// Query params: `path`, `ref_kind`, `sha` (required for commit), `offset`, `limit`.
+pub async fn get_agent_workspace_file_diff_page(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<FileDiffPageQuery>,
+) -> Result<Json<crate::application::FileDiffPage>, JsonError> {
+    let (file_path, ref_kind, offset, limit) = params
+        .into_service_params()
+        .map_err(|msg| json_error(axum::http::StatusCode::BAD_REQUEST, msg, None))?;
+    let conversation_id = crate::domain::entities::ChatConversationId::from_string(conversation_id);
+    crate::commands::diff_commands::get_agent_conversation_workspace_file_diff_page_for_state(
+        state.app_state.as_ref(),
+        &conversation_id,
+        file_path,
+        ref_kind,
+        offset,
+        limit,
     )
     .await
     .map(Json)
@@ -1822,7 +2857,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn needs_repair_action_response_preserves_error_payload() {
+    async fn needs_repair_action_response_preserves_error_payload_without_implying_queue() {
         let app_state = Arc::new(AppState::new_test());
         let conversation_id = ChatConversationId::new();
         let mut workspace = test_workspace(conversation_id.clone());
@@ -1846,10 +2881,46 @@ mod tests {
         assert!(response.success);
         assert_eq!(response.status, "needs_agent_repair");
         assert_eq!(response.message, "merge conflict");
-        assert!(response.repair_queued);
+        assert!(!response.repair_queued);
         assert!(response.freshness.is_none());
         assert_eq!(response.pr_number, None);
         assert_eq!(response.pr_url, None);
+    }
+
+    #[tokio::test]
+    async fn needs_repair_action_response_reports_queue_from_repair_events() {
+        let app_state = Arc::new(AppState::new_test());
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        app_state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "repair_requested",
+                "started",
+                "Workspace agent repair requested before the base update can complete",
+                Some("agent_fixable:update_only".to_string()),
+            ))
+            .await
+            .unwrap();
+
+        let Json(response) = action_response_for_needs_repair(
+            app_state.as_ref(),
+            &conversation_id,
+            "merge conflict".to_string(),
+        )
+        .await
+        .expect("needs-agent response should be returned");
+
+        assert!(response.success);
+        assert_eq!(response.status, "needs_agent_repair");
+        assert!(response.repair_queued);
     }
 
     #[tokio::test]
@@ -1935,7 +3006,7 @@ mod tests {
 
         assert!(response.success);
         assert_eq!(response.status, "needs_agent_repair");
-        assert!(response.repair_queued);
+        assert!(!response.repair_queued);
     }
 
     #[tokio::test]
@@ -1984,6 +3055,56 @@ mod tests {
         assert_eq!(updated.publication_pr_status.as_deref(), Some("merged"));
         assert!(updated.pr_supervision_status.is_none());
         assert_eq!(github.state().check_pr_status_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_skips_publish_when_auto_publish_is_paused() {
+        let app_state = Arc::new(AppState::new_test());
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.publication_pr_number = Some(267);
+        workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/267".to_string());
+        workspace.publication_pr_status = Some("open".to_string());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        workspace.auto_publish_enabled = false;
+        workspace.pr_supervision_status = Some("fixing".to_string());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        let state = test_http_state(Arc::clone(&app_state));
+
+        let Json(response) = complete_agent_workspace_pr_fix(
+            State(state),
+            Path(conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Fixed requested review change".to_string(),
+                blocker: None,
+            }),
+        )
+        .await
+        .expect("paused Auto Publish should skip publish");
+
+        assert_eq!(response.status, "publish_paused");
+        assert_eq!(response.publish_status.as_deref(), Some("skipped"));
+        assert!(response.commit_sha.is_none());
+        let updated = app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.pr_supervision_status.as_deref(), Some("paused"));
+        let events = app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .unwrap();
+        assert!(events.iter().any(|event| {
+            event.step == "pr_autofix_publish_skipped"
+                && event.classification.as_deref() == Some("auto_publish_paused")
+        }));
     }
 
     #[tokio::test]
@@ -2262,6 +3383,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await

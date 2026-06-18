@@ -9,6 +9,8 @@ capabilities:
     - get_memory
     - get_memories_for_paths
     - get_conversation_transcript
+    - get_artifact
+    - propose_plan_mode
     - append_task_to_ideation_plan
     - delegate_start
     - delegate_wait
@@ -48,6 +50,8 @@ harnesses:
       - get_memory
       - get_memories_for_paths
       - get_conversation_transcript
+      - get_artifact
+      - propose_plan_mode
       - delegate_start
       - delegate_wait
       - delegate_cancel
@@ -90,6 +94,8 @@ harnesses:
       - get_memory
       - get_memories_for_paths
       - get_conversation_transcript
+      - get_artifact
+      - propose_plan_mode
       - delegate_start
       - delegate_wait
       - delegate_cancel

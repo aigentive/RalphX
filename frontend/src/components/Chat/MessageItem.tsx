@@ -18,6 +18,8 @@ import { TextBubble } from "./TextBubble";
 import { formatTimestamp, formatTimestampTitle } from "./MessageItem.utils";
 import { isTaskToolCall } from "./DiffToolCallView.utils";
 import { MessageAttachments, type MessageAttachment } from "./MessageAttachments";
+import { MessageReferences } from "./MessageReferences";
+import type { MessageComposerReferences } from "./MessageReferences.parse";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -52,11 +54,18 @@ export interface ContentBlockItem {
   resultPreviewOriginalBytes?: number;
   resultPreviewLineCount?: number;
   resultPreviewOmittedLines?: number;
+  resultPreviewPaths?: string[];
+  argumentsPreviewTruncated?: boolean;
+  argumentsPreviewOriginalBytes?: number;
+  argumentsPreviewLineCount?: number;
+  argumentsPreviewOmittedLines?: number;
+  diffPreview?: ToolCall["diffPreview"];
   detailRef?: ToolCall["detailRef"];
   parentToolUseId?: string;
   /** Diff context for Edit/Write tool calls (old file content for computing diffs) */
   diffContext?: {
     oldContent?: string;
+    oldFileExists?: boolean;
     filePath: string;
   };
 }
@@ -74,6 +83,8 @@ export interface MessageItemProps {
   contentBlocks?: ContentBlockItem[] | null;
   /** File attachments for user messages */
   attachments?: MessageAttachment[];
+  /** Structured project and integration references for user messages */
+  composerReferences?: MessageComposerReferences;
   /** Teammate name for team mode messages */
   teammateName?: string | null | undefined;
   /** Teammate color for left-border indicator */
@@ -92,6 +103,8 @@ export interface MessageItemProps {
   cacheReadTokens?: number | null | undefined;
   estimatedUsd?: number | null | undefined;
   showAssistantIcon?: boolean | undefined;
+  reserveAssistantIconSpace?: boolean | undefined;
+  showProviderMeta?: boolean | undefined;
   hideMeta?: boolean | undefined;
 }
 
@@ -175,6 +188,7 @@ export const MessageItem = React.memo(function MessageItem({
   toolCalls,
   contentBlocks,
   attachments,
+  composerReferences,
   teammateName,
   teammateColor,
   providerHarness,
@@ -191,6 +205,8 @@ export const MessageItem = React.memo(function MessageItem({
   cacheReadTokens,
   estimatedUsd,
   showAssistantIcon = true,
+  reserveAssistantIconSpace = showAssistantIcon,
+  showProviderMeta = true,
   hideMeta = false,
 }: MessageItemProps) {
   const isUser = role === "user";
@@ -218,10 +234,13 @@ export const MessageItem = React.memo(function MessageItem({
     cacheReadTokens,
     estimatedUsd,
   });
-  const showProviderMeta =
+  const shouldShowProviderMeta =
+    showProviderMeta &&
     !isUser &&
     !teammateName &&
     (providerHarnessLabel !== null || modelEffortLabel !== null);
+  const shouldReserveAssistantIconSpace =
+    !isUser && !teammateName && reserveAssistantIconSpace;
 
   // Use pre-parsed data directly (parsing now happens at API layer)
   const { contentBlocks: parsedContentBlocks, toolCalls: parsedToolCalls } = useMemo(
@@ -235,6 +254,13 @@ export const MessageItem = React.memo(function MessageItem({
     () => parsedToolCalls.filter((tc) => !shouldHideCompletedProjectOrchestrationToolCall(tc)),
     [parsedToolCalls],
   );
+  const parsedToolCallsById = useMemo(() => {
+    const byId = new Map<string, ToolCall>();
+    for (const toolCall of parsedToolCalls) {
+      byId.set(toolCall.id, toolCall);
+    }
+    return byId;
+  }, [parsedToolCalls]);
   const hasContentBlocks = parsedContentBlocks.length > 0;
   const copyableText = useMemo(() => {
     if (hasCustomBody) {
@@ -259,9 +285,10 @@ export const MessageItem = React.memo(function MessageItem({
     if (blocks.length === 0) return new Set<string>();
     const ids = new Set<string>();
     for (const block of blocks) {
-      if (block.type === "tool_use" && block.name && isTaskToolCall(block.name) && block.result) {
+      const matchingToolCall = block.id ? parsedToolCallsById.get(block.id) : undefined;
+      const result = block.result ?? matchingToolCall?.result;
+      if (block.type === "tool_use" && block.name && isTaskToolCall(block.name) && result) {
         // Task result may be an array of content blocks containing child tool_use/tool_result
-        const result = block.result;
         if (Array.isArray(result)) {
           for (const child of result) {
             if (child && typeof child === "object") {
@@ -277,7 +304,7 @@ export const MessageItem = React.memo(function MessageItem({
       }
     }
     return ids;
-  }, [parsedContentBlocks]);
+  }, [parsedContentBlocks, parsedToolCallsById]);
 
   return (
     <div
@@ -290,8 +317,16 @@ export const MessageItem = React.memo(function MessageItem({
       style={teammateColor ? { borderLeft: `2px solid ${teammateColor}`, paddingLeft: "8px" } : undefined}
     >
       {/* Agent indicator for assistant messages */}
-      {!isUser && !teammateName && showAssistantIcon && (
-        <Bot className={cn("w-3.5 h-3.5 mr-2 shrink-0 text-text-primary/40", showProviderMeta ? "mt-0.5" : "mt-2")} />
+      {shouldReserveAssistantIconSpace && (
+        showAssistantIcon ? (
+          <Bot className={cn("w-3.5 h-3.5 mr-2 shrink-0 text-text-primary/40", shouldShowProviderMeta ? "mt-0.5" : "mt-2")} />
+        ) : (
+          <span
+            aria-hidden="true"
+            className={cn("w-3.5 h-3.5 mr-2 shrink-0", shouldShowProviderMeta ? "mt-0.5" : "mt-2")}
+            data-testid="message-assistant-icon-spacer"
+          />
+        )
       )}
       {/* Teammate name badge */}
       {!isUser && teammateName && (
@@ -306,7 +341,7 @@ export const MessageItem = React.memo(function MessageItem({
       )}
 
       <div className="flex flex-col gap-3 min-w-0 w-full">
-        {showProviderMeta && (
+        {shouldShowProviderMeta && (
           <div
             className="flex items-center gap-2 min-w-0"
             data-testid="message-provider-meta"
@@ -334,7 +369,15 @@ export const MessageItem = React.memo(function MessageItem({
 
         {/* Render attachments for user messages */}
         {isUser && attachments && attachments.length > 0 && (
-          <MessageAttachments attachments={attachments} />
+          <MessageAttachments attachments={attachments} align="end" />
+        )}
+
+        {isUser && composerReferences && (
+          <MessageReferences
+            projectReferences={composerReferences.projectReferences}
+            integrationReferences={composerReferences.integrationReferences}
+            artifactReferences={composerReferences.artifactReferences}
+          />
         )}
 
         {hasCustomBody ? (
@@ -356,29 +399,60 @@ export const MessageItem = React.memo(function MessageItem({
               if (block.id && childToolCallIds.has(block.id)) {
                 return null;
               }
+              const matchingToolCall = block.id ? parsedToolCallsById.get(block.id) : undefined;
               const toolCall: ToolCall = {
-                id: block.id || `tool-${index}`,
-                name: block.name,
-                arguments: block.arguments,
-                result: block.result,
+                id: block.id || matchingToolCall?.id || `tool-${index}`,
+                name: block.name || matchingToolCall?.name || "unknown",
+                arguments: block.arguments ?? matchingToolCall?.arguments ?? {},
+                result: block.result ?? matchingToolCall?.result,
               };
-              if (block.resultPreviewTruncated) {
-                toolCall.resultPreviewTruncated = block.resultPreviewTruncated;
+              const resultPreviewTruncated = block.resultPreviewTruncated ?? matchingToolCall?.resultPreviewTruncated;
+              if (resultPreviewTruncated) {
+                toolCall.resultPreviewTruncated = resultPreviewTruncated;
               }
-              if (block.resultPreviewOriginalBytes != null) {
-                toolCall.resultPreviewOriginalBytes = block.resultPreviewOriginalBytes;
+              const resultPreviewOriginalBytes = block.resultPreviewOriginalBytes ?? matchingToolCall?.resultPreviewOriginalBytes;
+              if (resultPreviewOriginalBytes != null) {
+                toolCall.resultPreviewOriginalBytes = resultPreviewOriginalBytes;
               }
-              if (block.resultPreviewLineCount != null) {
-                toolCall.resultPreviewLineCount = block.resultPreviewLineCount;
+              const resultPreviewLineCount = block.resultPreviewLineCount ?? matchingToolCall?.resultPreviewLineCount;
+              if (resultPreviewLineCount != null) {
+                toolCall.resultPreviewLineCount = resultPreviewLineCount;
               }
-              if (block.resultPreviewOmittedLines != null) {
-                toolCall.resultPreviewOmittedLines = block.resultPreviewOmittedLines;
+              const resultPreviewOmittedLines = block.resultPreviewOmittedLines ?? matchingToolCall?.resultPreviewOmittedLines;
+              if (resultPreviewOmittedLines != null) {
+                toolCall.resultPreviewOmittedLines = resultPreviewOmittedLines;
               }
-              if (block.detailRef) {
-                toolCall.detailRef = block.detailRef;
+              const resultPreviewPaths = block.resultPreviewPaths ?? matchingToolCall?.resultPreviewPaths;
+              if (resultPreviewPaths) {
+                toolCall.resultPreviewPaths = resultPreviewPaths;
               }
-              if (block.diffContext) {
-                toolCall.diffContext = block.diffContext;
+              const argumentsPreviewTruncated = block.argumentsPreviewTruncated ?? matchingToolCall?.argumentsPreviewTruncated;
+              if (argumentsPreviewTruncated) {
+                toolCall.argumentsPreviewTruncated = argumentsPreviewTruncated;
+              }
+              const argumentsPreviewOriginalBytes = block.argumentsPreviewOriginalBytes ?? matchingToolCall?.argumentsPreviewOriginalBytes;
+              if (argumentsPreviewOriginalBytes != null) {
+                toolCall.argumentsPreviewOriginalBytes = argumentsPreviewOriginalBytes;
+              }
+              const argumentsPreviewLineCount = block.argumentsPreviewLineCount ?? matchingToolCall?.argumentsPreviewLineCount;
+              if (argumentsPreviewLineCount != null) {
+                toolCall.argumentsPreviewLineCount = argumentsPreviewLineCount;
+              }
+              const argumentsPreviewOmittedLines = block.argumentsPreviewOmittedLines ?? matchingToolCall?.argumentsPreviewOmittedLines;
+              if (argumentsPreviewOmittedLines != null) {
+                toolCall.argumentsPreviewOmittedLines = argumentsPreviewOmittedLines;
+              }
+              const diffPreview = block.diffPreview ?? matchingToolCall?.diffPreview;
+              if (diffPreview) {
+                toolCall.diffPreview = diffPreview;
+              }
+              const detailRef = block.detailRef ?? matchingToolCall?.detailRef;
+              if (detailRef) {
+                toolCall.detailRef = detailRef;
+              }
+              const diffContext = block.diffContext ?? matchingToolCall?.diffContext;
+              if (diffContext) {
+                toolCall.diffContext = diffContext;
               }
               if (shouldHideCompletedProjectOrchestrationToolCall(toolCall)) {
                 return null;
@@ -426,6 +500,7 @@ export const MessageItem = React.memo(function MessageItem({
     && prev.toolCalls === next.toolCalls
     && prev.contentBlocks === next.contentBlocks
     && prev.attachments === next.attachments
+    && prev.composerReferences === next.composerReferences
     && prev.teammateName === next.teammateName
     && prev.teammateColor === next.teammateColor
     && prev.providerHarness === next.providerHarness
@@ -442,5 +517,7 @@ export const MessageItem = React.memo(function MessageItem({
     && prev.cacheReadTokens === next.cacheReadTokens
     && prev.estimatedUsd === next.estimatedUsd
     && prev.showAssistantIcon === next.showAssistantIcon
+    && prev.reserveAssistantIconSpace === next.reserveAssistantIconSpace
+    && prev.showProviderMeta === next.showProviderMeta
     && prev.hideMeta === next.hideMeta;
 });

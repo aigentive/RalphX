@@ -28,6 +28,8 @@ function fireEvent<T>(event: string, payload: T) {
 }
 
 const mockInvalidateQueries = vi.fn();
+const mockUpsertFinalizedMessageIntoConversationCache = vi.fn();
+const mockUpsertRenderReadyMessageIntoConversationCache = vi.fn();
 let mockQueryData: { messages: Array<{ id: string }> } | undefined = undefined;
 const mockGetQueryData = vi.fn(() => mockQueryData);
 const cacheSubscribers: Array<(event: { type: string; query: { queryKey: unknown[] } }) => void> = [];
@@ -82,6 +84,10 @@ vi.mock("@/hooks/useChat", () => ({
     mockInvalidateQueries({ queryKey: ["chat", "conversations", conversationId] });
     mockInvalidateQueries({ queryKey: ["chat", "conversations", conversationId, "history"] });
   },
+  upsertFinalizedMessageIntoConversationCache: (...args: unknown[]) =>
+    mockUpsertFinalizedMessageIntoConversationCache(...args),
+  upsertRenderReadyMessageIntoConversationCache: (...args: unknown[]) =>
+    mockUpsertRenderReadyMessageIntoConversationCache(...args),
 }));
 
 // Dynamic mock for chat-context-registry — tests override via mockContextConfig
@@ -113,6 +119,8 @@ interface DefaultProps {
   activeConversationId: string | null;
   contextId: string | null;
   contextType: ContextType | null;
+  streamingToolCalls?: ToolCall[];
+  streamingContentBlocks?: StreamingContentBlock[];
   setStreamingToolCalls: ReturnType<typeof vi.fn>;
   setStreamingContentBlocks: ReturnType<typeof vi.fn>;
   setStreamingTasks: ReturnType<typeof vi.fn>;
@@ -171,6 +179,10 @@ describe("useChatEvents", () => {
   beforeEach(() => {
     subscriptions.clear();
     mockInvalidateQueries.mockClear();
+    mockUpsertFinalizedMessageIntoConversationCache.mockReset();
+    mockUpsertFinalizedMessageIntoConversationCache.mockReturnValue(false);
+    mockUpsertRenderReadyMessageIntoConversationCache.mockReset();
+    mockUpsertRenderReadyMessageIntoConversationCache.mockReturnValue(false);
     mockCancelQueries.mockClear();
     mockGetQueryData.mockClear();
     mockQueryData = undefined;
@@ -323,6 +335,7 @@ describe("useChatEvents", () => {
           result_preview_line_count: 120,
           result_preview_omitted_lines: 110,
           result_preview_original_bytes: 48_000,
+          result_preview_paths: ["$.task.details"],
           detail_ref: {
             conversation_id: CONV_ID,
             message_id: "msg-live",
@@ -343,10 +356,88 @@ describe("useChatEvents", () => {
       expect(result[0]!.resultPreviewLineCount).toBe(120);
       expect(result[0]!.resultPreviewOmittedLines).toBe(110);
       expect(result[0]!.resultPreviewOriginalBytes).toBe(48_000);
+      expect(result[0]!.resultPreviewPaths).toEqual(["$.task.details"]);
       expect(result[0]!.detailRef).toEqual({
         conversationId: CONV_ID,
         messageId: "msg-live",
         toolCallId: "toolu_preview",
+      });
+    });
+
+    it("should preserve backend streaming argument previews for live edit tool calls", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "Edit",
+          tool_id: "toolu_edit_preview",
+          arguments: { file_path: "src/app.ts" },
+          arguments_preview_truncated: true,
+          arguments_preview_line_count: 24,
+          arguments_preview_omitted_lines: 18,
+          arguments_preview_original_bytes: 2_400,
+          diff_context: {
+            file_path: "src/app.ts",
+            old_file_exists: false,
+          },
+          diff_preview: {
+            file_path: "src/app.ts",
+            language: "typescript",
+            old_total_lines: 12,
+            new_total_lines: 12,
+            is_binary: false,
+            hunks: [
+              {
+                old_start: 4,
+                old_lines: 2,
+                new_start: 4,
+                new_lines: 2,
+                header: "@@ -4,2 +4,2 @@",
+                lines: [
+                  {
+                    kind: "deletion",
+                    content: "const label = 'old';",
+                    old_line_num: 4,
+                    new_line_num: null,
+                  },
+                  {
+                    kind: "addition",
+                    content: "const label = 'new';",
+                    old_line_num: null,
+                    new_line_num: 4,
+                  },
+                ],
+              },
+            ],
+          },
+          detail_ref: {
+            conversation_id: CONV_ID,
+            message_id: "msg-live-edit",
+            tool_call_id: "toolu_edit_preview",
+          },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      const result = executeUpdater<ToolCall[]>(props.setStreamingToolCalls, []);
+
+      expect(result[0]!.arguments).toEqual({ file_path: "src/app.ts" });
+      expect(result[0]!.argumentsPreviewTruncated).toBe(true);
+      expect(result[0]!.argumentsPreviewLineCount).toBe(24);
+      expect(result[0]!.argumentsPreviewOmittedLines).toBe(18);
+      expect(result[0]!.argumentsPreviewOriginalBytes).toBe(2_400);
+      expect(result[0]!.diffPreview?.filePath).toBe("src/app.ts");
+      expect(result[0]!.diffPreview?.hunks[0]?.lines).toHaveLength(2);
+      expect(result[0]!.diffContext).toEqual({
+        filePath: "src/app.ts",
+        oldFileExists: false,
+      });
+      expect(result[0]!.detailRef).toEqual({
+        conversationId: CONV_ID,
+        messageId: "msg-live-edit",
+        toolCallId: "toolu_edit_preview",
       });
     });
 
@@ -705,6 +796,75 @@ describe("useChatEvents", () => {
         id: "toolu_child_001",
         name: "Bash",
       });
+    });
+
+    it("should preserve backend argument previews when updating child tool calls", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      const parentId = "toolu_parent";
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "Edit",
+          tool_id: "toolu_child_edit",
+          arguments: { file_path: "src/child.ts" },
+          parent_tool_use_id: parentId,
+          arguments_preview_truncated: true,
+          arguments_preview_line_count: 18,
+          arguments_preview_omitted_lines: 12,
+          arguments_preview_original_bytes: 1800,
+          diff_preview: {
+            file_path: "src/child.ts",
+            language: "typescript",
+            old_total_lines: 9,
+            new_total_lines: 9,
+            is_binary: false,
+            hunks: [
+              {
+                old_start: 2,
+                old_lines: 1,
+                new_start: 2,
+                new_lines: 1,
+                header: "@@ -2,1 +2,1 @@",
+                lines: [
+                  {
+                    kind: "addition",
+                    content: "const child = true;",
+                    old_line_num: null,
+                    new_line_num: 2,
+                  },
+                ],
+              },
+            ],
+          },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      const parentTask: StreamingTask = {
+        toolUseId: parentId,
+        toolName: "Task",
+        description: "Test task",
+        subagentType: "Bash",
+        model: "sonnet",
+        status: "running",
+        startedAt: Date.now(),
+        childToolCalls: [
+          { id: "toolu_child_edit", name: "Edit", arguments: { file_path: "src/child.ts" } },
+        ],
+      };
+      const prevMap = new Map<string, StreamingTask>([[parentId, parentTask]]);
+      const nextMap = executeUpdater<Map<string, StreamingTask>>(props.setStreamingTasks, prevMap);
+      const updated = nextMap.get(parentId)!.childToolCalls[0]!;
+
+      expect(updated.argumentsPreviewTruncated).toBe(true);
+      expect(updated.argumentsPreviewLineCount).toBe(18);
+      expect(updated.argumentsPreviewOmittedLines).toBe(12);
+      expect(updated.argumentsPreviewOriginalBytes).toBe(1800);
+      expect(updated.diffPreview?.filePath).toBe("src/child.ts");
+      expect(updated.diffPreview?.hunks[0]?.lines[0]?.content).toBe("const child = true;");
     });
 
     it("should NOT route to tasks when supportsSubagentTasks is false", () => {
@@ -1106,6 +1266,349 @@ describe("useChatEvents", () => {
 
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
         queryKey: ["chat", "conversation-stats", CONV_ID],
+      });
+    });
+
+    it("uses lightweight cache handoff for active assistant messages with renderable streaming blocks", () => {
+      mockUpsertFinalizedMessageIntoConversationCache.mockReturnValue(true);
+      const props = makeProps({
+        streamingContentBlocks: [{ type: "text", text: "Final answer" }],
+      });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:message_created", {
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          role: "assistant",
+          message_id: "msg-final",
+          content: "Final answer",
+          created_at: "2026-01-24T10:00:00Z",
+        });
+      });
+
+      expect(mockUpsertFinalizedMessageIntoConversationCache).toHaveBeenCalledWith(
+        expect.anything(),
+        CONV_ID,
+        expect.objectContaining({
+          id: "msg-final",
+          content: "Final answer",
+          contentBlocks: [{ type: "text", text: "Final answer" }],
+        }),
+      );
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID, "summary"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversation-stats", CONV_ID],
+      });
+      expect(mockInvalidateQueries).not.toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID],
+      });
+      expect(mockInvalidateQueries).not.toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID, "history"],
+      });
+    });
+
+    it("prefers backend render-ready cache handoff over live streaming fallback", () => {
+      mockUpsertRenderReadyMessageIntoConversationCache.mockReturnValue(true);
+      const renderReady = {
+        message: {
+          id: "msg-final",
+          conversation_id: CONV_ID,
+          role: "assistant",
+          content: "Final answer",
+          content_blocks: [{ type: "text", text: "Final answer" }],
+          created_at: "2026-01-24T10:00:00Z",
+        },
+        timeline_items: [{
+          id: "block:msg-final:0",
+          conversation_id: CONV_ID,
+          message_id: "msg-final",
+          run_id: null,
+          sequence: 12,
+          block_index: 0,
+          role: "assistant",
+          kind: "text",
+          status: "finalized",
+          content: "Final answer",
+          content_blocks: [{ type: "text", text: "Final answer" }],
+          tool_call: null,
+          metadata: null,
+          provider_harness: "codex",
+          provider_session_id: "thread-1",
+          created_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:00:01Z",
+          finalized_at: "2026-01-24T10:00:01Z",
+        }],
+      };
+      const props = makeProps({
+        streamingContentBlocks: [{ type: "task", toolUseId: "task-1" }],
+      });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:message_created", {
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          role: "assistant",
+          message_id: "msg-final",
+          content: "Final answer",
+          render_ready: renderReady,
+        });
+      });
+
+      expect(mockUpsertRenderReadyMessageIntoConversationCache).toHaveBeenCalledWith(
+        expect.anything(),
+        CONV_ID,
+        renderReady,
+      );
+      expect(mockUpsertFinalizedMessageIntoConversationCache).not.toHaveBeenCalled();
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID, "summary"],
+      });
+      expect(mockInvalidateQueries).not.toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID],
+      });
+    });
+
+    it("falls back to full invalidation when render-ready cache handoff is incomplete", () => {
+      const renderReady = {
+        message: {
+          id: "msg-final",
+          conversation_id: CONV_ID,
+          role: "assistant",
+          content: "Final answer",
+          content_blocks: [{ type: "text", text: "Final answer" }],
+          created_at: "2026-01-24T10:00:00Z",
+        },
+        timeline_items: [],
+      };
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:message_created", {
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          role: "assistant",
+          message_id: "msg-final",
+          content: "Final answer",
+          render_ready: renderReady,
+        });
+      });
+
+      expect(mockUpsertRenderReadyMessageIntoConversationCache).toHaveBeenCalledWith(
+        expect.anything(),
+        CONV_ID,
+        renderReady,
+      );
+      expect(mockUpsertFinalizedMessageIntoConversationCache).not.toHaveBeenCalled();
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID, "history"],
+      });
+    });
+
+    it("uses streaming tool calls for lightweight cache handoff when no text blocks exist", () => {
+      mockUpsertFinalizedMessageIntoConversationCache.mockReturnValue(true);
+      const props = makeProps({
+        streamingToolCalls: [{
+          id: "toolu-read",
+          name: "Read",
+          arguments: { file_path: "src/app.ts" },
+          result: "preview",
+          resultPreviewTruncated: true,
+          resultPreviewOriginalBytes: 2400,
+          resultPreviewLineCount: 20,
+          resultPreviewOmittedLines: 4,
+          detailRef: {
+            conversationId: CONV_ID,
+            messageId: "msg-final",
+            toolCallId: "toolu-read",
+            contentBlockIndex: 0,
+          },
+          parentToolUseId: "toolu-parent",
+          diffContext: { filePath: "src/app.ts" },
+        }],
+      });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:message_created", {
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          role: "assistant",
+          message_id: "msg-final",
+          content: "",
+          metadata: "{\"kind\":\"final\"}",
+          created_at: "2026-01-24T10:00:00Z",
+        });
+      });
+
+      expect(mockUpsertFinalizedMessageIntoConversationCache).toHaveBeenCalledWith(
+        expect.anything(),
+        CONV_ID,
+        expect.objectContaining({
+          id: "msg-final",
+          content: "",
+          metadata: "{\"kind\":\"final\"}",
+          toolCalls: [expect.objectContaining({
+            id: "toolu-read",
+            result: "preview",
+          })],
+          contentBlocks: [expect.objectContaining({
+            type: "tool_use",
+            id: "toolu-read",
+            resultPreviewTruncated: true,
+            parentToolUseId: "toolu-parent",
+            diffContext: { filePath: "src/app.ts" },
+          })],
+        }),
+      );
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID, "summary"],
+      });
+      expect(mockInvalidateQueries).not.toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID],
+      });
+    });
+
+    it("uses payload content when no live streaming snapshot exists", () => {
+      mockUpsertFinalizedMessageIntoConversationCache.mockReturnValue(true);
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:message_created", {
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          role: "assistant",
+          message_id: "msg-final",
+          content: "Persisted final answer",
+          created_at: "2026-01-24T10:00:00Z",
+        });
+      });
+
+      expect(mockUpsertFinalizedMessageIntoConversationCache).toHaveBeenCalledWith(
+        expect.anything(),
+        CONV_ID,
+        expect.objectContaining({
+          id: "msg-final",
+          content: "Persisted final answer",
+          contentBlocks: [{ type: "text", text: "Persisted final answer" }],
+        }),
+      );
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID, "summary"],
+      });
+    });
+
+    it("builds final cache content from streaming text when payload content is omitted", () => {
+      mockUpsertFinalizedMessageIntoConversationCache.mockReturnValue(true);
+      const props = makeProps({
+        streamingContentBlocks: [{ type: "text", text: "Streamed final answer" }],
+      });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:message_created", {
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          role: "assistant",
+          message_id: "msg-final",
+          created_at: "2026-01-24T10:00:00Z",
+        });
+      });
+
+      expect(mockUpsertFinalizedMessageIntoConversationCache).toHaveBeenCalledWith(
+        expect.anything(),
+        CONV_ID,
+        expect.objectContaining({
+          id: "msg-final",
+          content: "Streamed final answer",
+          contentBlocks: [{ type: "text", text: "Streamed final answer" }],
+        }),
+      );
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID, "summary"],
+      });
+    });
+
+    it("skips live cache synthesis for ideation messages without render-ready payloads", () => {
+      const props = makeProps({
+        contextType: "ideation" as ContextType,
+        streamingContentBlocks: [{ type: "text", text: "Final answer" }],
+      });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:message_created", {
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          role: "assistant",
+          message_id: "msg-final",
+          content: "Final answer",
+          created_at: "2026-01-24T10:00:00Z",
+        });
+      });
+
+      expect(mockUpsertFinalizedMessageIntoConversationCache).not.toHaveBeenCalled();
+      expect(mockUpsertRenderReadyMessageIntoConversationCache).not.toHaveBeenCalled();
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID, "history"],
+      });
+    });
+
+    it("does not synthesize a cache message when the provider event lacks a message id", () => {
+      const props = makeProps({
+        streamingContentBlocks: [{ type: "text", text: "Final answer" }],
+      });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:message_created", {
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          role: "assistant",
+          content: "Final answer",
+          created_at: "2026-01-24T10:00:00Z",
+        });
+      });
+
+      expect(mockUpsertFinalizedMessageIntoConversationCache).not.toHaveBeenCalled();
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID],
+      });
+    });
+
+    it("falls back to conversation refetch when streaming blocks contain task markers", () => {
+      const props = makeProps({
+        streamingContentBlocks: [{ type: "task", toolUseId: "task-1" }],
+      });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:message_created", {
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          role: "assistant",
+          message_id: "msg-final",
+          content: "Final answer",
+        });
+      });
+
+      expect(mockUpsertFinalizedMessageIntoConversationCache).not.toHaveBeenCalled();
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID, "history"],
       });
     });
   });

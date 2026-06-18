@@ -19,16 +19,17 @@ pub trait QuestionRepository: Send + Sync {
     /// Mark a question as resolved with the given answer
     async fn resolve(&self, request_id: &str, answer: &QuestionAnswer) -> AppResult<bool>;
 
-    /// Get all currently pending questions
+    /// Get all user-visible unresolved questions, including questions whose
+    /// agent-side wait has timed out but can still accept a late answer.
     async fn get_pending(&self) -> AppResult<Vec<PendingQuestionInfo>>;
 
     /// Get a single question by its request_id
     async fn get_by_request_id(&self, request_id: &str) -> AppResult<Option<PendingQuestionInfo>>;
 
-    /// Expire all pending questions (e.g., on startup — agents that asked are gone)
+    /// Mark all active waits as expired while keeping questions user-visible.
     async fn expire_all_pending(&self) -> AppResult<u64>;
 
-    /// Expire a single pending question by request_id (for runtime sweep — audit trail preserved)
+    /// Mark a single active wait as expired while keeping the question user-visible.
     async fn expire_by_request_id(&self, request_id: &str) -> AppResult<()>;
 
     /// Remove a question record by request_id

@@ -114,7 +114,7 @@ impl ChatTimelineRepository for SqliteChatTimelineRepository {
                     rows.collect::<Result<Vec<_>, _>>()?
                 };
                 items.reverse();
-                hydrate_diff_tool_payloads(conn, &mut items)?;
+                hydrate_required_tool_payloads(conn, &mut items)?;
 
                 let oldest_loaded_sequence = items.first().map(|item| item.sequence);
                 let newest_loaded_sequence = items.last().map(|item| item.sequence);
@@ -157,6 +157,26 @@ impl ChatTimelineRepository for SqliteChatTimelineRepository {
             .await
     }
 
+    async fn get_by_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<ChatTimelineItem>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(&format!(
+                    "{} WHERE b.conversation_id = ?1 ORDER BY b.sequence ASC",
+                    timeline_item_select_sql(true)
+                ))?;
+                let mut items = stmt
+                    .query_map(params![conversation_id], row_to_timeline_item)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                hydrate_required_tool_payloads(conn, &mut items)?;
+                Ok(items)
+            })
+            .await
+    }
+
     async fn mark_message_items_finalized(&self, message_id: &ChatMessageId) -> AppResult<()> {
         let message_id = message_id.as_str().to_string();
         let finalized_at = Utc::now().to_rfc3339();
@@ -178,11 +198,11 @@ impl ChatTimelineRepository for SqliteChatTimelineRepository {
     }
 }
 
-fn hydrate_diff_tool_payloads(
+fn hydrate_required_tool_payloads(
     conn: &Connection,
     items: &mut [ChatTimelineItem],
 ) -> rusqlite::Result<()> {
-    if !items.iter().any(should_hydrate_diff_tool_payload) {
+    if !items.iter().any(should_hydrate_full_tool_payload) {
         return Ok(());
     }
 
@@ -196,7 +216,7 @@ fn hydrate_diff_tool_payloads(
 
     for item in items
         .iter_mut()
-        .filter(|item| should_hydrate_diff_tool_payload(item))
+        .filter(|item| should_hydrate_full_tool_payload(item))
     {
         let payload = stmt
             .query_row(params![item.id.as_str()], |row| {
@@ -218,9 +238,12 @@ fn hydrate_diff_tool_payloads(
     Ok(())
 }
 
-fn should_hydrate_diff_tool_payload(item: &ChatTimelineItem) -> bool {
+fn should_hydrate_full_tool_payload(item: &ChatTimelineItem) -> bool {
     item.kind == ChatTimelineItemKind::ToolUse
-        && item.tool_name.as_deref().is_some_and(is_diff_tool_name)
+        && item
+            .tool_name
+            .as_deref()
+            .is_some_and(|name| is_diff_tool_name(name) || is_ask_user_question_tool_name(name))
 }
 
 fn is_diff_tool_name(name: &str) -> bool {
@@ -232,6 +255,24 @@ fn is_diff_tool_name(name: &str) -> bool {
             .as_str(),
         "edit" | "write"
     )
+}
+
+fn is_ask_user_question_tool_name(name: &str) -> bool {
+    let mut normalized = name.trim().to_ascii_lowercase();
+    for prefix in [
+        "mcp__ralphx__",
+        "mcp__ralphx_internal__",
+        "ralphx::",
+        "ralphx_internal::",
+        "ralphx:",
+        "ralphx_internal:",
+    ] {
+        if let Some(stripped) = normalized.strip_prefix(prefix) {
+            normalized = stripped.to_string();
+            break;
+        }
+    }
+    normalized == "ask_user_question"
 }
 
 fn upsert_item(conn: &Connection, item: ChatTimelineItem) -> AppResult<ChatTimelineItem> {

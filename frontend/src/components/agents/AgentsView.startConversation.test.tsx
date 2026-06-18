@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
+import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -23,24 +24,49 @@ import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
+import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
 import { useStartAgentConversation } from "./useStartAgentConversation";
 
 const {
   archiveConversationMock,
   createConversationMock,
-  getPlanBranchesMock,
   integratedChatPanelRenderMock,
+  loadBranchBaseOptionsMock,
+  loadPullRequestBaseOptionsMock,
   listAgentConversationWorkspacesByProjectMock,
   listConversationsMock,
   listIdeationSessionsMock,
   spawnConversationSessionNamerMock,
   startAgentConversationMock,
+  useHarnessProvidersMock,
   useConversationMock,
   useProjectAgentConversationsMock,
   useProjectsMock,
 } = getAgentsViewTestMocks();
 
 const providerUpdatedAt = new Date().toISOString();
+
+function prPickerBranchOption(): BranchBaseOption {
+  return {
+    key: "pull_request:42:feature/pr-picker",
+    label: "#42 Add PR picker",
+    detail: "feature/pr-picker -> main",
+    source: "pull_request",
+    selection: {
+      kind: "local_branch",
+      ref: "feature/pr-picker",
+      displayName: "PR #42: Add PR picker",
+      sourcePullRequest: {
+        number: 42,
+        title: "Add PR picker",
+        url: "https://github.com/owner/repo/pull/42",
+        headRefName: "feature/pr-picker",
+        headRefOid: "abc123",
+        baseRefName: "main",
+      },
+    },
+  };
+}
 
 function agentProviderSettings(
   overrides: Partial<AgentProvidersSettingsResponse> = {},
@@ -110,9 +136,12 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agent-composer-runtime-pill")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-start-new-project")).not.toBeInTheDocument();
     await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-    expect(screen.getByTestId("agents-start-mode-edit")).toBeInTheDocument();
     expect(screen.getByTestId("agents-start-new-project")).toBeInTheDocument();
     expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    // Workflow modes live on the Mode chip popover, not the "+" action menu.
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    expect(screen.getByTestId("agents-start-mode-edit")).toBeInTheDocument();
   });
 
   it("restores a persisted selected conversation even when it is outside the first sidebar page", async () => {
@@ -255,7 +284,8 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(spawnConversationSessionNamerMock).toHaveBeenCalledWith(
         "conversation-2",
-        "fix agent landing flow"
+        "fix agent landing flow",
+        "codex"
       )
     );
     await waitFor(() =>
@@ -285,6 +315,96 @@ describe("AgentsView start conversation", () => {
       })
     );
     invalidateSpy.mockRestore();
+  });
+
+  it("starts a new conversation from a selected pull request head branch", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    loadPullRequestBaseOptionsMock.mockResolvedValue([prPickerBranchOption()]);
+
+    renderAgentsView();
+
+    await user.click(await screen.findByTestId("agents-start-base"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+    await waitFor(() =>
+      expect(loadPullRequestBaseOptionsMock).toHaveBeenCalledWith({
+        projectId: "project-1",
+        query: "",
+      })
+    );
+    const prOption = await screen.findByText("#42 Add PR picker");
+    const prOptionButton = prOption.closest("button");
+    expect(prOptionButton).not.toBeNull();
+    await user.click(prOptionButton as HTMLButtonElement);
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
+    );
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "review this PR" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          content: "review this PR",
+          base: expect.objectContaining({
+            kind: "local_branch",
+            ref: "feature/pr-picker",
+            displayName: "PR #42: Add PR picker",
+            sourcePullRequest: expect.objectContaining({
+              number: 42,
+              headRefName: "feature/pr-picker",
+              baseRefName: "main",
+              headRefOid: "abc123",
+            }),
+          }),
+        })
+      )
+    );
+  });
+
+  it("keeps a selected pull request visible across later start-from searches", async () => {
+    const user = userEvent.setup();
+    let pullRequestSearches = 0;
+    mockAgentViewData();
+    loadPullRequestBaseOptionsMock.mockImplementation(() => {
+      pullRequestSearches += 1;
+      return Promise.resolve(
+        pullRequestSearches === 1 ? [prPickerBranchOption()] : []
+      );
+    });
+
+    renderAgentsView();
+
+    await user.click(await screen.findByTestId("agents-start-base"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+    await user.click(await screen.findByText("#42 Add PR picker"));
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
+    );
+
+    await user.click(screen.getByTestId("agents-start-base"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+
+    await waitFor(() => expect(pullRequestSearches).toBe(2));
+    expect(screen.getAllByText("#42 Add PR picker").length).toBeGreaterThan(1);
+  });
+
+  it("shows pull request search failures in the start composer", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    loadPullRequestBaseOptionsMock.mockRejectedValue(
+      new Error("GitHub search failed")
+    );
+
+    renderAgentsView();
+
+    await user.click(await screen.findByTestId("agents-start-base"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+
+    expect(await screen.findByText("GitHub search failed")).toBeInTheDocument();
   });
 
   it("paints the conversation shell before the draft conversation IPC resolves", async () => {
@@ -655,6 +775,51 @@ describe("AgentsView start conversation", () => {
     );
   });
 
+  it("shows Fable in the starter model selector when refreshed Claude capabilities report it", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    const snapshotSettings = agentProviderSettings();
+    const refreshedSettings = agentProviderSettings({
+      providers: [
+        snapshotSettings.providers[0]!,
+        {
+          ...snapshotSettings.providers[1]!,
+          supportedModelAliases: ["sonnet", "opus", "haiku", "fable"],
+          supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+        },
+      ],
+    });
+    useHarnessProvidersMock.mockImplementation(
+      (options?: { refreshRuntime?: boolean }) => {
+        const settings = options?.refreshRuntime ? refreshedSettings : snapshotSettings;
+        return {
+          settings,
+          providers: settings.providers,
+          isLoading: false,
+          isPlaceholderData: false,
+          isError: false,
+          error: null,
+          refetchProviders: vi.fn(),
+          updateProviderAsync: vi.fn(),
+          isUpdating: false,
+          updateError: null,
+        };
+      }
+    );
+
+    renderAgentsView();
+
+    await user.click(screen.getByTestId("agent-composer-runtime-pill"));
+    await user.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
+
+    expect(useHarnessProvidersMock).toHaveBeenCalledWith({ refreshRuntime: true });
+    expect(await screen.findByTestId("agents-start-model-fable")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("agents-start-model-fable"));
+
+    expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent("fable");
+  });
+
   it("shows manage models link in the runtime selector popover", async () => {
     mockAgentViewData();
 
@@ -764,9 +929,205 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(spawnConversationSessionNamerMock).toHaveBeenCalledWith(
         "conversation-seeded",
-        "fix agent landing flow"
+        "fix agent landing flow",
+        "codex"
       )
     );
+  });
+
+  it("stores selected references on the first optimistic message before a conversation exists", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: Infinity },
+        mutations: { retry: false },
+      },
+    });
+    const seededConversation = conversation({
+      id: "conversation-seeded-references",
+      contextId: "project-1",
+      title: null,
+    });
+    let resolveCreate:
+      | ((value: Awaited<ReturnType<typeof createConversationMock>>) => void)
+      | null = null;
+    createConversationMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCreate = resolve;
+      })
+    );
+    startAgentConversationMock.mockResolvedValue({
+      conversation: seededConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-seeded-references",
+      }),
+      sendResult: {
+        conversationId: "conversation-seeded-references",
+        agentRunId: "run-seeded-references",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    const setOptimisticSelectedConversationId = vi.fn();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation: vi.fn(),
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId,
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+        }),
+      { wrapper }
+    );
+
+    const startPromise = result.current({
+      projectId: "project-1",
+      content: "start with references",
+      runtime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "xhigh",
+      },
+      mode: "edit",
+      base: null,
+      files: [],
+      composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
+      composerIntegrationReferences: [
+        {
+          provider: "atlassian",
+          kind: "jira",
+          id: "RX-42",
+          key: "RX-42",
+          title: "Fix composer references",
+        },
+      ],
+      composerArtifactReferences: [
+        {
+          kind: "plan",
+          artifactId: "artifact-1",
+          title: "Implementation Plan",
+        },
+      ],
+    });
+
+    await waitFor(() =>
+      expect(setOptimisticSelectedConversationId).toHaveBeenCalled()
+    );
+    const optimisticConversationId =
+      setOptimisticSelectedConversationId.mock.calls[0]?.[0];
+    const optimisticMessage = queryClient.getQueryData<{
+      messages: Array<{ metadata: string | null }>;
+    }>(["chat", "conversations", optimisticConversationId])?.messages[0];
+    expect(JSON.parse(optimisticMessage?.metadata ?? "{}")).toEqual({
+      composer_project_references: [{ path: "src/main.ts", kind: "file" }],
+      composer_integration_references: [
+        {
+          provider: "atlassian",
+          kind: "jira",
+          id: "RX-42",
+          key: "RX-42",
+          title: "Fix composer references",
+        },
+      ],
+      composer_artifact_references: [
+        {
+          kind: "plan",
+          artifactId: "artifact-1",
+          title: "Implementation Plan",
+        },
+      ],
+    });
+
+    resolveCreate?.(seededConversation);
+    await startPromise;
+  });
+
+  it("invalidates the resolved Jira issue query after starting with a Jira reference", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const seededConversation = conversation({
+      id: "conversation-with-jira",
+      contextId: "project-1",
+      title: null,
+    });
+    createConversationMock.mockResolvedValue(seededConversation);
+    startAgentConversationMock.mockResolvedValue({
+      conversation: seededConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-with-jira",
+      }),
+      sendResult: {
+        conversationId: "conversation-with-jira",
+        agentRunId: "run-with-jira",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const onJiraLinked = vi.fn();
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation: vi.fn(),
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+          onJiraLinked,
+        }),
+      { wrapper }
+    );
+
+    await result.current({
+      projectId: "project-1",
+      content: "start with jira",
+      runtime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "xhigh",
+      },
+      mode: "edit",
+      base: null,
+      files: [],
+      composerIntegrationReferences: [
+        {
+          provider: "atlassian",
+          kind: "jira",
+          id: "RX-42",
+          key: "RX-42",
+          title: "Fix composer references",
+        },
+      ],
+    });
+
+    expect(invalidateQueriesSpy).toHaveBeenCalledWith({
+      queryKey: agentJiraIssueKeys.issue("conversation-with-jira"),
+    });
+    expect(onJiraLinked).toHaveBeenCalledWith("conversation-with-jira");
   });
 
   it("clears optimistic running state when the seeded agent start fails", async () => {
@@ -956,10 +1317,12 @@ describe("AgentsView start conversation", () => {
 
   it("renders remembered branch base options before hover and refreshes with a loading state on intent", async () => {
     mockAgentViewData();
-    let resolveBranches: ((branches: unknown[]) => void) | null = null;
-    getPlanBranchesMock.mockReturnValue(
+    let resolveBranchOptions:
+      | ((result: { options: BranchBaseOption[]; selectedKey: string }) => void)
+      | null = null;
+    loadBranchBaseOptionsMock.mockReturnValue(
       new Promise((resolve) => {
-        resolveBranches = resolve;
+        resolveBranchOptions = resolve;
       })
     );
     resetAgentSessionState({
@@ -1006,14 +1369,21 @@ describe("AgentsView start conversation", () => {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     expect(screen.getByTestId("agents-start-base")).toHaveTextContent("feature/cached");
-    expect(getPlanBranchesMock).not.toHaveBeenCalled();
+    expect(loadBranchBaseOptionsMock).not.toHaveBeenCalled();
     expect(listIdeationSessionsMock).not.toHaveBeenCalled();
     expect(listConversationsMock).not.toHaveBeenCalled();
     expect(listAgentConversationWorkspacesByProjectMock).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByTestId("agents-start-base"));
 
-    await waitFor(() => expect(getPlanBranchesMock).toHaveBeenCalledWith("project-1"));
+    await waitFor(() =>
+      expect(loadBranchBaseOptionsMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          workingDirectory: "/tmp/ralphx",
+        })
+      )
+    );
     expect(screen.getByText("Refreshing branches...")).toBeInTheDocument();
     expect(screen.getAllByText("feature/cached").length).toBeGreaterThan(0);
 
@@ -1025,7 +1395,22 @@ describe("AgentsView start conversation", () => {
       useAgentSessionStore.getState().branchBaseCacheByProjectId["project-1"]?.selectedKey
     ).toBe("project_default:main");
 
-    resolveBranches?.([]);
+    resolveBranchOptions?.({
+      options: [
+        {
+          key: "project_default:main",
+          label: "Project default (main)",
+          detail: "Configured project base branch",
+          source: "project",
+          selection: {
+            kind: "project_default",
+            ref: "main",
+            displayName: "Project default (main)",
+          },
+        },
+      ],
+      selectedKey: "project_default:main",
+    });
   });
 
   it("starts a chat-mode conversation from the selected base and shows its workspace", async () => {
@@ -1069,7 +1454,7 @@ describe("AgentsView start conversation", () => {
 
     renderAgentsView();
 
-    await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
     await userEvent.click(screen.getByTestId("agents-start-mode-chat"));
     expect(screen.getByTestId("agents-start-base")).toBeInTheDocument();
 

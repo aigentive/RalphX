@@ -3,40 +3,20 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   agentModelsApi,
-  type AgentModelResponse,
   type UpsertCustomAgentModelInput,
 } from "@/api/agent-models";
 import {
-  AGENT_MODEL_CATALOG,
   buildAgentModelRegistry,
   type AgentModelRegistry,
-  type AgentProvider,
 } from "@/lib/agent-models";
 
 export const agentModelKeys = {
   all: ["agent", "models"] as const,
 };
 
-function fallbackAgentModels(): AgentModelResponse[] {
-  return (["claude", "codex"] as const satisfies readonly AgentProvider[]).flatMap(
-    (provider) =>
-      AGENT_MODEL_CATALOG[provider].map((model) => ({
-        provider,
-        modelId: model.id,
-        label: model.label,
-        menuLabel: model.menuLabel,
-        description: model.description ?? null,
-        supportedEfforts: [...model.supportedEfforts],
-        defaultEffort: model.defaultEffort,
-        source: "built_in" as const,
-        enabled: model.enabled !== false,
-        createdAt: null,
-        updatedAt: null,
-      }))
-  );
-}
+const EMPTY_MODELS: readonly [] = [];
 
-const FALLBACK_AGENT_MODELS = fallbackAgentModels();
+const EMPTY_REGISTRY: AgentModelRegistry = { claude: [], codex: [] };
 
 export function useAgentModels() {
   const queryClient = useQueryClient();
@@ -45,14 +25,14 @@ export function useAgentModels() {
     queryFn: agentModelsApi.list,
     staleTime: 1000 * 60 * 5,
     gcTime: 1000 * 60 * 10,
-    placeholderData: FALLBACK_AGENT_MODELS,
   });
 
-  const models = query.data ?? FALLBACK_AGENT_MODELS;
+  const models = query.data ?? EMPTY_MODELS;
   const registry = useMemo<AgentModelRegistry>(
-    () => buildAgentModelRegistry(models),
+    () => (models.length > 0 ? buildAgentModelRegistry(models) : EMPTY_REGISTRY),
     [models]
   );
+  const isReady = query.isSuccess && models.length > 0;
 
   const upsertMutation = useMutation({
     mutationFn: (input: UpsertCustomAgentModelInput) =>
@@ -73,8 +53,8 @@ export function useAgentModels() {
   return {
     models,
     registry,
+    isReady,
     isLoading: query.isLoading,
-    isPlaceholderData: query.isPlaceholderData,
     isError: query.isError,
     error: query.error,
     upsertModel: upsertMutation.mutate,

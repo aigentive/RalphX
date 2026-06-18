@@ -1,8 +1,11 @@
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription, ChatConversationId,
-    IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId,
+    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
+    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -49,6 +52,76 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
         "ralphx/project/agent-11111111".to_string(),
         "/tmp/ralphx/agent-11111111".to_string(),
     )
+}
+
+#[tokio::test]
+async fn source_pull_request_metadata_round_trips() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id);
+    workspace.base_ref_kind = IdeationAnalysisBaseRefKind::LocalBranch;
+    workspace.base_ref = "feature/pr-origin".to_string();
+    workspace.base_display_name = Some("PR #123: Add PR context".to_string());
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 123,
+        url: Some("https://github.com/owner/repo/pull/123".to_string()),
+        title: Some("Add PR context".to_string()),
+        head_ref_name: "feature/pr-origin".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("abc123".to_string()),
+    });
+
+    repo.create_or_update(workspace).await.unwrap();
+
+    let loaded = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should load");
+    assert_eq!(
+        loaded.source_pull_request,
+        Some(AgentWorkspaceSourcePullRequest {
+            number: 123,
+            url: Some("https://github.com/owner/repo/pull/123".to_string()),
+            title: Some("Add PR context".to_string()),
+            head_ref_name: "feature/pr-origin".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: Some("abc123".to_string()),
+        })
+    );
+}
+
+#[tokio::test]
+async fn linked_ideation_session_lookup_returns_latest_workspace_and_none_for_missing() {
+    let (db, repo, first_id) = setup_repo();
+    let session_id = IdeationSessionId::from_string("ideation-session-1");
+    let mut first = make_workspace(first_id);
+    first.linked_ideation_session_id = Some(session_id.clone());
+    first.branch_name = "ralphx/project/agent-first".to_string();
+    repo.create_or_update(first).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+
+    let second_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    seed_conversation(&db, &second_id);
+    let mut second = make_workspace(second_id.clone());
+    second.linked_ideation_session_id = Some(session_id.clone());
+    second.branch_name = "ralphx/project/agent-second".to_string();
+    second.worktree_path = "/tmp/ralphx/agent-22222222".to_string();
+    repo.create_or_update(second).await.unwrap();
+
+    let loaded = repo
+        .get_by_linked_ideation_session_id(&session_id)
+        .await
+        .unwrap()
+        .expect("latest linked workspace should load");
+    assert_eq!(loaded.conversation_id, second_id);
+    assert_eq!(loaded.branch_name, "ralphx/project/agent-second");
+
+    let missing = repo
+        .get_by_linked_ideation_session_id(&IdeationSessionId::from_string("missing-session"))
+        .await
+        .unwrap();
+    assert!(missing.is_none());
 }
 
 #[tokio::test]
@@ -364,6 +437,178 @@ async fn delete_removes_pr_comment_evidence_for_conversation() {
 }
 
 #[tokio::test]
+async fn pr_review_monitor_round_trips_and_active_listing_filters_terminal_rows() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+        267,
+        Some("head-sha-1".to_string()),
+    );
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+    monitor.monitor_enabled = true;
+    monitor.first_review_completed = true;
+    monitor.last_reviewed_head_sha = Some("head-sha-1".to_string());
+    monitor.last_review_outcome = Some("request_changes".to_string());
+
+    let saved = repo
+        .upsert_pr_review_monitor(monitor.clone())
+        .await
+        .unwrap();
+    assert_eq!(saved.status, AgentWorkspacePrReviewMonitorStatus::Watching);
+    assert_eq!(saved.last_seen_head_sha.as_deref(), Some("head-sha-1"));
+
+    let loaded = repo
+        .get_pr_review_monitor(&conversation_id)
+        .await
+        .unwrap()
+        .expect("monitor should exist");
+    assert!(loaded.monitor_enabled);
+    assert!(loaded.first_review_completed);
+
+    let active = repo.list_active_pr_review_monitors().await.unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].conversation_id, conversation_id);
+
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Terminal;
+    repo.upsert_pr_review_monitor(monitor).await.unwrap();
+    assert!(repo
+        .list_active_pr_review_monitors()
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn pr_review_actions_update_existing_pending_action_for_same_head() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let action = AgentWorkspacePrReviewAction::new(
+        conversation_id.clone(),
+        267,
+        "head-sha-1".to_string(),
+        AgentWorkspacePrReviewActionKind::RequestChanges,
+        "Found blocking issues".to_string(),
+        "Please address the blocking issues.".to_string(),
+        Some(r#"[{"path":"src/lib.rs"}]"#.to_string()),
+        Some("run-1".to_string()),
+    );
+    let saved = repo
+        .create_or_update_pr_review_action(action)
+        .await
+        .unwrap();
+
+    let replacement = AgentWorkspacePrReviewAction::new(
+        conversation_id.clone(),
+        267,
+        "head-sha-1".to_string(),
+        AgentWorkspacePrReviewActionKind::Approve,
+        "Looks good now".to_string(),
+        "The requested changes were addressed.".to_string(),
+        None,
+        Some("run-2".to_string()),
+    );
+    let updated = repo
+        .create_or_update_pr_review_action(replacement)
+        .await
+        .unwrap();
+
+    assert_eq!(updated.id, saved.id);
+    assert_eq!(
+        updated.proposed_action,
+        AgentWorkspacePrReviewActionKind::Approve
+    );
+    assert_eq!(updated.summary, "Looks good now");
+    assert_eq!(updated.created_by_run_id.as_deref(), Some("run-2"));
+
+    let pending = repo
+        .get_pending_pr_review_action_for_head(&conversation_id, 267, "head-sha-1")
+        .await
+        .unwrap()
+        .expect("pending action should exist");
+    assert_eq!(pending.id, saved.id);
+
+    let actions = repo
+        .list_pr_review_actions(&conversation_id, 10)
+        .await
+        .unwrap();
+    assert_eq!(actions.len(), 1);
+
+    repo.update_pr_review_action_status(
+        &saved.id,
+        AgentWorkspacePrReviewActionStatus::Submitted,
+        Some("review-1"),
+    )
+    .await
+    .unwrap();
+
+    let submitted = repo
+        .get_pr_review_action(&saved.id)
+        .await
+        .unwrap()
+        .expect("action should still exist");
+    assert_eq!(
+        submitted.status,
+        AgentWorkspacePrReviewActionStatus::Submitted
+    );
+    assert_eq!(submitted.submitted_review_id.as_deref(), Some("review-1"));
+    assert!(submitted.resolved_at.is_some());
+    assert!(repo
+        .get_pending_pr_review_action_for_head(&conversation_id, 267, "head-sha-1")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn delete_removes_pr_review_state_for_conversation() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    let monitor = AgentWorkspacePrReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+        267,
+        Some("head-sha-1".to_string()),
+    );
+    repo.upsert_pr_review_monitor(monitor).await.unwrap();
+    let action = AgentWorkspacePrReviewAction::new(
+        conversation_id.clone(),
+        267,
+        "head-sha-1".to_string(),
+        AgentWorkspacePrReviewActionKind::RequestChanges,
+        "Found blocking issues".to_string(),
+        "Please address the blocking issues.".to_string(),
+        None,
+        None,
+    );
+    repo.create_or_update_pr_review_action(action)
+        .await
+        .unwrap();
+
+    repo.delete(&conversation_id).await.unwrap();
+
+    assert!(repo
+        .get_pr_review_monitor(&conversation_id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repo
+        .list_pr_review_actions(&conversation_id, 10)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces() {
     let (db, repo, conversation_id) = setup_repo();
     let mut published = make_workspace(conversation_id);
@@ -379,6 +624,15 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
     refreshed.publication_pr_status = Some("open".to_string());
     refreshed.publication_push_status = Some("refreshed".to_string());
     repo.create_or_update(refreshed.clone()).await.unwrap();
+
+    let paused_id = ChatConversationId::from_string("12121212-1212-1212-1212-121212121212");
+    seed_conversation(&db, &paused_id);
+    let mut paused = make_workspace(paused_id);
+    paused.publication_pr_number = Some(79);
+    paused.publication_pr_status = Some("open".to_string());
+    paused.publication_push_status = Some("pushed".to_string());
+    paused.auto_publish_enabled = false;
+    repo.create_or_update(paused).await.unwrap();
 
     let archived_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
     seed_conversation(&db, &archived_id);
@@ -431,6 +685,52 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
     assert!(workspaces
         .iter()
         .any(|workspace| workspace.conversation_id == refreshed.conversation_id));
+}
+
+#[tokio::test]
+async fn list_active_pr_poller_recovery_workspaces_includes_supervised_ideation_prs() {
+    let (db, repo, conversation_id) = setup_repo();
+    let mut direct = make_workspace(conversation_id);
+    direct.publication_pr_number = Some(72);
+    direct.publication_pr_status = Some("open".to_string());
+    direct.publication_push_status = Some("pushed".to_string());
+    repo.create_or_update(direct.clone()).await.unwrap();
+
+    let ideation_id = ChatConversationId::from_string("10101010-1010-1010-1010-101010101010");
+    seed_conversation(&db, &ideation_id);
+    let mut ideation = make_workspace(ideation_id);
+    ideation.mode = AgentConversationWorkspaceMode::Ideation;
+    ideation.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-branch-1"));
+    ideation.publication_pr_number = Some(73);
+    ideation.publication_pr_status = Some("open".to_string());
+    ideation.publication_push_status = Some("pushed".to_string());
+    ideation.pr_autofix_enabled = true;
+    repo.create_or_update(ideation.clone()).await.unwrap();
+
+    let unsupervised_id = ChatConversationId::from_string("20202020-2020-2020-2020-202020202020");
+    seed_conversation(&db, &unsupervised_id);
+    let mut unsupervised = make_workspace(unsupervised_id);
+    unsupervised.mode = AgentConversationWorkspaceMode::Ideation;
+    unsupervised.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-branch-2"));
+    unsupervised.publication_pr_number = Some(74);
+    unsupervised.publication_pr_status = Some("open".to_string());
+    unsupervised.publication_push_status = Some("pushed".to_string());
+    repo.create_or_update(unsupervised).await.unwrap();
+
+    let workspaces = repo
+        .list_active_pr_poller_recovery_workspaces()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        workspaces
+            .into_iter()
+            .map(|workspace| workspace.conversation_id)
+            .collect::<std::collections::HashSet<_>>(),
+        [direct.conversation_id, ideation.conversation_id]
+            .into_iter()
+            .collect()
+    );
 }
 
 #[tokio::test]
@@ -513,6 +813,17 @@ async fn list_active_direct_pr_supervision_recovery_candidates_filters_blocked_f
     disabled.publication_push_status = Some("failed".to_string());
     disabled.pr_supervision_status = Some("blocked".to_string());
     repo.create_or_update(disabled).await.unwrap();
+
+    let paused_id = ChatConversationId::from_string("12121212-1212-1212-1212-121212121212");
+    seed_conversation(&db, &paused_id);
+    let mut paused = make_workspace(paused_id);
+    paused.publication_pr_number = Some(86);
+    paused.publication_pr_status = Some("open".to_string());
+    paused.publication_push_status = Some("failed".to_string());
+    paused.pr_supervision_status = Some("blocked".to_string());
+    paused.pr_autofix_enabled = true;
+    paused.auto_publish_enabled = false;
+    repo.create_or_update(paused).await.unwrap();
 
     let needs_agent_id = ChatConversationId::from_string("77777777-7777-7777-7777-777777777777");
     seed_conversation(&db, &needs_agent_id);
@@ -616,6 +927,69 @@ async fn pr_supervision_preferences_round_trip() {
     );
     assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
     assert!(updated.pr_supervision_updated_at.is_some());
+}
+
+#[tokio::test]
+async fn auto_publish_preferences_round_trip() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.pr_autofix_enabled = true;
+    workspace.pr_auto_merge_desired = true;
+    repo.create_or_update(workspace).await.unwrap();
+
+    repo.update_auto_publish_preferences(
+        &conversation_id,
+        false,
+        Some(true),
+        Some(true),
+        false,
+        false,
+        Some("paused"),
+        Some("Auto Publish is paused."),
+    )
+    .await
+    .unwrap();
+
+    let updated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert!(!updated.auto_publish_enabled);
+    assert_eq!(updated.auto_publish_paused_pr_autofix_enabled, Some(true));
+    assert_eq!(
+        updated.auto_publish_paused_pr_auto_merge_desired,
+        Some(true)
+    );
+    assert!(!updated.pr_autofix_enabled);
+    assert!(!updated.pr_auto_merge_desired);
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("paused"));
+}
+
+#[tokio::test]
+async fn auto_publish_initial_pr_preference_round_trip() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let workspace = make_workspace(conversation_id.clone());
+    repo.create_or_update(workspace).await.unwrap();
+
+    let loaded = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert!(!loaded.auto_publish_initial_pr_enabled);
+
+    repo.update_auto_publish_initial_pr_preference(&conversation_id, true)
+        .await
+        .unwrap();
+
+    let updated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert!(updated.auto_publish_initial_pr_enabled);
+    assert!(updated.auto_publish_enabled);
 }
 
 #[tokio::test]

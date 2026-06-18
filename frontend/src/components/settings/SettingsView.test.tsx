@@ -75,6 +75,18 @@ describe("SettingsView", () => {
       render(<SettingsView />);
       expect(screen.getByText("Max Concurrent Tasks")).toBeInTheDocument();
       expect(screen.getByText("Project Ideation Cap")).toBeInTheDocument();
+      expect(screen.getByText("Default Autofix CI & Reviews")).toBeInTheDocument();
+      expect(screen.getByText("Default GitHub auto-merge")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "RalphX monitors this PR for failing checks and review feedback, then publishes follow-up fixes from the workspace automatically."
+        )
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "RalphX asks GitHub to merge the PR after required checks and review requirements pass."
+        )
+      ).toBeInTheDocument();
     });
 
     it("displays default max concurrent tasks value", () => {
@@ -111,6 +123,23 @@ describe("SettingsView", () => {
       expect(onChange).toHaveBeenCalledTimes(1);
       const calledWith = onChange.mock.calls[0][0];
       expect(calledWith.execution.project_ideation_max).toBe(4);
+    });
+
+    it("updates agent workspace PR automation defaults", async () => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+      render(<SettingsView onSettingsChange={onChange} />);
+
+      await user.click(screen.getByTestId("agent-workspace-pr-autofix-default"));
+      await user.click(screen.getByTestId("agent-workspace-pr-auto-merge-default"));
+
+      expect(onChange).toHaveBeenCalledTimes(2);
+      expect(
+        onChange.mock.calls[0][0].execution.agent_workspace_pr_autofix_default
+      ).toBe(true);
+      expect(
+        onChange.mock.calls[1][0].execution.agent_workspace_pr_auto_merge_default
+      ).toBe(true);
     });
   });
 

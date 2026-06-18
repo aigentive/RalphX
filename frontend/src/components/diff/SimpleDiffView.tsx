@@ -9,13 +9,18 @@
 
 import { useState, useCallback, useMemo, useRef } from "react";
 import * as ScrollAreaPrimitive from "@radix-ui/react-scroll-area";
-import { ExternalLink } from "lucide-react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { Virtuoso } from "react-virtuoso";
 import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { withAlpha } from "@/lib/theme-colors";
 import { diffApi } from "@/api/diff";
 import type { DiffHunk, DiffLine, DiffRefKind, PrDiffAnnotation, RangeLine } from "@/api/diff";
+import {
+  annotationsForLine,
+  buildAnnotationIndex,
+  renderDiffLine,
+  renderHunkHeader,
+  type AnnotationIndex,
+  type DiffRenderVariant,
+} from "./diffRenderHelpers";
 
 export interface SimpleDiffViewProps {
   hunks: DiffHunk[];
@@ -35,133 +40,39 @@ export interface SimpleDiffViewProps {
   scrollContainer?: boolean | undefined;
   /** GitHub review/check annotations already filtered to this file. */
   annotations?: PrDiffAnnotation[] | undefined;
+  /** Compact density for embedded chat widgets; default keeps repository diff views unchanged. */
+  density?: "standard" | "compact" | undefined;
+  /** Initial line wrapping state. */
+  defaultWrapLines?: boolean | undefined;
+  /** Show the line wrapping toggle. */
+  showWrapToggle?: boolean | undefined;
+  /** Show expandable unchanged-line gap rows between hunks. */
+  showContextGaps?: boolean | undefined;
 }
 
 type GapState = "loading" | "error" | RangeLine[];
 
-type Variant = "standard" | "conflict";
-type AnnotationSide = "old" | "new";
-type AnnotationIndex = Map<string, PrDiffAnnotation[]>;
+type Variant = DiffRenderVariant;
+export const DIFF_ROW_VIRTUALIZATION_THRESHOLD = 1_000;
+const INLINE_VIRTUAL_DIFF_HEIGHT = "min(70vh, 720px)";
 
-// ============================================================================
-// Rendering helpers (pure)
-// ============================================================================
+type GapRowBase = {
+  gapKey: string;
+  gapCount: number;
+  fromNewLine: number;
+  toNewLine: number;
+  fromOldLine: number;
+};
 
-function getLineBackground(kind: DiffLine["kind"], variant: Variant): string {
-  switch (kind) {
-    case "addition":
-      return variant === "conflict"
-        ? "var(--status-info-muted)"
-        : "var(--status-success-muted)";
-    case "deletion":
-      return "var(--status-error-muted)";
-    default:
-      return "transparent";
-  }
-}
-
-function getLineNumColor(kind: DiffLine["kind"], variant: Variant): string {
-  switch (kind) {
-    case "addition":
-      return variant === "conflict"
-        ? withAlpha("var(--status-info)", 60)
-        : withAlpha("var(--status-success)", 60);
-    case "deletion":
-      return withAlpha("var(--status-error)", 60);
-    default:
-      return "var(--text-muted)";
-  }
-}
-
-function getLinePrefix(kind: DiffLine["kind"]): string {
-  switch (kind) {
-    case "addition":
-      return "+";
-    case "deletion":
-      return "-";
-    default:
-      return " ";
-  }
-}
-
-function getPrefixColor(kind: DiffLine["kind"], variant: Variant): string {
-  switch (kind) {
-    case "addition":
-      return variant === "conflict" ? "var(--status-info)" : "var(--status-success)";
-    case "deletion":
-      return "var(--status-error)";
-    default:
-      return "transparent";
-  }
-}
-
-function annotationSide(annotation: PrDiffAnnotation): AnnotationSide {
-  const side = annotation.side?.toLowerCase();
-  return side === "left" || side === "old" ? "old" : "new";
-}
-
-function annotationLevelColor(level: string): string {
-  switch (level.toLowerCase()) {
-    case "failure":
-    case "error":
-    case "critical":
-    case "high":
-      return "var(--status-error)";
-    case "medium":
-    case "warning":
-      return "var(--status-warning)";
-    case "low":
-    case "notice":
-      return "var(--status-info)";
-    default:
-      return "var(--accent-primary)";
-  }
-}
-
-function annotationSourceLabel(source: string): string {
-  switch (source) {
-    case "code_scanning":
-      return "Code scanning";
-    case "check_run":
-      return "Check";
-    case "review_comment":
-      return "Review";
-    default:
-      return source.replace(/_/g, " ");
-  }
-}
-
-function buildAnnotationIndex(annotations: PrDiffAnnotation[]): AnnotationIndex {
-  const index: AnnotationIndex = new Map();
-  for (const annotation of annotations) {
-    const startLine = annotation.startLine;
-    if (startLine == null) continue;
-    const endLine = annotation.endLine ?? startLine;
-    const side = annotationSide(annotation);
-    const boundedEnd = Math.min(endLine, startLine + 50);
-    for (let line = startLine; line <= boundedEnd; line += 1) {
-      const key = `${side}:${line}`;
-      const existing = index.get(key);
-      if (existing) {
-        existing.push(annotation);
-      } else {
-        index.set(key, [annotation]);
-      }
-    }
-  }
-  return index;
-}
-
-function annotationsForLine(index: AnnotationIndex, line: DiffLine): PrDiffAnnotation[] {
-  const annotations: PrDiffAnnotation[] = [];
-  if (line.oldLineNum != null) {
-    annotations.push(...(index.get(`old:${line.oldLineNum}`) ?? []));
-  }
-  if (line.newLineNum != null) {
-    annotations.push(...(index.get(`new:${line.newLineNum}`) ?? []));
-  }
-  return [...new Map(annotations.map((annotation) => [annotation.id, annotation])).values()];
-}
+type DiffVirtualRow =
+  | { type: "hunk-header"; key: string; header: string }
+  | { type: "line"; key: string; line: DiffLine }
+  | { type: "range-line"; key: string; line: DiffLine }
+  | ({ type: "gap-collapsed" | "gap-loading" | "gap-error" | "gap-hide"; key: string } & GapRowBase);
+type GapVirtualRow = Extract<
+  DiffVirtualRow,
+  { type: "gap-collapsed" | "gap-loading" | "gap-error" | "gap-hide" }
+>;
 
 function annotationsForNewLineRange(
   index: AnnotationIndex,
@@ -175,174 +86,6 @@ function annotationsForNewLineRange(
     }
   }
   return [...annotations.values()];
-}
-
-function renderAnnotationRows(
-  annotations: PrDiffAnnotation[],
-  wrapLines: boolean,
-  variant: Variant
-) {
-  if (annotations.length === 0) return null;
-  return annotations.map((annotation) => {
-    const label = annotationSourceLabel(annotation.source);
-    const summary = annotation.title ?? annotation.message;
-    const detail =
-      annotation.title && annotation.message && annotation.title !== annotation.message
-        ? annotation.message
-        : null;
-    const annotationUrl = annotation.url;
-    return (
-      <div
-        key={annotation.id}
-        className="flex"
-        data-testid="diff-annotation-row"
-        style={{ backgroundColor: variant === "conflict" ? "var(--status-info-muted)" : "var(--bg-subtle)" }}
-      >
-        <div className="w-12 shrink-0" style={{ backgroundColor: "var(--bg-surface)" }} />
-        <div className="w-12 shrink-0 border-r" style={{ backgroundColor: "var(--bg-surface)", borderColor: "var(--border-subtle)" }} />
-        <div className="w-6 shrink-0" style={{ backgroundColor: "var(--bg-surface)" }} />
-        <div
-          className={`flex-1 min-w-0 border-l-2 px-2 py-1 text-[0.6875rem] ${
-            wrapLines ? "whitespace-normal break-words" : "whitespace-nowrap"
-          }`}
-          style={{
-            borderColor: annotationLevelColor(annotation.level),
-            color: "var(--text-secondary)",
-          }}
-        >
-          <div className="flex min-w-0 items-start gap-2">
-            <div className="min-w-0 flex-1">
-              <span
-                className="mr-1 rounded px-1 font-semibold uppercase"
-                style={{
-                  backgroundColor: "var(--overlay-weak)",
-                  color: annotationLevelColor(annotation.level),
-                }}
-              >
-                {label}
-              </span>
-              {annotation.checkName && (
-                <span className="mr-1 font-medium" style={{ color: "var(--text-primary)" }}>
-                  {annotation.checkName}:
-                </span>
-              )}
-              <span>{summary}</span>
-              {annotation.isOutdated && (
-                <span className="ml-1" style={{ color: "var(--text-muted)" }}>
-                  outdated
-                </span>
-              )}
-              {detail && (
-                <div className="mt-0.5" style={{ color: "var(--text-muted)" }}>
-                  {detail}
-                </div>
-              )}
-            </div>
-            {annotationUrl && (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label="Open annotation in GitHub"
-                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border"
-                      style={{
-                        borderColor: "var(--border-subtle)",
-                        color: "var(--text-muted)",
-                      }}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void openUrl(annotationUrl);
-                      }}
-                    >
-                      <ExternalLink className="h-3 w-3" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">Open in GitHub</TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  });
-}
-
-// ============================================================================
-// Line renderer
-// ============================================================================
-
-function renderDiffLine(
-  line: DiffLine,
-  index: number,
-  wrapLines: boolean,
-  variant: Variant,
-  annotations: PrDiffAnnotation[] = []
-) {
-  return (
-    <div key={index}>
-      <div
-        className="flex"
-        style={{
-          backgroundColor: getLineBackground(line.kind, variant),
-          minHeight: "20px",
-        }}
-      >
-        <div
-          className="w-12 shrink-0 text-right pr-2 select-none z-10"
-          style={{
-            position: "sticky",
-            left: 0,
-            color: getLineNumColor(line.kind, variant),
-            backgroundColor: "var(--bg-surface)",
-          }}
-        >
-          {line.oldLineNum ?? ""}
-        </div>
-
-        <div
-          className="w-12 shrink-0 text-right pr-2 select-none border-r z-10"
-          style={{
-            position: "sticky",
-            left: 48,
-            color: getLineNumColor(line.kind, variant),
-            backgroundColor: "var(--bg-surface)",
-            borderColor: "var(--border-subtle)",
-          }}
-        >
-          {line.newLineNum ?? ""}
-        </div>
-
-        <div
-          className="w-6 shrink-0 text-center select-none font-bold z-10"
-          style={{
-            position: "sticky",
-            left: 96,
-            color: getPrefixColor(line.kind, variant),
-            backgroundColor: "var(--bg-surface)",
-          }}
-        >
-          {getLinePrefix(line.kind)}
-        </div>
-
-        <div
-          className={`flex-1 pr-4 min-w-0 ${
-            wrapLines ? "whitespace-pre-wrap break-all" : "whitespace-pre"
-          }`}
-          style={{
-            color:
-              line.kind === "deletion"
-                ? "var(--text-muted)"
-                : "var(--text-secondary)",
-          }}
-        >
-          {line.content || " "}
-        </div>
-      </div>
-      {renderAnnotationRows(annotations, wrapLines, variant)}
-    </div>
-  );
 }
 
 /** Render a fetched context range line as a DiffLine-like row. */
@@ -362,20 +105,123 @@ function renderRangeLine(
   return renderDiffLine(line, rl.lineNum, wrapLines, variant, annotations);
 }
 
-function renderHunkHeader(header: string) {
-  return (
-    <div
-      className="px-3 py-1 text-[0.6875rem] font-mono"
-      style={{
-        backgroundColor: "var(--overlay-weak)",
-        color: withAlpha("var(--text-primary)", 60),
-        borderTop: "1px solid var(--overlay-weak)",
-        borderBottom: "1px solid var(--overlay-weak)",
-      }}
-    >
-      {header}
-    </div>
-  );
+function pushGapRows(
+  rows: DiffVirtualRow[],
+  gap: GapRowBase,
+  gapCache: Map<string, GapState>,
+  collapsedGaps: Set<string>
+) {
+  if (gap.gapCount <= 0) return;
+
+  const state = gapCache.get(gap.gapKey);
+  const isCollapsed = collapsedGaps.has(gap.gapKey);
+
+  if (state === "error") {
+    rows.push({ type: "gap-error", key: `gap-${gap.gapKey}-error`, ...gap });
+    return;
+  }
+
+  if (state === "loading") {
+    rows.push({ type: "gap-loading", key: `gap-${gap.gapKey}-loading`, ...gap });
+    return;
+  }
+
+  if (Array.isArray(state) && !isCollapsed) {
+    state.forEach((rangeLine, index) => {
+      rows.push({
+        type: "range-line",
+        key: `gap-${gap.gapKey}-line-${rangeLine.lineNum}-${index}`,
+        line: {
+          kind: "context",
+          content: rangeLine.content,
+          oldLineNum: gap.fromOldLine + index,
+          newLineNum: rangeLine.lineNum,
+        },
+      });
+    });
+    rows.push({ type: "gap-hide", key: `gap-${gap.gapKey}-hide`, ...gap });
+    return;
+  }
+
+  rows.push({ type: "gap-collapsed", key: `gap-${gap.gapKey}-collapsed`, ...gap });
+}
+
+function buildDiffVirtualRows(
+  hunks: DiffHunk[],
+  newTotalLines: number,
+  showContextGaps: boolean,
+  gapCache: Map<string, GapState>,
+  collapsedGaps: Set<string>
+): DiffVirtualRow[] {
+  const rows: DiffVirtualRow[] = [];
+
+  hunks.forEach((hunk, hunkIdx) => {
+    const prevHunk = hunks[hunkIdx - 1];
+    if (showContextGaps) {
+      if (hunkIdx === 0) {
+        pushGapRows(
+          rows,
+          {
+            gapKey: "pre",
+            gapCount: hunk.newStart - 1,
+            fromNewLine: 1,
+            toNewLine: hunk.newStart - 1,
+            fromOldLine: 1,
+          },
+          gapCache,
+          collapsedGaps
+        );
+      } else if (prevHunk) {
+        const fromNewLine = prevHunk.newStart + prevHunk.newLines;
+        pushGapRows(
+          rows,
+          {
+            gapKey: String(hunkIdx),
+            gapCount: hunk.newStart - fromNewLine,
+            fromNewLine,
+            toNewLine: hunk.newStart - 1,
+            fromOldLine: prevHunk.oldStart + prevHunk.oldLines,
+          },
+          gapCache,
+          collapsedGaps
+        );
+      }
+    }
+
+    rows.push({
+      type: "hunk-header",
+      key: `hunk-${hunkIdx}-header`,
+      header: hunk.header,
+    });
+    hunk.lines.forEach((line, lineIdx) => {
+      rows.push({
+        type: "line",
+        key: `hunk-${hunkIdx}-line-${lineIdx}-${line.oldLineNum ?? "x"}-${line.newLineNum ?? "x"}`,
+        line,
+      });
+    });
+  });
+
+  if (showContextGaps) {
+    const lastHunk = hunks[hunks.length - 1];
+    if (lastHunk) {
+      const fromNewLine = lastHunk.newStart + lastHunk.newLines;
+      pushGapRows(
+        rows,
+        {
+          gapKey: "post",
+          gapCount: newTotalLines - lastHunk.newStart - lastHunk.newLines + 1,
+          fromNewLine,
+          toNewLine: newTotalLines,
+          fromOldLine: lastHunk.oldStart + lastHunk.oldLines,
+        },
+        gapCache,
+        collapsedGaps
+      );
+    }
+  }
+
+  return rows;
 }
 
 // ============================================================================
@@ -393,8 +239,12 @@ export function SimpleDiffView({
   refKind,
   scrollContainer = true,
   annotations = [],
+  density = "standard",
+  defaultWrapLines = true,
+  showWrapToggle = true,
+  showContextGaps = true,
 }: SimpleDiffViewProps) {
-  const [wrapLines, setWrapLines] = useState(true);
+  const [wrapLines, setWrapLines] = useState(defaultWrapLines);
   // gapCache state drives rendering; gapCacheRef mirrors it so callbacks
   // always read the latest value without a stale closure.
   const [gapCache, setGapCache] = useState<Map<string, GapState>>(() => new Map());
@@ -408,6 +258,10 @@ export function SimpleDiffView({
     filePath !== undefined &&
     refKind !== undefined;
   const annotationIndex = useMemo(() => buildAnnotationIndex(annotations), [annotations]);
+  const bodyTextClass =
+    density === "compact"
+      ? "font-mono text-[0.6875rem] leading-[18px]"
+      : "font-mono text-[0.8125rem] leading-[20px]";
 
   function setGapData(key: string, value: GapState) {
     // Update ref immediately so callbacks see fresh data; update state to re-render.
@@ -486,6 +340,25 @@ export function SimpleDiffView({
   const collapseGap = useCallback((gapKey: string) => {
     setCollapsedGaps((prev) => new Set(prev).add(gapKey));
   }, []);
+
+  const diffLineCount = useMemo(
+    () => hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0),
+    [hunks]
+  );
+  const shouldVirtualizeRows = diffLineCount >= DIFF_ROW_VIRTUALIZATION_THRESHOLD;
+  const virtualRows = useMemo(
+    () =>
+      shouldVirtualizeRows
+        ? buildDiffVirtualRows(
+            hunks,
+            newTotalLines,
+            showContextGaps,
+            gapCache,
+            collapsedGaps
+          )
+        : [],
+    [collapsedGaps, gapCache, hunks, newTotalLines, shouldVirtualizeRows, showContextGaps]
+  );
 
   // ── Early exits ────────────────────────────────────────────────────────
 
@@ -654,24 +527,207 @@ export function SimpleDiffView({
     );
   }
 
+  function renderVirtualGapRow(row: GapVirtualRow) {
+    if (row.type === "gap-error") {
+      return (
+        <div data-testid="diff-gap">
+          <div
+            data-testid="gap-error"
+            className="flex items-center gap-2 px-3 py-1.5 text-[0.6875rem]"
+            style={{
+              borderBottom: "1px solid var(--overlay-faint)",
+              color: "var(--text-muted)",
+            }}
+          >
+            <span>Could not load context lines.</span>
+            <button
+              type="button"
+              aria-label="Retry loading lines"
+              className="underline hover:no-underline"
+              style={{ color: "var(--text-secondary)" }}
+              onClick={() => retryGap(row.gapKey, row.fromNewLine, row.toNewLine)}
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (row.type === "gap-loading") {
+      return (
+        <div data-testid="diff-gap">
+          <div
+            data-testid="gap-loading"
+            className="px-3 py-1.5 text-[0.6875rem]"
+            style={{
+              borderBottom: "1px solid var(--overlay-faint)",
+              color: "var(--text-muted)",
+            }}
+          >
+            Loading…
+          </div>
+        </div>
+      );
+    }
+
+    if (row.type === "gap-hide") {
+      return (
+        <div data-testid="diff-gap">
+          <div
+            data-testid="diff-gap-control"
+            style={{ borderBottom: "1px solid var(--overlay-faint)" }}
+          >
+            <button
+              type="button"
+              aria-label="Hide unchanged lines"
+              className="block px-3 py-1.5 text-[0.6875rem] hover:underline"
+              style={{ color: "var(--text-muted)" }}
+              onClick={() => collapseGap(row.gapKey)}
+            >
+              Hide unchanged lines
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    const hiddenAnnotations = annotationsForNewLineRange(
+      annotationIndex,
+      row.fromNewLine,
+      row.toNewLine
+    );
+
+    return (
+      <div data-testid="diff-gap">
+        <div
+          data-testid="diff-gap-control"
+          style={{ borderBottom: "1px solid var(--overlay-faint)" }}
+        >
+          {hiddenAnnotations.length > 0 && (
+            <div
+              className="px-3 pt-1.5 text-[0.6875rem] font-medium"
+              data-testid="diff-hidden-annotations"
+              style={{ color: "var(--status-warning)" }}
+            >
+              {hiddenAnnotations.length} GitHub annotation
+              {hiddenAnnotations.length === 1 ? "" : "s"} in hidden context
+            </div>
+          )}
+          {canFetch ? (
+            <button
+              type="button"
+              aria-label={
+                hiddenAnnotations.length > 0
+                  ? `Show ${hiddenAnnotations.length} hidden annotations in ${row.gapCount} unchanged lines`
+                  : `Show ${row.gapCount} unchanged lines`
+              }
+              className="block px-3 py-1.5 text-[0.6875rem] hover:underline"
+              style={{ color: "var(--text-muted)" }}
+              onClick={() => expandGap(row.gapKey, row.fromNewLine, row.toNewLine)}
+            >
+              {hiddenAnnotations.length > 0
+                ? `Show annotations in ${row.gapCount} unchanged lines`
+                : `Show ${row.gapCount} unchanged lines`}
+            </button>
+          ) : (
+            <span
+              className="block px-3 py-1.5 text-[0.6875rem]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              {row.gapCount} unchanged lines
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function renderVirtualRow(_index: number, row: DiffVirtualRow) {
+    if (row.type === "hunk-header") {
+      return renderHunkHeader(row.header);
+    }
+    if (row.type === "line" || row.type === "range-line") {
+      return renderDiffLine(
+        row.line,
+        _index,
+        wrapLines,
+        variant,
+        annotationsForLine(annotationIndex, row.line)
+      );
+    }
+    return renderVirtualGapRow(row);
+  }
+
   // ── Main render ────────────────────────────────────────────────────────
+
+  if (shouldVirtualizeRows) {
+    return (
+      <div className={scrollContainer ? "h-full overflow-hidden" : "w-full overflow-hidden"}>
+        <div
+          className={
+            scrollContainer
+              ? `${bodyTextClass} flex h-full min-h-0 flex-col`
+              : bodyTextClass
+          }
+          data-density={density}
+          data-wrap-lines={wrapLines}
+          data-testid="simple-diff-virtualized"
+          style={{ backgroundColor: "var(--bg-base)" }}
+        >
+          {showWrapToggle && (
+            <div
+              className="px-3 py-2 border-b"
+              style={{ borderColor: "var(--overlay-weak)" }}
+            >
+              <Button
+                variant="ghost"
+                className="h-7 px-2 text-[0.6875rem]"
+                onClick={() => setWrapLines((prev) => !prev)}
+              >
+                {wrapLines ? "Disable wrap" : "Wrap lines"}
+              </Button>
+            </div>
+          )}
+          <Virtuoso
+            data={virtualRows}
+            data-testid="simple-diff-virtual-list"
+            className={scrollContainer ? "min-h-0 flex-1" : undefined}
+            style={{
+              height: scrollContainer ? "100%" : INLINE_VIRTUAL_DIFF_HEIGHT,
+              overflowX: "auto",
+            }}
+            computeItemKey={(_index, row) => row.key}
+            increaseViewportBy={{ top: 320, bottom: 640 }}
+            itemContent={renderVirtualRow}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={scrollContainer ? "h-full overflow-y-auto" : "w-full overflow-visible"}>
       <div
-        className="font-mono text-[0.8125rem] leading-[20px]"
+        className={bodyTextClass}
+        data-density={density}
+        data-wrap-lines={wrapLines}
         style={{ backgroundColor: "var(--bg-base)" }}
       >
-        {/* Wrap toggle */}
-        <div className="px-3 py-2 border-b" style={{ borderColor: "var(--overlay-weak)" }}>
-          <Button
-            variant="ghost"
-            className="h-7 px-2 text-[0.6875rem]"
-            onClick={() => setWrapLines((prev) => !prev)}
+        {showWrapToggle && (
+          <div
+            className="px-3 py-2 border-b"
+            style={{ borderColor: "var(--overlay-weak)" }}
           >
-            {wrapLines ? "Disable wrap" : "Wrap lines"}
-          </Button>
-        </div>
+            <Button
+              variant="ghost"
+              className="h-7 px-2 text-[0.6875rem]"
+              onClick={() => setWrapLines((prev) => !prev)}
+            >
+              {wrapLines ? "Disable wrap" : "Wrap lines"}
+            </Button>
+          </div>
+        )}
 
         {hunks.map((hunk, hunkIdx) => {
           const prevHunk = hunks[hunkIdx - 1];
@@ -701,7 +757,9 @@ export function SimpleDiffView({
 
           return (
             <div key={`hunk-${hunkIdx}`}>
-              {renderGap(gapKey, gapCount, gapFromNew, gapToNew, gapFromOld)}
+              {showContextGaps
+                ? renderGap(gapKey, gapCount, gapFromNew, gapToNew, gapFromOld)
+                : null}
 
               <div
                 className="border-b"
@@ -735,14 +793,22 @@ export function SimpleDiffView({
         })}
 
         {/* Trailing gap (after last hunk) */}
-        {(() => {
-          const lastHunk = hunks[hunks.length - 1]!;
-          const trailingFromNew = lastHunk.newStart + lastHunk.newLines;
-          const trailingToNew = newTotalLines;
-          const trailingFromOld = lastHunk.oldStart + lastHunk.oldLines;
-          const trailingCount = newTotalLines - lastHunk.newStart - lastHunk.newLines + 1;
-          return renderGap("post", trailingCount, trailingFromNew, trailingToNew, trailingFromOld);
-        })()}
+        {showContextGaps
+          ? (() => {
+              const lastHunk = hunks[hunks.length - 1]!;
+              const trailingFromNew = lastHunk.newStart + lastHunk.newLines;
+              const trailingToNew = newTotalLines;
+              const trailingFromOld = lastHunk.oldStart + lastHunk.oldLines;
+              const trailingCount = newTotalLines - lastHunk.newStart - lastHunk.newLines + 1;
+              return renderGap(
+                "post",
+                trailingCount,
+                trailingFromNew,
+                trailingToNew,
+                trailingFromOld
+              );
+            })()
+          : null}
       </div>
     </div>
   );

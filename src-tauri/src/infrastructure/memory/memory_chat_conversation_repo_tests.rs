@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
-use crate::domain::entities::{AttributionBackfillStatus, IdeationSessionId};
+use crate::domain::entities::{AttributionBackfillStatus, IdeationSessionId, ProjectId};
 
 #[tokio::test]
 async fn test_create_and_get() {
@@ -66,6 +66,60 @@ async fn test_get_by_context_page_filtered_can_return_archived_only() {
     assert_eq!(page.total_count, 1);
     assert_eq!(page.conversations.len(), 1);
     assert_eq!(page.conversations[0].id, archived.id);
+}
+
+#[tokio::test]
+async fn test_list_recent_resumable_by_context_type_filters_and_orders() {
+    let repo = MemoryChatConversationRepository::new();
+    let now = chrono::Utc::now();
+
+    let mut oldest = ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+    oldest.provider_session_id = Some("codex-oldest".to_string());
+    oldest.provider_harness = Some(AgentHarnessKind::Codex);
+    oldest.last_message_at = Some(now - chrono::Duration::minutes(5));
+    oldest.updated_at = now - chrono::Duration::minutes(1);
+
+    let mut newest = ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+    newest.claude_session_id = Some("claude-newest".to_string());
+    newest.last_message_at = Some(now - chrono::Duration::minutes(1));
+    newest.updated_at = now - chrono::Duration::minutes(5);
+
+    let mut middle = ChatConversation::new_project(ProjectId::from_string("project-2".to_string()));
+    middle.provider_session_id = Some("codex-middle".to_string());
+    middle.provider_harness = Some(AgentHarnessKind::Codex);
+    middle.last_message_at = Some(now - chrono::Duration::minutes(3));
+
+    let missing_session =
+        ChatConversation::new_project(ProjectId::from_string("project-3".to_string()));
+
+    let mut archived = ChatConversation::new_project(ProjectId::from_string("project-4".to_string()));
+    archived.provider_session_id = Some("codex-archived".to_string());
+    archived.provider_harness = Some(AgentHarnessKind::Codex);
+    archived.archived_at = Some(now);
+
+    let mut ideation = ChatConversation::new_ideation(IdeationSessionId::new());
+    ideation.provider_session_id = Some("codex-ideation".to_string());
+    ideation.provider_harness = Some(AgentHarnessKind::Codex);
+
+    repo.create(oldest.clone()).await.unwrap();
+    repo.create(newest.clone()).await.unwrap();
+    repo.create(middle.clone()).await.unwrap();
+    repo.create(missing_session).await.unwrap();
+    repo.create(archived).await.unwrap();
+    repo.create(ideation).await.unwrap();
+
+    let resumable = repo
+        .list_recent_resumable_by_context_type(ChatContextType::Project, 2)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resumable
+            .iter()
+            .map(|conversation| conversation.id)
+            .collect::<Vec<_>>(),
+        vec![newest.id, middle.id]
+    );
 }
 
 #[tokio::test]

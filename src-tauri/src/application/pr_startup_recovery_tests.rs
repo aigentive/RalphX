@@ -5,7 +5,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+use crate::application::agent_conversation_workspace::{
+    resolve_agent_conversation_workspace_path, resolve_linked_plan_branch_agent_worktree_path,
+};
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::application::pr_startup_recovery::{
@@ -250,14 +252,17 @@ async fn startup_agent_workspace_pr_recovery_restarts_active_published_poller() 
     let project_repo: Arc<dyn ProjectRepository> =
         Arc::new(MemoryProjectRepository::with_projects(vec![project]));
     let github = Arc::new(MockGithubService::new());
+    let plan_branch_repo: Arc<dyn PlanBranchRepository> =
+        Arc::new(MemoryPlanBranchRepository::new());
     let registry = Arc::new(PrPollerRegistry::new(
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
-        Arc::new(MemoryPlanBranchRepository::new()),
+        Arc::clone(&plan_branch_repo),
     ));
 
     recover_agent_workspace_pr_pollers(
         workspace_repo,
         project_repo,
+        plan_branch_repo,
         Arc::clone(&registry),
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MockChatService::new()),
@@ -266,6 +271,114 @@ async fn startup_agent_workspace_pr_recovery_restarts_active_published_poller() 
     .await;
 
     assert!(registry.is_agent_workspace_polling(&conversation_id));
+    registry.stop_agent_workspace_polling(&conversation_id);
+}
+
+#[tokio::test]
+async fn startup_agent_workspace_pr_recovery_restarts_supervised_ideation_poller() {
+    init_tracing();
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let repo_path = temp_dir.path().join("repo");
+    std::fs::create_dir_all(&repo_path).expect("create repo dir");
+    run_git(&repo_path, &["init"]);
+    run_git(&repo_path, &["config", "user.email", "test@example.com"]);
+    run_git(&repo_path, &["config", "user.name", "Test User"]);
+    run_git(&repo_path, &["checkout", "-b", "main"]);
+    std::fs::write(repo_path.join("README.md"), "base\n").expect("write readme");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "initial"]);
+
+    let mut project = Project::new(
+        "Startup Ideation Poller".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
+    project.worktree_parent_directory = Some(
+        temp_dir
+            .path()
+            .join("worktrees")
+            .to_string_lossy()
+            .to_string(),
+    );
+
+    let conversation_id = ChatConversationId::from_string("abababab-4444-5555-6666-cdcdcdcdcdcd");
+    let plan_branch_name = "feature/startup-ideation-poller-plan";
+    run_git(&repo_path, &["checkout", "-b", plan_branch_name]);
+    std::fs::write(repo_path.join("plan.txt"), "plan branch\n").expect("write plan fixture");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "plan branch"]);
+    run_git(&repo_path, &["checkout", "main"]);
+
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("artifact-startup-ideation-poller"),
+        IdeationSessionId::from_string("session-startup-ideation-poller"),
+        project.id.clone(),
+        plan_branch_name.to_string(),
+        "main".to_string(),
+    );
+    plan_branch.id = PlanBranchId::from_string("plan-branch-ideation");
+    plan_branch.pr_number = Some(101);
+    plan_branch.pr_url = Some("https://github.com/owner/repo/pull/101".to_string());
+    plan_branch.pr_status = Some(PlanPrStatus::Open);
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    let expected_plan_worktree =
+        resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
+            .expect("plan worktree path should resolve");
+
+    let mut workspace = published_workspace(
+        &project,
+        conversation_id.clone(),
+        "ralphx/test/startup-ideation-poller",
+    );
+    workspace.mode = AgentConversationWorkspaceMode::Ideation;
+    workspace.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-branch-ideation"));
+    workspace.pr_autofix_enabled = true;
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let project_repo: Arc<dyn ProjectRepository> =
+        Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let plan_branch_repo: Arc<dyn PlanBranchRepository> =
+        Arc::new(MemoryPlanBranchRepository::new());
+    plan_branch_repo
+        .create(plan_branch)
+        .await
+        .expect("plan branch should persist");
+    let github = Arc::new(MockGithubService::new());
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::clone(&plan_branch_repo),
+    ));
+
+    recover_agent_workspace_pr_pollers(
+        workspace_repo,
+        project_repo,
+        plan_branch_repo,
+        Arc::clone(&registry),
+        Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MockChatService::new()),
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    assert!(registry.is_agent_workspace_polling(&conversation_id));
+    assert_eq!(
+        GitService::get_current_branch(&repo_path)
+            .await
+            .expect("root branch should be readable"),
+        "main"
+    );
+    assert_eq!(
+        GitService::get_current_branch(&expected_plan_worktree)
+            .await
+            .expect("plan worktree branch should be readable"),
+        plan_branch_name
+    );
     registry.stop_agent_workspace_polling(&conversation_id);
 }
 
@@ -605,4 +718,15 @@ impl AgentConversationWorkspaceRepository for WorkspaceLoadErrorRepository {
     async fn delete(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
         Err(repo_error())
     }
+}
+
+#[tokio::test]
+async fn workspace_repository_default_linked_ideation_lookup_returns_none() {
+    let repo = WorkspaceLoadErrorRepository;
+    let loaded = repo
+        .get_by_linked_ideation_session_id(&IdeationSessionId::from_string("session-1"))
+        .await
+        .unwrap();
+
+    assert!(loaded.is_none());
 }

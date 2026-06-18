@@ -3,8 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import {
   agentComposerApi,
   type AgentComposerEntry,
+  type AgentComposerPlanReference,
   type AgentComposerSkill,
 } from "@/api/agent-composer";
+import {
+  atlassianApi,
+  type AtlassianResourceKind,
+  type AtlassianResourceSummary,
+} from "@/api/atlassian";
 
 export const agentComposerKeys = {
   all: ["agent-composer"] as const,
@@ -18,6 +24,8 @@ export const agentComposerKeys = {
       "entries",
       { projectId, conversationId: conversationId ?? null, query },
     ] as const,
+  planReferences: (projectId: string, query: string) =>
+    [...agentComposerKeys.all, "plan-references", { projectId, query }] as const,
   skills: (
     projectId: string,
     conversationId: string | null | undefined,
@@ -34,6 +42,8 @@ export const agentComposerKeys = {
         mode: mode ?? null,
       },
     ] as const,
+  integrations: (kind: AtlassianResourceKind | null | undefined, query: string) =>
+    [...agentComposerKeys.all, "integrations", { kind: kind ?? null, query }] as const,
 };
 
 export function useAgentComposerEntries({
@@ -64,6 +74,34 @@ export function useAgentComposerEntries({
   });
 }
 
+export function useAgentComposerPlanReferences({
+  projectId,
+  query,
+  enabled,
+}: {
+  projectId: string;
+  query: string;
+  enabled: boolean;
+}) {
+  const normalizedQuery = query.trim();
+  return useQuery({
+    queryKey: agentComposerKeys.planReferences(projectId, normalizedQuery),
+    queryFn: () =>
+      agentComposerApi.searchPlanReferences({
+        projectId,
+        query: normalizedQuery,
+        limit: 12,
+      }),
+    enabled: enabled && projectId.length > 0,
+    staleTime: 10_000,
+    gcTime: 60_000,
+    placeholderData: {
+      plans: [] satisfies AgentComposerPlanReference[],
+      truncated: false,
+    },
+  });
+}
+
 export function useAgentComposerSkills({
   projectId,
   conversationId,
@@ -90,5 +128,30 @@ export function useAgentComposerSkills({
     staleTime: 30_000,
     gcTime: 120_000,
     placeholderData: { skills: [] satisfies AgentComposerSkill[] },
+  });
+}
+
+export function useAgentComposerIntegrationResources({
+  kind,
+  query,
+  enabled,
+}: {
+  kind?: AtlassianResourceKind | null;
+  query: string;
+  enabled: boolean;
+}) {
+  const normalizedQuery = query.trim();
+  return useQuery({
+    queryKey: agentComposerKeys.integrations(kind, normalizedQuery),
+    queryFn: () =>
+      atlassianApi.searchResources({
+        kind: kind ?? "jira",
+        query: normalizedQuery,
+        limit: 12,
+      }),
+    enabled: enabled && kind !== null && kind !== undefined,
+    staleTime: 10_000,
+    gcTime: 60_000,
+    placeholderData: [] satisfies AtlassianResourceSummary[],
   });
 }

@@ -82,7 +82,10 @@ fn test_existing_sessions_get_default_internal() {
         )
         .unwrap();
 
-    assert_eq!(origin, "internal", "existing session should get default 'internal' origin");
+    assert_eq!(
+        origin, "internal",
+        "existing session should get default 'internal' origin"
+    );
 }
 
 #[test]

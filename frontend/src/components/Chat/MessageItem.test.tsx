@@ -55,6 +55,59 @@ describe("MessageItem - Attachment Integration", () => {
     expect(screen.getByText("image.png")).toBeInTheDocument();
   });
 
+  it("renders structured composer references for user messages", () => {
+    renderMessageItem(
+      <MessageItem
+        {...baseProps}
+        role="user"
+        composerReferences={{
+          projectReferences: [{ path: "src/main.ts", kind: "file" }],
+          artifactReferences: [],
+          integrationReferences: [
+            {
+              provider: "atlassian",
+              kind: "jira",
+              id: "RX-42",
+              key: "RX-42",
+              title: "Fix composer references",
+              url: "https://example.atlassian.net/browse/RX-42",
+            },
+            {
+              provider: "atlassian",
+              kind: "confluence",
+              id: "123",
+              title: "Release Notes",
+            },
+          ],
+        }}
+      />
+    );
+
+    expect(screen.getByTestId("message-reference-project:src/main.ts")).toHaveTextContent(
+      "File",
+    );
+    expect(screen.getByTestId("message-reference-integration:jira:RX-42")).toHaveTextContent(
+      "Jira",
+    );
+    const jiraReference = screen.getByTestId(
+      "message-reference-integration:jira:RX-42",
+    );
+    expect(jiraReference).toHaveTextContent("RX-42");
+    expect(jiraReference).toHaveAttribute(
+      "href",
+      "https://example.atlassian.net/browse/RX-42",
+    );
+    expect(jiraReference).toHaveClass("no-underline", "flex-wrap");
+    expect(jiraReference).toHaveStyle({ textDecoration: "none" });
+    expect(screen.getByText("Fix composer references")).toHaveClass("break-words");
+    expect(
+      screen.getByTestId("message-reference-integration:confluence:123"),
+    ).toHaveTextContent("Confluence");
+    expect(
+      screen.getByTestId("message-reference-integration:confluence:123"),
+    ).toHaveTextContent("Release Notes");
+  });
+
   it("does NOT render MessageAttachments for user messages without attachments", () => {
     renderMessageItem(<MessageItem {...baseProps} role="user" />);
 
@@ -117,6 +170,25 @@ describe("MessageItem - Attachment Integration", () => {
     expect(attachmentsIndex).toBeLessThan(textBubbleIndex);
   });
 
+  it("aligns user attachments and references with the right-aligned text bubble", () => {
+    renderMessageItem(
+      <MessageItem
+        {...baseProps}
+        role="user"
+        attachments={mockAttachments}
+        composerReferences={{
+          projectReferences: [{ path: "src/main.ts", kind: "file" }],
+          integrationReferences: [],
+          artifactReferences: [],
+        }}
+      />
+    );
+
+    expect(screen.getByTestId("text-bubble-user")).toHaveClass("self-end");
+    expect(screen.getByTestId("message-attachment-list")).toHaveClass("self-end");
+    expect(screen.getByTestId("message-reference-list")).toHaveClass("self-end", "justify-end");
+  });
+
   it("works with content blocks rendering", () => {
     const contentBlocks = [makeContentText("First block"), makeContentText("Second block")];
 
@@ -136,6 +208,62 @@ describe("MessageItem - Attachment Integration", () => {
     // Content blocks should also render
     expect(screen.getByText("First block")).toBeInTheDocument();
     expect(screen.getByText("Second block")).toBeInTheDocument();
+  });
+
+  it("passes argument preview metadata from content block tool uses into diff widgets", () => {
+    const contentBlocks = [
+      {
+        type: "tool_use" as const,
+        id: "tool-edit-preview",
+        name: "edit",
+        arguments: { file_path: "src/app.ts" },
+        argumentsPreviewTruncated: true,
+        argumentsPreviewOriginalBytes: 2400,
+        argumentsPreviewLineCount: 120,
+        argumentsPreviewOmittedLines: 114,
+        diffPreview: {
+          filePath: "src/app.ts",
+          language: "typescript",
+          oldTotalLines: 0,
+          newTotalLines: 1,
+          isBinary: false,
+          hunks: [
+            {
+              oldStart: 1,
+              oldLines: 0,
+              newStart: 1,
+              newLines: 1,
+              header: "@@ -1,0 +1,1 @@",
+              lines: [
+                {
+                  kind: "addition" as const,
+                  content: "export const value = 1;",
+                  oldLineNum: null,
+                  newLineNum: 1,
+                },
+              ],
+            },
+          ],
+        },
+        detailRef: {
+          conversationId: "conv-1",
+          messageId: "msg-1",
+          toolCallId: "tool-edit-preview",
+        },
+      },
+    ];
+
+    renderMessageItem(
+      <MessageItem
+        {...baseProps}
+        role="assistant"
+        contentBlocks={contentBlocks}
+      />
+    );
+
+    expect(screen.getByTestId("diff-tool-call-preview-diff")).toHaveTextContent(
+      "export const value = 1;"
+    );
   });
 
   it("works with legacy rendering (toolCalls + text)", () => {
@@ -404,6 +532,26 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
     expect(indicators.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("passes structured preview path metadata from content blocks into tool calls", () => {
+    const contentBlocks = [
+      {
+        type: "tool_use" as const,
+        id: "custom-preview-paths",
+        name: "custom_tool",
+        arguments: { file_path: "/src/big.log" },
+        result: { output: "preview" },
+        resultPreviewTruncated: true,
+        resultPreviewPaths: ["$.output"],
+      },
+    ];
+
+    const { container } = renderMessageItem(
+      <MessageItem role="assistant" content="" createdAt={createdAt} contentBlocks={contentBlocks} />
+    );
+
+    expect(container.querySelector('[data-testid="tool-call-preview-card"]')).toBeInTheDocument();
+  });
+
   it("collects both tool_use and tool_result IDs from Agent result for suppression", () => {
     // Verify that both the tool_use ID and tool_result's tool_use_id are suppressed
     const childId = "child-abc";
@@ -464,6 +612,53 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
     expect(container.querySelector('[data-testid="task-tool-call-card"]')).toBeInTheDocument();
     // Independent tool renders as generic indicator
     expect(container.querySelector('[data-testid="tool-call-indicator"]')).toBeInTheDocument();
+  });
+});
+
+describe("MessageItem - hydrated content block tool results", () => {
+  const createdAt = "2026-04-10T07:00:00Z";
+
+  it("hydrates a content-block tool widget result from the matching toolCalls entry", async () => {
+    const toolCallId = "tool-ask-question";
+    const contentBlocks = [
+      makeContentToolUse("mcp__ralphx__ask_user_question", {
+        id: toolCallId,
+        arguments: { question: "Which area should we focus on?" },
+      }),
+    ];
+    const toolCalls = [
+      makeToolCall("mcp__ralphx__ask_user_question", {
+        id: toolCallId,
+        arguments: { question: "Which area should we focus on?" },
+        result: {
+          answers: [
+            {
+              id: "scope",
+              request_id: "req-1",
+              question: "Which area should we focus on?",
+              options: [{ label: "Backend", value: "backend" }],
+              selected_options: ["backend"],
+              text: null,
+              skipped: false,
+            },
+          ],
+        },
+      }),
+    ];
+
+    renderMessageItem(
+      <MessageItem
+        role="assistant"
+        content=""
+        createdAt={createdAt}
+        contentBlocks={contentBlocks}
+        toolCalls={toolCalls}
+      />,
+    );
+
+    expect(await screen.findByText("Question answered")).toBeInTheDocument();
+    expect(screen.getByText("Which area should we focus on?")).toBeInTheDocument();
+    expect(screen.getByText("Backend")).toBeInTheDocument();
   });
 });
 

@@ -342,6 +342,141 @@ describe("diff api", () => {
     });
   });
 
+  describe("getAgentConversationWorkspaceFileDiffPage", () => {
+    const rawPage = {
+      file_path: "src/lib.rs",
+      language: "rust",
+      rows: [
+        { kind: "hunk_header", header: "@@ -1,2 +1,2 @@" },
+        {
+          kind: "line",
+          line: {
+            kind: "addition",
+            content: "pub fn answer() -> u8 { 42 }",
+            old_line_num: null,
+            new_line_num: 1,
+          },
+        },
+      ],
+      offset: 0,
+      limit: 2,
+      next_offset: 2,
+      total_rows: 12,
+      old_total_lines: 0,
+      new_total_lines: 1,
+      is_binary: false,
+    };
+
+    beforeEach(() => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve(rawPage),
+        })
+      );
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("calls the HTTP diff page endpoint and transforms rows", async () => {
+      const result = await diffApi.getAgentConversationWorkspaceFileDiffPage({
+        conversationId: "conv-1",
+        path: "src/lib.rs",
+        refKind: { kind: "head" },
+        offset: 0,
+        limit: 2,
+      });
+
+      expect(fetch).toHaveBeenCalledOnce();
+      const [calledUrl] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
+      expect(calledUrl).toContain("/api/agent-workspaces/conv-1/file-diff-page");
+      expect(calledUrl).toContain("path=src%2Flib.rs");
+      expect(calledUrl).toContain("ref_kind=head");
+      expect(calledUrl).toContain("offset=0");
+      expect(calledUrl).toContain("limit=2");
+      expect(result).toEqual({
+        filePath: "src/lib.rs",
+        language: "rust",
+        rows: [
+          { kind: "hunk_header", header: "@@ -1,2 +1,2 @@" },
+          {
+            kind: "line",
+            line: {
+              kind: "addition",
+              content: "pub fn answer() -> u8 { 42 }",
+              oldLineNum: null,
+              newLineNum: 1,
+            },
+          },
+        ],
+        offset: 0,
+        limit: 2,
+        nextOffset: 2,
+        totalRows: 12,
+        oldTotalLines: 0,
+        newTotalLines: 1,
+        isBinary: false,
+      });
+    });
+
+    it("includes sha param for commit ref kind", async () => {
+      await diffApi.getAgentConversationWorkspaceFileDiffPage({
+        conversationId: "conv-1",
+        path: "src/lib.rs",
+        refKind: { kind: "commit", sha: "abc123" },
+        offset: 4,
+        limit: 8,
+      });
+
+      const [calledUrl] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
+      expect(calledUrl).toContain("ref_kind=commit");
+      expect(calledUrl).toContain("sha=abc123");
+      expect(calledUrl).toContain("offset=4");
+      expect(calledUrl).toContain("limit=8");
+    });
+
+    it("throws on non-OK HTTP response", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({ ok: false, status: 404, statusText: "Not Found" })
+      );
+
+      await expect(
+        diffApi.getAgentConversationWorkspaceFileDiffPage({
+          conversationId: "conv-1",
+          path: "src/lib.rs",
+          refKind: { kind: "head" },
+          offset: 0,
+          limit: 2,
+        })
+      ).rejects.toThrow("File diff page fetch failed: 404 Not Found");
+    });
+  });
+
+  it("loads and transforms the compact agent workspace change summary", async () => {
+    mockInvoke.mockResolvedValue({
+      supports_worktree_modes: true,
+      staged: { file_count: 1, additions: 7, deletions: 2 },
+      unstaged: { file_count: 2, additions: 12, deletions: 3 },
+    });
+
+    const summary =
+      await diffApi.getAgentConversationWorkspaceChangeSummary("conversation-1");
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "get_agent_conversation_workspace_change_summary",
+      { conversationId: "conversation-1" }
+    );
+    expect(summary).toEqual({
+      supportsWorktreeModes: true,
+      staged: { fileCount: 1, additions: 7, deletions: 2 },
+      unstaged: { fileCount: 2, additions: 12, deletions: 3 },
+    });
+  });
+
   it("transforms agent workspace review fields without invoking Tauri", () => {
     const review = transformAgentWorkspaceReview({
       changes: [

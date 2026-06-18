@@ -9,9 +9,14 @@ import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
 import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
 import { callAgentWorkspaceTool, callCheckAgentWorkspacePublishReadinessTool, callCompleteAgentWorkspacePrFixTool, callCompleteAgentWorkspaceRepairTool, callGetAgentWorkspacePrFixContextTool, callGetAgentWorkspacePublishStatusTool, callPublishAgentWorkspaceTool, callSubmitAgentWorkspacePrDescriptionTool, callUpdateAgentWorkspaceFromBaseTool, isAgentWorkspaceToolName, } from '../agent-workspace-tools.js';
-import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, GENERAL_WORKER, AGENT_WORKSPACE_PR_FIXER, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
+import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, GENERAL_EXPLORER, GENERAL_WORKER, AGENT_WORKSPACE_PR_FIXER, PLAN_COMPLEXITY_ASSESSOR, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
 function toolsByAgent() {
     return getToolsByAgent();
+}
+function inputSchemaProperties(toolName) {
+    const tool = getAllTools().find((candidate) => candidate.name === toolName);
+    expect(tool, `${toolName} tool`).toBeDefined();
+    return (tool.inputSchema.properties ?? {});
 }
 describe('getAllowedToolNames', () => {
     beforeEach(() => {
@@ -104,6 +109,12 @@ describe('getAllowedToolNames', () => {
         expect(getAllowedToolNames()).toEqual(loadCanonicalMcpTools('pr-describer'));
         expect(getAllowedToolNames()).toContain('submit_agent_workspace_pr_description');
     });
+    it('resolves the plan complexity legacy alias to canonical metadata', () => {
+        setAgentType('plan-complexity');
+        expect(canonicalAgentName('plan-complexity')).toBe('ralphx-utility-plan-complexity');
+        expect(getAllowedToolNames()).toEqual(loadCanonicalMcpTools('plan-complexity'));
+        expect(getAllowedToolNames()).toEqual(['submit_plan_complexity_assessment']);
+    });
 });
 describe('getToolRecoveryHint', () => {
     it('does not expose recovery guidance for removed update_plan_verification', () => {
@@ -149,6 +160,14 @@ describe('getToolRecoveryHint', () => {
         const hint = getToolRecoveryHint('send_ideation_session_message');
         expect(hint).toContain('SESSION_ID, ROUND, critic/schema');
         expect(hint).toContain('Example payload:');
+    });
+    it('returns cleanup guidance for agent task ledger progression tools', () => {
+        for (const toolName of ['claim_agent_task', 'complete_agent_task', 'update_agent_task']) {
+            const hint = getToolRecoveryHint(toolName);
+            expect(hint).toContain('one meaningful task cannot be claimed, activated, or completed');
+            expect(hint).toContain('state=dropped');
+            expect(hint).toContain('create multiple concrete tasks');
+        }
     });
     it('returns null for an unknown tool', () => {
         expect(getToolRecoveryHint('not_a_real_tool')).toBeNull();
@@ -227,6 +246,31 @@ describe('tool input schemas', () => {
             expect(tool.inputSchema, `${tool.name} inputSchema`).not.toHaveProperty('anyOf');
         }
     });
+    it('advertises create_task_proposal dependency fields supported by the backend', () => {
+        const tool = getAllTools().find((candidate) => candidate.name === 'create_task_proposal');
+        expect(tool).toBeDefined();
+        const properties = inputSchemaProperties('create_task_proposal');
+        expect(properties.depends_on).toMatchObject({
+            type: 'array',
+            items: { type: 'string' },
+        });
+        expect(tool.inputSchema.required ?? []).not.toContain('depends_on');
+    });
+    it('advertises update_task_proposal dependency edit fields supported by the backend', () => {
+        const tool = getAllTools().find((candidate) => candidate.name === 'update_task_proposal');
+        expect(tool).toBeDefined();
+        const properties = inputSchemaProperties('update_task_proposal');
+        expect(properties.add_depends_on).toMatchObject({
+            type: 'array',
+            items: { type: 'string' },
+        });
+        expect(properties.add_blocks).toMatchObject({
+            type: 'array',
+            items: { type: 'string' },
+        });
+        expect(tool.inputSchema.required ?? []).not.toContain('add_depends_on');
+        expect(tool.inputSchema.required ?? []).not.toContain('add_blocks');
+    });
 });
 describe('getFilteredTools', () => {
     beforeEach(() => {
@@ -302,13 +346,36 @@ describe('getFilteredTools', () => {
         expect(toolNames).not.toContain('report_verification_round');
         expect(toolNames).not.toContain('complete_plan_verification');
     });
-    it('should keep project chat on the scoped ideation append tool only', () => {
+    it('should keep project chat on scoped parent-chat planning tools only', () => {
         setAgentType(CHAT_PROJECT);
         const tools = getFilteredTools();
         const toolNames = tools.map((t) => t.name);
         expect(toolNames).toContain('suggest_task');
         expect(toolNames).toContain('list_tasks');
+        expect(toolNames).toContain('propose_plan_mode');
         expect(toolNames).toContain('append_task_to_ideation_plan');
+        expect(toolNames).not.toContain('start_ideation_session');
+        expect(toolNames).not.toContain('create_child_session');
+        expect(toolNames).not.toContain('create_task_proposal');
+        expect(toolNames).not.toContain('update_plan_artifact');
+    });
+    it('should let the general chat explorer propose a Plan-mode handoff without edit or ideation tools', () => {
+        setAgentType(GENERAL_EXPLORER);
+        const tools = getFilteredTools();
+        const toolNames = tools.map((t) => t.name);
+        expect(toolNames).toContain('propose_plan_mode');
+        expect(toolNames).not.toContain('publish_agent_workspace');
+        expect(toolNames).not.toContain('update_agent_workspace_from_base');
+        expect(toolNames).not.toContain('start_ideation_session');
+        expect(toolNames).not.toContain('create_child_session');
+        expect(toolNames).not.toContain('create_task_proposal');
+        expect(toolNames).not.toContain('update_plan_artifact');
+    });
+    it('should let the general edit worker propose a Plan-mode handoff without exposing ideation tools', () => {
+        setAgentType(GENERAL_WORKER);
+        const tools = getFilteredTools();
+        const toolNames = tools.map((t) => t.name);
+        expect(toolNames).toContain('propose_plan_mode');
         expect(toolNames).not.toContain('start_ideation_session');
         expect(toolNames).not.toContain('create_child_session');
         expect(toolNames).not.toContain('create_task_proposal');
@@ -1096,6 +1163,40 @@ describe('agent workspace PR description tool', () => {
         });
     });
 });
+describe('plan complexity assessment tool', () => {
+    const allTools = getAllTools();
+    const tool = allTools.find((t) => t.name === 'submit_plan_complexity_assessment');
+    it('should exist in ALL_TOOLS', () => {
+        expect(tool).toBeDefined();
+    });
+    it('should require the current approved plan assessment fields', () => {
+        expect(tool?.inputSchema.type).toBe('object');
+        expect(tool?.inputSchema.properties).toHaveProperty('session_id');
+        expect(tool?.inputSchema.properties).toHaveProperty('artifact_id');
+        expect(tool?.inputSchema.properties).toHaveProperty('artifact_version');
+        expect(tool?.inputSchema.properties).toHaveProperty('level');
+        expect(tool?.inputSchema.properties).toHaveProperty('score');
+        expect(tool?.inputSchema.properties).toHaveProperty('recommended_action');
+        expect(tool?.inputSchema.properties).toHaveProperty('confidence');
+        expect(tool?.inputSchema.properties).toHaveProperty('reason_summary');
+        expect(tool?.inputSchema.required).toEqual(expect.arrayContaining([
+            'session_id',
+            'artifact_id',
+            'artifact_version',
+            'level',
+            'score',
+            'recommended_action',
+            'confidence',
+            'reason_summary',
+        ]));
+    });
+    it('exposes the submit tool only through the utility assessor metadata', () => {
+        setAgentType(PLAN_COMPLEXITY_ASSESSOR);
+        const toolNames = getFilteredTools().map((candidate) => candidate.name);
+        expect(toolNames).toEqual(loadCanonicalMcpTools(PLAN_COMPLEXITY_ASSESSOR));
+        expect(toolNames).toEqual(['submit_plan_complexity_assessment']);
+    });
+});
 describe('agent workspace publish tool transport', () => {
     it('routes publish status reads to the agent workspace endpoint', async () => {
         const callTauriGet = vi.fn().mockResolvedValue({ success: true });
@@ -1364,6 +1465,17 @@ describe('agent task tools', () => {
         expect(tool?.inputSchema.required).toEqual(expect.arrayContaining(['title', 'details']));
         expect(tool?.inputSchema.properties).not.toHaveProperty('context_type');
         expect(tool?.inputSchema.properties).not.toHaveProperty('actor_agent');
+    });
+    it('agent task tool descriptions explain single-task cleanup and decomposition', () => {
+        const createTool = allTools.find((entry) => entry.name === 'create_agent_task');
+        const updateTool = allTools.find((entry) => entry.name === 'update_agent_task');
+        const claimTool = allTools.find((entry) => entry.name === 'claim_agent_task');
+        const completeTool = allTools.find((entry) => entry.name === 'complete_agent_task');
+        expect(createTool?.description).toContain('Do not create a task for genuinely single-step work');
+        expect(createTool?.description).toContain('decomposed into multiple concrete tasks');
+        expect(updateTool?.description).toContain('state=dropped');
+        expect(claimTool?.description).toContain('only one meaningful task');
+        expect(completeTool?.description).toContain('single-task ledger');
     });
     it.each([ORCHESTRATOR_IDEATION, CHAT_PROJECT, GENERAL_WORKER, WORKER])('%s should expose writable agent task tools', (agent) => {
         expect(toolsByAgent()[agent]).toContain('create_agent_task');

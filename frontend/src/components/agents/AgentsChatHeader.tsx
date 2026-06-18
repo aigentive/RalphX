@@ -299,16 +299,29 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   const conversationMode = conversation
     ? resolveConversationAgentMode(conversation, workspace)
     : null;
+  const isLinkedPlanEditWorkspace =
+    conversationMode === "edit" &&
+    Boolean(workspace?.linkedIdeationSessionId || workspace?.linkedPlanBranchId);
   const visibleHeaderArtifactTabs = useMemo(
-    () =>
-      HEADER_ARTIFACT_TABS.filter((tab) =>
+    () => {
+      const tabs = HEADER_ARTIFACT_TABS.filter((tab) =>
         availableArtifactTabs.includes(tab.id),
-      ),
-    [availableArtifactTabs],
+      );
+      return isLinkedPlanEditWorkspace
+        ? tabs.filter((tab) => tab.id === "plan")
+        : tabs;
+    },
+    [availableArtifactTabs, isLinkedPlanEditWorkspace],
   );
-  const showIdeationArtifacts =
-    conversationMode === "ideation" && visibleHeaderArtifactTabs.length > 0;
-  const showArtifactToggle = conversationMode === "ideation" || artifactOpen;
+  const showHeaderArtifactShortcuts =
+    visibleHeaderArtifactTabs.length > 0 &&
+    (conversationMode === "ideation" ||
+      conversationMode === "plan" ||
+      isLinkedPlanEditWorkspace);
+  const showArtifactToggle =
+    artifactOpen ||
+    conversationMode === "ideation" ||
+    (conversationMode === "plan" && visibleHeaderArtifactTabs.length > 0);
   // Hide the publish shortcut whenever any artifact pane is open — the user
   // can already reach Commit & Publish via the artifact tab bar, so the
   // header CTA is redundant (and visually crowds the Update-from-base label).
@@ -519,7 +532,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
           </Tooltip>
         )}
 
-        {showIdeationArtifacts && !artifactOpen &&
+        {showHeaderArtifactShortcuts && !artifactOpen &&
           visibleHeaderArtifactTabs.map(({ id, label, icon: Icon }) => {
             const isActive = activeArtifactTab === id && artifactOpen;
             return (

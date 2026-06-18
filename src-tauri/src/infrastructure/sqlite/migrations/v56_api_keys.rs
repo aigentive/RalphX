@@ -3,7 +3,8 @@ use rusqlite::Connection;
 use crate::error::AppResult;
 
 pub fn migrate(conn: &Connection) -> AppResult<()> {
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS api_keys (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -42,6 +43,7 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
         CREATE INDEX IF NOT EXISTS idx_external_events_project ON external_events(project_id, id);
         CREATE INDEX IF NOT EXISTS idx_external_events_created ON external_events(created_at);
         CREATE INDEX IF NOT EXISTS idx_audit_log_key ON api_audit_log(api_key_id, created_at);
-    ")?;
+    ",
+    )?;
     Ok(())
 }

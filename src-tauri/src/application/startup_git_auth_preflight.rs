@@ -18,7 +18,7 @@ use crate::domain::repositories::{
 };
 use crate::infrastructure::git_auth::{
     check_gh_auth_token_available, git_remote_url_kind_label, inspect_origin_auth_config,
-    suggested_github_ssh_origin, GitRemoteAuthConfig, GitRemoteUrlKind,
+    suggested_github_ssh_origin, GitRemoteAuthConfig,
 };
 
 pub(crate) const STARTUP_GIT_AUTH_PREFLIGHT_EVENT: &str = "git-auth:startup_preflight";
@@ -355,10 +355,19 @@ pub(crate) fn evaluate_project_git_auth_issue(
                     );
                 }
 
-                if has_github_https_remote(&config) && !gh_authenticated {
+                let has_github_https_remote = config.has_github_https_remote();
+                if has_github_https_remote && !config.github_https_credential_helper_configured {
                     issue_kind = "auth_blocked".to_string();
                     reasons.push(
-                        "GitHub HTTPS origin needs non-interactive credentials for background git access"
+                        "GitHub HTTPS origin needs a non-interactive credential helper for background git access"
+                            .to_string(),
+                    );
+                }
+
+                if has_github_https_remote && !gh_authenticated {
+                    issue_kind = "auth_blocked".to_string();
+                    reasons.push(
+                        "GitHub HTTPS origin needs GitHub CLI authentication for background git access"
                             .to_string(),
                     );
                 }
@@ -391,16 +400,7 @@ pub(crate) fn evaluate_project_git_auth_issue(
 }
 
 fn has_github_https_remote(config: &GitRemoteAuthConfig) -> bool {
-    [config.fetch_url.as_deref(), config.push_url.as_deref()]
-        .into_iter()
-        .flatten()
-        .any(|url| {
-            url.trim().starts_with("https://github.com/")
-                && matches!(
-                    crate::infrastructure::git_auth::classify_git_remote_url(url),
-                    GitRemoteUrlKind::Https
-                )
-        })
+    config.has_github_https_remote()
 }
 
 #[cfg(test)]
@@ -423,6 +423,7 @@ mod tests {
             Ok(GitRemoteAuthConfig {
                 fetch_url: Some("https://github.com/owner/repo.git".to_string()),
                 push_url: Some("git@github.com:owner/repo.git".to_string()),
+                github_https_credential_helper_configured: false,
             }),
         )
         .expect("mixed auth modes should block");
@@ -447,6 +448,7 @@ mod tests {
             Ok(GitRemoteAuthConfig {
                 fetch_url: Some("git@github.com:owner/repo.git".to_string()),
                 push_url: Some("git@github.com:owner/repo.git".to_string()),
+                github_https_credential_helper_configured: false,
             }),
         )
         .expect("gh auth should be required for PR mode");
@@ -468,6 +470,7 @@ mod tests {
             Ok(GitRemoteAuthConfig {
                 fetch_url: Some("https://github.com/owner/repo.git".to_string()),
                 push_url: Some("https://github.com/owner/repo.git".to_string()),
+                github_https_credential_helper_configured: false,
             }),
         )
         .expect("GitHub HTTPS origin should require non-interactive credentials");
@@ -483,7 +486,44 @@ mod tests {
         assert!(issue
             .reasons
             .iter()
-            .any(|reason| reason.contains("non-interactive credentials")));
+            .any(|reason| reason.contains("non-interactive credential")));
+    }
+
+    #[test]
+    fn github_https_origin_blocks_when_helper_missing_even_if_gh_is_authenticated() {
+        let issue = evaluate_project_git_auth_issue(
+            &project(false),
+            true,
+            true,
+            Ok(GitRemoteAuthConfig {
+                fetch_url: Some("https://github.com/owner/repo.git".to_string()),
+                push_url: Some("https://github.com/owner/repo.git".to_string()),
+                github_https_credential_helper_configured: false,
+            }),
+        )
+        .expect("GitHub HTTPS origin should require a configured credential helper");
+
+        assert_eq!(issue.issue_kind, "auth_blocked");
+        assert!(issue
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("credential helper")));
+    }
+
+    #[test]
+    fn github_https_origin_with_helper_and_gh_auth_does_not_block() {
+        let issue = evaluate_project_git_auth_issue(
+            &project(false),
+            true,
+            true,
+            Ok(GitRemoteAuthConfig {
+                fetch_url: Some("https://github.com/owner/repo.git".to_string()),
+                push_url: Some("https://github.com/owner/repo.git".to_string()),
+                github_https_credential_helper_configured: true,
+            }),
+        );
+
+        assert!(issue.is_none());
     }
 
     #[test]
@@ -514,6 +554,7 @@ mod tests {
             Ok(GitRemoteAuthConfig {
                 fetch_url: Some("git@github.com:owner/repo.git".to_string()),
                 push_url: Some("git@github.com:owner/repo.git".to_string()),
+                github_https_credential_helper_configured: false,
             }),
         );
 
@@ -529,6 +570,7 @@ mod tests {
             Ok(GitRemoteAuthConfig {
                 fetch_url: None,
                 push_url: None,
+                github_https_credential_helper_configured: false,
             }),
         )
         .expect("missing origin should be reported");
@@ -640,6 +682,7 @@ mod tests {
             &Ok(GitRemoteAuthConfig {
                 fetch_url: Some("git@github.com:owner/repo.git".to_string()),
                 push_url: Some("git@github.com:owner/repo.git".to_string()),
+                github_https_credential_helper_configured: false,
             }),
         ));
         assert!(project_needs_gh_auth_check(
@@ -647,6 +690,7 @@ mod tests {
             &Ok(GitRemoteAuthConfig {
                 fetch_url: Some("https://github.com/owner/repo.git".to_string()),
                 push_url: Some("https://github.com/owner/repo.git".to_string()),
+                github_https_credential_helper_configured: false,
             }),
         ));
         assert!(!project_needs_gh_auth_check(
@@ -654,6 +698,7 @@ mod tests {
             &Ok(GitRemoteAuthConfig {
                 fetch_url: Some("git@github.com:owner/repo.git".to_string()),
                 push_url: Some("git@github.com:owner/repo.git".to_string()),
+                github_https_credential_helper_configured: false,
             }),
         ));
         assert!(!project_needs_gh_auth_check(
@@ -661,6 +706,7 @@ mod tests {
             &Ok(GitRemoteAuthConfig {
                 fetch_url: None,
                 push_url: None,
+                github_https_credential_helper_configured: false,
             }),
         ));
         assert!(!project_needs_gh_auth_check(

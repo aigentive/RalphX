@@ -19,6 +19,7 @@ import {
   agentProjectFixture as project,
   agentRuntimeFixture as runtime,
   conversationFixture as conversation,
+  conversationWorkspaceFixture as conversationWorkspace,
   renderWithAgentProviders as renderWithProviders,
 } from "./agentsTestFixtures";
 
@@ -35,8 +36,11 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getAgentConversationWorkspaceFreshnessMock: vi.fn(),
   listAgentConversationWorkspacesByProjectMock: vi.fn(),
   listWorkspaceOpenTargetsMock: vi.fn(),
+  openAgentConversationWorkspacePathMock: vi.fn(),
   listConversationsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
+  updateWorkspaceFromBaseMock: vi.fn(),
+  setAgentConversationWorkspaceAutoPublishMock: vi.fn(),
   setAgentConversationWorkspacePrSupervisionMock: vi.fn(),
   precomputePrDescriptionMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
@@ -48,9 +52,12 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   restoreConversationMock: vi.fn(),
   getAgentRunningStatesMock: vi.fn(),
   getPlanBranchesMock: vi.fn(),
+  loadBranchBaseOptionsMock: vi.fn(),
+  loadPullRequestBaseOptionsMock: vi.fn(),
   listIdeationSessionsMock: vi.fn(),
   getLatestChildSessionIdMock: vi.fn(),
   getWorkspaceChangesMock: vi.fn(),
+  getWorkspaceChangeSummaryMock: vi.fn(),
   getWorkspaceReviewMock: vi.fn(),
   getWorkspaceDiffMock: vi.fn(),
   getWorkspaceCommitsMock: vi.fn(),
@@ -63,7 +70,12 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getWorkspaceUnstagedDiffMock: vi.fn(),
   getWorkspaceCumulativeDiffMock: vi.fn(),
   listAgentTasksMock: vi.fn(),
+  listAgentTaskListsMock: vi.fn(),
+  listAgentTaskListTasksMock: vi.fn(),
+  toastDismissMock: vi.fn(),
   toastErrorMock: vi.fn(),
+  toastInfoMock: vi.fn(),
+  toastLoadingMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   integratedChatPanelRenderMock: vi.fn(),
   preloadAgentsArtifactPaneMock: vi.fn(),
@@ -136,8 +148,11 @@ const {
   getAgentConversationWorkspaceFreshnessMock,
   listAgentConversationWorkspacesByProjectMock,
   listWorkspaceOpenTargetsMock,
+  openAgentConversationWorkspacePathMock,
   listConversationsMock,
   publishAgentConversationWorkspaceMock,
+  updateWorkspaceFromBaseMock,
+  setAgentConversationWorkspaceAutoPublishMock,
   setAgentConversationWorkspacePrSupervisionMock,
   precomputePrDescriptionMock,
   switchAgentConversationModeMock,
@@ -149,9 +164,12 @@ const {
   restoreConversationMock,
   getAgentRunningStatesMock,
   getPlanBranchesMock,
+  loadBranchBaseOptionsMock,
+  loadPullRequestBaseOptionsMock,
   listIdeationSessionsMock,
   getLatestChildSessionIdMock,
   getWorkspaceChangesMock,
+  getWorkspaceChangeSummaryMock,
   getWorkspaceReviewMock,
   getWorkspaceDiffMock,
   getWorkspaceCommitsMock,
@@ -164,7 +182,12 @@ const {
   getWorkspaceUnstagedDiffMock,
   getWorkspaceCumulativeDiffMock,
   listAgentTasksMock,
+  listAgentTaskListsMock,
+  listAgentTaskListTasksMock,
+  toastDismissMock,
   toastErrorMock,
+  toastInfoMock,
+  toastLoadingMock,
   toastSuccessMock,
   integratedChatPanelRenderMock,
   preloadAgentsArtifactPaneMock,
@@ -181,6 +204,89 @@ const {
 export function getAgentsViewTestMocks() {
   return agentsViewTestMocks;
 }
+
+vi.mock("react-virtuoso", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+
+  type VirtuosoMockRange = {
+    startIndex: number;
+    endIndex: number;
+  };
+  type VirtuosoMockProps = {
+    className?: string;
+    computeItemKey?: (index: number, item: unknown) => React.Key;
+    data?: unknown[];
+    "data-testid"?: string;
+    endReached?: (index: number) => void;
+    itemContent?: (index: number, item: unknown) => React.ReactNode;
+    rangeChanged?: (range: VirtuosoMockRange) => void;
+    scrollerRef?: (node: HTMLElement | Window | null) => void;
+    style?: React.CSSProperties;
+    totalCount?: number;
+  };
+
+  const Virtuoso = React.forwardRef<unknown, VirtuosoMockProps>(function MockVirtuoso(
+    props,
+    ref
+  ) {
+    const {
+      className,
+      computeItemKey,
+      data: dataProp,
+      itemContent,
+      rangeChanged,
+      scrollerRef,
+      style,
+      totalCount,
+    } = props;
+    const data =
+      dataProp ??
+      Array.from({ length: totalCount ?? 0 }, () => undefined);
+    const endIndex = data.length - 1;
+
+    React.useImperativeHandle(
+      ref,
+      () => ({
+        getState: (stateCb: (state: unknown) => void) => {
+          stateCb({
+            ranges: [],
+            scrollTop: 0,
+          });
+        },
+        scrollToIndex: vi.fn(),
+      }),
+      []
+    );
+
+    React.useEffect(() => {
+      if (endIndex < 0) {
+        return;
+      }
+      rangeChanged?.({ startIndex: 0, endIndex });
+    }, [endIndex, rangeChanged]);
+
+    const setScrollerRef = React.useCallback((node: HTMLDivElement | null) => {
+      scrollerRef?.(node);
+    }, [scrollerRef]);
+
+    return (
+      <div
+        ref={setScrollerRef}
+        data-testid={props["data-testid"] ?? "mock-virtuoso"}
+        className={className}
+        style={style}
+      >
+        {data.map((item, index) => (
+          <div key={computeItemKey?.(index, item) ?? index}>
+            {itemContent?.(index, item)}
+          </div>
+        ))}
+      </div>
+    );
+  });
+
+  return { Virtuoso };
+});
 
 export function mockHarnessProviders(
   settings: AgentProvidersSettingsResponse = defaultProviderSettings,
@@ -238,7 +344,54 @@ vi.mock("@/hooks/useProjects", () => ({
 }));
 
 vi.mock("@/hooks/useHarnessProviders", () => ({
-  useHarnessProviders: () => useHarnessProvidersMock(),
+  useHarnessProviders: (options?: unknown) => useHarnessProvidersMock(options),
+}));
+
+vi.mock("@/hooks/useAgentModels", () => ({
+  useAgentModels: () => ({
+    isReady: true,
+    registry: {
+      claude: [
+        {
+          id: "sonnet",
+          label: "sonnet",
+          menuLabel: "sonnet",
+          defaultEffort: "medium",
+          supportedEfforts: ["low", "medium", "high", "max"],
+        },
+        {
+          id: "opus",
+          label: "opus",
+          menuLabel: "opus",
+          defaultEffort: "xhigh",
+          supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+        },
+        {
+          id: "haiku",
+          label: "haiku",
+          menuLabel: "haiku",
+          defaultEffort: "medium",
+          supportedEfforts: ["low", "medium", "high"],
+        },
+        {
+          id: "fable",
+          label: "fable",
+          menuLabel: "fable",
+          defaultEffort: "high",
+          supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+        },
+      ],
+      codex: [
+        {
+          id: "gpt-5.5",
+          label: "gpt-5.5",
+          menuLabel: "gpt-5.5",
+          defaultEffort: "xhigh",
+          supportedEfforts: ["low", "medium", "high", "xhigh"],
+        },
+      ],
+    },
+  }),
 }));
 
 vi.mock("@/providers/EventProvider", () => ({
@@ -506,6 +659,10 @@ vi.mock("@/api/chat", () => ({
     listConversations: (...args: unknown[]) => listConversationsMock(...args),
     publishAgentConversationWorkspace: (...args: unknown[]) =>
       publishAgentConversationWorkspaceMock(...args),
+    updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>
+      updateWorkspaceFromBaseMock(...args),
+    setAgentConversationWorkspaceAutoPublish: (...args: unknown[]) =>
+      setAgentConversationWorkspaceAutoPublishMock(...args),
     setAgentConversationWorkspacePrSupervision: (...args: unknown[]) =>
       setAgentConversationWorkspacePrSupervisionMock(...args),
     precomputeAgentConversationWorkspacePrDescription: (...args: unknown[]) =>
@@ -522,6 +679,8 @@ vi.mock("@/api/chat", () => ({
     getAgentRunningStates: (...args: unknown[]) => getAgentRunningStatesMock(...args),
     listWorkspaceOpenTargets: (...args: unknown[]) =>
       listWorkspaceOpenTargetsMock(...args),
+    openAgentConversationWorkspacePath: (...args: unknown[]) =>
+      openAgentConversationWorkspacePathMock(...args),
     getBulkWorkspacePublicationStates: vi.fn().mockResolvedValue({}),
   },
 }));
@@ -545,6 +704,8 @@ vi.mock("@/api/diff", () => ({
   diffApi: {
     getAgentConversationWorkspaceFileChanges: (...args: unknown[]) =>
       getWorkspaceChangesMock(...args),
+    getAgentConversationWorkspaceChangeSummary: (...args: unknown[]) =>
+      getWorkspaceChangeSummaryMock(...args),
     getAgentConversationWorkspaceReview: (...args: unknown[]) =>
       getWorkspaceReviewMock(...args),
     getAgentConversationWorkspaceFileDiff: (...args: unknown[]) =>
@@ -573,15 +734,34 @@ vi.mock("@/api/diff", () => ({
 vi.mock("@/api/agent-tasks", () => ({
   agentTaskApi: {
     listConversationTasks: (...args: unknown[]) => listAgentTasksMock(...args),
+    listConversationTaskLists: (...args: unknown[]) =>
+      listAgentTaskListsMock(...args),
+    listConversationTaskListTasks: (...args: unknown[]) =>
+      listAgentTaskListTasksMock(...args),
   },
 }));
 
 vi.mock("sonner", () => ({
   toast: {
+    dismiss: (...args: unknown[]) => toastDismissMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
+    info: (...args: unknown[]) => toastInfoMock(...args),
+    loading: (...args: unknown[]) => toastLoadingMock(...args),
     success: (...args: unknown[]) => toastSuccessMock(...args),
   },
 }));
+
+vi.mock("@/components/shared/branchBaseOptions", async () => {
+  const actual = await vi.importActual<
+    typeof import("@/components/shared/branchBaseOptions")
+  >("@/components/shared/branchBaseOptions");
+  return {
+    ...actual,
+    loadBranchBaseOptions: (...args: unknown[]) => loadBranchBaseOptionsMock(...args),
+    loadPullRequestBaseOptions: (...args: unknown[]) =>
+      loadPullRequestBaseOptionsMock(...args),
+  };
+});
 
 vi.mock("@/api/plan-branch", () => ({
   planBranchApi: {
@@ -795,12 +975,14 @@ export function mockAgentSidebarData(conversations: AgentConversation[]) {
       search = "",
       publicationStates = DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS,
       pinnedConversationIds = [],
+      priorityConversationIds = [],
     }: {
       projectId?: string | null;
       archivedOnly?: boolean;
       search?: string;
       publicationStates?: string[];
       pinnedConversationIds?: string[];
+      priorityConversationIds?: string[];
     }) =>
       buildAgentSidebarGroupResult({
         key: projectId ?? "",
@@ -811,6 +993,7 @@ export function mockAgentSidebarData(conversations: AgentConversation[]) {
           search,
           publicationStates,
           pinnedConversationIds,
+          priorityConversationIds,
         }),
       })
   );
@@ -821,12 +1004,14 @@ export function mockAgentSidebarData(conversations: AgentConversation[]) {
       archivedOnly = false,
       search = "",
       pinnedConversationIds = [],
+      priorityConversationIds = [],
     }: {
       projectIds?: string[];
       publicationState?: string;
       archivedOnly?: boolean;
       search?: string;
       pinnedConversationIds?: string[];
+      priorityConversationIds?: string[];
     }) =>
       buildAgentSidebarGroupResult({
         key: publicationState,
@@ -837,6 +1022,7 @@ export function mockAgentSidebarData(conversations: AgentConversation[]) {
           search,
           publicationStates: [publicationState],
           pinnedConversationIds,
+          priorityConversationIds,
         }),
       })
   );
@@ -850,16 +1036,19 @@ function filterSidebarConversations(
     search,
     publicationStates,
     pinnedConversationIds,
+    priorityConversationIds,
   }: {
     projectIds: string[];
     archivedOnly: boolean;
     search: string;
     publicationStates: string[];
     pinnedConversationIds: string[];
+    priorityConversationIds: string[];
   }
 ) {
   const projectIdSet = new Set(projectIds);
   const pinnedIdSet = new Set(pinnedConversationIds);
+  const priorityIdSet = new Set(priorityConversationIds);
   const normalizedSearch = search.trim().toLowerCase();
   return conversations
     .filter((item) => projectIdSet.has(item.projectId ?? item.contextId))
@@ -876,6 +1065,11 @@ function filterSidebarConversations(
         Number(pinnedIdSet.has(right.id)) - Number(pinnedIdSet.has(left.id));
       if (pinnedDelta !== 0) {
         return pinnedDelta;
+      }
+      const priorityDelta =
+        Number(priorityIdSet.has(right.id)) - Number(priorityIdSet.has(left.id));
+      if (priorityDelta !== 0) {
+        return priorityDelta;
       }
       return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
     });
@@ -949,6 +1143,7 @@ export function mockSessionWithData(
     gapScore: null,
     inheritedPlanArtifactId: null,
     sessionPurpose: "general" as const,
+    sessionFlow: "ideation" as const,
     acceptanceStatus: null,
     ...overrides,
   };
@@ -1017,8 +1212,11 @@ export function setupAgentsViewTest() {
   getAgentConversationWorkspaceFreshnessMock.mockReset();
   listAgentConversationWorkspacesByProjectMock.mockReset();
   listWorkspaceOpenTargetsMock.mockReset();
+  openAgentConversationWorkspacePathMock.mockReset();
   listConversationsMock.mockReset();
   publishAgentConversationWorkspaceMock.mockReset();
+  updateWorkspaceFromBaseMock.mockReset();
+  setAgentConversationWorkspaceAutoPublishMock.mockReset();
   setAgentConversationWorkspacePrSupervisionMock.mockReset();
   switchAgentConversationModeMock.mockReset();
   sendAgentMessageMock.mockReset();
@@ -1029,8 +1227,11 @@ export function setupAgentsViewTest() {
   restoreConversationMock.mockReset();
   getAgentRunningStatesMock.mockReset();
   getPlanBranchesMock.mockReset();
+  loadBranchBaseOptionsMock.mockReset();
+  loadPullRequestBaseOptionsMock.mockReset();
   listIdeationSessionsMock.mockReset();
   getWorkspaceChangesMock.mockReset();
+  getWorkspaceChangeSummaryMock.mockReset();
   getWorkspaceReviewMock.mockReset();
   getWorkspaceDiffMock.mockReset();
   getWorkspaceCommitsMock.mockReset();
@@ -1043,8 +1244,13 @@ export function setupAgentsViewTest() {
   getWorkspaceUnstagedDiffMock.mockReset();
   getWorkspaceCumulativeDiffMock.mockReset();
   listAgentTasksMock.mockReset();
+  listAgentTaskListsMock.mockReset();
+  listAgentTaskListTasksMock.mockReset();
   precomputePrDescriptionMock.mockReset();
+  toastDismissMock.mockReset();
   toastErrorMock.mockReset();
+  toastInfoMock.mockReset();
+  toastLoadingMock.mockReset();
   toastSuccessMock.mockReset();
   integratedChatPanelRenderMock.mockReset();
   preloadAgentsArtifactPaneMock.mockReset();
@@ -1082,11 +1288,65 @@ export function setupAgentsViewTest() {
   });
   listAgentConversationWorkspacesByProjectMock.mockResolvedValue([]);
   listWorkspaceOpenTargetsMock.mockResolvedValue([]);
+  openAgentConversationWorkspacePathMock.mockResolvedValue(undefined);
   listConversationsMock.mockResolvedValue([]);
   getPlanBranchesMock.mockResolvedValue([]);
+  loadBranchBaseOptionsMock.mockResolvedValue({
+    options: [
+      {
+        key: "project_default:main",
+        label: "Project default (main)",
+        detail: "Configured project base branch",
+        source: "project",
+        selection: {
+          kind: "project_default",
+          ref: "main",
+          displayName: "Project default (main)",
+        },
+      },
+      {
+        key: "local_branch:feature/new-base",
+        label: "feature/new-base",
+        detail: "Local branch",
+        source: "local",
+        selection: {
+          kind: "local_branch",
+          ref: "feature/new-base",
+          displayName: "feature/new-base",
+        },
+      },
+    ],
+    selectedKey: "project_default:main",
+  });
+  loadPullRequestBaseOptionsMock.mockResolvedValue([
+    {
+      key: "pull_request:42:feature/pr-base",
+      label: "#42 Add PR base",
+      detail: "feature/pr-base -> main",
+      source: "pull_request",
+      selection: {
+        kind: "local_branch",
+        ref: "feature/pr-base",
+        displayName: "PR #42: Add PR base",
+        sourcePullRequest: {
+          number: 42,
+          url: "https://github.com/mock/project/pull/42",
+          title: "Add PR base",
+          headRefName: "feature/pr-base",
+          baseRefName: "main",
+          headRefOid: "pr-head-sha",
+        },
+      },
+    },
+  ]);
   listIdeationSessionsMock.mockResolvedValue([]);
   mockAgentSidebarData([]);
   getWorkspaceChangesMock.mockResolvedValue([]);
+  getWorkspaceChangeSummaryMock.mockResolvedValue({
+    supportsWorktreeModes: true,
+    staged: { fileCount: 0, additions: 0, deletions: 0 },
+    unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+  });
   getWorkspaceReviewMock.mockResolvedValue({
     changes: [],
     commits: [],
@@ -1104,6 +1364,8 @@ export function setupAgentsViewTest() {
   getWorkspaceUnstagedDiffMock.mockResolvedValue("");
   getWorkspaceCumulativeDiffMock.mockResolvedValue("");
   listAgentTasksMock.mockResolvedValue([]);
+  listAgentTaskListsMock.mockResolvedValue([]);
+  listAgentTaskListTasksMock.mockResolvedValue([]);
   precomputePrDescriptionMock.mockResolvedValue({
     conversationId: "conversation-1",
     status: "skipped",
@@ -1127,6 +1389,10 @@ export function setupAgentsViewTest() {
       publicationPrUrl: "https://github.com/mock/project/pull/42",
       publicationPrStatus: "draft",
       publicationPushStatus: "pushed",
+      autoPublishEnabled: true,
+      autoPublishInitialPrEnabled: false,
+      autoPublishPausedPrAutofixEnabled: null,
+      autoPublishPausedPrAutoMergeDesired: null,
       status: "active",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1137,6 +1403,36 @@ export function setupAgentsViewTest() {
     prNumber: 42,
     prUrl: "https://github.com/mock/project/pull/42",
   });
+  updateWorkspaceFromBaseMock.mockImplementation(
+    async (
+      conversationId: string,
+      base?: {
+        kind: string;
+        ref: string;
+        displayName: string;
+        sourcePullRequest?: {
+          number: number;
+          url?: string | null;
+          title?: string | null;
+          headRefName: string;
+          baseRefName?: string | null;
+          headRefOid?: string | null;
+        } | null;
+      } | null,
+    ) => ({
+      workspace: conversationWorkspace({
+        conversationId,
+        baseRefKind: base?.kind ?? "project_default",
+        baseRef: base?.ref ?? "main",
+        baseDisplayName: base?.displayName ?? "Project default (main)",
+        baseCommit: "updated-base",
+        sourcePullRequest: base?.sourcePullRequest ?? null,
+      }),
+      updated: true,
+      targetRef: base?.ref ?? "origin/main",
+      baseCommit: "updated-base",
+    }),
+  );
   setAgentConversationWorkspacePrSupervisionMock.mockImplementation(
     async (conversationId: string, input: { autoFixEnabled: boolean; autoMergeDesired: boolean }) => ({
       conversationId,
@@ -1154,11 +1450,45 @@ export function setupAgentsViewTest() {
       publicationPrUrl: "https://github.com/mock/project/pull/42",
       publicationPrStatus: "open",
       publicationPushStatus: "pushed",
+      autoPublishEnabled: true,
+      autoPublishInitialPrEnabled: false,
+      autoPublishPausedPrAutofixEnabled: null,
+      autoPublishPausedPrAutoMergeDesired: null,
       prAutofixEnabled: input.autoFixEnabled,
       prAutoMergeDesired: input.autoMergeDesired,
       prAutoMergeMethod: "squash",
       prSupervisionStatus:
         input.autoFixEnabled || input.autoMergeDesired ? "monitoring" : "disabled",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }),
+  );
+  setAgentConversationWorkspaceAutoPublishMock.mockImplementation(
+    async (conversationId: string, input: { autoPublishEnabled: boolean }) => ({
+      conversationId,
+      projectId: "project-1",
+      mode: "edit",
+      baseRefKind: "project_default",
+      baseRef: "main",
+      baseDisplayName: "Project default (main)",
+      baseCommit: null,
+      branchName: `ralphx/demo/agent-${conversationId}`,
+      worktreePath: `/tmp/ralphx/${conversationId}`,
+      linkedIdeationSessionId: null,
+      linkedPlanBranchId: null,
+      publicationPrNumber: 42,
+      publicationPrUrl: "https://github.com/mock/project/pull/42",
+      publicationPrStatus: "open",
+      publicationPushStatus: "pushed",
+      autoPublishEnabled: input.autoPublishEnabled,
+      autoPublishInitialPrEnabled: input.autoPublishEnabled,
+      autoPublishPausedPrAutofixEnabled: input.autoPublishEnabled ? null : true,
+      autoPublishPausedPrAutoMergeDesired: input.autoPublishEnabled ? null : false,
+      prAutofixEnabled: input.autoPublishEnabled,
+      prAutoMergeDesired: false,
+      prAutoMergeMethod: "squash",
+      prSupervisionStatus: input.autoPublishEnabled ? "monitoring" : "paused",
       status: "active",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1266,6 +1596,7 @@ export function setupAgentsViewTest() {
     openByConversationId: {},
     heightByConversationId: {},
     activeTerminalByConversationId: {},
+    statusByConversationId: {},
     placement: "auto",
     draggingConversationId: null,
     dragOverDock: null,

@@ -83,6 +83,69 @@ export const PLAN_TOOLS = [
         },
     },
     {
+        name: "submit_plan_complexity_assessment",
+        description: "Persist a complexity assessment for the current approved Plan-mode artifact version. " +
+            "Only the ralphx-utility-plan-complexity helper should call this after grading an approved plan.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                session_id: {
+                    type: "string",
+                    description: "Planning session ID for the approved plan",
+                },
+                artifact_id: {
+                    type: "string",
+                    description: "Approved plan artifact ID",
+                },
+                artifact_version: {
+                    type: "integer",
+                    description: "Approved plan artifact version",
+                },
+                level: {
+                    type: "string",
+                    enum: ["trivial", "simple", "moderate", "complex", "very_complex"],
+                    description: "Overall plan complexity tier",
+                },
+                score: {
+                    type: "integer",
+                    minimum: 0,
+                    maximum: 100,
+                    description: "0-100 score where higher means proposal decomposition is more appropriate",
+                },
+                recommended_action: {
+                    type: "string",
+                    enum: ["implement_directly", "create_proposals"],
+                    description: "Recommended primary CTA for the approved plan",
+                },
+                confidence: {
+                    type: "number",
+                    minimum: 0,
+                    maximum: 1,
+                    description: "Confidence in the recommendation",
+                },
+                reason_summary: {
+                    type: "string",
+                    description: "Concise user-facing reason for the recommendation",
+                },
+                signals: {
+                    type: "object",
+                    description: "Compact signals used to grade the plan, such as dependent_steps, affected_areas, migration_risk, or ambiguity",
+                    additionalProperties: true,
+                },
+            },
+            required: [
+                "session_id",
+                "artifact_id",
+                "artifact_version",
+                "level",
+                "score",
+                "recommended_action",
+                "confidence",
+                "reason_summary",
+            ],
+        },
+    },
+    {
         name: "report_verification_round",
         description: "Verifier-friendly helper for reporting an in-progress verification round on the PARENT ideation session. " +
             "The parent session remains canonical and is derived automatically from the active verification child context. Do not pass session_id. " +

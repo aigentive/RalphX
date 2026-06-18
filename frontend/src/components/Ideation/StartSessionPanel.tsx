@@ -5,7 +5,7 @@
  * refined typography, and smooth interactions.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Lightbulb, Zap, FileText, Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,7 @@ import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
 import {
   fallbackBranchBaseOptions,
   loadBranchBaseOptions,
+  loadPullRequestBaseOptions,
   type BranchBaseOption,
 } from "@/components/shared/branchBaseOptions";
 import type { Task } from "@/types/task";
@@ -57,14 +58,25 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
     state.activeProjectId ? state.projects[state.activeProjectId] ?? null : null,
   );
   const [startFromOptions, setStartFromOptions] = useState<BranchBaseOption[]>([]);
+  const [pullRequestStartFromOptions, setPullRequestStartFromOptions] = useState<
+    BranchBaseOption[]
+  >([]);
   const [selectedStartFromKey, setSelectedStartFromKey] = useState<string>("");
   const [isLoadingStartFrom, setIsLoadingStartFrom] = useState(false);
+  const [isLoadingPullRequestStartFrom, setIsLoadingPullRequestStartFrom] = useState(false);
+  const [pullRequestStartFromMessage, setPullRequestStartFromMessage] =
+    useState<string | null>(null);
+  const pullRequestStartFromRequestRef = useRef(0);
   const { importSession, isImporting } = useSessionExportImport();
   const { ideationTeamModeAvailable: teamModeVisible } =
     useTeamModeAvailability(activeProjectId);
   const isTeamMode = teamModeVisible && teamMode !== "solo";
   const activeProjectWorkingDirectory = activeProject?.workingDirectory;
   const activeProjectBaseBranch = activeProject?.baseBranch;
+  const allStartFromOptions = useMemo(
+    () => [...startFromOptions, ...pullRequestStartFromOptions],
+    [pullRequestStartFromOptions, startFromOptions]
+  );
 
   useEffect(() => {
     if (!teamModeVisible && teamMode !== "solo") {
@@ -99,6 +111,11 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
   }, [onNewSession]);
 
   useEffect(() => {
+    pullRequestStartFromRequestRef.current += 1;
+    setPullRequestStartFromOptions([]);
+    setPullRequestStartFromMessage(null);
+    setIsLoadingPullRequestStartFrom(false);
+
     if (!activeProjectWorkingDirectory) {
       setStartFromOptions([]);
       setSelectedStartFromKey("");
@@ -118,7 +135,11 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
       if (cancelled) return;
 
       setStartFromOptions(result.options);
-      setSelectedStartFromKey(result.selectedKey);
+      setSelectedStartFromKey((currentKey) =>
+        currentKey && result.options.some((option) => option.key === currentKey)
+          ? currentKey
+          : result.selectedKey
+      );
       setIsLoadingStartFrom(false);
     }
 
@@ -126,7 +147,11 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
       if (!cancelled) {
         const fallback = fallbackBranchBaseOptions(activeProjectBaseBranch);
         setStartFromOptions(fallback.options);
-        setSelectedStartFromKey(fallback.selectedKey);
+        setSelectedStartFromKey((currentKey) =>
+          currentKey && fallback.options.some((option) => option.key === currentKey)
+            ? currentKey
+            : fallback.selectedKey
+        );
         setIsLoadingStartFrom(false);
       }
     });
@@ -136,11 +161,70 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
     };
   }, [activeProjectBaseBranch, activeProjectId, activeProjectWorkingDirectory]);
 
-  const selectedStartFrom = startFromOptions.find((option) => option.key === selectedStartFromKey);
+  const selectedStartFrom = allStartFromOptions.find(
+    (option) => option.key === selectedStartFromKey
+  );
+  const requiresStartFromSelection = Boolean(activeProjectWorkingDirectory);
+  const canSubmitStartFrom = !requiresStartFromSelection || Boolean(selectedStartFrom);
+
+  const searchPullRequestStartFromOptions = useCallback(
+    (query: string) => {
+      if (!activeProjectId) {
+        setPullRequestStartFromOptions([]);
+        setPullRequestStartFromMessage(null);
+        setIsLoadingPullRequestStartFrom(false);
+        return;
+      }
+
+      const requestId = ++pullRequestStartFromRequestRef.current;
+      setIsLoadingPullRequestStartFrom(true);
+      setPullRequestStartFromMessage(null);
+
+      void loadPullRequestBaseOptions({ projectId: activeProjectId, query })
+        .then((options) => {
+          if (pullRequestStartFromRequestRef.current !== requestId) {
+            return;
+          }
+          setPullRequestStartFromOptions((current) => {
+            const selected = current.find(
+              (option) => option.key === selectedStartFromKey
+            );
+            if (
+              selected &&
+              !options.some((option) => option.key === selected.key)
+            ) {
+              return [selected, ...options];
+            }
+            return options;
+          });
+          setIsLoadingPullRequestStartFrom(false);
+        })
+        .catch((err) => {
+          if (pullRequestStartFromRequestRef.current !== requestId) {
+            return;
+          }
+          setPullRequestStartFromOptions((current) =>
+            current.filter((option) => option.key === selectedStartFromKey)
+          );
+          setPullRequestStartFromMessage(
+            err instanceof Error
+              ? err.message
+              : "Unable to search pull requests"
+          );
+          setIsLoadingPullRequestStartFrom(false);
+        });
+    },
+    [activeProjectId, selectedStartFromKey]
+  );
 
   const handleStartSession = async () => {
     if (!activeProjectId) {
       toast.error("No active project selected");
+      return;
+    }
+    /* v8 ignore next 3 -- the disabled primary button prevents this UI path; keep the stale-call guard. */
+    if (!canSubmitStartFrom) {
+      toast.error("Base branch is still loading");
       return;
     }
 
@@ -167,6 +251,11 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
   };
 
   const handleSeedFromTask = async (task: Task) => {
+    if (!canSubmitStartFrom) {
+      toast.error("Base branch is still loading");
+      return;
+    }
+
     setIsCreatingFromTask(true);
     try {
       const params: Parameters<typeof createSession.mutateAsync>[0] = {
@@ -192,6 +281,8 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
   };
 
   const isCreating = isCreatingTeamSession || createSession.isPending;
+  const startActionDisabled = isCreating || !canSubmitStartFrom;
+  const seedActionDisabled = isCreatingFromTask || !canSubmitStartFrom;
 
   return (
     <>
@@ -244,8 +335,13 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
               value={selectedStartFromKey}
               onValueChange={setSelectedStartFromKey}
               options={startFromOptions}
+              enablePullRequests={Boolean(activeProjectId)}
+              pullRequestOptions={pullRequestStartFromOptions}
+              isLoadingPullRequests={isLoadingPullRequestStartFrom}
+              pullRequestMessage={pullRequestStartFromMessage}
+              onPullRequestSearch={searchPullRequestStartFromOptions}
               placeholder={isLoadingStartFrom ? "Loading branch..." : "Base branch"}
-              disabled={isLoadingStartFrom || startFromOptions.length === 0}
+              disabled={isLoadingStartFrom && startFromOptions.length === 0}
               testId="start-from-select"
               align="center"
               className="max-w-[min(100%,440px)] justify-center rounded-xl border px-3 py-2"
@@ -329,17 +425,19 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
           {/* Primary Action */}
           <Button
             onClick={handleStartSession}
-            disabled={isCreating}
+            disabled={startActionDisabled}
             className="h-11 px-6 text-[0.875rem] font-semibold tracking-[-0.01em] border-0 transition-colors duration-150 mt-4"
             style={{
-              background: isCreating ? withAlpha("var(--accent-primary)", 60) : "var(--accent-primary)",
+              background: startActionDisabled
+                ? withAlpha("var(--accent-primary)", 60)
+                : "var(--accent-primary)",
               color: "var(--text-on-accent)",
             }}
             onMouseEnter={(e) => {
-              if (!isCreating) e.currentTarget.style.background = withAlpha("var(--accent-primary)", 90);
+              if (!startActionDisabled) e.currentTarget.style.background = withAlpha("var(--accent-primary)", 90);
             }}
             onMouseLeave={(e) => {
-              if (!isCreating) e.currentTarget.style.background = "var(--accent-primary)";
+              if (!startActionDisabled) e.currentTarget.style.background = "var(--accent-primary)";
             }}
           >
             {isCreating ? (
@@ -358,11 +456,11 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
           {/* Secondary Action */}
           <button
             onClick={() => setShowTaskPicker(true)}
-            disabled={isCreatingFromTask}
+            disabled={seedActionDisabled}
             className="flex items-center justify-center gap-2 mx-auto mt-5 text-[0.8125rem] transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ color: "var(--text-secondary)" }}
             onMouseEnter={(e) => {
-              if (!isCreatingFromTask) {
+              if (!seedActionDisabled) {
                 e.currentTarget.style.color = "var(--accent-primary)";
               }
             }}

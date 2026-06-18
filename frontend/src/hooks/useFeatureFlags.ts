@@ -18,6 +18,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   extensibilityPage: true,
   battleMode: true,
   teamMode: false,
+  atlassianOauth: false,
 };
 
 export function useFeatureFlags() {

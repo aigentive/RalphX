@@ -2,7 +2,7 @@
  * AgentsPublishFileDiff
  *
  * Per-file collapsible card in the inline diff view.
- * Parent manages diff fetching and passes state via `diff` prop.
+ * Parent manages normal diff fetching via `diff`; large explicit diffs use paged row fetching.
  *
  * Performance contract (frontend-interaction-performance.md):
  * - Header (file path, status badge, +/−, buttons) paints synchronously.
@@ -16,10 +16,15 @@
 import { useEffect, useRef } from "react";
 import { Copy, ChevronRight, Maximize2, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { PagedDiffView } from "@/components/diff/PagedDiffView";
 import { SimpleDiffView } from "@/components/diff/SimpleDiffView";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { FileChange, FileDiff, DiffRefKind, PrDiffAnnotation } from "@/api/diff";
+import {
+  isLargeInlineDiff,
+  requiresExplicitDiffHydration,
+} from "./inlineDiffGuards";
 
 export type DiffState = FileDiff | "loading" | "error" | undefined;
 
@@ -35,6 +40,8 @@ export interface AgentsPublishFileDiffProps {
   conversationId?: string | undefined;
   /** Which diff reference to use for range fetches. */
   refKind?: DiffRefKind | undefined;
+  /** Which diff reference to use for paged large-file fetching. */
+  diffPageRefKind?: DiffRefKind | undefined;
   /** Whether this file is in the viewport (±200px) — controls body hydration. */
   shouldHydrate: boolean;
   /** GitHub PR review/check annotations for this file. */
@@ -79,6 +86,7 @@ export function AgentsPublishFileDiff({
   onRetry,
   conversationId,
   refKind,
+  diffPageRefKind,
   shouldHydrate,
   annotations = [],
   isShowAnywayOverridden,
@@ -86,7 +94,12 @@ export function AgentsPublishFileDiff({
   isFocusTarget = false,
 }: AgentsPublishFileDiffProps) {
   const diffData = diff !== "loading" && diff !== "error" ? diff : undefined;
-  const showGeneratedPlaceholder = file.isGenerated && !isShowAnywayOverridden;
+  const showExplicitPlaceholder =
+    requiresExplicitDiffHydration(file) && !isShowAnywayOverridden;
+  const usePagedDiff =
+    isLargeInlineDiff(file) &&
+    conversationId !== undefined &&
+    diffPageRefKind !== undefined;
   const pathButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -97,7 +110,7 @@ export function AgentsPublishFileDiff({
 
   return (
     <div
-      className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border"
+      className="flex min-h-0 min-w-0 w-full max-w-full flex-col overflow-hidden rounded-md border"
       data-testid={`publish-file-diff-${file.path}`}
       style={{
         backgroundColor: "var(--bg-surface)",
@@ -237,7 +250,7 @@ export function AgentsPublishFileDiff({
           className="flex min-h-0 flex-col"
           style={{ minHeight: "60px" }}
         >
-          {showGeneratedPlaceholder ? (
+          {showExplicitPlaceholder ? (
             /* Generated-file placeholder — shown until user clicks "Show anyway" */
             <div
               data-testid="file-diff-generated-placeholder"
@@ -303,7 +316,17 @@ export function AgentsPublishFileDiff({
                 </div>
               )}
 
-              {diffData !== undefined && (
+              {usePagedDiff && (
+                <PagedDiffView
+                  conversationId={conversationId!}
+                  filePath={file.path}
+                  refKind={diffPageRefKind!}
+                  annotations={annotations}
+                  scrollContainer={false}
+                />
+              )}
+
+              {!usePagedDiff && diffData !== undefined && (
                 <SimpleDiffView
                   hunks={diffData.hunks}
                   oldTotalLines={diffData.oldTotalLines}
@@ -318,7 +341,7 @@ export function AgentsPublishFileDiff({
                 />
               )}
 
-              {diff === undefined && (
+              {!usePagedDiff && diff === undefined && (
                 <div
                   className="flex items-center justify-center py-6 text-xs"
                   style={{ color: "var(--text-muted)" }}

@@ -15,6 +15,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openPath: vi.fn().mockResolvedValue(undefined),
+  revealItemInDir: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe("TextBubble", () => {

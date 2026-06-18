@@ -11,10 +11,18 @@ import { getAgentArtifactStateSnapshot } from "./agentArtifactState";
 import { useAgentArtifactUiStore, persistTaskMode } from "./agentArtifactUiStore";
 import { preloadAgentsArtifactPane } from "./agentArtifactPanePreload";
 import type { DeferredFrameJob } from "./agentDeferredFrame";
+import { useAgentTerminalStore } from "./agentTerminalStore";
 
 interface UseAgentArtifactControllerArgs {
   hasAutoOpenArtifacts: boolean;
   selectedConversationId: string | null;
+}
+
+function movePanelTerminalPlacementToChat() {
+  const terminalState = useAgentTerminalStore.getState();
+  if (terminalState.placement === "panel") {
+    terminalState.setPlacement("chat");
+  }
 }
 
 export function useAgentArtifactController({
@@ -136,6 +144,9 @@ export function useAgentArtifactController({
         ...current,
         isOpen,
       }));
+      if (!isOpen) {
+        movePanelTerminalPlacementToChat();
+      }
     },
     [updateArtifactState],
   );

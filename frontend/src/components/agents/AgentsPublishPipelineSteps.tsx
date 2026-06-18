@@ -1,7 +1,10 @@
-import { CheckCircle2, Loader2, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Loader2, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { isAgentWorkspaceAutoMergeRequestPending } from "./agentWorkspacePublishState";
+import {
+  isAgentWorkspaceAutoMergeDeferred,
+  isAgentWorkspaceAutoMergeRequestPending,
+} from "./agentWorkspacePublishState";
 
 const PUBLISH_STEPS = [
   { id: "checking", label: "Check workspace" },
@@ -36,6 +39,13 @@ export function PublishPipelineSteps({
     ? [...PUBLISH_STEPS, AUTO_MERGE_STEP]
     : PUBLISH_STEPS;
   const autoMergePending = isAgentWorkspaceAutoMergeRequestPending({
+    autoMergeDesired,
+    autoMergeCurrent,
+    hasPublishedPr: true,
+    prSupervisionStatus,
+    publicationPushStatus: normalizedStatus,
+  });
+  const autoMergeDeferred = isAgentWorkspaceAutoMergeDeferred({
     autoMergeDesired,
     autoMergeCurrent,
     hasPublishedPr: true,
@@ -95,6 +105,7 @@ export function PublishPipelineSteps({
             !isTerminalFailure &&
             activeIndex === index &&
             (isPublishing || (step.id === "auto_merge" && autoMergePending));
+          const isDeferred = step.id === "auto_merge" && autoMergeDeferred;
           const isFailed = isTerminalFailure && index === failureIndex;
           return (
             <div
@@ -103,7 +114,7 @@ export function PublishPipelineSteps({
               data-testid={`${testIdPrefix}-step-${step.id}`}
               style={{
                 color:
-                  isDone || isActive || isFailed
+                  isDone || isActive || isFailed || isDeferred
                     ? "var(--text-primary)"
                     : "var(--text-muted)",
               }}
@@ -113,18 +124,22 @@ export function PublishPipelineSteps({
                 style={{
                   borderColor: isFailed
                     ? "var(--status-danger)"
-                    : isDone
-                      ? "var(--status-success)"
-                      : isActive
-                        ? "var(--accent-primary)"
-                        : "var(--overlay-weak)",
+                    : isDeferred
+                      ? "var(--status-warning)"
+                      : isDone
+                        ? "var(--status-success)"
+                        : isActive
+                          ? "var(--accent-primary)"
+                          : "var(--overlay-weak)",
                   color: isFailed
                     ? "var(--status-danger)"
-                    : isDone
-                      ? "var(--status-success)"
-                      : isActive
-                        ? "var(--accent-primary)"
-                        : "var(--text-muted)",
+                    : isDeferred
+                      ? "var(--status-warning)"
+                      : isDone
+                        ? "var(--status-success)"
+                        : isActive
+                          ? "var(--accent-primary)"
+                          : "var(--text-muted)",
                 }}
               >
                 {isActive ? (
@@ -133,11 +148,15 @@ export function PublishPipelineSteps({
                   <CheckCircle2 className="h-3 w-3" />
                 ) : isFailed ? (
                   <X className="h-3 w-3" />
+                ) : isDeferred ? (
+                  <AlertTriangle className="h-3 w-3" />
                 ) : (
                   index + 1
                 )}
               </span>
-              <span className="min-w-0 leading-snug">{step.label}</span>
+              <span className="min-w-0 leading-snug">
+                {isDeferred ? "Auto-merge deferred" : step.label}
+              </span>
             </div>
           );
         })}

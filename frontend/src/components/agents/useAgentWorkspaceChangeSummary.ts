@@ -1,8 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { diffApi } from "@/api/diff";
-import type { AgentWorkspaceReview, DiffRefKind, FileChange } from "@/api/diff";
+import type {
+  AgentWorkspaceChangeBucketSummary,
+  AgentWorkspaceChangeSummary,
+  AgentWorkspaceReview,
+  DiffRefKind,
+  FileChange,
+} from "@/api/diff";
 import type { Commit as DiffViewerCommit } from "@/components/diff";
 
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
@@ -26,6 +32,7 @@ export interface AgentWorkspaceChangeSummaryState {
   commitSha: string | undefined;
   supportsWorktreeModes: boolean;
   workspaceChangeCount: number;
+  currentFileCount: number;
   stagedCount: number | undefined;
   unstagedCount: number | undefined;
   totalAdditions: number;
@@ -49,41 +56,78 @@ export function mapReviewCommitsToDiffViewerCommits(
 export function useAgentWorkspaceChangeSummary({
   conversationId,
   review,
+  defaultMode = "uncommitted",
+  liveSummary = null,
+  hydrateWorktreeFileLists = true,
 }: {
   conversationId: string;
   review: AgentWorkspaceReview | null;
+  defaultMode?: DiffFilterMode | undefined;
+  liveSummary?: AgentWorkspaceChangeSummary | null;
+  hydrateWorktreeFileLists?: boolean;
 }): AgentWorkspaceChangeSummaryState {
-  const [selectedMode, setSelectedMode] = useState<DiffFilterMode>("uncommitted");
+  const [selectedMode, setSelectedMode] = useState<DiffFilterMode>(defaultMode);
   const [hasUserSelectedMode, setHasUserSelectedMode] = useState(false);
-  const supportsWorktreeModes = review?.supportsWorktreeModes ?? true;
-  const canQueryWorktreeFiles = review != null && supportsWorktreeModes;
+  const previousConversationIdRef = useRef(conversationId);
+  const supportsWorktreeModes =
+    liveSummary?.supportsWorktreeModes ?? review?.supportsWorktreeModes ?? true;
+  const canQueryWorktreeFiles =
+    hydrateWorktreeFileLists &&
+    supportsWorktreeModes &&
+    (review != null || liveSummary != null);
+  const hasLiveWorktreeSummary = liveSummary != null && supportsWorktreeModes;
+  const liveStagedCount = liveSummary?.staged.fileCount;
+  const liveUnstagedCount = liveSummary?.unstaged.fileCount;
   const setMode = useCallback((nextMode: DiffFilterMode) => {
     setSelectedMode(nextMode);
     setHasUserSelectedMode(true);
   }, []);
 
   useEffect(() => {
-    setSelectedMode("uncommitted");
-    setHasUserSelectedMode(false);
-  }, [conversationId]);
+    const conversationChanged = previousConversationIdRef.current !== conversationId;
+    previousConversationIdRef.current = conversationId;
+
+    if (conversationChanged) {
+      setSelectedMode(defaultMode);
+      setHasUserSelectedMode(false);
+      return;
+    }
+
+    if (!hasUserSelectedMode) {
+      setSelectedMode(defaultMode);
+    }
+  }, [conversationId, defaultMode, hasUserSelectedMode]);
 
   const stagedFilesQuery = useQuery({
     queryKey: [...agentWorkspaceKeys.diff(conversationId), "staged-files"],
     queryFn: () => diffApi.getAgentConversationWorkspaceStagedFileChanges(conversationId),
-    enabled: canQueryWorktreeFiles,
+    enabled:
+      canQueryWorktreeFiles &&
+      (!hasLiveWorktreeSummary ||
+        selectedMode === "staged" ||
+        (!hasUserSelectedMode &&
+          liveUnstagedCount === 0 &&
+          liveStagedCount !== undefined &&
+          liveStagedCount > 0)),
     staleTime: AGENT_WORKSPACE_STALE_MS,
   });
 
   const unstagedFilesQuery = useQuery({
     queryKey: [...agentWorkspaceKeys.diff(conversationId), "unstaged-files"],
     queryFn: () => diffApi.getAgentConversationWorkspaceUnstagedFileChanges(conversationId),
-    enabled: canQueryWorktreeFiles,
+    enabled:
+      canQueryWorktreeFiles &&
+      (!hasLiveWorktreeSummary ||
+        selectedMode === "unstaged" ||
+        (!hasUserSelectedMode &&
+          liveUnstagedCount !== undefined &&
+          liveUnstagedCount > 0)),
     staleTime: AGENT_WORKSPACE_STALE_MS,
   });
-  const stagedCount = stagedFilesQuery.data?.length;
-  const unstagedCount = unstagedFilesQuery.data?.length;
+  const stagedCount = liveSummary?.staged.fileCount ?? stagedFilesQuery.data?.length;
+  const unstagedCount = liveSummary?.unstaged.fileCount ?? unstagedFilesQuery.data?.length;
   const preferredMode = useMemo<DiffFilterMode>(() => {
-    if (!supportsWorktreeModes || hasUserSelectedMode) {
+    if (!supportsWorktreeModes || hasUserSelectedMode || selectedMode !== "uncommitted") {
       return selectedMode;
     }
     if (unstagedCount !== undefined && unstagedCount > 0) {
@@ -187,8 +231,19 @@ export function useAgentWorkspaceChangeSummary({
           ? (cumulativeFilesQuery.isPending && !cumulativeFilesQuery.isError)
           : false;
 
-  const totalAdditions = currentFiles.reduce((sum, file) => sum + file.additions, 0);
-  const totalDeletions = currentFiles.reduce((sum, file) => sum + file.deletions, 0);
+  const currentLiveBucket = useMemo<AgentWorkspaceChangeBucketSummary | null>(() => {
+    if (!liveSummary || !supportsWorktreeModes) return null;
+    if (isStagedMode) return liveSummary.staged;
+    if (isUnstagedMode) return liveSummary.unstaged;
+    return null;
+  }, [isStagedMode, isUnstagedMode, liveSummary, supportsWorktreeModes]);
+  const currentFileCount = currentLiveBucket?.fileCount ?? currentFiles.length;
+  const totalAdditions =
+    currentLiveBucket?.additions ??
+    currentFiles.reduce((sum, file) => sum + file.additions, 0);
+  const totalDeletions =
+    currentLiveBucket?.deletions ??
+    currentFiles.reduce((sum, file) => sum + file.deletions, 0);
 
   return {
     mode: selectedMode,
@@ -204,7 +259,11 @@ export function useAgentWorkspaceChangeSummary({
     isCumulativeMode,
     commitSha,
     supportsWorktreeModes,
-    workspaceChangeCount: review?.changes.length ?? 0,
+    workspaceChangeCount:
+      liveSummary != null
+        ? liveSummary.staged.fileCount + liveSummary.unstaged.fileCount
+        : review?.changes.length ?? 0,
+    currentFileCount,
     stagedCount,
     unstagedCount,
     totalAdditions,

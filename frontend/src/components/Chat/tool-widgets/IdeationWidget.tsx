@@ -27,7 +27,7 @@ import {
   FolderTree,
 } from "lucide-react";
 import { InlineIndicator, Badge, WidgetRow } from "./shared";
-import { colors, getString, getNumber, getArray, getBool, parseMcpToolResult } from "./shared.constants";
+import { colors, getString, getNumber, getArray, getBool, getStringArray, parseMcpToolResult } from "./shared.constants";
 import type { ToolCallWidgetProps } from "./shared.constants";
 
 // ============================================================================
@@ -224,10 +224,211 @@ function LinkProposals({ toolCall, compact }: ToolCallWidgetProps) {
   );
 }
 
-function AskUserQuestion({ toolCall, compact }: ToolCallWidgetProps) {
+interface QuestionAnswerOption {
+  label: string;
+  value: string;
+}
+
+interface QuestionAnswerRecord {
+  header: string | undefined;
+  question: string | undefined;
+  options: QuestionAnswerOption[];
+  selectedOptions: string[];
+  text: string | undefined;
+  skipped: boolean;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeAnswerOptions(options: unknown[] | undefined): QuestionAnswerOption[] {
+  return (options ?? [])
+    .filter(isRecord)
+    .map((option) => {
+      const label = getString(option, "label");
+      if (!label) return null;
+      return {
+        label,
+        value: getString(option, "value") ?? label,
+      };
+    })
+    .filter((option): option is QuestionAnswerOption => option != null);
+}
+
+function hasAnswerFields(record: Record<string, unknown>): boolean {
+  return (
+    "selected_options" in record ||
+    "selectedOptions" in record ||
+    "text" in record ||
+    "skipped" in record
+  );
+}
+
+function normalizeQuestionAnswerRecord(
+  value: unknown,
+  fallbackArgs?: unknown,
+): QuestionAnswerRecord | null {
+  if (!isRecord(value)) return null;
+  if (!hasAnswerFields(value)) return null;
+
+  const header = getString(value, "header") ?? getString(fallbackArgs, "header");
+  const question = getString(value, "question") ?? getString(fallbackArgs, "question");
+  const selectedOptions =
+    getStringArray(value, "selected_options")
+    ?? getStringArray(value, "selectedOptions")
+    ?? [];
+  const text = getString(value, "text")?.trim();
+  const options = normalizeAnswerOptions(getArray(value, "options") ?? getArray(fallbackArgs, "options"));
+
+  return {
+    header,
+    question,
+    options,
+    selectedOptions,
+    text: text || undefined,
+    skipped: getBool(value, "skipped") ?? false,
+  };
+}
+
+function getQuestionAnswerRecords(toolCall: ToolCallWidgetProps["toolCall"]): QuestionAnswerRecord[] {
+  const parsed = parseMcpToolResult(toolCall.result);
+  const answers = getArray(parsed, "answers");
+  if (answers && answers.length > 0) {
+    return answers
+      .map((answer) => normalizeQuestionAnswerRecord(answer))
+      .filter((answer): answer is QuestionAnswerRecord => answer != null);
+  }
+
+  const legacyAnswer = normalizeQuestionAnswerRecord(parsed, toolCall.arguments);
+  return legacyAnswer ? [legacyAnswer] : [];
+}
+
+function formatQuestionPrompt(answer: QuestionAnswerRecord): string {
+  if (answer.header && answer.question && answer.header !== answer.question) {
+    return `${answer.header}: ${answer.question}`;
+  }
+  return answer.header ?? answer.question ?? "Question";
+}
+
+function formatSubmittedAnswer(answer: QuestionAnswerRecord): string {
+  if (answer.skipped) {
+    return "Skipped";
+  }
+
+  const selected = answer.selectedOptions.map((selectedOption) => {
+    const match = answer.options.find(
+      (option) => option.value === selectedOption || option.label === selectedOption,
+    );
+    return match?.label ?? selectedOption;
+  });
+  if (answer.text) {
+    return selected.length > 0 ? `${selected.join(", ")} - ${answer.text}` : answer.text;
+  }
+  return selected.length > 0 ? selected.join(", ") : "Answered";
+}
+
+function getQuestionPreview(toolCall: ToolCallWidgetProps["toolCall"]): string {
   const question = getString(toolCall.arguments, "question");
   const header = getString(toolCall.arguments, "header");
-  const preview = header ?? question ?? "Asking user...";
+  if (header || question) {
+    return header ?? question ?? "Asking user...";
+  }
+
+  const questions = getArray(toolCall.arguments, "questions")?.filter(isRecord) ?? [];
+  const firstQuestion = questions[0];
+  if (firstQuestion) {
+    return getString(firstQuestion, "header")
+      ?? getString(firstQuestion, "question")
+      ?? "Asking user...";
+  }
+
+  return "Asking user...";
+}
+
+function AskUserQuestion({ toolCall, compact }: ToolCallWidgetProps) {
+  const answers = getQuestionAnswerRecords(toolCall);
+
+  if (answers.length > 0) {
+    const summary = answers.length === 1 ? "Question answered" : `${answers.length} questions answered`;
+    if (compact) {
+      return (
+        <WidgetRow compact={compact}>
+          <MessageCircleQuestion size={12} style={{ color: colors.success, flexShrink: 0 }} />
+          <span
+            style={{
+              flex: 1,
+              fontSize: 10.5,
+              color: colors.textSecondary,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {answers.length === 1 ? formatSubmittedAnswer(answers[0]!) : summary}
+          </span>
+          <Badge variant="success" compact>Answered</Badge>
+        </WidgetRow>
+      );
+    }
+
+    return (
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          padding: "6px 10px",
+          margin: "2px 0",
+          boxSizing: "border-box",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 7, minHeight: 18 }}>
+          <MessageCircleQuestion size={12} style={{ color: colors.success, flexShrink: 0 }} />
+          <span
+            style={{
+              flex: 1,
+              fontSize: 11,
+              color: colors.textSecondary,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              fontStyle: "italic",
+            }}
+          >
+            {summary}
+          </span>
+          <Badge variant="success" compact>Answered</Badge>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, paddingLeft: 19 }}>
+          {answers.map((answer, index) => (
+            <div key={`${formatQuestionPrompt(answer)}-${index}`} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <span
+                style={{
+                  fontSize: 11,
+                  lineHeight: 1.35,
+                  color: colors.textMuted,
+                }}
+              >
+                {formatQuestionPrompt(answer)}
+              </span>
+              <span
+                style={{
+                  fontSize: 11,
+                  lineHeight: 1.35,
+                  color: answer.skipped ? colors.textMuted : colors.textPrimary,
+                }}
+              >
+                {formatSubmittedAnswer(answer)}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const preview = getQuestionPreview(toolCall);
 
   // Truncate long questions
   const maxLen = compact ? 60 : 80;
@@ -236,7 +437,17 @@ function AskUserQuestion({ toolCall, compact }: ToolCallWidgetProps) {
     : preview;
 
   return (
-    <WidgetRow compact={compact}>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 7,
+        padding: compact ? "3px 10px" : "5px 10px",
+        margin: "2px 0",
+        height: compact ? undefined : 26,
+        boxSizing: "border-box",
+      }}
+    >
       <MessageCircleQuestion size={12} style={{ color: colors.accent, flexShrink: 0 }} />
       <span
         style={{
@@ -252,7 +463,7 @@ function AskUserQuestion({ toolCall, compact }: ToolCallWidgetProps) {
         {truncated}
       </span>
       <Badge variant="accent" compact>Question</Badge>
-    </WidgetRow>
+    </div>
   );
 }
 
@@ -475,7 +686,7 @@ export const IdeationWidget = React.memo(function IdeationWidget(props: ToolCall
     case "link_proposals_to_plan":
       return <div data-testid="ideation-widget-link-proposals"><LinkProposals {...props} /></div>;
     case "ask_user_question":
-      return <div data-testid="ideation-widget-ask-question"><AskUserQuestion {...props} /></div>;
+      return <div data-testid="ideation-widget-ask-question" style={props.compact ? undefined : { display: "flow-root" }}><AskUserQuestion {...props} /></div>;
     case "list_session_proposals":
       return <div data-testid="ideation-widget-list-proposals"><ListProposals {...props} /></div>;
     case "get_proposal":

@@ -1,7 +1,7 @@
 use super::publish_resilience::review_base_for_publish;
 use super::publish_resilience::{
     classify_publish_failure, count_unpublished_publish_commits,
-    publish_branch_freshness_outcome_from_source_update,
+    publish_branch_freshness_outcome_from_source_update, publish_push_status_for_failure,
     publish_branch_freshness_status_from_commits,
     publish_branch_freshness_status_from_commits_and_branch, remote_tracking_ref_for_publish,
     verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
@@ -38,6 +38,16 @@ fn classifies_commit_hook_policy_failures_as_agent_fixable() {
 }
 
 #[test]
+fn classifies_unknown_pre_commit_failures_as_agent_fixable() {
+    let error = "Failed to commit changes: pre-commit hook exited with status 1";
+
+    assert_eq!(
+        classify_publish_failure(error),
+        PublishFailureClass::AgentFixable
+    );
+}
+
+#[test]
 fn classifies_branch_conflicts_as_agent_fixable() {
     let error = "failed to update branch: merge conflict in frontend/src/App.tsx";
 
@@ -45,6 +55,23 @@ fn classifies_branch_conflicts_as_agent_fixable() {
         classify_publish_failure(error),
         PublishFailureClass::AgentFixable
     );
+}
+
+#[test]
+fn classifies_dirty_worktree_merge_aborts_as_agent_fixable() {
+    let error = concat!(
+        "merge in existing worktree failed: Git operation error: Merge failed: ",
+        "error: Your local changes to the following files would be overwritten by merge:\n",
+        "\tsrc-tauri/src/application/agent_task_service.rs\n",
+        "Please commit your changes or stash them before you merge.\n",
+        "Aborting"
+    );
+
+    assert_eq!(
+        classify_publish_failure(error),
+        PublishFailureClass::AgentFixable
+    );
+    assert_eq!(publish_push_status_for_failure(error), "needs_agent");
 }
 
 #[test]
@@ -78,8 +105,29 @@ fn classifies_git_authentication_failures_as_operational() {
 }
 
 #[test]
+fn classifies_git_command_timeouts_as_operational() {
+    let error = "Git operation error: git command timed out after 60s";
+
+    assert_eq!(
+        classify_publish_failure(error),
+        PublishFailureClass::Operational
+    );
+    assert_eq!(publish_push_status_for_failure(error), "failed");
+}
+
+#[test]
 fn classifies_commit_hook_environment_failures_as_operational() {
     let error = "Failed to commit changes: pre-commit failed: Cannot find package 'vitest'";
+
+    assert_eq!(
+        classify_publish_failure(error),
+        PublishFailureClass::Operational
+    );
+}
+
+#[test]
+fn classifies_commit_hook_module_resolution_failures_as_operational() {
+    let error = "Failed to commit changes: pre-commit failed: Cannot find module 'zod'";
 
     assert_eq!(
         classify_publish_failure(error),

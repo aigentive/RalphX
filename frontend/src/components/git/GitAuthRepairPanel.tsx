@@ -54,11 +54,19 @@ function hasDeferredStartupBlockingIssue(
   if (diagnostics.mixedAuthModes) {
     return true;
   }
+  const hasGithubHttpsRemote =
+    isGithubHttpsRemote(diagnostics.fetchUrl) ||
+    isGithubHttpsRemote(diagnostics.pushUrl);
+  if (
+    hasGithubHttpsRemote &&
+    diagnostics.githubHttpsCredentialHelperConfigured !== true
+  ) {
+    return true;
+  }
   return Boolean(
     ghAuthenticated === false &&
       (requiresGhAuth ||
-        isGithubHttpsRemote(diagnostics.fetchUrl) ||
-        isGithubHttpsRemote(diagnostics.pushUrl)),
+        hasGithubHttpsRemote),
   );
 }
 
@@ -99,7 +107,14 @@ export function GitAuthRepairPanel({
   const hasGithubHttpsRemote =
     isGithubHttpsRemote(diagnostics?.fetchUrl) ||
     isGithubHttpsRemote(diagnostics?.pushUrl);
-  const canSetupGithubHttps = isGhAuthed && hasGithubHttpsRemote;
+  const githubHttpsCredentialHelperConfigured =
+    diagnostics?.githubHttpsCredentialHelperConfigured === true;
+  const hasOtherHttpsRemote = hasHttpsRemote && !hasGithubHttpsRemote;
+  const hasGithubHttpsCredentialIssue =
+    hasGithubHttpsRemote &&
+    (!githubHttpsCredentialHelperConfigured || isGhMissing);
+  const canSetupGithubHttps =
+    isGhAuthed && hasGithubHttpsRemote && !githubHttpsCredentialHelperConfigured;
   const canLoginGithubCli = isGhMissing && (requiresGhAuth || hasGithubHttpsRemote);
   const canCopyGithubLogin = canLoginGithubCli;
   const hasRepairAction =
@@ -111,12 +126,17 @@ export function GitAuthRepairPanel({
     diagnosticsQuery.isError ||
     ghAuthQuery.isError ||
     diagnostics?.mixedAuthModes ||
-    hasHttpsRemote;
+    hasOtherHttpsRemote ||
+    hasGithubHttpsCredentialIssue;
   const hasGhPrIssue = requiresGhAuth && isGhMissing;
   const hasVisibleIssue = hasGitTransportIssue || hasGhPrIssue;
   const showPrAccessMode = hasGhPrIssue && !hasGitTransportIssue;
 
-  if (!showWhenHealthy && !isChecking && !hasVisibleIssue && !hasRepairAction) {
+  const shouldHide = surface === "publish"
+    ? !isChecking && !hasVisibleIssue
+    : !showWhenHealthy && !isChecking && !hasVisibleIssue && !hasRepairAction;
+
+  if (shouldHide) {
     return null;
   }
 
@@ -141,7 +161,9 @@ export function GitAuthRepairPanel({
   }
   if (canSetupGithubHttps) {
     messages.push("HTTPS remotes need a non-interactive credential. Configure GitHub CLI credentials or switch origin to SSH.");
-  } else if (hasHttpsRemote) {
+  } else if (hasGithubHttpsRemote && !githubHttpsCredentialHelperConfigured) {
+    messages.push("HTTPS remotes need a non-interactive credential before background fetch or push can run.");
+  } else if (hasOtherHttpsRemote) {
     messages.push("HTTPS remotes need a non-interactive credential before background fetch or push can run.");
   }
   if (canCopyGithubLogin && !showPrAccessMode) {

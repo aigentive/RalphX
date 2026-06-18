@@ -26,6 +26,7 @@ import { TeamSplitView } from "@/components/Team";
 import { TaskGraphView } from "@/components/TaskGraph";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { UpdateChecker } from "@/components/UpdateChecker";
+import { ProviderCliUpdateChecker } from "@/components/ProviderCliUpdateChecker";
 import { PostUpdatePreparingScreen } from "@/components/PostUpdatePreparingScreen";
 import { ProjectCreationWizard } from "@/components/projects/ProjectCreationWizard";
 import { PlanQuickSwitcherPalette } from "@/components/plan/PlanQuickSwitcherPalette";
@@ -62,6 +63,7 @@ import { useNavCompactBreakpoint } from "@/hooks";
 import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
 import { extractErrorMessage } from "@/lib/errors";
 import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
+import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
 import { executionApi } from "@/api/execution";
 import { tasksApi } from "@/api/tasks";
@@ -74,6 +76,20 @@ import { Toaster } from "@/components/ui/sonner";
 import { ScreenshotGalleryTestPage } from "@/test-pages/ScreenshotGalleryTest";
 
 const queryClient = getQueryClient();
+const ATLASSIAN_AWARENESS_TOAST_KEY = "ralphx.atlassianIntegrationAwareness.v1";
+
+function ensureCreatedProjectVisibleInAgentFilters(projectId: string) {
+  const {
+    showAllProjects,
+    sidebarProjectFilterIds,
+    setSidebarProjectFilterIds,
+  } = useAgentSessionStore.getState();
+  if (!showAllProjects) {
+    setSidebarProjectFilterIds([
+      ...new Set([...sidebarProjectFilterIds, projectId]),
+    ]);
+  }
+}
 
 /**
  * Test page router - checks URL params and returns test page if applicable
@@ -264,6 +280,9 @@ function AppContent() {
     !isLoadingProviderSettings &&
     !isPlaceholderProviderSettings;
   const isPostUpdatePreparing = usePostUpdatePreparing(postUpdateAppReady);
+  const shouldShowAtlassianAwarenessAfterUpdateRef = useRef(
+    readFreshPostUpdatePreparingMarker() !== null,
+  );
 
   // Use active project ID (queries are disabled when null)
   const currentProjectId = activeProjectId ?? "";
@@ -410,6 +429,9 @@ function AppContent() {
             project_ideation_max: response.projectIdeationMax,
             auto_commit: response.autoCommit,
             pause_on_failure: response.pauseOnFailure,
+            agent_workspace_pr_autofix_default: response.agentWorkspacePrAutofixDefault,
+            agent_workspace_pr_auto_merge_default:
+              response.agentWorkspacePrAutoMergeDefault,
           },
         });
       } catch (err) {
@@ -453,6 +475,10 @@ function AppContent() {
           projectIdeationMax: newSettings.execution.project_ideation_max,
           autoCommit: newSettings.execution.auto_commit,
           pauseOnFailure: newSettings.execution.pause_on_failure,
+          agentWorkspacePrAutofixDefault:
+            newSettings.execution.agent_workspace_pr_autofix_default,
+          agentWorkspacePrAutoMergeDefault:
+            newSettings.execution.agent_workspace_pr_auto_merge_default,
         }, currentProjectId || undefined);
       } catch (err) {
         console.error("Failed to save execution settings:", err);
@@ -531,6 +557,42 @@ function AppContent() {
   const handleOpenProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
   }, [openModal]);
+
+  const handleOpenIntegrationSettings = useCallback(() => {
+    openModal("settings", { section: "integrations" });
+  }, [openModal]);
+
+  useEffect(() => {
+    if (
+      !postUpdateAppReady ||
+      isPostUpdatePreparing ||
+      !shouldShowAtlassianAwarenessAfterUpdateRef.current ||
+      hasNoProjects ||
+      providerSetupRequired
+    ) {
+      return;
+    }
+    if (window.localStorage.getItem(ATLASSIAN_AWARENESS_TOAST_KEY) === "seen") {
+      shouldShowAtlassianAwarenessAfterUpdateRef.current = false;
+      return;
+    }
+    shouldShowAtlassianAwarenessAfterUpdateRef.current = false;
+    window.localStorage.setItem(ATLASSIAN_AWARENESS_TOAST_KEY, "seen");
+    toast.info("Atlassian integrations are available", {
+      description: "Connect Jira and Confluence from Settings.",
+      action: {
+        label: "Open Integrations",
+        onClick: handleOpenIntegrationSettings,
+      },
+      duration: 10000,
+    });
+  }, [
+    handleOpenIntegrationSettings,
+    hasNoProjects,
+    isPostUpdatePreparing,
+    postUpdateAppReady,
+    providerSetupRequired,
+  ]);
 
   const handleBattleModeToggle = useCallback(() => {
     if (battleModeActive) {
@@ -668,13 +730,21 @@ function AppContent() {
       await queryClient.invalidateQueries({ queryKey: projectKeys.list() });
       addProject(newProject);
       selectProject(newProject.id);
+      setFocusedAgentProject(newProject.id);
+      clearAgentSelection();
+      ensureCreatedProjectVisibleInAgentFilters(newProject.id);
       setIsProjectWizardOpen(false);
     } catch (error) {
       setProjectCreationError(error instanceof Error ? error.message : "Failed to create project");
     } finally {
       setIsCreatingProject(false);
     }
-  }, [addProject, selectProject]);
+  }, [
+    addProject,
+    clearAgentSelection,
+    selectProject,
+    setFocusedAgentProject,
+  ]);
 
   const handleBrowseFolder = useCallback(async (): Promise<string | null> => {
     try {
@@ -841,7 +911,10 @@ function AppContent() {
     />
   ) : null;
 
-  const toastBottomOffset = showsExecutionFooter ? "92px" : "16px";
+  const toastOffset = {
+    bottom: showsExecutionFooter ? "92px" : "16px",
+    left: "16px",
+  };
   const quickSwitcherAnchorSelector =
     currentView === "kanban"
       ? '[data-testid="kanban-split-left"]'
@@ -857,6 +930,7 @@ function AppContent() {
       >
       {/* Update checker - runs on mount, shows toast if update available */}
       <UpdateChecker />
+      <ProviderCliUpdateChecker />
 
       {isPostUpdatePreparing ? (
         <PostUpdatePreparingScreen />
@@ -891,6 +965,7 @@ function AppContent() {
         <WelcomeScreen
           onCreateProject={handleOpenProjectWizard}
           onSetupProviders={handleOpenProviderSettings}
+          onSetupIntegrations={handleOpenIntegrationSettings}
           providerSetupRequired={providerSetupRequired}
           hasProjects={!hasNoProjects}
           onClose={showWelcomeOverlay && !providerSetupRequired ? handleCloseWelcomeOverlay : undefined}
@@ -1072,7 +1147,7 @@ function AppContent() {
       )}
 
       {/* Toast notifications */}
-      <Toaster position="bottom-left" offset={toastBottomOffset} />
+      <Toaster position="bottom-left" offset={toastOffset} />
       </main>
     </TooltipProvider>
   );

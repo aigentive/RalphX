@@ -23,6 +23,8 @@ import {
   getCachedConversationMessages,
   addOptimisticUserMessageToConversationCache,
   removeOptimisticMessageFromConversationCache,
+  upsertFinalizedMessageIntoConversationCache,
+  upsertRenderReadyMessageIntoConversationCache,
 } from "./useChat";
 import {
   chatApi,
@@ -68,6 +70,18 @@ vi.mock("@/api/chat", () => ({
     createConversation: vi.fn(),
     getAgentRunStatus: vi.fn(),
   },
+  parseToolCalls: (raw: unknown) => Array.isArray(raw)
+    ? raw.map((toolCall, index) => {
+      const record = toolCall as Record<string, unknown>;
+      return {
+        id: typeof record.id === "string" ? record.id : `tool-${index}`,
+        name: typeof record.name === "string" ? record.name : "unknown",
+        arguments: record.arguments ?? {},
+        ...(record.result !== undefined ? { result: record.result } : {}),
+      };
+    })
+    : [],
+  parseContentBlocks: (raw: unknown) => Array.isArray(raw) ? raw : [],
 }));
 
 // Create mock data
@@ -514,6 +528,88 @@ describe("useConversationHistoryWindow", () => {
 
     expect(chatApi.getConversationMessagesPage).toHaveBeenCalledTimes(2);
   });
+
+  it("continues default history pagination past three pages until the first message is reachable", async () => {
+    const message3: ChatMessageResponse = {
+      ...mockMessage1,
+      id: "message-3",
+      content: "Middle page",
+      createdAt: "2026-01-24T10:00:03Z",
+    };
+    const message4: ChatMessageResponse = {
+      ...mockMessage2,
+      id: "message-4",
+      content: "Latest page",
+      createdAt: "2026-01-24T10:00:04Z",
+    };
+
+    vi.mocked(chatApi.getConversationMessagesPage)
+      .mockResolvedValueOnce({
+        conversation: mockConversation1,
+        messages: [message4],
+        limit: 1,
+        offset: 0,
+        totalMessageCount: 4,
+        hasOlder: true,
+      })
+      .mockResolvedValueOnce({
+        conversation: mockConversation1,
+        messages: [message3],
+        limit: 1,
+        offset: 1,
+        totalMessageCount: 4,
+        hasOlder: true,
+      })
+      .mockResolvedValueOnce({
+        conversation: mockConversation1,
+        messages: [mockMessage2],
+        limit: 1,
+        offset: 2,
+        totalMessageCount: 4,
+        hasOlder: true,
+      })
+      .mockResolvedValueOnce({
+        conversation: mockConversation1,
+        messages: [mockMessage1],
+        limit: 1,
+        offset: 3,
+        totalMessageCount: 4,
+        hasOlder: false,
+      });
+
+    const { result } = renderHook(
+      () => useConversationHistoryWindow("conv-1", { pageSize: 1 }),
+      {
+        wrapper: createWrapper(),
+      }
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    for (let index = 0; index < 3; index += 1) {
+      await act(async () => {
+        await result.current.fetchOlderMessages();
+      });
+    }
+
+    await waitFor(() =>
+      expect(result.current.data?.messages.map((message) => message.id)).toEqual([
+        "message-1",
+        "message-2",
+        "message-3",
+        "message-4",
+      ])
+    );
+    expect(result.current.loadedStartIndex).toBe(0);
+    expect(result.current.hasOlderMessages).toBe(false);
+    expect(chatApi.getConversationMessagesPage).toHaveBeenCalledTimes(4);
+    expect(chatApi.getConversationMessagesPage).toHaveBeenNthCalledWith(
+      4,
+      "conv-1",
+      1,
+      3
+    );
+  });
 });
 
 describe("useConversationTimelineWindow", () => {
@@ -603,6 +699,93 @@ describe("useConversationTimelineWindow", () => {
     );
   });
 
+  it("continues default timeline pagination past three pages until the first item is reachable", async () => {
+    const timelineBlocks = [1, 2, 3, 4].map((sequence) => ({
+      ...mockMessage1,
+      id: `block:message-${sequence}:0`,
+      parentMessageId: `message-${sequence}`,
+      content: `Timeline block ${sequence}`,
+      timelineSequence: sequence,
+      timelineKind: "text" as const,
+      timelineStatus: "finalized" as const,
+      createdAt: `2026-01-24T10:00:0${sequence}Z`,
+    }));
+
+    vi.mocked(chatApi.getConversationTimelinePage)
+      .mockResolvedValueOnce(
+        timelinePage([timelineBlocks[3]], {
+          limit: 1,
+          totalItemCount: 4,
+          hasOlder: true,
+          oldestLoadedSequence: 4,
+          newestLoadedSequence: 4,
+        })
+      )
+      .mockResolvedValueOnce(
+        timelinePage([timelineBlocks[2]], {
+          limit: 1,
+          beforeSequence: 4,
+          totalItemCount: 4,
+          hasOlder: true,
+          oldestLoadedSequence: 3,
+          newestLoadedSequence: 3,
+        })
+      )
+      .mockResolvedValueOnce(
+        timelinePage([timelineBlocks[1]], {
+          limit: 1,
+          beforeSequence: 3,
+          totalItemCount: 4,
+          hasOlder: true,
+          oldestLoadedSequence: 2,
+          newestLoadedSequence: 2,
+        })
+      )
+      .mockResolvedValueOnce(
+        timelinePage([timelineBlocks[0]], {
+          limit: 1,
+          beforeSequence: 2,
+          totalItemCount: 4,
+          hasOlder: false,
+          oldestLoadedSequence: 1,
+          newestLoadedSequence: 1,
+        })
+      );
+
+    const { result } = renderHook(
+      () => useConversationTimelineWindow("conv-1", { pageSize: 1 }),
+      {
+        wrapper: createWrapper(),
+      }
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    for (let index = 0; index < 3; index += 1) {
+      await act(async () => {
+        await result.current.fetchOlderMessages();
+      });
+    }
+
+    await waitFor(() =>
+      expect(result.current.data?.messages.map((message) => message.id)).toEqual([
+        "block:message-1:0",
+        "block:message-2:0",
+        "block:message-3:0",
+        "block:message-4:0",
+      ])
+    );
+    expect(result.current.loadedStartIndex).toBe(0);
+    expect(result.current.hasOlderMessages).toBe(false);
+    expect(chatApi.getConversationTimelinePage).toHaveBeenCalledTimes(4);
+    expect(chatApi.getConversationTimelinePage).toHaveBeenNthCalledWith(
+      4,
+      "conv-1",
+      1,
+      2
+    );
+  });
+
   it("merges timeline cache messages and maintains optimistic timeline items", () => {
     const { queryClient } = createWrapperWithClient();
     queryClient.setQueryData(chatKeys.conversationTimeline("conv-1"), {
@@ -655,6 +838,604 @@ describe("useConversationTimelineWindow", () => {
       "block:message-2:0",
     ]);
     expect(trimmed?.pages[0]?.newestLoadedSequence).toBe(4);
+  });
+
+  it("upserts finalized assistant blocks into the active timeline cache without refetch", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [mockMessage1],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [mockMessage1],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 1,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [
+          timelinePage([
+            {
+              ...mockMessage1,
+              id: "block:message-1:0",
+              parentMessageId: "message-1",
+              timelineSequence: 7,
+            },
+          ], {
+            totalItemCount: 7,
+            oldestLoadedSequence: 7,
+            newestLoadedSequence: 7,
+          }),
+        ],
+        pageParams: [null],
+      },
+    );
+
+    const finalized: ChatMessageResponse = {
+      id: "assistant-final",
+      sessionId: null,
+      projectId: null,
+      taskId: null,
+      role: "assistant",
+      content: "Done",
+      metadata: null,
+      parentMessageId: null,
+      conversationId: "conv-1",
+      toolCalls: [{
+        id: "toolu-read",
+        name: "Read",
+        arguments: { file_path: "src/app.ts" },
+        result: "preview",
+      }],
+      contentBlocks: [
+        { type: "text", text: "Done" },
+        {
+          type: "tool_use",
+          id: "toolu-read",
+          name: "Read",
+          arguments: { file_path: "src/app.ts" },
+          result: "preview",
+        },
+      ],
+      sender: null,
+      createdAt: "2026-01-24T10:01:00Z",
+    };
+
+    expect(upsertFinalizedMessageIntoConversationCache(queryClient, "conv-1", finalized)).toBe(true);
+
+    const timelineData =
+      queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+        chatKeys.conversationTimeline("conv-1")
+      );
+    expect(timelineData?.pages[0]?.messages.map((message) => message.id)).toEqual([
+      "block:message-1:0",
+      "block:assistant-final:0",
+      "block:assistant-final:1",
+    ]);
+    expect(timelineData?.pages[0]?.messages[1]?.parentMessageId).toBe("assistant-final");
+    expect(timelineData?.pages[0]?.messages[2]?.toolCalls?.[0]?.result).toBe("preview");
+    expect(timelineData?.pages[0]?.newestLoadedSequence).toBe(9);
+    expect(
+      getCachedConversationMessages(queryClient, "conv-1").some(
+        (message) => message.parentMessageId === "assistant-final",
+      )
+    ).toBe(true);
+  });
+
+  it("does not upsert finalized messages when the active timeline cache is absent", () => {
+    const { queryClient } = createWrapperWithClient();
+    const finalized: ChatMessageResponse = {
+      ...mockMessage2,
+      id: "assistant-final",
+      role: "assistant",
+      conversationId: "conv-1",
+      content: "Done",
+      contentBlocks: [{ type: "text", text: "Done" }],
+    };
+
+    expect(upsertFinalizedMessageIntoConversationCache(queryClient, "conv-1", finalized)).toBe(false);
+    expect(queryClient.getQueryData(chatKeys.conversationTimeline("conv-1"))).toBeUndefined();
+  });
+
+  it("upserts backend render-ready timeline items without synthesizing sequences", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [mockMessage1],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [mockMessage1],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 1,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [
+          timelinePage([
+            {
+              ...mockMessage1,
+              id: "block:message-1:0",
+              parentMessageId: "message-1",
+              timelineSequence: 7,
+            },
+          ], {
+            totalItemCount: 7,
+            oldestLoadedSequence: 7,
+            newestLoadedSequence: 7,
+          }),
+        ],
+        pageParams: [null],
+      },
+    );
+
+    const didUpsert = upsertRenderReadyMessageIntoConversationCache(queryClient, "conv-1", {
+      message: {
+        id: "assistant-final",
+        conversation_id: "conv-1",
+        role: "assistant",
+        content: "Done",
+        tool_calls: [{
+          id: "toolu-read",
+          name: "Read",
+          arguments: { file_path: "src/app.ts" },
+          result: "preview",
+        }],
+        content_blocks: [
+          { type: "text", text: "Done" },
+          {
+            type: "tool_use",
+            id: "toolu-read",
+            name: "Read",
+            arguments: { file_path: "src/app.ts" },
+            result: "preview",
+          },
+        ],
+        created_at: "2026-01-24T10:01:00Z",
+      },
+      timeline_items: [{
+        id: "block:assistant-final:1",
+        conversation_id: "conv-1",
+        message_id: "assistant-final",
+        run_id: null,
+        sequence: 12,
+        block_index: 1,
+        role: "assistant",
+        kind: "tool_use",
+        status: "finalized",
+        content: "",
+        content_blocks: [{
+          type: "tool_use",
+          id: "toolu-read",
+          name: "Read",
+          arguments: { file_path: "src/app.ts" },
+          result: "preview",
+        }],
+        tool_call: {
+          type: "tool_use",
+          id: "toolu-read",
+          name: "Read",
+          arguments: { file_path: "src/app.ts" },
+          result: "preview",
+        },
+        metadata: null,
+        provider_harness: "codex",
+        provider_session_id: "thread-1",
+        created_at: "2026-01-24T10:01:00Z",
+        updated_at: "2026-01-24T10:01:01Z",
+        finalized_at: "2026-01-24T10:01:01Z",
+      }],
+    });
+
+    expect(didUpsert).toBe(true);
+    const timelineData =
+      queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+        chatKeys.conversationTimeline("conv-1")
+      );
+    expect(timelineData?.pages[0]?.messages.map((message) => message.id)).toEqual([
+      "block:message-1:0",
+      "block:assistant-final:1",
+    ]);
+    expect(timelineData?.pages[0]?.newestLoadedSequence).toBe(12);
+    expect(timelineData?.pages[0]?.messages[1]?.providerHarness).toBe("codex");
+    expect(timelineData?.pages[0]?.messages[1]?.toolCalls?.[0]?.result).toBe("preview");
+  });
+
+  it("replaces existing render-ready rows and sorts by backend sequence", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [mockMessage1],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [mockMessage1],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 1,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [
+          timelinePage([
+            {
+              ...mockMessage1,
+              id: "block:message-1:0",
+              parentMessageId: "message-1",
+              timelineSequence: 7,
+            },
+            {
+              ...mockMessage2,
+              id: "block:assistant-final:old",
+              parentMessageId: "assistant-final",
+              timelineSequence: 8,
+            },
+          ], {
+            totalItemCount: 8,
+            oldestLoadedSequence: 7,
+            newestLoadedSequence: 8,
+          }),
+        ],
+        pageParams: [null],
+      },
+    );
+
+    const didUpsert = upsertRenderReadyMessageIntoConversationCache(queryClient, "conv-1", {
+      message: {
+        id: "assistant-final",
+        role: "assistant",
+        content: "Updated",
+        tool_calls: {},
+        content_blocks: "not-an-array",
+        provider_session_id: "thread-2",
+        created_at: "2026-01-24T10:02:00Z",
+      },
+      timeline_items: [
+        {
+          id: "block:assistant-final:1",
+          message_id: "assistant-final",
+          run_id: "run-1",
+          sequence: 12,
+          block_index: 1,
+          role: "assistant",
+          kind: "text",
+          status: "finalized",
+          content: "second",
+          content_blocks: "not-an-array",
+          metadata: null,
+          provider_session_id: "thread-2",
+          created_at: "2026-01-24T10:02:00Z",
+          updated_at: "2026-01-24T10:02:01Z",
+          finalized_at: null,
+        },
+        {
+          id: "block:assistant-final:0",
+          message_id: "assistant-final",
+          run_id: "run-1",
+          sequence: 11,
+          block_index: 0,
+          role: "assistant",
+          kind: "text",
+          status: "finalized",
+          content: "first",
+          content_blocks: [{ type: "text", text: "first" }],
+          metadata: null,
+          provider_session_id: "thread-2",
+          created_at: "2026-01-24T10:02:00Z",
+          updated_at: "2026-01-24T10:02:01Z",
+          finalized_at: "2026-01-24T10:02:01Z",
+        },
+      ],
+    });
+
+    expect(didUpsert).toBe(true);
+    const timelineData =
+      queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+        chatKeys.conversationTimeline("conv-1")
+      );
+    expect(timelineData?.pages[0]?.items.map((item) => item.id)).toEqual([
+      "block:message-1:0",
+      "block:assistant-final:0",
+      "block:assistant-final:1",
+    ]);
+    expect(timelineData?.pages[0]?.messages[1]?.conversationId).toBe("conv-1");
+    expect(timelineData?.pages[0]?.messages[1]?.contentBlocks).toEqual([
+      { type: "text", text: "first" },
+    ]);
+    expect(timelineData?.pages[0]?.messages[2]?.contentBlocks).toEqual([]);
+    expect(timelineData?.pages[0]?.newestLoadedSequence).toBe(12);
+    expect(getCachedConversationMessages(queryClient, "conv-1")).toContainEqual(
+      expect.objectContaining({
+        id: "assistant-final",
+        conversationId: "conv-1",
+        contentBlocks: null,
+        providerSessionId: "thread-2",
+      }),
+    );
+  });
+
+  it("does not upsert incomplete render-ready payloads or create missing timeline caches", () => {
+    const { queryClient } = createWrapperWithClient();
+
+    expect(upsertRenderReadyMessageIntoConversationCache(queryClient, "conv-1", {
+      message: null,
+      timeline_items: [],
+    })).toBe(false);
+    expect(upsertRenderReadyMessageIntoConversationCache(queryClient, "conv-1", {
+      message: {
+        id: "assistant-final",
+        role: "assistant",
+        content: "Done",
+        created_at: "2026-01-24T10:02:00Z",
+      },
+      timeline_items: null,
+    })).toBe(false);
+    expect(upsertRenderReadyMessageIntoConversationCache(queryClient, "conv-1", {
+      message: {
+        id: "assistant-final",
+        role: "assistant",
+        content: "Done",
+        created_at: "2026-01-24T10:02:00Z",
+      },
+      timeline_items: [{
+        id: "block:assistant-final:0",
+        message_id: "assistant-final",
+        sequence: 1,
+        block_index: 0,
+        role: "assistant",
+        kind: "text",
+        status: "finalized",
+        content: "Done",
+        content_blocks: [{ type: "text", text: "Done" }],
+        created_at: "2026-01-24T10:02:00Z",
+        updated_at: "2026-01-24T10:02:01Z",
+      }],
+    })).toBe(false);
+
+    expect(queryClient.getQueryData(chatKeys.conversationTimeline("conv-1"))).toBeUndefined();
+  });
+
+  it("upserts finalized text content when content blocks are absent", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [{
+        ...mockMessage2,
+        id: "assistant-final",
+        content: "Stale final text",
+      }],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [{
+              ...mockMessage2,
+              id: "assistant-final",
+              content: "Stale final text",
+            }],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 1,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [timelinePage([], { totalItemCount: 0 })],
+        pageParams: [null],
+      },
+    );
+
+    const finalized: ChatMessageResponse = {
+      ...mockMessage2,
+      id: "assistant-final",
+      role: "assistant",
+      conversationId: "conv-1",
+      content: "Plain final text",
+      contentBlocks: null,
+      providerHarness: "codex",
+      providerSessionId: "thread-final",
+      upstreamProvider: "openai",
+      providerProfile: "default",
+      logicalModel: "gpt-5.5",
+      effectiveModelId: "gpt-5.5-2026-05-01",
+      logicalEffort: "medium",
+      effectiveEffort: "medium",
+      inputTokens: 11,
+      outputTokens: 17,
+      cacheCreationTokens: 3,
+      cacheReadTokens: 5,
+      estimatedUsd: 0.0123,
+    };
+
+    expect(upsertFinalizedMessageIntoConversationCache(queryClient, "conv-1", finalized)).toBe(true);
+
+    const timelineData =
+      queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+        chatKeys.conversationTimeline("conv-1")
+      );
+    expect(timelineData?.pages[0]?.items).toHaveLength(1);
+    expect(timelineData?.pages[0]?.items[0]).toMatchObject({
+      id: "block:assistant-final:0",
+      content: "Plain final text",
+      providerHarness: "codex",
+      providerSessionId: "thread-final",
+      upstreamProvider: "openai",
+      providerProfile: "default",
+      logicalModel: "gpt-5.5",
+      effectiveModelId: "gpt-5.5-2026-05-01",
+      logicalEffort: "medium",
+      effectiveEffort: "medium",
+      inputTokens: 11,
+      outputTokens: 17,
+      cacheCreationTokens: 3,
+      cacheReadTokens: 5,
+      estimatedUsd: 0.0123,
+    });
+    expect(
+      queryClient.getQueryData<ConversationQueryData>(
+        chatKeys.conversation("conv-1")
+      )?.messages
+    ).toContainEqual(finalized);
+  });
+
+  it("does not upsert finalized messages without renderable content", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [timelinePage([], { totalItemCount: 0 })],
+        pageParams: [null],
+      },
+    );
+
+    expect(upsertFinalizedMessageIntoConversationCache(queryClient, "conv-1", {
+      ...mockMessage2,
+      id: "assistant-final",
+      content: "   ",
+      contentBlocks: null,
+    })).toBe(false);
+    expect(
+      queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+        chatKeys.conversationTimeline("conv-1")
+      )?.pages[0]?.items
+    ).toEqual([]);
+  });
+
+  it("does not update finalized or render-ready caches when the newest timeline page is missing", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [undefined as unknown as ConversationTimelinePageResponse],
+        pageParams: [null],
+      },
+    );
+
+    expect(upsertFinalizedMessageIntoConversationCache(queryClient, "conv-1", {
+      ...mockMessage2,
+      id: "assistant-final",
+      content: "Done",
+      contentBlocks: [{ type: "text", text: "Done" }],
+    })).toBe(false);
+    expect(upsertRenderReadyMessageIntoConversationCache(queryClient, "conv-1", {
+      message: {
+        id: "assistant-final",
+        role: "assistant",
+        content: "Done",
+        created_at: "2026-01-24T10:02:00Z",
+      },
+      timeline_items: [{
+        id: "block:assistant-final:0",
+        message_id: "assistant-final",
+        sequence: 1,
+        block_index: 0,
+        role: "assistant",
+        kind: "text",
+        status: "finalized",
+        content: "Done",
+        content_blocks: [{ type: "text", text: "Done" }],
+        created_at: "2026-01-24T10:02:00Z",
+        updated_at: "2026-01-24T10:02:01Z",
+      }],
+    })).toBe(false);
+  });
+
+  it("stores composer reference metadata on optimistic user messages", () => {
+    const { queryClient } = createWrapperWithClient();
+    const metadata =
+      '{"composer_integration_references":[{"provider":"atlassian","kind":"jira","id":"RX-42","key":"RX-42"}]}';
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 0,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [timelinePage([], { limit: 40, totalItemCount: 0 })],
+        pageParams: [null],
+      },
+    );
+
+    const optimistic = addOptimisticUserMessageToConversationCache(
+      queryClient,
+      "conv-1",
+      "hello from user",
+      { metadata },
+    );
+
+    expect(optimistic.metadata).toBe(metadata);
+    expect(
+      queryClient.getQueryData<{ messages: ChatMessageResponse[] }>(
+        chatKeys.conversation("conv-1"),
+      )?.messages[0]?.metadata,
+    ).toBe(metadata);
+    expect(
+      queryClient.getQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+        chatKeys.conversationHistory("conv-1"),
+      )?.pages[0]?.messages[0]?.metadata,
+    ).toBe(metadata);
+    expect(
+      queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+        chatKeys.conversationTimeline("conv-1"),
+      )?.pages[0]?.messages[0]?.metadata,
+    ).toBe(metadata);
   });
 });
 

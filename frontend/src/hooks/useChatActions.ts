@@ -21,10 +21,13 @@ import {
   removeOptimisticMessageFromConversationCache,
 } from "@/hooks/useChat";
 import { ideationApi } from "@/api/ideation";
+import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
 import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import type { ContextType } from "@/types/chat-conversation";
 import type {
+  ComposerArtifactReference,
+  ComposerIntegrationReference,
   ComposerProjectReference,
   SendAgentMessageOptions,
   SendAgentMessageResult,
@@ -54,7 +57,9 @@ interface UseChatActionsProps {
       content: string;
       attachmentIds?: string[];
       target?: string;
+      composerArtifactReferences?: ComposerArtifactReference[];
       composerProjectReferences?: ComposerProjectReference[];
+      composerIntegrationReferences?: ComposerIntegrationReference[];
     }) => Promise<SendAgentMessageResult>;
   };
   /** Current visible conversation ID, used by direct review/merge sends for immediate local echo. */
@@ -67,6 +72,7 @@ interface UseChatActionsProps {
   onUserMessageSent?: ((payload: {
     content: string;
     result: SendAgentMessageResult;
+    composerIntegrationReferences?: ComposerIntegrationReference[];
   }) => void | Promise<void>) | undefined;
 }
 
@@ -103,13 +109,28 @@ export function useChatActions({
     });
   }, []);
 
+  const queueAcceptedMessage = useCallback(
+    (content: string, queuedMessageId: string, attachmentIds?: string[]) => {
+      if (attachmentIds !== undefined && attachmentIds.length > 0) {
+        queueMessage(storeContextKey, content, queuedMessageId, attachmentIds);
+        return;
+      }
+      queueMessage(storeContextKey, content, queuedMessageId);
+    },
+    [queueMessage, storeContextKey]
+  );
+
   // ── Send ─────────────────────────────────────────────────────────
   const handleSend = useCallback(
     async (
       content: string,
       attachmentIds?: string[],
       target?: string,
-      composerOptions?: { projectReferences?: ComposerProjectReference[] },
+      composerOptions?: {
+        projectReferences?: ComposerProjectReference[];
+        integrationReferences?: ComposerIntegrationReference[];
+        artifactReferences?: ComposerArtifactReference[];
+      },
     ) => {
       if (!content.trim() || sendMessage.isPending) return;
 
@@ -129,11 +150,23 @@ export function useChatActions({
           setSending(storeContextKey, true);
           try {
             if (activeConversationId && !target) {
-              const message = addOptimisticUserMessageToConversationCache(
-                queryClient,
-                activeConversationId,
-                content
-              );
+              const referenceMetadata = serializeComposerReferencesMetadata({
+                projectReferences: composerOptions?.projectReferences,
+                integrationReferences: composerOptions?.integrationReferences,
+                artifactReferences: composerOptions?.artifactReferences,
+              });
+              const message = referenceMetadata
+                ? addOptimisticUserMessageToConversationCache(
+                    queryClient,
+                    activeConversationId,
+                    content,
+                    { metadata: referenceMetadata },
+                  )
+                : addOptimisticUserMessageToConversationCache(
+                    queryClient,
+                    activeConversationId,
+                    content,
+                  );
               optimisticMessage = {
                 conversationId: activeConversationId,
                 messageId: message.id,
@@ -145,8 +178,29 @@ export function useChatActions({
               content,
               attachmentIds,
               target,
-              composerOptions?.projectReferences?.length
-                ? { composerProjectReferences: composerOptions.projectReferences }
+              composerOptions?.projectReferences?.length ||
+                composerOptions?.integrationReferences?.length ||
+                composerOptions?.artifactReferences?.length
+                ? {
+                    ...(composerOptions?.projectReferences?.length
+                      ? {
+                          composerProjectReferences:
+                            composerOptions.projectReferences,
+                        }
+                      : {}),
+                    ...(composerOptions?.integrationReferences?.length
+                      ? {
+                          composerIntegrationReferences:
+                            composerOptions.integrationReferences,
+                        }
+                      : {}),
+                    ...(composerOptions?.artifactReferences?.length
+                      ? {
+                          composerArtifactReferences:
+                            composerOptions.artifactReferences,
+                        }
+                      : {}),
+                  }
                 : undefined,
             );
             sentResult = result;
@@ -156,7 +210,7 @@ export function useChatActions({
             });
 
             if (result.wasQueued && result.queuedMessageId != null) {
-              queueMessage(storeContextKey, content, result.queuedMessageId);
+              queueAcceptedMessage(content, result.queuedMessageId, attachmentIds);
             }
 
             if (result.conversationId) {
@@ -175,7 +229,9 @@ export function useChatActions({
             content: string;
             attachmentIds?: string[];
             target?: string;
+            composerArtifactReferences?: ComposerArtifactReference[];
             composerProjectReferences?: ComposerProjectReference[];
+            composerIntegrationReferences?: ComposerIntegrationReference[];
           } = { content };
           if (attachmentIds !== undefined) {
             params.attachmentIds = attachmentIds;
@@ -186,10 +242,18 @@ export function useChatActions({
           if (composerOptions?.projectReferences?.length) {
             params.composerProjectReferences = composerOptions.projectReferences;
           }
+          if (composerOptions?.integrationReferences?.length) {
+            params.composerIntegrationReferences =
+              composerOptions.integrationReferences;
+          }
+          if (composerOptions?.artifactReferences?.length) {
+            params.composerArtifactReferences =
+              composerOptions.artifactReferences;
+          }
           const result = await sendMessage.mutateAsync(params);
           sentResult = result;
           if (result.wasQueued && result.queuedMessageId != null) {
-            queueMessage(storeContextKey, content, result.queuedMessageId);
+            queueAcceptedMessage(content, result.queuedMessageId, attachmentIds);
           }
           if (
             contextType === "ideation" &&
@@ -227,7 +291,13 @@ export function useChatActions({
           });
         }
         if (sentResult) {
-          void onUserMessageSent?.({ content, result: sentResult });
+          void onUserMessageSent?.({
+            content,
+            result: sentResult,
+            ...(composerOptions?.integrationReferences?.length
+              ? { composerIntegrationReferences: composerOptions.integrationReferences }
+              : {}),
+          });
         }
       } catch (err) {
         if (optimisticMessage) {
@@ -244,7 +314,7 @@ export function useChatActions({
         setAgentRunning(storeContextKey, false);
       }
     },
-    [sendMessage, contextType, contextId, selectedTaskId, storeContextKey, setAgentRunning, setSending, setActiveConversation, queryClient, ideationSessionId, messageCount, queueMessage, onUserMessageSent, reportSendFailure, activeConversationId]
+    [sendMessage, contextType, contextId, selectedTaskId, storeContextKey, setAgentRunning, setSending, setActiveConversation, queryClient, ideationSessionId, messageCount, queueAcceptedMessage, onUserMessageSent, reportSendFailure, activeConversationId]
   );
 
   // ── Stop Agent ───────────────────────────────────────────────────
@@ -287,9 +357,48 @@ export function useChatActions({
     [deleteQueuedMessage, storeContextKey, contextType, backendQueueContextId]
   );
 
+  // ── Send Queued Message Now ─────────────────────────────────────
+  const handleSendQueuedMessageNow = useCallback(
+    async (messageId: string, content?: string, attachmentIds?: string[]) => {
+      deleteQueuedMessage(storeContextKey, messageId);
+      setSending(storeContextKey, true);
+
+      try {
+        const result = await chatApi.sendQueuedAgentMessageNow(
+          contextType,
+          backendQueueContextId,
+          messageId
+        );
+
+        if (result.wasQueued && result.queuedMessageId != null && content) {
+          queueAcceptedMessage(content, result.queuedMessageId, attachmentIds);
+        } else if (!result.wasQueued) {
+          setAgentRunning(storeContextKey, true);
+        }
+      } catch (err) {
+        if (content) {
+          queueAcceptedMessage(content, messageId, attachmentIds);
+        }
+        reportSendFailure(err);
+      } finally {
+        setSending(storeContextKey, false);
+      }
+    },
+    [
+      backendQueueContextId,
+      contextType,
+      deleteQueuedMessage,
+      queueAcceptedMessage,
+      reportSendFailure,
+      setAgentRunning,
+      setSending,
+      storeContextKey,
+    ]
+  );
+
   // ── Edit Queued Message ──────────────────────────────────────────
   const handleEditQueuedMessage = useCallback(
-    async (messageId: string, newContent: string) => {
+    async (messageId: string, newContent: string, attachmentIds?: string[]) => {
       // Delete old message from backend
       try {
         await chatApi.deleteQueuedAgentMessage(contextType, backendQueueContextId, messageId);
@@ -307,12 +416,12 @@ export function useChatActions({
           contextType,
           contextId,
           newContent,
-          undefined,
+          attachmentIds !== undefined && attachmentIds.length > 0 ? attachmentIds : undefined,
           undefined,
           sendOptions
         );
         if (result.wasQueued && result.queuedMessageId != null) {
-          queueMessage(storeContextKey, newContent, result.queuedMessageId);
+          queueAcceptedMessage(newContent, result.queuedMessageId, attachmentIds);
         }
       } catch (err) {
         reportSendFailure(err);
@@ -322,7 +431,7 @@ export function useChatActions({
     },
     [
       deleteQueuedMessage,
-      queueMessage,
+      queueAcceptedMessage,
       contextType,
       contextId,
       backendQueueContextId,
@@ -347,6 +456,7 @@ export function useChatActions({
     handleSend,
     handleStopAgent,
     handleDeleteQueuedMessage,
+    handleSendQueuedMessageNow,
     handleEditQueuedMessage,
     handleEditLastQueued,
   };

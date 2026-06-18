@@ -117,6 +117,21 @@ impl PrBranchMatch {
     }
 }
 
+/// Pull request search result used by branch/base picker UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrSearchResult {
+    pub number: i64,
+    pub title: String,
+    pub url: String,
+    pub head_ref_name: String,
+    pub head_ref_oid: Option<String>,
+    pub base_ref_name: String,
+    pub is_draft: bool,
+    pub updated_at: Option<String>,
+    pub author_login: Option<String>,
+    pub is_cross_repository: bool,
+}
+
 /// Inline review comment attached to a GitHub pull request review.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrReviewCommentFeedback {
@@ -186,6 +201,32 @@ impl PrDiffAnnotations {
     }
 }
 
+/// Summary-level GitHub pull request review event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrReviewSubmissionEvent {
+    Approve,
+    RequestChanges,
+    Comment,
+}
+
+impl std::fmt::Display for PrReviewSubmissionEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Approve => write!(f, "APPROVE"),
+            Self::RequestChanges => write!(f, "REQUEST_CHANGES"),
+            Self::Comment => write!(f, "COMMENT"),
+        }
+    }
+}
+
+/// Result from submitting a GitHub pull request review.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrSubmittedReview {
+    pub id: String,
+    pub url: Option<String>,
+}
+
 /// Abstraction over GitHub operations (production: `gh` CLI, tests: mock)
 #[async_trait]
 pub trait GithubServiceTrait: Send + Sync {
@@ -243,6 +284,19 @@ pub trait GithubServiceTrait: Send + Sync {
         Ok(PrDiffAnnotations::empty(pr_number))
     }
 
+    /// Submit a summary-level GitHub pull request review.
+    async fn submit_pr_review(
+        &self,
+        _working_dir: &Path,
+        _pr_number: i64,
+        _event: PrReviewSubmissionEvent,
+        _body: &str,
+    ) -> AppResult<PrSubmittedReview> {
+        Err(crate::error::AppError::Infrastructure(
+            "GitHub review submission is unavailable for this runtime".to_string(),
+        ))
+    }
+
     /// Fetch lightweight PR health for background supervision.
     async fn fetch_pr_health(&self, working_dir: &Path, pr_number: i64) -> AppResult<PrHealth> {
         let sync_state = self.check_pr_sync_state(working_dir, pr_number).await?;
@@ -296,6 +350,16 @@ pub trait GithubServiceTrait: Send + Sync {
         working_dir: &Path,
         head: &str,
     ) -> AppResult<Option<(i64, String)>>;
+
+    /// Search open pull requests for base-picker selection.
+    async fn search_pull_requests(
+        &self,
+        _working_dir: &Path,
+        _query: Option<&str>,
+        _limit: usize,
+    ) -> AppResult<Vec<PrSearchResult>> {
+        Ok(Vec::new())
+    }
 
     /// Find the latest PR for a head branch across all GitHub states.
     async fn find_latest_pr_by_head_branch(

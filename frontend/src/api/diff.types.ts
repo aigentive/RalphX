@@ -53,6 +53,23 @@ export interface FileDiff {
   isBinary: boolean;
 }
 
+export type DiffPageRow =
+  | { kind: "hunk_header"; header: string }
+  | { kind: "line"; line: DiffLine };
+
+export interface FileDiffPage {
+  filePath: string;
+  language: string;
+  rows: DiffPageRow[];
+  offset: number;
+  limit: number;
+  nextOffset: number | null;
+  totalRows: number;
+  oldTotalLines: number;
+  newTotalLines: number;
+  isBinary: boolean;
+}
+
 // ── GitHub PR annotation types ─────────────────────────────────────────────
 
 export interface PrDiffAnnotation {
@@ -103,4 +120,16 @@ export interface AgentWorkspaceReview {
   baseRef: string;
   headRef: string;
   supportsWorktreeModes?: boolean;
+}
+
+export interface AgentWorkspaceChangeBucketSummary {
+  fileCount: number;
+  additions: number;
+  deletions: number;
+}
+
+export interface AgentWorkspaceChangeSummary {
+  supportsWorktreeModes: boolean;
+  staged: AgentWorkspaceChangeBucketSummary;
+  unstaged: AgentWorkspaceChangeBucketSummary;
 }

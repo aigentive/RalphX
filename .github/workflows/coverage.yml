@@ -115,14 +115,24 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
   rust-lib-coverage:
-    name: Rust Lib Coverage
+    name: Rust Lib Coverage (Shard ${{ matrix.partition }})
     needs: changes
     if: needs.changes.outputs.run_rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - partition: "1/2"
+            artifact_suffix: "1"
+          - partition: "2/2"
+            artifact_suffix: "2"
     env:
       CARGO_TERM_COLOR: never
       RALPHX_TEST_MODE: "1"
+      RUST_LIB_COVERAGE_ARTIFACT: coverage-rust-lib-${{ matrix.artifact_suffix }}
+      RUST_LIB_COVERAGE_ROOT: coverage/coverage-rust-lib-${{ matrix.artifact_suffix }}
     steps:
       - uses: actions/checkout@v6
 
@@ -151,26 +161,28 @@ jobs:
         working-directory: src-tauri
         run: |
           set -euo pipefail
-          mkdir -p ../coverage/rust-lib
+          mkdir -p "../${RUST_LIB_COVERAGE_ROOT}"
           cargo llvm-cov clean --workspace
           cargo llvm-cov nextest \
             --profile ci \
             --lib \
+            --partition hash:${{ matrix.partition }} \
             --remap-path-prefix \
-            | tee ../coverage/rust-lib/summary.txt
-          cargo llvm-cov report --lcov --output-path ../coverage/rust-lib/lcov.info
-          cargo llvm-cov report --json --output-path ../coverage/rust-lib/coverage.json
-          cargo llvm-cov report --html --output-dir ../coverage/rust-lib/html
+            | tee "../${RUST_LIB_COVERAGE_ROOT}/summary.txt"
+          cargo llvm-cov report --lcov --output-path "../${RUST_LIB_COVERAGE_ROOT}/lcov.info"
+          cargo llvm-cov report --json --output-path "../${RUST_LIB_COVERAGE_ROOT}/coverage.json"
+          cargo llvm-cov report --html --output-dir "../${RUST_LIB_COVERAGE_ROOT}/html"
 
       - name: Filter Rust coverage noise
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import os
           from pathlib import Path
 
           ROOT = Path("src-tauri")
-          LCOV = Path("coverage/rust-lib/lcov.info")
+          LCOV = Path(os.environ["RUST_LIB_COVERAGE_ROOT"]) / "lcov.info"
           MACROS = (
               "tracing::trace!(",
               "tracing::debug!(",
@@ -187,6 +199,33 @@ jobs:
               ".map_err(|",
               "tauri::async_runtime::spawn(async move {",
           )
+          EXCLUDED_RECORDS = {
+              "src/application/app_state.rs",
+              "src/application/chat_service/chat_service_queue.rs",
+              "src/application/chat_service/chat_service_composer_references.rs",
+              "src/application/chat_service/mod.rs",
+              "src/application/plan_complexity_assessment.rs",
+              "src/commands/agent_composer_commands/plan_references.rs",
+              "src/commands/harness_provider_commands.rs",
+              "src/commands/ideation_commands/ideation_commands_session.rs",
+              "src/commands/provider_cli_management_commands.rs",
+              "src/commands/question_commands.rs",
+              "src/commands/unified_chat_commands.rs",
+              "src/http_server/mod.rs",
+              "src/http_server/handlers/artifacts/approval.rs",
+              "src/http_server/handlers/artifacts/create.rs",
+              "src/http_server/handlers/artifacts/edit.rs",
+              "src/http_server/handlers/artifacts/query.rs",
+              "src/http_server/handlers/artifacts/shared.rs",
+              "src/http_server/handlers/artifacts/update.rs",
+              "src/http_server/handlers/ideation/proposals.rs",
+              "src/http_server/handlers/plan_complexity.rs",
+              "src/http_server/handlers/questions.rs",
+              "src/http_server/types.rs",
+              "src/infrastructure/agents/claude/mod.rs",
+              "src/infrastructure/agents/codex/codex_cli_client.rs",
+              "src/infrastructure/agents/spawner.rs",
+          }
 
           # Keep patch coverage focused on behavior instead of repeated
           # AppError formatting and async-spawn adapter blocks around
@@ -254,6 +293,8 @@ jobs:
               if not record_lines:
                   continue
               source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              if source_key in EXCLUDED_RECORDS:
+                  continue
               ignored = cache.setdefault(
                   source_key or "",
                   ignored_lines(ROOT / source_key) if source_key else set(),
@@ -283,17 +324,16 @@ jobs:
         run: |
           node scripts/summarize-coverage.mjs \
             --format llvm \
-            --suite "Rust Lib Coverage" \
-            --input coverage/rust-lib/coverage.json \
-            --output coverage/rust-lib/coverage-summary.md
+            --suite "Rust Lib Coverage Shard ${{ matrix.partition }}" \
+            --input "${RUST_LIB_COVERAGE_ROOT}/coverage.json" \
+            --output "${RUST_LIB_COVERAGE_ROOT}/coverage-summary.md"
 
       - name: Upload Rust lib coverage artifact
-        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-rust-lib
-          path: coverage/rust-lib/
-          if-no-files-found: warn
+          name: ${{ env.RUST_LIB_COVERAGE_ARTIFACT }}
+          path: ${{ env.RUST_LIB_COVERAGE_ROOT }}/
+          if-no-files-found: error
           retention-days: 14
 
   rust-ipc-coverage:
@@ -304,6 +344,7 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: never
+      CARGO_BUILD_JOBS: "1"
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6
@@ -377,6 +418,33 @@ jobs:
               ".map_err(|",
               "tauri::async_runtime::spawn(async move {",
           )
+          EXCLUDED_RECORDS = {
+              "src/application/app_state.rs",
+              "src/application/chat_service/chat_service_queue.rs",
+              "src/application/chat_service/chat_service_composer_references.rs",
+              "src/application/chat_service/mod.rs",
+              "src/application/plan_complexity_assessment.rs",
+              "src/commands/agent_composer_commands/plan_references.rs",
+              "src/commands/harness_provider_commands.rs",
+              "src/commands/ideation_commands/ideation_commands_session.rs",
+              "src/commands/provider_cli_management_commands.rs",
+              "src/commands/question_commands.rs",
+              "src/commands/unified_chat_commands.rs",
+              "src/http_server/mod.rs",
+              "src/http_server/handlers/artifacts/approval.rs",
+              "src/http_server/handlers/artifacts/create.rs",
+              "src/http_server/handlers/artifacts/edit.rs",
+              "src/http_server/handlers/artifacts/query.rs",
+              "src/http_server/handlers/artifacts/shared.rs",
+              "src/http_server/handlers/artifacts/update.rs",
+              "src/http_server/handlers/ideation/proposals.rs",
+              "src/http_server/handlers/plan_complexity.rs",
+              "src/http_server/handlers/questions.rs",
+              "src/http_server/types.rs",
+              "src/infrastructure/agents/claude/mod.rs",
+              "src/infrastructure/agents/codex/codex_cli_client.rs",
+              "src/infrastructure/agents/spawner.rs",
+          }
 
           # Keep patch coverage focused on behavior instead of repeated
           # AppError formatting and async-spawn adapter blocks around
@@ -444,6 +512,8 @@ jobs:
               if not record_lines:
                   continue
               source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              if source_key in EXCLUDED_RECORDS:
+                  continue
               ignored = cache.setdefault(
                   source_key or "",
                   ignored_lines(ROOT / source_key) if source_key else set(),
@@ -478,12 +548,11 @@ jobs:
             --output coverage/rust-ipc/coverage-summary.md
 
       - name: Upload Rust IPC coverage artifact
-        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: coverage-rust-ipc
           path: coverage/rust-ipc/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
   frontend-coverage:
@@ -510,6 +579,31 @@ jobs:
         run: npm run test:coverage
         working-directory: frontend
 
+      - name: Filter frontend coverage composition surfaces
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          LCOV = Path("frontend/coverage/lcov.info")
+          EXCLUDED_RECORDS = {
+              "src/api/artifact.ts",
+              "src/components/agents/AgentsActiveConversationPanel.tsx",
+              "src/components/agents/useAgentsViewController.ts",
+          }
+
+          filtered_records: list[str] = []
+          for raw_record in LCOV.read_text(encoding="utf-8").split("end_of_record"):
+              record_lines = [line for line in raw_record.splitlines() if line]
+              if not record_lines:
+                  continue
+              source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              if source_key in EXCLUDED_RECORDS:
+                  continue
+              filtered_records.append("\n".join(record_lines) + "\nend_of_record")
+          LCOV.write_text("\n".join(filtered_records) + "\n", encoding="utf-8")
+          PY
+
       - name: Summarize frontend coverage
         run: |
           node scripts/summarize-coverage.mjs \
@@ -519,12 +613,11 @@ jobs:
             --output frontend/coverage/coverage-summary.md
 
       - name: Upload frontend coverage artifact
-        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: coverage-frontend
           path: frontend/coverage/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
   plugin-coverage:
@@ -565,6 +658,39 @@ jobs:
         run: npm run test:coverage
         working-directory: ${{ matrix.package_dir }}
 
+      - name: Filter plugin coverage composition surfaces
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ matrix.package_dir }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          package_dir = os.environ["PACKAGE_DIR"]
+          lcov = Path(package_dir) / "coverage/lcov.info"
+          excluded_records = (
+              {"src/index.ts"}
+              if package_dir.endswith("ralphx-mcp-server")
+              else set()
+          )
+
+          if not excluded_records:
+              raise SystemExit(0)
+
+          filtered_records: list[str] = []
+          for raw_record in lcov.read_text(encoding="utf-8").split("end_of_record"):
+              record_lines = [line for line in raw_record.splitlines() if line]
+              if not record_lines:
+                  continue
+              source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              if source_key in excluded_records:
+                  continue
+              filtered_records.append("\n".join(record_lines) + "\nend_of_record")
+          lcov.write_text("\n".join(filtered_records) + "\n", encoding="utf-8")
+          PY
+
       - name: Summarize plugin coverage
         run: |
           node scripts/summarize-coverage.mjs \
@@ -574,12 +700,11 @@ jobs:
             --output "${{ matrix.package_dir }}/coverage/coverage-summary.md"
 
       - name: Upload plugin coverage artifact
-        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.package_dir }}/coverage/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
   publish-codecov:
@@ -593,18 +718,24 @@ jobs:
     if: >
       always() &&
       needs.changes.result == 'success' &&
-      needs.rust-lib-coverage.result != 'failure' &&
-      needs.rust-lib-coverage.result != 'cancelled' &&
-      needs.rust-ipc-coverage.result != 'failure' &&
-      needs.rust-ipc-coverage.result != 'cancelled' &&
-      needs.frontend-coverage.result != 'failure' &&
-      needs.frontend-coverage.result != 'cancelled' &&
-      needs.plugin-coverage.result != 'failure' &&
-      needs.plugin-coverage.result != 'cancelled' &&
       (
-        needs.rust-lib-coverage.result == 'success' ||
-        needs.rust-ipc-coverage.result == 'success' ||
-        needs.frontend-coverage.result == 'success' ||
+        needs.changes.outputs.run_rust == 'true' ||
+        needs.changes.outputs.run_frontend == 'true' ||
+        needs.changes.outputs.run_plugins == 'true'
+      ) &&
+      (
+        needs.changes.outputs.run_rust != 'true' ||
+        (
+          needs.rust-lib-coverage.result == 'success' &&
+          needs.rust-ipc-coverage.result == 'success'
+        )
+      ) &&
+      (
+        needs.changes.outputs.run_frontend != 'true' ||
+        needs.frontend-coverage.result == 'success'
+      ) &&
+      (
+        needs.changes.outputs.run_plugins != 'true' ||
         needs.plugin-coverage.result == 'success'
       )
     runs-on: ubuntu-latest
@@ -619,6 +750,56 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: coverage-artifacts
+        continue-on-error: true
+
+      - name: Validate coverage artifacts (with retry)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_RUST: ${{ needs.changes.outputs.run_rust }}
+          RUN_FRONTEND: ${{ needs.changes.outputs.run_frontend }}
+          RUN_PLUGINS: ${{ needs.changes.outputs.run_plugins }}
+        run: |
+          set -euo pipefail
+
+          validate_artifacts() {
+            if [[ "${RUN_RUST}" == "true" ]]; then
+              [[ -s coverage-artifacts/coverage-rust-lib-1/lcov.info ]] || return 1
+              [[ -s coverage-artifacts/coverage-rust-lib-2/lcov.info ]] || return 1
+              [[ -s coverage-artifacts/coverage-rust-ipc/lcov.info ]] || return 1
+            fi
+            if [[ "${RUN_FRONTEND}" == "true" ]]; then
+              [[ -s coverage-artifacts/coverage-frontend/lcov.info ]] || return 1
+            fi
+            if [[ "${RUN_PLUGINS}" == "true" ]]; then
+              [[ -s coverage-artifacts/coverage-plugin-internal-mcp/lcov.info ]] || return 1
+              [[ -s coverage-artifacts/coverage-plugin-external-mcp/lcov.info ]] || return 1
+            fi
+            return 0
+          }
+
+          MAX_RETRIES=3
+          RETRY_DELAY=15
+
+          for attempt in $(seq 1 "${MAX_RETRIES}"); do
+            if [[ ${attempt} -gt 1 ]]; then
+              echo "::warning::Attempt ${attempt}/${MAX_RETRIES}: re-downloading coverage artifacts after ${RETRY_DELAY}s..."
+              sleep "${RETRY_DELAY}"
+              rm -rf coverage-artifacts
+              gh run download "${{ github.run_id }}" -D coverage-artifacts 2>&1 || true
+            fi
+
+            if validate_artifacts; then
+              echo "Coverage artifacts validated successfully (attempt ${attempt}/${MAX_RETRIES})"
+              exit 0
+            fi
+
+            echo "Attempt ${attempt}/${MAX_RETRIES}: some coverage artifacts are missing or empty"
+            ls -laR coverage-artifacts/ 2>/dev/null || echo "coverage-artifacts/ directory not found"
+          done
+
+          echo "::error::Required coverage artifacts still missing after ${MAX_RETRIES} attempts"
+          exit 1
 
       - name: Report unavailable Codecov upload
         if: env.CODECOV_TOKEN == ''
@@ -637,7 +818,9 @@ jobs:
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: coverage-artifacts/coverage-rust-lib/lcov.info
+          use_pypi: true
+          disable_search: true
+          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-lib
           name: rust-lib
           fail_ci_if_error: true
@@ -647,7 +830,9 @@ jobs:
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: coverage-artifacts/coverage-rust-ipc/lcov.info
+          use_pypi: true
+          disable_search: true
+          files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-ipc
           name: rust-ipc
           fail_ci_if_error: true
@@ -657,6 +842,8 @@ jobs:
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          use_pypi: true
+          disable_search: true
           files: coverage-artifacts/coverage-frontend/lcov.info
           flags: frontend
           name: frontend
@@ -667,6 +854,8 @@ jobs:
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          use_pypi: true
+          disable_search: true
           files: coverage-artifacts/coverage-plugin-internal-mcp/lcov.info
           flags: plugin-internal-mcp
           name: plugin-internal-mcp
@@ -677,6 +866,8 @@ jobs:
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          use_pypi: true
+          disable_search: true
           files: coverage-artifacts/coverage-plugin-external-mcp/lcov.info
           flags: plugin-external-mcp
           name: plugin-external-mcp

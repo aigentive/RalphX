@@ -515,15 +515,17 @@ async function seedAgentsScenario(page: Page) {
       "uncommitted",
       "unpushed",
     ];
+    const sidebarGroupPageSize = 8;
     const activeSidebarResponse = await mockListAgentSidebarConversations({
       projectIds: ["project-mock-1"],
       includeArchived: false,
       archivedOnly: false,
       publicationStates,
       groupBy: "project",
-      limitPerGroup: 6,
+      limitPerGroup: sidebarGroupPageSize,
       offsets: { "project-mock-1": 0 },
       pinnedConversationIds: [],
+      priorityConversationIds: [],
     });
     const archivedSidebarResponse = await mockListAgentSidebarConversations({
       projectIds: ["project-mock-1"],
@@ -531,9 +533,10 @@ async function seedAgentsScenario(page: Page) {
       archivedOnly: true,
       publicationStates,
       groupBy: "project",
-      limitPerGroup: 6,
+      limitPerGroup: sidebarGroupPageSize,
       offsets: { "project-mock-1": 0 },
       pinnedConversationIds: [],
+      priorityConversationIds: [],
     });
     const activeSidebarGroup = activeSidebarResponse.groups.find(
       (group) => group.key === "project-mock-1",
@@ -558,6 +561,12 @@ async function seedAgentsScenario(page: Page) {
         publicationStates,
         "pinned",
         [],
+        "priority",
+        [],
+        "page-size",
+        sidebarGroupPageSize,
+        "initial-limit",
+        sidebarGroupPageSize,
       ],
       {
         pages: [activeSidebarGroup],
@@ -578,6 +587,12 @@ async function seedAgentsScenario(page: Page) {
         publicationStates,
         "pinned",
         [],
+        "priority",
+        [],
+        "page-size",
+        sidebarGroupPageSize,
+        "initial-limit",
+        sidebarGroupPageSize,
       ],
       {
         pages: [archivedSidebarGroup],
@@ -611,15 +626,22 @@ test.describe("Agents View", () => {
     });
   });
 
-  test("starter composer and action menu match visual contract", async ({ page }) => {
+  test("starter composer mode and action menus are separated", async ({ page }) => {
     await setupAgentsView(page);
     await expect(page.getByTestId("agents-start-composer")).toBeVisible();
 
-    await page.getByTestId("agent-composer-actions-menu").click();
+    // Workflow modes live on the Mode chip popover only.
+    await page.getByTestId("agents-start-mode-chip").click();
     await expect(page.getByTestId("agents-start-mode-edit")).toBeVisible();
     await expect(page.getByTestId("agents-start-mode-chat")).toBeVisible();
     await expect(page.getByTestId("agents-start-mode-ideation")).toBeVisible();
     await expect(page.getByText("Build, change, and review code in a branch.")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("agents-start-mode-edit")).toHaveCount(0);
+
+    // The "+" action menu keeps everything except mode switching.
+    await page.getByTestId("agent-composer-actions-menu").click();
+    await expect(page.getByTestId("agents-start-mode-edit")).toHaveCount(0);
 
     await expect(page).toHaveScreenshot("agents-start-composer-actions.png", {
       fullPage: false,

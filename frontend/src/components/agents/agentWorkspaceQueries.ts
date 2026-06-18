@@ -44,14 +44,38 @@ export const agentWorkspaceKeys = {
     "workspace-review",
     conversationId,
   ] as const,
+  changeSummary: (conversationId: string | null | undefined) => [
+    "agents",
+    "workspace-change-summary",
+    conversationId,
+  ] as const,
   agentTasks: (conversationId: string | null | undefined) => [
     "agents",
     "conversation-agent-tasks",
     conversationId,
   ] as const,
+  agentTaskLists: (conversationId: string | null | undefined) => [
+    "agents",
+    "conversation-agent-task-lists",
+    conversationId,
+  ] as const,
+  agentTaskListTasks: (
+    conversationId: string | null | undefined,
+    taskListId: string | null | undefined,
+  ) => [
+    "agents",
+    "conversation-agent-task-list-tasks",
+    conversationId,
+    taskListId,
+  ] as const,
   prAnnotations: (conversationId: string | null | undefined) => [
     "agents",
     "workspace-pr-annotations",
+    conversationId,
+  ] as const,
+  prReview: (conversationId: string | null | undefined) => [
+    "agents",
+    "workspace-pr-review",
     conversationId,
   ] as const,
   diff: (conversationId: string | null | undefined) => [
@@ -135,10 +159,19 @@ export function invalidateWorkspaceQueries(
       queryKey: agentWorkspaceKeys.review(conversationId),
     }),
     queryClient.invalidateQueries({
+      queryKey: agentWorkspaceKeys.changeSummary(conversationId),
+    }),
+    queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.agentTasks(conversationId),
     }),
     queryClient.invalidateQueries({
+      queryKey: agentWorkspaceKeys.agentTaskLists(conversationId),
+    }),
+    queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.prAnnotations(conversationId),
+    }),
+    queryClient.invalidateQueries({
+      queryKey: agentWorkspaceKeys.prReview(conversationId),
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.diff(conversationId),

@@ -6,8 +6,8 @@ use tauri::State;
 
 use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
-    agent_workspace_response_for_state, AgentConversationResponse,
-    AgentConversationWorkspaceResponse,
+    agent_conversation_response_for_state, agent_workspace_response_for_state,
+    AgentConversationResponse, AgentConversationWorkspaceResponse,
 };
 use crate::domain::entities::{
     ChatContextType, ChatConversation, ChatConversationId, Project, ProjectId,
@@ -29,6 +29,7 @@ pub struct AgentSidebarConversationsInput {
     pub limit_per_group: Option<u32>,
     pub offsets: Option<HashMap<String, u32>>,
     pub pinned_conversation_ids: Option<Vec<String>>,
+    pub priority_conversation_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -161,7 +162,8 @@ struct SidebarConversationRow {
     project_id: String,
     sort_at: DateTime<Utc>,
     is_pinned: bool,
-    conversation: ChatConversation,
+    is_priority: bool,
+    conversation: AgentConversationResponse,
     workspace: Option<AgentConversationWorkspaceResponse>,
     ref_kind: &'static str,
     ref_label: String,
@@ -197,6 +199,10 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
     let search = normalize_search(input.search.as_deref());
     let pinned_conversation_ids: HashSet<String> =
         normalize_string_set(input.pinned_conversation_ids.as_deref().unwrap_or(&[]))
+            .into_iter()
+            .collect();
+    let priority_conversation_ids: HashSet<String> =
+        normalize_string_set(input.priority_conversation_ids.as_deref().unwrap_or(&[]))
             .into_iter()
             .collect();
 
@@ -257,10 +263,13 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
                 conversation_ref_display(workspace.as_ref(), default_ref_label.as_str());
             let sort_at = conversation.created_at;
             let is_pinned = pinned_conversation_ids.contains(&conversation.id.as_str());
+            let is_priority = priority_conversation_ids.contains(&conversation.id.as_str());
+            let conversation = agent_conversation_response_for_state(state, conversation).await?;
             rows.push(SidebarConversationRow {
                 project_id: project_id_string.clone(),
                 sort_at,
                 is_pinned,
+                is_priority,
                 conversation,
                 workspace,
                 ref_kind,
@@ -274,6 +283,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
         right
             .is_pinned
             .cmp(&left.is_pinned)
+            .then_with(|| right.is_priority.cmp(&left.is_priority))
             .then_with(|| compare_sidebar_rows(left, right, row_sort))
     });
 
@@ -543,7 +553,7 @@ impl From<SidebarConversationRow> for AgentSidebarConversationRowResponse {
         let publication_label =
             publication_label_for_workspace_response(row.workspace.as_ref(), row.publication_state);
         Self {
-            conversation: AgentConversationResponse::from(row.conversation),
+            conversation: row.conversation,
             workspace: row.workspace,
             ref_kind: row.ref_kind.to_string(),
             ref_label: row.ref_label,
@@ -687,6 +697,7 @@ mod tests {
             limit_per_group: Some(6),
             offsets: None,
             pinned_conversation_ids: None,
+            priority_conversation_ids: None,
         }
     }
 
@@ -1184,5 +1195,45 @@ mod tests {
             response.groups[1].rows[0].conversation.id,
             beta_conversation.id.as_str()
         );
+    }
+
+    #[tokio::test]
+    async fn project_grouping_sorts_pinned_rows_before_priority_rows() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha-priority").await;
+        let now = Utc::now();
+
+        let unpinned = create_conversation(&state, &project.id, "Unpinned newest", now).await;
+        create_workspace(&state, &unpinned, &project.id, None, Some("open"), None).await;
+        let priority = create_conversation(
+            &state,
+            &project.id,
+            "Selected priority",
+            now - chrono::Duration::minutes(5),
+        )
+        .await;
+        create_workspace(&state, &priority, &project.id, None, Some("open"), None).await;
+        let pinned = create_conversation(
+            &state,
+            &project.id,
+            "Pinned oldest",
+            now - chrono::Duration::minutes(10),
+        )
+        .await;
+        create_workspace(&state, &pinned, &project.id, None, Some("open"), None).await;
+
+        let mut input = sidebar_input(&project.id);
+        input.group_by = Some("project".to_string());
+        input.pinned_conversation_ids = Some(vec![pinned.id.as_str().to_string()]);
+        input.priority_conversation_ids = Some(vec![priority.id.as_str().to_string()]);
+
+        let response = list_agent_sidebar_conversations_for_app_state(input, &state)
+            .await
+            .unwrap();
+
+        let rows = &response.groups[0].rows;
+        assert_eq!(rows[0].conversation.id, pinned.id.as_str());
+        assert_eq!(rows[1].conversation.id, priority.id.as_str());
+        assert_eq!(rows[2].conversation.id, unpinned.id.as_str());
     }
 }

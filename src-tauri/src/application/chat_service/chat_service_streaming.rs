@@ -43,8 +43,9 @@ use super::chat_service_errors::StreamError;
 use super::chat_service_types::AgentUsageUpdatedPayload;
 use super::streaming_state_cache::{CachedStreamingTask, CachedToolCall, StreamingStateCache};
 use super::tool_result_preview::{
-    build_live_tool_result_preview_for_tool_call, build_live_tool_result_preview_for_tool_id,
-    live_tool_result_activity_content, live_tool_result_activity_metadata,
+    build_live_tool_argument_preview, build_live_tool_result_preview_for_tool_call,
+    build_live_tool_result_preview_for_tool_id, live_tool_result_activity_content,
+    live_tool_result_activity_metadata, tool_detail_ref,
 };
 use super::{
     event_context, events, has_meaningful_output, AgentChunkPayload, AgentHookPayload,
@@ -276,16 +277,18 @@ pub(super) async fn persist_timeline_snapshot(
     assistant_message_id: &Option<String>,
     content_blocks: &[ContentBlockItem],
     status: ChatTimelineItemStatus,
-) {
+) -> Vec<ChatTimelineItem> {
     let (Some(repo), Some(message_id)) =
         (chat_timeline_repo.as_ref(), assistant_message_id.as_ref())
     else {
-        return;
+        return Vec::new();
     };
 
     let conversation_id = ChatConversationId::from_string(conversation_id.to_string());
     let message_id = ChatMessageId::from_string(message_id.clone());
     let role = MessageRole::Orchestrator;
+    let mut persisted_items = Vec::new();
+    let mut persistence_failed = false;
 
     for (index, block) in content_blocks.iter().enumerate() {
         let kind = match block {
@@ -338,11 +341,22 @@ pub(super) async fn persist_timeline_snapshot(
             }
         }
 
-        let _ = repo.upsert_item(item).await;
+        match repo.upsert_item(item).await {
+            Ok(item) => persisted_items.push(item),
+            Err(_) => {
+                persistence_failed = true;
+            }
+        }
     }
 
     if status == ChatTimelineItemStatus::Finalized {
         let _ = repo.mark_message_items_finalized(&message_id).await;
+    }
+
+    if persistence_failed {
+        Vec::new()
+    } else {
+        persisted_items
     }
 }
 
@@ -472,6 +486,15 @@ struct PendingCodexFileChange {
     path: String,
     kind: String,
     old_content: Option<String>,
+    old_file_exists: Option<bool>,
+}
+
+fn capture_file_diff_baseline(path: &str) -> (Option<String>, Option<bool>) {
+    match std::fs::read_to_string(path) {
+        Ok(content) => (Some(content), Some(true)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, Some(false)),
+        Err(_) => (None, Some(true)),
+    }
 }
 
 fn codex_file_change_tool_call_id(item_id: Option<&str>, path: &str, index: usize) -> String {
@@ -537,6 +560,7 @@ fn codex_file_change_completed_snapshot(
                         parent_tool_use_id: None,
                         diff_context: Some(DiffContext {
                             old_content: change.old_content,
+                            old_file_exists: Some(true),
                             file_path: change.path,
                         }),
                         stats: None,
@@ -553,6 +577,7 @@ fn codex_file_change_completed_snapshot(
                         parent_tool_use_id: None,
                         diff_context: Some(DiffContext {
                             old_content: None,
+                            old_file_exists: change.old_file_exists,
                             file_path: change.path,
                         }),
                         stats: None,
@@ -590,6 +615,7 @@ fn codex_file_change_completed_snapshot(
                     parent_tool_use_id: None,
                     diff_context: Some(DiffContext {
                         old_content: None,
+                        old_file_exists: Some(false),
                         file_path: change.path,
                     }),
                     stats: None,
@@ -650,12 +676,14 @@ fn resolve_codex_file_change_tool_call_snapshots(
                 codex_file_change_tool_call_id(snapshot.id.as_deref(), &change.path, index);
             match snapshot.phase {
                 CodexToolCallPhase::Started => {
+                    let (old_content, old_file_exists) = capture_file_diff_baseline(&change.path);
                     pending_changes.insert(
                         tool_id.clone(),
                         PendingCodexFileChange {
                             path: change.path.clone(),
                             kind: change.kind.clone(),
-                            old_content: std::fs::read_to_string(&change.path).ok(),
+                            old_content,
+                            old_file_exists,
                         },
                     );
                     codex_file_change_started_snapshot(snapshot.id.as_deref(), &change, index)
@@ -668,6 +696,7 @@ fn resolve_codex_file_change_tool_call_snapshots(
                                 path: change.path,
                                 kind: change.kind,
                                 old_content: None,
+                                old_file_exists: None,
                             });
                     codex_file_change_completed_snapshot(
                         tool_id,
@@ -1721,9 +1750,11 @@ pub async fn process_stream_background<R: Runtime>(
                                 .get("file_path")
                                 .and_then(|v| v.as_str())
                             {
-                                let old_content = std::fs::read_to_string(file_path).ok();
+                                let (old_content, old_file_exists) =
+                                    capture_file_diff_baseline(file_path);
                                 let diff_ctx = DiffContext {
                                     old_content,
+                                    old_file_exists,
                                     file_path: file_path.to_string(),
                                 };
                                 tool_call.diff_context = Some(diff_ctx.clone());
@@ -1745,6 +1776,38 @@ pub async fn process_stream_background<R: Runtime>(
                             .diff_context
                             .as_ref()
                             .and_then(|dc| serde_json::to_value(dc).ok());
+                        let argument_preview =
+                            assistant_message_id.as_deref().and_then(|message_id| {
+                                let detail_ref = tool_detail_ref(
+                                    &conversation_id_str,
+                                    message_id,
+                                    tool_call.id.as_deref(),
+                                    None,
+                                );
+                                build_live_tool_argument_preview(
+                                    &tool_call,
+                                    diff_context_value.as_ref(),
+                                    Some(detail_ref),
+                                )
+                            });
+                        if argument_preview.is_some() {
+                            persist_assistant_message_snapshot(
+                                &chat_message_repo,
+                                &assistant_message_id,
+                                &processor.response_text,
+                                &processor.tool_calls,
+                                &processor.content_blocks,
+                            )
+                            .await;
+                            persist_timeline_snapshot(
+                                &chat_timeline_repo,
+                                &conversation_id_str,
+                                &assistant_message_id,
+                                &processor.content_blocks,
+                                ChatTimelineItemStatus::Streaming,
+                            )
+                            .await;
+                        }
 
                         // Update streaming state cache with completed tool call
                         let cached_tool = CachedToolCall {
@@ -1762,19 +1825,17 @@ pub async fn process_stream_background<R: Runtime>(
                         if let Some(ref handle) = app_handle {
                             let _ = handle.emit(
                                 events::AGENT_TOOL_CALL,
-                                AgentToolCallPayload {
-                                    tool_name: tool_call.name.clone(),
-                                    tool_id: tool_call.id.clone(),
-                                    arguments: tool_call.arguments.clone(),
-                                    result: None,
-                                    preview: AgentToolCallPreviewFields::default(),
-                                    conversation_id: conversation_id_str.clone(),
-                                    context_type: context_type_str.clone(),
-                                    context_id: context_id_str.clone(),
-                                    diff_context: diff_context_value,
-                                    parent_tool_use_id: parent_tool_use_id.clone(),
-                                    seq: stream_seq,
-                                },
+                                AgentToolCallPayload::from_completed_tool_call(
+                                    &tool_call,
+                                    None,
+                                    argument_preview.as_ref(),
+                                    &conversation_id_str,
+                                    &context_type_str,
+                                    &context_id_str,
+                                    diff_context_value,
+                                    parent_tool_use_id.clone(),
+                                    stream_seq,
+                                ),
                             );
                             stream_seq += 1;
 
@@ -1843,9 +1904,73 @@ pub async fn process_stream_background<R: Runtime>(
                             tracing::warn!(
                                 conversation_id = %conversation_id_str,
                                 ?session_id,
-                                "TurnComplete carried a result error; preserving processor state for terminal error handling"
+                                "TurnComplete carried a result error; terminating interactive turn immediately"
                             );
-                            continue;
+
+                            flush_content_before_error(
+                                &chat_message_repo,
+                                &assistant_message_id,
+                                &processor.response_text,
+                                &processor.tool_calls,
+                                &processor.content_blocks,
+                            )
+                            .await;
+                            persist_timeline_snapshot(
+                                &chat_timeline_repo,
+                                &conversation_id_str,
+                                &assistant_message_id,
+                                &processor.content_blocks,
+                                ChatTimelineItemStatus::Error,
+                            )
+                            .await;
+                            let turn_usage = processor.current_turn_usage();
+                            persist_assistant_message_usage(
+                                &chat_message_repo,
+                                &assistant_message_id,
+                                &turn_usage,
+                            )
+                            .await;
+                            persist_agent_run_usage(&agent_run_repo, &agent_run_id, &turn_usage)
+                                .await;
+
+                            if !session_id_persisted && persist_conversation_provider_session_ref {
+                                if let (Some(ref sess_id), Some(ref repo)) =
+                                    (&session_id, &conversation_repo)
+                                {
+                                    let session_ref =
+                                        provider_session_ref_for_harness(harness, sess_id.clone());
+                                    if let Err(e) = repo
+                                        .update_provider_session_ref(conversation_id, &session_ref)
+                                        .await
+                                    {
+                                        tracing::error!(
+                                            error = %e,
+                                            conversation_id = %conversation_id_str,
+                                            session_id = %sess_id,
+                                            "TurnComplete error: failed to persist provider_session_ref"
+                                        );
+                                    }
+                                }
+                            }
+
+                            let error_msg = if !processor.result_errors.is_empty() {
+                                processor.result_errors.join("; ")
+                            } else if !processor.response_text.trim().is_empty() {
+                                processor.response_text.trim().to_string()
+                            } else {
+                                "Agent failed during execution".to_string()
+                            };
+                            let provider_error =
+                                super::chat_service_errors::classify_provider_error(&error_msg);
+                            let _ = child.start_kill();
+                            stderr_task.abort();
+                            if let Some(provider_err) = provider_error {
+                                return Err(provider_err);
+                            }
+                            return Err(StreamError::AgentExit {
+                                exit_code: None,
+                                stderr: error_msg,
+                            });
                         }
 
                         // Finalize the current assistant message with accumulated content
@@ -1857,6 +1982,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     .to_string();
                             super::chat_service_send_background::finalize_structured_assistant_message(
                                 repo,
+                                &chat_timeline_repo,
                                 app_handle.as_ref(),
                                 context_type,
                                 context_id,
@@ -1867,19 +1993,6 @@ pub async fn process_stream_background<R: Runtime>(
                                 &processor.tool_calls,
                                 &processor.content_blocks,
                                 split_verification_transcript,
-                            )
-                            .await;
-                            // Mirror the finalize_structured_assistant_message write into the
-                            // timeline-backed chat_message_blocks table. Without this, project
-                            // and task chat turns that end on TurnComplete leave the timeline
-                            // empty and the chat UI shows the response as missing — even though
-                            // chat_messages has the full content.
-                            persist_timeline_snapshot(
-                                &chat_timeline_repo,
-                                &conversation_id_str,
-                                &assistant_message_id,
-                                &processor.content_blocks,
-                                ChatTimelineItemStatus::Finalized,
                             )
                             .await;
                             let turn_usage = processor.current_turn_usage();
@@ -3077,6 +3190,7 @@ async fn process_codex_stream_background<R: Runtime>(
     let mut completion_signal_tracker = CompletionSignalTracker::default();
     let mut last_emitted_usage = AgentRunUsage::default();
     let mut pending_codex_file_changes: HashMap<String, PendingCodexFileChange> = HashMap::new();
+    let mut codex_turn_completed = false;
     let heartbeat_key = running_agent_registry
         .as_ref()
         .map(|_| RunningAgentKey::new(context_type.to_string(), context_id));
@@ -3295,6 +3409,19 @@ async fn process_codex_stream_background<R: Runtime>(
                     assistant_message_id.as_deref(),
                     &tool_call,
                 );
+                let argument_preview = assistant_message_id.as_deref().and_then(|message_id| {
+                    let detail_ref = tool_detail_ref(
+                        &conversation_id_str,
+                        message_id,
+                        tool_call.id.as_deref(),
+                        None,
+                    );
+                    build_live_tool_argument_preview(
+                        &tool_call,
+                        diff_context_value.as_ref(),
+                        Some(detail_ref),
+                    )
+                });
 
                 if let Some(ref handle) = app_handle {
                     let _ = handle.emit(
@@ -3302,6 +3429,7 @@ async fn process_codex_stream_background<R: Runtime>(
                         AgentToolCallPayload::from_completed_tool_call(
                             &tool_call,
                             result_preview.as_ref(),
+                            argument_preview.as_ref(),
                             &conversation_id_str,
                             &context_type_str,
                             &context_id_str,
@@ -3396,6 +3524,12 @@ async fn process_codex_stream_background<R: Runtime>(
                     last_emitted_usage = usage.clone();
                 }
             }
+
+            if event.event_type == "turn.completed" {
+                codex_turn_completed = true;
+                let _ = child.start_kill();
+                break;
+            }
         } else if lines_seen > 0 && last_parsed_at.elapsed() >= timeout_config.parse_stall_timeout {
             let _ = child.kill().await;
             flush_content_before_error(
@@ -3476,7 +3610,7 @@ async fn process_codex_stream_background<R: Runtime>(
         &conversation_id_str,
         &assistant_message_id,
         &outcome.content_blocks,
-        if status.success() || outcome.has_meaningful_output() {
+        if status.success() || codex_turn_completed || outcome.has_meaningful_output() {
             ChatTimelineItemStatus::Finalized
         } else {
             ChatTimelineItemStatus::Error
@@ -3496,6 +3630,7 @@ async fn process_codex_stream_background<R: Runtime>(
     }
 
     if !status.success()
+        && !codex_turn_completed
         && !outcome.has_meaningful_output()
         && !completion_signal_tracker.was_called()
     {

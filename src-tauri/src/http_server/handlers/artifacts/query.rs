@@ -69,6 +69,27 @@ pub async fn get_session_plan(
     let mut response = ArtifactResponse::from(artifact);
     response.is_inherited = Some(is_inherited);
     response.project_working_directory = project_working_dir;
+    if session.session_flow == IdeationSessionFlow::Planning && !is_inherited {
+        let session_id_str = session_id.as_str().to_string();
+        let artifact_id_str = response.id.clone();
+        let artifact_version = response.version;
+        let approval = state
+            .app_state
+            .db
+            .run(move |conn| {
+                plan_approval_view_sync(conn, &session_id_str, &artifact_id_str, artifact_version)
+            })
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to get plan approval state for session {}: {}",
+                    session_id.as_str(),
+                    e
+                );
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        attach_plan_approval(&mut response, approval);
+    }
     Ok(Json(Some(response)))
 }
 

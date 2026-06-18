@@ -50,7 +50,7 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
     name: "update_agent_workspace_from_base",
     description:
       "Update the current agent workspace branch from its configured base through RalphX. " +
-      "If conflicts require repair, RalphX will route the workspace to the repair agent and will not publish automatically.",
+      "If conflicts require repair, RalphX will route the workspace to the repair agent and continue the original publish flow after repair when Auto Publish is enabled.",
     inputSchema: {
       type: "object",
       properties: {
@@ -106,6 +106,102 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
         },
       },
       required: ["conversation_id"],
+    },
+  },
+  {
+    name: "get_pr_review_context",
+    description:
+      "Read the current Review PR workspace context, including linked PR metadata, current head SHA, prior review monitor state, pending review action, and PR health/comment evidence. " +
+      "Call this first when running in Review PR mode.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        conversation_id: {
+          type: "string",
+          description:
+            "Optional agent workspace conversation ID. Omit when calling from the current Review PR workspace conversation.",
+        },
+      },
+    },
+  },
+  {
+    name: "propose_pr_review_action",
+    description:
+      "Create or update a pending user-approved PR review action for the current PR head. " +
+      "Use this after local review when the recommendation is Request Changes, Approve PR, or Comment.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        conversation_id: {
+          type: "string",
+          description:
+            "Optional agent workspace conversation ID. Omit when calling from the current Review PR workspace conversation.",
+        },
+        head_sha: {
+          type: "string",
+          description: "Current PR head SHA being reviewed.",
+        },
+        proposed_action: {
+          type: "string",
+          enum: ["request_changes", "approve", "comment"],
+          description: "Recommended GitHub review action for the current PR head.",
+        },
+        summary: {
+          type: "string",
+          description: "Short user-facing summary for the approval card.",
+        },
+        review_body: {
+          type: "string",
+          description: "Full Markdown review body to submit if the user approves.",
+        },
+        findings_json: {
+          type: "string",
+          description:
+            "Optional compact JSON string containing structured review findings.",
+        },
+        created_by_run_id: {
+          type: "string",
+          description: "Optional RalphX run id that produced this recommendation.",
+        },
+      },
+      required: ["head_sha", "proposed_action", "summary", "review_body"],
+    },
+  },
+  {
+    name: "complete_pr_review_run",
+    description:
+      "Record that a Review PR run completed without proposing a GitHub review action, or that it is blocked. " +
+      "Use this for Comment/No Action or Blocked outcomes when no pending approval card should be created.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        conversation_id: {
+          type: "string",
+          description:
+            "Optional agent workspace conversation ID. Omit when calling from the current Review PR workspace conversation.",
+        },
+        head_sha: {
+          type: "string",
+          description: "Optional PR head SHA reviewed by this run.",
+        },
+        outcome: {
+          type: "string",
+          description: "Optional normalized outcome such as no_action, comment, or blocked.",
+        },
+        summary: {
+          type: "string",
+          description: "Brief summary of the review run outcome.",
+        },
+        blocker: {
+          type: "string",
+          description: "Optional blocker when review could not be completed safely.",
+        },
+        created_by_run_id: {
+          type: "string",
+          description: "Optional RalphX run id that produced this outcome.",
+        },
+      },
+      required: ["summary"],
     },
   },
   {
@@ -246,6 +342,12 @@ export async function callAgentWorkspaceTool(
       return callPublishAgentWorkspaceTool(callTauri, args, runtimeContext);
     case "get_agent_workspace_pr_fix_context":
       return callGetAgentWorkspacePrFixContextTool(callTauriGet, args);
+    case "get_pr_review_context":
+      return callGetPrReviewContextTool(callTauriGet, args, runtimeContext);
+    case "propose_pr_review_action":
+      return callProposePrReviewActionTool(callTauri, args, runtimeContext);
+    case "complete_pr_review_run":
+      return callCompletePrReviewRunTool(callTauri, args, runtimeContext);
     case "read_agent_workspace_pr_comment":
       return callReadAgentWorkspacePrCommentTool(callTauriGet, args);
     case "complete_agent_workspace_pr_fix":
@@ -353,6 +455,73 @@ export async function callGetAgentWorkspacePrFixContextTool(
 ): Promise<unknown> {
   const { conversation_id } = args as { conversation_id: string };
   return callTauriGet(`agent-workspaces/${conversation_id}/pr-fix-context`);
+}
+
+export async function callGetPrReviewContextTool(
+  callTauriGet: TauriGet,
+  args: unknown,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
+): Promise<unknown> {
+  const conversation_id = resolveAgentWorkspaceConversationId(
+    "get_pr_review_context",
+    args,
+    runtimeContext
+  );
+  return callTauriGet(`agent-workspaces/${conversation_id}/pr-review-context`);
+}
+
+export async function callProposePrReviewActionTool(
+  callTauri: TauriPost,
+  args: unknown,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
+): Promise<unknown> {
+  const conversation_id = resolveAgentWorkspaceConversationId(
+    "propose_pr_review_action",
+    args,
+    runtimeContext
+  );
+  const actionArgs = (args && typeof args === "object" ? args : {}) as {
+    head_sha?: string;
+    proposed_action?: string;
+    summary?: string;
+    review_body?: string;
+    findings_json?: string;
+    created_by_run_id?: string;
+  };
+  return callTauri(`agent-workspaces/${conversation_id}/pr-review-actions`, {
+    head_sha: actionArgs.head_sha,
+    proposed_action: actionArgs.proposed_action,
+    summary: actionArgs.summary,
+    review_body: actionArgs.review_body,
+    findings_json: actionArgs.findings_json,
+    created_by_run_id: actionArgs.created_by_run_id,
+  });
+}
+
+export async function callCompletePrReviewRunTool(
+  callTauri: TauriPost,
+  args: unknown,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
+): Promise<unknown> {
+  const conversation_id = resolveAgentWorkspaceConversationId(
+    "complete_pr_review_run",
+    args,
+    runtimeContext
+  );
+  const runArgs = (args && typeof args === "object" ? args : {}) as {
+    head_sha?: string;
+    outcome?: string;
+    summary?: string;
+    blocker?: string;
+    created_by_run_id?: string;
+  };
+  return callTauri(`agent-workspaces/${conversation_id}/complete-pr-review-run`, {
+    head_sha: runArgs.head_sha,
+    outcome: runArgs.outcome,
+    summary: runArgs.summary,
+    blocker: runArgs.blocker,
+    created_by_run_id: runArgs.created_by_run_id,
+  });
 }
 
 export async function callReadAgentWorkspacePrCommentTool(

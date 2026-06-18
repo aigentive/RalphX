@@ -3,6 +3,7 @@
 
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -64,6 +65,29 @@ pub struct AgenticClientSpawner {
     execution_state: Option<Arc<ExecutionState>>,
     /// Tauri app handle for emitting events to frontend (optional)
     app_handle: Option<AppHandle<Wry>>,
+}
+
+struct ResolvedSpawnerHarness {
+    client: Arc<dyn AgenticClient>,
+    harness: AgentHarnessKind,
+    model: Option<String>,
+    logical_effort: Option<LogicalEffort>,
+    approval_policy: Option<String>,
+    sandbox_mode: Option<String>,
+    cli_path_override: Option<PathBuf>,
+}
+
+impl fmt::Debug for ResolvedSpawnerHarness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolvedSpawnerHarness")
+            .field("harness", &self.harness)
+            .field("model", &self.model)
+            .field("logical_effort", &self.logical_effort)
+            .field("approval_policy", &self.approval_policy)
+            .field("sandbox_mode", &self.sandbox_mode)
+            .field("cli_path_override", &self.cli_path_override)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AgenticClientSpawner {
@@ -350,7 +374,9 @@ impl AgenticClientSpawner {
 
     fn process_name(agent_type: &str) -> Option<&'static str> {
         match agent_type {
-            "worker" | "coder" | "ralphx-execution-worker" | "ralphx-execution-coder" => Some("execution"),
+            "worker" | "coder" | "ralphx-execution-worker" | "ralphx-execution-coder" => {
+                Some("execution")
+            }
             "reviewer" | "ralphx-execution-reviewer" => Some("review"),
             "merger" | "ralphx-execution-merger" => Some("merge"),
             "qa-prep" => Some("qa_prep"),
@@ -362,9 +388,11 @@ impl AgenticClientSpawner {
 
     fn context_type_for_agent(agent_type: &str) -> Option<ChatContextType> {
         match agent_type {
-            "worker" | "coder" | "ralphx-execution-worker" | "ralphx-execution-coder" | "qa-prep" => {
-                Some(ChatContextType::TaskExecution)
-            }
+            "worker"
+            | "coder"
+            | "ralphx-execution-worker"
+            | "ralphx-execution-coder"
+            | "qa-prep" => Some(ChatContextType::TaskExecution),
             "qa-refiner" | "qa-tester" => Some(ChatContextType::TaskExecution),
             "reviewer" | "ralphx-execution-reviewer" => Some(ChatContextType::Review),
             "merger" | "ralphx-execution-merger" => Some(ChatContextType::Merge),
@@ -382,21 +410,52 @@ impl AgenticClientSpawner {
         .map(|name| crate::infrastructure::agents::claude::qualify_agent_name(&name))
     }
 
+    async fn resolve_client_and_cli_path_override(
+        &self,
+        harness: AgentHarnessKind,
+        agent_type: &str,
+    ) -> Result<(Arc<dyn AgenticClient>, Option<PathBuf>), String> {
+        let client = self.resolve_client_for_harness(harness).ok_or_else(|| {
+            format!(
+                "Configured execution harness {} is not registered in the runtime",
+                harness
+            )
+        })?;
+
+        if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
+            let settings = provider_repo
+                .get(harness)
+                .await
+                .map_err(|error| format!("Failed to read provider settings: {error}"))?;
+            if let Some(settings) = settings.as_ref() {
+                if let Some(launch_path) =
+                    crate::application::managed_provider_cli::checked_managed_provider_cli_launch_path(
+                        settings,
+                        "state-machine agent spawn",
+                    )
+                {
+                    return Ok((client, Some(launch_path?)));
+                }
+            }
+        }
+
+        let harness_available = client.is_available().await.unwrap_or(false);
+        if !harness_available {
+            return Err(format!(
+                "Configured execution harness {} is unavailable for {}",
+                harness, agent_type
+            ));
+        }
+
+        Ok((client, None))
+    }
+
     async fn resolve_spawn_harness(
         &self,
         agent_type: &str,
         task_id: &str,
         project_id: Option<&str>,
-    ) -> Result<
-        (
-        AgentHarnessKind,
-        Option<String>,
-        Option<LogicalEffort>,
-        Option<String>,
-        Option<String>,
-        ),
-        String,
-    > {
+    ) -> Result<ResolvedSpawnerHarness, String> {
         let Some(context_type) = Self::context_type_for_agent(agent_type) else {
             if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
                 crate::application::ensure_provider_spawn_enabled(
@@ -406,7 +465,18 @@ impl AgenticClientSpawner {
                 )
                 .await?;
             }
-            return Ok((self.default_harness, None, None, None, None));
+            let (client, cli_path_override) = self
+                .resolve_client_and_cli_path_override(self.default_harness, agent_type)
+                .await?;
+            return Ok(ResolvedSpawnerHarness {
+                client,
+                harness: self.default_harness,
+                model: None,
+                logical_effort: None,
+                approval_policy: None,
+                sandbox_mode: None,
+                cli_path_override,
+            });
         };
         let Some(agent_name) = Self::resolve_process_agent_name(agent_type) else {
             if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
@@ -417,7 +487,18 @@ impl AgenticClientSpawner {
                 )
                 .await?;
             }
-            return Ok((self.default_harness, None, None, None, None));
+            let (client, cli_path_override) = self
+                .resolve_client_and_cli_path_override(self.default_harness, agent_type)
+                .await?;
+            return Ok(ResolvedSpawnerHarness {
+                client,
+                harness: self.default_harness,
+                model: None,
+                logical_effort: None,
+                approval_policy: None,
+                sandbox_mode: None,
+                cli_path_override,
+            });
         };
         let entity_status = self.resolve_task_status(task_id).await;
 
@@ -441,24 +522,19 @@ impl AgenticClientSpawner {
             )
             .await?;
         }
-        let client = self.resolve_client_for_harness(harness).ok_or_else(|| {
-            format!("Configured execution harness {} is not registered in the runtime", harness)
-        })?;
-        let harness_available = client.is_available().await.unwrap_or(false);
-        if !harness_available {
-            return Err(format!(
-                "Configured execution harness {} is unavailable for {}",
-                harness, agent_type
-            ));
-        }
+        let (client, cli_path_override) = self
+            .resolve_client_and_cli_path_override(harness, agent_type)
+            .await?;
 
-        Ok((
+        Ok(ResolvedSpawnerHarness {
+            client,
             harness,
-            Some(resolved.model),
-            resolved.logical_effort,
-            resolved.approval_policy,
-            resolved.sandbox_mode,
-        ))
+            model: Some(resolved.model),
+            logical_effort: resolved.logical_effort,
+            approval_policy: resolved.approval_policy,
+            sandbox_mode: resolved.sandbox_mode,
+            cli_path_override,
+        })
     }
 
     fn build_agent_config(
@@ -474,6 +550,7 @@ impl AgenticClientSpawner {
         logical_effort: Option<LogicalEffort>,
         approval_policy: Option<String>,
         sandbox_mode: Option<String>,
+        cli_path_override: Option<PathBuf>,
     ) -> AgentConfig {
         let mut env = std::collections::HashMap::new();
         if let Some(pid) = project_id {
@@ -489,6 +566,7 @@ impl AgenticClientSpawner {
             agent: None,
             model,
             harness: Some(harness),
+            cli_path_override,
             logical_effort,
             approval_policy,
             sandbox_mode,
@@ -513,7 +591,10 @@ impl AgenticClientSpawner {
         config
     }
 
-    fn resolve_client_for_harness(&self, harness: AgentHarnessKind) -> Option<Arc<dyn AgenticClient>> {
+    fn resolve_client_for_harness(
+        &self,
+        harness: AgentHarnessKind,
+    ) -> Option<Arc<dyn AgenticClient>> {
         if harness == self.default_harness {
             Some(Arc::clone(&self.default_client))
         } else {
@@ -613,7 +694,7 @@ impl AgentSpawner for AgenticClientSpawner {
 
         // Resolve project ID for RALPHX_PROJECT_ID env var
         let project_id = self.resolve_project_id(task_id).await;
-        let (harness, model, logical_effort, approval_policy, sandbox_mode) = match self
+        let resolved_harness = match self
             .resolve_spawn_harness(agent_type, task_id, project_id.as_deref())
             .await
         {
@@ -624,30 +705,21 @@ impl AgentSpawner for AgenticClientSpawner {
                 return;
             }
         };
-        let Some(client) = self.resolve_client_for_harness(harness) else {
-            self.rollback_spawn_failure();
-            self.emit_error(
-                task_id,
-                ErrorInfo::new(
-                    format!("Configured execution harness {} is not registered in the runtime", harness),
-                    "resolve_client_for_harness",
-                ),
-            );
-            return;
-        };
+        let client = Arc::clone(&resolved_harness.client);
         let client_type = client.capabilities().client_type.clone();
         let config = self.build_agent_config(
-            harness,
+            resolved_harness.harness,
             client_type,
             role,
             agent_type,
             task_id,
             working_dir,
             project_id,
-            model,
-            logical_effort,
-            approval_policy,
-            sandbox_mode,
+            resolved_harness.model,
+            resolved_harness.logical_effort,
+            resolved_harness.approval_policy,
+            resolved_harness.sandbox_mode,
+            resolved_harness.cli_path_override,
         );
 
         // Spawn and handle errors

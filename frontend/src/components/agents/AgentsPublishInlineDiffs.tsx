@@ -10,18 +10,18 @@
  *                             default view selection; file diffs still hydrate lazily
  *   - Commit mode: file list via getAgentConversationWorkspaceCommitFileChanges,
  *                  then per-file diff via getAgentConversationWorkspaceCommitFileDiff
- *   - Diffs fetched for hydrated expanded files only; off-range/collapsed cards pay zero query cost.
+ *   - Normal diffs fetched for hydrated expanded files only; large diffs fetch row pages.
  *
  * Performance contract (frontend-interaction-performance.md):
  *   - Sticky bar always renders synchronously.
- *   - File cards receive diff as prop — parent manages timing, cards never fetch.
+ *   - File cards receive normal diff state as prop; large explicit diffs page their own rows.
  *
  * WKWebView CSS: explicit background-color / border-color with shallow-chain tokens.
  */
 
 import { memo, useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { useQueries } from "@tanstack/react-query";
-import { ArrowDownToLine, ChevronDown, ChevronUp } from "lucide-react";
+import { ArrowDownToLine, ChevronDown, ChevronUp, Maximize2 } from "lucide-react";
 import { Virtuoso, type ListRange, type VirtuosoHandle } from "react-virtuoso";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
@@ -30,10 +30,12 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { diffApi } from "@/api/diff";
 import type { AgentWorkspaceReview, FileChange, DiffRefKind, PrDiffAnnotation } from "@/api/diff";
 import type { Commit as DiffViewerCommit } from "@/components/diff";
+import { cn } from "@/lib/utils";
 import { AgentsPublishDiffFilter } from "./AgentsPublishDiffFilter";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import { AgentsPublishFileDiff } from "./AgentsPublishFileDiff";
 import type { DiffState } from "./AgentsPublishFileDiff";
+import { isLargeInlineDiff } from "./inlineDiffGuards";
 import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
@@ -44,6 +46,7 @@ import { useAgentWorkspaceChangeSummary } from "./useAgentWorkspaceChangeSummary
 const EMPTY_PR_DIFF_ANNOTATIONS: PrDiffAnnotation[] = [];
 const VIRTUAL_RANGE_OVERSCAN_FILES = 0;
 const PATCH_BACKED_HEAD_REF_PREFIX = "github-pr-diff/";
+type BulkExpansionPreference = "expanded" | "collapsed" | "custom";
 
 export interface AgentsPublishInlineDiffsProps {
   conversationId: string;
@@ -52,8 +55,9 @@ export interface AgentsPublishInlineDiffsProps {
   isLoading: boolean;
   annotations?: PrDiffAnnotation[] | undefined;
   error?: unknown;
-  onOpenInDialog?: ((filePath: string) => void) | undefined;
+  onOpenInDialog?: ((filePath?: string) => void) | undefined;
   focusRequest?: AgentPublishFocusRequest | null | undefined;
+  defaultMode?: DiffFilterMode | undefined;
   workspaceChangeLabel?: string | undefined;
 }
 
@@ -97,6 +101,20 @@ function getEmptyDiffStateCopy(
   };
 }
 
+function buildEffectiveCollapsedPaths(
+  preference: BulkExpansionPreference,
+  files: FileChange[],
+  customCollapsedPaths: ReadonlySet<string>,
+): Set<string> {
+  if (preference === "collapsed") {
+    return new Set(files.map((file) => file.path));
+  }
+  if (preference === "expanded") {
+    return new Set();
+  }
+  return new Set(customCollapsedPaths);
+}
+
 interface AgentsPublishVirtualFileRowProps {
   file: FileChange;
   diff: DiffState;
@@ -106,6 +124,7 @@ interface AgentsPublishVirtualFileRowProps {
   onOpenFullscreenPath: (path: string) => void;
   conversationId: string;
   refKind?: DiffRefKind | undefined;
+  diffPageRefKind?: DiffRefKind | undefined;
   shouldHydrate: boolean;
   annotations: PrDiffAnnotation[];
   isShowAnywayOverridden: boolean;
@@ -122,6 +141,7 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
   onOpenFullscreenPath,
   conversationId,
   refKind,
+  diffPageRefKind,
   shouldHydrate,
   annotations,
   isShowAnywayOverridden,
@@ -146,6 +166,7 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
       onOpenFullscreen={onOpenFullscreenPath}
       conversationId={conversationId}
       refKind={refKind}
+      diffPageRefKind={diffPageRefKind}
       shouldHydrate={shouldHydrate}
       annotations={annotations}
       isShowAnywayOverridden={isShowAnywayOverridden}
@@ -164,10 +185,13 @@ export function AgentsPublishInlineDiffs({
   error,
   onOpenInDialog,
   focusRequest,
+  defaultMode,
   workspaceChangeLabel,
 }: AgentsPublishInlineDiffsProps) {
   // Set of collapsed file paths; empty = all expanded (default).
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
+  const [bulkExpansionPreference, setBulkExpansionPreference] =
+    useState<BulkExpansionPreference>("expanded");
   // Jump-to-file popover
   const [jumpOpen, setJumpOpen] = useState(false);
   const [jumpSearch, setJumpSearch] = useState("");
@@ -176,7 +200,7 @@ export function AgentsPublishInlineDiffs({
   // Lazy hydration tracks which file paths have entered the virtual range.
   // Paths are added on first range entry and never removed, so body teardown does not thrash.
   const [hydratedPaths, setHydratedPaths] = useState<Set<string>>(new Set());
-  // Show-anyway overrides — paths where the user has dismissed the generated-file placeholder.
+  // Show-anyway overrides — paths where the user has dismissed a generated-file placeholder.
   const [userShowAnywayPaths, setUserShowAnywayPaths] = useState<Set<string>>(new Set());
   const [pendingFocusRequest, setPendingFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
@@ -199,7 +223,7 @@ export function AgentsPublishInlineDiffs({
     totalDeletions,
     workspaceChangeCount,
     unstagedCount,
-  } = useAgentWorkspaceChangeSummary({ conversationId, review });
+  } = useAgentWorkspaceChangeSummary({ conversationId, review, defaultMode });
   const rangeRefKind =
     review?.headRef.startsWith(PATCH_BACKED_HEAD_REF_PREFIX) === true
       ? undefined
@@ -256,6 +280,16 @@ export function AgentsPublishInlineDiffs({
     return paths;
   }, [currentFiles, visibleRange]);
 
+  const effectiveCollapsedPaths = useMemo(
+    () =>
+      buildEffectiveCollapsedPaths(
+        bulkExpansionPreference,
+        currentFiles,
+        collapsedPaths,
+      ),
+    [bulkExpansionPreference, collapsedPaths, currentFiles],
+  );
+
   const hydrateVisibleRange = useCallback(
     (range: ListRange) => {
       setVisibleRange(range);
@@ -291,8 +325,8 @@ export function AgentsPublishInlineDiffs({
 
   // Only fetch diffs for visible expanded files — collapsed/off-range cards pay no query cost.
   const expandedFiles = useMemo(
-    () => currentFiles.filter((f) => !collapsedPaths.has(f.path)),
-    [currentFiles, collapsedPaths],
+    () => currentFiles.filter((f) => !effectiveCollapsedPaths.has(f.path)),
+    [currentFiles, effectiveCollapsedPaths],
   );
 
   const fetchableFiles = useMemo(
@@ -300,6 +334,7 @@ export function AgentsPublishInlineDiffs({
       expandedFiles.filter(
         (file) =>
           bufferedVisiblePathSet.has(file.path) &&
+          !isLargeInlineDiff(file) &&
           (!file.isGenerated || userShowAnywayPaths.has(file.path)),
       ),
     [bufferedVisiblePathSet, expandedFiles, userShowAnywayPaths],
@@ -413,8 +448,13 @@ export function AgentsPublishInlineDiffs({
   }, [setMode]);
 
   const handleToggle = useCallback((path: string) => {
+    setBulkExpansionPreference("custom");
     setCollapsedPaths((prev) => {
-      const next = new Set(prev);
+      const next = buildEffectiveCollapsedPaths(
+        bulkExpansionPreference,
+        currentFiles,
+        prev,
+      );
       if (next.has(path)) {
         next.delete(path);
       } else {
@@ -422,7 +462,7 @@ export function AgentsPublishInlineDiffs({
       }
       return next;
     });
-  }, []);
+  }, [bulkExpansionPreference, currentFiles]);
 
   const handleCopyPath = useCallback((path: string) => {
     void navigator.clipboard?.writeText(path).catch(() => undefined);
@@ -435,6 +475,10 @@ export function AgentsPublishInlineDiffs({
     [onOpenInDialog],
   );
 
+  const handleOpenDialog = useCallback(() => {
+    onOpenInDialog?.();
+  }, [onOpenInDialog]);
+
   const handleShowAnyway = useCallback((path: string) => {
     setUserShowAnywayPaths((prev) => {
       if (prev.has(path)) {
@@ -445,10 +489,12 @@ export function AgentsPublishInlineDiffs({
   }, []);
 
   const collapseAll = useCallback(() => {
+    setBulkExpansionPreference("collapsed");
     setCollapsedPaths(new Set(currentFiles.map((f) => f.path)));
   }, [currentFiles]);
 
   const expandAll = useCallback(() => {
+    setBulkExpansionPreference("expanded");
     setCollapsedPaths(new Set());
   }, []);
 
@@ -490,11 +536,18 @@ export function AgentsPublishInlineDiffs({
       return;
     }
 
+    if (bulkExpansionPreference === "collapsed") {
+      setBulkExpansionPreference("custom");
+    }
     setCollapsedPaths((prev) => {
-      if (!prev.has(pendingFocusRequest.filePath)) {
-        return prev;
+      const next = buildEffectiveCollapsedPaths(
+        bulkExpansionPreference,
+        currentFiles,
+        prev,
+      );
+      if (!next.has(pendingFocusRequest.filePath)) {
+        return next;
       }
-      const next = new Set(prev);
       next.delete(pendingFocusRequest.filePath);
       return next;
     });
@@ -509,6 +562,7 @@ export function AgentsPublishInlineDiffs({
   }, [
     conversationId,
     currentFiles,
+    bulkExpansionPreference,
     hydrateVisibleRange,
     isCurrentFilesLoading,
     isLoading,
@@ -522,16 +576,24 @@ export function AgentsPublishInlineDiffs({
 
   const renderFileRow = useCallback(
     (_index: number, fileChange: FileChange) => (
-      <div className="min-w-0 overflow-x-hidden py-1 first:pt-3 last:pb-3">
+      <div
+        data-testid={`inline-diffs-file-row-${_index}`}
+        className={cn(
+          "box-border min-w-0 w-full overflow-x-hidden px-3",
+          _index === 0 ? "pt-2" : "pt-0.5",
+          _index === currentFiles.length - 1 ? "pb-2" : "pb-0.5",
+        )}
+      >
         <AgentsPublishVirtualFileRow
           file={fileChange}
           diff={diffByPath.get(fileChange.path)}
-          isExpanded={!collapsedPaths.has(fileChange.path)}
+          isExpanded={!effectiveCollapsedPaths.has(fileChange.path)}
           onTogglePath={handleToggle}
           onCopyPath={handleCopyPath}
           onOpenFullscreenPath={handleOpenFullscreen}
           conversationId={conversationId}
           refKind={rangeRefKind}
+          diffPageRefKind={refKind}
           shouldHydrate={hydratedPaths.has(fileChange.path)}
           annotations={annotationsByPath.get(fileChange.path) ?? EMPTY_PR_DIFF_ANNOTATIONS}
           isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
@@ -542,15 +604,17 @@ export function AgentsPublishInlineDiffs({
     ),
     [
       annotationsByPath,
-      collapsedPaths,
       conversationId,
+      currentFiles.length,
       diffByPath,
+      effectiveCollapsedPaths,
       handleCopyPath,
       handleOpenFullscreen,
       handleShowAnyway,
       handleToggle,
       hydratedPaths,
       focusTargetPath,
+      refKind,
       rangeRefKind,
       userShowAnywayPaths,
     ],
@@ -721,6 +785,26 @@ export function AgentsPublishInlineDiffs({
               </div>
             </PopoverContent>
           </Popover>
+
+          {onOpenInDialog !== undefined && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  data-testid="agents-review-changes"
+                  aria-label="Open changes in full diff dialog"
+                  onClick={handleOpenDialog}
+                  className="flex items-center justify-center rounded p-1 transition-colors hover:bg-[var(--bg-hover)]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>Open in full dialog</p>
+              </TooltipContent>
+            </Tooltip>
+          )}
         </div>
       </div>
 
@@ -758,8 +842,8 @@ export function AgentsPublishInlineDiffs({
           ref={virtuosoRef}
           data={currentFiles}
           data-testid="inline-diffs-virtual-list"
-          className="min-h-0 flex-1 overflow-x-hidden px-3"
-          style={{ height: "100%", overflowX: "hidden" }}
+          className="min-h-0 flex-1 overflow-x-hidden"
+          style={{ height: "100%", overflowX: "hidden", scrollbarGutter: "stable" }}
           computeItemKey={computeFileKey}
           rangeChanged={hydrateVisibleRange}
           increaseViewportBy={{ top: 240, bottom: 480 }}

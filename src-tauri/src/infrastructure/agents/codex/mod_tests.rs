@@ -1,6 +1,7 @@
 use super::{
     build_codex_exec_args, build_codex_exec_resume_args, build_codex_mcp_overrides,
-    build_spawnable_codex_exec_command, compose_codex_prompt, configure_spawn, probe_codex_cli,
+    build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
+    compose_codex_prompt, compose_codex_prompt_for_profile, configure_spawn, probe_codex_cli,
     resolve_codex_cli_from_candidates, CodexCliCapabilities, CodexExecCliConfig,
     CodexMcpRuntimeContext,
 };
@@ -68,6 +69,26 @@ fn create_plugin_dir(root: &std::path::Path) -> PathBuf {
     let plugin_dir = root.join("plugins/app");
     std::fs::create_dir_all(plugin_dir.join("agents")).expect("create plugin agents dir");
     plugin_dir
+}
+
+fn codex_mcp_args_override(overrides: &[String]) -> &str {
+    overrides
+        .iter()
+        .find_map(|entry| entry.strip_prefix("mcp_servers.ralphx.args="))
+        .expect("Codex MCP args override")
+}
+
+fn seed_live_agent_yaml(root: &Path, agent_name: &str) {
+    let agent_dir = root.join("agents").join(agent_name);
+    std::fs::create_dir_all(&agent_dir).expect("create agent fixture dir");
+    std::fs::copy(
+        project_root()
+            .join("agents")
+            .join(agent_name)
+            .join("agent.yaml"),
+        agent_dir.join("agent.yaml"),
+    )
+    .expect("copy live agent fixture");
 }
 
 fn project_root() -> PathBuf {
@@ -684,6 +705,7 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         task_id: None,
         project_id: Some("project-456".to_string()),
         working_directory: Some(root.join("workspace")),
+        filesystem_read_roots: vec![root.join("project-root")],
         lead_session_id: Some("lead-789".to_string()),
         parent_conversation_id: Some("conversation-abc".to_string()),
     };
@@ -736,6 +758,14 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
     assert!(
         args_override.contains("--project-id"),
         "expected project-id CLI arg in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("--filesystem-read-root"),
+        "expected filesystem read-root CLI arg in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("project-root"),
+        "expected filesystem read-root value in overrides: {args_override}"
     );
     assert!(
         args_override.contains("project-456"),
@@ -851,6 +881,81 @@ harnesses:
 }
 
 #[test]
+fn build_codex_mcp_overrides_keeps_plan_question_tool_for_interactive_runs() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    let plugin_dir = create_plugin_dir(root);
+    seed_live_agent_yaml(root, "ralphx-ideation");
+
+    let overrides = build_codex_mcp_overrides_for_profile(
+        &plugin_dir,
+        "ralphx-ideation",
+        Some("plan"),
+        false,
+        None,
+    )
+    .expect("overrides");
+    let args = codex_mcp_args_override(&overrides);
+
+    assert!(
+        args.contains("--allowed-tools=") && args.contains("ask_user_question"),
+        "Codex Plan chat must keep ask_user_question for interactive Agent conversations: {overrides:?}"
+    );
+}
+
+#[test]
+fn build_codex_mcp_overrides_filters_plan_question_tool_for_external_runs() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    let plugin_dir = create_plugin_dir(root);
+    seed_live_agent_yaml(root, "ralphx-ideation");
+
+    let overrides = build_codex_mcp_overrides_for_profile(
+        &plugin_dir,
+        "ralphx-ideation",
+        Some("plan"),
+        true,
+        None,
+    )
+    .expect("overrides");
+    let args = codex_mcp_args_override(&overrides);
+
+    assert!(
+        !args.contains("ask_user_question"),
+        "External Codex Plan chat spawns must filter ask_user_question: {overrides:?}"
+    );
+    assert!(
+        args.contains("get_session_plan"),
+        "Filtering interactive tools must preserve non-interactive Plan tools: {overrides:?}"
+    );
+}
+
+#[test]
+fn compose_codex_prompt_includes_runtime_profile_context_for_profile() {
+    let root = project_root();
+    let plugin_dir = root.join("plugins/app");
+    let prompt = compose_codex_prompt_for_profile(
+        "Create a plan",
+        Some(&plugin_dir),
+        Some("ralphx-ideation"),
+        Some("plan"),
+    );
+
+    assert!(prompt.contains("<agent_runtime_profile>"));
+    assert!(prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
+    assert!(prompt.contains("<profile_slug>plan</profile_slug>"));
+    assert!(prompt.contains("<profile_role>plan_chat</profile_role>"));
+
+    let default_prompt = compose_codex_prompt(
+        "Create a plan",
+        Some(&plugin_dir),
+        Some("ralphx-ideation"),
+    );
+    assert!(!default_prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
+    assert!(!default_prompt.contains("<profile_role>plan_chat</profile_role>"));
+}
+
+#[test]
 fn build_codex_mcp_overrides_mixes_external_transport_with_internal_sidecar_tools() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let root = temp_dir.path();
@@ -930,6 +1035,7 @@ harnesses:
         task_id: None,
         project_id: Some("project-123".to_string()),
         working_directory: Some(root.join("workspace")),
+        filesystem_read_roots: Vec::new(),
         lead_session_id: None,
         parent_conversation_id: Some("conversation 456".to_string()),
     };

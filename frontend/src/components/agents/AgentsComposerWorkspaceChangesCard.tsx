@@ -1,8 +1,13 @@
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Check, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
 import { agentTaskApi } from "@/api/agent-tasks";
-import type { AgentTaskState, AgentTaskSummary } from "@/api/agent-tasks";
+import type {
+  AgentTaskListSummary,
+  AgentTaskState,
+  AgentTaskSummary,
+} from "@/api/agent-tasks";
 import { diffApi } from "@/api/diff";
 import type { FileChange } from "@/api/diff";
 import type { AgentConversationWorkspace } from "@/api/chat";
@@ -14,16 +19,22 @@ import {
   agentWorkspaceKeys,
 } from "./agentWorkspaceQueries";
 import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
-import {
-  mapReviewCommitsToDiffViewerCommits,
-  useAgentWorkspaceChangeSummary,
-} from "./useAgentWorkspaceChangeSummary";
+import { useAgentWorkspaceChangeSummary } from "./useAgentWorkspaceChangeSummary";
 
-const ACTIVE_AGENT_REVIEW_REFRESH_MS = 2_500;
+const ACTIVE_AGENT_CHANGE_SUMMARY_REFRESH_MS = 2_500;
 const ACTIVE_AGENT_TASK_REFRESH_MS = 2_500;
 const EMPTY_AGENT_TASKS: AgentTaskSummary[] = [];
+const EMPTY_AGENT_TASK_LISTS: AgentTaskListSummary[] = [];
+const VISIBLE_TASK_COUNT = 3;
+const TASK_ROW_HEIGHT_PX = 36;
 
 type ComposerContextPanel = "tasks" | "changes";
+
+interface VisibleTaskWindow {
+  tasks: AgentTaskSummary[];
+  hiddenBefore: number;
+  hiddenAfter: number;
+}
 
 interface AgentsComposerWorkspaceChangesCardProps {
   conversationId: string;
@@ -107,6 +118,116 @@ function statusColor(status: FileChange["status"]): string {
   }
 }
 
+function formatTaskRef(taskId: string, taskNumberById: Map<string, number>): string {
+  const taskNumber = taskNumberById.get(taskId);
+  return taskNumber ? `#${taskNumber}` : `#${taskId}`;
+}
+
+function taskListStatusLabel(list: AgentTaskListSummary): string {
+  if (list.activeCount > 0) {
+    return "In progress";
+  }
+  if (list.openCount > 0) {
+    return "Open";
+  }
+  if (list.taskCount > 0 && list.doneCount + list.droppedCount === list.taskCount) {
+    return "Done";
+  }
+  return `${list.doneCount}/${list.taskCount}`;
+}
+
+function taskCountText(count: number): string {
+  return `${count} ${count === 1 ? "task" : "tasks"}`;
+}
+
+function visibleTaskWindow(
+  tasks: AgentTaskSummary[],
+  showAllTasks: boolean,
+  visibleTaskCount: number,
+): VisibleTaskWindow {
+  if (showAllTasks || tasks.length <= visibleTaskCount) {
+    return {
+      tasks,
+      hiddenBefore: 0,
+      hiddenAfter: 0,
+    };
+  }
+
+  const firstActiveIndex = tasks.findIndex((task) => task.state === "active");
+  const latestWindowStart = Math.max(tasks.length - visibleTaskCount, 0);
+  const windowStart = firstActiveIndex >= 0
+    ? Math.min(firstActiveIndex, latestWindowStart)
+    : latestWindowStart;
+  const windowEnd = Math.min(windowStart + visibleTaskCount, tasks.length);
+
+  return {
+    tasks: tasks.slice(windowStart, windowEnd),
+    hiddenBefore: windowStart,
+    hiddenAfter: tasks.length - windowEnd,
+  };
+}
+
+function AgentTaskRowLine({
+  task,
+  taskNumberById,
+  testId,
+  highlighted = false,
+  registerNode,
+}: {
+  task: AgentTaskSummary;
+  taskNumberById: Map<string, number>;
+  testId: string;
+  highlighted?: boolean;
+  registerNode?: (node: HTMLDivElement | null) => void;
+}) {
+  return (
+    <div
+      ref={registerNode}
+      data-testid={testId}
+      className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 transition-colors"
+      style={{
+        backgroundColor: highlighted ? "var(--bg-hover)" : "transparent",
+        color: "var(--text-secondary)",
+      }}
+    >
+      <span
+        className="w-8 shrink-0 font-mono text-[0.6875rem] font-semibold"
+        style={{ color: "var(--text-muted)" }}
+      >
+        #{task.taskNumber}
+      </span>
+      <span
+        className="shrink-0 rounded border px-1.5 py-0.5 text-[0.625rem] font-medium"
+        style={{
+          borderColor: "var(--border-subtle)",
+          color: taskStateColor(task.state),
+        }}
+      >
+        {taskStateLabel(task.state)}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[0.7188rem]">
+        {task.title}
+      </span>
+      {task.ownerAgent && (
+        <span
+          className="hidden shrink-0 text-[0.6875rem] sm:inline"
+          style={{ color: "var(--text-muted)" }}
+        >
+          {task.ownerAgent}
+        </span>
+      )}
+      {task.blockedBy.length > 0 && (
+        <span
+          className="hidden max-w-[9rem] shrink-0 truncate text-[0.6875rem] sm:inline"
+          style={{ color: "var(--text-muted)" }}
+        >
+          blocked by {task.blockedBy.map((taskId) => formatTaskRef(taskId, taskNumberById)).join(", ")}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function AgentsComposerWorkspaceChangesCard({
   conversationId,
   projectId,
@@ -135,6 +256,102 @@ export function AgentsComposerWorkspaceChangesCard({
   );
 }
 
+function PreviousTaskListDisclosure({
+  conversationId,
+  projectId,
+  list,
+  expanded,
+  onToggle,
+}: {
+  conversationId: string;
+  projectId?: string | null | undefined;
+  list: AgentTaskListSummary;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const tasksQuery = useQuery({
+    queryKey: agentWorkspaceKeys.agentTaskListTasks(conversationId, list.listId),
+    queryFn: () =>
+      agentTaskApi.listConversationTaskListTasks({
+        conversationId,
+        projectId,
+        taskListId: list.listId,
+        includeDone: true,
+      }),
+    enabled: expanded,
+    staleTime: AGENT_WORKSPACE_STALE_MS,
+  });
+  const tasks = tasksQuery.data ?? EMPTY_AGENT_TASKS;
+  const taskNumberById = useMemo(
+    () => new Map(tasks.map((task) => [task.taskId, task.taskNumber])),
+    [tasks],
+  );
+
+  return (
+    <div data-testid={`agents-composer-task-list-slice-${list.listId}`}>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={onToggle}
+        className="flex w-full min-w-0 items-center gap-1.5 px-2 py-1.5 text-left transition-colors hover:bg-[var(--bg-hover)]"
+        style={{ color: "var(--text-secondary)" }}
+      >
+        {expanded ? (
+          <ChevronDown className="h-3 w-3 shrink-0" style={{ color: "var(--text-muted)" }} />
+        ) : (
+          <ChevronRight className="h-3 w-3 shrink-0" style={{ color: "var(--text-muted)" }} />
+        )}
+        <span className="min-w-0 flex-1 truncate text-[0.6875rem]">
+          Task list #{list.listSequence}
+        </span>
+        <span
+          className="shrink-0 text-[0.625rem]"
+          style={{ color: "var(--text-muted)" }}
+        >
+          {taskCountText(list.taskCount)}
+        </span>
+        <span
+          className="shrink-0 rounded border px-1.5 py-0.5 text-[0.625rem] font-medium"
+          style={{
+            borderColor: "var(--border-subtle)",
+            color: list.activeCount > 0 ? "var(--accent-primary)" : "var(--text-muted)",
+          }}
+        >
+          {taskListStatusLabel(list)}
+        </span>
+      </button>
+      {expanded && (
+        <div data-testid={`agents-composer-task-list-slice-${list.listId}-tasks`}>
+          {tasksQuery.isLoading ? (
+            <div
+              className="px-8 py-1.5 text-[0.6875rem]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Loading tasks...
+            </div>
+          ) : tasksQuery.isError ? (
+            <div
+              className="px-8 py-1.5 text-[0.6875rem]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Could not load tasks
+            </div>
+          ) : (
+            tasks.map((task) => (
+              <AgentTaskRowLine
+                key={task.taskId}
+                task={task}
+                taskNumberById={taskNumberById}
+                testId={`agents-composer-task-list-${list.listId}-task-${task.taskNumber}`}
+              />
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AgentsComposerWorkspaceChangesCardContent({
   conversationId,
   projectId,
@@ -154,14 +371,12 @@ function AgentsComposerWorkspaceChangesCardContent({
 }) {
   const [activePanel, setActivePanel] = useState<ComposerContextPanel | null>(null);
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
-  const isReviewRefreshInFlight = useRef(false);
   const wasAgentGenerating = useRef(false);
   const previousIsAgentGenerating = useRef(false);
   const userDismissedTaskPanel = useRef(false);
   const hasObservedTaskSnapshot = useRef(false);
   const previousTaskSignatures = useRef<Map<string, string>>(new Map());
   const taskRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const reviewRefetchRef = useRef<(() => Promise<unknown>) | null>(null);
   const canInspectChanges =
     workspace?.mode === "edit" && workspace.status !== "missing";
   const canScheduleReviewHydration = useDeferredAgentHydration(conversationId);
@@ -178,11 +393,15 @@ function AgentsComposerWorkspaceChangesCardContent({
 
     return () => window.clearTimeout(timer);
   }, [canScheduleReviewHydration, conversationId, pauseHydration]);
-  const reviewQuery = useQuery({
-    queryKey: agentWorkspaceKeys.review(conversationId),
-    queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId),
+  const changeSummaryQuery = useQuery({
+    queryKey: agentWorkspaceKeys.changeSummary(conversationId),
+    queryFn: () => diffApi.getAgentConversationWorkspaceChangeSummary(conversationId),
     enabled: canInspectChanges && canHydrateReview,
     staleTime: AGENT_WORKSPACE_STALE_MS,
+    refetchInterval:
+      canInspectChanges && canHydrateReview && isAgentGenerating
+        ? ACTIVE_AGENT_CHANGE_SUMMARY_REFRESH_MS
+        : false,
   });
   const tasksQuery = useQuery({
     queryKey: agentWorkspaceKeys.agentTasks(conversationId),
@@ -197,7 +416,22 @@ function AgentsComposerWorkspaceChangesCardContent({
     refetchInterval:
       canHydrateReview && isAgentGenerating ? ACTIVE_AGENT_TASK_REFRESH_MS : false,
   });
+  const taskListsQuery = useQuery({
+    queryKey: agentWorkspaceKeys.agentTaskLists(conversationId),
+    queryFn: () =>
+      agentTaskApi.listConversationTaskLists({
+        conversationId,
+        projectId,
+      }),
+    enabled: canHydrateReview && activePanel === "tasks",
+    staleTime: AGENT_WORKSPACE_STALE_MS,
+    refetchInterval:
+      canHydrateReview && activePanel === "tasks" && isAgentGenerating
+        ? ACTIVE_AGENT_TASK_REFRESH_MS
+        : false,
+  });
   const refetchTasks = tasksQuery.refetch;
+  const refetchTaskLists = taskListsQuery.refetch;
   useEffect(() => {
     if (isAgentGenerating) {
       wasAgentGenerating.current = true;
@@ -208,53 +442,50 @@ function AgentsComposerWorkspaceChangesCardContent({
     }
     wasAgentGenerating.current = false;
     void refetchTasks();
-  }, [canHydrateReview, isAgentGenerating, refetchTasks]);
-  useEffect(() => {
-    reviewRefetchRef.current = reviewQuery.refetch;
-  }, [reviewQuery.refetch]);
-  useEffect(() => {
-    if (!canInspectChanges || !canHydrateReview || !isAgentGenerating) {
-      isReviewRefreshInFlight.current = false;
-      return;
+    if (activePanel === "tasks") {
+      void refetchTaskLists();
     }
-
-    const timer = window.setInterval(() => {
-      if (isReviewRefreshInFlight.current) {
-        return;
-      }
-      const refetchReview = reviewRefetchRef.current;
-      if (!refetchReview) {
-        return;
-      }
-      isReviewRefreshInFlight.current = true;
-      void refetchReview().finally(() => {
-        isReviewRefreshInFlight.current = false;
-      });
-    }, ACTIVE_AGENT_REVIEW_REFRESH_MS);
-
-    return () => window.clearInterval(timer);
-  }, [canHydrateReview, canInspectChanges, conversationId, isAgentGenerating]);
-  const review = reviewQuery.data ?? null;
-  const commits = useMemo(() => mapReviewCommitsToDiffViewerCommits(review), [review]);
-  const summary = useAgentWorkspaceChangeSummary({ conversationId, review });
-  const hasCommitSummary = summary.workspaceChangeCount === 0 && commits.length > 0;
+  }, [activePanel, canHydrateReview, isAgentGenerating, refetchTaskLists, refetchTasks]);
+  const liveSummary = changeSummaryQuery.data ?? null;
+  const summary = useAgentWorkspaceChangeSummary({
+    conversationId,
+    review: null,
+    liveSummary,
+    hydrateWorktreeFileLists: activePanel === "changes",
+  });
   const tasks = tasksQuery.data ?? EMPTY_AGENT_TASKS;
+  const taskLists = taskListsQuery.data ?? EMPTY_AGENT_TASK_LISTS;
+  const previousTaskLists = useMemo(() => taskLists.slice(1), [taskLists]);
   const taskNumberById = useMemo(
     () => new Map(tasks.map((task) => [task.taskId, task.taskNumber])),
     [tasks],
   );
+  const [showAllTasks, setShowAllTasks] = useState(false);
+  const [showPreviousTaskLists, setShowPreviousTaskLists] = useState(false);
+  const [expandedTaskListIds, setExpandedTaskListIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const taskListRef = useRef<HTMLDivElement>(null);
+  const taskProgress = useMemo(() => {
+    const actionable = tasks.filter((t) => t.state !== "dropped");
+    const done = actionable.filter((t) => t.state === "done").length;
+    const active = actionable.filter((t) => t.state === "active").length;
+    return { actionable: actionable.length, done, active, total: tasks.length };
+  }, [tasks]);
   const shouldShowTasks = tasksQuery.isSuccess && tasks.length > 0;
   const shouldShowChanges =
     canInspectChanges &&
-    reviewQuery.isSuccess &&
+    changeSummaryQuery.isSuccess &&
     (summary.workspaceChangeCount > 0 ||
-      summary.currentFiles.length > 0 ||
-      hasCommitSummary);
+      summary.currentFiles.length > 0);
   const shouldShow = shouldShowTasks || shouldShowChanges;
 
   useEffect(() => {
     setActivePanel(null);
     setHighlightedTaskId(null);
+    setShowAllTasks(false);
+    setShowPreviousTaskLists(false);
+    setExpandedTaskListIds(new Set());
     userDismissedTaskPanel.current = false;
     hasObservedTaskSnapshot.current = false;
     previousTaskSignatures.current = new Map();
@@ -332,6 +563,25 @@ function AgentsComposerWorkspaceChangesCardContent({
   }, [activePanel, highlightedTaskId]);
 
   useEffect(() => {
+    if (activePanel !== "tasks") {
+      return;
+    }
+    const container = taskListRef.current;
+    if (!container) {
+      return;
+    }
+    const lastActive = [...tasks].reverse().find((t) => t.state === "active");
+    if (lastActive) {
+      const node = taskRowRefs.current.get(lastActive.taskId);
+      if (typeof node?.scrollIntoView === "function") {
+        node.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        return;
+      }
+    }
+    container.scrollTop = container.scrollHeight;
+  }, [activePanel, tasks]);
+
+  useEffect(() => {
     if (activePanel === "tasks" && !shouldShowTasks) {
       setActivePanel(null);
     }
@@ -339,6 +589,18 @@ function AgentsComposerWorkspaceChangesCardContent({
       setActivePanel(null);
     }
   }, [activePanel, shouldShowChanges, shouldShowTasks]);
+
+  const taskWindow = useMemo(
+    () => visibleTaskWindow(tasks, showAllTasks, VISIBLE_TASK_COUNT),
+    [showAllTasks, tasks],
+  );
+  const visibleTasks = taskWindow.tasks;
+  const hiddenTaskRevealRows =
+    (taskWindow.hiddenBefore > 0 ? 1 : 0) + (taskWindow.hiddenAfter > 0 ? 1 : 0);
+  const taskHistoryRowReserve =
+    previousTaskLists.length > 0 || taskListsQuery.isFetching || taskListsQuery.isError
+      ? 30
+      : 0;
 
   if (!shouldShow) {
     return null;
@@ -349,16 +611,16 @@ function AgentsComposerWorkspaceChangesCardContent({
       ? "Unstaged"
       : summary.effectiveMode === "staged"
         ? "Staged"
-        : summary.effectiveMode === "cumulative" && hasCommitSummary
-          ? "All commits"
-          : "Workspace changes";
-  const fileLabel = `${summary.currentFiles.length} ${
-    summary.currentFiles.length === 1 ? "file" : "files"
+        : "Workspace changes";
+  const fileLabel = `${summary.currentFileCount} ${
+    summary.currentFileCount === 1 ? "file" : "files"
   }`;
-  const changesCountLabel = hasCommitSummary
-    ? `${commits.length} ${commits.length === 1 ? "commit" : "commits"}`
-    : fileLabel;
-  const taskLabel = `${tasks.length}`;
+  const changesCountLabel = fileLabel;
+  const allDone = taskProgress.actionable > 0 && taskProgress.done === taskProgress.actionable;
+  const hasActive = taskProgress.active > 0;
+  const taskCountLabel = allDone
+    ? `${taskProgress.actionable}`
+    : `${taskProgress.done}/${taskProgress.actionable}`;
   const togglePanel = (panel: ComposerContextPanel) =>
     setActivePanel((current) => {
       const nextPanel = current === panel ? null : panel;
@@ -374,15 +636,25 @@ function AgentsComposerWorkspaceChangesCardContent({
       togglePanel(shouldShowChanges ? "changes" : "tasks");
     }
   };
-  const formatTaskRef = (taskId: string) => {
-    const taskNumber = taskNumberById.get(taskId);
-    return taskNumber ? `#${taskNumber}` : `#${taskId}`;
+  const togglePreviousTaskList = (listId: string) => {
+    setExpandedTaskListIds((current) => {
+      const next = new Set(current);
+      if (next.has(listId)) {
+        next.delete(listId);
+      } else {
+        next.add(listId);
+      }
+      return next;
+    });
   };
   const handlePublishIntent = () => {
     if (shouldShowChanges) {
       onPreloadPublishPane();
     }
   };
+
+  const TasksChevron = activePanel === "tasks" ? ChevronDown : ChevronRight;
+  const ChangesChevron = activePanel === "changes" ? ChevronDown : ChevronRight;
 
   return (
     <div
@@ -394,7 +666,10 @@ function AgentsComposerWorkspaceChangesCardContent({
       <div data-testid="agents-composer-workspace-changes">
         <div
           data-testid="agents-composer-workspace-changes-header"
-          className="flex min-h-7 min-w-0 flex-wrap items-center gap-1.5"
+          className={cn(
+            "flex min-h-7 min-w-0 flex-wrap items-center gap-1.5",
+            activePanel && "mb-0",
+          )}
           onClick={handleHeaderClick}
         >
           {shouldShowTasks && (
@@ -404,22 +679,31 @@ function AgentsComposerWorkspaceChangesCardContent({
               aria-expanded={activePanel === "tasks"}
               onClick={() => togglePanel("tasks")}
               className={cn(
-                "inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 overflow-hidden rounded border px-2 text-[0.6875rem] font-medium transition-colors hover:bg-[var(--bg-hover)]",
-                activePanel === "tasks" && "bg-[var(--bg-hover)]",
+                "inline-flex h-7 max-w-full min-w-0 items-center gap-1 overflow-hidden px-2 text-[0.6875rem] font-medium transition-colors",
+                activePanel === "tasks"
+                  ? "rounded-t border border-b-0 bg-[var(--bg-base)]"
+                  : "rounded hover:bg-[var(--bg-hover)]",
               )}
               style={{
-                borderColor: "var(--border-subtle)",
+                borderColor: activePanel === "tasks" ? "var(--border-subtle)" : "transparent",
                 color: "var(--text-secondary)",
               }}
             >
+              <TasksChevron className="h-3 w-3 shrink-0" style={{ color: "var(--text-muted)" }} />
               <span>Tasks</span>
               <span
                 data-testid="agents-composer-tasks-count"
                 className="font-mono"
                 style={{ color: "var(--text-muted)" }}
               >
-                {taskLabel}
+                {taskCountLabel}
               </span>
+              {allDone && (
+                <Check className="h-3 w-3 shrink-0" style={{ color: "var(--status-success)" }} />
+              )}
+              {hasActive && !allDone && (
+                <Loader2 className="h-3 w-3 shrink-0 animate-spin" style={{ color: "var(--accent-primary)" }} />
+              )}
             </button>
           )}
           {shouldShowChanges && (
@@ -429,14 +713,17 @@ function AgentsComposerWorkspaceChangesCardContent({
               aria-expanded={activePanel === "changes"}
               onClick={() => togglePanel("changes")}
               className={cn(
-                "inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 overflow-hidden rounded border px-2 text-[0.6875rem] font-medium transition-colors hover:bg-[var(--bg-hover)]",
-                activePanel === "changes" && "bg-[var(--bg-hover)]",
+                "inline-flex h-7 max-w-full min-w-0 items-center gap-1 overflow-hidden px-2 text-[0.6875rem] font-medium transition-colors",
+                activePanel === "changes"
+                  ? "rounded-t border border-b-0 bg-[var(--bg-base)]"
+                  : "rounded hover:bg-[var(--bg-hover)]",
               )}
               style={{
-                borderColor: "var(--border-subtle)",
+                borderColor: activePanel === "changes" ? "var(--border-subtle)" : "transparent",
                 color: "var(--text-secondary)",
               }}
             >
+              <ChangesChevron className="h-3 w-3 shrink-0" style={{ color: "var(--text-muted)" }} />
               <span className="truncate">{changesLabel}</span>
               <span
                 data-testid="agents-composer-workspace-changes-count"
@@ -471,73 +758,130 @@ function AgentsComposerWorkspaceChangesCardContent({
 
         {activePanel && (
           <div
-            className="mt-1.5 max-h-44 overflow-y-auto rounded border"
+            ref={activePanel === "tasks" ? taskListRef : undefined}
+            className="overflow-y-auto rounded-b rounded-tr border"
             data-testid="agents-composer-context-tray-body"
             style={{
               backgroundColor: "var(--bg-base)",
               borderColor: "var(--border-subtle)",
               borderStyle: "solid",
               borderWidth: "1px",
+              maxHeight: activePanel === "tasks" && !showAllTasks
+                ? `${
+                    VISIBLE_TASK_COUNT * TASK_ROW_HEIGHT_PX +
+                    hiddenTaskRevealRows * 30 +
+                    taskHistoryRowReserve
+                  }px`
+                : "11rem",
             }}
           >
             {activePanel === "tasks" ? (
               <div data-testid="agents-composer-task-list">
-                {tasks.map((task) => (
-                  <div
+                {taskWindow.hiddenBefore > 0 && (
+                  <button
+                    type="button"
+                    data-testid="agents-composer-tasks-show-older"
+                    onClick={() => setShowAllTasks(true)}
+                    className="flex w-full items-center justify-center py-1 text-[0.625rem] font-medium transition-colors hover:bg-[var(--bg-hover)]"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    Show {taskWindow.hiddenBefore} earlier in this list
+                  </button>
+                )}
+                {visibleTasks.map((task) => (
+                  <AgentTaskRowLine
                     key={task.taskId}
-                    ref={(node) => {
+                    task={task}
+                    taskNumberById={taskNumberById}
+                    testId={`agents-composer-task-${task.taskNumber}`}
+                    highlighted={highlightedTaskId === task.taskId}
+                    registerNode={(node) => {
                       if (node) {
                         taskRowRefs.current.set(task.taskId, node);
                       } else {
                         taskRowRefs.current.delete(task.taskId);
                       }
                     }}
-                    data-testid={`agents-composer-task-${task.taskNumber}`}
-                    className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 transition-colors"
+                  />
+                ))}
+                {taskWindow.hiddenAfter > 0 && (
+                  <button
+                    type="button"
+                    data-testid="agents-composer-tasks-show-more"
+                    onClick={() => setShowAllTasks(true)}
+                    className="flex w-full items-center justify-center py-1 text-[0.625rem] font-medium transition-colors hover:bg-[var(--bg-hover)]"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    Show {taskWindow.hiddenAfter} more in this list
+                  </button>
+                )}
+                {taskListsQuery.isLoading && (
+                  <div
+                    className="px-2 py-1.5 text-[0.6875rem]"
                     style={{
-                      backgroundColor:
-                        highlightedTaskId === task.taskId
-                          ? "var(--bg-hover)"
-                          : "transparent",
-                      color: "var(--text-secondary)",
+                      borderTopColor: "var(--border-subtle)",
+                      borderTopStyle: "solid",
+                      borderTopWidth: "1px",
+                      color: "var(--text-muted)",
                     }}
                   >
-                    <span
-                      className="w-8 shrink-0 font-mono text-[0.6875rem] font-semibold"
+                    Loading previous task lists...
+                  </div>
+                )}
+                {taskListsQuery.isError && (
+                  <div
+                    className="px-2 py-1.5 text-[0.6875rem]"
+                    style={{
+                      borderTopColor: "var(--border-subtle)",
+                      borderTopStyle: "solid",
+                      borderTopWidth: "1px",
+                      color: "var(--text-muted)",
+                    }}
+                  >
+                    Could not load previous task lists
+                  </div>
+                )}
+                {!taskListsQuery.isError && previousTaskLists.length > 0 && (
+                  <div
+                    style={{
+                      borderTopColor: "var(--border-subtle)",
+                      borderTopStyle: "solid",
+                      borderTopWidth: "1px",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      data-testid="agents-composer-task-lists-show-previous"
+                      aria-expanded={showPreviousTaskLists}
+                      onClick={() => setShowPreviousTaskLists((current) => !current)}
+                      className="flex w-full min-w-0 items-center gap-1.5 px-2 py-1 text-left text-[0.625rem] font-medium transition-colors hover:bg-[var(--bg-hover)]"
                       style={{ color: "var(--text-muted)" }}
                     >
-                      #{task.taskNumber}
-                    </span>
-                    <span
-                      className="shrink-0 rounded border px-1.5 py-0.5 text-[0.625rem] font-medium"
-                      style={{
-                        borderColor: "var(--border-subtle)",
-                        color: taskStateColor(task.state),
-                      }}
-                    >
-                      {taskStateLabel(task.state)}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-[0.7188rem]">
-                      {task.title}
-                    </span>
-                    {task.ownerAgent && (
-                      <span
-                        className="hidden shrink-0 text-[0.6875rem] sm:inline"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        {task.ownerAgent}
+                      {showPreviousTaskLists ? (
+                        <ChevronDown className="h-3 w-3 shrink-0" />
+                      ) : (
+                        <ChevronRight className="h-3 w-3 shrink-0" />
+                      )}
+                      <span className="min-w-0 flex-1 truncate">
+                        Previous task lists
                       </span>
-                    )}
-                    {task.blockedBy.length > 0 && (
-                      <span
-                        className="hidden max-w-[9rem] shrink-0 truncate text-[0.6875rem] sm:inline"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        blocked by {task.blockedBy.map(formatTaskRef).join(", ")}
+                      <span className="shrink-0 font-mono">
+                        {previousTaskLists.length}
                       </span>
-                    )}
+                    </button>
+                    {showPreviousTaskLists &&
+                      previousTaskLists.map((list) => (
+                        <PreviousTaskListDisclosure
+                          key={list.listId}
+                          conversationId={conversationId}
+                          projectId={projectId}
+                          list={list}
+                          expanded={expandedTaskListIds.has(list.listId)}
+                          onToggle={() => togglePreviousTaskList(list.listId)}
+                        />
+                      ))}
                   </div>
-                ))}
+                )}
               </div>
             ) : (
               <div data-testid="agents-composer-workspace-changes-list">

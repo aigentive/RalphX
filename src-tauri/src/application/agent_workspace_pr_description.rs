@@ -14,16 +14,16 @@ use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
 use crate::infrastructure::agents::claude::git_runtime_config;
 use dashmap::DashMap;
-use tracing::info;
+use tracing::{info, warn};
 
 pub const DEFAULT_AGENT_WORKSPACE_PR_TEMPLATE: &str =
     include_str!("../../../.github/PULL_REQUEST_TEMPLATE.md");
 
 const MAX_AGENT_WORKSPACE_PR_BODY_CHARS: usize = 60_000;
-const MAX_PATCH_EXCERPT_CHARS: usize = 42_000;
+pub(crate) const MAX_PATCH_EXCERPT_CHARS: usize = 42_000;
 const MAX_CONVERSATION_CONTEXT_CHARS: usize = 12_000;
-const MAX_NAME_STATUS_CHARS: usize = 16_000;
-const MAX_STAT_CHARS: usize = 8_000;
+pub(crate) const MAX_NAME_STATUS_CHARS: usize = 16_000;
+pub(crate) const MAX_STAT_CHARS: usize = 8_000;
 const MAX_MESSAGE_CHARS: usize = 1_600;
 const MAX_CONTEXT_MESSAGES: usize = 12;
 const MAX_COMMIT_SUMMARIES: usize = 40;
@@ -313,6 +313,7 @@ pub async fn draft_agent_workspace_pr_description(
             agent: Some(bootstrap.agent_name),
             model: runtime.model,
             harness: runtime.harness,
+            cli_path_override: runtime.cli_path_override,
             logical_effort: runtime.logical_effort,
             approval_policy: runtime.approval_policy,
             sandbox_mode: runtime.sandbox_mode,
@@ -356,12 +357,32 @@ pub async fn draft_agent_workspace_pr_description(
         )));
     }
 
-    let Some(description) = state
+    let description = match state
         .agent_conversation_workspace_repo
         .get_pr_description(&workspace.conversation_id)
         .await?
-    else {
-        return Err(pr_describer_missing_submission_error(&output));
+    {
+        Some(description) => description,
+        None => {
+            let Some(description) = recover_pr_description_from_literal_tool_call(
+                &output.content,
+                &workspace.conversation_id,
+            ) else {
+                return Err(pr_describer_missing_submission_error(&output));
+            };
+            warn!(
+                target: "ralphx_lib::application::agent_workspace_pr_description",
+                conversation_id = %workspace.conversation_id,
+                project_id = %project.id,
+                branch = %workspace.branch_name,
+                "Recovered PR description from literal tool-call text emitted by describer helper"
+            );
+            state
+                .agent_conversation_workspace_repo
+                .save_pr_description(&workspace.conversation_id, description.clone())
+                .await?;
+            description
+        }
     };
 
     validate_agent_workspace_pr_description_body(&description.body_markdown)?;
@@ -563,7 +584,12 @@ fn pr_describer_missing_submission_error(output: &crate::domain::agents::AgentOu
         return AppError::Infrastructure(base);
     }
 
-    AppError::Infrastructure(format!("{base}. Raw output: {raw_output}"))
+    warn!(
+        target: "ralphx_lib::application::agent_workspace_pr_description",
+        raw_output_chars = raw_output.chars().count(),
+        "PR describer helper completed without submitting a PR description; raw output omitted from user-facing error"
+    );
+    AppError::Infrastructure(base)
 }
 
 fn pr_describer_output_reports_missing_submit_tool(output: &str) -> bool {
@@ -573,6 +599,48 @@ fn pr_describer_output_reports_missing_submit_tool(output: &str) -> bool {
             || lower.contains("unavailable")
             || lower.contains("cannot submit")
             || lower.contains("can't submit"))
+}
+
+fn recover_pr_description_from_literal_tool_call(
+    output: &str,
+    conversation_id: &ChatConversationId,
+) -> Option<AgentWorkspacePrDescription> {
+    if !output.contains(PR_DESCRIBER_SUBMIT_TOOL) {
+        return None;
+    }
+
+    let submitted_conversation_id = extract_literal_tool_parameter(output, "conversation_id")?;
+    if submitted_conversation_id.trim() != conversation_id.as_str() {
+        return None;
+    }
+
+    let body_markdown = unescape_xml_text(
+        extract_literal_tool_parameter(output, "body_markdown")?.trim(),
+    );
+    if body_markdown.trim().is_empty() {
+        return None;
+    }
+    let title = extract_literal_tool_parameter(output, "title")
+        .map(|value| unescape_xml_text(value.trim()))
+        .filter(|value| !value.trim().is_empty());
+
+    Some(AgentWorkspacePrDescription::new(title, body_markdown))
+}
+
+fn extract_literal_tool_parameter<'a>(output: &'a str, name: &str) -> Option<&'a str> {
+    let start = format!("<parameter name=\"{name}\">");
+    let start_idx = output.find(&start)? + start.len();
+    let end_idx = output[start_idx..].find("</parameter>")? + start_idx;
+    Some(&output[start_idx..end_idx])
+}
+
+fn unescape_xml_text(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 async fn read_pull_request_template_context(
@@ -610,7 +678,7 @@ async fn read_template(repo_path: &Path) -> Option<String> {
     }
 }
 
-async fn run_git_text(repo: &Path, args: &[&str]) -> AppResult<String> {
+pub(crate) async fn run_git_text(repo: &Path, args: &[&str]) -> AppResult<String> {
     let output = git_cmd::run(args, repo).await?;
     if !output.status.success() {
         return Err(AppError::GitOperation(format!(
@@ -730,7 +798,7 @@ fn build_pr_describer_prompt(ctx: PrDescriberPromptContext<'_>) -> String {
     )
 }
 
-fn format_commit_summaries(commits: &[crate::application::git_service::CommitInfo]) -> String {
+pub(crate) fn format_commit_summaries(commits: &[crate::application::git_service::CommitInfo]) -> String {
     if commits.is_empty() {
         return "No commit summaries were available.".to_string();
     }
@@ -761,7 +829,7 @@ fn is_pr_description_commit_noise(message: &str) -> bool {
         || trimmed.starts_with("merged ")
 }
 
-fn format_changed_files(diff_stats: &crate::application::git_service::DiffStats) -> String {
+pub(crate) fn format_changed_files(diff_stats: &crate::application::git_service::DiffStats) -> String {
     if diff_stats.changed_files.is_empty() {
         return "No changed files were reported by git diff.".to_string();
     }
@@ -773,11 +841,11 @@ fn format_changed_files(diff_stats: &crate::application::git_service::DiffStats)
         .join("\n")
 }
 
-fn truncate_chars(text: &str, max_chars: usize) -> String {
+pub(crate) fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
-fn escape_xml_text(value: &str) -> String {
+pub(crate) fn escape_xml_text(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -1522,13 +1590,13 @@ mod tests {
     }
 
     #[test]
-    fn pr_describer_missing_submission_error_preserves_raw_output_without_tool_hint() {
+    fn pr_describer_missing_submission_error_omits_raw_output_without_tool_hint() {
         let output = AgentOutput::success("Generated a body but did not call the submit tool.");
 
         let error = pr_describer_missing_submission_error(&output).to_string();
 
         assert!(error.contains("completed without submitting a PR description"));
-        assert!(error.contains("Raw output: Generated a body"));
+        assert!(!error.contains("Raw output: Generated a body"));
     }
 
     #[test]
@@ -1652,6 +1720,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn draft_pr_description_recovers_literal_tool_call_output() {
+        let (_temp_dir, repo, base) = create_reviewable_repo();
+        let project = project_for(&repo);
+        let conversation = conversation_for(&project);
+        let workspace = workspace_for(&conversation, &project, &repo, &base);
+        let state = AppState::new_test();
+        let raw_output = format!(
+            "## Summary\n\nRecovered body\n\n<call_tool>\n\
+             <tool_name>{PR_DESCRIBER_SUBMIT_TOOL}</tool_name>\n\
+             <tool_parameters>\n\
+             <parameter name=\"conversation_id\">{}</parameter>\n\
+             <parameter name=\"title\">Recovered title</parameter>\n\
+             <parameter name=\"body_markdown\">## Summary\n\nRecovered body &amp; context</parameter>\n\
+             </tool_parameters>\n\
+             </call_tool>",
+            conversation.id
+        );
+        let client = Arc::new(SubmittingPrDescriptionClient::success_without_submission(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation.id.clone(),
+            raw_output,
+        ));
+        let state = state.with_agent_client(client);
+
+        let description = draft_agent_workspace_pr_description(
+            &state,
+            &conversation,
+            &project,
+            &workspace,
+            &repo,
+            &base,
+        )
+        .await
+        .expect("literal tool call output should recover");
+
+        assert_eq!(description.title.as_deref(), Some("Recovered title"));
+        assert_eq!(description.body_markdown, "## Summary\n\nRecovered body & context");
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_pr_description(&conversation.id)
+            .await
+            .expect("stored description lookup should succeed")
+            .expect("recovered description should be stored");
+        assert_eq!(stored.body_markdown, description.body_markdown);
+    }
+
+    #[tokio::test]
     async fn draft_pr_description_uses_conversation_harness_client_when_available() {
         let (_temp_dir, repo, base) = create_reviewable_repo();
         let project = project_for(&repo);
@@ -1741,7 +1856,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn draft_pr_description_surfaces_raw_tool_unavailable_output_when_agent_submits_nothing()
+    async fn draft_pr_description_summarizes_tool_unavailable_output_when_agent_submits_nothing()
     {
         let (_temp_dir, repo, base) = create_reviewable_repo();
         let project = project_for(&repo);
@@ -1772,9 +1887,6 @@ mod tests {
         let error = error.to_string();
 
         assert!(error.contains("PR describer infrastructure error"));
-        assert!(
-            error.contains(&raw_output),
-            "raw model output should be surfaced for publish failure diagnostics: {error}"
-        );
+        assert!(!error.contains(&raw_output));
     }
 }

@@ -28,6 +28,51 @@ impl GitService {
         Ok(())
     }
 
+    /// Ensure a selected branch name exists locally, creating it from `origin/<branch>` if needed.
+    pub async fn ensure_local_branch_from_origin_if_missing(
+        repo: &Path,
+        branch: &str,
+    ) -> AppResult<String> {
+        let trimmed = branch.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::Validation(
+                "Selected branch name cannot be empty".to_string(),
+            ));
+        }
+
+        let local_branch = trimmed
+            .strip_prefix("refs/remotes/origin/")
+            .or_else(|| trimmed.strip_prefix("origin/"))
+            .unwrap_or(trimmed);
+
+        if Self::branch_exists(repo, local_branch).await? {
+            return Ok(local_branch.to_string());
+        }
+
+        let remote_ref = format!("origin/{local_branch}");
+        if !Self::ref_exists(repo, &remote_ref).await? {
+            Self::fetch_origin(repo).await?;
+        }
+
+        if !Self::ref_exists(repo, &remote_ref).await? {
+            return Err(AppError::Validation(format!(
+                "Selected branch '{}' does not exist locally or on origin",
+                local_branch
+            )));
+        }
+
+        match Self::create_branch(repo, local_branch, &remote_ref).await {
+            Ok(()) => Ok(local_branch.to_string()),
+            Err(error) => {
+                if Self::branch_exists(repo, local_branch).await? {
+                    Ok(local_branch.to_string())
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
     /// Detect a repository's default branch.
     ///
     /// Fallback chain matches the project settings UI:
@@ -506,5 +551,110 @@ impl GitService {
         } else {
             (false, "content_differs")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GitService;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_repo_with_origin() -> (tempfile::TempDir, std::path::PathBuf) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let origin = temp.path().join("origin.git");
+        let repo = temp.path().join("repo");
+
+        let output = Command::new("git")
+            .args(["init", "--bare", origin.to_str().expect("origin path")])
+            .output()
+            .expect("git init bare should run");
+        assert!(output.status.success());
+        let output = Command::new("git")
+            .args(["init", "-b", "main", repo.to_str().expect("repo path")])
+            .output()
+            .expect("git init should run");
+        assert!(output.status.success());
+
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "Test User"]);
+        std::fs::write(repo.join("README.md"), "main\n").expect("write readme");
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "initial"]);
+        git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git(&repo, &["push", "-u", "origin", "main"]);
+
+        (temp, repo)
+    }
+
+    #[tokio::test]
+    async fn ensure_local_branch_returns_existing_branch_with_normalized_origin_prefix() {
+        let (_temp, repo) = init_repo_with_origin();
+
+        let branch = GitService::ensure_local_branch_from_origin_if_missing(
+            &repo,
+            "refs/remotes/origin/main",
+        )
+        .await
+        .expect("existing branch should normalize");
+
+        assert_eq!(branch, "main");
+    }
+
+    #[tokio::test]
+    async fn ensure_local_branch_creates_missing_branch_from_origin_ref() {
+        let (_temp, repo) = init_repo_with_origin();
+        git(&repo, &["checkout", "-b", "feature/pr-head"]);
+        std::fs::write(repo.join("feature.txt"), "feature\n").expect("write feature");
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "feature"]);
+        git(&repo, &["push", "origin", "feature/pr-head"]);
+        git(&repo, &["checkout", "main"]);
+        git(&repo, &["branch", "-D", "feature/pr-head"]);
+
+        let branch =
+            GitService::ensure_local_branch_from_origin_if_missing(&repo, "origin/feature/pr-head")
+                .await
+                .expect("missing branch should be created from origin");
+
+        assert_eq!(branch, "feature/pr-head");
+        assert!(GitService::branch_exists(&repo, "feature/pr-head")
+            .await
+            .expect("branch lookup should work"));
+    }
+
+    #[tokio::test]
+    async fn ensure_local_branch_rejects_empty_or_unknown_branch() {
+        let (_temp, repo) = init_repo_with_origin();
+
+        let empty_error = GitService::ensure_local_branch_from_origin_if_missing(&repo, "   ")
+            .await
+            .expect_err("empty branch should fail");
+        assert!(empty_error.to_string().contains("cannot be empty"));
+
+        let missing_error =
+            GitService::ensure_local_branch_from_origin_if_missing(&repo, "missing/pr")
+                .await
+                .expect_err("missing branch should fail");
+        assert!(missing_error
+            .to_string()
+            .contains("does not exist locally or on origin"));
     }
 }

@@ -9,14 +9,16 @@
 /// - create_mcp_config(): no --allowed-tools arg when agent has no mcp_tools config
 use super::*;
 use crate::infrastructure::agents::harness_agent_catalog::{
-    internal_mcp_server_name,
-    load_canonical_agent_definition, load_canonical_claude_metadata, load_harness_agent_prompt,
-    AgentPromptHarness,
+    internal_mcp_server_name, load_canonical_agent_definition, load_canonical_claude_metadata,
+    load_harness_agent_prompt, AgentPromptHarness,
 };
 use crate::infrastructure::agents::mcp_runtime_context::McpRuntimeContext;
+use crate::utils::path_safety::{
+    checked_exists, checked_read_to_string, validate_absolute_non_root_path,
+};
 use serde_yaml::Value;
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -50,6 +52,32 @@ fn make_temp_project_plugin_dir() -> (tempfile::TempDir, std::path::PathBuf, std
     )
     .unwrap();
     (dir, root, plugin_dir)
+}
+
+fn allowed_tools_arg_from_mcp_config(json: &serde_json::Value) -> Option<String> {
+    json["mcpServers"]
+        .as_object()
+        .and_then(|servers| servers.values().next())
+        .and_then(|server| server["args"].as_array())
+        .and_then(|args| {
+            args.iter()
+                .filter_map(|arg| arg.as_str())
+                .find(|arg| arg.starts_with("--allowed-tools="))
+                .map(str::to_string)
+        })
+}
+
+fn seed_live_agent_yaml(root: &Path, agent_name: &str) {
+    let agent_dir = root.join("agents").join(agent_name);
+    std::fs::create_dir_all(&agent_dir).expect("create agent fixture dir");
+    std::fs::copy(
+        repo_project_root()
+            .join("agents")
+            .join(agent_name)
+            .join("agent.yaml"),
+        agent_dir.join("agent.yaml"),
+    )
+    .expect("copy live agent fixture");
 }
 
 fn seed_runnable_mcp_runtime(plugin_dir: &Path, runtime_marker: &str) {
@@ -113,12 +141,47 @@ fn symlink_dir(source: impl AsRef<Path>, target: impl AsRef<Path>) {
     std::os::windows::fs::symlink_dir(source, target).expect("create directory symlink");
 }
 
-/// Parse the JSON args array from a generated MCP config temp file.
-fn get_json_args(config_path: &Path) -> Vec<String> {
+fn read_test_file(path: impl AsRef<Path>) -> String {
+    checked_read_to_string(path.as_ref(), "Claude plugin test fixture")
+        .expect("read Claude plugin test fixture")
+}
+
+fn test_path_exists(path: impl AsRef<Path>) -> bool {
+    checked_exists(path.as_ref(), "Claude plugin test fixture")
+        .expect("inspect Claude plugin test fixture")
+}
+
+fn read_test_link(path: impl AsRef<Path>) -> PathBuf {
+    let path = validate_absolute_non_root_path(path.as_ref(), "Claude plugin test symlink")
+        .expect("validate Claude plugin test symlink");
+
     // codeql[rust/path-injection]
-    let content = std::fs::read_to_string(config_path).expect("read config file");
-    let v: serde_json::Value = serde_json::from_str(&content).expect("parse JSON");
-    v.get("mcpServers")
+    std::fs::read_link(path).expect("read Claude plugin test symlink")
+}
+
+fn test_symlink_metadata_is_err(path: impl AsRef<Path>) -> bool {
+    let path = validate_absolute_non_root_path(path.as_ref(), "Claude plugin test metadata")
+        .expect("validate Claude plugin test metadata path");
+
+    // codeql[rust/path-injection]
+    std::fs::symlink_metadata(path).is_err()
+}
+
+fn remove_test_file_or_dir(path: impl AsRef<Path>) {
+    let path = validate_absolute_non_root_path(path.as_ref(), "Claude plugin test removal")
+        .expect("validate Claude plugin test removal path");
+
+    // codeql[rust/path-injection]
+    if std::fs::remove_file(&path).is_err() {
+        // codeql[rust/path-injection]
+        std::fs::remove_dir(&path).expect("remove Claude plugin test directory");
+    }
+}
+
+/// Parse the JSON args array from an MCP config value without touching temp files.
+fn get_json_args(config: &serde_json::Value) -> Vec<String> {
+    config
+        .get("mcpServers")
         .and_then(|s| s.as_object())
         .and_then(|m| m.values().next())
         .and_then(|server| server.get("args"))
@@ -279,9 +342,9 @@ fn test_format_allowed_tools_arg_value_absent_mcp_tools_returns_none() {
 fn test_create_mcp_config_injects_allowed_tools_for_agent_with_mcp_tools() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
     // ralphx-ideation has a non-empty mcp_tools list in config/ralphx.yaml
-    let config_path = create_mcp_config(&plugin_dir, "ralphx-ideation", false)
-        .expect("should create config file");
-    let args = get_json_args(&config_path);
+    let config = build_mcp_config_with_runtime_context(&plugin_dir, "ralphx-ideation", false, None)
+        .expect("should create config");
+    let args = get_json_args(&config);
 
     let allowed_tools_arg = args.iter().find(|a| a.starts_with("--allowed-tools="));
     assert!(
@@ -305,9 +368,9 @@ fn test_create_mcp_config_injects_allowed_tools_for_agent_with_mcp_tools() {
 #[test]
 fn test_create_mcp_config_injects_agent_type_alongside_allowed_tools() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
-    let config_path = create_mcp_config(&plugin_dir, "ralphx-ideation", false)
-        .expect("should create config file");
-    let args = get_json_args(&config_path);
+    let config = build_mcp_config_with_runtime_context(&plugin_dir, "ralphx-ideation", false, None)
+        .expect("should create config");
+    let args = get_json_args(&config);
 
     // Both --agent-type and --allowed-tools must be present
     assert!(
@@ -323,9 +386,9 @@ fn test_create_mcp_config_injects_agent_type_alongside_allowed_tools() {
 #[test]
 fn test_create_mcp_config_injects_app_owned_trace_dir() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
-    let config_path = create_mcp_config(&plugin_dir, "ralphx-ideation", false)
-        .expect("should create config file");
-    let args = get_json_args(&config_path);
+    let config = build_mcp_config_with_runtime_context(&plugin_dir, "ralphx-ideation", false, None)
+        .expect("should create config");
+    let args = get_json_args(&config);
 
     let trace_dir_index = args
         .iter()
@@ -349,12 +412,14 @@ fn test_create_mcp_config_injects_app_owned_trace_dir() {
 fn test_create_mcp_config_injects_runtime_context_args() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
     let workspace_dir = plugin_dir.join("workspace");
+    let project_root = plugin_dir.join("project-root");
     let runtime_context = McpRuntimeContext {
         context_type: Some("project".to_string()),
         context_id: Some("project-123".to_string()),
         task_id: None,
         project_id: Some("project-123".to_string()),
         working_directory: Some(workspace_dir.clone()),
+        filesystem_read_roots: vec![project_root.clone()],
         lead_session_id: Some("lead-456".to_string()),
         parent_conversation_id: Some("conversation-789".to_string()),
     };
@@ -396,6 +461,14 @@ fn test_create_mcp_config_injects_runtime_context_args() {
         "args: {args:?}"
     );
     assert!(
+        args.contains(&"--filesystem-read-root".to_string()),
+        "args: {args:?}"
+    );
+    assert!(
+        args.contains(&project_root.to_string_lossy().into_owned()),
+        "args: {args:?}"
+    );
+    assert!(
         args.contains(&"--parent-conversation-id".to_string()),
         "args: {args:?}"
     );
@@ -409,9 +482,14 @@ fn test_create_mcp_config_injects_runtime_context_args() {
 fn test_create_mcp_config_no_allowed_tools_arg_for_unknown_agent() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
     // Unknown agent has no config → mcp_tools absent → no --allowed-tools injected
-    let config_path = create_mcp_config(&plugin_dir, "completely-unknown-agent-xyz", false)
-        .expect("should create config file even for unknown agent");
-    let args = get_json_args(&config_path);
+    let config = build_mcp_config_with_runtime_context(
+        &plugin_dir,
+        "completely-unknown-agent-xyz",
+        false,
+        None,
+    )
+    .expect("should create config even for unknown agent");
+    let args = get_json_args(&config);
 
     let has_allowed_tools = args.iter().any(|a| a.starts_with("--allowed-tools="));
     assert!(
@@ -429,9 +507,14 @@ fn test_create_mcp_config_no_allowed_tools_arg_for_unknown_agent() {
 fn test_create_mcp_config_allowed_tools_value_matches_agent_mcp_tools() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
     // ralphx-utility-session-namer has a small mcp_tools list: [update_session_title]
-    let config_path = create_mcp_config(&plugin_dir, "ralphx-utility-session-namer", false)
-        .expect("should create config file");
-    let args = get_json_args(&config_path);
+    let config = build_mcp_config_with_runtime_context(
+        &plugin_dir,
+        "ralphx-utility-session-namer",
+        false,
+        None,
+    )
+    .expect("should create config");
+    let args = get_json_args(&config);
 
     let allowed_arg = args
         .iter()
@@ -570,21 +653,9 @@ fn test_filter_interactive_tools_empty_input() {
 fn test_create_mcp_config_external_mcp_filters_ask_user_question() {
     let (dir, plugin_dir) = make_temp_plugin_dir();
     // ralphx-ideation has ask_user_question in its mcp_tools
-    let config_path =
-        create_mcp_config(&plugin_dir, "ralphx-ideation", true).expect("should succeed");
-    // codeql[rust/path-injection]
-    let content = std::fs::read_to_string(&config_path).expect("should read config");
-    let json: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
-    let args: Vec<String> = json["mcpServers"]
-        .as_object()
-        .and_then(|servers| servers.values().next())
-        .and_then(|server| server["args"].as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let config = build_mcp_config_with_runtime_context(&plugin_dir, "ralphx-ideation", true, None)
+        .expect("should create config");
+    let args = get_json_args(&config);
     let allowed_tools_arg = args.iter().find(|a| a.starts_with("--allowed-tools="));
     if let Some(arg) = allowed_tools_arg {
         assert!(
@@ -599,21 +670,9 @@ fn test_create_mcp_config_external_mcp_filters_ask_user_question() {
 fn test_create_mcp_config_non_external_mcp_keeps_ask_user_question() {
     let (dir, plugin_dir) = make_temp_plugin_dir();
     // ralphx-ideation has ask_user_question in its mcp_tools — should be present when not external
-    let config_path =
-        create_mcp_config(&plugin_dir, "ralphx-ideation", false).expect("should succeed");
-    // codeql[rust/path-injection]
-    let content = std::fs::read_to_string(&config_path).expect("should read config");
-    let json: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
-    let args: Vec<String> = json["mcpServers"]
-        .as_object()
-        .and_then(|servers| servers.values().next())
-        .and_then(|server| server["args"].as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let config = build_mcp_config_with_runtime_context(&plugin_dir, "ralphx-ideation", false, None)
+        .expect("should create config");
+    let args = get_json_args(&config);
     let allowed_tools_arg = args.iter().find(|a| a.starts_with("--allowed-tools="));
     if let Some(arg) = allowed_tools_arg {
         assert!(
@@ -622,6 +681,79 @@ fn test_create_mcp_config_non_external_mcp_keeps_ask_user_question() {
         );
     }
     drop(dir);
+}
+
+#[test]
+fn test_plan_profile_mcp_config_non_external_keeps_ask_user_question() {
+    let (dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    seed_live_agent_yaml(&root, "ralphx-ideation");
+    let config = build_mcp_config_with_runtime_context_for_profile(
+        &plugin_dir,
+        "ralphx-ideation",
+        Some("plan"),
+        false,
+        None,
+    )
+    .expect("should succeed");
+    let allowed_tools_arg = allowed_tools_arg_from_mcp_config(&config).expect("allowed tools arg");
+
+    assert!(
+        allowed_tools_arg.contains("ask_user_question"),
+        "Plan chat must keep ask_user_question for interactive Agent conversations, got: {allowed_tools_arg}"
+    );
+    drop(dir);
+}
+
+#[test]
+fn test_plan_profile_mcp_config_external_filters_ask_user_question() {
+    let (dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    seed_live_agent_yaml(&root, "ralphx-ideation");
+    let config = build_mcp_config_with_runtime_context_for_profile(
+        &plugin_dir,
+        "ralphx-ideation",
+        Some("plan"),
+        true,
+        None,
+    )
+    .expect("should succeed");
+    let allowed_tools_arg = allowed_tools_arg_from_mcp_config(&config).expect("allowed tools arg");
+
+    assert!(
+        !allowed_tools_arg.contains("ask_user_question"),
+        "External Plan chat spawns must filter ask_user_question to avoid unattended deadlocks, got: {allowed_tools_arg}"
+    );
+    assert!(
+        allowed_tools_arg.contains("get_session_plan"),
+        "Filtering interactive tools must preserve non-interactive Plan tools, got: {allowed_tools_arg}"
+    );
+    drop(dir);
+}
+
+#[test]
+fn test_plan_profile_system_prompt_includes_runtime_profile_context() {
+    let (_dir, _root, plugin_dir, _runtime_guard) = make_isolated_live_project_plugin_dir();
+    let (system_prompt, _) = load_agent_system_prompt_with_internal_skills(
+        &plugin_dir,
+        "ralphx-ideation",
+        Some("plan"),
+        "Create a plan",
+    )
+    .expect("plan profile prompt");
+
+    assert!(system_prompt.contains("<agent_runtime_profile>"));
+    assert!(system_prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
+    assert!(system_prompt.contains("<profile_slug>plan</profile_slug>"));
+    assert!(system_prompt.contains("<profile_role>plan_chat</profile_role>"));
+
+    let (default_prompt, _) = load_agent_system_prompt_with_internal_skills(
+        &plugin_dir,
+        "ralphx-ideation",
+        None,
+        "Create a plan",
+    )
+    .expect("default profile prompt");
+    assert!(!default_prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
+    assert!(!default_prompt.contains("<profile_role>plan_chat</profile_role>"));
 }
 
 #[test]
@@ -698,13 +830,9 @@ harnesses:
     )
     .expect("write agent definition");
 
-    let json = build_mcp_config_with_runtime_context(
-        &plugin_dir,
-        "ralphx-chat-project",
-        false,
-        None,
-    )
-    .expect("should create mixed MCP config");
+    let json =
+        build_mcp_config_with_runtime_context(&plugin_dir, "ralphx-chat-project", false, None)
+            .expect("should create mixed MCP config");
     let external_server = &json["mcpServers"]["ralphx"];
     let internal_server = &json["mcpServers"]["ralphx_internal"];
 
@@ -762,8 +890,7 @@ skills:
 
     let generated_dir =
         materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
-    let generated_prompt = std::fs::read_to_string(generated_dir.join("agents/ralphx-ideation.md"))
-        .expect("read generated agent prompt");
+    let generated_prompt = read_test_file(generated_dir.join("agents/ralphx-ideation.md"));
 
     assert!(
         generated_prompt.contains("name: ralphx-ideation"),
@@ -823,8 +950,7 @@ description: Generates concise ideation session titles from user or plan context
     let generated_dir =
         materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
     let generated_prompt =
-        std::fs::read_to_string(generated_dir.join("agents/ralphx-utility-session-namer.md"))
-            .expect("read generated session namer prompt");
+        read_test_file(generated_dir.join("agents/ralphx-utility-session-namer.md"));
 
     assert!(
         generated_prompt.contains("model: haiku"),
@@ -947,8 +1073,7 @@ capabilities:
         raw_prompt_path_str.as_str(),
         "Claude must not use the raw canonical prompt file when generated appendices are present"
     );
-    let generated_prompt =
-        std::fs::read_to_string(generated_prompt_path.as_str()).expect("read generated prompt");
+    let generated_prompt = read_test_file(Path::new(generated_prompt_path.as_str()));
     assert!(
         generated_prompt.contains("General worker prompt"),
         "generated prompt should preserve the canonical prompt body"
@@ -988,7 +1113,7 @@ fn test_materialize_generated_plugin_dir_skips_canonical_agent_symlinks_outside_
         materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
 
     assert!(
-        !generated_dir.join("agents/ralphx-escape.md").exists(),
+        !test_path_exists(generated_dir.join("agents/ralphx-escape.md")),
         "generated plugin materialization must ignore canonical agent directories that resolve outside the project root"
     );
 }
@@ -1024,9 +1149,7 @@ max_turns: 80
 
     let generated_dir =
         materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
-    let generated_prompt =
-        std::fs::read_to_string(generated_dir.join("agents/ralphx-plan-verifier.md"))
-            .expect("read generated plan verifier prompt");
+    let generated_prompt = read_test_file(generated_dir.join("agents/ralphx-plan-verifier.md"));
 
     assert!(
         generated_prompt.contains("maxTurns: 80"),
@@ -1060,8 +1183,7 @@ description: Generates concise ideation session titles from user or plan context
     let generated_dir =
         materialize_generated_plugin_dir(&plugin_dir).expect("first generated plugin dir");
     let generated_prompt_path = generated_dir.join("agents/ralphx-utility-session-namer.md");
-    let first_prompt =
-        std::fs::read_to_string(&generated_prompt_path).expect("read initial generated prompt");
+    let first_prompt = read_test_file(&generated_prompt_path);
     assert!(
         first_prompt.contains("Initial generated prompt"),
         "first materialization should render the initial prompt body"
@@ -1080,8 +1202,7 @@ description: Generates concise ideation session titles from user or plan context
         "generated plugin path should be stable within the same process"
     );
 
-    let reused_prompt =
-        std::fs::read_to_string(&generated_prompt_path).expect("read reused generated prompt");
+    let reused_prompt = read_test_file(&generated_prompt_path);
     assert!(
         reused_prompt.contains("Initial generated prompt"),
         "later materialize calls in the same process must reuse the first generated prompt"
@@ -1110,17 +1231,12 @@ fn test_materialize_generated_plugin_dir_repairs_cached_runtime_entries_after_ex
 
     let generated_dir =
         materialize_generated_plugin_dir(&plugin_dir).expect("first generated plugin dir");
-    let expected_mcp_source = std::fs::read_link(generated_dir.join("ralphx-mcp-server"))
-        .expect("read initial mcp symlink");
+    let expected_mcp_source = read_test_link(generated_dir.join("ralphx-mcp-server"));
     let stale_runtime = tempfile::TempDir::new().expect("create stale runtime dir");
     let stale_mcp_dir = stale_runtime.path().join("plugins/app/ralphx-mcp-server");
     std::fs::create_dir_all(&stale_mcp_dir).expect("create stale mcp dir");
     let generated_mcp_dir = generated_dir.join("ralphx-mcp-server");
-    // codeql[rust/path-injection]
-    if std::fs::remove_file(&generated_mcp_dir).is_err() {
-        // codeql[rust/path-injection]
-        std::fs::remove_dir(&generated_mcp_dir).expect("remove generated mcp dir symlink");
-    }
+    remove_test_file_or_dir(&generated_mcp_dir);
     symlink_dir(&stale_mcp_dir, &generated_mcp_dir);
     symlink_dir(&stale_mcp_dir, generated_dir.join(".cache"));
 
@@ -1129,18 +1245,16 @@ fn test_materialize_generated_plugin_dir_repairs_cached_runtime_entries_after_ex
 
     assert_eq!(repaired_dir, generated_dir);
     assert_eq!(
-        std::fs::read_link(repaired_dir.join("ralphx-mcp-server"))
-            .expect("read repaired mcp symlink"),
+        read_test_link(repaired_dir.join("ralphx-mcp-server")),
         expected_mcp_source,
         "cached materialization should repair externally mutated managed runtime symlinks"
     );
     assert!(
-        std::fs::symlink_metadata(repaired_dir.join(".cache")).is_err(),
+        test_symlink_metadata_is_err(repaired_dir.join(".cache")),
         "cached materialization should remove unmanaged top-level entries"
     );
     assert!(
-        std::fs::read_to_string(repaired_dir.join("agents/ralphx-utility-session-namer.md"))
-            .expect("read repaired generated prompt")
+        read_test_file(repaired_dir.join("agents/ralphx-utility-session-namer.md"))
             .contains("Prompt before runtime contamination"),
         "repair should preserve generated canonical prompt materialization"
     );
@@ -1151,9 +1265,7 @@ fn test_materialize_generated_plugin_dir_prefers_root_canonical_claude_disallowe
     let (_dir, _root, plugin_dir, _runtime_guard) = make_isolated_live_project_plugin_dir();
     let generated_dir =
         materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
-    let generated_prompt =
-        std::fs::read_to_string(generated_dir.join("agents/ralphx-plan-verifier.md"))
-            .expect("read generated agent prompt");
+    let generated_prompt = read_test_file(generated_dir.join("agents/ralphx-plan-verifier.md"));
     let (frontmatter, _) = split_frontmatter(&generated_prompt);
     let disallowed_tools = frontmatter["disallowedTools"]
         .as_sequence()
@@ -1181,7 +1293,7 @@ fn test_materialize_generated_plugin_dir_omits_removed_supervisor_agent() {
     let generated_prompt_path = generated_dir.join("agents/ralphx-execution-supervisor.md");
 
     assert!(
-        !generated_prompt_path.exists(),
+        !test_path_exists(&generated_prompt_path),
         "removed supervisor agent should not be materialized into generated Claude assets"
     );
 }
@@ -1201,8 +1313,7 @@ fn test_materialize_generated_plugin_dir_matches_canonical_and_runtime_semantics
         let generated_path = generated_dir
             .join("agents")
             .join(format!("{agent_name}.md"));
-        let generated_markdown =
-            std::fs::read_to_string(&generated_path).expect("read generated agent markdown");
+        let generated_markdown = read_test_file(&generated_path);
         let definition = load_canonical_agent_definition(&root, &agent_name)
             .unwrap_or_else(|| panic!("missing canonical definition for {agent_name}"));
         let canonical_body =
@@ -1292,20 +1403,17 @@ fn test_materialize_generated_plugin_dir_uses_fallback_runtime_entries_when_loca
     .expect("materialize generated plugin dir");
 
     assert_eq!(
-        std::fs::read_to_string(generated_dir.join(".mcp.json"))
-            .expect("read generated mcp config"),
+        read_test_file(generated_dir.join(".mcp.json")),
         r#"{"mcpServers":{"ralphx":{"type":"stdio","command":"node","args":["local-config"]}}}"#,
         "generated plugin should preserve the local config surface"
     );
     assert_eq!(
-        std::fs::read_to_string(generated_dir.join("ralphx-mcp-server/build/index.js"))
-            .expect("read generated runtime entry"),
+        read_test_file(generated_dir.join("ralphx-mcp-server/build/index.js")),
         "// fallback runtime",
         "generated plugin should link the runnable fallback runtime bundle"
     );
     assert!(
-        std::fs::read_to_string(generated_dir.join("agents/ralphx-plan-verifier.md"))
-            .expect("read generated prompt")
+        read_test_file(generated_dir.join("agents/ralphx-plan-verifier.md"))
             .contains("Local canonical verifier prompt"),
         "generated plugin should keep canonical prompts from the local RalphX checkout"
     );

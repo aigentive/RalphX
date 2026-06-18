@@ -44,6 +44,8 @@ let mockExecutionSettings: ExecutionSettingsResponse = {
   projectIdeationMax: 5,
   autoCommit: false,
   pauseOnFailure: true,
+  agentWorkspacePrAutofixDefault: false,
+  agentWorkspacePrAutoMergeDefault: false,
 };
 
 let _mockActiveProjectId: string | undefined = undefined;

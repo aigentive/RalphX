@@ -5,6 +5,8 @@ use tauri::{AppHandle, Manager, Runtime, State};
 use crate::application::AppState;
 
 const RELEASE_NOTES_DIR: &str = "release-notes";
+const RELEASE_NOTES_FILE_PREFIX: &str = "v";
+const RELEASE_NOTES_FILE_EXTENSION: &str = ".md";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,6 +55,82 @@ pub async fn mark_release_notes_seen(
         .set_last_seen_release_notes_version(Some(&version))
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn list_release_notes_versions<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<Vec<String>, String> {
+    let dirs = release_notes_dirs(&app);
+    Ok(collect_versions_from_dirs(dirs, |path| {
+        std::fs::read_dir(path).ok()
+    }))
+}
+
+#[tauri::command]
+pub async fn get_release_notes_for_version<R: Runtime>(
+    app: AppHandle<R>,
+    version: String,
+) -> Result<ReleaseNotesResponse, String> {
+    read_release_notes_for_version(&app, &version)
+}
+
+fn release_notes_dirs<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        dirs.push(resource_dir.join(RELEASE_NOTES_DIR));
+    }
+    if let Some(repo_root) = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent() {
+        dirs.push(repo_root.join(RELEASE_NOTES_DIR));
+    }
+    dirs
+}
+
+fn collect_versions_from_dirs(
+    dirs: Vec<PathBuf>,
+    mut read_dir: impl FnMut(&Path) -> Option<std::fs::ReadDir>,
+) -> Vec<String> {
+    let mut versions = Vec::new();
+    for dir in &dirs {
+        if let Some(entries) = read_dir(dir) {
+            for entry in entries.flatten() {
+                if let Some(version) = parse_version_from_filename(entry.file_name().to_str()) {
+                    if !versions.contains(&version) {
+                        versions.push(version);
+                    }
+                }
+            }
+        }
+    }
+    versions.sort_by(|a, b| compare_semver_desc(a, b));
+    versions
+}
+
+fn parse_version_from_filename(filename: Option<&str>) -> Option<String> {
+    let name = filename?;
+    let stem = name.strip_prefix(RELEASE_NOTES_FILE_PREFIX)?;
+    let version = stem.strip_suffix(RELEASE_NOTES_FILE_EXTENSION)?;
+    if version.is_empty() {
+        return None;
+    }
+    Some(version.to_string())
+}
+
+fn compare_semver_desc(a: &str, b: &str) -> std::cmp::Ordering {
+    let parse = |v: &str| -> Vec<u64> {
+        v.split('.')
+            .map(|part| {
+                part.chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse::<u64>()
+                    .unwrap_or(0)
+            })
+            .collect()
+    };
+    let av = parse(a);
+    let bv = parse(b);
+    bv.cmp(&av)
 }
 
 fn read_release_notes_for_version<R: Runtime>(

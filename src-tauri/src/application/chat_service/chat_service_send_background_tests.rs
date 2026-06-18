@@ -1,6 +1,7 @@
 use super::{
-    session_changed_after_resume, should_process_stream_queue,
-    should_warn_missing_agent_task_ledger,
+    enqueue_silent_completion_recovery, session_changed_after_resume, should_process_stream_queue,
+    should_recover_silent_completion, should_warn_missing_agent_task_ledger,
+    silent_completion_recovery_backoff, SilentCompletionRecoveryEnqueue,
 };
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
@@ -8,10 +9,11 @@ use crate::application::interactive_process_registry::{
 use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ChatAttachment, ChatContextType, ChatConversation,
-    ChatConversationId, ProjectId,
+    AgentConversationWorkspaceMode, AgentRunId, AgentRunStatus, ChatAttachment, ChatContextType,
+    ChatConversation, ChatConversationId, ChatTimelineItemStatus, ProjectId,
 };
-use crate::infrastructure::agents::claude::ToolCall;
+use crate::domain::services::RunningAgentKey;
+use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
@@ -80,6 +82,402 @@ fn stream_queue_processing_gate_allows_non_cancel_silent_exit_with_queue() {
     assert!(
         should_process_stream_queue(1, true, true, false),
         "timeout/eof silent exits can still drain queued messages"
+    );
+}
+
+#[test]
+fn silent_completion_recovery_triggers_after_tool_without_final_text() {
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![
+        ContentBlockItem::Text {
+            text: "I am patching this now.".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("patch-1".to_string()),
+            name: "apply_patch".to_string(),
+            arguments: serde_json::json!({ "file": "src/lib.rs" }),
+            result: Some(serde_json::json!({ "ok": true })),
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+    ];
+
+    assert!(should_recover_silent_completion(
+        ChatContextType::Project,
+        "I am patching this now.",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+    ));
+}
+
+#[test]
+fn silent_completion_recovery_treats_blank_text_before_tool_as_unfinished() {
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![
+        ContentBlockItem::Text {
+            text: "   ".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("patch-1".to_string()),
+            name: "apply_patch".to_string(),
+            arguments: serde_json::json!({ "file": "src/lib.rs" }),
+            result: Some(serde_json::json!({ "ok": true })),
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+    ];
+
+    assert!(should_recover_silent_completion(
+        ChatContextType::Project,
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+    ));
+}
+
+#[test]
+fn silent_completion_recovery_does_not_trigger_after_final_text() {
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![
+        ContentBlockItem::ToolUse {
+            id: Some("patch-1".to_string()),
+            name: "apply_patch".to_string(),
+            arguments: serde_json::json!({ "file": "src/lib.rs" }),
+            result: Some(serde_json::json!({ "ok": true })),
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+        ContentBlockItem::Text {
+            text: "Done and validated.".to_string(),
+        },
+    ];
+
+    assert!(!should_recover_silent_completion(
+        ChatContextType::Project,
+        "Done and validated.",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+    ));
+}
+
+#[test]
+fn silent_completion_recovery_ignores_terminal_completion_tools() {
+    let tool_calls = vec![test_tool_call("mcp__ralphx__execution_complete")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("complete-1".to_string()),
+        name: "mcp__ralphx__execution_complete".to_string(),
+        arguments: serde_json::json!({}),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    assert!(!should_recover_silent_completion(
+        ChatContextType::Project,
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+    ));
+}
+
+#[test]
+fn silent_completion_recovery_triggers_from_legacy_tool_calls_without_content_blocks() {
+    let tool_calls = vec![test_tool_call("apply_patch")];
+
+    assert!(should_recover_silent_completion(
+        ChatContextType::Project,
+        "",
+        &tool_calls,
+        &[],
+        0,
+        false,
+        false,
+        true,
+    ));
+}
+
+#[test]
+fn silent_completion_recovery_ignores_question_and_permission_tools() {
+    for tool_name in [
+        "mcp__ralphx__ask_user_question",
+        "mcp__ralphx__permission_request",
+        "mcp__ralphx__resolve_permission_request",
+    ] {
+        let tool_calls = vec![test_tool_call(tool_name)];
+        let content_blocks = vec![ContentBlockItem::ToolUse {
+            id: Some("tool-1".to_string()),
+            name: tool_name.to_string(),
+            arguments: serde_json::json!({}),
+            result: Some(serde_json::json!({ "ok": true })),
+            parent_tool_use_id: None,
+            diff_context: None,
+        }];
+
+        assert!(
+            !should_recover_silent_completion(
+                ChatContextType::Project,
+                "",
+                &tool_calls,
+                &content_blocks,
+                0,
+                false,
+                false,
+                true,
+            ),
+            "{tool_name} should not trigger silent-completion recovery"
+        );
+    }
+}
+
+#[test]
+fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
+    let queue = crate::domain::services::MessageQueue::new();
+    queue.queue(
+        ChatContextType::Project,
+        "conversation-1",
+        "user follow-up".to_string(),
+    );
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        None,
+    );
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Queued {
+            attempt: 1,
+            backoff_ms: 1_000,
+        }
+    );
+    let queued = queue.get_queued(ChatContextType::Project, "conversation-1");
+    assert_eq!(queued.len(), 2);
+    assert!(queued[0].content.contains("ended after tool activity"));
+    assert_eq!(queued[1].content, "user follow-up");
+    let metadata: serde_json::Value =
+        serde_json::from_str(queued[0].metadata_override.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["resume_in_place"], true);
+    assert_eq!(metadata["persist_hidden_marker"], true);
+    assert_eq!(metadata["recovery_attempt"], 1);
+    assert_eq!(metadata["recovery_max_attempts"], 3);
+    assert_eq!(
+        silent_completion_recovery_backoff(queued[0].metadata_override.as_deref())
+            .map(|duration| duration.as_millis()),
+        Some(1_000)
+    );
+}
+
+#[test]
+fn silent_completion_recovery_enqueues_second_attempt_with_backoff() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let metadata = serde_json::json!({
+        "recovery_reason": "silent_completion_after_tool_activity",
+        "recovery_attempt": 1,
+    })
+    .to_string();
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        Some(&metadata),
+    );
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Queued {
+            attempt: 2,
+            backoff_ms: 2_000,
+        }
+    );
+    let queued = queue.get_queued(ChatContextType::Project, "conversation-1");
+    assert_eq!(queued.len(), 1);
+    let metadata: serde_json::Value =
+        serde_json::from_str(queued[0].metadata_override.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["recovery_attempt"], 2);
+    assert_eq!(metadata["recovery_backoff_ms"], 2_000);
+}
+
+#[test]
+fn silent_completion_recovery_enqueues_first_attempt_for_unrelated_prior_metadata() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let metadata = serde_json::json!({
+        "recovery_reason": "other_recovery_path",
+        "recovery_attempt": 2,
+    })
+    .to_string();
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        Some(&metadata),
+    );
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Queued {
+            attempt: 1,
+            backoff_ms: 1_000,
+        }
+    );
+    let queued = queue.get_queued(ChatContextType::Project, "conversation-1");
+    assert_eq!(queued.len(), 1);
+    let queued_metadata: serde_json::Value =
+        serde_json::from_str(queued[0].metadata_override.as_deref().unwrap()).unwrap();
+    assert_eq!(queued_metadata["recovery_attempt"], 1);
+}
+
+#[test]
+fn silent_completion_recovery_stops_at_max_attempts() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let metadata = serde_json::json!({
+        "resume_in_place": true,
+        "recovery_reason": "silent_completion_after_tool_activity",
+        "recovery_attempt": 3,
+    })
+    .to_string();
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        Some(&metadata),
+    );
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Exhausted { attempts: 3 }
+    );
+    assert!(queue
+        .get_queued(ChatContextType::Project, "conversation-1")
+        .is_empty());
+}
+
+#[test]
+fn silent_completion_recovery_enqueue_skips_without_resumable_session() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        false,
+        None,
+    );
+
+    assert_eq!(result, SilentCompletionRecoveryEnqueue::NotNeeded);
+    assert!(queue
+        .get_queued(ChatContextType::Project, "conversation-1")
+        .is_empty());
+}
+
+#[test]
+fn silent_completion_recovery_backoff_ignores_invalid_metadata() {
+    assert_eq!(silent_completion_recovery_backoff(None), None);
+    assert_eq!(silent_completion_recovery_backoff(Some("not json")), None);
+    assert_eq!(
+        silent_completion_recovery_backoff(Some(
+            r#"{"recovery_reason":"different","recovery_backoff_ms":1000}"#
+        )),
+        None
     );
 }
 
@@ -228,6 +626,8 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
         conversation_id,
         "session-cli",
         &app_state.message_queue,
+        &app_state.running_agent_registry,
+        &app_state.agent_run_repo,
         &app_state.chat_message_repo,
         None,
         &app_state.chat_attachment_repo,
@@ -269,6 +669,8 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
 async fn queue_processing_records_run_id_before_spawn_failure() {
     let app_state = AppState::new_test();
     let message_queue = Arc::clone(&app_state.message_queue);
+    let running_agent_registry = Arc::clone(&app_state.running_agent_registry);
+    let agent_run_repo = Arc::clone(&app_state.agent_run_repo);
     let chat_message_repo = Arc::clone(&app_state.chat_message_repo);
     let chat_attachment_repo = Arc::clone(&app_state.chat_attachment_repo);
     let artifact_repo = Arc::clone(&app_state.artifact_repo);
@@ -300,6 +702,8 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
             conversation_id,
             "session-cli",
             &message_queue,
+            &running_agent_registry,
+            &agent_run_repo,
             &chat_message_repo,
             None,
             &chat_attachment_repo,
@@ -323,13 +727,210 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
         .await;
 
     assert_eq!(outcome.total_processed, 1);
-    assert!(outcome.last_run_id.is_some());
+    let queued_run_id = outcome
+        .last_run_id
+        .as_deref()
+        .expect("queued continuation run id should be recorded");
+    let queued_run = agent_run_repo
+        .get_by_id(&AgentRunId::from_string(queued_run_id.to_string()))
+        .await
+        .expect("queued run lookup should succeed")
+        .expect("queued run should be persisted");
+    assert_eq!(queued_run.status, AgentRunStatus::Failed);
+    assert!(
+        running_agent_registry
+            .get(&RunningAgentKey::new(
+                ChatContextType::Ideation.to_string(),
+                "session-spawn-fails"
+            ))
+            .await
+            .is_none(),
+        "spawn failure should not leave queued continuation marked running"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn queue_processing_success_registers_pid_and_completes_continuation_run() {
+    use crate::domain::agents::AgentHarnessKind;
+
+    let state = AppState::new_test();
+    let message_queue = Arc::clone(&state.message_queue);
+    let running_agent_registry = Arc::clone(&state.running_agent_registry);
+    let agent_run_repo = Arc::clone(&state.agent_run_repo);
+    let chat_message_repo = Arc::clone(&state.chat_message_repo);
+    let chat_timeline_repo = Arc::clone(&state.chat_timeline_repo);
+    let chat_attachment_repo = Arc::clone(&state.chat_attachment_repo);
+    let artifact_repo = Arc::clone(&state.artifact_repo);
+    let activity_event_repo = Arc::clone(&state.activity_event_repo);
+    let task_repo = Arc::clone(&state.task_repo);
+    let ideation_session_repo = Arc::clone(&state.ideation_session_repo);
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("fake-claude");
+    std::fs::write(
+        &cli_path,
+        r#"#!/bin/sh
+cat <<'EOF'
+{"type":"assistant","message":{"content":[{"type":"text","text":"queued continuation response"}]},"session_id":"session-cli"}
+{"type":"result","session_id":"session-cli","is_error":false,"result":"queued continuation response","cost_usd":0.0}
+EOF
+"#,
+    )
+    .expect("write fake cli");
+    let mut permissions = std::fs::metadata(&cli_path)
+        .expect("fake cli metadata")
+        .permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&cli_path, permissions).expect("mark fake cli executable");
+
+    message_queue.queue(
+        ChatContextType::Ideation,
+        "session-success",
+        "Queued message".to_string(),
+    );
+
+    let conversation_id = ChatConversationId::new();
+    let outcome =
+        super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
+            ChatContextType::Ideation,
+            AgentHarnessKind::Claude,
+            "session-success",
+            "session-success",
+            conversation_id,
+            "session-cli",
+            &message_queue,
+            &running_agent_registry,
+            &agent_run_repo,
+            &chat_message_repo,
+            Some(chat_timeline_repo),
+            &chat_attachment_repo,
+            &artifact_repo,
+            &activity_event_repo,
+            &task_repo,
+            &ideation_session_repo,
+            &cli_path,
+            temp.path(),
+            temp.path(),
+            None,
+            None,
+            Some(app_handle),
+            None,
+            false,
+            tokio_util::sync::CancellationToken::new(),
+            Some("chain-queued"),
+            Some("parent-run"),
+            super::StreamingStateCache::new(),
+        )
+        .await;
+
+    assert_eq!(outcome.total_processed, 1);
+    let queued_run_id = outcome
+        .last_run_id
+        .as_deref()
+        .expect("queued continuation run id should be recorded");
+    let queued_run = agent_run_repo
+        .get_by_id(&AgentRunId::from_string(queued_run_id.to_string()))
+        .await
+        .expect("queued run lookup should succeed")
+        .expect("queued run should be persisted");
+    assert_eq!(queued_run.status, AgentRunStatus::Completed);
+    assert_eq!(queued_run.run_chain_id.as_deref(), Some("chain-queued"));
+    assert_eq!(queued_run.parent_run_id.as_deref(), Some("parent-run"));
+    assert!(
+        running_agent_registry
+            .get(&RunningAgentKey::new(
+                ChatContextType::Ideation.to_string(),
+                "session-success"
+            ))
+            .await
+            .is_none(),
+        "successful queued continuation should unregister the runtime key"
+    );
+}
+
+#[tokio::test]
+async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
+    use crate::application::chat_service::{ChatService, MockChatService};
+    use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
+    use crate::domain::services::{ComposerArtifactReference, MessageQueue};
+
+    let message_queue = Arc::new(MessageQueue::new());
+    let service = MockChatService::with_queue(Arc::clone(&message_queue));
+    let missing = service
+        .send_queued_message_now(ChatContextType::Task, "task-1", "missing")
+        .await
+        .expect_err("missing queued message should fail");
+    assert!(
+        missing.to_string().contains("Queued message not found"),
+        "missing queued message error should identify the queue lookup failure"
+    );
+
+    let queued = message_queue.queue_with_runtime_overrides_and_project_references(
+        ChatContextType::Task,
+        "task-1",
+        "queued content".to_string(),
+        Some(r#"{"source":"queue-now"}"#.to_string()),
+        None,
+        Some(AgentHarnessKind::Codex),
+        Some("gpt-5.5".to_string()),
+        Some(LogicalEffort::High),
+        true,
+        Vec::new(),
+        Vec::new(),
+        vec![ComposerArtifactReference {
+            artifact_id: "artifact-1".to_string(),
+            kind: "plan".to_string(),
+            title: Some("Implementation Plan".to_string()),
+            session_id: Some("session-1".to_string()),
+            version: Some(2),
+            status: Some("approved".to_string()),
+        }],
+        Vec::new(),
+    );
+
+    let result = service
+        .send_queued_message_now(ChatContextType::Task, "task-1", &queued.id)
+        .await
+        .expect("queued message should send through mock service");
+
+    assert_eq!(result.was_queued, false);
+    assert_eq!(
+        service.get_sent_messages().await,
+        vec!["queued content".to_string()]
+    );
+    let sent_options = service.get_sent_options().await;
+    assert_eq!(sent_options.len(), 1);
+    assert_eq!(
+        sent_options[0].metadata.as_deref(),
+        Some(r#"{"source":"queue-now"}"#)
+    );
+    assert_eq!(
+        sent_options[0].harness_override,
+        Some(AgentHarnessKind::Codex)
+    );
+    assert_eq!(sent_options[0].model_override.as_deref(), Some("gpt-5.5"));
+    assert_eq!(
+        sent_options[0].logical_effort_override,
+        Some(LogicalEffort::High)
+    );
+    assert_eq!(
+        sent_options[0].composer_artifact_references,
+        queued.composer_artifact_references
+    );
+    assert!(sent_options[0].force_new_provider_session);
 }
 
 #[tokio::test]
 async fn queue_processing_links_selected_attachments_before_spawn_failure() {
     let app_state = AppState::new_test();
     let message_queue = Arc::clone(&app_state.message_queue);
+    let running_agent_registry = Arc::clone(&app_state.running_agent_registry);
+    let agent_run_repo = Arc::clone(&app_state.agent_run_repo);
     let chat_message_repo = Arc::clone(&app_state.chat_message_repo);
     let chat_attachment_repo = Arc::clone(&app_state.chat_attachment_repo);
     let artifact_repo = Arc::clone(&app_state.artifact_repo);
@@ -377,6 +978,8 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
         None,
         None,
         Vec::new(),
+        Vec::new(),
+        Vec::new(),
         vec![selected_attachment.id],
     );
 
@@ -390,6 +993,8 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
             conversation_id,
             "session-cli",
             &message_queue,
+            &running_agent_registry,
+            &agent_run_repo,
             &chat_message_repo,
             None,
             &chat_attachment_repo,
@@ -500,6 +1105,9 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         agent_conversation_workspace_repo: Some(Arc::clone(
             &state.agent_conversation_workspace_repo,
         )),
+        agent_conversation_jira_issue_repo: Some(Arc::clone(
+            &state.agent_conversation_jira_issue_repo,
+        )),
         task_proposal_repo: Some(Arc::clone(&state.task_proposal_repo)),
         activity_event_repo: Arc::clone(&state.activity_event_repo),
         memory_event_repo: Arc::clone(&state.memory_event_repo),
@@ -541,6 +1149,7 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         run_chain_id: None,
         is_retry_attempt: false,
         user_message_content: Some("initial prompt".to_string()),
+        turn_metadata: None,
         conversation: Some(conversation),
         agent_name: Some("orchestrator".to_string()),
         team_mode: false,
@@ -931,4 +1540,303 @@ async fn finalize_no_output_writes_both_chat_messages_and_timeline_placeholder()
             .contains("Agent completed with no output"),
         "the placeholder block must carry the same note as chat_messages"
     );
+}
+
+#[tokio::test]
+async fn finalize_structured_writes_chat_message_and_finalized_timeline_rows() {
+    use crate::application::chat_service::create_assistant_message;
+    use crate::domain::entities::IdeationSessionId;
+
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let session_id = IdeationSessionId::new();
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed pre-assistant message");
+
+    let tool_calls = vec![ToolCall {
+        id: Some("toolu-read".to_string()),
+        name: "Read".to_string(),
+        arguments: serde_json::json!({ "file_path": "src/app.ts" }),
+        result: Some(serde_json::json!("preview")),
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    }];
+    let content_blocks = vec![
+        ContentBlockItem::Text {
+            text: "Done".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("toolu-read".to_string()),
+            name: "Read".to_string(),
+            arguments: serde_json::json!({ "file_path": "src/app.ts" }),
+            result: Some(serde_json::json!("preview")),
+            parent_tool_use_id: None,
+            diff_context: Some(serde_json::json!({ "file_path": "src/app.ts" })),
+        },
+    ];
+
+    super::finalize_structured_assistant_message::<tauri::Wry>(
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        None,
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        &conversation_id,
+        &pre_assistant_id,
+        "orchestrator",
+        "Done",
+        &tool_calls,
+        &content_blocks,
+        false,
+    )
+    .await;
+
+    let persisted = state
+        .chat_message_repo
+        .get_by_id(&crate::domain::entities::ChatMessageId::from_string(
+            pre_assistant_id.clone(),
+        ))
+        .await
+        .expect("load message")
+        .expect("message persisted");
+    assert_eq!(persisted.content, "Done");
+    assert!(persisted
+        .content_blocks
+        .as_deref()
+        .is_some_and(|raw| raw.contains("toolu-read")));
+
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    let assistant_blocks: Vec<_> = page
+        .items
+        .iter()
+        .filter(|item| {
+            item.message_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == pre_assistant_id)
+        })
+        .collect();
+    assert_eq!(assistant_blocks.len(), 2);
+    assert!(assistant_blocks
+        .iter()
+        .all(|item| item.status == ChatTimelineItemStatus::Finalized));
+    assert_eq!(assistant_blocks[0].text.as_deref(), Some("Done"));
+    assert_eq!(
+        assistant_blocks[1].tool_call_id.as_deref(),
+        Some("toolu-read")
+    );
+    assert_eq!(
+        assistant_blocks[1].tool_status.as_deref(),
+        Some("completed")
+    );
+    assert!(assistant_blocks[1]
+        .raw_block_json
+        .as_deref()
+        .is_some_and(|raw| raw.contains("diff_context")));
+}
+
+#[tokio::test]
+async fn finalize_structured_split_transcript_writes_timeline_for_each_segment() {
+    use crate::application::chat_service::create_assistant_message;
+    use crate::domain::entities::IdeationSessionId;
+
+    let state = AppState::new_test();
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+    let conversation_id = ChatConversationId::new();
+    let session_id = IdeationSessionId::new();
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed pre-assistant message");
+
+    let content_blocks = vec![
+        ContentBlockItem::Text {
+            text: "First segment".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("toolu-read".to_string()),
+            name: "Read".to_string(),
+            arguments: serde_json::json!({ "file_path": "src/app.ts" }),
+            result: Some(serde_json::json!("preview")),
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+        ContentBlockItem::Text {
+            text: "Second segment".to_string(),
+        },
+    ];
+    let tool_calls = vec![ToolCall {
+        id: Some("toolu-read".to_string()),
+        name: "Read".to_string(),
+        arguments: serde_json::json!({ "file_path": "src/app.ts" }),
+        result: Some(serde_json::json!("preview")),
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    }];
+
+    super::finalize_structured_assistant_message::<tauri::test::MockRuntime>(
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        Some(&app_handle),
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        &conversation_id,
+        &pre_assistant_id,
+        "orchestrator",
+        "First segmentSecond segment",
+        &tool_calls,
+        &content_blocks,
+        true,
+    )
+    .await;
+
+    let messages = state
+        .chat_message_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("load conversation messages");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].id.as_str(), pre_assistant_id);
+    assert_eq!(messages[0].content, "First segment");
+    assert_eq!(messages[1].content, "Second segment");
+
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    assert_eq!(page.items.len(), 3);
+    assert!(page
+        .items
+        .iter()
+        .all(|item| item.status == ChatTimelineItemStatus::Finalized));
+    assert_eq!(
+        page.items[0].message_id.as_ref().unwrap().as_str(),
+        pre_assistant_id
+    );
+    assert_eq!(
+        page.items[1].message_id.as_ref().unwrap().as_str(),
+        pre_assistant_id
+    );
+    assert_eq!(
+        page.items[2].message_id.as_ref().unwrap().as_str(),
+        messages[1].id.as_str()
+    );
+}
+
+#[tokio::test]
+async fn exported_finalization_test_helpers_delegate_to_core_paths() {
+    use crate::application::chat_service::{
+        create_assistant_message, finalize_assistant_message_for_test,
+        finalize_structured_assistant_message_for_test,
+    };
+    use crate::domain::entities::{ChatMessageId, IdeationSessionId};
+
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let session_id = IdeationSessionId::new();
+
+    let plain_message = create_assistant_message(
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let plain_message_id = plain_message.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(plain_message)
+        .await
+        .expect("seed plain assistant message");
+    finalize_assistant_message_for_test::<tauri::Wry>(
+        &state.chat_message_repo,
+        None,
+        &conversation_id.as_str(),
+        "ideation",
+        session_id.as_str(),
+        &plain_message_id,
+        "orchestrator",
+        "Plain helper content",
+        None,
+        None,
+    )
+    .await;
+
+    let structured_message = create_assistant_message(
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let structured_message_id = structured_message.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(structured_message)
+        .await
+        .expect("seed structured assistant message");
+    finalize_structured_assistant_message_for_test::<tauri::Wry>(
+        &state.chat_message_repo,
+        None,
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        &conversation_id,
+        &structured_message_id,
+        "orchestrator",
+        "Structured helper content",
+        &[],
+        &[ContentBlockItem::Text {
+            text: "Structured helper content".to_string(),
+        }],
+        false,
+    )
+    .await;
+
+    let plain = state
+        .chat_message_repo
+        .get_by_id(&ChatMessageId::from_string(plain_message_id))
+        .await
+        .expect("load plain helper message")
+        .expect("plain helper message");
+    let structured = state
+        .chat_message_repo
+        .get_by_id(&ChatMessageId::from_string(structured_message_id))
+        .await
+        .expect("load structured helper message")
+        .expect("structured helper message");
+    assert_eq!(plain.content, "Plain helper content");
+    assert_eq!(structured.content, "Structured helper content");
 }

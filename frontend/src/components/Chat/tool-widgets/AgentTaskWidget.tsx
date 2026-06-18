@@ -14,6 +14,7 @@ import { Badge, InlineIndicator, WidgetCard, WidgetHeader, WidgetRow } from "./s
 import {
   colors,
   getArray,
+  getBool,
   getString,
   parseMcpToolResult,
   type BadgeVariant,
@@ -185,6 +186,63 @@ function parseTasks(result: Record<string, unknown>): AgentTaskView[] {
   return tasks.map(parseTask).filter((task): task is AgentTaskView => task != null);
 }
 
+function parsePreviewJsonString(value: string): string {
+  try {
+    return JSON.parse(`"${value}"`) as string;
+  } catch {
+    return value.replace(/\\"/g, "\"");
+  }
+}
+
+function previewTextFromResult(result: unknown): string | null {
+  if (typeof result === "string") {
+    return result;
+  }
+  if (!isRecord(result)) {
+    return null;
+  }
+  const text = result.text;
+  if (typeof text === "string") {
+    return text;
+  }
+  const content = result.content;
+  if (Array.isArray(content)) {
+    const firstText = content
+      .map((item) => (isRecord(item) && typeof item.text === "string" ? item.text : null))
+      .find((item): item is string => item != null);
+    if (firstText) {
+      return firstText;
+    }
+  }
+  return null;
+}
+
+function parsePreviewTask(result: unknown): AgentTaskView | null {
+  const previewText = previewTextFromResult(result);
+  if (!previewText) {
+    return null;
+  }
+  const taskNumberMatch = previewText.match(/"task_number"\s*:\s*(\d+)/);
+  const titleMatch = previewText.match(/"title"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  if (!taskNumberMatch && !titleMatch) {
+    return null;
+  }
+  const stateMatch = previewText.match(/"state"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  const taskIdMatch = previewText.match(/"task_id"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  const ownerMatch = previewText.match(/"owner_agent"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  return {
+    taskId: taskIdMatch ? parsePreviewJsonString(taskIdMatch[1] ?? "") : undefined,
+    taskNumber: taskNumberMatch ? Number(taskNumberMatch[1]) : undefined,
+    title: titleMatch ? parsePreviewJsonString(titleMatch[1] ?? "") : "Agent task",
+    details: undefined,
+    state: stateMatch ? parsePreviewJsonString(stateMatch[1] ?? "") : undefined,
+    ownerAgent: ownerMatch ? parsePreviewJsonString(ownerMatch[1] ?? "") : undefined,
+    blockedBy: [],
+    blocks: [],
+    availability: undefined,
+  };
+}
+
 function parseStateChange(value: unknown): AgentTaskResult["stateChange"] {
   if (!isRecord(value)) {
     return undefined;
@@ -200,13 +258,17 @@ function parseAgentTaskResult(result: unknown): AgentTaskResult {
   return {
     success: typeof parsed.success === "boolean" ? parsed.success : undefined,
     error: typeof parsed.error === "string" ? parsed.error : undefined,
-    task: parseTask(parsed.task),
+    task: parseTask(parsed.task) ?? parsePreviewTask(result),
     tasks: parseTasks(parsed),
     changedFields: getArray(parsed, "changed_fields")?.filter(
       (field): field is string => typeof field === "string"
     ) ?? [],
     stateChange: parseStateChange(parsed.state_change),
   };
+}
+
+function includeResolvedTasks(args: unknown): boolean {
+  return getBool(args, "include_done") ?? getBool(args, "includeDone") ?? false;
 }
 
 function formatTaskRef(task: AgentTaskView | null | undefined, fallback?: string): string {
@@ -374,21 +436,30 @@ function AgentTaskRows({
 
 function ListAgentTasksWidget({
   result,
+  includeDone,
   compact,
   className,
 }: {
   result: AgentTaskResult;
+  includeDone: boolean;
   compact: boolean;
   className: string | undefined;
 }) {
   const taskCount = result.tasks.length;
+  const badgeLabel =
+    taskCount === 0 && !includeDone
+      ? "0 unresolved"
+      : `${taskCount} ${taskCount === 1 ? "task" : "tasks"}`;
+  const emptyLabel = includeDone
+    ? "No agent tasks found in this snapshot"
+    : "No unresolved agent tasks found in this snapshot";
   const header = (
     <WidgetHeader
       icon={iconForTool("list_agent_tasks")}
       title="Agent task ledger"
       badge={
         <Badge variant="muted" compact>
-          {taskCount} {taskCount === 1 ? "task" : "tasks"}
+          {badgeLabel}
         </Badge>
       }
       compact={compact}
@@ -398,7 +469,7 @@ function ListAgentTasksWidget({
   if (taskCount === 0) {
     return (
       <WidgetCard className={className ?? ""} header={header} compact={compact} alwaysExpanded>
-        <span style={{ color: colors.textMuted, fontSize: 10.5 }}>No agent tasks found</span>
+        <span style={{ color: colors.textMuted, fontSize: 10.5 }}>{emptyLabel}</span>
       </WidgetCard>
     );
   }
@@ -450,6 +521,7 @@ export const AgentTaskWidget = React.memo(function AgentTaskWidget({
     return (
       <ListAgentTasksWidget
         result={result}
+        includeDone={includeResolvedTasks(toolCall.arguments)}
         compact={compact}
         className={className}
       />

@@ -2,13 +2,20 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import type { WorkspaceOpenTarget } from "@/api/chat";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { CodeBlock, MarkdownLink, markdownComponents } from "./MessageItem.markdown";
-import { openPath } from "@tauri-apps/plugin-opener";
+import {
+  MessageFileLinkContext,
+  type MessageFileLinkContextValue,
+} from "./MessageFileLinkContext";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 
 const writeTextMock = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openPath: vi.fn().mockResolvedValue(undefined),
+  revealItemInDir: vi.fn().mockResolvedValue(undefined),
 }));
 
 beforeEach(() => {
@@ -17,7 +24,39 @@ beforeEach(() => {
     value: { writeText: writeTextMock },
   });
   writeTextMock.mockClear();
+  vi.mocked(openPath).mockReset();
+  vi.mocked(openPath).mockResolvedValue(undefined);
+  vi.mocked(revealItemInDir).mockReset();
+  vi.mocked(revealItemInDir).mockResolvedValue(undefined);
 });
+
+const workspaceTargets: WorkspaceOpenTarget[] = [
+  { id: "cursor", label: "Cursor", kind: "editor" },
+  { id: "finder", label: "Finder", kind: "fileManager" },
+];
+
+function renderWithFileLinkContext(
+  ui: React.ReactElement,
+  overrides: Partial<MessageFileLinkContextValue> = {},
+) {
+  const context: MessageFileLinkContextValue = {
+    workspaceRootPath: "/tmp/ralphx-worktree",
+    targets: workspaceTargets,
+    preferredTargetId: "cursor",
+    openingPath: null,
+    openingTargetId: null,
+    onOpenPath: vi.fn(),
+    ...overrides,
+  };
+  const result = render(
+    <TooltipProvider>
+      <MessageFileLinkContext.Provider value={context}>
+        {ui}
+      </MessageFileLinkContext.Provider>
+    </TooltipProvider>,
+  );
+  return { ...result, context };
+}
 
 describe("MessageItem.markdown", () => {
   it("CodeBlock renders the language label and copies on click", async () => {
@@ -89,7 +128,6 @@ describe("MessageItem.markdown", () => {
 
   it("MarkdownLink parses file:// URLs and strips line/col suffix", async () => {
     const user = userEvent.setup();
-    (openPath as unknown as { mockClear: () => void }).mockClear();
     render(<MarkdownLink href="file:///tmp/foo%20bar.txt:10">f</MarkdownLink>);
     const anchor = screen.getByText("f").closest("a");
     await user.click(anchor!);
@@ -98,12 +136,61 @@ describe("MessageItem.markdown", () => {
 
   it("MarkdownLink falls back when file:// URL is malformed", async () => {
     const user = userEvent.setup();
-    (openPath as unknown as { mockClear: () => void }).mockClear();
     // Intentionally malformed URL to hit the catch branch in parseLocalFileHref
     render(<MarkdownLink href="file://%E0%A4%A">x</MarkdownLink>);
     const anchor = screen.getByText("x").closest("a");
     await user.click(anchor!);
     expect(openPath).toHaveBeenCalled();
+  });
+
+  it("MarkdownLink reveals local files when openPath is unavailable", async () => {
+    const user = userEvent.setup();
+    vi.mocked(openPath).mockRejectedValueOnce(new Error("forbidden"));
+    render(<MarkdownLink href="/tmp/ralphx-worktree/file.ts">file</MarkdownLink>);
+    const anchor = screen.getByText("file").closest("a");
+
+    await user.click(anchor!);
+
+    await waitFor(() => {
+      expect(revealItemInDir).toHaveBeenCalledWith("/tmp/ralphx-worktree/file.ts");
+    });
+  });
+
+  it("MarkdownLink opens workspace-local paths with the preferred workspace target", async () => {
+    const user = userEvent.setup();
+    const onOpenPath = vi.fn();
+    renderWithFileLinkContext(
+      <MarkdownLink href="/tmp/ralphx-worktree/src/lib.rs:42">lib.rs</MarkdownLink>,
+      { onOpenPath },
+    );
+
+    await user.click(screen.getByRole("button", { name: "Open lib.rs in Cursor" }));
+
+    expect(onOpenPath).toHaveBeenCalledWith(
+      "/tmp/ralphx-worktree/src/lib.rs",
+      "cursor",
+    );
+    expect(openPath).not.toHaveBeenCalled();
+    expect(revealItemInDir).not.toHaveBeenCalled();
+  });
+
+  it("MarkdownLink exposes workspace file open targets from the caret menu", async () => {
+    const user = userEvent.setup();
+    const onOpenPath = vi.fn();
+    renderWithFileLinkContext(
+      <MarkdownLink href="file:///tmp/ralphx-worktree/src/lib.rs">lib.rs</MarkdownLink>,
+      { onOpenPath },
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Open options for lib.rs" }),
+    );
+    await user.click(await screen.findByText("Reveal in Finder"));
+
+    expect(onOpenPath).toHaveBeenCalledWith(
+      "/tmp/ralphx-worktree/src/lib.rs",
+      "finder",
+    );
   });
 
   it("MarkdownLink keeps remote URLs as external links", () => {
@@ -116,7 +203,6 @@ describe("MessageItem.markdown", () => {
 
   it("MarkdownLink with no href is a noop on click", async () => {
     const user = userEvent.setup();
-    (openPath as unknown as { mockClear: () => void }).mockClear();
     render(<MarkdownLink>nohref</MarkdownLink>);
     await user.click(screen.getByText("nohref"));
     expect(openPath).not.toHaveBeenCalled();
@@ -126,6 +212,56 @@ describe("MessageItem.markdown", () => {
     render(<MarkdownLink href="//example.com/path">pr</MarkdownLink>);
     const anchor = screen.getByText("pr").closest("a");
     expect(anchor).toHaveAttribute("target", "_blank");
+  });
+
+  it("renders ASCII art paragraphs as monospace pre elements", () => {
+    const P = markdownComponents.p as React.ComponentType<{
+      children: React.ReactNode;
+      className?: string;
+      style?: React.CSSProperties;
+    }>;
+    const { container } = render(<P>{"┌──────┐\n│ box  │\n└──────┘"}</P>);
+    const pre = container.querySelector("pre");
+    expect(pre).toBeInTheDocument();
+    expect(pre).toHaveStyle({ fontFamily: "var(--font-mono)" });
+  });
+
+  it("renders normal paragraphs with prose width", () => {
+    const P = markdownComponents.p as React.ComponentType<{
+      children: React.ReactNode;
+    }>;
+    const { container } = render(<P>Just a normal paragraph.</P>);
+    expect(container.querySelector("p")).toBeInTheDocument();
+    expect(container.querySelector("pre")).not.toBeInTheDocument();
+  });
+
+  it("keeps prose paragraphs with inline comparison code out of ASCII-art mode", () => {
+    const P = markdownComponents.p as React.ComponentType<{
+      children: React.ReactNode;
+    }>;
+    const { container } = render(
+      <P>
+        My recommendation: detect{" "}
+        <code>{'sidebarGroupBy === "project" && orderedProjects.length === 1'}</code>
+        , then fill the available sidebar body.
+      </P>,
+    );
+
+    expect(container.querySelector("p")).toBeInTheDocument();
+    expect(container.querySelector("pre")).not.toBeInTheDocument();
+  });
+
+  it("extractText handles nested React elements for ASCII art detection", () => {
+    const P = markdownComponents.p as React.ComponentType<{
+      children: React.ReactNode;
+    }>;
+    const { container } = render(
+      <P>
+        <strong>{"╔═══╗"}</strong>
+      </P>,
+    );
+    const pre = container.querySelector("pre");
+    expect(pre).toBeInTheDocument();
   });
 
   it("renders all block-level markdownComponents", () => {

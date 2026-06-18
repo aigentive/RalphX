@@ -297,6 +297,7 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         Path::new("/tmp"),
         Some("verification"), // → ralphx-plan-verifier agent
         Some("proj-1"),
+        &[],
         false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
@@ -305,6 +306,7 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         None,
         &[],
         0,
+        None,
         None,
         None,
     )
@@ -347,9 +349,12 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         ChatContextType::Ideation,
         session_id.as_str(),
         "verify plan",
+        None,
+        None,
         Path::new("/tmp"),
         "fake-session-id",
         Some("proj-1"),
+        &[],
         None,
         false,
         Arc::new(MemoryChatAttachmentRepository::new()),
@@ -364,6 +369,7 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         0,
         None,
         None, // model_override: agent selection comes from session_purpose, not this field
+        None, // attachment_context_override
     )
     .await;
 

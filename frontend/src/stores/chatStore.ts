@@ -45,6 +45,8 @@ export interface QueuedMessage {
   createdAt: string;
   /** Whether this message is currently being edited */
   isEditing: boolean;
+  /** Chat attachment IDs selected when the message was queued */
+  attachmentIds: string[];
 }
 
 // ============================================================================
@@ -116,7 +118,12 @@ interface ChatActions {
   /** Clear all agent running states for a task (all context types) */
   clearAgentRunningForTask: (taskId: string) => void;
   /** Queue a message to be sent when the agent finishes */
-  queueMessage: (contextKey: string, content: string, clientId?: string) => void;
+  queueMessage: (
+    contextKey: string,
+    content: string,
+    clientId?: string,
+    attachmentIds?: string[]
+  ) => void;
   /** Edit a queued message */
   editQueuedMessage: (contextKey: string, id: string, content: string) => void;
   /** Delete a queued message */
@@ -309,14 +316,25 @@ export const useChatStore = create<ChatState & ChatActions>()(
         });
       }),
 
-    queueMessage: (contextKey, content, clientId) =>
+    queueMessage: (contextKey, content, clientId, attachmentIds) =>
       set((state) => {
         const id = clientId ?? `queued-${Date.now()}-${Math.random()}`;
         if (!state.queuedMessages[contextKey]) {
           state.queuedMessages[contextKey] = [];
         }
-        // Duplicate-ID guard: if a message with this ID already exists, no-op
-        if (clientId != null && state.queuedMessages[contextKey].some((m) => m.id === clientId)) {
+        // Duplicate-ID guard: backend events may arrive after the optimistic local enqueue.
+        // Merge attachment IDs if the event carries metadata the optimistic row lacks.
+        const existingMessage = clientId != null
+          ? state.queuedMessages[contextKey].find((m) => m.id === clientId)
+          : undefined;
+        if (existingMessage) {
+          if (
+            (existingMessage.attachmentIds ?? []).length === 0
+            && attachmentIds !== undefined
+            && attachmentIds.length > 0
+          ) {
+            existingMessage.attachmentIds = [...attachmentIds];
+          }
           return;
         }
         const queuedMessage: QueuedMessage = {
@@ -324,6 +342,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
           content,
           createdAt: new Date().toISOString(),
           isEditing: false,
+          attachmentIds: [...(attachmentIds ?? [])],
         };
         state.queuedMessages[contextKey].push(queuedMessage);
       }),

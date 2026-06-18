@@ -12,6 +12,9 @@ import {
   getAgentMessageToolCallDetail,
   getAgentTimelineItemToolCallDetail,
   getConversationStats,
+  getAgentWorkspacePrReviewContext,
+  submitAgentWorkspacePrReviewAction,
+  skipAgentWorkspacePrReviewAction,
   createConversation,
   updateConversationTitle,
   spawnConversationSessionNamer,
@@ -20,17 +23,21 @@ import {
   getAgentRunStatus,
   getAgentConversationWorkspaceFreshness,
   openAgentConversationWorkspace,
+  openAgentConversationWorkspacePath,
   listAgentConversationWorkspacePublicationEvents,
   listAgentConversationWorkspacesByProject,
   listAgentSidebarConversations,
   updateAgentConversationWorkspaceFromBase,
   precomputeAgentConversationWorkspacePrDescription,
+  setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
   startAgentConversation,
+  forkAgentConversation,
   switchAgentConversationMode,
   sendAgentMessage,
   getQueuedAgentMessages,
   deleteQueuedAgentMessage,
+  sendQueuedAgentMessageNow,
   isChatServiceAvailable,
   stopAgent,
   isAgentRunning,
@@ -77,6 +84,7 @@ describe("chat api", () => {
         result_preview_line_count: 40,
         result_preview_omitted_lines: 30,
         result_preview_original_bytes: 12000,
+        result_preview_paths: ["$.task.details"],
         detail_ref: {
           conversation_id: "conv-1",
           message_id: "msg-1",
@@ -91,10 +99,87 @@ describe("chat api", () => {
       resultPreviewLineCount: 40,
       resultPreviewOmittedLines: 30,
       resultPreviewOriginalBytes: 12000,
+      resultPreviewPaths: ["$.task.details"],
       detailRef: {
         conversationId: "conv-1",
         messageId: "msg-1",
         toolCallId: "t1",
+      },
+    });
+  });
+
+  it("preserves argument preview metadata and diff previews on parsed tool calls", () => {
+    const parsed = parseToolCalls([
+      {
+        id: "tool-edit",
+        name: "edit",
+        arguments: { file_path: "src/example.ts" },
+        arguments_preview_truncated: true,
+        arguments_preview_original_bytes: 2400,
+        arguments_preview_line_count: 120,
+        arguments_preview_omitted_lines: 114,
+        diff_preview: {
+          file_path: "src/example.ts",
+          language: "typescript",
+          hunks: [
+            {
+              old_start: 1,
+              old_lines: 2,
+              new_start: 1,
+              new_lines: 2,
+              header: "@@ -1,2 +1,2 @@",
+              lines: [
+                {
+                  kind: "context",
+                  content: "line 1",
+                  old_line_num: 1,
+                  new_line_num: 1,
+                },
+                {
+                  kind: "addition",
+                  content: "line 2 changed",
+                  old_line_num: null,
+                  new_line_num: 2,
+                },
+              ],
+            },
+          ],
+          old_total_lines: 60,
+          new_total_lines: 60,
+          is_binary: false,
+        },
+      },
+    ]);
+
+    expect(parsed[0]).toMatchObject({
+      id: "tool-edit",
+      argumentsPreviewTruncated: true,
+      argumentsPreviewOriginalBytes: 2400,
+      argumentsPreviewLineCount: 120,
+      argumentsPreviewOmittedLines: 114,
+      diffPreview: {
+        filePath: "src/example.ts",
+        language: "typescript",
+        oldTotalLines: 60,
+        newTotalLines: 60,
+        hunks: [
+          {
+            oldStart: 1,
+            newStart: 1,
+            lines: [
+              {
+                content: "line 1",
+                oldLineNum: 1,
+                newLineNum: 1,
+              },
+              {
+                content: "line 2 changed",
+                oldLineNum: null,
+                newLineNum: 2,
+              },
+            ],
+          },
+        ],
       },
     });
   });
@@ -110,6 +195,7 @@ describe("chat api", () => {
         resultPreviewLineCount: 12,
         resultPreviewOmittedLines: 2,
         resultPreviewOriginalBytes: 1200,
+        resultPreviewPaths: ["$.output"],
         detailRef: {
           conversationId: "conv-1",
         },
@@ -122,6 +208,7 @@ describe("chat api", () => {
       resultPreviewLineCount: 12,
       resultPreviewOmittedLines: 2,
       resultPreviewOriginalBytes: 1200,
+      resultPreviewPaths: ["$.output"],
     });
     expect(parsed[0]?.detailRef).toBeUndefined();
   });
@@ -136,6 +223,7 @@ describe("chat api", () => {
         diff_context: {
           file_path: "src/main.rs",
           old_content: "old",
+          old_file_exists: true,
         },
       },
       {
@@ -145,16 +233,25 @@ describe("chat api", () => {
         diffContext: {
           filePath: "src/lib.rs",
           oldContent: "before",
+          oldFileExists: false,
         },
       },
     ]);
 
     expect(parsed[0]).toMatchObject({
       error: "edit failed",
-      diffContext: { filePath: "src/main.rs", oldContent: "old" },
+      diffContext: {
+        filePath: "src/main.rs",
+        oldContent: "old",
+        oldFileExists: true,
+      },
     });
     expect(parsed[1]).toMatchObject({
-      diffContext: { filePath: "src/lib.rs", oldContent: "before" },
+      diffContext: {
+        filePath: "src/lib.rs",
+        oldContent: "before",
+        oldFileExists: false,
+      },
     });
   });
 
@@ -185,6 +282,7 @@ describe("chat api", () => {
         result: "first lines",
         result_preview_truncated: true,
         result_preview_line_count: 20,
+        result_preview_paths: ["$.content[1].text"],
         detail_ref: {
           conversation_id: "conv-1",
           message_id: "msg-1",
@@ -200,11 +298,68 @@ describe("chat api", () => {
       arguments: { file_path: "big.txt" },
       resultPreviewTruncated: true,
       resultPreviewLineCount: 20,
+      resultPreviewPaths: ["$.content[1].text"],
       detailRef: {
         conversationId: "conv-1",
         messageId: "msg-1",
         toolCallId: "tool-1",
         contentBlockIndex: 2,
+      },
+    });
+  });
+
+  it("preserves argument preview metadata and diff previews on parsed content blocks", () => {
+    const parsed = parseContentBlocks([
+      {
+        type: "tool_use",
+        id: "tool-edit",
+        name: "edit",
+        arguments: { file_path: "src/example.ts" },
+        arguments_preview_truncated: true,
+        diff_preview: {
+          file_path: "src/example.ts",
+          language: "typescript",
+          hunks: [
+            {
+              old_start: 1,
+              old_lines: 1,
+              new_start: 1,
+              new_lines: 1,
+              header: "@@ -1,1 +1,1 @@",
+              lines: [
+                {
+                  kind: "addition",
+                  content: "new line",
+                  old_line_num: null,
+                  new_line_num: 1,
+                },
+              ],
+            },
+          ],
+          old_total_lines: 1,
+          new_total_lines: 1,
+          is_binary: false,
+        },
+      },
+    ]);
+
+    expect(parsed[0]).toMatchObject({
+      type: "tool_use",
+      argumentsPreviewTruncated: true,
+      diffPreview: {
+        filePath: "src/example.ts",
+        hunks: [
+          {
+            oldStart: 1,
+            lines: [
+              {
+                content: "new line",
+                oldLineNum: null,
+                newLineNum: 1,
+              },
+            ],
+          },
+        ],
       },
     });
   });
@@ -219,6 +374,7 @@ describe("chat api", () => {
         diff_context: {
           file_path: "src/main.rs",
           old_content: "old",
+          old_file_exists: false,
         },
       },
     ]);
@@ -226,7 +382,11 @@ describe("chat api", () => {
     expect(parsed[0]).toMatchObject({
       type: "tool_use",
       arguments: { file_path: "src/main.rs" },
-      diffContext: { filePath: "src/main.rs", oldContent: "old" },
+      diffContext: {
+        filePath: "src/main.rs",
+        oldContent: "old",
+        oldFileExists: false,
+      },
     });
   });
 
@@ -239,6 +399,10 @@ describe("chat api", () => {
         claude_session_id: null,
         provider_session_id: "thread-1",
         provider_harness: "codex",
+        logical_model: "gpt-5.4",
+        effective_model_id: "gpt-5.4-2026-04-01",
+        logical_effort: "high",
+        effective_effort: "high",
         title: "Title",
         message_count: 2,
         last_message_at: null,
@@ -261,6 +425,10 @@ describe("chat api", () => {
       providerHarness: "codex",
       upstreamProvider: null,
       providerProfile: null,
+      logicalModel: "gpt-5.4",
+      effectiveModelId: "gpt-5.4-2026-04-01",
+      logicalEffort: "high",
+      effectiveEffort: "high",
       claudeSessionId: null,
     });
   });
@@ -372,6 +540,22 @@ describe("chat api", () => {
     expect(mockInvoke).toHaveBeenCalledWith("spawn_session_namer", {
       conversationId: "conversation-42",
       firstMessage: "fix the agents landing flow",
+    });
+  });
+
+  it("passes selected provider when spawning the session namer", async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await spawnConversationSessionNamer(
+      "conversation-42",
+      "fix the agents landing flow",
+      "codex"
+    );
+
+    expect(mockInvoke).toHaveBeenCalledWith("spawn_session_namer", {
+      conversationId: "conversation-42",
+      firstMessage: "fix the agents landing flow",
+      providerHarness: "codex",
     });
   });
 
@@ -1082,6 +1266,9 @@ describe("chat api", () => {
         publication_pr_url: null,
         publication_pr_status: null,
         publication_push_status: null,
+        auto_publish_enabled: true,
+        auto_publish_paused_pr_autofix_enabled: null,
+        auto_publish_paused_pr_auto_merge_desired: null,
         status: "active",
         created_at: "2026-01-24T10:00:00Z",
         updated_at: "2026-01-24T10:01:00Z",
@@ -1098,6 +1285,7 @@ describe("chat api", () => {
       conversationId: "conversation-1",
       projectId: "project-1",
       branchName: "ralphx/demo/agent-conversation-1",
+      autoPublishInitialPrEnabled: false,
     });
   });
 
@@ -1111,6 +1299,27 @@ describe("chat api", () => {
     expect(mockInvoke).toHaveBeenCalledWith(
       "open_agent_conversation_workspace",
       { conversationId: "conversation-1", targetId: "cursor" }
+    );
+  });
+
+  it("opens an agent conversation workspace path when Tauri returns null for Rust unit", async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    await expect(
+      openAgentConversationWorkspacePath(
+        "conversation-1",
+        "cursor",
+        "/tmp/worktree/src/lib.rs"
+      )
+    ).resolves.toBeUndefined();
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "open_agent_conversation_workspace_path",
+      {
+        conversationId: "conversation-1",
+        targetId: "cursor",
+        path: "/tmp/worktree/src/lib.rs",
+      }
     );
   });
 
@@ -1176,6 +1385,8 @@ describe("chat api", () => {
       publicationStates: ["merged", "closed"],
       limitPerGroup: 20,
       offsets: { merged: 0 },
+      pinnedConversationIds: ["conversation-pinned"],
+      priorityConversationIds: ["conversation-selected"],
       search: " merged ",
     });
 
@@ -1189,6 +1400,8 @@ describe("chat api", () => {
         groupBy: "publication",
         limitPerGroup: 20,
         offsets: { merged: 0 },
+        pinnedConversationIds: ["conversation-pinned"],
+        priorityConversationIds: ["conversation-selected"],
       },
     });
     expect(result.groups[0]).toMatchObject({
@@ -1335,9 +1548,9 @@ describe("chat api", () => {
         conversation_id: "conversation-1",
         project_id: "project-1",
         mode: "edit",
-        base_ref_kind: "current_branch",
+        base_ref_kind: "local_branch",
         base_ref: "feature/agent-screen",
-        base_display_name: "Current branch (feature/agent-screen)",
+        base_display_name: "PR #42: Add PR picker",
         base_commit: "new-base",
         branch_name: "ralphx/demo/agent-conversation-1",
         worktree_path: "/tmp/ralphx/conversation-1",
@@ -1374,6 +1587,78 @@ describe("chat api", () => {
     });
   });
 
+  it("updates an agent conversation workspace from a PR-backed base branch", async () => {
+    mockInvoke.mockResolvedValue({
+      workspace: {
+        conversation_id: "conversation-1",
+        project_id: "project-1",
+        mode: "edit",
+        base_ref_kind: "local_branch",
+        base_ref: "feature/pr-base",
+        base_display_name: "PR #42: Add PR base",
+        base_commit: "new-base",
+        branch_name: "ralphx/demo/agent-conversation-1",
+        worktree_path: "/tmp/ralphx/conversation-1",
+        linked_ideation_session_id: null,
+        linked_plan_branch_id: null,
+        source_pull_request: {
+          number: 42,
+          url: "https://github.com/mock/project/pull/42",
+          title: "Add PR base",
+          head_ref_name: "feature/pr-base",
+          base_ref_name: "main",
+          head_ref_oid: "pr-head-sha",
+        },
+        publication_pr_number: 78,
+        publication_pr_url: "https://github.com/mock/project/pull/78",
+        publication_pr_status: "open",
+        publication_push_status: "refreshed",
+        status: "active",
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:01:00Z",
+      },
+      updated: true,
+      target_ref: "origin/feature/pr-base",
+      base_commit: "new-base",
+    });
+
+    const result = await updateAgentConversationWorkspaceFromBase("conversation-1", {
+      kind: "local_branch",
+      ref: "feature/pr-base",
+      displayName: "PR #42: Add PR base",
+      sourcePullRequest: {
+        number: 42,
+        url: "https://github.com/mock/project/pull/42",
+        title: "Add PR base",
+        headRefName: "feature/pr-base",
+        baseRefName: "main",
+        headRefOid: "pr-head-sha",
+      },
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "update_agent_conversation_workspace_from_base",
+      {
+        conversationId: "conversation-1",
+        baseRefKind: "local_branch",
+        baseRef: "feature/pr-base",
+        baseDisplayName: "PR #42: Add PR base",
+        baseSourcePullRequest: {
+          number: 42,
+          url: "https://github.com/mock/project/pull/42",
+          title: "Add PR base",
+          headRefName: "feature/pr-base",
+          baseRefName: "main",
+          headRefOid: "pr-head-sha",
+        },
+      },
+    );
+    expect(result.workspace.sourcePullRequest).toMatchObject({
+      number: 42,
+      headRefName: "feature/pr-base",
+    });
+  });
+
   it("updates PR supervision preferences for an agent conversation workspace", async () => {
     mockInvoke.mockResolvedValue({
       conversation_id: "conversation-1",
@@ -1391,6 +1676,9 @@ describe("chat api", () => {
       publication_pr_url: "https://github.com/mock/project/pull/78",
       publication_pr_status: "open",
       publication_push_status: "pushed",
+      auto_publish_enabled: true,
+      auto_publish_paused_pr_autofix_enabled: null,
+      auto_publish_paused_pr_auto_merge_desired: null,
       pr_autofix_enabled: true,
       pr_auto_merge_desired: true,
       pr_auto_merge_method: "squash",
@@ -1427,6 +1715,61 @@ describe("chat api", () => {
       prAutoMergeDesired: true,
       prAutoMergeMethod: "squash",
       prSupervisionStatus: "monitoring",
+    });
+  });
+
+  it("sets agent conversation workspace auto publish", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conversation-1",
+      project_id: "project-1",
+      mode: "edit",
+      base_ref_kind: "project_default",
+      base_ref: "main",
+      base_display_name: "Project default (main)",
+      base_commit: null,
+      branch_name: "ralphx/demo/agent-conversation-1",
+      worktree_path: "/tmp/ralphx/conversation-1",
+      linked_ideation_session_id: null,
+      linked_plan_branch_id: null,
+      publication_pr_number: 42,
+      publication_pr_url: "https://github.com/mock/project/pull/42",
+      publication_pr_status: "open",
+      publication_push_status: "pushed",
+      auto_publish_enabled: false,
+      auto_publish_paused_pr_autofix_enabled: true,
+      auto_publish_paused_pr_auto_merge_desired: false,
+      pr_autofix_enabled: false,
+      pr_auto_merge_desired: false,
+      pr_auto_merge_method: "squash",
+      pr_auto_merge_current: null,
+      pr_supervision_status: "paused",
+      pr_supervision_summary: "Auto Publish is paused.",
+      pr_supervision_updated_at: "2026-05-17T10:00:00Z",
+      status: "active",
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:01:00Z",
+    });
+
+    const result = await setAgentConversationWorkspaceAutoPublish(
+      "conversation-1",
+      { autoPublishEnabled: false }
+    );
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "set_agent_conversation_workspace_auto_publish",
+      {
+        conversationId: "conversation-1",
+        input: {
+          autoPublishEnabled: false,
+        },
+      }
+    );
+    expect(result).toMatchObject({
+      conversationId: "conversation-1",
+      autoPublishEnabled: false,
+      autoPublishPausedPrAutofixEnabled: true,
+      prAutofixEnabled: false,
+      prSupervisionStatus: "paused",
     });
   });
 
@@ -1541,14 +1884,22 @@ describe("chat api", () => {
         conversation_id: "conversation-chat",
         project_id: "project-1",
         mode: "chat",
-        base_ref_kind: "current_branch",
+        base_ref_kind: "local_branch",
         base_ref: "feature/agent-screen",
-        base_display_name: "Current branch (feature/agent-screen)",
+        base_display_name: "PR #42: Add PR picker",
         base_commit: null,
         branch_name: "ralphx/demo/agent-conversation-chat",
         worktree_path: "/tmp/ralphx/conversation-chat",
         linked_ideation_session_id: null,
         linked_plan_branch_id: null,
+        source_pull_request: {
+          number: 42,
+          url: "https://github.com/owner/repo/pull/42",
+          title: "Add PR picker",
+          head_ref_name: "feature/agent-screen",
+          base_ref_name: "main",
+          head_ref_oid: "abc123",
+        },
         publication_pr_number: null,
         publication_pr_url: null,
         publication_pr_status: null,
@@ -1572,9 +1923,17 @@ describe("chat api", () => {
       logicalEffort: "xhigh",
       mode: "chat",
       base: {
-        kind: "current_branch",
+        kind: "local_branch",
         ref: "feature/agent-screen",
-        displayName: "Current branch (feature/agent-screen)",
+        displayName: "PR #42: Add PR picker",
+        sourcePullRequest: {
+          number: 42,
+          url: "https://github.com/owner/repo/pull/42",
+          title: "Add PR picker",
+          headRefName: "feature/agent-screen",
+          baseRefName: "main",
+          headRefOid: "abc123",
+        },
       },
     });
 
@@ -1586,20 +1945,34 @@ describe("chat api", () => {
         modelOverride: "gpt-5.5",
         logicalEffort: "xhigh",
         mode: "chat",
-        baseRefKind: "current_branch",
+        baseRefKind: "local_branch",
         baseRef: "feature/agent-screen",
-        baseDisplayName: "Current branch (feature/agent-screen)",
+        baseDisplayName: "PR #42: Add PR picker",
+        baseSourcePullRequest: {
+          number: 42,
+          url: "https://github.com/owner/repo/pull/42",
+          title: "Add PR picker",
+          headRefName: "feature/agent-screen",
+          baseRefName: "main",
+          headRefOid: "abc123",
+        },
       },
     });
     expect(result.conversation.agentMode).toBe("chat");
     expect(result.workspace).toMatchObject({
       mode: "chat",
-      baseRefKind: "current_branch",
+      baseRefKind: "local_branch",
       baseRef: "feature/agent-screen",
+      sourcePullRequest: expect.objectContaining({
+        number: 42,
+        headRefName: "feature/agent-screen",
+        baseRefName: "main",
+        headRefOid: "abc123",
+      }),
     });
   });
 
-  it("switches an existing agent conversation mode", async () => {
+  it("switches an existing agent conversation into plan mode", async () => {
     mockInvoke.mockResolvedValue({
       conversation: {
         id: "conversation-chat",
@@ -1608,7 +1981,7 @@ describe("chat api", () => {
         claude_session_id: null,
         provider_session_id: null,
         provider_harness: null,
-        agent_mode: "edit",
+        agent_mode: "plan",
         title: "Chat",
         message_count: 1,
         last_message_at: null,
@@ -1619,7 +1992,7 @@ describe("chat api", () => {
       workspace: {
         conversation_id: "conversation-chat",
         project_id: "project-1",
-        mode: "edit",
+        mode: "plan",
         base_ref_kind: "project_default",
         base_ref: "main",
         base_display_name: "Project default (main)",
@@ -1640,17 +2013,182 @@ describe("chat api", () => {
 
     const result = await switchAgentConversationMode({
       conversationId: "conversation-chat",
+      mode: "plan",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("switch_agent_conversation_mode", {
+      input: {
+        conversationId: "conversation-chat",
+        mode: "plan",
+      },
+    });
+    expect(result.conversation.agentMode).toBe("plan");
+    expect(result.workspace?.mode).toBe("plan");
+  });
+
+  it("sends source pull request metadata when switching mode with a PR base", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation: {
+        id: "conversation-chat",
+        context_type: "project",
+        context_id: "project-1",
+        claude_session_id: null,
+        provider_session_id: null,
+        provider_harness: null,
+        agent_mode: "edit",
+        title: "Chat",
+        message_count: 1,
+        last_message_at: null,
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:02:00Z",
+        archived_at: null,
+      },
+      workspace: {
+        conversation_id: "conversation-chat",
+        project_id: "project-1",
+        mode: "edit",
+        base_ref_kind: "local_branch",
+        base_ref: "feature/source-pr",
+        base_display_name: "PR #42: Source PR",
+        base_commit: null,
+        branch_name: "ralphx/demo/agent-conversation-chat",
+        worktree_path: "/tmp/ralphx/conversation-chat",
+        linked_ideation_session_id: null,
+        linked_plan_branch_id: null,
+        source_pull_request: {
+          number: 42,
+          url: "https://github.com/owner/repo/pull/42",
+          title: "Source PR",
+          head_ref_name: "feature/source-pr",
+          base_ref_name: "main",
+          head_ref_oid: "abc123",
+        },
+        publication_pr_number: null,
+        publication_pr_url: null,
+        publication_pr_status: null,
+        publication_push_status: null,
+        status: "active",
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:02:00Z",
+      },
+    });
+
+    const result = await switchAgentConversationMode({
+      conversationId: "conversation-chat",
       mode: "edit",
+      base: {
+        kind: "local_branch",
+        ref: "feature/source-pr",
+        displayName: "PR #42: Source PR",
+        sourcePullRequest: {
+          number: 42,
+          url: "https://github.com/owner/repo/pull/42",
+          title: "Source PR",
+          headRefName: "feature/source-pr",
+          baseRefName: "main",
+          headRefOid: "abc123",
+        },
+      },
     });
 
     expect(mockInvoke).toHaveBeenCalledWith("switch_agent_conversation_mode", {
       input: {
         conversationId: "conversation-chat",
         mode: "edit",
+        baseRefKind: "local_branch",
+        baseRef: "feature/source-pr",
+        baseDisplayName: "PR #42: Source PR",
+        baseSourcePullRequest: {
+          number: 42,
+          url: "https://github.com/owner/repo/pull/42",
+          title: "Source PR",
+          headRefName: "feature/source-pr",
+          baseRefName: "main",
+          headRefOid: "abc123",
+        },
       },
     });
-    expect(result.conversation.agentMode).toBe("edit");
-    expect(result.workspace?.mode).toBe("edit");
+    expect(result.workspace?.sourcePullRequest?.number).toBe(42);
+  });
+
+  it("forks an agent conversation and transforms child workspace metadata", async () => {
+    const conversation = {
+      id: "conversation-child",
+      context_type: "project",
+      context_id: "project-1",
+      claude_session_id: null,
+      provider_session_id: "thread-child",
+      provider_harness: "codex",
+      logical_model: "gpt-5.5",
+      effective_model_id: "gpt-5.5",
+      logical_effort: "high",
+      effective_effort: "high",
+      agent_mode: "edit",
+      parent_conversation_id: "conversation-parent",
+      title: "[Fork] Parent chat",
+      message_count: 2,
+      last_message_at: null,
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:02:00Z",
+      archived_at: null,
+    };
+    mockInvoke.mockResolvedValue({
+      parent_conversation: {
+        ...conversation,
+        id: "conversation-parent",
+        provider_session_id: "thread-parent",
+        parent_conversation_id: null,
+        title: "Parent chat",
+      },
+      conversation,
+      workspace: {
+        conversation_id: "conversation-child",
+        project_id: "project-1",
+        mode: "edit",
+        base_ref_kind: "project_default",
+        base_ref: "main",
+        base_display_name: "Project default (main)",
+        base_commit: "base-sha",
+        branch_name: "ralphx/demo/conversation-child",
+        worktree_path: "/tmp/ralphx/conversation-child",
+        linked_ideation_session_id: null,
+        linked_plan_branch_id: null,
+        publication_pr_number: null,
+        publication_pr_url: null,
+        publication_pr_status: null,
+        publication_push_status: null,
+        status: "active",
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:02:00Z",
+      },
+      provider_session_forked: true,
+      copied_message_count: 2,
+      copied_timeline_item_count: 3,
+    });
+
+    const result = await forkAgentConversation("conversation-parent");
+
+    expect(mockInvoke).toHaveBeenCalledWith("fork_agent_conversation", {
+      input: {
+        conversationId: "conversation-parent",
+      },
+    });
+    expect(result.parentConversation.id).toBe("conversation-parent");
+    expect(result.conversation).toMatchObject({
+      id: "conversation-child",
+      providerHarness: "codex",
+      providerSessionId: "thread-child",
+      logicalModel: "gpt-5.5",
+      logicalEffort: "high",
+      parentConversationId: "conversation-parent",
+    });
+    expect(result.workspace).toMatchObject({
+      conversationId: "conversation-child",
+      baseCommit: "base-sha",
+      branchName: "ralphx/demo/conversation-child",
+    });
+    expect(result.providerSessionForked).toBe(true);
+    expect(result.copiedTimelineItemCount).toBe(3);
   });
 
   it("uses the web-mode chat mock for child session status when available", async () => {
@@ -1739,6 +2277,29 @@ describe("chat api", () => {
     });
   });
 
+  it("sends unified agent message with hidden user-message handoff", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "c1",
+      agent_run_id: "r1",
+      is_new_conversation: false,
+    });
+
+    await sendAgentMessage("project", "p1", "Run internally", undefined, undefined, {
+      conversationId: "c1",
+      suppressUserMessage: true,
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
+      input: {
+        contextType: "project",
+        contextId: "p1",
+        content: "Run internally",
+        conversationId: "c1",
+        suppressUserMessage: true,
+      },
+    });
+  });
+
   it("sends unified agent message with structured composer references", async () => {
     mockInvoke.mockResolvedValue({
       conversation_id: "c1",
@@ -1748,6 +2309,12 @@ describe("chat api", () => {
 
     await sendAgentMessage("project", "p1", "Read @src/main.ts", undefined, undefined, {
       composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
+      composerIntegrationReferences: [
+        { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
+      ],
+      composerArtifactReferences: [
+        { kind: "plan", artifactId: "artifact-1", sessionId: "session-1" },
+      ],
     });
 
     expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
@@ -1756,22 +2323,61 @@ describe("chat api", () => {
         contextId: "p1",
         content: "Read @src/main.ts",
         composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
+        composerIntegrationReferences: [
+          { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
+        ],
+        composerArtifactReferences: [
+          { kind: "plan", artifactId: "artifact-1", sessionId: "session-1" },
+        ],
       },
     });
   });
 
   it("lists queued messages", async () => {
-    mockInvoke.mockResolvedValueOnce([{ id: "q1", content: "queued", created_at: "2026-01-24T10:00:00Z", is_editing: false }]);
+    mockInvoke.mockResolvedValueOnce([
+      {
+        id: "q1",
+        content: "queued",
+        created_at: "2026-01-24T10:00:00Z",
+        is_editing: false,
+        attachment_ids: ["att-1"],
+      },
+    ]);
 
     const list = await getQueuedAgentMessages("project", "p1");
 
     expect(list).toHaveLength(1);
+    expect(list[0].attachmentIds).toEqual(["att-1"]);
   });
 
   it("deletes queued message", async () => {
     mockInvoke.mockResolvedValue(true);
     const result = await deleteQueuedAgentMessage("project", "p1", "q1");
     expect(result).toBe(true);
+  });
+
+  it("sends queued message immediately", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conv-1",
+      agent_run_id: "run-1",
+      is_new_conversation: false,
+      was_queued: false,
+      queued_as_pending: false,
+      queued_message_id: null,
+    });
+
+    const result = await sendQueuedAgentMessageNow("project", "conv-1", "q1");
+
+    expect(result).toMatchObject({
+      conversationId: "conv-1",
+      agentRunId: "run-1",
+      wasQueued: false,
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("send_queued_agent_message_now", {
+      contextType: "project",
+      contextId: "conv-1",
+      messageId: "q1",
+    });
   });
 
   it("checks service and running state and stops agent", async () => {
@@ -1786,15 +2392,30 @@ describe("chat api", () => {
   });
 
   it("bulk-checks running states", async () => {
-    mockInvoke.mockResolvedValueOnce({ c1: true, c2: false });
+    mockInvoke.mockResolvedValueOnce({
+      c1: { is_running: true, agent_status: "generating" },
+      c2: { is_running: false, agent_status: "idle" },
+    });
 
     await expect(getAgentRunningStates("project", ["c1", "c2"])).resolves.toEqual({
-      c1: true,
-      c2: false,
+      c1: { isRunning: true, agentStatus: "generating" },
+      c2: { isRunning: false, agentStatus: "idle" },
     });
     expect(mockInvoke).toHaveBeenCalledWith("get_agent_running_states", {
       contextType: "project",
       contextIds: ["c1", "c2"],
+    });
+  });
+
+  it("normalizes legacy boolean bulk running states", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      c1: true,
+      c2: false,
+    });
+
+    await expect(getAgentRunningStates("project", ["c1", "c2"])).resolves.toEqual({
+      c1: { isRunning: true, agentStatus: "generating" },
+      c2: { isRunning: false, agentStatus: "idle" },
     });
   });
 
@@ -1816,7 +2437,20 @@ describe("chat api", () => {
     expect(chatApi.setAgentConversationWorkspacePrSupervision).toBe(
       setAgentConversationWorkspacePrSupervision
     );
+    expect(chatApi.setAgentConversationWorkspaceAutoPublish).toBe(
+      setAgentConversationWorkspaceAutoPublish
+    );
+    expect(chatApi.getAgentWorkspacePrReviewContext).toBe(
+      getAgentWorkspacePrReviewContext
+    );
+    expect(chatApi.submitAgentWorkspacePrReviewAction).toBe(
+      submitAgentWorkspacePrReviewAction
+    );
+    expect(chatApi.skipAgentWorkspacePrReviewAction).toBe(
+      skipAgentWorkspacePrReviewAction
+    );
     expect(chatApi.switchAgentConversationMode).toBe(switchAgentConversationMode);
+    expect(chatApi.forkAgentConversation).toBe(forkAgentConversation);
     expect(chatApi.archiveConversation).toBe(archiveConversation);
     expect(chatApi.restoreConversation).toBe(restoreConversation);
     expect(chatApi.getConversationActiveState).toBe(getConversationActiveState);
@@ -1826,6 +2460,72 @@ describe("chat api", () => {
 
 describe("getConversationActiveState", () => {
   let mockFetch: ReturnType<typeof vi.fn>;
+  const rawWorkspace = () => ({
+    conversation_id: "conversation-1",
+    project_id: "project-1",
+    mode: "edit",
+    base_ref_kind: "project_default",
+    base_ref: "main",
+    base_display_name: "Project default (main)",
+    base_commit: "base-sha",
+    branch_name: "ralphx/ralphx/agent-conversation-1",
+    worktree_path: "/tmp/ralphx/conversation-1",
+    linked_ideation_session_id: null,
+    linked_plan_branch_id: null,
+    source_pull_request: null,
+    publication_pr_number: 411,
+    publication_pr_url: "https://github.com/aigentive/ralphx.app/pull/411",
+    publication_pr_status: "open",
+    publication_push_status: "pushed",
+    auto_publish_enabled: true,
+    auto_publish_initial_pr_enabled: false,
+    auto_publish_paused_pr_autofix_enabled: null,
+    auto_publish_paused_pr_auto_merge_desired: null,
+    pr_autofix_enabled: true,
+    pr_auto_merge_desired: true,
+    pr_auto_merge_method: "squash",
+    pr_auto_merge_current: true,
+    pr_supervision_status: "monitoring",
+    pr_supervision_summary: "Watching PR",
+    pr_supervision_updated_at: "2026-06-18T12:00:00Z",
+    status: "active",
+    created_at: "2026-06-18T12:00:00Z",
+    updated_at: "2026-06-18T12:00:00Z",
+  });
+  const rawMonitor = (overrides: Record<string, unknown> = {}) => ({
+    conversation_id: "conversation-1",
+    project_id: "project-1",
+    pr_number: 411,
+    status: "awaiting_user",
+    monitor_enabled: true,
+    first_review_completed: false,
+    last_seen_head_sha: "abcdef1234567890",
+    last_reviewed_head_sha: null,
+    last_review_run_id: "run-1",
+    last_review_outcome: null,
+    last_submitted_review_id: null,
+    last_error: null,
+    created_at: "2026-06-18T12:00:00Z",
+    updated_at: "2026-06-18T12:00:00Z",
+    ...overrides,
+  });
+  const rawAction = (overrides: Record<string, unknown> = {}) => ({
+    id: "action-1",
+    conversation_id: "conversation-1",
+    pr_number: 411,
+    head_sha: "abcdef1234567890",
+    proposed_action: "request_changes",
+    summary: "Found a regression",
+    review_body: "Please fix the regression before merge.",
+    findings_json: '[{"path":"src/lib.rs"}]',
+    status: "pending",
+    submitted_review_id: null,
+    created_by_run_id: "run-1",
+    created_at: "2026-06-18T12:00:00Z",
+    updated_at: "2026-06-18T12:00:00Z",
+    resolved_at: null,
+    ...overrides,
+  });
 
   beforeEach(() => {
     mockFetch = vi.fn();
@@ -1934,5 +2634,133 @@ describe("getConversationActiveState", () => {
     await expect(getConversationActiveState("conv-missing")).rejects.toThrow(
       "Failed to get conversation active state: 404"
     );
+  });
+
+  it("fetches and transforms agent workspace PR review context", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          workspace: rawWorkspace(),
+          events: [
+            {
+              id: "event-1",
+              conversation_id: "conversation-1",
+              step: "published",
+              status: "succeeded",
+              summary: "Draft pull request is ready",
+              classification: null,
+              created_at: "2026-06-18T12:01:00Z",
+            },
+          ],
+          pr_number: 411,
+          pr_url: "https://github.com/aigentive/ralphx.app/pull/411",
+          current_head_sha: "abcdef1234567890",
+          health: { merge_state_status: "Blocked" },
+          review_feedback: null,
+          monitor: rawMonitor(),
+          pending_action: rawAction(),
+          recent_actions: [
+            rawAction({
+              id: "action-0",
+              status: "skipped",
+              resolved_at: "2026-06-18T12:02:00Z",
+            }),
+          ],
+          issue_comment_evidence: [{ comment_id: "comment-1" }],
+        }),
+    });
+
+    const result = await getAgentWorkspacePrReviewContext("conversation-1");
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:3847/api/agent-workspaces/conversation-1/pr-review-context",
+      undefined
+    );
+    expect(result.workspace.conversationId).toBe("conversation-1");
+    expect(result.events[0]?.conversationId).toBe("conversation-1");
+    expect(result.monitor?.lastReviewRunId).toBe("run-1");
+    expect(result.pendingAction?.proposedAction).toBe("request_changes");
+    expect(result.recentActions[0]?.status).toBe("skipped");
+    expect(result.issueCommentEvidence).toEqual([{ comment_id: "comment-1" }]);
+  });
+
+  it("submits and skips agent workspace PR review actions through encoded REST endpoints", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            success: true,
+            monitor: rawMonitor(),
+            action: rawAction({
+              status: "submitted",
+              submitted_review_id: "review-1",
+              resolved_at: "2026-06-18T12:03:00Z",
+            }),
+            submitted_review_id: "review-1",
+            submitted_review_url:
+              "https://github.com/aigentive/ralphx.app/pull/411#pullrequestreview-1",
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            success: true,
+            monitor: rawMonitor({ status: "watching" }),
+            action: rawAction({
+              status: "skipped",
+              resolved_at: "2026-06-18T12:04:00Z",
+            }),
+          }),
+      });
+
+    const submitted = await submitAgentWorkspacePrReviewAction(
+      "conversation/1",
+      "action/1",
+      "approve"
+    );
+    const skipped = await skipAgentWorkspacePrReviewAction(
+      "conversation/1",
+      "action/1",
+      null
+    );
+
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:3847/api/agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/submit",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action_kind: "approve" }),
+      }
+    );
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost:3847/api/agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/skip",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: null }),
+      }
+    );
+    expect(submitted.submittedReviewId).toBe("review-1");
+    expect(submitted.action.status).toBe("submitted");
+    expect(skipped.action.status).toBe("skipped");
+  });
+
+  it("surfaces backend error detail for agent workspace PR review requests", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      json: () => Promise.resolve({ detail: "No linked pull request" }),
+    });
+
+    await expect(
+      getAgentWorkspacePrReviewContext("conversation-1")
+    ).rejects.toThrow("409 Conflict: No linked pull request");
   });
 });

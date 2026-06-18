@@ -8,11 +8,11 @@
  */
 
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { chatApi } from "@/api/chat";
 import { useEventBus } from "@/providers/EventProvider";
-import type { ChatMessageResponse } from "@/api/chat";
+import type { AgentConversationWorkspaceMode, ChatMessageResponse } from "@/api/chat";
 import {
   mergeConversationProviderMetadata,
   type ChatConversation,
@@ -25,7 +25,6 @@ import type {
 import { extractConversationProviderMetadataFromRunPayload } from "@/types/events";
 import { useChatStore } from "@/stores/chatStore";
 import { useIdeationStore } from "@/stores/ideationStore";
-import { useUiStore } from "@/stores/uiStore";
 import { useTeamStore } from "@/stores/teamStore";
 import { buildStoreKey, parseStoreKey } from "@/lib/chat-context-registry";
 import { buildAgentEventStoreKey } from "@/lib/agent-store-key";
@@ -66,6 +65,94 @@ function updateConversationHistoryConversation(
       conversation: updateConversation(page.conversation),
     })),
   };
+}
+
+function workspaceChangedMode(payload: unknown): AgentConversationWorkspaceMode | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const mode = (payload as { mode?: unknown }).mode;
+  return mode === "chat" || mode === "edit" || mode === "plan" || mode === "ideation"
+    ? mode
+    : null;
+}
+
+function patchConversationMode<T>(
+  value: T | undefined,
+  conversationId: string,
+  mode: AgentConversationWorkspaceMode
+): T | undefined {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.id !== conversationId || !("agentMode" in record)) {
+    return value;
+  }
+  if (record.agentMode === mode) {
+    return value;
+  }
+  return { ...record, agentMode: mode } as T;
+}
+
+function patchConversationModeInListPages<T>(
+  value: T | undefined,
+  conversationId: string,
+  mode: AgentConversationWorkspaceMode
+): T | undefined {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const record = value as { pages?: unknown };
+  if (!Array.isArray(record.pages)) {
+    return value;
+  }
+
+  let changed = false;
+  const pages = record.pages.map((page) => {
+    if (!page || typeof page !== "object") {
+      return page;
+    }
+    const pageRecord = page as { conversations?: unknown };
+    if (!Array.isArray(pageRecord.conversations)) {
+      return page;
+    }
+    let pageChanged = false;
+    const conversations = pageRecord.conversations.map((conversation) => {
+      const patched = patchConversationMode(
+        conversation,
+        conversationId,
+        mode
+      );
+      pageChanged ||= patched !== conversation;
+      return patched;
+    });
+    changed ||= pageChanged;
+    return pageChanged ? { ...pageRecord, conversations } : page;
+  });
+
+  return changed ? ({ ...(value as object), pages } as T) : value;
+}
+
+function patchWorkspaceChangedModeCaches(
+  queryClient: QueryClient,
+  conversationId: string,
+  mode: AgentConversationWorkspaceMode | null
+) {
+  if (!mode) {
+    return;
+  }
+  queryClient.setQueryData<ChatConversation | null | undefined>(
+    chatKeys.conversationSummary(conversationId),
+    (current) => patchConversationMode(current, conversationId, mode)
+  );
+  queryClient.setQueriesData<unknown>(
+    {
+      predicate: (query) =>
+        Array.isArray(query.queryKey) && query.queryKey[0] === "agents",
+    },
+    (current: unknown) => patchConversationModeInListPages(current, conversationId, mode)
+  );
 }
 
 function shouldRouteRunStartSelectionToCallerStoreKey(
@@ -125,7 +212,6 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
   const setActiveAgentRun = useChatStore((s) => s.setActiveAgentRun);
   const clearActiveAgentRun = useChatStore((s) => s.clearActiveAgentRun);
-  const clearActiveQuestion = useUiStore((s) => s.clearActiveQuestion);
   const clearPendingPlan = useTeamStore((s) => s.clearPendingPlan);
 
   useEffect(() => {
@@ -217,13 +303,11 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
 
     function handleAgentTermination(
       storeKey: string,
-      eventContextId: string,
       conversationId: string,
       eventRunId: string | null
     ) {
       clearActiveAgentRun(storeKey, eventRunId);
       setAgentStatus(storeKey, "idle");
-      clearActiveQuestion(eventContextId);
       clearPendingPlan(storeKey);
       queryClient.invalidateQueries({ queryKey: chatKeys.agentRun(conversationId) });
       invalidateConversationDataQueries(queryClient, conversationId);
@@ -296,7 +380,6 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
     // Uses getState() pattern (not closure-captured values) matching watchdog at line 438.
     function guardedTermination(
       storeKey: string,
-      eventContextId: string,
       conversationId: string,
       eventRunId: string | null,
       eventName: string
@@ -314,7 +397,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           return true;
         }
       }
-      handleAgentTermination(storeKey, eventContextId, conversationId, eventRunId);
+      handleAgentTermination(storeKey, conversationId, eventRunId);
       return true;
     }
 
@@ -494,7 +577,6 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         if (
           !guardedTermination(
             eventContextKey,
-            eventContextId,
             conversation_id,
             eventRunId,
             "run_completed"
@@ -632,6 +714,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         context_id: string;
         conversation_id?: string | null;
         created_at: string;
+        attachment_ids?: string[];
       }>("agent:message_queued", (payload) => {
         const { message_id, content, context_type, context_id: eventContextId } = payload;
 
@@ -640,7 +723,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           eventContextId,
           payload.conversation_id
         );
-        queueMessage(eventContextKey, content, message_id);
+        queueMessage(eventContextKey, content, message_id, payload.attachment_ids);
       })
     );
 
@@ -648,7 +731,13 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
       bus.subscribe<unknown>("agent:workspace_changed", (payload) => {
         const conversationId = workspaceChangedConversationId(payload);
         if (conversationId) {
+          patchWorkspaceChangedModeCaches(
+            queryClient,
+            conversationId,
+            workspaceChangedMode(payload)
+          );
           invalidateAgentWorkspacePublishQueries(conversationId);
+          invalidateConversationDataQueries(queryClient, conversationId);
           queryClient.invalidateQueries({
             queryKey: ["agents", "sidebar-conversations"],
           });
@@ -680,7 +769,6 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         if (
           guardedTermination(
             eventContextKey,
-            eventContextId,
             conversation_id,
             lifecycleRunId(payload),
             "stopped"
@@ -719,7 +807,6 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         if (
           !guardedTermination(
             eventContextKey,
-            eventContextId,
             conversation_id,
             lifecycleRunId(payload),
             "error"
@@ -793,7 +880,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
     return () => {
       unsubscribes.forEach((unsub) => unsub());
     };
-  }, [bus, activeConversationId, storeKey, queryClient, setAgentStatus, updateLastAgentEvent, deleteQueuedMessage, queueMessage, setActiveConversation, setActiveAgentRun, clearActiveAgentRun, clearActiveQuestion, clearPendingPlan]);
+  }, [bus, activeConversationId, storeKey, queryClient, setAgentStatus, updateLastAgentEvent, deleteQueuedMessage, queueMessage, setActiveConversation, setActiveAgentRun, clearActiveAgentRun, clearPendingPlan]);
 
   // Global singleton watchdog — defense-in-depth for stuck generating state.
   // If the backend misses run_completed for any reason, this forces idle after

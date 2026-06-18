@@ -92,6 +92,7 @@ beforeEach(() => {
     fetchKind: "HTTPS",
     pushKind: "HTTPS",
     mixedAuthModes: false,
+    githubHttpsCredentialHelperConfigured: false,
     canSwitchToSsh: false,
     suggestedSshUrl: null,
   };
@@ -159,6 +160,7 @@ describe("GitAuthRepairPanel — Sign in", () => {
       fetchKind: "HTTPS",
       pushKind: "HTTPS",
       mixedAuthModes: false,
+      githubHttpsCredentialHelperConfigured: false,
       canSwitchToSsh: true,
       suggestedSshUrl: "git@github.com:owner/repo.git",
     };
@@ -179,6 +181,85 @@ describe("GitAuthRepairPanel — Sign in", () => {
     expect(mocks.setupGh.mutateAsync).toHaveBeenCalled();
   });
 
+  it("treats GitHub HTTPS as healthy when gh auth and credential helper are configured", () => {
+    mocks.ghAuth.data = true;
+    mocks.diagnostics.data = {
+      fetchUrl: "https://github.com/owner/repo.git",
+      pushUrl: "https://github.com/owner/repo.git",
+      fetchKind: "HTTPS",
+      pushKind: "HTTPS",
+      mixedAuthModes: false,
+      githubHttpsCredentialHelperConfigured: true,
+      canSwitchToSsh: true,
+      suggestedSshUrl: "git@github.com:owner/repo.git",
+    };
+
+    render(<GitAuthRepairPanel projectId="proj-1" />);
+
+    expect(screen.queryByText(/HTTPS remotes need/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("git-auth-setup-gh")).not.toBeInTheDocument();
+    expect(screen.getByText("Git remote auth and GitHub CLI status look ready.")).toBeInTheDocument();
+    expect(screen.getByTestId("git-auth-switch-ssh")).toBeInTheDocument();
+  });
+
+  it("hides on publish surface when auth is healthy even if canSwitchToSsh is available", () => {
+    mocks.ghAuth.data = true;
+    mocks.diagnostics.data = {
+      fetchUrl: "https://github.com/owner/repo.git",
+      pushUrl: "https://github.com/owner/repo.git",
+      fetchKind: "HTTPS",
+      pushKind: "HTTPS",
+      mixedAuthModes: false,
+      githubHttpsCredentialHelperConfigured: true,
+      canSwitchToSsh: true,
+      suggestedSshUrl: "git@github.com:owner/repo.git",
+    };
+
+    const { container } = render(
+      <GitAuthRepairPanel projectId="proj-1" surface="publish" requiresGhAuth />,
+    );
+    expect(container.innerHTML).toBe("");
+  });
+
+  it("shows on publish surface when there is a visible issue", () => {
+    mocks.ghAuth.data = false;
+    mocks.diagnostics.data = {
+      fetchUrl: "https://github.com/owner/repo.git",
+      pushUrl: "https://github.com/owner/repo.git",
+      fetchKind: "HTTPS",
+      pushKind: "HTTPS",
+      mixedAuthModes: false,
+      githubHttpsCredentialHelperConfigured: false,
+      canSwitchToSsh: true,
+      suggestedSshUrl: "git@github.com:owner/repo.git",
+    };
+
+    render(
+      <GitAuthRepairPanel projectId="proj-1" surface="publish" requiresGhAuth />,
+    );
+    expect(screen.getByTestId("git-auth-repair-panel")).toBeInTheDocument();
+  });
+
+  it("shows on settings surface with showWhenHealthy even when auth is healthy", () => {
+    mocks.ghAuth.data = true;
+    mocks.diagnostics.data = {
+      fetchUrl: "git@github.com:owner/repo.git",
+      pushUrl: "git@github.com:owner/repo.git",
+      fetchKind: "SSH",
+      pushKind: "SSH",
+      mixedAuthModes: false,
+      githubHttpsCredentialHelperConfigured: false,
+      canSwitchToSsh: false,
+      suggestedSshUrl: null,
+    };
+
+    render(
+      <GitAuthRepairPanel projectId="proj-1" showWhenHealthy />,
+    );
+    expect(screen.getByTestId("git-auth-repair-panel")).toBeInTheDocument();
+    expect(screen.getByText("Git remote auth and GitHub CLI status look ready.")).toBeInTheDocument();
+  });
+
   it("Recheck refetches diagnostics and gh auth status", async () => {
     const user = userEvent.setup();
     render(<GitAuthRepairPanel projectId="proj-1" />);
@@ -194,6 +275,7 @@ describe("GitAuthRepairPanel — Sign in", () => {
       fetchKind: "SSH",
       pushKind: "SSH",
       mixedAuthModes: false,
+      githubHttpsCredentialHelperConfigured: false,
       canSwitchToSsh: false,
       suggestedSshUrl: null,
     };

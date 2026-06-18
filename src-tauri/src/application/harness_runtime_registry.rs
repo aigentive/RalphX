@@ -29,6 +29,8 @@ pub(crate) struct HarnessRuntimeProbe {
     pub probe_succeeded: bool,
     pub available: bool,
     pub missing_core_exec_features: Vec<String>,
+    pub cli_version: Option<String>,
+    pub supported_model_aliases: Option<Vec<String>>,
     pub supported_efforts: Option<Vec<String>>,
     pub error: Option<String>,
 }
@@ -106,6 +108,7 @@ fn probe_claude_harness() -> HarnessRuntimeProbe {
                     tracing::info!(
                         cli_path = %cli_path.display(),
                         version = ?capabilities.version,
+                        supported_model_aliases = ?capabilities.supported_model_aliases,
                         supported_efforts = ?capabilities.supported_effort_labels(),
                         "Claude CLI capability probe completed"
                     );
@@ -115,6 +118,8 @@ fn probe_claude_harness() -> HarnessRuntimeProbe {
                         probe_succeeded: true,
                         available: true,
                         missing_core_exec_features: Vec::new(),
+                        cli_version: capabilities.version.clone(),
+                        supported_model_aliases: Some(capabilities.supported_model_aliases.clone()),
                         supported_efforts: Some(capabilities.supported_effort_labels()),
                         error: None,
                     }
@@ -125,6 +130,8 @@ fn probe_claude_harness() -> HarnessRuntimeProbe {
                     probe_succeeded: false,
                     available: true,
                     missing_core_exec_features: Vec::new(),
+                    cli_version: None,
+                    supported_model_aliases: None,
                     supported_efforts: None,
                     error: Some(error),
                 },
@@ -136,6 +143,8 @@ fn probe_claude_harness() -> HarnessRuntimeProbe {
             probe_succeeded: false,
             available: false,
             missing_core_exec_features: Vec::new(),
+            cli_version: None,
+            supported_model_aliases: None,
             supported_efforts: None,
             error: Some("Claude CLI not found".to_string()),
         },
@@ -167,6 +176,8 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 probe_succeeded: true,
                 available,
                 missing_core_exec_features,
+                cli_version: capabilities.version,
+                supported_model_aliases: None,
                 supported_efforts: None,
                 error,
             }
@@ -178,6 +189,8 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 probe_succeeded: false,
                 available: false,
                 missing_core_exec_features: Vec::new(),
+                cli_version: None,
+                supported_model_aliases: None,
                 supported_efforts: None,
                 error: Some(error),
             },
@@ -187,6 +200,8 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 probe_succeeded: false,
                 available: false,
                 missing_core_exec_features: Vec::new(),
+                cli_version: None,
+                supported_model_aliases: None,
                 supported_efforts: None,
                 error: Some(error),
             },
@@ -394,6 +409,8 @@ fn probe_harness_uncached(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
             probe_succeeded: false,
             available: false,
             missing_core_exec_features: Vec::new(),
+            cli_version: None,
+            supported_model_aliases: None,
             supported_efforts: None,
             error: Some(format!("No harness probe registered for {}", harness)),
         })
@@ -454,6 +471,8 @@ pub(crate) fn probe_harness(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
                 probe_succeeded: false,
                 available: false,
                 missing_core_exec_features: Vec::new(),
+                cli_version: None,
+                supported_model_aliases: None,
                 supported_efforts: None,
                 error: Some("Harness runtime probe panicked".to_string()),
             }
@@ -526,7 +545,7 @@ pub(crate) fn refresh_harness_runtime_probe(harness: AgentHarnessKind) -> Harnes
     probe_harness(harness)
 }
 
-fn clear_harness_runtime_caches_for_harness(harness: AgentHarnessKind) {
+pub(crate) fn clear_harness_runtime_caches_for_harness(harness: AgentHarnessKind) {
     if let Some(cache) = HARNESS_RUNTIME_PROBE_CACHE.get() {
         cache.lock().unwrap().remove(&harness);
     }
@@ -549,6 +568,11 @@ fn clear_harness_runtime_caches_for_harness(harness: AgentHarnessKind) {
             }
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_harness_runtime_caches_for_tests(harness: AgentHarnessKind) {
+    clear_harness_runtime_caches_for_harness(harness);
 }
 
 pub(crate) fn probe_default_harness() -> HarnessRuntimeProbe {
@@ -883,6 +907,17 @@ fn external_mcp_entry_for_plugin_dir(plugin_dir: &Path) -> PathBuf {
 }
 
 pub(crate) fn probe_supported_harnesses() -> HashMap<AgentHarnessKind, HarnessRuntimeProbe> {
+    probe_standard_harnesses_with(probe_harness, "probe")
+}
+
+pub(crate) fn refresh_supported_harnesses() -> HashMap<AgentHarnessKind, HarnessRuntimeProbe> {
+    probe_standard_harnesses_with(refresh_harness_runtime_probe, "refresh")
+}
+
+fn probe_standard_harnesses_with(
+    probe_fn: fn(AgentHarnessKind) -> HarnessRuntimeProbe,
+    operation: &'static str,
+) -> HashMap<AgentHarnessKind, HarnessRuntimeProbe> {
     let started = Instant::now();
     let harnesses = standard_harness_runtime_adapters()
         .into_keys()
@@ -892,7 +927,7 @@ pub(crate) fn probe_supported_harnesses() -> HashMap<AgentHarnessKind, HarnessRu
     std::thread::scope(|scope| {
         let handles = harnesses
             .into_iter()
-            .map(|harness| (harness, scope.spawn(move || probe_harness(harness))))
+            .map(|harness| (harness, scope.spawn(move || probe_fn(harness))))
             .collect::<Vec<_>>();
 
         for (harness, handle) in handles {
@@ -913,7 +948,8 @@ pub(crate) fn probe_supported_harnesses() -> HashMap<AgentHarnessKind, HarnessRu
     tracing::info!(
         harnesses = probes.len(),
         elapsed_ms = started.elapsed().as_millis() as u64,
-        "Harness runtime probe batch completed"
+        operation,
+        "Harness runtime batch completed"
     );
     probes
 }
@@ -944,6 +980,8 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     probe_succeeded: true,
                     available,
                     missing_core_exec_features,
+                    cli_version: capabilities.version.clone(),
+                    supported_model_aliases: None,
                     supported_efforts: None,
                     error,
                 },
@@ -958,6 +996,8 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     probe_succeeded: false,
                     available: false,
                     missing_core_exec_features: Vec::new(),
+                    cli_version: None,
+                    supported_model_aliases: None,
                     supported_efforts: None,
                     error: Some(error),
                 },
@@ -967,6 +1007,8 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     probe_succeeded: false,
                     available: false,
                     missing_core_exec_features: Vec::new(),
+                    cli_version: None,
+                    supported_model_aliases: None,
                     supported_efforts: None,
                     error: Some(error),
                 },
@@ -1294,6 +1336,8 @@ mod tests {
                     probe_succeeded: true,
                     available: true,
                     missing_core_exec_features: Vec::new(),
+                    cli_version: None,
+                    supported_model_aliases: None,
                     supported_efforts: None,
                     error: None,
                 },
@@ -1351,6 +1395,8 @@ mod tests {
             probe_succeeded: true,
             available: true,
             missing_core_exec_features: Vec::new(),
+            cli_version: None,
+            supported_model_aliases: None,
             supported_efforts: None,
             error: None,
         };
@@ -1413,6 +1459,15 @@ esac
 
         assert!(probe.available);
         assert!(probe.probe_succeeded);
+        assert_eq!(probe.cli_version.as_deref(), Some("2.1.142"));
+        assert_eq!(
+            probe.supported_model_aliases,
+            Some(vec![
+                "sonnet".to_string(),
+                "opus".to_string(),
+                "haiku".to_string(),
+            ])
+        );
         assert_eq!(
             probe.supported_efforts,
             Some(vec![
@@ -1546,6 +1601,8 @@ esac
                     probe_succeeded: true,
                     available: true,
                     missing_core_exec_features: Vec::new(),
+                    cli_version: None,
+                    supported_model_aliases: None,
                     supported_efforts: None,
                     error: None,
                 },

@@ -2352,7 +2352,6 @@ async fn test_create_ideation_session_local_branch_provisions_worktree() {
     };
     use ralphx_lib::testing::create_mock_app;
     use std::path::PathBuf;
-    use std::process::Command;
 
     let app = create_mock_app();
     let handle = app.handle().clone();
@@ -2360,16 +2359,7 @@ async fn test_create_ideation_session_local_branch_provisions_worktree() {
     let repo_dir = setup_git_repo_for_apply_test();
     let worktree_parent = tempfile::TempDir::new().unwrap();
 
-    let branch_output = Command::new("git")
-        .args(["branch", "feature/analysis"])
-        .current_dir(repo_dir.path())
-        .output()
-        .expect("create local branch");
-    assert!(
-        branch_output.status.success(),
-        "branch creation failed: {}",
-        String::from_utf8_lossy(&branch_output.stderr)
-    );
+    git_ok(repo_dir.path(), &["branch", "feature/analysis"]);
 
     let mut project = Project::new(
         "Test Project".to_string(),
@@ -2411,18 +2401,8 @@ async fn test_create_ideation_session_local_branch_provisions_worktree() {
     assert!(workspace.is_dir(), "workspace should exist");
     assert_ne!(workspace, repo_dir.path());
 
-    let workspace_branch = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(&workspace)
-        .output()
-        .expect("read worktree branch");
-    assert!(
-        workspace_branch.status.success(),
-        "branch read failed: {}",
-        String::from_utf8_lossy(&workspace_branch.stderr)
-    );
     assert_eq!(
-        String::from_utf8_lossy(&workspace_branch.stdout).trim(),
+        git_stdout(&workspace, &["rev-parse", "--abbrev-ref", "HEAD"]),
         "feature/analysis"
     );
 
@@ -2439,6 +2419,192 @@ async fn test_create_ideation_session_local_branch_provisions_worktree() {
     assert_eq!(
         stored.analysis.workspace_path.as_deref(),
         workspace.to_str()
+    );
+}
+
+#[tokio::test]
+async fn test_create_ideation_session_project_default_locks_main_when_current_branch_differs() {
+    use ralphx_lib::domain::entities::{
+        IdeationAnalysisBaseRefKind, IdeationAnalysisWorkspaceKind,
+    };
+    use ralphx_lib::testing::create_mock_app;
+    use std::path::PathBuf;
+
+    let app = create_mock_app();
+    let handle = app.handle().clone();
+    let state = setup_apply_test_state();
+    let repo_dir = setup_git_repo_for_apply_test();
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+
+    let main_sha = git_stdout(repo_dir.path(), &["rev-parse", "main"]);
+    git_ok(repo_dir.path(), &["checkout", "-b", "pr/366"]);
+    git_ok(
+        repo_dir.path(),
+        &["commit", "--allow-empty", "-m", "pr branch commit"],
+    );
+    let pr_sha = git_stdout(repo_dir.path(), &["rev-parse", "HEAD"]);
+    assert_ne!(main_sha, pr_sha, "test requires divergent current branch");
+
+    let mut project = Project::new(
+        "Test Project".to_string(),
+        repo_dir.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().to_string());
+    let project = state.project_repo.create(project).await.unwrap();
+
+    let result = create_ideation_session_impl(
+        &handle,
+        &state,
+        CreateSessionInput {
+            project_id: project.id.to_string(),
+            title: Some("Main Base Session".to_string()),
+            seed_task_id: None,
+            team_mode: None,
+            team_config: None,
+            analysis_base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            analysis_base_ref: Some("main".to_string()),
+            analysis_base_display_name: Some("Project default (main)".to_string()),
+        },
+    )
+    .await
+    .expect("create session should lock the selected project default branch");
+
+    assert_eq!(
+        result.analysis_base_ref_kind.as_deref(),
+        Some("project_default")
+    );
+    assert_eq!(result.analysis_base_ref.as_deref(), Some("main"));
+    assert_eq!(
+        result.analysis_base_commit.as_deref(),
+        Some(main_sha.as_str())
+    );
+    assert_ne!(
+        result.analysis_base_commit.as_deref(),
+        Some(pr_sha.as_str())
+    );
+    assert_eq!(result.analysis_workspace_kind, "ideation_worktree");
+
+    let workspace = PathBuf::from(
+        result
+            .analysis_workspace_path
+            .as_deref()
+            .expect("workspace path should be persisted"),
+    );
+    assert!(workspace.is_dir(), "workspace should exist");
+    assert_ne!(workspace, repo_dir.path());
+    assert_eq!(
+        git_stdout(&workspace, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "main"
+    );
+    assert_eq!(git_stdout(&workspace, &["rev-parse", "HEAD"]), main_sha);
+
+    let stored = state
+        .ideation_session_repo
+        .get_by_id(&IdeationSessionId::from_string(result.id))
+        .await
+        .expect("load stored ideation session")
+        .expect("stored ideation session should exist");
+    assert_eq!(
+        stored.analysis.base_ref_kind,
+        Some(IdeationAnalysisBaseRefKind::ProjectDefault)
+    );
+    assert_eq!(stored.analysis.base_ref.as_deref(), Some("main"));
+    assert_eq!(
+        stored.analysis.base_commit.as_deref(),
+        Some(main_sha.as_str())
+    );
+    assert_eq!(
+        stored.analysis.workspace_kind,
+        IdeationAnalysisWorkspaceKind::IdeationWorktree
+    );
+}
+
+#[tokio::test]
+async fn test_create_ideation_session_rejects_mislabeled_project_default_ref() {
+    use ralphx_lib::domain::entities::IdeationAnalysisBaseRefKind;
+    use ralphx_lib::testing::create_mock_app;
+
+    let app = create_mock_app();
+    let handle = app.handle().clone();
+    let state = setup_apply_test_state();
+    let repo_dir = setup_git_repo_for_apply_test();
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+
+    git_ok(repo_dir.path(), &["checkout", "-b", "pr/366"]);
+
+    let mut project = Project::new(
+        "Test Project".to_string(),
+        repo_dir.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().to_string());
+    let project = state.project_repo.create(project).await.unwrap();
+
+    let err = create_ideation_session_impl(
+        &handle,
+        &state,
+        CreateSessionInput {
+            project_id: project.id.to_string(),
+            title: Some("Mislabeled Base Session".to_string()),
+            seed_task_id: None,
+            team_mode: None,
+            team_config: None,
+            analysis_base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            analysis_base_ref: Some("pr/366".to_string()),
+            analysis_base_display_name: Some("Project default (main)".to_string()),
+        },
+    )
+    .await
+    .expect_err("project_default ref must match the resolved project default");
+
+    assert!(
+        err.contains("Project default ideation base ref 'pr/366' does not match resolved project default 'main'"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_create_ideation_session_project_default_ignores_blank_ref() {
+    use ralphx_lib::domain::entities::IdeationAnalysisBaseRefKind;
+    use ralphx_lib::testing::create_mock_app;
+
+    let app = create_mock_app();
+    let handle = app.handle().clone();
+    let state = setup_apply_test_state();
+    let repo_dir = setup_git_repo_for_apply_test();
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+
+    let main_sha = git_stdout(repo_dir.path(), &["rev-parse", "main"]);
+    let mut project = Project::new(
+        "Test Project".to_string(),
+        repo_dir.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().to_string());
+    let project = state.project_repo.create(project).await.unwrap();
+
+    let result = create_ideation_session_impl(
+        &handle,
+        &state,
+        CreateSessionInput {
+            project_id: project.id.to_string(),
+            title: Some("Blank Base Ref Session".to_string()),
+            seed_task_id: None,
+            team_mode: None,
+            team_config: None,
+            analysis_base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            analysis_base_ref: Some("   ".to_string()),
+            analysis_base_display_name: Some("Project default (main)".to_string()),
+        },
+    )
+    .await
+    .expect("blank project_default ref should resolve to project default");
+
+    assert_eq!(result.analysis_base_ref.as_deref(), Some("main"));
+    assert_eq!(
+        result.analysis_base_commit.as_deref(),
+        Some(main_sha.as_str())
     );
 }
 
@@ -2472,6 +2638,35 @@ fn setup_git_repo_for_apply_test() -> tempfile::TempDir {
         .output()
         .unwrap();
     dir
+}
+
+fn git_ok(repo: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("run git command");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn git_stdout(repo: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("run git command");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 #[tokio::test]
@@ -2569,6 +2764,7 @@ async fn test_apply_proposals_core_linked_agent_workspace_reuses_conversation_br
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
         },
     )
     .await

@@ -1,7 +1,12 @@
 use crate::application::chat_service::{
-    AgentErrorPayload, AgentRunCompletedPayload, AgentRunStartedPayload,
+    AgentErrorPayload, AgentMessageQueuedPayload, AgentMessageRenderReadyPayload,
+    AgentRunCompletedPayload, AgentRunStartedPayload,
 };
 use crate::domain::agents::AgentHarnessKind;
+use crate::domain::entities::{
+    ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemKind,
+    ChatTimelineItemStatus, MessageRole, ProjectId,
+};
 
 #[test]
 fn agent_run_started_payload_serde_snake_case() {
@@ -152,4 +157,140 @@ fn agent_error_payload_serializes_agent_run_id_for_terminal_correlation() {
 
     assert_eq!(value["agent_run_id"], "run-1");
     assert!(value.get("agentRunId").is_none());
+}
+
+#[test]
+fn agent_message_queued_payload_serializes_attachment_ids() {
+    let payload = AgentMessageQueuedPayload {
+        message_id: "queued-1".to_string(),
+        content: "queued with file".to_string(),
+        context_type: "project".to_string(),
+        context_id: "conversation-1".to_string(),
+        conversation_id: Some("conversation-1".to_string()),
+        created_at: "2026-01-24T10:00:00Z".to_string(),
+        attachment_ids: vec!["att-1".to_string()],
+    };
+
+    let value = serde_json::to_value(&payload).expect("serialization failed");
+
+    assert_eq!(value["attachment_ids"], serde_json::json!(["att-1"]));
+    assert!(value.get("attachmentIds").is_none());
+}
+
+#[test]
+fn message_render_ready_payload_serializes_canonical_message_and_timeline() {
+    let conversation_id = ChatConversationId::from_string("11111111-1111-1111-1111-111111111111");
+    let message_id = ChatMessageId::from_string("msg-1");
+    let content_blocks = serde_json::json!([
+        { "type": "text", "text": "Done" },
+        {
+            "type": "tool_use",
+            "id": "toolu-1",
+            "name": "Read",
+            "arguments": { "file_path": "src/app.ts" },
+            "result": "ok"
+        }
+    ]);
+    let tool_calls = serde_json::json!([
+        {
+            "id": "toolu-1",
+            "name": "Read",
+            "arguments": { "file_path": "src/app.ts" },
+            "result": "ok"
+        }
+    ]);
+    let mut message =
+        ChatMessage::user_in_project(ProjectId::from_string("project-1".to_string()), "Done");
+    message.id = message_id.clone();
+    message.conversation_id = Some(conversation_id.clone());
+    message.role = MessageRole::Orchestrator;
+    message.tool_calls = Some(tool_calls.to_string());
+    message.content_blocks = Some(content_blocks.to_string());
+    message.provider_harness = Some(AgentHarnessKind::Codex);
+    message.provider_session_id = Some("thread-1".to_string());
+
+    let mut item = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        1,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::ToolUse,
+    );
+    item.sequence = 42;
+    item.status = ChatTimelineItemStatus::Finalized;
+    item.tool_call_id = Some("toolu-1".to_string());
+    item.tool_name = Some("Read".to_string());
+    item.input_json = Some(serde_json::json!({ "file_path": "src/app.ts" }).to_string());
+    item.result_json = Some(serde_json::json!("ok").to_string());
+    item.raw_block_json =
+        Some(serde_json::json!({ "diff_context": { "file_path": "src/app.ts" } }).to_string());
+    item.finalized_at = Some(item.updated_at);
+
+    let payload =
+        AgentMessageRenderReadyPayload::from_message_and_timeline_items(&message, vec![item])
+            .expect("payload");
+    let value = serde_json::to_value(payload).expect("serialization failed");
+
+    assert_eq!(value["message"]["id"], "msg-1");
+    assert_eq!(
+        value["message"]["conversation_id"],
+        "11111111-1111-1111-1111-111111111111"
+    );
+    assert_eq!(value["message"]["provider_harness"], "codex");
+    assert_eq!(value["message"]["content_blocks"][0]["text"], "Done");
+    assert_eq!(value["timeline_items"][0]["message_id"], "msg-1");
+    assert_eq!(value["timeline_items"][0]["sequence"], 42);
+    assert_eq!(value["timeline_items"][0]["tool_call"]["id"], "toolu-1");
+    assert_eq!(
+        value["timeline_items"][0]["tool_call"]["detail_ref"]["timeline_item_id"],
+        "block:msg-1:1"
+    );
+    assert_eq!(
+        value["timeline_items"][0]["tool_call"]["diff_context"]["file_path"],
+        "src/app.ts"
+    );
+}
+
+#[test]
+fn message_render_ready_payload_handles_empty_and_text_timeline_items() {
+    let conversation_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    let message_id = ChatMessageId::from_string("msg-text");
+    let mut message =
+        ChatMessage::user_in_project(ProjectId::from_string("project-1".to_string()), "Done");
+    message.id = message_id.clone();
+    message.conversation_id = Some(conversation_id.clone());
+    message.role = MessageRole::Orchestrator;
+    message.tool_calls = Some("not-json".to_string());
+    message.content_blocks = Some("not-json".to_string());
+
+    assert!(AgentMessageRenderReadyPayload::from_message_and_timeline_items(
+        &message,
+        Vec::new()
+    )
+    .is_none());
+
+    let mut item = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::Text,
+    );
+    item.sequence = 7;
+    item.status = ChatTimelineItemStatus::Finalized;
+    item.text = Some("Done".to_string());
+    item.finalized_at = Some(item.updated_at);
+
+    let payload =
+        AgentMessageRenderReadyPayload::from_message_and_timeline_items(&message, vec![item])
+            .expect("payload");
+    let value = serde_json::to_value(payload).expect("serialization failed");
+
+    assert!(value["message"]["tool_calls"].is_null());
+    assert!(value["message"]["content_blocks"].is_null());
+    assert_eq!(value["timeline_items"][0]["kind"], "text");
+    assert_eq!(value["timeline_items"][0]["content"], "Done");
+    assert_eq!(value["timeline_items"][0]["content_blocks"][0]["type"], "text");
+    assert_eq!(value["timeline_items"][0]["content_blocks"][0]["text"], "Done");
+    assert!(value["timeline_items"][0]["tool_call"].is_null());
 }

@@ -26,10 +26,10 @@ function createWrapper() {
 // ============================================================================
 
 describe("isViewEnabled", () => {
-  const allEnabled: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, teamMode: false };
-  const activityDisabled: FeatureFlags = { activityPage: false, extensibilityPage: true, battleMode: true, teamMode: false };
-  const extensibilityDisabled: FeatureFlags = { activityPage: true, extensibilityPage: false, battleMode: true, teamMode: false };
-  const allDisabled: FeatureFlags = { activityPage: false, extensibilityPage: false, battleMode: true, teamMode: false };
+  const allEnabled: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false };
+  const activityDisabled: FeatureFlags = { activityPage: false, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false };
+  const extensibilityDisabled: FeatureFlags = { activityPage: true, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false };
+  const allDisabled: FeatureFlags = { activityPage: false, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false };
 
   it("returns true for kanban regardless of flags", () => {
     expect(isViewEnabled("kanban", allDisabled)).toBe(true);
@@ -85,6 +85,7 @@ describe("useFeatureFlags", () => {
       extensibilityPage: true,
       battleMode: true,
       teamMode: false,
+      atlassianOauth: false,
     });
   });
 
@@ -103,6 +104,7 @@ describe("useFeatureFlags", () => {
       extensibilityPage: true,
       battleMode: true,
       teamMode: false,
+      atlassianOauth: false,
     });
     expect(invoke).toHaveBeenCalledWith("get_ui_feature_flags");
   });
@@ -127,6 +129,7 @@ describe("useFeatureFlags", () => {
       extensibilityPage: true,
       battleMode: true,
       teamMode: false,
+      atlassianOauth: false,
     });
   });
 });

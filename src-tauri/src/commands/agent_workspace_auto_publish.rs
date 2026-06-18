@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -7,10 +6,7 @@ use dashmap::DashMap;
 use serde::Deserialize;
 use tauri::{Emitter, Listener, Manager, Runtime};
 
-use crate::application::agent_conversation_workspace::{
-    is_terminal_agent_conversation_publication_status,
-    resolve_valid_agent_conversation_workspace_path,
-};
+use crate::application::agent_conversation_workspace::is_terminal_agent_conversation_publication_status;
 use crate::application::agent_conversation_workspace_base::{resolve_workspace_base, BaseStatus};
 use crate::application::chat_service::events::{AGENT_RUN_COMPLETED, AGENT_TURN_COMPLETED};
 use crate::application::git_service::git_cmd;
@@ -18,7 +14,10 @@ use crate::application::publish_resilience::{
     count_unpublished_publish_commits, inspect_publish_branch_freshness_for_source_after_fetch,
 };
 use crate::application::{AppState, GitService, TeamService};
-use crate::commands::unified_chat_commands::publish_agent_conversation_workspace_for_app_state;
+use crate::commands::unified_chat_commands::{
+    publish_agent_conversation_workspace_for_app_state, resolve_agent_workspace_publish_target,
+    AgentConversationWorkspacePublishTarget,
+};
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
@@ -65,10 +64,13 @@ enum AutoPublishDecision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutoPublishSkipReason {
+    WorkspaceMissing,
     InactiveWorkspace,
     NotEditWorkspace,
     ExecutionOwnedWorkspace,
     NoExistingPr,
+    InitialPrAutoPublishDisabled,
+    AutoPublishDisabled,
     TerminalPr,
     PublishAlreadyActive,
     NoPendingLocalWork,
@@ -80,10 +82,13 @@ enum AutoPublishSkipReason {
 impl AutoPublishSkipReason {
     fn as_str(self) -> &'static str {
         match self {
+            Self::WorkspaceMissing => "workspace_missing",
             Self::InactiveWorkspace => "inactive_workspace",
             Self::NotEditWorkspace => "not_edit_workspace",
             Self::ExecutionOwnedWorkspace => "execution_owned_workspace",
             Self::NoExistingPr => "no_existing_pr",
+            Self::InitialPrAutoPublishDisabled => "initial_pr_auto_publish_disabled",
+            Self::AutoPublishDisabled => "auto_publish_disabled",
             Self::TerminalPr => "terminal_pr",
             Self::PublishAlreadyActive => "publish_already_active",
             Self::NoPendingLocalWork => "no_pending_local_work",
@@ -94,9 +99,8 @@ impl AutoPublishSkipReason {
     }
 }
 
-/// Register backend-only listeners that continue already-published agent
-/// workspace PRs after an agent turn finishes. First-time PR creation remains a
-/// deliberate user action; this only updates PRs that already exist.
+/// Register backend-only listeners that publish opted-in agent workspaces after
+/// an agent turn finishes, then keep already-published PRs fresh.
 pub(crate) fn install_agent_workspace_auto_publish_listeners<R>(app: &tauri::App<R>)
 where
     R: Runtime,
@@ -350,7 +354,7 @@ where
         .map_err(|error| error.to_string())?
     else {
         return Ok(AutoPublishDecision::Skip(
-            AutoPublishSkipReason::NoExistingPr,
+            AutoPublishSkipReason::WorkspaceMissing,
         ));
     };
 
@@ -364,10 +368,20 @@ where
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
-    let worktree_path = resolve_valid_agent_conversation_workspace_path(&project, &workspace)
-        .await
-        .map_err(|error| error.to_string())?;
-    let facts = collect_auto_publish_facts(&project, &workspace, worktree_path).await?;
+    let publish_target =
+        resolve_agent_workspace_publish_target(state, &project, &workspace).await?;
+    if publish_target.plan_branch.as_ref().is_some()
+        && publish_target
+            .plan_branch
+            .as_ref()
+            .and_then(|branch| branch.pr_number)
+            .is_none()
+    {
+        return Ok(AutoPublishDecision::Skip(
+            AutoPublishSkipReason::NoExistingPr,
+        ));
+    }
+    let facts = collect_auto_publish_facts(&project, &workspace, &publish_target).await?;
     let decision = should_auto_publish_existing_pr(&workspace, facts, trigger);
     if decision != AutoPublishDecision::Publish {
         return Ok(decision);
@@ -426,29 +440,43 @@ async fn publish_was_routed_to_agent_repair(
 async fn collect_auto_publish_facts(
     project: &Project,
     workspace: &AgentConversationWorkspace,
-    worktree_path: PathBuf,
+    publish_target: &AgentConversationWorkspacePublishTarget,
 ) -> Result<AutoPublishFacts, String> {
-    let has_uncommitted_changes = GitService::has_uncommitted_changes(&worktree_path)
+    let worktree_path = &publish_target.worktree_path;
+    let has_uncommitted_changes = GitService::has_uncommitted_changes(worktree_path)
         .await
         .map_err(|error| error.to_string())?;
     let unpublished_commit_count =
-        count_unpublished_publish_commits(&worktree_path, &workspace.branch_name)
+        count_unpublished_publish_commits(worktree_path, &publish_target.branch_name)
             .await
             .map_err(|error| error.to_string())?;
-    let base_resolution = resolve_workspace_base(project, workspace)
-        .await
-        .map_err(|error| error.to_string())?;
-    let base_is_blocked = base_resolution.status == BaseStatus::Blocked;
+    let base_resolution = if workspace.mode == AgentConversationWorkspaceMode::Edit {
+        Some(
+            resolve_workspace_base(project, workspace)
+                .await
+                .map_err(|error| error.to_string())?,
+        )
+    } else {
+        None
+    };
+    let base_is_blocked = base_resolution
+        .as_ref()
+        .is_some_and(|resolution| resolution.status == BaseStatus::Blocked);
     let base_is_ahead = if base_is_blocked {
         false
     } else {
-        let effective_base_ref = base_resolution
-            .effective_checkout_ref()
-            .map_err(|error| error.to_string())?;
+        let effective_base_ref = if let Some(base_resolution) = base_resolution.as_ref() {
+            base_resolution
+                .effective_checkout_ref()
+                .map_err(|error| error.to_string())?
+                .to_string()
+        } else {
+            publish_target.base_ref.clone()
+        };
         inspect_publish_branch_freshness_for_source_after_fetch(
-            &worktree_path,
-            effective_base_ref,
-            &workspace.branch_name,
+            worktree_path,
+            &effective_base_ref,
+            &publish_target.branch_name,
             workspace.base_commit.as_deref(),
         )
         .await
@@ -494,14 +522,24 @@ fn static_auto_publish_skip_reason(
     if workspace.status != AgentConversationWorkspaceStatus::Active {
         return Some(AutoPublishSkipReason::InactiveWorkspace);
     }
-    if workspace.mode != AgentConversationWorkspaceMode::Edit {
+    let linked_ideation_plan_workspace = workspace.mode == AgentConversationWorkspaceMode::Ideation
+        && workspace.linked_plan_branch_id.is_some();
+    if workspace.mode != AgentConversationWorkspaceMode::Edit && !linked_ideation_plan_workspace {
         return Some(AutoPublishSkipReason::NotEditWorkspace);
     }
-    if workspace.is_execution_owned() {
+    if workspace.is_execution_owned() && !linked_ideation_plan_workspace {
         return Some(AutoPublishSkipReason::ExecutionOwnedWorkspace);
     }
     if workspace.publication_pr_number.is_none() {
-        return Some(AutoPublishSkipReason::NoExistingPr);
+        if linked_ideation_plan_workspace {
+            if !workspace.auto_publish_enabled {
+                return Some(AutoPublishSkipReason::AutoPublishDisabled);
+            }
+        } else if !workspace.auto_publish_initial_pr_enabled {
+            return Some(AutoPublishSkipReason::InitialPrAutoPublishDisabled);
+        }
+    } else if !workspace.auto_publish_enabled {
+        return Some(AutoPublishSkipReason::AutoPublishDisabled);
     }
     if is_terminal_agent_conversation_publication_status(workspace.publication_pr_status.as_deref())
     {
@@ -544,8 +582,12 @@ fn begin_auto_publish(conversation_id: &ChatConversationId) -> Option<AutoPublis
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::entities::{IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId};
-    use std::path::Path;
+    use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
+    use crate::domain::entities::{
+        ArtifactId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId,
+        ProjectId,
+    };
+    use std::path::{Path, PathBuf};
     use std::process::Command;
     use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 
@@ -664,9 +706,22 @@ mod tests {
         (root, project, workspace)
     }
 
+    fn publish_target_for_workspace(
+        workspace: &AgentConversationWorkspace,
+    ) -> AgentConversationWorkspacePublishTarget {
+        AgentConversationWorkspacePublishTarget {
+            worktree_path: PathBuf::from(&workspace.worktree_path),
+            branch_name: workspace.branch_name.clone(),
+            base_ref: workspace.base_ref.clone(),
+            base_display_name: workspace.base_display_name.clone(),
+            plan_branch: None,
+        }
+    }
+
     #[test]
     fn skip_reason_strings_are_stable_for_logs() {
         let cases = [
+            (AutoPublishSkipReason::WorkspaceMissing, "workspace_missing"),
             (
                 AutoPublishSkipReason::InactiveWorkspace,
                 "inactive_workspace",
@@ -679,7 +734,14 @@ mod tests {
                 AutoPublishSkipReason::ExecutionOwnedWorkspace,
                 "execution_owned_workspace",
             ),
-            (AutoPublishSkipReason::NoExistingPr, "no_existing_pr"),
+            (
+                AutoPublishSkipReason::InitialPrAutoPublishDisabled,
+                "initial_pr_auto_publish_disabled",
+            ),
+            (
+                AutoPublishSkipReason::AutoPublishDisabled,
+                "auto_publish_disabled",
+            ),
             (AutoPublishSkipReason::TerminalPr, "terminal_pr"),
             (
                 AutoPublishSkipReason::PublishAlreadyActive,
@@ -733,6 +795,16 @@ mod tests {
     }
 
     #[test]
+    fn static_preflight_allows_linked_ideation_plan_workspace() {
+        let mut workspace = workspace();
+        workspace.mode = AgentConversationWorkspaceMode::Ideation;
+        workspace.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-1".to_string()));
+        workspace.publication_pr_number = None;
+
+        assert_eq!(static_auto_publish_skip_reason(&workspace), None);
+    }
+
+    #[test]
     fn static_preflight_skips_terminal_pr() {
         let mut workspace = workspace();
         workspace.publication_pr_status = Some("merged".to_string());
@@ -740,6 +812,17 @@ mod tests {
         assert_eq!(
             static_auto_publish_skip_reason(&workspace),
             Some(AutoPublishSkipReason::TerminalPr)
+        );
+    }
+
+    #[test]
+    fn static_preflight_skips_paused_auto_publish() {
+        let mut workspace = workspace();
+        workspace.auto_publish_enabled = false;
+
+        assert_eq!(
+            static_auto_publish_skip_reason(&workspace),
+            Some(AutoPublishSkipReason::AutoPublishDisabled)
         );
     }
 
@@ -849,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_publish_requires_existing_pr() {
+    fn initial_pr_auto_publish_requires_explicit_opt_in() {
         let mut workspace = workspace();
         workspace.publication_pr_number = None;
 
@@ -866,8 +949,22 @@ mod tests {
 
         assert_eq!(
             decision,
-            AutoPublishDecision::Skip(AutoPublishSkipReason::NoExistingPr)
+            AutoPublishDecision::Skip(AutoPublishSkipReason::InitialPrAutoPublishDisabled)
         );
+    }
+
+    #[test]
+    fn initial_pr_auto_publish_runs_with_explicit_opt_in() {
+        let mut workspace = workspace();
+        workspace.publication_pr_number = None;
+        workspace.auto_publish_initial_pr_enabled = true;
+        let mut facts = facts();
+        facts.has_uncommitted_changes = true;
+
+        let decision =
+            should_auto_publish_existing_pr(&workspace, facts, AutoPublishTrigger::AgentCompletion);
+
+        assert_eq!(decision, AutoPublishDecision::Publish);
     }
 
     #[test]
@@ -1017,7 +1114,7 @@ mod tests {
 
         assert_eq!(
             decision,
-            AutoPublishDecision::Skip(AutoPublishSkipReason::NoExistingPr)
+            AutoPublishDecision::Skip(AutoPublishSkipReason::WorkspaceMissing)
         );
     }
 
@@ -1181,16 +1278,68 @@ mod tests {
         workspace.base_ref = "deleted-base".to_string();
         workspace.base_commit = None;
 
-        let facts = collect_auto_publish_facts(
-            &project,
-            &workspace,
-            PathBuf::from(&workspace.worktree_path),
-        )
-        .await
-        .expect("blocked base should still collect facts");
+        let publish_target = publish_target_for_workspace(&workspace);
+        let facts = collect_auto_publish_facts(&project, &workspace, &publish_target)
+            .await
+            .expect("blocked base should still collect facts");
 
         assert!(facts.base_is_blocked);
         assert!(!facts.base_is_ahead);
+    }
+
+    #[tokio::test]
+    async fn collect_auto_publish_facts_reads_linked_ideation_plan_target() {
+        let (_repo, project, mut workspace) = git_workspace_fixture();
+        let repo_path = Path::new(&project.working_directory);
+        let plan_branch_name = "feature/plan-publish-back";
+        run_git(repo_path, &["checkout", "-b", plan_branch_name]);
+        run_git(repo_path, &["checkout", "main"]);
+
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-plan-publish-back"),
+            IdeationSessionId::from_string("session-plan-publish-back"),
+            project.id.clone(),
+            plan_branch_name.to_string(),
+            "main".to_string(),
+        );
+        plan_branch.id = PlanBranchId::from_string("plan-publish-back");
+        plan_branch.pr_number = Some(77);
+        plan_branch.pr_url = Some("https://github.com/mock/repo/pull/77".to_string());
+        plan_branch.pr_status = Some(PrStatus::Open);
+        plan_branch.pr_push_status = PrPushStatus::Pushed;
+        workspace.mode = AgentConversationWorkspaceMode::Ideation;
+        workspace.linked_plan_branch_id = Some(plan_branch.id.clone());
+        workspace.publication_pr_number = None;
+        let plan_worktree_path =
+            crate::application::agent_conversation_workspace::resolve_linked_plan_branch_agent_worktree_path(
+                &project,
+                &plan_branch,
+            )
+            .expect("linked plan branch worktree path should resolve");
+        GitService::checkout_existing_branch_worktree(
+            repo_path,
+            &plan_worktree_path,
+            plan_branch_name,
+        )
+        .await
+        .expect("linked plan branch worktree should be created");
+        std::fs::write(plan_worktree_path.join("plan-fix.txt"), "pending fix\n")
+            .expect("plan branch fixture change should be written");
+
+        let publish_target = AgentConversationWorkspacePublishTarget {
+            worktree_path: plan_worktree_path,
+            branch_name: plan_branch.branch_name.clone(),
+            base_ref: "main".to_string(),
+            base_display_name: Some("Current branch (main)".to_string()),
+            plan_branch: Some(plan_branch),
+        };
+        let facts = collect_auto_publish_facts(&project, &workspace, &publish_target)
+            .await
+            .expect("linked ideation plan facts should collect from isolated plan worktree");
+
+        assert!(facts.has_uncommitted_changes);
+        assert!(!facts.base_is_ahead);
+        assert!(!facts.base_is_blocked);
     }
 
     #[tokio::test]

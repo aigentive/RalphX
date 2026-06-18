@@ -12,7 +12,13 @@ import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 
 export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/agent-models";
 
-export type AgentArtifactTab = "plan" | "verification" | "proposal" | "tasks" | "publish";
+export type AgentArtifactTab =
+  | "plan"
+  | "verification"
+  | "proposal"
+  | "tasks"
+  | "jira"
+  | "publish";
 export type AgentTaskArtifactMode = "graph" | "kanban";
 export type AgentProjectSort = "latest" | "az" | "za";
 export type AgentSidebarGroupBy = "project" | "publication";
@@ -106,7 +112,7 @@ export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationS
   "uncommitted",
   "unpushed",
 ];
-const AGENT_SESSION_STORE_VERSION = 5;
+const AGENT_SESSION_STORE_VERSION = 6;
 
 function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSelection> {
   if (!value || typeof value !== "object") {

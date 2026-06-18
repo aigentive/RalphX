@@ -14,6 +14,7 @@ describe("QueuedMessage", () => {
     content: "This is a test message",
     createdAt: new Date().toISOString(),
     isEditing: false,
+    attachmentIds: [],
     ...overrides,
   });
 
@@ -63,6 +64,31 @@ describe("QueuedMessage", () => {
     expect(onDelete).toHaveBeenCalledWith("test-message-1");
   });
 
+  it("calls onSendNow when send now button is clicked", async () => {
+    const user = userEvent.setup();
+    const message = createMockMessage({ attachmentIds: ["att-1"] });
+    const onEdit = vi.fn();
+    const onDelete = vi.fn();
+    const onSendNow = vi.fn();
+
+    render(
+      <QueuedMessage
+        message={message}
+        onEdit={onEdit}
+        onDelete={onDelete}
+        onSendNow={onSendNow}
+      />
+    );
+
+    await user.click(screen.getByTestId("queued-message-send-now"));
+
+    expect(onSendNow).toHaveBeenCalledWith(
+      "test-message-1",
+      "This is a test message",
+      ["att-1"]
+    );
+  });
+
   it("enters edit mode when edit button is clicked", async () => {
     const user = userEvent.setup();
     const message = createMockMessage();
@@ -109,7 +135,40 @@ describe("QueuedMessage", () => {
 
     await user.click(screen.getByTestId("queued-message-save"));
 
-    expect(onEdit).toHaveBeenCalledWith("test-message-1", "Updated message");
+    expect(onEdit).toHaveBeenCalledWith("test-message-1", "Updated message", []);
+  });
+
+  it("renders queued attachment count", () => {
+    const message = createMockMessage({ attachmentIds: ["att-1", "att-2"] });
+    const onEdit = vi.fn();
+    const onDelete = vi.fn();
+
+    render(<QueuedMessage message={message} onEdit={onEdit} onDelete={onDelete} />);
+
+    expect(screen.getByTestId("queued-message-attachment-count")).toHaveTextContent(
+      "2 attachments"
+    );
+  });
+
+  it("passes attachment IDs when saving an edit", async () => {
+    const user = userEvent.setup();
+    const message = createMockMessage({ attachmentIds: ["att-1"] });
+    const onEdit = vi.fn();
+    const onDelete = vi.fn();
+
+    render(<QueuedMessage message={message} onEdit={onEdit} onDelete={onDelete} />);
+
+    await user.click(screen.getByTestId("queued-message-edit"));
+    const input = screen.getByTestId("queued-message-edit-input");
+    await user.clear(input);
+    await user.type(input, "Updated with attachment");
+    await user.click(screen.getByTestId("queued-message-save"));
+
+    expect(onEdit).toHaveBeenCalledWith(
+      "test-message-1",
+      "Updated with attachment",
+      ["att-1"]
+    );
   });
 
   it("cancels edit mode when cancel button is clicked", async () => {
@@ -153,7 +212,7 @@ describe("QueuedMessage", () => {
     await user.type(input, "Enter saves this");
     await user.keyboard("{Enter}");
 
-    expect(onEdit).toHaveBeenCalledWith("test-message-1", "Enter saves this");
+    expect(onEdit).toHaveBeenCalledWith("test-message-1", "Enter saves this", []);
   });
 
   it("cancels edit when Escape is pressed", async () => {
@@ -278,7 +337,7 @@ describe("QueuedMessage", () => {
 
     await user.click(screen.getByTestId("queued-message-save"));
 
-    expect(onEdit).toHaveBeenCalledWith("test-message-1", "Trimmed content");
+    expect(onEdit).toHaveBeenCalledWith("test-message-1", "Trimmed content", []);
   });
 
   it("renders long messages as an excerpt in read-only mode", () => {

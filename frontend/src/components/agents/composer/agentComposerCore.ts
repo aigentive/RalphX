@@ -1,15 +1,40 @@
-export type AgentComposerTriggerKind = "path" | "skill" | "slash-command";
+export type AgentComposerTriggerKind =
+  | "path"
+  | "plan"
+  | "skill"
+  | "slash-command"
+  | "integration";
+export type AgentComposerIntegrationKind = "jira" | "confluence";
 
 export interface AgentComposerTrigger {
   kind: AgentComposerTriggerKind;
   query: string;
   rangeStart: number;
   rangeEnd: number;
+  integrationKind?: AgentComposerIntegrationKind;
 }
 
 export interface AgentComposerProjectReference {
   path: string;
   kind?: "file" | "directory";
+}
+
+export interface AgentComposerIntegrationReference {
+  provider: "atlassian";
+  kind: AgentComposerIntegrationKind;
+  id: string;
+  key?: string;
+  title?: string;
+  url?: string;
+}
+
+export interface AgentComposerArtifactReference {
+  artifactId: string;
+  kind: "plan" | string;
+  title?: string;
+  sessionId?: string;
+  version?: number;
+  status?: string;
 }
 
 const TOKEN_BOUNDARY_PATTERN = /\s/;
@@ -31,6 +56,15 @@ export function detectAgentComposerTrigger(
     };
   }
 
+  const integrationTrigger = detectIntegrationTriggerInLine(
+    linePrefix,
+    lineStart,
+    safeCursor,
+  );
+  if (integrationTrigger) {
+    return integrationTrigger;
+  }
+
   const tokenStart = findCurrentTokenStart(text, safeCursor);
   const token = text.slice(tokenStart, safeCursor);
   const pathIndex = token.lastIndexOf("@");
@@ -45,6 +79,27 @@ export function detectAgentComposerTrigger(
   const query = text.slice(rangeStart + 1, safeCursor);
   if (query.includes("@") || query.includes("$")) {
     return null;
+  }
+  if (marker === "@") {
+    const planTrigger = parsePlanTriggerQuery(query);
+    if (planTrigger) {
+      return {
+        kind: "plan",
+        query: planTrigger.query,
+        rangeStart,
+        rangeEnd: safeCursor,
+      };
+    }
+    const integrationTrigger = parseIntegrationTriggerQuery(query);
+    if (integrationTrigger) {
+      return {
+        kind: "integration",
+        query: integrationTrigger.query,
+        integrationKind: integrationTrigger.kind,
+        rangeStart,
+        rangeEnd: safeCursor,
+      };
+    }
   }
 
   return {
@@ -87,10 +142,56 @@ export function extractComposerPathTokens(text: string): AgentComposerProjectRef
   const references = new Map<string, AgentComposerProjectReference>();
   for (const match of text.matchAll(/@([^\s]+)/g)) {
     const rawPath = match[1]?.replace(/[),.;:]+$/g, "");
-    if (!rawPath || rawPath.includes("\0")) {
+    if (
+      !rawPath ||
+      rawPath.includes("\0") ||
+      isIntegrationReferenceToken(rawPath) ||
+      isPlanReferenceToken(rawPath)
+    ) {
       continue;
     }
     references.set(rawPath, { path: rawPath });
+  }
+  return [...references.values()];
+}
+
+export function extractComposerIntegrationTokens(
+  text: string,
+): AgentComposerIntegrationReference[] {
+  const references = new Map<string, AgentComposerIntegrationReference>();
+  for (const match of text.matchAll(/@(jira|confluence|conf):([^\s]+)/gi)) {
+    const rawKind = match[1]?.toLowerCase();
+    const rawId = match[2]?.replace(/[),.;]+$/g, "");
+    if (!rawKind || !rawId || rawId.includes("\0")) {
+      continue;
+    }
+    const kind: AgentComposerIntegrationKind =
+      rawKind === "jira" ? "jira" : "confluence";
+    const id = kind === "jira" ? rawId.toUpperCase() : rawId;
+    const reference: AgentComposerIntegrationReference = {
+      provider: "atlassian",
+      kind,
+      id,
+      ...(kind === "jira" ? { key: id } : {}),
+    };
+    references.set(`${kind}:${id}`, reference);
+  }
+  return [...references.values()];
+}
+
+export function extractComposerArtifactTokens(
+  text: string,
+): AgentComposerArtifactReference[] {
+  const references = new Map<string, AgentComposerArtifactReference>();
+  for (const match of text.matchAll(/@plan:([^\s]+)/gi)) {
+    const rawId = match[1]?.replace(/[),.;]+$/g, "");
+    if (!rawId || rawId.includes("\0")) {
+      continue;
+    }
+    references.set(`plan:${rawId}`, {
+      artifactId: rawId,
+      kind: "plan",
+    });
   }
   return [...references.values()];
 }
@@ -111,6 +212,44 @@ export function appendInternalSkillDirectives(
   return `${text.trimEnd()}\n\n${directives}`;
 }
 
+export function normalizeComposerArtifactReferences(
+  references: readonly AgentComposerArtifactReference[],
+): AgentComposerArtifactReference[] {
+  const safeReferences = new Map<string, AgentComposerArtifactReference>();
+  for (const reference of references) {
+    const artifactId = reference.artifactId.trim();
+    const kind = reference.kind.trim() || "plan";
+    if (
+      !artifactId ||
+      artifactId.includes("\n") ||
+      artifactId.includes("\r") ||
+      artifactId.includes("\0") ||
+      kind.includes("\n") ||
+      kind.includes("\r") ||
+      kind.includes("\0")
+    ) {
+      continue;
+    }
+    const version =
+      typeof reference.version === "number" && Number.isFinite(reference.version)
+        ? reference.version
+        : undefined;
+    const key = `${kind}:${artifactId}:${version ?? ""}`;
+    if (safeReferences.has(key)) {
+      continue;
+    }
+    safeReferences.set(key, {
+      artifactId,
+      kind,
+      ...(reference.title?.trim() ? { title: reference.title.trim() } : {}),
+      ...(reference.sessionId?.trim() ? { sessionId: reference.sessionId.trim() } : {}),
+      ...(version !== undefined ? { version } : {}),
+      ...(reference.status?.trim() ? { status: reference.status.trim() } : {}),
+    });
+  }
+  return [...safeReferences.values()];
+}
+
 export function normalizeComposerProjectReferences(
   references: readonly AgentComposerProjectReference[],
 ): AgentComposerProjectReference[] {
@@ -126,6 +265,110 @@ export function normalizeComposerProjectReferences(
     );
   }
   return [...safeReferences.values()];
+}
+
+export function normalizeComposerIntegrationReferences(
+  references: readonly AgentComposerIntegrationReference[],
+): AgentComposerIntegrationReference[] {
+  const safeReferences = new Map<string, AgentComposerIntegrationReference>();
+  for (const reference of references) {
+    if (reference.provider !== "atlassian") {
+      continue;
+    }
+    const id = reference.id.trim();
+    if (
+      !id ||
+      id.includes("\n") ||
+      id.includes("\r") ||
+      id.includes("\0") ||
+      (reference.kind !== "jira" && reference.kind !== "confluence")
+    ) {
+      continue;
+    }
+    const key = reference.kind === "jira" ? (reference.key ?? id).trim() : undefined;
+    safeReferences.set(`${reference.kind}:${id}`, {
+      provider: "atlassian",
+      kind: reference.kind,
+      id,
+      ...(key ? { key } : {}),
+      ...(reference.title ? { title: reference.title.trim() } : {}),
+      ...(reference.url ? { url: reference.url.trim() } : {}),
+    });
+  }
+  return [...safeReferences.values()];
+}
+
+function parseIntegrationTriggerQuery(
+  query: string,
+): { kind: AgentComposerIntegrationKind; query: string } | null {
+  const match = /^(jira|confluence|conf):(.*)$/i.exec(query);
+  if (!match) {
+    return null;
+  }
+  const kind = match[1]?.toLowerCase() === "jira" ? "jira" : "confluence";
+  return { kind, query: match[2] ?? "" };
+}
+
+function parsePlanTriggerQuery(query: string): { query: string } | null {
+  const match = /^plan:(.*)$/i.exec(query);
+  if (!match) {
+    return null;
+  }
+  return { query: match[1] ?? "" };
+}
+
+function isIntegrationReferenceToken(token: string): boolean {
+  return /^(jira|confluence|conf):/i.test(token);
+}
+
+function isPlanReferenceToken(token: string): boolean {
+  return /^plan:/i.test(token);
+}
+
+function detectIntegrationTriggerInLine(
+  linePrefix: string,
+  lineStart: number,
+  safeCursor: number,
+): AgentComposerTrigger | null {
+  const triggerPattern = /(^|[\s([{`'"])@(jira|confluence|conf):/gi;
+  let lastMatch:
+    | {
+        markerIndex: number;
+        rawKind: string;
+      }
+    | null = null;
+
+  for (const match of linePrefix.matchAll(triggerPattern)) {
+    const boundary = match[1] ?? "";
+    const rawKind = match[2];
+    if (!rawKind || match.index === undefined) {
+      continue;
+    }
+    lastMatch = {
+      markerIndex: match.index + boundary.length,
+      rawKind,
+    };
+  }
+
+  if (!lastMatch) {
+    return null;
+  }
+
+  const rangeStart = lineStart + lastMatch.markerIndex;
+  const queryStart = lastMatch.markerIndex + `@${lastMatch.rawKind}:`.length;
+  const query = linePrefix.slice(queryStart);
+  if (query.includes("@") || query.includes("$")) {
+    return null;
+  }
+
+  return {
+    kind: "integration",
+    integrationKind:
+      lastMatch.rawKind.toLowerCase() === "jira" ? "jira" : "confluence",
+    query,
+    rangeStart,
+    rangeEnd: safeCursor,
+  };
 }
 
 function findCurrentTokenStart(text: string, cursor: number): number {

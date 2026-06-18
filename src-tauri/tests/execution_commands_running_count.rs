@@ -780,6 +780,7 @@ fn make_ideation_session(session_id: &str, project_id: &ProjectId) -> IdeationSe
         spawn_reason: None,
         blocker_fingerprint: None,
         session_purpose: Default::default(),
+        session_flow: Default::default(),
         cross_project_checked: true,
         plan_version_last_read: None,
         origin: Default::default(),

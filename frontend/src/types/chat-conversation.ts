@@ -58,7 +58,9 @@ export type ConversationProviderMetadata = {
 export const AGENT_CONVERSATION_MODE_VALUES = [
   "chat",
   "edit",
+  "plan",
   "ideation",
+  "review_pr",
 ] as const;
 export const AgentConversationModeSchema = z.enum(
   AGENT_CONVERSATION_MODE_VALUES
@@ -81,7 +83,12 @@ export const ChatConversationSchema = z.object({
   providerHarness: ProviderHarnessSchema.nullable(),
   upstreamProvider: z.string().nullable().optional(),
   providerProfile: z.string().nullable().optional(),
+  logicalModel: z.string().nullable().optional(),
+  effectiveModelId: z.string().nullable().optional(),
+  logicalEffort: z.string().nullable().optional(),
+  effectiveEffort: z.string().nullable().optional(),
   agentMode: AgentConversationModeSchema.nullable().optional(),
+  parentConversationId: z.string().nullable().optional(),
   title: z.string().nullable(),
   messageCount: z.number().int().min(0),
   lastMessageAt: z.string().datetime().nullable(),

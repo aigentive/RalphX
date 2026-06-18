@@ -119,6 +119,7 @@ describe("RepositorySettingsSection", () => {
         fetchKind: "SSH",
         pushKind: "SSH",
         mixedAuthModes: false,
+        githubHttpsCredentialHelperConfigured: false,
         canSwitchToSsh: false,
         suggestedSshUrl: null,
       },
@@ -211,7 +212,7 @@ describe("RepositorySettingsSection", () => {
     expect(screen.getByText("Not authenticated")).toBeInTheDocument();
   });
 
-  it("does not show a generic git repair warning for all-SSH remotes when PR mode is disabled", () => {
+  it("shows git auth panel for all-SSH remotes in settings (showWhenHealthy) without a generic repair warning", () => {
     vi.mocked(useGhAuthStatus).mockReturnValue({
       data: false,
       isLoading: false,
@@ -221,7 +222,7 @@ describe("RepositorySettingsSection", () => {
 
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 
-    expect(screen.queryByTestId("git-auth-repair-panel")).not.toBeInTheDocument();
+    expect(screen.getByTestId("git-auth-repair-panel")).toBeInTheDocument();
     expect(screen.queryByText(/GitHub CLI is not authenticated/i)).not.toBeInTheDocument();
   });
 
@@ -288,6 +289,7 @@ describe("RepositorySettingsSection", () => {
         fetchKind: "HTTPS",
         pushKind: "SSH",
         mixedAuthModes: true,
+        githubHttpsCredentialHelperConfigured: false,
         canSwitchToSsh: true,
         suggestedSshUrl: "git@github.com:user/repo.git",
       },
@@ -312,6 +314,7 @@ describe("RepositorySettingsSection", () => {
         fetchKind: "HTTPS",
         pushKind: "HTTPS",
         mixedAuthModes: false,
+        githubHttpsCredentialHelperConfigured: false,
         canSwitchToSsh: true,
         suggestedSshUrl: "git@github.com:user/repo.git",
       },
@@ -342,6 +345,7 @@ describe("RepositorySettingsSection", () => {
         fetchKind: "SSH",
         pushKind: "SSH",
         mixedAuthModes: false,
+        githubHttpsCredentialHelperConfigured: false,
         canSwitchToSsh: false,
         suggestedSshUrl: null,
       },
@@ -359,6 +363,7 @@ describe("RepositorySettingsSection", () => {
         fetchKind: "HTTPS",
         pushKind: "SSH",
         mixedAuthModes: true,
+        githubHttpsCredentialHelperConfigured: false,
         canSwitchToSsh: true,
         suggestedSshUrl: "git@github.com:user/repo.git",
       },

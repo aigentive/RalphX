@@ -1,7 +1,8 @@
+use crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests;
 use crate::application::{harness_runtime_registry::HarnessRuntimeProbe, AppState, AGENT_LANES};
 use crate::domain::agents::{
-    AgentHarnessKind, AgentLane, AgentProviderSettings, LogicalEffort,
-    CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
+    AgentHarnessKind, AgentLane, AgentProviderCliManagementMode, AgentProviderSettings,
+    LogicalEffort, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
 use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
 use std::collections::HashMap;
@@ -26,6 +27,8 @@ fn input(provider: &str) -> UpdateAgentProviderSettingsInput {
         claude_permission_mode: None,
         claude_dangerously_skip_permissions: None,
         claude_allow_dangerously_skip_permissions: None,
+        cli_management_mode: None,
+        auto_update_enabled: None,
         reset_to_defaults: false,
         apply_to_all_lanes: false,
     }
@@ -38,6 +41,8 @@ fn ready_probe(path: &str) -> HarnessRuntimeProbe {
         probe_succeeded: true,
         available: true,
         missing_core_exec_features: Vec::new(),
+        cli_version: None,
+        supported_model_aliases: None,
         supported_efforts: None,
         error: None,
     }
@@ -165,6 +170,57 @@ fn merge_locks_codex_policy_and_sandbox_to_mcp_required_defaults() {
 }
 
 #[test]
+fn merge_accepts_rx_managed_cli_auto_update_policy() {
+    let settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    let next = UpdateAgentProviderSettingsInput {
+        cli_management_mode: Some("rx_managed".to_string()),
+        auto_update_enabled: Some(true),
+        ..input("codex")
+    };
+
+    let merged = merge_input(settings, next, true).expect("merge settings");
+
+    assert_eq!(
+        merged.cli_management_mode,
+        AgentProviderCliManagementMode::RxManaged
+    );
+    assert!(merged.auto_update_enabled);
+}
+
+#[test]
+fn merge_clears_auto_update_when_cli_is_user_managed() {
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
+    settings.auto_update_enabled = true;
+    let next = UpdateAgentProviderSettingsInput {
+        cli_management_mode: Some("user_managed".to_string()),
+        auto_update_enabled: Some(true),
+        ..input("claude")
+    };
+
+    let merged = merge_input(settings, next, true).expect("merge settings");
+
+    assert_eq!(
+        merged.cli_management_mode,
+        AgentProviderCliManagementMode::UserManaged
+    );
+    assert!(!merged.auto_update_enabled);
+}
+
+#[test]
+fn merge_rejects_invalid_cli_management_mode() {
+    let settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    let next = UpdateAgentProviderSettingsInput {
+        cli_management_mode: Some("system".to_string()),
+        ..input("codex")
+    };
+
+    let err = merge_input(settings, next, true).expect_err("mode should fail");
+
+    assert!(err.contains("Invalid provider CLI management mode"));
+}
+
+#[test]
 fn merge_reset_to_defaults_preserves_enabled_and_default_state() {
     let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
     settings.enabled = true;
@@ -173,6 +229,8 @@ fn merge_reset_to_defaults_preserves_enabled_and_default_state() {
     settings.effort = Some(LogicalEffort::Max);
     settings.claude_permission_mode = Some("acceptEdits".to_string());
     settings.claude_dangerously_skip_permissions = false;
+    settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
+    settings.auto_update_enabled = true;
     let next = UpdateAgentProviderSettingsInput {
         reset_to_defaults: true,
         ..input("claude")
@@ -189,6 +247,11 @@ fn merge_reset_to_defaults_preserves_enabled_and_default_state() {
         Some("bypassPermissions")
     );
     assert!(merged.claude_dangerously_skip_permissions);
+    assert_eq!(
+        merged.cli_management_mode,
+        AgentProviderCliManagementMode::UserManaged
+    );
+    assert!(!merged.auto_update_enabled);
 }
 
 #[test]
@@ -284,6 +347,8 @@ fn response_maps_settings_and_probe_fields() {
     settings.is_default = true;
     settings.approval_policy = Some("never".to_string());
     settings.sandbox_mode = Some("danger-full-access".to_string());
+    settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
+    settings.auto_update_enabled = true;
     let response = to_response(
         settings,
         HarnessRuntimeProbe {
@@ -292,6 +357,8 @@ fn response_maps_settings_and_probe_fields() {
             probe_succeeded: true,
             available: true,
             missing_core_exec_features: vec!["exec".to_string()],
+            cli_version: Some("2.1.170".to_string()),
+            supported_model_aliases: Some(vec!["sonnet".to_string(), "fable".to_string()]),
             supported_efforts: Some(vec!["low".to_string(), "medium".to_string()]),
             error: None,
         },
@@ -304,6 +371,8 @@ fn response_maps_settings_and_probe_fields() {
     assert_eq!(response.effort.as_deref(), Some("xhigh"));
     assert_eq!(response.approval_policy.as_deref(), Some("never"));
     assert_eq!(response.sandbox_mode.as_deref(), Some("danger-full-access"));
+    assert_eq!(response.cli_management_mode, "rx_managed");
+    assert!(response.auto_update_enabled);
     assert!(response.available);
     assert!(response.binary_found);
     assert_eq!(
@@ -317,6 +386,11 @@ fn response_maps_settings_and_probe_fields() {
     assert_eq!(
         response.missing_core_exec_features,
         vec!["exec".to_string()]
+    );
+    assert_eq!(response.cli_version.as_deref(), Some("2.1.170"));
+    assert_eq!(
+        response.supported_model_aliases,
+        Some(vec!["sonnet".to_string(), "fable".to_string()])
     );
     assert_eq!(
         response.supported_efforts,
@@ -425,6 +499,8 @@ async fn update_settings_saves_default_and_applies_lanes_with_ready_probe() {
         effort: Some("high".to_string()),
         approval_policy: Some("never".to_string()),
         sandbox_mode: Some("danger-full-access".to_string()),
+        cli_management_mode: Some("rx_managed".to_string()),
+        auto_update_enabled: Some(true),
         apply_to_all_lanes: true,
         ..input("codex")
     };
@@ -435,6 +511,13 @@ async fn update_settings_saves_default_and_applies_lanes_with_ready_probe() {
 
     assert_eq!(response.default_provider.as_deref(), Some("codex"));
     assert!(!response.requires_onboarding);
+    let codex = response
+        .providers
+        .iter()
+        .find(|provider| provider.provider == "codex")
+        .expect("codex provider");
+    assert_eq!(codex.cli_management_mode, "rx_managed");
+    assert!(codex.auto_update_enabled);
     for lane in AGENT_LANES {
         let stored = state
             .agent_lane_settings_repo
@@ -446,6 +529,53 @@ async fn update_settings_saves_default_and_applies_lanes_with_ready_probe() {
         assert_eq!(stored.settings.model.as_deref(), Some("gpt-5.4"));
         assert_eq!(stored.settings.effort, Some(LogicalEffort::High));
     }
+}
+
+#[tokio::test]
+async fn update_settings_reprobes_managed_cli_after_mode_switch() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let missing_codex_path = temp_dir.path().join("missing-codex");
+    let _override = override_managed_codex_binary_path_for_tests(missing_codex_path.clone());
+    let state = AppState::new_test();
+    let mut stored = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    stored.enabled = true;
+    stored.is_default = true;
+    stored.cli_management_mode = AgentProviderCliManagementMode::UserManaged;
+    state
+        .agent_provider_settings_repo
+        .upsert(&stored)
+        .await
+        .expect("save existing provider");
+    let probes = HashMap::from([
+        (AgentHarnessKind::Codex, ready_probe("/usr/bin/codex")),
+        (AgentHarnessKind::Claude, ready_probe("/usr/bin/claude")),
+    ]);
+    let next = UpdateAgentProviderSettingsInput {
+        cli_management_mode: Some("rx_managed".to_string()),
+        auto_update_enabled: Some(false),
+        ..input("codex")
+    };
+
+    let response = update_provider_settings_with_probes(next, &state, &probes)
+        .await
+        .expect("update provider settings");
+
+    let codex = response
+        .providers
+        .iter()
+        .find(|provider| provider.provider == "codex")
+        .expect("codex provider");
+    assert_eq!(codex.cli_management_mode, "rx_managed");
+    assert!(codex.enabled);
+    assert!(!codex.available);
+    assert_eq!(
+        codex.binary_path.as_deref(),
+        Some(missing_codex_path.to_string_lossy().as_ref())
+    );
+    assert_eq!(codex.status, "RX-managed Codex is not installed.");
 }
 
 #[tokio::test]

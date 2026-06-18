@@ -22,6 +22,9 @@ import {
   chatKeys,
   getCachedConversationMessages,
   invalidateConversationDataQueries,
+  upsertFinalizedMessageIntoConversationCache,
+  upsertRenderReadyMessageIntoConversationCache,
+  type RenderReadyMessageCreatedPayload,
 } from "@/hooks/useChat";
 import { conversationStatsKey } from "@/hooks/useConversationStats";
 import { getContextConfig } from "@/lib/chat-context-registry";
@@ -29,6 +32,9 @@ import { isProviderRole } from "@/lib/chat/provider-role";
 import type { ContextType } from "@/types/chat-conversation";
 import type { AgentRunCompletedPayload } from "@/types/events";
 import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
+import type { ChatMessageResponse } from "@/api/chat";
+import { FileDiffSchema, transformFileDiff, type FileDiff } from "@/api/diff";
+import type { ContentBlockItem } from "@/components/Chat/MessageItem";
 import type { StreamingTask, StreamingContentBlock } from "@/types/streaming-task";
 import type { Unsubscribe } from "@/lib/event-bus";
 import { useChatStore } from "@/stores/chatStore";
@@ -144,6 +150,18 @@ type ToolResultPreviewMetadata = {
   resultPreviewLineCount?: unknown;
   result_preview_omitted_lines?: unknown;
   resultPreviewOmittedLines?: unknown;
+  result_preview_paths?: unknown;
+  resultPreviewPaths?: unknown;
+  arguments_preview_truncated?: unknown;
+  argumentsPreviewTruncated?: unknown;
+  arguments_preview_original_bytes?: unknown;
+  argumentsPreviewOriginalBytes?: unknown;
+  arguments_preview_line_count?: unknown;
+  argumentsPreviewLineCount?: unknown;
+  arguments_preview_omitted_lines?: unknown;
+  argumentsPreviewOmittedLines?: unknown;
+  diff_preview?: unknown;
+  diffPreview?: unknown;
   detail_ref?: unknown;
   detailRef?: unknown;
 };
@@ -155,6 +173,17 @@ function getNumberMetadata(
 ): number | undefined {
   const value = metadata[snakeKey] ?? metadata[camelKey];
   return typeof value === "number" ? value : undefined;
+}
+
+function getStringArrayMetadata(
+  metadata: ToolResultPreviewMetadata,
+  snakeKey: keyof ToolResultPreviewMetadata,
+  camelKey: keyof ToolResultPreviewMetadata,
+): string[] | undefined {
+  const value = metadata[snakeKey] ?? metadata[camelKey];
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? value
+    : undefined;
 }
 
 function normalizeStreamingToolDetailRef(raw: unknown): ToolCall["detailRef"] | undefined {
@@ -178,6 +207,11 @@ function normalizeStreamingToolDetailRef(raw: unknown): ToolCall["detailRef"] | 
     detailRef.contentBlockIndex = contentBlockIndex;
   }
   return detailRef;
+}
+
+function normalizeStreamingDiffPreview(raw: unknown): FileDiff | undefined {
+  const parsed = FileDiffSchema.safeParse(raw);
+  return parsed.success ? transformFileDiff(parsed.data) : undefined;
 }
 
 function applyBackendToolResultPreviewMetadata(
@@ -204,12 +238,65 @@ function applyBackendToolResultPreviewMetadata(
   if (originalBytes != null) toolCall.resultPreviewOriginalBytes = originalBytes;
   if (lineCount != null) toolCall.resultPreviewLineCount = lineCount;
   if (omittedLines != null) toolCall.resultPreviewOmittedLines = omittedLines;
+  const previewPaths = getStringArrayMetadata(
+    metadata,
+    "result_preview_paths",
+    "resultPreviewPaths",
+  );
+  if (previewPaths != null) {
+    toolCall.resultPreviewPaths = previewPaths;
+  } else {
+    delete toolCall.resultPreviewPaths;
+  }
 
   const detailRef = normalizeStreamingToolDetailRef(metadata.detail_ref ?? metadata.detailRef);
   if (detailRef) {
     toolCall.detailRef = detailRef;
-  } else {
+  } else if (!toolCall.argumentsPreviewTruncated) {
     delete toolCall.detailRef;
+  }
+}
+
+function applyBackendToolArgumentPreviewMetadata(
+  toolCall: ToolCall,
+  metadata: ToolResultPreviewMetadata,
+) {
+  if (
+    metadata.arguments_preview_truncated !== true
+    && metadata.argumentsPreviewTruncated !== true
+  ) {
+    return;
+  }
+
+  toolCall.argumentsPreviewTruncated = true;
+
+  const originalBytes = getNumberMetadata(
+    metadata,
+    "arguments_preview_original_bytes",
+    "argumentsPreviewOriginalBytes",
+  );
+  const lineCount = getNumberMetadata(
+    metadata,
+    "arguments_preview_line_count",
+    "argumentsPreviewLineCount",
+  );
+  const omittedLines = getNumberMetadata(
+    metadata,
+    "arguments_preview_omitted_lines",
+    "argumentsPreviewOmittedLines",
+  );
+  if (originalBytes != null) toolCall.argumentsPreviewOriginalBytes = originalBytes;
+  if (lineCount != null) toolCall.argumentsPreviewLineCount = lineCount;
+  if (omittedLines != null) toolCall.argumentsPreviewOmittedLines = omittedLines;
+
+  const diffPreview = normalizeStreamingDiffPreview(metadata.diff_preview ?? metadata.diffPreview);
+  if (diffPreview) {
+    toolCall.diffPreview = diffPreview;
+  }
+
+  const detailRef = normalizeStreamingToolDetailRef(metadata.detail_ref ?? metadata.detailRef);
+  if (detailRef) {
+    toolCall.detailRef = detailRef;
   }
 }
 
@@ -234,7 +321,10 @@ function applyToolCallResultPreview(
     toolCall.resultPreviewOriginalBytes = preview.resultPreviewOriginalBytes;
     toolCall.resultPreviewLineCount = preview.resultPreviewLineCount;
     toolCall.resultPreviewOmittedLines = preview.resultPreviewOmittedLines;
-    delete toolCall.detailRef;
+    delete toolCall.resultPreviewPaths;
+    if (!toolCall.argumentsPreviewTruncated) {
+      delete toolCall.detailRef;
+    }
     return;
   }
 
@@ -243,7 +333,159 @@ function applyToolCallResultPreview(
   delete toolCall.resultPreviewOriginalBytes;
   delete toolCall.resultPreviewLineCount;
   delete toolCall.resultPreviewOmittedLines;
-  delete toolCall.detailRef;
+  delete toolCall.resultPreviewPaths;
+  if (!toolCall.argumentsPreviewTruncated) {
+    delete toolCall.detailRef;
+  }
+}
+
+type AgentMessageCreatedPayload = {
+  conversation_id?: string;
+  context_id?: string;
+  context_type?: string;
+  role?: string;
+  message_id?: string;
+  content?: string;
+  created_at?: string;
+  metadata?: string | null;
+  render_ready?: RenderReadyMessageCreatedPayload | null;
+};
+
+function contentBlockFromToolCall(toolCall: ToolCall): ContentBlockItem {
+  return {
+    type: "tool_use",
+    id: toolCall.id,
+    name: toolCall.name,
+    arguments: toolCall.arguments,
+    ...(toolCall.result !== undefined ? { result: toolCall.result } : {}),
+    ...(toolCall.resultPreviewTruncated !== undefined
+      ? { resultPreviewTruncated: toolCall.resultPreviewTruncated }
+      : {}),
+    ...(toolCall.resultPreviewOriginalBytes !== undefined
+      ? { resultPreviewOriginalBytes: toolCall.resultPreviewOriginalBytes }
+      : {}),
+    ...(toolCall.resultPreviewLineCount !== undefined
+      ? { resultPreviewLineCount: toolCall.resultPreviewLineCount }
+      : {}),
+    ...(toolCall.resultPreviewOmittedLines !== undefined
+      ? { resultPreviewOmittedLines: toolCall.resultPreviewOmittedLines }
+      : {}),
+    ...(toolCall.argumentsPreviewTruncated !== undefined
+      ? { argumentsPreviewTruncated: toolCall.argumentsPreviewTruncated }
+      : {}),
+    ...(toolCall.argumentsPreviewOriginalBytes !== undefined
+      ? { argumentsPreviewOriginalBytes: toolCall.argumentsPreviewOriginalBytes }
+      : {}),
+    ...(toolCall.argumentsPreviewLineCount !== undefined
+      ? { argumentsPreviewLineCount: toolCall.argumentsPreviewLineCount }
+      : {}),
+    ...(toolCall.argumentsPreviewOmittedLines !== undefined
+      ? { argumentsPreviewOmittedLines: toolCall.argumentsPreviewOmittedLines }
+      : {}),
+    ...(toolCall.diffPreview ? { diffPreview: toolCall.diffPreview } : {}),
+    ...(toolCall.detailRef ? { detailRef: toolCall.detailRef } : {}),
+    ...(toolCall.parentToolUseId ? { parentToolUseId: toolCall.parentToolUseId } : {}),
+    ...(toolCall.diffContext ? { diffContext: toolCall.diffContext } : {}),
+  };
+}
+
+function buildFinalizedContentBlocks(
+  payload: AgentMessageCreatedPayload,
+  streamingContentBlocks: StreamingContentBlock[],
+  streamingToolCalls: ToolCall[],
+): ContentBlockItem[] | null {
+  if (streamingContentBlocks.some((block) => block.type === "task")) {
+    return null;
+  }
+
+  const blocks = streamingContentBlocks
+    .filter((block): block is Exclude<StreamingContentBlock, { type: "task" }> => block.type !== "task")
+    .map((block): ContentBlockItem | null => {
+      if (block.type === "text") {
+        return block.text.trim().length > 0 ? { type: "text", text: block.text } : null;
+      }
+      return contentBlockFromToolCall(block.toolCall);
+    })
+    .filter((block): block is ContentBlockItem => block != null);
+
+  if (blocks.length > 0) {
+    return blocks;
+  }
+
+  if (streamingToolCalls.length > 0) {
+    return streamingToolCalls.map(contentBlockFromToolCall);
+  }
+
+  const content = payload.content ?? "";
+  return content.trim().length > 0 ? [{ type: "text", text: content }] : null;
+}
+
+function buildFinalizedMessageForCache(
+  payload: AgentMessageCreatedPayload,
+  contentBlocks: ContentBlockItem[],
+): ChatMessageResponse | null {
+  if (!payload.message_id || !payload.conversation_id || !payload.role) {
+    return null;
+  }
+
+  const toolCalls = contentBlocks
+    .filter((block): block is ContentBlockItem & { type: "tool_use" } => block.type === "tool_use")
+    .map((block): ToolCall => ({
+      id: block.id ?? `tool:${block.name ?? "unknown"}`,
+      name: block.name ?? "unknown",
+      arguments: block.arguments ?? {},
+      ...(block.result !== undefined ? { result: block.result } : {}),
+      ...(block.resultPreviewTruncated !== undefined
+        ? { resultPreviewTruncated: block.resultPreviewTruncated }
+        : {}),
+      ...(block.resultPreviewOriginalBytes !== undefined
+        ? { resultPreviewOriginalBytes: block.resultPreviewOriginalBytes }
+        : {}),
+      ...(block.resultPreviewLineCount !== undefined
+        ? { resultPreviewLineCount: block.resultPreviewLineCount }
+        : {}),
+      ...(block.resultPreviewOmittedLines !== undefined
+        ? { resultPreviewOmittedLines: block.resultPreviewOmittedLines }
+        : {}),
+      ...(block.argumentsPreviewTruncated !== undefined
+        ? { argumentsPreviewTruncated: block.argumentsPreviewTruncated }
+        : {}),
+      ...(block.argumentsPreviewOriginalBytes !== undefined
+        ? { argumentsPreviewOriginalBytes: block.argumentsPreviewOriginalBytes }
+        : {}),
+      ...(block.argumentsPreviewLineCount !== undefined
+        ? { argumentsPreviewLineCount: block.argumentsPreviewLineCount }
+        : {}),
+      ...(block.argumentsPreviewOmittedLines !== undefined
+        ? { argumentsPreviewOmittedLines: block.argumentsPreviewOmittedLines }
+        : {}),
+      ...(block.diffPreview ? { diffPreview: block.diffPreview } : {}),
+      ...(block.detailRef ? { detailRef: block.detailRef } : {}),
+      ...(block.parentToolUseId ? { parentToolUseId: block.parentToolUseId } : {}),
+      ...(block.diffContext ? { diffContext: block.diffContext } : {}),
+    }));
+  const textContent =
+    payload.content ??
+    contentBlocks
+      .filter((block) => block.type === "text")
+      .map((block) => block.text ?? "")
+      .join("");
+
+  return {
+    id: payload.message_id,
+    sessionId: null,
+    projectId: null,
+    taskId: null,
+    role: payload.role,
+    content: textContent,
+    metadata: payload.metadata ?? null,
+    parentMessageId: null,
+    conversationId: payload.conversation_id,
+    toolCalls: toolCalls.length > 0 ? toolCalls : null,
+    contentBlocks,
+    sender: null,
+    createdAt: payload.created_at ?? new Date().toISOString(),
+  };
 }
 
 // ============================================================================
@@ -254,6 +496,8 @@ interface UseChatEventsProps {
   activeConversationId: string | null;
   contextId: string | null;
   contextType: ContextType | null;
+  streamingToolCalls?: ToolCall[];
+  streamingContentBlocks?: StreamingContentBlock[];
   setStreamingToolCalls: Dispatch<SetStateAction<ToolCall[]>>;
   setStreamingContentBlocks: Dispatch<SetStateAction<StreamingContentBlock[]>>;
   setStreamingTasks: Dispatch<SetStateAction<Map<string, StreamingTask>>>;
@@ -271,6 +515,8 @@ export function useChatEvents({
   activeConversationId,
   contextId,
   contextType,
+  streamingToolCalls = [],
+  streamingContentBlocks = [],
   setStreamingToolCalls,
   setStreamingContentBlocks,
   setStreamingTasks,
@@ -279,6 +525,16 @@ export function useChatEvents({
 }: UseChatEventsProps) {
   const bus = useEventBus();
   const queryClient = useQueryClient();
+  const streamingToolCallsRef = useRef(streamingToolCalls);
+  const streamingContentBlocksRef = useRef(streamingContentBlocks);
+
+  useEffect(() => {
+    streamingToolCallsRef.current = streamingToolCalls;
+  }, [streamingToolCalls]);
+
+  useEffect(() => {
+    streamingContentBlocksRef.current = streamingContentBlocks;
+  }, [streamingContentBlocks]);
 
   // Resolve feature flags from registry
   const config = contextType ? getContextConfig(contextType) : null;
@@ -364,12 +620,26 @@ export function useChatEvents({
         resultPreviewLineCount?: number | null;
         result_preview_omitted_lines?: number | null;
         resultPreviewOmittedLines?: number | null;
+        arguments_preview_truncated?: boolean | null;
+        argumentsPreviewTruncated?: boolean | null;
+        arguments_preview_original_bytes?: number | null;
+        argumentsPreviewOriginalBytes?: number | null;
+        arguments_preview_line_count?: number | null;
+        argumentsPreviewLineCount?: number | null;
+        arguments_preview_omitted_lines?: number | null;
+        argumentsPreviewOmittedLines?: number | null;
+        diff_preview?: unknown;
+        diffPreview?: unknown;
         detail_ref?: unknown;
         detailRef?: unknown;
         conversation_id: string;
         context_id?: string;
         context_type?: string;
-        diff_context?: { old_content?: string; file_path: string } | null;
+        diff_context?: {
+          old_content?: string;
+          old_file_exists?: boolean;
+          file_path: string;
+        } | null;
         parent_tool_use_id?: string | null;
         seq?: number;
       }>("agent:tool_call", (payload) => {
@@ -494,6 +764,9 @@ export function useChatEvents({
           if (diff_context.old_content != null) {
             diffContext.oldContent = diff_context.old_content;
           }
+          if (typeof diff_context.old_file_exists === "boolean") {
+            diffContext.oldFileExists = diff_context.old_file_exists;
+          }
         }
 
         // Use backend tool_id for deduplication. Some provider streams can omit
@@ -505,6 +778,7 @@ export function useChatEvents({
         if (result != null) {
           applyToolCallResultPreview(entry, result, payload);
         }
+        applyBackendToolArgumentPreviewMetadata(entry, payload);
         if (diffContext) {
           entry.diffContext = diffContext;
         }
@@ -600,6 +874,7 @@ export function useChatEvents({
               } else if (existing.result != null) {
                 updated.result = existing.result;
               }
+              applyBackendToolArgumentPreviewMetadata(updated, payload);
               if (diffContext) {
                 updated.diffContext = diffContext;
               }
@@ -631,6 +906,7 @@ export function useChatEvents({
                 } else if (tc.result != null) {
                   updated.result = tc.result;
                 }
+                applyBackendToolArgumentPreviewMetadata(updated, payload);
                 if (diffContext) {
                   updated.diffContext = diffContext;
                 }
@@ -668,6 +944,7 @@ export function useChatEvents({
                   } else if (block.toolCall.result != null) {
                     updated.result = block.toolCall.result;
                   }
+                  applyBackendToolArgumentPreviewMetadata(updated, payload);
                   if (diffContext) {
                     updated.diffContext = diffContext;
                   }
@@ -985,27 +1262,48 @@ export function useChatEvents({
     // 1. Streaming active: streamingContentBlocks visible, last DB assistant message filtered
     // 2. agent:message_created fires: setIsFinalizing(true) + clear streaming state (same batch)
     // 3. Re-render: hasActiveStreaming=false, isFinalizing=true → filter still applies
-    // 4. Subscribe to query cache; when the refetch returns data containing the new message_id,
-    //    call setIsFinalizing(false) and unsubscribe.
-    // 5. Safety timeout (3s) clears isFinalizing if the query never returns the expected message.
+    // 4. Try a lightweight active-tail cache handoff from a backend render-ready
+    //    payload or the live streaming snapshot; if it succeeds, the watcher clears immediately.
+    // 5. Otherwise subscribe to query cache; when the fallback refetch returns
+    //    data containing the new message_id, call setIsFinalizing(false) and unsubscribe.
+    // 6. Safety timeout (3s) clears isFinalizing if the query never returns the expected message.
     // Result: smooth swap with no fixed-delay race condition.
     unsubscribes.push(
-      bus.subscribe<{
-        conversation_id?: string;
-        context_id?: string;
-        context_type?: string;
-        role?: string;
-        message_id?: string;
-      }>("agent:message_created", (payload) => {
+      bus.subscribe<AgentMessageCreatedPayload>("agent:message_created", (payload) => {
         if (!payload.conversation_id) return;
         if (!isRelevant(payload)) return;
 
+        let usedLightweightHandoff = false;
         if (isProviderRole(payload.role)) {
           const convId = payload.conversation_id;
           const assistantMessageId = payload.message_id;
+          const contentBlocks = payload.render_ready || contextType === "ideation"
+            ? null
+            : buildFinalizedContentBlocks(
+              payload,
+              streamingContentBlocksRef.current,
+              streamingToolCallsRef.current,
+            );
+          const finalizedMessage = contentBlocks
+            ? buildFinalizedMessageForCache(payload, contentBlocks)
+            : null;
 
-          // Set isFinalizing=true in same batch as clearing streaming state
+          // Set isFinalizing=true in the same batch as clearing streaming state.
+          // When the active timeline cache can be updated from the canonical
+          // event payload or live stream snapshot, the cache watcher clears
+          // finalizing immediately; otherwise it waits for the DB refetch fallback.
           setIsFinalizing(true);
+          if (payload.render_ready) {
+            usedLightweightHandoff = upsertRenderReadyMessageIntoConversationCache(
+              queryClient,
+              convId,
+              payload.render_ready,
+            );
+          } else {
+            usedLightweightHandoff = finalizedMessage
+              ? upsertFinalizedMessageIntoConversationCache(queryClient, convId, finalizedMessage)
+              : false;
+          }
           setStreamingContentBlocks(prev => prev.length === 0 ? prev : []);
           setStreamingToolCalls(prev => prev.length === 0 ? prev : []);
           setStreamingTasks(prev => prev.size === 0 ? prev : new Map());
@@ -1069,13 +1367,19 @@ export function useChatEvents({
           // If no message_id in payload, the safety timeout alone handles cleanup
         }
 
-        // Cancel in-flight fetches so invalidation starts a fresh refetch
-        // instead of deduplicating with a stale in-flight request.
+        // Cancel in-flight fetches so a stale response cannot overwrite either
+        // the lightweight active-tail handoff or the fallback refetch.
         void queryClient.cancelQueries({ queryKey: chatKeys.conversation(payload.conversation_id), exact: true });
         void queryClient.cancelQueries({ queryKey: chatKeys.conversationSummary(payload.conversation_id) });
         void queryClient.cancelQueries({ queryKey: chatKeys.conversationHistory(payload.conversation_id) });
         void queryClient.cancelQueries({ queryKey: chatKeys.conversationTimeline(payload.conversation_id) });
-        invalidateConversationDataQueries(queryClient, payload.conversation_id);
+        if (isProviderRole(payload.role) && usedLightweightHandoff) {
+          queryClient.invalidateQueries({
+            queryKey: chatKeys.conversationSummary(payload.conversation_id),
+          });
+        } else {
+          invalidateConversationDataQueries(queryClient, payload.conversation_id);
+        }
         queryClient.invalidateQueries({
           queryKey: conversationStatsKey(payload.conversation_id),
         });

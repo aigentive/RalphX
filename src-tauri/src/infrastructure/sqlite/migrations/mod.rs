@@ -18,8 +18,11 @@
 //
 // ## For existing databases
 //
-// Existing databases have schema_migrations tracking what version they're at.
-// Only migrations newer than their current version will run.
+// Existing databases have schema_migrations tracking applied versions.
+// Any registered migration that is not recorded will run, even if a later
+// version was already applied by another branch.
+
+use std::collections::HashSet;
 
 use rusqlite::Connection;
 
@@ -37,18 +40,24 @@ mod v17_running_agents;
 mod v18_task_metadata;
 mod v19_project_analysis;
 mod v1_initial_schema;
+mod v20260325120000_app_state_execution_halt_mode;
+mod v20260325131500_execution_ideation_allocation_settings;
+mod v20260327233752_pending_initial_prompt;
+mod v20260328194000_ideation_followup_provenance;
+mod v20260329103000_review_note_followup_session;
+mod v20260329113000_ideation_blocker_fingerprint;
 mod v20_merge_validation_mode;
 mod v21_questions_permissions;
 mod v22_project_active_plan;
 mod v23_plan_selection_stats;
 mod v24_memory_framework;
-mod v26_running_agent_worktree;
 mod v25_seed_artifact_buckets;
-mod v30_update_max_concurrent_default;
+mod v26_running_agent_worktree;
 mod v27_merge_strategy;
 mod v28_default_rebase_squash;
 mod v29_repair_schema_drift;
 mod v2_add_dependency_reason;
+mod v30_update_max_concurrent_default;
 mod v31_session_linking;
 mod v32_fix_task_fk_constraints;
 mod v33_agent_run_chain_ids;
@@ -80,6 +89,7 @@ mod v56_api_keys;
 mod v57_plan_verification;
 mod v58_metrics_index;
 mod v59_project_metrics_config;
+mod v5_add_review_summary_issues;
 mod v60_metrics_working_days;
 mod v61_ideation_settings_verification;
 mod v62_api_key_admin_permissions;
@@ -90,11 +100,7 @@ mod v66_cross_project_import;
 mod v67_tasks_session_status_index;
 mod v68_session_purpose;
 mod v69_soft_delete_archived_at;
-mod v5_add_review_summary_issues;
 mod v6_review_issues;
-mod v7_session_status_converted_to_accepted;
-mod v8_task_git_fields;
-mod v9_project_git_fields;
 mod v70_plan_branch_base_override;
 mod v71_add_target_project_to_proposals;
 mod v72_cross_project_check;
@@ -105,14 +111,11 @@ mod v76_session_origin;
 mod v77_expected_proposal_count;
 mod v78_webhook_registrations;
 mod v79_external_session_reliability;
+mod v7_session_status_converted_to_accepted;
 mod v80_dependencies_acknowledged;
 mod v81_external_session_reliability_backfill;
-mod v20260325120000_app_state_execution_halt_mode;
-mod v20260327233752_pending_initial_prompt;
-mod v20260325131500_execution_ideation_allocation_settings;
-mod v20260328194000_ideation_followup_provenance;
-mod v20260329103000_review_note_followup_session;
-mod v20260329113000_ideation_blocker_fingerprint;
+mod v8_task_git_fields;
+mod v9_project_git_fields;
 
 #[cfg(test)]
 mod tests;
@@ -139,94 +142,6 @@ mod v19_project_analysis_tests;
 #[cfg(test)]
 mod v1_initial_schema_tests;
 #[cfg(test)]
-mod v20_merge_validation_mode_tests;
-#[cfg(test)]
-mod v21_questions_permissions_tests;
-#[cfg(test)]
-mod v22_project_active_plan_tests;
-#[cfg(test)]
-mod v23_plan_selection_stats_tests;
-#[cfg(test)]
-mod v24_memory_framework_tests;
-#[cfg(test)]
-mod v26_running_agent_worktree_tests;
-#[cfg(test)]
-mod v27_merge_strategy_tests;
-#[cfg(test)]
-mod v2_add_dependency_reason_tests;
-#[cfg(test)]
-mod v31_session_linking_tests;
-#[cfg(test)]
-mod v32_fix_task_fk_constraints_tests;
-#[cfg(test)]
-mod v33_agent_run_chain_ids_tests;
-#[cfg(test)]
-mod v34_chat_attachments_tests;
-#[cfg(test)]
-mod v35_step_substeps_tests;
-#[cfg(test)]
-mod v37_team_sessions_tests;
-#[cfg(test)]
-mod v38_ideation_team_mode_tests;
-#[cfg(test)]
-mod v39_conversation_parent_id_tests;
-#[cfg(test)]
-mod v3_add_activity_events_tests;
-#[cfg(test)]
-mod v40_dependency_source_tests;
-#[cfg(test)]
-mod v43_session_title_source_tests;
-#[cfg(test)]
-mod v44_remove_local_git_mode_tests;
-#[cfg(test)]
-mod v4_add_blocked_reason_tests;
-#[cfg(test)]
-mod v6_review_issues_tests;
-#[cfg(test)]
-mod v7_session_status_converted_to_accepted_tests;
-#[cfg(test)]
-mod v8_task_git_fields_tests;
-#[cfg(test)]
-mod v9_project_git_fields_tests;
-#[cfg(test)]
-mod v49_backfill_execution_plans_tests;
-#[cfg(test)]
-mod v51_repair_plan_branches_tests;
-#[cfg(test)]
-mod v56_api_keys_tests;
-#[cfg(test)]
-mod v58_metrics_index_tests;
-#[cfg(test)]
-mod v59_project_metrics_config_tests;
-#[cfg(test)]
-mod v60_metrics_working_days_tests;
-#[cfg(test)]
-mod v61_ideation_settings_verification_tests;
-#[cfg(test)]
-mod v62_api_key_admin_permissions_tests;
-#[cfg(test)]
-mod v63_auto_verify_generation_tests;
-#[cfg(test)]
-mod v65_unique_working_directory_tests;
-#[cfg(test)]
-mod v66_cross_project_import_tests;
-#[cfg(test)]
-mod v67_tasks_session_status_index_tests;
-#[cfg(test)]
-mod v68_session_purpose_tests;
-#[cfg(test)]
-mod v69_soft_delete_archived_at_tests;
-#[cfg(test)]
-mod v71_add_target_project_to_proposals_tests;
-#[cfg(test)]
-mod v72_cross_project_check_tests;
-#[cfg(test)]
-mod v73_proposal_migrated_from_tests;
-#[cfg(test)]
-mod v76_session_origin_tests;
-#[cfg(test)]
-mod v81_external_session_reliability_backfill_tests;
-#[cfg(test)]
 mod v20260325120000_app_state_execution_halt_mode_tests;
 #[cfg(test)]
 mod v20260325131500_execution_ideation_allocation_settings_tests;
@@ -234,16 +149,16 @@ mod v20260325131500_execution_ideation_allocation_settings_tests;
 mod v20260327233752_pending_initial_prompt_tests;
 #[cfg(test)]
 mod v20260328194000_ideation_followup_provenance_tests;
-#[cfg(test)]
-mod v20260329103000_review_note_followup_session_tests;
-#[cfg(test)]
-mod v20260329113000_ideation_blocker_fingerprint_tests;
 mod v20260328210000_proposal_affected_paths;
 #[cfg(test)]
 mod v20260328210000_proposal_affected_paths_tests;
 mod v20260329080000_acceptance_status;
 #[cfg(test)]
 mod v20260329080000_acceptance_status_tests;
+#[cfg(test)]
+mod v20260329103000_review_note_followup_session_tests;
+#[cfg(test)]
+mod v20260329113000_ideation_blocker_fingerprint_tests;
 mod v20260330000000_verification_confirmation_status;
 #[cfg(test)]
 mod v20260330000000_verification_confirmation_status_tests;
@@ -281,6 +196,9 @@ mod v20260410101500_chat_message_attribution_tests;
 mod v20260410113000_agent_run_usage;
 #[cfg(test)]
 mod v20260410113000_agent_run_usage_tests;
+mod v20260410124500_chat_message_usage;
+#[cfg(test)]
+mod v20260410124500_chat_message_usage_tests;
 mod v20260410143000_upstream_provider_metadata;
 #[cfg(test)]
 mod v20260410143000_upstream_provider_metadata_tests;
@@ -293,9 +211,6 @@ mod v20260411190000_delegated_sessions_tests;
 mod v20260413043153_drop_agent_lane_settings_fallback_harness;
 #[cfg(test)]
 mod v20260413043153_drop_agent_lane_settings_fallback_harness_tests;
-mod v20260410124500_chat_message_usage;
-#[cfg(test)]
-mod v20260410124500_chat_message_usage_tests;
 mod v20260414060000_verification_run_store;
 #[cfg(test)]
 mod v20260414060000_verification_run_store_tests;
@@ -354,12 +269,151 @@ mod v20260518230038_agent_workspace_pr_comment_evidence_tests;
 mod v20260519180000_agent_tasks;
 #[cfg(test)]
 mod v20260519180000_agent_tasks_tests;
+mod v20260520125526_atlassian_integrations;
+#[cfg(test)]
+mod v20260520125526_atlassian_integrations_tests;
+mod v20260520150000_atlassian_oauth;
+#[cfg(test)]
+mod v20260520150000_atlassian_oauth_tests;
+mod v20260521150003_agent_workspace_source_pull_request;
+#[cfg(test)]
+mod v20260521150003_agent_workspace_source_pull_request_tests;
+mod v20260521222911_agent_plan_mode;
+#[cfg(test)]
+mod v20260521222911_agent_plan_mode_tests;
 mod v20260522090000_agent_workspace_state_history;
 #[cfg(test)]
 mod v20260522090000_agent_workspace_state_history_tests;
+mod v20260522093000_ideation_session_flow;
+#[cfg(test)]
+mod v20260522093000_ideation_session_flow_tests;
+mod v20260523070000_plan_artifact_approvals;
+#[cfg(test)]
+mod v20260523070000_plan_artifact_approvals_tests;
+mod v20260523145711_plan_complexity_assessments;
+#[cfg(test)]
+mod v20260523145711_plan_complexity_assessments_tests;
+mod v20260523152748_agent_task_list_slices;
+#[cfg(test)]
+mod v20260523152748_agent_task_list_slices_tests;
+mod v20260527033000_agent_workspace_auto_publish;
+#[cfg(test)]
+mod v20260527033000_agent_workspace_auto_publish_tests;
+mod v20260611110952_question_skip_progress;
+#[cfg(test)]
+mod v20260611110952_question_skip_progress_tests;
+mod v20260611152000_question_metadata;
+#[cfg(test)]
+mod v20260611152000_question_metadata_tests;
+mod v20260611191722_agent_workspace_pr_automation_defaults;
+#[cfg(test)]
+mod v20260611191722_agent_workspace_pr_automation_defaults_tests;
+mod v20260612124826_provider_cli_management_policy;
+#[cfg(test)]
+mod v20260612124826_provider_cli_management_policy_tests;
+mod v20260617121800_agent_conversation_jira_issue_links;
+#[cfg(test)]
+mod v20260617121800_agent_conversation_jira_issue_links_tests;
+mod v20260617122430_agent_workspace_initial_auto_publish;
+#[cfg(test)]
+mod v20260617122430_agent_workspace_initial_auto_publish_tests;
+mod v20260618123000_agent_workspace_pr_review_monitoring;
+#[cfg(test)]
+mod v20260618123000_agent_workspace_pr_review_monitoring_tests;
+mod v20260618134600_review_pr_mode_checks;
+#[cfg(test)]
+mod v20260618134600_review_pr_mode_checks_tests;
+#[cfg(test)]
+mod v20_merge_validation_mode_tests;
+#[cfg(test)]
+mod v21_questions_permissions_tests;
+#[cfg(test)]
+mod v22_project_active_plan_tests;
+#[cfg(test)]
+mod v23_plan_selection_stats_tests;
+#[cfg(test)]
+mod v24_memory_framework_tests;
+#[cfg(test)]
+mod v26_running_agent_worktree_tests;
+#[cfg(test)]
+mod v27_merge_strategy_tests;
+#[cfg(test)]
+mod v2_add_dependency_reason_tests;
+#[cfg(test)]
+mod v31_session_linking_tests;
+#[cfg(test)]
+mod v32_fix_task_fk_constraints_tests;
+#[cfg(test)]
+mod v33_agent_run_chain_ids_tests;
+#[cfg(test)]
+mod v34_chat_attachments_tests;
+#[cfg(test)]
+mod v35_step_substeps_tests;
+#[cfg(test)]
+mod v37_team_sessions_tests;
+#[cfg(test)]
+mod v38_ideation_team_mode_tests;
+#[cfg(test)]
+mod v39_conversation_parent_id_tests;
+#[cfg(test)]
+mod v3_add_activity_events_tests;
+#[cfg(test)]
+mod v40_dependency_source_tests;
+#[cfg(test)]
+mod v43_session_title_source_tests;
+#[cfg(test)]
+mod v44_remove_local_git_mode_tests;
+#[cfg(test)]
+mod v49_backfill_execution_plans_tests;
+#[cfg(test)]
+mod v4_add_blocked_reason_tests;
+#[cfg(test)]
+mod v51_repair_plan_branches_tests;
+#[cfg(test)]
+mod v56_api_keys_tests;
+#[cfg(test)]
+mod v58_metrics_index_tests;
+#[cfg(test)]
+mod v59_project_metrics_config_tests;
+#[cfg(test)]
+mod v60_metrics_working_days_tests;
+#[cfg(test)]
+mod v61_ideation_settings_verification_tests;
+#[cfg(test)]
+mod v62_api_key_admin_permissions_tests;
+#[cfg(test)]
+mod v63_auto_verify_generation_tests;
+#[cfg(test)]
+mod v65_unique_working_directory_tests;
+#[cfg(test)]
+mod v66_cross_project_import_tests;
+#[cfg(test)]
+mod v67_tasks_session_status_index_tests;
+#[cfg(test)]
+mod v68_session_purpose_tests;
+#[cfg(test)]
+mod v69_soft_delete_archived_at_tests;
+#[cfg(test)]
+mod v6_review_issues_tests;
+#[cfg(test)]
+mod v71_add_target_project_to_proposals_tests;
+#[cfg(test)]
+mod v72_cross_project_check_tests;
+#[cfg(test)]
+mod v73_proposal_migrated_from_tests;
+#[cfg(test)]
+mod v76_session_origin_tests;
+#[cfg(test)]
+mod v7_session_status_converted_to_accepted_tests;
+#[cfg(test)]
+mod v81_external_session_reliability_backfill_tests;
+#[cfg(test)]
+mod v8_task_git_fields_tests;
+#[cfg(test)]
+mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260522090000;
+pub const SCHEMA_VERSION: i64 = 20260618134600;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1010,9 +1064,94 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260519180000_agent_tasks::migrate,
     },
     Migration {
+        version: 20260520125526,
+        name: "atlassian_integrations",
+        migrate: v20260520125526_atlassian_integrations::migrate,
+    },
+    Migration {
+        version: 20260520150000,
+        name: "atlassian_oauth",
+        migrate: v20260520150000_atlassian_oauth::migrate,
+    },
+    Migration {
+        version: 20260521150003,
+        name: "agent_workspace_source_pull_request",
+        migrate: v20260521150003_agent_workspace_source_pull_request::migrate,
+    },
+    Migration {
+        version: 20260521222911,
+        name: "agent_plan_mode",
+        migrate: v20260521222911_agent_plan_mode::migrate,
+    },
+    Migration {
         version: 20260522090000,
         name: "agent_workspace_state_history",
         migrate: v20260522090000_agent_workspace_state_history::migrate,
+    },
+    Migration {
+        version: 20260522093000,
+        name: "ideation_session_flow",
+        migrate: v20260522093000_ideation_session_flow::migrate,
+    },
+    Migration {
+        version: 20260523070000,
+        name: "plan_artifact_approvals",
+        migrate: v20260523070000_plan_artifact_approvals::migrate,
+    },
+    Migration {
+        version: 20260523145711,
+        name: "plan_complexity_assessments",
+        migrate: v20260523145711_plan_complexity_assessments::migrate,
+    },
+    Migration {
+        version: 20260523152748,
+        name: "agent_task_list_slices",
+        migrate: v20260523152748_agent_task_list_slices::migrate,
+    },
+    Migration {
+        version: 20260527033000,
+        name: "agent_workspace_auto_publish",
+        migrate: v20260527033000_agent_workspace_auto_publish::migrate,
+    },
+    Migration {
+        version: 20260611110952,
+        name: "question_skip_progress",
+        migrate: v20260611110952_question_skip_progress::migrate,
+    },
+    Migration {
+        version: 20260611152000,
+        name: "question_metadata",
+        migrate: v20260611152000_question_metadata::migrate,
+    },
+    Migration {
+        version: 20260611191722,
+        name: "agent_workspace_pr_automation_defaults",
+        migrate: v20260611191722_agent_workspace_pr_automation_defaults::migrate,
+    },
+    Migration {
+        version: 20260612124826,
+        name: "provider_cli_management_policy",
+        migrate: v20260612124826_provider_cli_management_policy::migrate,
+    },
+    Migration {
+        version: 20260617121800,
+        name: "agent_conversation_jira_issue_links",
+        migrate: v20260617121800_agent_conversation_jira_issue_links::migrate,
+    },
+    Migration {
+        version: 20260617122430,
+        name: "agent_workspace_initial_auto_publish",
+        migrate: v20260617122430_agent_workspace_initial_auto_publish::migrate,
+    },
+    Migration {
+        version: 20260618123000,
+        name: "agent_workspace_pr_review_monitoring",
+        migrate: v20260618123000_agent_workspace_pr_review_monitoring::migrate,
+    },
+    Migration {
+        version: 20260618134600,
+        name: "review_pr_mode_checks",
+        migrate: v20260618134600_review_pr_mode_checks::migrate,
     },
 ];
 
@@ -1021,12 +1160,13 @@ pub fn run_migrations(conn: &Connection) -> AppResult<()> {
     // Create migrations table if it doesn't exist
     create_migrations_table(conn)?;
 
-    // Get current version
-    let current_version = get_schema_version(conn)?;
+    let mut applied_versions = get_applied_migration_versions(conn)?;
 
-    // Run migrations sequentially
+    // Run registered migrations sequentially. Membership checks repair dev and
+    // branch databases that have a later version recorded while missing an
+    // earlier migration added on this branch.
     for migration in MIGRATIONS {
-        if current_version < migration.version {
+        if !applied_versions.contains(&migration.version) {
             tracing::info!(
                 "Running migration v{}: {}",
                 migration.version,
@@ -1035,6 +1175,7 @@ pub fn run_migrations(conn: &Connection) -> AppResult<()> {
 
             (migration.migrate)(conn)?;
             set_schema_version(conn, migration.version)?;
+            applied_versions.insert(migration.version);
 
             tracing::info!("Migration v{} complete", migration.version);
         }
@@ -1047,13 +1188,13 @@ pub fn run_migrations(conn: &Connection) -> AppResult<()> {
 pub(super) fn run_migrations_through(conn: &Connection, target_version: i64) -> AppResult<()> {
     create_migrations_table(conn)?;
 
-    let mut current_version = get_schema_version(conn)?;
+    let mut applied_versions = get_applied_migration_versions(conn)?;
 
     for migration in MIGRATIONS {
-        if current_version < migration.version && migration.version <= target_version {
+        if migration.version <= target_version && !applied_versions.contains(&migration.version) {
             (migration.migrate)(conn)?;
             set_schema_version(conn, migration.version)?;
-            current_version = migration.version;
+            applied_versions.insert(migration.version);
         }
     }
 
@@ -1090,6 +1231,18 @@ pub fn get_schema_version(conn: &Connection) -> AppResult<i64> {
     );
 
     result.map_err(|e| AppError::Database(e.to_string()))
+}
+
+fn get_applied_migration_versions(conn: &Connection) -> AppResult<HashSet<i64>> {
+    let mut statement = conn
+        .prepare("SELECT version FROM schema_migrations")
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    let versions = statement
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(|e| AppError::Database(e.to_string()))?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    Ok(versions)
 }
 
 /// Set the schema version after a migration

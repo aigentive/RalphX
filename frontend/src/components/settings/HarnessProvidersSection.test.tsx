@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -6,6 +6,7 @@ import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useProviderCliManagement } from "@/hooks/useProviderCliManagement";
 
 import { HarnessProvidersSection } from "./HarnessProvidersSection";
 
@@ -17,13 +18,19 @@ vi.mock("@/hooks/useHarnessProviders", () => ({
   useHarnessProviders: vi.fn(),
 }));
 
+vi.mock("@/hooks/useProviderCliManagement", () => ({
+  useProviderCliManagement: vi.fn(),
+}));
+
 vi.mock("@/hooks/useConfirmation", () => ({
   useConfirmation: vi.fn(),
 }));
 
 const providerUpdatedAt = new Date().toISOString();
 const refetchProviders = vi.fn();
+const refetchStatus = vi.fn();
 const updateProviderAsync = vi.fn();
+const installOrUpdateProviderAsync = vi.fn();
 const confirm = vi.fn();
 
 if (!HTMLElement.prototype.scrollIntoView) {
@@ -48,6 +55,8 @@ const settings: AgentProvidersSettingsResponse = {
       claudePermissionMode: null,
       claudeDangerouslySkipPermissions: false,
       claudeAllowDangerouslySkipPermissions: false,
+      cliManagementMode: "rx_managed",
+      autoUpdateEnabled: true,
       available: true,
       binaryFound: true,
       binaryPath: "/opt/homebrew/bin/codex",
@@ -67,6 +76,8 @@ const settings: AgentProvidersSettingsResponse = {
       claudePermissionMode: "bypassPermissions",
       claudeDangerouslySkipPermissions: true,
       claudeAllowDangerouslySkipPermissions: true,
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
       available: false,
       binaryFound: false,
       binaryPath: null,
@@ -74,6 +85,40 @@ const settings: AgentProvidersSettingsResponse = {
       error: "Claude CLI not found",
       missingCoreExecFeatures: [],
       updatedAt: providerUpdatedAt,
+    },
+  ],
+};
+
+const managedCliStatuses = {
+  providers: [
+    {
+      provider: "codex" as const,
+      cliManagementMode: "rx_managed" as const,
+      autoUpdateEnabled: true,
+      supported: true,
+      installed: true,
+      binaryPath: "/mock/ralphx/managed-cli/codex/bin/codex",
+      currentVersion: "0.136.0",
+      latestVersion: "0.137.0",
+      updateAvailable: true,
+      action: "update" as const,
+      status: "RX-managed codex 0.136.0 can update to 0.137.0.",
+      error: null,
+    },
+    {
+      provider: "claude" as const,
+      cliManagementMode: "user_managed" as const,
+      autoUpdateEnabled: false,
+      supported: true,
+      installed: true,
+      binaryPath: "/Users/example/.local/bin/claude",
+      currentVersion: "2.1.170",
+      latestVersion: "2.1.175",
+      updateAvailable: true,
+      action: "none" as const,
+      status:
+        "claude CLI 2.1.170 is user-managed; 2.1.175 is available. RX will not update it unless management is enabled.",
+      error: null,
     },
   ],
 };
@@ -97,6 +142,32 @@ function mockProviders(
   } as ReturnType<typeof useHarnessProviders>);
 }
 
+function mockProviderCliManagement(
+  overrides: Partial<ReturnType<typeof useProviderCliManagement>> = {},
+) {
+  vi.mocked(useProviderCliManagement).mockReturnValue({
+    statuses: managedCliStatuses,
+    statusByProvider: new Map(
+      managedCliStatuses.providers.map((provider) => [
+        provider.provider,
+        provider,
+      ]),
+    ),
+    isLoadingStatus: false,
+    isStatusPlaceholderData: false,
+    isStatusError: false,
+    statusError: null,
+    refetchStatus,
+    installOrUpdateProviderAsync,
+    isInstallingProvider: false,
+    installError: null,
+    autoUpdateProvidersAsync: vi.fn(),
+    isAutoUpdatingProviders: false,
+    autoUpdateError: null,
+    ...overrides,
+  } as ReturnType<typeof useProviderCliManagement>);
+}
+
 function openSelectById(id: string) {
   const trigger = document.getElementById(id);
   expect(trigger).not.toBeNull();
@@ -107,7 +178,17 @@ describe("HarnessProvidersSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     confirm.mockResolvedValue(true);
+    refetchProviders.mockResolvedValue({ data: settings });
+    refetchStatus.mockResolvedValue({ data: managedCliStatuses });
+    installOrUpdateProviderAsync.mockResolvedValue({
+      provider: "codex",
+      success: true,
+      status: managedCliStatuses.providers[0],
+      stdout: null,
+      stderr: null,
+    });
     mockProviders();
+    mockProviderCliManagement();
     vi.mocked(useAgentModels).mockReturnValue({
       models: [
         {
@@ -186,11 +267,37 @@ describe("HarnessProvidersSection", () => {
     expect(screen.queryByRole("button", { name: "Apply as Default" })).toBeNull();
 
     const codexCard = screen.getByTestId("provider-card-codex");
+    expect(within(codexCard).getByText("RX-managed CLI")).toBeInTheDocument();
+    expect(
+      within(codexCard).getByText(
+        "RX-managed codex 0.136.0 can update to 0.137.0.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(codexCard).getByRole("button", { name: "Update Codex" }),
+    ).toBeEnabled();
     expect(
       within(codexCard).getByRole("button", { name: "Apply to all agents" }),
     ).toBeEnabled();
 
     const claudeCard = screen.getByTestId("provider-card-claude");
+    expect(
+      within(claudeCard).getByLabelText("Let RX manage this CLI"),
+    ).toBeInTheDocument();
+    expect(
+      within(claudeCard).getByLabelText("Update automatically"),
+    ).toBeDisabled();
+    expect(
+      within(claudeCard).getByText("CLI update available"),
+    ).toBeInTheDocument();
+    expect(
+      within(claudeCard).getByText(
+        "claude CLI 2.1.170 is user-managed; 2.1.175 is available. RX will not update it unless management is enabled.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(claudeCard).queryByRole("button", { name: "Update Claude" }),
+    ).toBeNull();
     expect(within(claudeCard).queryByText("Default Model")).toBeNull();
     expect(within(claudeCard).queryByText("Default Effort")).toBeNull();
     expect(
@@ -213,6 +320,128 @@ describe("HarnessProvidersSection", () => {
       provider: "codex",
       enabled: false,
     });
+  });
+
+  it("updates managed CLI and auto-update policy controls", async () => {
+    const user = userEvent.setup();
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    expect(
+      within(codexCard).getByLabelText("Let RX manage this CLI"),
+    ).toBeChecked();
+    expect(
+      within(codexCard).getByLabelText("Update automatically"),
+    ).toBeChecked();
+    expect(
+      within(codexCard).getByText(/RX-managed CLI handling is enabled/i),
+    ).toBeInTheDocument();
+
+    await user.click(within(codexCard).getByLabelText("Update automatically"));
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      autoUpdateEnabled: false,
+    });
+
+    await user.click(within(codexCard).getByLabelText("Let RX manage this CLI"));
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
+    });
+
+    const claudeCard = screen.getByTestId("provider-card-claude");
+    expect(
+      within(claudeCard).getByLabelText("Update automatically"),
+    ).toBeDisabled();
+    expect(
+      within(claudeCard).getByText(/User-managed CLI installs are never modified/i),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(claudeCard).getByLabelText("Let RX manage this CLI"),
+    );
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "claude",
+      cliManagementMode: "rx_managed",
+      autoUpdateEnabled: false,
+    });
+  });
+
+  it("runs a managed CLI update from the provider card", async () => {
+    const user = userEvent.setup();
+    render(<HarnessProvidersSection />);
+
+    await user.click(
+      within(screen.getByTestId("provider-card-codex")).getByRole("button", {
+        name: "Update Codex",
+      }),
+    );
+
+    expect(installOrUpdateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+    });
+    await waitFor(() => {
+      expect(refetchStatus).toHaveBeenCalled();
+      expect(refetchProviders).toHaveBeenCalled();
+    });
+  });
+
+  it("shows managed Claude install status with an action", () => {
+    const nextSettings: AgentProvidersSettingsResponse = {
+      ...settings,
+      providers: [
+        settings.providers[0]!,
+        {
+          ...settings.providers[1]!,
+          cliManagementMode: "rx_managed",
+        },
+      ],
+    };
+    mockProviders(nextSettings);
+    mockProviderCliManagement({
+      statuses: {
+        providers: [
+          managedCliStatuses.providers[0]!,
+          {
+            ...managedCliStatuses.providers[1]!,
+            cliManagementMode: "rx_managed",
+            installed: false,
+            currentVersion: null,
+            latestVersion: "2.1.175",
+            updateAvailable: false,
+            action: "install",
+            status: "RX-managed Claude is not installed.",
+          },
+        ],
+      },
+      statusByProvider: new Map([
+        ["codex", managedCliStatuses.providers[0]!],
+        [
+          "claude",
+          {
+            ...managedCliStatuses.providers[1]!,
+            cliManagementMode: "rx_managed",
+            installed: false,
+            currentVersion: null,
+            latestVersion: "2.1.175",
+            updateAvailable: false,
+            action: "install",
+            status: "RX-managed Claude is not installed.",
+          },
+        ],
+      ]),
+    } as Partial<ReturnType<typeof useProviderCliManagement>>);
+
+    render(<HarnessProvidersSection />);
+
+    const claudeCard = screen.getByTestId("provider-card-claude");
+    expect(
+      within(claudeCard).getByText("RX-managed Claude is not installed."),
+    ).toBeInTheDocument();
+    expect(
+      within(claudeCard).getByRole("button", { name: "Install Claude" }),
+    ).toBeEnabled();
   });
 
   it("updates provider model settings and applies an enabled provider to all agents", async () => {

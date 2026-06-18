@@ -122,8 +122,23 @@ describe("PlanDisplay", () => {
   it("shows approved badge when already approved", () => {
     render(<PlanDisplay plan={mockPlan} showApprove={true} isApproved={true} />);
 
-    expect(screen.getByText("Approved")).toBeInTheDocument();
+    expect(screen.getByText("Plan Approved")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
+  });
+
+  it("shows and handles Verify Plan action", () => {
+    const onVerifyPlan = vi.fn();
+    render(
+      <PlanDisplay
+        plan={mockPlan}
+        isApproved={true}
+        onVerifyPlan={onVerifyPlan}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Verify Plan/i }));
+
+    expect(onVerifyPlan).toHaveBeenCalledTimes(1);
   });
 
   it("shows no content for empty inline text", () => {
@@ -693,7 +708,7 @@ describe("PlanDisplay", () => {
       render(
         <PlanDisplay plan={mockPlan} chromeless={true} showApprove={true} isApproved={true} />,
       );
-      expect(screen.getByText("Approved")).toBeInTheDocument();
+      expect(screen.getByText("Plan Approved")).toBeInTheDocument();
     });
 
     it("renders Create Proposals in chromeless mode and dispatches handler", () => {
@@ -710,6 +725,81 @@ describe("PlanDisplay", () => {
       fireEvent.mouseEnter(btn);
       fireEvent.mouseLeave(btn);
       fireEvent.click(btn);
+      expect(onCreateProposals).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders Verify Plan on the chromeless action row and dispatches handler", () => {
+      const onVerifyPlan = vi.fn();
+      render(
+        <PlanDisplay
+          plan={mockPlan}
+          chromeless={true}
+          onVerifyPlan={onVerifyPlan}
+        />,
+      );
+
+      const btn = screen.getByRole("button", { name: /verify plan/i });
+      fireEvent.mouseEnter(btn);
+      fireEvent.mouseLeave(btn);
+      fireEvent.click(btn);
+      expect(onVerifyPlan).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders Create Proposals before Implement Directly when proposals are primary", () => {
+      const onCreateProposals = vi.fn();
+      const onImplementDirectly = vi.fn();
+      render(
+        <PlanDisplay
+          plan={mockPlan}
+          chromeless={true}
+          linkedProposalsCount={0}
+          onCreateProposals={onCreateProposals}
+          onImplementDirectly={onImplementDirectly}
+          primaryPlanAction="create_proposals"
+        />,
+      );
+
+      const createButton = screen.getByRole("button", { name: /create proposals/i });
+      const implementButton = screen.getByRole("button", { name: /implement directly/i });
+      expect(createButton.compareDocumentPosition(implementButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+      fireEvent.mouseEnter(createButton);
+      fireEvent.mouseLeave(createButton);
+      fireEvent.click(createButton);
+      expect(onCreateProposals).toHaveBeenCalledTimes(1);
+
+      fireEvent.mouseEnter(implementButton);
+      fireEvent.mouseLeave(implementButton);
+      fireEvent.click(implementButton);
+      expect(onImplementDirectly).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders Implement Directly before Create Proposals when implementation is primary", () => {
+      const onCreateProposals = vi.fn();
+      const onImplementDirectly = vi.fn();
+      render(
+        <PlanDisplay
+          plan={mockPlan}
+          chromeless={true}
+          linkedProposalsCount={0}
+          onCreateProposals={onCreateProposals}
+          onImplementDirectly={onImplementDirectly}
+          primaryPlanAction="implement_directly"
+        />,
+      );
+
+      const implementButton = screen.getByRole("button", { name: /implement directly/i });
+      const createButton = screen.getByRole("button", { name: /create proposals/i });
+      expect(implementButton.compareDocumentPosition(createButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+      fireEvent.mouseEnter(implementButton);
+      fireEvent.mouseLeave(implementButton);
+      fireEvent.click(implementButton);
+      expect(onImplementDirectly).toHaveBeenCalledTimes(1);
+
+      fireEvent.mouseEnter(createButton);
+      fireEvent.mouseLeave(createButton);
+      fireEvent.click(createButton);
       expect(onCreateProposals).toHaveBeenCalledTimes(1);
     });
 
@@ -808,6 +898,23 @@ describe("PlanDisplay", () => {
       await user.click(screen.getByLabelText("Plan actions"));
       await user.click(screen.getByRole("menuitem", { name: /copy markdown/i }));
       expect(writeText).toHaveBeenCalled();
+    });
+
+    it("handles clipboard copy failure from the chromeless overflow menu", async () => {
+      const user = userEvent.setup();
+      const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+      Object.defineProperty(navigator, "clipboard", {
+        value: { writeText },
+        configurable: true,
+        writable: true,
+      });
+
+      render(<PlanDisplay plan={mockPlan} chromeless={true} />);
+      await user.click(screen.getByLabelText("Plan actions"));
+      await user.click(screen.getByRole("menuitem", { name: /copy markdown/i }));
+      await waitFor(() => {
+        expect(writeText).toHaveBeenCalled();
+      });
     });
   });
 

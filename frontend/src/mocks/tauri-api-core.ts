@@ -62,6 +62,66 @@ const mockExternalMcpConfig = {
   nodePath: null as string | null,
 };
 
+const mockAtlassianIntegrationSettings = {
+  enabled: false,
+  authMethod: "api_token",
+  siteUrl: null as string | null,
+  email: null as string | null,
+  hasApiToken: false,
+  oauthClientId: null as string | null,
+  oauthRedirectUri: null as string | null,
+  hasOauthClientSecret: false,
+  hasOauthToken: false,
+  oauthCloudId: null as string | null,
+  oauthScopes: null as string | null,
+  validationStatus: "not_configured",
+  jiraAvailable: false,
+  confluenceAvailable: false,
+  lastValidatedAt: null as string | null,
+  lastError: null as string | null,
+  updatedAt: new Date(0).toISOString(),
+};
+
+const mockAgentConversationJiraIssues = new Map<string, unknown>();
+
+function mockJiraIssue(input: {
+  conversationId: string;
+  projectId?: string | null;
+  issueKey: string;
+  issueId?: string | null;
+  title?: string | null;
+  issueUrl?: string | null;
+}) {
+  const now = new Date(0).toISOString();
+  return {
+    conversationId: input.conversationId,
+    projectId: input.projectId ?? "mock-project",
+    provider: "atlassian",
+    issueKey: input.issueKey,
+    issueId: input.issueId ?? input.issueKey,
+    issueUrl: input.issueUrl ?? `https://example.atlassian.net/browse/${input.issueKey}`,
+    title: input.title ?? `Mock issue ${input.issueKey}`,
+    status: "To Do",
+    assignee: null,
+    reporter: "Mock Reporter",
+    updatedAtRemote: now,
+    descriptionMarkdown: "Mock Jira description.",
+    descriptionText: "Mock Jira description.",
+    acceptanceCriteriaMarkdown: null,
+    acceptanceCriteriaText: null,
+    comments: [],
+    attachments: [],
+    lastRefreshedAt: now,
+    refreshStatus: "loaded",
+    refreshError: null,
+    assignedAt: now,
+    assignedFromMessageId: null,
+    manuallyAssigned: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 const mockAgentProviderSettings = {
   providers: [
     {
@@ -75,6 +135,8 @@ const mockAgentProviderSettings = {
       claudePermissionMode: null,
       claudeDangerouslySkipPermissions: false,
       claudeAllowDangerouslySkipPermissions: false,
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
       available: true,
       binaryFound: true,
       binaryPath: "/opt/homebrew/bin/codex",
@@ -95,6 +157,8 @@ const mockAgentProviderSettings = {
       claudePermissionMode: "bypassPermissions",
       claudeDangerouslySkipPermissions: true,
       claudeAllowDangerouslySkipPermissions: true,
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
       available: true,
       binaryFound: true,
       binaryPath: "/opt/homebrew/bin/claude",
@@ -107,6 +171,41 @@ const mockAgentProviderSettings = {
   ],
   defaultProvider: "codex",
   requiresOnboarding: false,
+};
+
+const mockManagedProviderCliStatuses = {
+  providers: [
+    {
+      provider: "codex",
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
+      supported: true,
+      installed: true,
+      binaryPath: "/opt/homebrew/bin/codex",
+      currentVersion: "0.136.0",
+      latestVersion: "0.137.0",
+      updateAvailable: true,
+      action: "none",
+      status:
+        "codex CLI 0.136.0 is user-managed; 0.137.0 is available. RX will not update it unless management is enabled.",
+      error: null,
+    },
+    {
+      provider: "claude",
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
+      supported: true,
+      installed: true,
+      binaryPath: "/Users/example/.local/bin/claude",
+      currentVersion: "2.1.170",
+      latestVersion: "2.1.175",
+      updateAvailable: true,
+      action: "none",
+      status:
+        "claude CLI 2.1.170 is user-managed; 2.1.175 is available. RX will not update it unless management is enabled.",
+      error: null,
+    },
+  ],
 };
 
 const mockAgentModels = [
@@ -230,6 +329,12 @@ function toSnakeAgentWorkspace(workspace: AgentConversationWorkspace | null) {
     publication_pr_url: workspace.publicationPrUrl,
     publication_pr_status: workspace.publicationPrStatus,
     publication_push_status: workspace.publicationPushStatus,
+    auto_publish_enabled: workspace.autoPublishEnabled ?? true,
+    auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+    auto_publish_paused_pr_autofix_enabled:
+      workspace.autoPublishPausedPrAutofixEnabled ?? null,
+    auto_publish_paused_pr_auto_merge_desired:
+      workspace.autoPublishPausedPrAutoMergeDesired ?? null,
     status: workspace.status,
     created_at: workspace.createdAt,
     updated_at: workspace.updatedAt,
@@ -332,6 +437,7 @@ function toSnakeIdeationSession(session: IdeationSessionResponse) {
     blocker_fingerprint: session.blockerFingerprint ?? null,
     inherited_plan_artifact_id: session.inheritedPlanArtifactId ?? null,
     session_purpose: session.sessionPurpose,
+    session_flow: session.sessionFlow ?? "ideation",
     acceptance_status: session.acceptanceStatus,
     analysis_base_ref_kind: session.analysisBaseRefKind ?? null,
     analysis_base_ref: session.analysisBaseRef ?? null,
@@ -351,6 +457,7 @@ function mockGitAuthDiagnostics(): GitAuthDiagnostics {
     fetchKind: "SSH",
     pushKind: "SSH",
     mixedAuthModes: false,
+    githubHttpsCredentialHelperConfigured: false,
     canSwitchToSsh: false,
     suggestedSshUrl: null,
   };
@@ -477,6 +584,29 @@ const commandHandlers: Record<
       truncated: false,
     };
   },
+  search_agent_composer_plan_references: async (args) => {
+    const input = args.input as { query?: string; limit?: number } | undefined;
+    const query = input?.query?.toLowerCase() ?? "";
+    const plans = [
+      {
+        sessionId: "mock-planning-session",
+        artifactId: "mock-plan-artifact",
+        title: "Mock Implementation Plan",
+        status: "approved",
+        artifactVersion: 1,
+        updatedAt: new Date().toISOString(),
+        approvedAt: new Date().toISOString(),
+      },
+    ].filter((plan) =>
+      `${plan.title} ${plan.sessionId} ${plan.artifactId} ${plan.status}`
+        .toLowerCase()
+        .includes(query),
+    );
+    return {
+      plans: plans.slice(0, input?.limit ?? 12),
+      truncated: false,
+    };
+  },
   list_agent_composer_skills: async () => ({
     skills: [
       {
@@ -521,6 +651,183 @@ const commandHandlers: Record<
     ],
   }),
   get_agent_provider_settings: async () => mockAgentProviderSettings,
+  get_managed_provider_cli_status: async () => mockManagedProviderCliStatuses,
+  install_or_update_managed_provider_cli: async (args) => {
+    const input = args.input as { provider?: string };
+    const status = mockManagedProviderCliStatuses.providers.find(
+      (entry) => entry.provider === input.provider,
+    );
+    if (!status || !status.supported) {
+      throw new Error("Managed CLI installs are not available for this provider.");
+    }
+    Object.assign(status, {
+      cliManagementMode: "rx_managed",
+      installed: true,
+      currentVersion: status.latestVersion ?? "0.137.0",
+      updateAvailable: false,
+      action: "none",
+      status: `RX-managed ${status.provider} ${status.latestVersion ?? "0.137.0"} is installed.`,
+    });
+    return {
+      provider: status.provider,
+      success: true,
+      status,
+      stdout: "mock install complete",
+      stderr: null,
+    };
+  },
+  auto_update_managed_provider_clis: async () => ({
+    updated: [],
+    skipped: mockManagedProviderCliStatuses.providers,
+  }),
+  get_atlassian_integration_settings: async () => mockAtlassianIntegrationSettings,
+  save_atlassian_integration_settings: async (args) => {
+    const input = args.input as {
+      authMethod?: "api_token" | "oauth";
+      siteUrl?: string | null;
+      email?: string | null;
+      apiToken?: string | null;
+      oauthClientId?: string | null;
+      oauthClientSecret?: string | null;
+      oauthRedirectUri?: string | null;
+    };
+    mockAtlassianIntegrationSettings.authMethod =
+      input.authMethod ?? mockAtlassianIntegrationSettings.authMethod;
+    mockAtlassianIntegrationSettings.siteUrl = input.siteUrl ?? null;
+    mockAtlassianIntegrationSettings.email = input.email ?? null;
+    mockAtlassianIntegrationSettings.hasApiToken =
+      Boolean(input.apiToken) || mockAtlassianIntegrationSettings.hasApiToken;
+    mockAtlassianIntegrationSettings.oauthClientId = input.oauthClientId ?? null;
+    mockAtlassianIntegrationSettings.oauthRedirectUri = input.oauthRedirectUri ?? null;
+    mockAtlassianIntegrationSettings.hasOauthClientSecret =
+      Boolean(input.oauthClientSecret) ||
+      mockAtlassianIntegrationSettings.hasOauthClientSecret;
+    mockAtlassianIntegrationSettings.enabled = false;
+    mockAtlassianIntegrationSettings.validationStatus =
+      mockAtlassianIntegrationSettings.authMethod === "oauth"
+        ? mockAtlassianIntegrationSettings.siteUrl &&
+          mockAtlassianIntegrationSettings.oauthClientId &&
+          mockAtlassianIntegrationSettings.oauthRedirectUri &&
+          mockAtlassianIntegrationSettings.hasOauthClientSecret
+          ? "pending"
+          : "not_configured"
+        : mockAtlassianIntegrationSettings.siteUrl &&
+            mockAtlassianIntegrationSettings.email &&
+            mockAtlassianIntegrationSettings.hasApiToken
+        ? "pending"
+        : "not_configured";
+    return mockAtlassianIntegrationSettings;
+  },
+  build_atlassian_oauth_authorization_url: async () => ({
+    authorizationUrl: "https://auth.atlassian.com/authorize?mock=1",
+    state: "mock-state",
+    scopes: "read:jira-work offline_access",
+    redirectUri: "http://127.0.0.1:8765/atlassian/oauth/callback",
+  }),
+  start_atlassian_oauth_local_callback: async () => ({
+    authorizationUrl: "https://auth.atlassian.com/authorize?mock=1",
+    state: "mock-state",
+    scopes: "read:jira-work offline_access",
+    redirectUri: "http://127.0.0.1:8765/atlassian/oauth/callback",
+  }),
+  complete_atlassian_oauth_local_callback: async () => {
+    Object.assign(mockAtlassianIntegrationSettings, {
+      authMethod: "oauth",
+      enabled: true,
+      hasOauthToken: true,
+      oauthCloudId: "mock-cloud-id",
+      validationStatus: "valid",
+      jiraAvailable: true,
+      confluenceAvailable: true,
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+    });
+    return mockAtlassianIntegrationSettings;
+  },
+  exchange_atlassian_oauth_code: async () => {
+    Object.assign(mockAtlassianIntegrationSettings, {
+      authMethod: "oauth",
+      enabled: true,
+      hasOauthToken: true,
+      oauthCloudId: "mock-cloud-id",
+      validationStatus: "valid",
+      jiraAvailable: true,
+      confluenceAvailable: true,
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+    });
+    return mockAtlassianIntegrationSettings;
+  },
+  validate_atlassian_integration: async () => {
+    Object.assign(mockAtlassianIntegrationSettings, {
+      enabled: true,
+      validationStatus: "valid",
+      jiraAvailable: true,
+      confluenceAvailable: true,
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+    });
+    return mockAtlassianIntegrationSettings;
+  },
+  search_atlassian_resources: async (args) => {
+    const input = args.input as { kind?: string; query?: string };
+    const query = input.query?.trim() ?? "";
+    if (input.kind !== "jira" || query.length === 0) {
+      return { resources: [] };
+    }
+    const key = /^[a-z]+-\d+$/i.test(query) ? query.toUpperCase() : "RX-42";
+    return {
+      resources: [
+        {
+          kind: "jira",
+          id: key,
+          key,
+          title: `Mock issue for ${query}`,
+          url: `https://example.atlassian.net/browse/${key}`,
+          excerpt: "Mock Jira search result",
+        },
+      ],
+    };
+  },
+  get_agent_conversation_jira_issue: async (args) => {
+    const input = args.input as { conversationId: string };
+    return {
+      issue: mockAgentConversationJiraIssues.get(input.conversationId) ?? null,
+    };
+  },
+  assign_agent_conversation_jira_issue: async (args) => {
+    const input = args.input as {
+      conversationId: string;
+      projectId?: string | null;
+      issueKey: string;
+      issueId?: string | null;
+      title?: string | null;
+      issueUrl?: string | null;
+    };
+    const issue = mockJiraIssue(input);
+    mockAgentConversationJiraIssues.set(input.conversationId, issue);
+    return { issue };
+  },
+  refresh_agent_conversation_jira_issue: async (args) => {
+    const input = args.input as { conversationId: string };
+    const existing = mockAgentConversationJiraIssues.get(input.conversationId);
+    if (!existing || typeof existing !== "object") {
+      return { issue: null };
+    }
+    const issue = {
+      ...existing,
+      lastRefreshedAt: new Date(0).toISOString(),
+      refreshStatus: "loaded",
+      refreshError: null,
+    };
+    mockAgentConversationJiraIssues.set(input.conversationId, issue);
+    return { issue };
+  },
+  clear_agent_conversation_jira_issue: async (args) => {
+    const input = args.input as { conversationId: string };
+    mockAgentConversationJiraIssues.delete(input.conversationId);
+    return { issue: null };
+  },
   update_agent_provider_settings: async (args) => {
     const input = args.input as Partial<
       (typeof mockAgentProviderSettings.providers)[number]
@@ -585,6 +892,7 @@ const commandHandlers: Record<
       fetchKind: "SSH",
       pushKind: "SSH",
       mixedAuthModes: false,
+      githubHttpsCredentialHelperConfigured: false,
       canSwitchToSsh: false,
       suggestedSshUrl: null,
     };
@@ -596,7 +904,19 @@ const commandHandlers: Record<
     window.__mockGhAuthStatus = true;
     return true;
   },
-  setup_gh_git_auth: async () => true,
+  setup_gh_git_auth: async () => {
+    const current = mockGitAuthDiagnostics();
+    if (
+      current.fetchUrl?.startsWith("https://github.com/") ||
+      current.pushUrl?.startsWith("https://github.com/")
+    ) {
+      window.__mockGitAuthDiagnostics = {
+        ...current,
+        githubHttpsCredentialHelperConfigured: true,
+      };
+    }
+    return true;
+  },
   resume_deferred_git_startup: async () => true,
   update_github_pr_enabled: async () => null,
 
@@ -870,6 +1190,12 @@ const commandHandlers: Record<
       publication_pr_url: workspace.publicationPrUrl,
       publication_pr_status: workspace.publicationPrStatus,
       publication_push_status: workspace.publicationPushStatus,
+      auto_publish_enabled: workspace.autoPublishEnabled ?? true,
+      auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+      auto_publish_paused_pr_autofix_enabled:
+        workspace.autoPublishPausedPrAutofixEnabled ?? null,
+      auto_publish_paused_pr_auto_merge_desired:
+        workspace.autoPublishPausedPrAutoMergeDesired ?? null,
       status: workspace.status,
       created_at: workspace.createdAt,
       updated_at: workspace.updatedAt,
@@ -916,6 +1242,12 @@ const commandHandlers: Record<
             publication_pr_url: workspace.publicationPrUrl,
             publication_pr_status: workspace.publicationPrStatus,
             publication_push_status: workspace.publicationPushStatus,
+            auto_publish_enabled: workspace.autoPublishEnabled ?? true,
+            auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+            auto_publish_paused_pr_autofix_enabled:
+              workspace.autoPublishPausedPrAutofixEnabled ?? null,
+            auto_publish_paused_pr_auto_merge_desired:
+              workspace.autoPublishPausedPrAutoMergeDesired ?? null,
             status: workspace.status,
             created_at: workspace.createdAt,
             updated_at: workspace.updatedAt,
@@ -1016,6 +1348,12 @@ const commandHandlers: Record<
             publication_pr_url: workspace.publicationPrUrl,
             publication_pr_status: workspace.publicationPrStatus,
             publication_push_status: workspace.publicationPushStatus,
+            auto_publish_enabled: workspace.autoPublishEnabled ?? true,
+            auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+            auto_publish_paused_pr_autofix_enabled:
+              workspace.autoPublishPausedPrAutofixEnabled ?? null,
+            auto_publish_paused_pr_auto_merge_desired:
+              workspace.autoPublishPausedPrAutoMergeDesired ?? null,
             status: workspace.status,
             created_at: workspace.createdAt,
             updated_at: workspace.updatedAt,
@@ -1073,6 +1411,12 @@ const commandHandlers: Record<
             publication_pr_url: workspace.publicationPrUrl,
             publication_pr_status: workspace.publicationPrStatus,
             publication_push_status: workspace.publicationPushStatus,
+            auto_publish_enabled: workspace.autoPublishEnabled ?? true,
+            auto_publish_initial_pr_enabled: workspace.autoPublishInitialPrEnabled ?? false,
+            auto_publish_paused_pr_autofix_enabled:
+              workspace.autoPublishPausedPrAutofixEnabled ?? null,
+            auto_publish_paused_pr_auto_merge_desired:
+              workspace.autoPublishPausedPrAutoMergeDesired ?? null,
             status: workspace.status,
             created_at: workspace.createdAt,
             updated_at: workspace.updatedAt,
@@ -1334,6 +1678,8 @@ const commandHandlers: Record<
       project_ideation_max: settings.projectIdeationMax,
       auto_commit: settings.autoCommit,
       pause_on_failure: settings.pauseOnFailure,
+      agent_workspace_pr_autofix_default: settings.agentWorkspacePrAutofixDefault,
+      agent_workspace_pr_auto_merge_default: settings.agentWorkspacePrAutoMergeDefault,
     };
   },
   update_execution_settings: async (args) => {
@@ -1342,18 +1688,24 @@ const commandHandlers: Record<
       project_ideation_max: number;
       auto_commit: boolean;
       pause_on_failure: boolean;
+      agent_workspace_pr_autofix_default: boolean;
+      agent_workspace_pr_auto_merge_default: boolean;
     };
     const settings = await mockExecutionApi.updateSettings({
       maxConcurrentTasks: input.max_concurrent_tasks,
       projectIdeationMax: input.project_ideation_max,
       autoCommit: input.auto_commit,
       pauseOnFailure: input.pause_on_failure,
+      agentWorkspacePrAutofixDefault: input.agent_workspace_pr_autofix_default,
+      agentWorkspacePrAutoMergeDefault: input.agent_workspace_pr_auto_merge_default,
     }, args.projectId as string | undefined);
     return {
       max_concurrent_tasks: settings.maxConcurrentTasks,
       project_ideation_max: settings.projectIdeationMax,
       auto_commit: settings.autoCommit,
       pause_on_failure: settings.pauseOnFailure,
+      agent_workspace_pr_autofix_default: settings.agentWorkspacePrAutofixDefault,
+      agent_workspace_pr_auto_merge_default: settings.agentWorkspacePrAutoMergeDefault,
     };
   },
   set_active_project: async (args) => {

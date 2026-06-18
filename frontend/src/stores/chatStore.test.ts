@@ -584,6 +584,29 @@ describe("chatStore", () => {
       expect(state.queuedMessages[contextKey]?.[0].isEditing).toBe(false);
     });
 
+    it("stores attachment IDs for queued messages", () => {
+      useChatStore
+        .getState()
+        .queueMessage(contextKey, "Test", "msg-with-attachments", ["att-1", "att-2"]);
+
+      const state = useChatStore.getState();
+      expect(state.queuedMessages[contextKey]?.[0].attachmentIds).toEqual([
+        "att-1",
+        "att-2",
+      ]);
+    });
+
+    it("merges attachment IDs from duplicate backend queue events", () => {
+      useChatStore.getState().queueMessage(contextKey, "Test", "msg-with-attachments");
+      useChatStore
+        .getState()
+        .queueMessage(contextKey, "Test", "msg-with-attachments", ["att-1"]);
+
+      const state = useChatStore.getState();
+      expect(state.queuedMessages[contextKey]).toHaveLength(1);
+      expect(state.queuedMessages[contextKey]?.[0].attachmentIds).toEqual(["att-1"]);
+    });
+
     it("appends to existing queue", () => {
       useChatStore.getState().queueMessage(contextKey, "First");
       useChatStore.getState().queueMessage(contextKey, "Second");
@@ -648,6 +671,20 @@ describe("chatStore", () => {
 
       const state = useChatStore.getState();
       expect(state.queuedMessages[contextKey]?.[0].content).toBe("Updated");
+    });
+
+    it("preserves attachment IDs when editing content", () => {
+      useChatStore
+        .getState()
+        .queueMessage(contextKey, "Original", "msg-with-attachments", ["att-1"]);
+
+      useChatStore
+        .getState()
+        .editQueuedMessage(contextKey, "msg-with-attachments", "Updated");
+
+      const state = useChatStore.getState();
+      expect(state.queuedMessages[contextKey]?.[0].content).toBe("Updated");
+      expect(state.queuedMessages[contextKey]?.[0].attachmentIds).toEqual(["att-1"]);
     });
 
     it("sets isEditing to false after edit", () => {

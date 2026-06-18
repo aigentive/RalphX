@@ -16,7 +16,16 @@ pub async fn create_plan_artifact(
         auto_accept.contains(&session_id_str)
     };
 
-    let (session_id, created, auto_verify_generation, project_id, session_origin, session_title, should_auto_verify) =
+    let (
+        session_id,
+        created,
+        auto_verify_generation,
+        project_id,
+        session_title,
+        is_planning_flow,
+        should_auto_verify,
+        should_offer_verification_confirmation,
+    ) =
         state
             .app_state
             .db
@@ -27,8 +36,11 @@ pub async fn create_plan_artifact(
                     .ok_or_else(|| AppError::NotFound(format!("Session {} not found", sid)))?;
 
                 let is_external = session.origin == SessionOrigin::External;
+                let is_planning_flow = session.session_flow == IdeationSessionFlow::Planning;
                 let should_auto_verify =
-                    auto_verify_enabled || is_external || is_auto_accept;
+                    !is_planning_flow && (auto_verify_enabled || is_external || is_auto_accept);
+                let should_offer_verification_confirmation =
+                    !is_planning_flow && session.origin != SessionOrigin::External;
 
                 crate::http_server::helpers::assert_session_mutable(&session)?;
 
@@ -72,8 +84,7 @@ pub async fn create_plan_artifact(
                 };
 
                 let session_title = session.title.clone();
-                let session_origin = session.origin.clone();
-                Ok((sid, created, auto_verify_generation, session.project_id.clone(), session_origin, session_title, should_auto_verify))
+                Ok((sid, created, auto_verify_generation, session.project_id.clone(), session_title, is_planning_flow, should_auto_verify, should_offer_verification_confirmation))
             })
             .await
             .map_err(|e| {
@@ -220,7 +231,7 @@ pub async fn create_plan_artifact(
                 );
             }
         }
-    } else if session_origin != SessionOrigin::External {
+    } else if should_offer_verification_confirmation {
         // UI session without auto-verify: set DB status to 'pending' (D7: also resets 'rejected')
         // and emit confirmation event so the UI shows the dialog immediately.
         if let Err(e) = state
@@ -248,5 +259,9 @@ pub async fn create_plan_artifact(
         }
     }
 
-    Ok(Json(ArtifactResponse::from(created)))
+    let mut response = ArtifactResponse::from(created);
+    if is_planning_flow {
+        attach_plan_approval(&mut response, PlanApprovalView::draft());
+    }
+    Ok(Json(response))
 }

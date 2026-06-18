@@ -16,7 +16,8 @@ use crate::domain::services::{MessageQueue, QueuedMessage};
 use crate::infrastructure::agents::claude::ToolCall;
 
 use super::{
-    ChatConversationWithMessages, ChatService, ChatServiceError, SendMessageOptions, SendResult,
+    AgentRunningState, ChatConversationWithMessages, ChatService, ChatServiceError,
+    SendMessageOptions, SendResult,
 };
 
 // ============================================================================
@@ -234,6 +235,42 @@ impl ChatService for MockChatService {
             .delete(context_type, context_id, message_id))
     }
 
+    async fn send_queued_message_now(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message_id: &str,
+    ) -> Result<SendResult, ChatServiceError> {
+        let queued_msg = self
+            .message_queue
+            .take(context_type, context_id, message_id)
+            .ok_or_else(|| {
+                ChatServiceError::ContextNotFound(format!(
+                    "Queued message not found for {}/{}: {}",
+                    context_type, context_id, message_id
+                ))
+            })?;
+
+        self.send_message(
+            context_type,
+            context_id,
+            &queued_msg.content,
+            SendMessageOptions {
+                metadata: queued_msg.metadata_override.clone(),
+                harness_override: queued_msg.harness_override,
+                model_override: queued_msg.model_override.clone(),
+                logical_effort_override: queued_msg.logical_effort_override,
+                force_new_provider_session: queued_msg.force_new_provider_session,
+                composer_project_references: queued_msg.composer_project_references.clone(),
+                composer_integration_references: queued_msg.composer_integration_references.clone(),
+                composer_artifact_references: queued_msg.composer_artifact_references.clone(),
+                attachment_ids: queued_msg.attachment_ids.clone(),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
     async fn get_or_create_conversation(
         &self,
         context_type: ChatContextType,
@@ -343,17 +380,19 @@ impl ChatService for MockChatService {
         &self,
         context_type: ChatContextType,
         context_ids: &[String],
-    ) -> HashMap<String, bool> {
+    ) -> HashMap<String, AgentRunningState> {
         let running_agents = self.running_agents.lock().await;
         context_ids
             .iter()
             .filter(|context_id| !context_id.is_empty())
             .map(|context_id| {
                 let key = format!("{}/{}", context_type, context_id);
-                (
-                    context_id.clone(),
-                    running_agents.get(&key).copied().unwrap_or(false),
-                )
+                let state = if running_agents.get(&key).copied().unwrap_or(false) {
+                    AgentRunningState::generating()
+                } else {
+                    AgentRunningState::idle()
+                };
+                (context_id.clone(), state)
             })
             .collect()
     }

@@ -25,7 +25,8 @@ pub use codex::stream_processor::{
 };
 pub use codex::{
     build_codex_exec_args, build_codex_exec_resume_args, build_codex_mcp_overrides,
-    build_spawnable_codex_exec_command, build_spawnable_codex_resume_command, compose_codex_prompt,
+    build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
+    build_spawnable_codex_resume_command, compose_codex_prompt, compose_codex_prompt_for_profile,
     find_codex_cli, normalize_codex_exec_output, parse_codex_cli_capabilities, parse_codex_version,
     probe_codex_cli, resolve_codex_cli, CodexCliCapabilities, CodexCliClient, CodexExecCliConfig,
     CodexMcpRuntimeContext, ResolvedCodexCli,

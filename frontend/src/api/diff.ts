@@ -5,7 +5,9 @@ import { z } from "zod";
 import {
   FileChangesResponseSchema,
   FileDiffSchema,
+  FileDiffPageSchema,
   TaskCommitsResponseSchema,
+  AgentWorkspaceChangeSummaryResponseSchema,
   AgentWorkspaceReviewResponseSchema,
   PrDiffAnnotationsResponseSchema,
   RangeFetchResponseSchema,
@@ -13,15 +15,19 @@ import {
 import {
   transformFileChange,
   transformFileDiff,
+  transformFileDiffPage,
   transformCommitInfo,
+  transformAgentWorkspaceChangeSummary,
   transformAgentWorkspaceReview,
   transformPrDiffAnnotationsResponse,
   transformRangeLine,
 } from "./diff.transforms";
 import type {
+  AgentWorkspaceChangeSummary,
   AgentWorkspaceReview,
   FileChange,
   FileDiff,
+  FileDiffPage,
   CommitInfo,
   DiffRefKind,
   PrDiffAnnotationsResponse,
@@ -31,9 +37,13 @@ import { backendApiUrl } from "./backend";
 
 // Re-export types for convenience
 export type {
+  AgentWorkspaceChangeBucketSummary,
+  AgentWorkspaceChangeSummary,
   AgentWorkspaceReview,
   FileChange,
   FileDiff,
+  FileDiffPage,
+  DiffPageRow,
   FileChangeStatus,
   CommitInfo,
   DiffLineKind,
@@ -51,9 +61,13 @@ export {
   FileChangeSchema,
   FileChangeStatusSchema,
   FileDiffSchema,
+  FileDiffPageSchema,
+  DiffPageRowSchema,
   FileChangesResponseSchema,
   CommitInfoSchema,
   TaskCommitsResponseSchema,
+  AgentWorkspaceChangeBucketSummarySchema,
+  AgentWorkspaceChangeSummaryResponseSchema,
   AgentWorkspaceReviewResponseSchema,
   DiffLineKindSchema,
   DiffLineSchema,
@@ -68,9 +82,12 @@ export {
 
 // Re-export transforms for consumers that need manual transformation
 export {
+  transformAgentWorkspaceChangeSummary,
   transformAgentWorkspaceReview,
   transformFileChange,
   transformFileDiff,
+  transformFileDiffPage,
+  transformDiffPageRow,
   transformDiffLine,
   transformDiffHunk,
   transformCommitInfo,
@@ -196,6 +213,16 @@ export const diffApi = {
       transformAgentWorkspaceReview
     ),
 
+  getAgentConversationWorkspaceChangeSummary: (
+    conversationId: string
+  ): Promise<AgentWorkspaceChangeSummary> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_change_summary",
+      { conversationId },
+      AgentWorkspaceChangeSummaryResponseSchema,
+      transformAgentWorkspaceChangeSummary
+    ),
+
   getAgentConversationWorkspacePrAnnotations: (
     conversationId: string
   ): Promise<PrDiffAnnotationsResponse> =>
@@ -312,6 +339,40 @@ export const diffApi = {
       FileDiffSchema,
       transformFileDiff
     ),
+
+  /**
+   * Fetch a bounded page of flattened diff rows for one agent workspace file.
+   * Used by large inline diffs so explicit "Show anyway" does not request the
+   * full hunk payload up front.
+   */
+  getAgentConversationWorkspaceFileDiffPage: async (args: {
+    conversationId: string;
+    path: string;
+    refKind: DiffRefKind;
+    offset: number;
+    limit: number;
+  }): Promise<FileDiffPage> => {
+    const { conversationId, path, refKind, offset, limit } = args;
+    const url = backendApiUrl(
+      `agent-workspaces/${encodeURIComponent(conversationId)}/file-diff-page`
+    );
+    const params = new URLSearchParams({
+      path,
+      ref_kind: refKind.kind,
+      offset: String(offset),
+      limit: String(limit),
+    });
+    if (refKind.kind === "commit") {
+      params.set("sha", refKind.sha);
+    }
+    const response = await fetch(`${url}?${params.toString()}`);
+    if (!response.ok) {
+      throw new Error(`File diff page fetch failed: ${response.status} ${response.statusText}`);
+    }
+    const data: unknown = await response.json();
+    const validated = FileDiffPageSchema.parse(data);
+    return transformFileDiffPage(validated);
+  },
 
   /**
    * Fetch a range of lines from a file in the agent workspace.

@@ -42,6 +42,7 @@ describe("tool widget registry coverage", () => {
     expect(canonicalizeToolName("mcp__ralphx__start_step")).toBe("start_step");
     expect(canonicalizeToolName("mcp__ralphx_internal__create_agent_task")).toBe("create_agent_task");
     expect(canonicalizeToolName("mcp__ralphx__fs_read_file")).toBe("read");
+    expect(canonicalizeToolName("mcp__ralphx__fs_list_dir")).toBe("list_dir");
     expect(canonicalizeToolName("mcp__ralphx__fs_grep")).toBe("grep");
     expect(canonicalizeToolName("mcp__ralphx__fs_glob")).toBe("glob");
 
@@ -85,6 +86,7 @@ describe("tool widget registry coverage", () => {
       getToolCallWidget("create_agent_task")
     );
     expect(getToolCallWidget("mcp__ralphx__fs_read_file")).toBe(getToolCallWidget("read"));
+    expect(getToolCallWidget("mcp__ralphx__fs_list_dir")).toBe(getToolCallWidget("list_dir"));
     expect(getToolCallWidget("mcp__ralphx__fs_grep")).toBe(getToolCallWidget("grep"));
     expect(getToolCallWidget("mcp__ralphx__fs_glob")).toBe(getToolCallWidget("glob"));
   });

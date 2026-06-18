@@ -19,6 +19,29 @@ export type SearchAgentComposerEntriesResponse = z.infer<
   typeof SearchAgentComposerEntriesResponseSchema
 >;
 
+export const AgentComposerPlanReferenceSchema = z.object({
+  sessionId: z.string(),
+  artifactId: z.string(),
+  title: z.string().nullable().optional(),
+  status: z.enum(["draft", "approved", "accepted"]),
+  artifactVersion: z.number(),
+  updatedAt: z.string(),
+  approvedAt: z.string().nullable().optional(),
+});
+
+export type AgentComposerPlanReference = z.infer<
+  typeof AgentComposerPlanReferenceSchema
+>;
+
+export const SearchAgentComposerPlanReferencesResponseSchema = z.object({
+  plans: z.array(AgentComposerPlanReferenceSchema),
+  truncated: z.boolean(),
+});
+
+export type SearchAgentComposerPlanReferencesResponse = z.infer<
+  typeof SearchAgentComposerPlanReferencesResponseSchema
+>;
+
 export const AgentComposerSkillSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -50,6 +73,12 @@ export interface SearchAgentComposerEntriesInput {
   limit?: number;
 }
 
+export interface SearchAgentComposerPlanReferencesInput {
+  projectId: string;
+  query: string;
+  limit?: number;
+}
+
 export interface ListAgentComposerSkillsInput {
   projectId: string;
   conversationId?: string | null;
@@ -75,6 +104,16 @@ export const agentComposerApi = {
       "list_agent_composer_skills",
       { input },
       ListAgentComposerSkillsResponseSchema,
+    );
+  },
+
+  searchPlanReferences(
+    input: SearchAgentComposerPlanReferencesInput,
+  ): Promise<SearchAgentComposerPlanReferencesResponse> {
+    return typedInvoke(
+      "search_agent_composer_plan_references",
+      { input },
+      SearchAgentComposerPlanReferencesResponseSchema,
     );
   },
 } as const;

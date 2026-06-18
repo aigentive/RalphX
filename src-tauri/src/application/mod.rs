@@ -3,10 +3,14 @@
 
 pub mod agent_lane_settings_bootstrap;
 pub mod agent_lane_resolution;
+pub mod agent_conversation_fork;
+pub mod agent_conversation_jira_issue;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
+pub(crate) mod agent_planning_session_titles;
 pub mod agent_workspace_pr_description;
 pub mod agent_workspace_external_pr_reconciliation;
+pub(crate) mod plan_pr_description;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_bridge;
@@ -24,6 +28,7 @@ mod shutdown_tests;
 pub mod ideation_harness_availability;
 pub mod ideation_workspace;
 pub mod apply_service;
+pub mod atlassian_integration_service;
 pub mod chat_attachment_service;
 pub mod chat_resumption;
 pub mod chat_service;
@@ -38,15 +43,18 @@ pub(crate) mod git_artifact_cleanup;
 pub mod harness_runtime_registry;
 pub mod ideation_service;
 pub mod interactive_process_registry;
+pub(crate) mod managed_provider_cli;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
 pub(crate) mod native_menu;
 pub(crate) mod orphan_worktree_cleanup;
 pub mod pending_session_drain;
 pub mod permission_state;
+pub(crate) mod plan_complexity_assessment;
 pub mod plan_ranking;
 pub mod priority_service;
 pub(crate) mod provider_onboarding_gate;
+pub mod provider_session_fork;
 pub mod pr_startup_recovery;
 pub mod prune_engine;
 pub mod publish_resilience;
@@ -106,6 +114,13 @@ pub(crate) use ideation_harness_availability::{
 pub use apply_service::{
     ApplyProposalsOptions, ApplyProposalsResult, ApplyService, SelectionValidation, TargetColumn,
 };
+pub use atlassian_integration_service::{
+    AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
+    AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraComment,
+    AtlassianOAuthAuthorization, AtlassianOAuthResource, AtlassianOAuthTokenResponse,
+    AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
+    EmptyAtlassianApiClient, UnavailableAtlassianApiClient,
+};
 pub use chat_attachment_service::ChatAttachmentService;
 pub use agent_terminal::AgentTerminalService;
 pub use agent_task_service::AgentTaskService;
@@ -116,8 +131,8 @@ pub use execution_settings_bootstrap::{
     load_or_seed_execution_settings_defaults, ExecutionSettingsBootstrapResult,
 };
 pub use diff_service::{
-    ConflictDiff, DiffHunk, DiffLine, DiffLineKind, DiffRefKind, DiffService, DiffSide,
-    FileChange, FileChangeStatus, FileDiff, RangeLine,
+    ConflictDiff, DiffHunk, DiffLine, DiffLineKind, DiffPageRow, DiffRefKind, DiffService,
+    DiffSide, FileChange, FileChangeStatus, FileDiff, FileDiffPage, RangeLine,
 };
 pub use git_service::{
     checkout_free::CheckoutFreeMergeResult, CommitInfo, DiffStats, GitService, MergeAttemptResult,
@@ -183,7 +198,11 @@ mod chat_service_output_tests;
 #[cfg(test)]
 mod git_artifact_cleanup_tests;
 #[cfg(test)]
+mod harness_runtime_registry_tests;
+#[cfg(test)]
 mod ideation_harness_availability_tests;
+#[cfg(test)]
+mod ideation_workspace_tests;
 #[cfg(test)]
 mod orphan_worktree_cleanup_tests;
 #[cfg(test)]
@@ -199,9 +218,15 @@ mod prune_engine_tests;
 #[cfg(test)]
 mod publish_resilience_tests;
 #[cfg(test)]
+mod plan_complexity_assessment_tests;
+#[cfg(test)]
+mod plan_pr_description_tests;
+#[cfg(test)]
 mod session_export_service_tests;
 #[cfg(test)]
 mod session_namer_agent_tests;
+#[cfg(test)]
+mod agent_planning_session_titles_tests;
 #[cfg(test)]
 mod session_namer_prompt_tests;
 #[cfg(test)]

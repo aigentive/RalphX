@@ -2,9 +2,12 @@
 
 import type { z } from "zod";
 import type {
+  AgentWorkspaceChangeSummaryResponseSchema,
   AgentWorkspaceReviewResponseSchema,
   FileChangeSchema,
   FileDiffSchema,
+  FileDiffPageSchema,
+  DiffPageRowSchema,
   DiffLineSchema,
   DiffHunkSchema,
   CommitInfoSchema,
@@ -14,9 +17,13 @@ import type {
   RangeLineSchema,
 } from "./diff.schemas";
 import type {
+  AgentWorkspaceChangeBucketSummary,
+  AgentWorkspaceChangeSummary,
   AgentWorkspaceReview,
   FileChange,
   FileDiff,
+  FileDiffPage,
+  DiffPageRow,
   DiffLine,
   DiffHunk,
   CommitInfo,
@@ -28,6 +35,8 @@ import type {
 
 type RawFileChange = z.infer<typeof FileChangeSchema>;
 type RawFileDiff = z.infer<typeof FileDiffSchema>;
+type RawFileDiffPage = z.infer<typeof FileDiffPageSchema>;
+type RawDiffPageRow = z.infer<typeof DiffPageRowSchema>;
 type RawDiffLine = z.infer<typeof DiffLineSchema>;
 type RawDiffHunk = z.infer<typeof DiffHunkSchema>;
 type RawCommitInfo = z.infer<typeof CommitInfoSchema>;
@@ -36,6 +45,9 @@ type RawPrAnnotationSourceUnavailable = z.infer<typeof PrAnnotationSourceUnavail
 type RawPrDiffAnnotationsResponse = z.infer<typeof PrDiffAnnotationsResponseSchema>;
 type RawRangeLine = z.infer<typeof RangeLineSchema>;
 type RawAgentWorkspaceReview = z.infer<typeof AgentWorkspaceReviewResponseSchema>;
+type RawAgentWorkspaceChangeSummary = z.infer<
+  typeof AgentWorkspaceChangeSummaryResponseSchema
+>;
 
 export function transformFileChange(raw: RawFileChange): FileChange {
   return {
@@ -72,6 +84,34 @@ export function transformFileDiff(raw: RawFileDiff): FileDiff {
     filePath: raw.file_path,
     language: raw.language,
     hunks: raw.hunks.map(transformDiffHunk),
+    oldTotalLines: raw.old_total_lines,
+    newTotalLines: raw.new_total_lines,
+    isBinary: raw.is_binary,
+  };
+}
+
+export function transformDiffPageRow(raw: RawDiffPageRow): DiffPageRow {
+  if (raw.kind === "hunk_header") {
+    return {
+      kind: raw.kind,
+      header: raw.header,
+    };
+  }
+  return {
+    kind: raw.kind,
+    line: transformDiffLine(raw.line),
+  };
+}
+
+export function transformFileDiffPage(raw: RawFileDiffPage): FileDiffPage {
+  return {
+    filePath: raw.file_path,
+    language: raw.language,
+    rows: raw.rows.map(transformDiffPageRow),
+    offset: raw.offset,
+    limit: raw.limit,
+    nextOffset: raw.next_offset,
+    totalRows: raw.total_rows,
     oldTotalLines: raw.old_total_lines,
     newTotalLines: raw.new_total_lines,
     isBinary: raw.is_binary,
@@ -146,5 +186,25 @@ export function transformAgentWorkspaceReview(
     baseRef: raw.base_ref,
     headRef: raw.head_ref,
     supportsWorktreeModes: raw.supports_worktree_modes,
+  };
+}
+
+function transformAgentWorkspaceChangeBucketSummary(
+  raw: RawAgentWorkspaceChangeSummary["staged"]
+): AgentWorkspaceChangeBucketSummary {
+  return {
+    fileCount: raw.file_count,
+    additions: raw.additions,
+    deletions: raw.deletions,
+  };
+}
+
+export function transformAgentWorkspaceChangeSummary(
+  raw: RawAgentWorkspaceChangeSummary
+): AgentWorkspaceChangeSummary {
+  return {
+    supportsWorktreeModes: raw.supports_worktree_modes,
+    staged: transformAgentWorkspaceChangeBucketSummary(raw.staged),
+    unstaged: transformAgentWorkspaceChangeBucketSummary(raw.unstaged),
   };
 }

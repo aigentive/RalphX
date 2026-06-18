@@ -512,6 +512,7 @@ fn create_test_session(project_id: &ProjectId) -> IdeationSession {
         spawn_reason: None,
         blocker_fingerprint: None,
         session_purpose: Default::default(),
+        session_flow: Default::default(),
         cross_project_checked: true,
         plan_version_last_read: None,
         origin: Default::default(),

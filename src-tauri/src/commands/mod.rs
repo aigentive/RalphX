@@ -10,6 +10,7 @@ pub mod branch_helpers;
 pub mod api_key_commands;
 pub mod agent_profile_commands;
 pub(crate) mod agent_workspace_auto_publish;
+pub mod atlassian_commands;
 pub mod artifact_commands;
 pub mod chat_attachment_commands;
 pub mod conversation_stats_commands;
@@ -33,8 +34,11 @@ pub mod permission_commands;
 pub mod plan_branch_commands;
 pub mod plan_commands;
 pub mod project_commands;
+pub mod provider_cli_management_commands;
 pub mod qa_commands;
 pub mod question_commands;
+#[cfg(test)]
+mod question_commands_tests;
 pub mod research_commands;
 pub mod release_notes_commands;
 pub mod registry;
@@ -63,9 +67,12 @@ pub use agent_model_commands::{
     UpsertCustomAgentModelInput,
 };
 pub use agent_composer_commands::{
-    list_agent_composer_skills, search_agent_composer_entries, AgentComposerEntryResponse,
-    AgentComposerSkillResponse, ListAgentComposerSkillsInput, ListAgentComposerSkillsResponse,
-    SearchAgentComposerEntriesInput, SearchAgentComposerEntriesResponse,
+    list_agent_composer_skills, search_agent_composer_entries,
+    search_agent_composer_plan_references, AgentComposerEntryResponse,
+    AgentComposerPlanReferenceResponse, AgentComposerSkillResponse, ListAgentComposerSkillsInput,
+    ListAgentComposerSkillsResponse, SearchAgentComposerEntriesInput,
+    SearchAgentComposerEntriesResponse, SearchAgentComposerPlanReferencesInput,
+    SearchAgentComposerPlanReferencesResponse,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,
@@ -83,6 +90,22 @@ pub use artifact_commands::{
     update_artifact, AddRelationInput, ArtifactRelationResponse, ArtifactResponse, BucketResponse,
     CreateArtifactInput, CreateBucketInput, GetTeamArtifactsResponse, TeamArtifactSummaryResponse,
     UpdateArtifactInput,
+};
+pub use atlassian_commands::{
+    assign_agent_conversation_jira_issue, assign_agent_conversation_jira_issue_to_me,
+    build_atlassian_oauth_authorization_url, clear_agent_conversation_jira_issue,
+    complete_atlassian_oauth_local_callback, exchange_atlassian_oauth_code,
+    get_agent_conversation_jira_issue, get_atlassian_integration_settings,
+    save_atlassian_integration_settings, refresh_agent_conversation_jira_issue,
+    search_atlassian_resources,
+    start_atlassian_oauth_local_callback, validate_atlassian_integration,
+    AgentConversationJiraIssueLinkResponse, AgentConversationJiraIssueResponse,
+    AssignAgentConversationJiraIssueInput, AssignAgentConversationJiraIssueToMeInput,
+    AtlassianIntegrationSettingsResponse, ClearAgentConversationJiraIssueInput,
+    CompleteAtlassianOAuthLocalCallbackInput, ExchangeAtlassianOAuthCodeInput,
+    GetAgentConversationJiraIssueInput, RefreshAgentConversationJiraIssueInput,
+    SaveAtlassianIntegrationSettingsInput, SearchAtlassianResourcesInput,
+    SearchAtlassianResourcesResponse,
 };
 pub use chat_attachment_commands::{
     delete_chat_attachment, link_attachments_to_message, list_conversation_attachments,
@@ -156,6 +179,12 @@ pub use permission_commands::{
 pub use project_commands::{
     archive_project, create_project, delete_project, get_project, list_projects, update_project,
 };
+pub use provider_cli_management_commands::{
+    auto_update_managed_provider_clis, get_managed_provider_cli_status,
+    install_or_update_managed_provider_cli, ManagedProviderCliActionInput,
+    ManagedProviderCliActionResponse, ManagedProviderCliAutoUpdateResponse,
+    ManagedProviderCliStatusResponse, ManagedProviderCliStatusesResponse,
+};
 pub use qa_commands::{
     get_qa_results, get_qa_settings, get_task_qa, retry_qa, skip_qa, update_qa_settings,
 };
@@ -206,7 +235,8 @@ pub use agent_sidebar_commands::{
 };
 pub use unified_chat_commands::{
     archive_agent_conversation, create_agent_conversation,
-    delete_queued_agent_message, get_agent_conversation, get_agent_conversation_messages_page,
+    delete_queued_agent_message, fork_agent_conversation, get_agent_conversation,
+    get_agent_conversation_messages_page,
     get_agent_conversation_summary, get_agent_conversation_timeline_page,
     get_agent_conversation_workspace, get_agent_conversation_workspace_freshness,
     get_agent_message_tool_call_detail, get_agent_run_status_unified, get_agent_running_states,
@@ -217,10 +247,12 @@ pub use unified_chat_commands::{
     precompute_agent_conversation_workspace_pr_description,
     reconcile_agent_conversation_workspace_publication,
     publish_agent_conversation_workspace, queue_agent_message, restore_agent_conversation,
-    send_agent_message, set_agent_conversation_workspace_pr_supervision,
+    send_agent_message, set_agent_conversation_workspace_auto_publish,
+    set_agent_conversation_workspace_pr_supervision,
     start_agent_conversation, stop_agent, switch_agent_conversation_mode,
     update_agent_conversation_title, update_agent_conversation_workspace_from_base,
     AgentConversationWorkspaceFreshnessResponse,
+    AgentConversationWorkspaceAutoPublishInput,
     AgentConversationWorkspacePrSupervisionInput,
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
     PrecomputeAgentConversationWorkspacePrDescriptionResponse,
@@ -229,7 +261,8 @@ pub use unified_chat_commands::{
     AgentConversationResponse, AgentConversationTimelinePageResponse,
     AgentConversationWithMessagesResponse, AgentMessageResponse, AgentRunStatusResponse,
     AgentTimelineItemResponse, AgentToolCallDetailResponse, CreateAgentConversationInput,
-    QueueAgentMessageInput, QueuedMessageResponse as UnifiedQueuedMessageResponse, SendAgentMessageInput,
+    ForkAgentConversationInput, ForkAgentConversationResponse, QueueAgentMessageInput,
+    QueuedMessageResponse as UnifiedQueuedMessageResponse, SendAgentMessageInput,
     SendAgentMessageResponse, StartAgentConversationInput, StartAgentConversationResponse,
     SwitchAgentConversationModeInput, SwitchAgentConversationModeResponse,
     UpdateAgentConversationTitleInput,
@@ -244,6 +277,7 @@ pub use plan_branch_commands::{
 pub use ui_commands::{get_ui_feature_flags, UiFeatureFlagsResponse};
 pub use workspace_open_commands::{
     list_workspace_open_targets, open_agent_conversation_workspace,
+    open_agent_conversation_workspace_path,
     WorkspaceOpenTargetKind, WorkspaceOpenTargetResponse,
 };
 // Plan commands (Active plan management)

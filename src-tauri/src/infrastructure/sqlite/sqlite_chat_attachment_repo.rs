@@ -237,6 +237,24 @@ impl ChatAttachmentRepository for SqliteChatAttachmentRepository {
             .await
     }
 
+    async fn reparent_pending_attachments(
+        &self,
+        from_conversation_id: &ChatConversationId,
+        to_conversation_id: &ChatConversationId,
+    ) -> AppResult<usize> {
+        let from_str = from_conversation_id.as_str().to_string();
+        let to_str = to_conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                Ok(conn.execute(
+                    "UPDATE chat_attachments SET conversation_id = ?1 \
+                     WHERE conversation_id = ?2 AND message_id IS NULL",
+                    rusqlite::params![to_str, from_str],
+                )?)
+            })
+            .await
+    }
+
     async fn delete(&self, id: &ChatAttachmentId) -> AppResult<()> {
         let id_str = id.as_str().to_string();
         self.db

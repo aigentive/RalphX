@@ -5,9 +5,8 @@ use sha2::{Digest, Sha256};
 
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
-    AgentConversationWorkspace,
-    IdeationAnalysisBaseRefKind, IdeationAnalysisState, IdeationAnalysisWorkspaceKind,
-    IdeationSession, IdeationSessionId, Project,
+    AgentConversationWorkspace, IdeationAnalysisBaseRefKind, IdeationAnalysisState,
+    IdeationAnalysisWorkspaceKind, IdeationSession, IdeationSessionId, Project,
 };
 use crate::error::{AppError, AppResult};
 
@@ -89,10 +88,22 @@ pub async fn prepare_ideation_analysis_state(
     }
 
     let base_ref = match kind {
-        IdeationAnalysisBaseRefKind::ProjectDefault => selection
-            .base_ref
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or(project_default),
+        IdeationAnalysisBaseRefKind::ProjectDefault => {
+            if let Some(selected_ref) = selection
+                .base_ref
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                if selected_ref != project_default {
+                    return Err(AppError::Validation(format!(
+                        "Project default ideation base ref '{}' does not match resolved project default '{}'",
+                        selected_ref, project_default
+                    )));
+                }
+            }
+            project_default
+        }
         IdeationAnalysisBaseRefKind::CurrentBranch => selection
             .base_ref
             .filter(|value| !value.trim().is_empty())
@@ -107,6 +118,11 @@ pub async fn prepare_ideation_analysis_state(
                 )
             })?,
         IdeationAnalysisBaseRefKind::PullRequest => unreachable!("handled above"),
+    };
+    let base_ref = if kind == IdeationAnalysisBaseRefKind::LocalBranch {
+        GitService::ensure_local_branch_from_origin_if_missing(&repo_path, &base_ref).await?
+    } else {
+        base_ref
     };
 
     let display_name = selection

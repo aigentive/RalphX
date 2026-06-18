@@ -6,7 +6,7 @@ import {
   resetAgentSessionState,
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { useChatStore } from "@/stores/chatStore";
@@ -22,6 +22,7 @@ const {
   getAgentRunningStatesMock,
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
+  getWorkspaceChangeSummaryMock,
   getWorkspaceReviewMock,
   integratedChatPanelRenderMock,
   preloadAgentTerminalExperienceMock,
@@ -92,6 +93,36 @@ describe("AgentsView performance", () => {
     const drawer = await screen.findByTestId("agent-terminal-drawer");
     expect(drawer).toHaveAttribute("data-expanded", "false");
     expect(preloadAgentTerminalExperienceMock).not.toHaveBeenCalled();
+  });
+
+  it("paints a collapsed terminal shell with the cached running status", async () => {
+    const deferredFrames = holdDeferredFrames();
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" })
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+    useAgentTerminalStore.setState({
+      statusByConversationId: { "conversation-1": "running" },
+    });
+
+    try {
+      renderAgentsView();
+
+      const shellHeader = await screen.findByTestId(
+        "agent-terminal-loading-shell-header"
+      );
+      expect(within(shellHeader).getByText("running")).toBeInTheDocument();
+      expect(screen.getByTestId("agent-terminal-host-chat")).toHaveStyle({
+        height: "36px",
+      });
+      expect(preloadAgentTerminalExperienceMock).not.toHaveBeenCalled();
+    } finally {
+      deferredFrames.restore();
+    }
   });
 
   it("opens the terminal from the first-paint shell header", async () => {
@@ -408,52 +439,45 @@ describe("AgentsView performance", () => {
     fireEvent.focus(textbox);
     await new Promise((resolve) => window.setTimeout(resolve, 500));
 
+    expect(getWorkspaceChangeSummaryMock).not.toHaveBeenCalled();
     expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
 
     fireEvent.change(textbox, { target: { value: "typing while summary waits" } });
     await new Promise((resolve) => window.setTimeout(resolve, 500));
 
+    expect(getWorkspaceChangeSummaryMock).not.toHaveBeenCalled();
     expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
 
     await waitFor(
-      () => expect(getWorkspaceReviewMock).toHaveBeenCalledTimes(1),
+      () => expect(getWorkspaceChangeSummaryMock).toHaveBeenCalledTimes(1),
       { timeout: 2_000 }
     );
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
   });
 
-  it("refreshes the composer diff summary while the edit agent is generating", async () => {
+  it("refreshes the composer diff summary while the edit agent is generating without polling full review", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({ mode: "edit" })
     );
-    getWorkspaceReviewMock
+    getWorkspaceChangeSummaryMock
       .mockResolvedValueOnce({
-        changes: [],
-        commits: [],
-        baseRef: "main",
-        headRef: "HEAD",
         supportsWorktreeModes: true,
+        staged: { fileCount: 0, additions: 0, deletions: 0 },
+        unstaged: { fileCount: 0, additions: 0, deletions: 0 },
       })
       .mockResolvedValue({
-        changes: [
-          {
-            path: "src/live-change.ts",
-            status: "modified",
-            additions: 12,
-            deletions: 3,
-            isGenerated: false,
-          },
-        ],
-        commits: [],
-        baseRef: "main",
-        headRef: "HEAD",
         supportsWorktreeModes: true,
+        staged: { fileCount: 0, additions: 0, deletions: 0 },
+        unstaged: { fileCount: 1, additions: 12, deletions: 3 },
       });
     resetAgentSessionState({
       selectedProjectId: "project-1",
       selectedConversationId: "conversation-1",
     });
-    getAgentRunningStatesMock.mockResolvedValue({ "conversation-1": true });
+    getAgentRunningStatesMock.mockResolvedValue({
+      "conversation-1": { isRunning: true, agentStatus: "generating" },
+    });
     useChatStore
       .getState()
       .setAgentStatus("project:conversation-1", "generating");
@@ -462,18 +486,21 @@ describe("AgentsView performance", () => {
 
     expect(screen.getByTestId("agents-conversation-submit")).toHaveTextContent("Stop");
 
-    await waitFor(() => expect(getWorkspaceReviewMock).toHaveBeenCalledTimes(1), {
+    await waitFor(() => expect(getWorkspaceChangeSummaryMock).toHaveBeenCalledTimes(1), {
       timeout: 3_000,
     });
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
     expect(
       screen.queryByTestId("agents-composer-workspace-changes")
     ).not.toBeInTheDocument();
 
     await waitFor(
-      () => expect(getWorkspaceReviewMock.mock.calls.length).toBeGreaterThanOrEqual(2),
+      () => expect(getWorkspaceChangeSummaryMock.mock.calls.length).toBeGreaterThanOrEqual(2),
       { timeout: 5_000 },
     );
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
     await screen.findByTestId("agents-composer-workspace-changes");
+    expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Unstaged");
     expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
       "1 file",
     );

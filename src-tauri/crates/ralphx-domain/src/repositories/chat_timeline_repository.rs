@@ -20,5 +20,10 @@ pub trait ChatTimelineRepository: Send + Sync {
 
     async fn count_by_conversation(&self, conversation_id: &ChatConversationId) -> AppResult<u32>;
 
+    async fn get_by_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<ChatTimelineItem>>;
+
     async fn mark_message_items_finalized(&self, message_id: &ChatMessageId) -> AppResult<()>;
 }

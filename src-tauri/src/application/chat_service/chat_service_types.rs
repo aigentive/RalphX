@@ -3,13 +3,14 @@
 // Extracted from chat_service.rs to improve modularity and reduce file size.
 
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::chat_conversation::compatible_provider_session_fields_from_provider_ref;
-use crate::domain::entities::{ChatConversation, ChatMessage};
+use crate::domain::entities::{ChatConversation, ChatMessage, ChatTimelineItem};
 use crate::infrastructure::agents::claude::ToolCall;
 
-use super::tool_result_preview::LiveToolResultPreview;
+use super::tool_result_preview::{LiveToolResultPreview, ToolArgumentPreviewPayload};
 
 // ============================================================================
 // Event Name Constants
@@ -192,7 +193,7 @@ pub struct AgentUsageUpdatedPayload {
     pub context_id: String,
 }
 
-/// Optional preview metadata for agent:tool_call result payloads.
+/// Optional preview metadata for agent:tool_call payloads.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct AgentToolCallPreviewFields {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -203,6 +204,18 @@ pub struct AgentToolCallPreviewFields {
     pub result_preview_line_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_preview_omitted_lines: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_preview_paths: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments_preview_truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments_preview_original_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments_preview_line_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments_preview_omitted_lines: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff_preview: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail_ref: Option<serde_json::Value>,
 }
@@ -219,7 +232,20 @@ impl AgentToolCallPreviewFields {
             result_preview_original_bytes: Some(preview.original_bytes),
             result_preview_line_count: Some(preview.line_count),
             result_preview_omitted_lines: Some(preview.omitted_lines),
+            result_preview_paths: (!preview.paths.is_empty()).then(|| preview.paths.clone()),
             detail_ref: preview.detail_ref.clone(),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn apply_tool_argument_preview(&mut self, preview: &ToolArgumentPreviewPayload) {
+        self.arguments_preview_truncated = Some(true);
+        self.arguments_preview_original_bytes = Some(preview.original_bytes);
+        self.arguments_preview_line_count = Some(preview.line_count);
+        self.arguments_preview_omitted_lines = Some(preview.omitted_lines);
+        self.diff_preview = preview.diff_preview.clone();
+        if let Some(detail_ref) = preview.detail_ref.clone() {
+            self.detail_ref = Some(detail_ref);
         }
     }
 }
@@ -273,6 +299,7 @@ impl AgentToolCallPayload {
     pub(crate) fn from_completed_tool_call(
         tool_call: &ToolCall,
         result_preview: Option<&LiveToolResultPreview>,
+        argument_preview: Option<&ToolArgumentPreviewPayload>,
         conversation_id: &str,
         context_type: &str,
         context_id: &str,
@@ -283,15 +310,25 @@ impl AgentToolCallPayload {
         let result = result_preview
             .map(|preview| Some(preview.result.clone()))
             .unwrap_or_else(|| tool_call.result.clone());
+        let mut preview = AgentToolCallPreviewFields::from_tool_result_preview(
+            result_preview.and_then(|preview| preview.preview.as_ref()),
+        );
+        if let Some(argument_preview) = argument_preview {
+            preview.apply_tool_argument_preview(argument_preview);
+        }
+        let arguments = argument_preview
+            .map(|preview| preview.arguments.clone())
+            .unwrap_or_else(|| tool_call.arguments.clone());
+        let diff_context = argument_preview
+            .and_then(|preview| preview.diff_context.clone())
+            .or(diff_context);
 
         Self {
             tool_name: tool_call.name.clone(),
             tool_id: tool_call.id.clone(),
-            arguments: tool_call.arguments.clone(),
+            arguments,
             result,
-            preview: AgentToolCallPreviewFields::from_tool_result_preview(
-                result_preview.and_then(|preview| preview.preview.as_ref()),
-            ),
+            preview,
             conversation_id: conversation_id.to_string(),
             context_type: context_type.to_string(),
             context_id: context_id.to_string(),
@@ -317,6 +354,210 @@ pub struct AgentMessageCreatedPayload {
     /// Optional JSON metadata string attached to the message (e.g. recovery_context).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<String>,
+    /// Canonical render-ready payload for active transcript cache handoff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub render_ready: Option<AgentMessageRenderReadyPayload>,
+}
+
+/// Render-ready chat payload attached to `agent:message_created` after the
+/// backend has already persisted canonical timeline rows for the message.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentMessageRenderReadyPayload {
+    pub message: AgentRenderReadyMessagePayload,
+    pub timeline_items: Vec<AgentRenderReadyTimelineItemPayload>,
+}
+
+impl AgentMessageRenderReadyPayload {
+    pub fn from_message_and_timeline_items(
+        message: &ChatMessage,
+        timeline_items: Vec<ChatTimelineItem>,
+    ) -> Option<Self> {
+        if timeline_items.is_empty() {
+            return None;
+        }
+
+        Some(Self {
+            message: AgentRenderReadyMessagePayload::from(message),
+            timeline_items: timeline_items
+                .into_iter()
+                .map(AgentRenderReadyTimelineItemPayload::from)
+                .collect(),
+        })
+    }
+}
+
+/// Message shape matching the normal chat API response fields used by frontend cache hydration.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentRenderReadyMessagePayload {
+    pub id: String,
+    pub conversation_id: Option<String>,
+    pub role: String,
+    pub content: String,
+    pub metadata: Option<String>,
+    pub tool_calls: Option<Value>,
+    pub content_blocks: Option<Value>,
+    pub attribution_source: Option<String>,
+    pub provider_harness: Option<String>,
+    pub provider_session_id: Option<String>,
+    pub upstream_provider: Option<String>,
+    pub provider_profile: Option<String>,
+    pub logical_model: Option<String>,
+    pub effective_model_id: Option<String>,
+    pub logical_effort: Option<String>,
+    pub effective_effort: Option<String>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_creation_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub estimated_usd: Option<f64>,
+    pub created_at: String,
+}
+
+impl From<&ChatMessage> for AgentRenderReadyMessagePayload {
+    fn from(message: &ChatMessage) -> Self {
+        Self {
+            id: message.id.as_str().to_string(),
+            conversation_id: message
+                .conversation_id
+                .as_ref()
+                .map(|id| id.as_str().to_string()),
+            role: message.role.to_string(),
+            content: message.content.clone(),
+            metadata: message.metadata.clone(),
+            tool_calls: parse_json_payload(message.tool_calls.as_deref()),
+            content_blocks: parse_json_payload(message.content_blocks.as_deref()),
+            attribution_source: message.attribution_source.clone(),
+            provider_harness: message.provider_harness.map(|value| value.to_string()),
+            provider_session_id: message.provider_session_id.clone(),
+            upstream_provider: message.upstream_provider.clone(),
+            provider_profile: message.provider_profile.clone(),
+            logical_model: message.logical_model.clone(),
+            effective_model_id: message.effective_model_id.clone(),
+            logical_effort: message.logical_effort.map(|value| value.to_string()),
+            effective_effort: message.effective_effort.clone(),
+            input_tokens: message.input_tokens,
+            output_tokens: message.output_tokens,
+            cache_creation_tokens: message.cache_creation_tokens,
+            cache_read_tokens: message.cache_read_tokens,
+            estimated_usd: message.estimated_usd,
+            created_at: message.created_at.to_rfc3339(),
+        }
+    }
+}
+
+/// Timeline item shape matching the normal timeline API response fields used by frontend cache hydration.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentRenderReadyTimelineItemPayload {
+    pub id: String,
+    pub conversation_id: String,
+    pub message_id: Option<String>,
+    pub run_id: Option<String>,
+    pub sequence: i64,
+    pub block_index: i64,
+    pub role: String,
+    pub kind: String,
+    pub status: String,
+    pub content: String,
+    pub content_blocks: Value,
+    pub tool_call: Option<Value>,
+    pub metadata: Option<String>,
+    pub provider_harness: Option<String>,
+    pub provider_session_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub finalized_at: Option<String>,
+}
+
+impl From<ChatTimelineItem> for AgentRenderReadyTimelineItemPayload {
+    fn from(item: ChatTimelineItem) -> Self {
+        let message_id = item.message_id.as_ref().map(|id| id.as_str().to_string());
+        let conversation_id = item.conversation_id.as_str();
+        let content = item.text.clone().unwrap_or_default();
+        let content_block =
+            render_ready_timeline_content_block(&item, &conversation_id, message_id.as_deref());
+        let content_blocks = Value::Array(vec![content_block.clone()]);
+        let tool_call = if item.kind.to_string() == "tool_use" {
+            Some(content_block)
+        } else {
+            None
+        };
+
+        Self {
+            id: item.id.to_string(),
+            conversation_id,
+            message_id,
+            run_id: item.run_id.map(|id| id.as_str()),
+            sequence: item.sequence,
+            block_index: item.block_index,
+            role: item.role.to_string(),
+            kind: item.kind.to_string(),
+            status: item.status.to_string(),
+            content,
+            content_blocks,
+            tool_call,
+            metadata: item.metadata,
+            provider_harness: item.provider_harness.map(|value| value.to_string()),
+            provider_session_id: item.provider_session_id,
+            created_at: item.created_at.to_rfc3339(),
+            updated_at: item.updated_at.to_rfc3339(),
+            finalized_at: item.finalized_at.map(|value| value.to_rfc3339()),
+        }
+    }
+}
+
+fn parse_json_payload(raw: Option<&str>) -> Option<Value> {
+    raw.and_then(|value| serde_json::from_str(value).ok())
+}
+
+fn render_ready_timeline_content_block(
+    item: &ChatTimelineItem,
+    conversation_id: &str,
+    message_id: Option<&str>,
+) -> Value {
+    if item.kind.to_string() == "text" {
+        return serde_json::json!({
+            "type": "text",
+            "text": item.text.clone().unwrap_or_default(),
+        });
+    }
+
+    let arguments = item
+        .input_json
+        .as_deref()
+        .or(item.tool_input_preview.as_deref())
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let result = item
+        .result_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .or_else(|| item.tool_result_preview.clone().map(Value::String));
+    let mut block = serde_json::json!({
+        "type": "tool_use",
+        "id": item.tool_call_id.clone().unwrap_or_else(|| item.id.to_string()),
+        "name": item.tool_name.clone().unwrap_or_else(|| "unknown".to_string()),
+        "arguments": arguments,
+        "result": result,
+        "detail_ref": {
+            "conversation_id": conversation_id,
+            "message_id": message_id.unwrap_or(item.id.as_str()),
+            "tool_call_id": item.tool_call_id.clone(),
+            "content_block_index": item.block_index,
+            "timeline_item_id": item.id.to_string(),
+        }
+    });
+
+    if let Some(raw) = item
+        .raw_block_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+    {
+        if let Some(diff_context) = raw.get("diff_context").cloned() {
+            block["diff_context"] = diff_context;
+        }
+    }
+
+    block
 }
 
 /// Payload for agent:run_completed event
@@ -524,6 +765,8 @@ pub struct AgentMessageQueuedPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_ids: Vec<String>,
 }
 
 /// Payload for agent:conversation_created event

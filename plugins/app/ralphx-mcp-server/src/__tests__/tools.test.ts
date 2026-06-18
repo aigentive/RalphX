@@ -23,10 +23,14 @@ import {
   callAgentWorkspaceTool,
   callCheckAgentWorkspacePublishReadinessTool,
   callCompleteAgentWorkspacePrFixTool,
+  callCompletePrReviewRunTool,
   callCompleteAgentWorkspaceRepairTool,
   callGetAgentWorkspacePrFixContextTool,
+  callGetPrReviewContextTool,
   callGetAgentWorkspacePublishStatusTool,
   callPublishAgentWorkspaceTool,
+  callProposePrReviewActionTool,
+  callReadAgentWorkspacePrCommentTool,
   callSubmitAgentWorkspacePrDescriptionTool,
   callUpdateAgentWorkspaceFromBaseTool,
   isAgentWorkspaceToolName,
@@ -53,8 +57,10 @@ import {
   PLAN_CRITIC_COMPLETENESS,
   PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
   REVIEWER,
+  GENERAL_EXPLORER,
   GENERAL_WORKER,
   AGENT_WORKSPACE_PR_FIXER,
+  PLAN_COMPLEXITY_ASSESSOR,
   WORKER,
   MERGER,
   CHAT_PROJECT,
@@ -62,6 +68,17 @@ import {
 
 function toolsByAgent(): Record<string, string[]> {
   return getToolsByAgent();
+}
+
+type SchemaProperty = {
+  type?: string;
+  items?: { type?: string };
+};
+
+function inputSchemaProperties(toolName: string): Record<string, SchemaProperty> {
+  const tool = getAllTools().find((candidate) => candidate.name === toolName);
+  expect(tool, `${toolName} tool`).toBeDefined();
+  return (tool!.inputSchema.properties ?? {}) as Record<string, SchemaProperty>;
 }
 
 describe('getAllowedToolNames', () => {
@@ -170,6 +187,14 @@ describe('getAllowedToolNames', () => {
     expect(getAllowedToolNames()).toEqual(loadCanonicalMcpTools('pr-describer'));
     expect(getAllowedToolNames()).toContain('submit_agent_workspace_pr_description');
   });
+
+  it('resolves the plan complexity legacy alias to canonical metadata', () => {
+    setAgentType('plan-complexity');
+
+    expect(canonicalAgentName('plan-complexity')).toBe('ralphx-utility-plan-complexity');
+    expect(getAllowedToolNames()).toEqual(loadCanonicalMcpTools('plan-complexity'));
+    expect(getAllowedToolNames()).toEqual(['submit_plan_complexity_assessment']);
+  });
 });
 
 describe('getToolRecoveryHint', () => {
@@ -223,6 +248,15 @@ describe('getToolRecoveryHint', () => {
     const hint = getToolRecoveryHint('send_ideation_session_message');
     expect(hint).toContain('SESSION_ID, ROUND, critic/schema');
     expect(hint).toContain('Example payload:');
+  });
+
+  it('returns cleanup guidance for agent task ledger progression tools', () => {
+    for (const toolName of ['claim_agent_task', 'complete_agent_task', 'update_agent_task']) {
+      const hint = getToolRecoveryHint(toolName);
+      expect(hint).toContain('one meaningful task cannot be claimed, activated, or completed');
+      expect(hint).toContain('state=dropped');
+      expect(hint).toContain('create multiple concrete tasks');
+    }
   });
 
   it('returns null for an unknown tool', () => {
@@ -316,6 +350,35 @@ describe('tool input schemas', () => {
       expect(tool.inputSchema, `${tool.name} inputSchema`).not.toHaveProperty('allOf');
       expect(tool.inputSchema, `${tool.name} inputSchema`).not.toHaveProperty('anyOf');
     }
+  });
+
+  it('advertises create_task_proposal dependency fields supported by the backend', () => {
+    const tool = getAllTools().find((candidate) => candidate.name === 'create_task_proposal');
+    expect(tool).toBeDefined();
+
+    const properties = inputSchemaProperties('create_task_proposal');
+    expect(properties.depends_on).toMatchObject({
+      type: 'array',
+      items: { type: 'string' },
+    });
+    expect(tool!.inputSchema.required ?? []).not.toContain('depends_on');
+  });
+
+  it('advertises update_task_proposal dependency edit fields supported by the backend', () => {
+    const tool = getAllTools().find((candidate) => candidate.name === 'update_task_proposal');
+    expect(tool).toBeDefined();
+
+    const properties = inputSchemaProperties('update_task_proposal');
+    expect(properties.add_depends_on).toMatchObject({
+      type: 'array',
+      items: { type: 'string' },
+    });
+    expect(properties.add_blocks).toMatchObject({
+      type: 'array',
+      items: { type: 'string' },
+    });
+    expect(tool!.inputSchema.required ?? []).not.toContain('add_depends_on');
+    expect(tool!.inputSchema.required ?? []).not.toContain('add_blocks');
   });
 });
 
@@ -411,14 +474,41 @@ describe('getFilteredTools', () => {
     expect(toolNames).not.toContain('complete_plan_verification');
   });
 
-  it('should keep project chat on the scoped ideation append tool only', () => {
+  it('should keep project chat on scoped parent-chat planning tools only', () => {
     setAgentType(CHAT_PROJECT);
     const tools = getFilteredTools();
     const toolNames = tools.map((t) => t.name);
 
     expect(toolNames).toContain('suggest_task');
     expect(toolNames).toContain('list_tasks');
+    expect(toolNames).toContain('propose_plan_mode');
     expect(toolNames).toContain('append_task_to_ideation_plan');
+    expect(toolNames).not.toContain('start_ideation_session');
+    expect(toolNames).not.toContain('create_child_session');
+    expect(toolNames).not.toContain('create_task_proposal');
+    expect(toolNames).not.toContain('update_plan_artifact');
+  });
+
+  it('should let the general chat explorer propose a Plan-mode handoff without edit or ideation tools', () => {
+    setAgentType(GENERAL_EXPLORER);
+    const tools = getFilteredTools();
+    const toolNames = tools.map((t) => t.name);
+
+    expect(toolNames).toContain('propose_plan_mode');
+    expect(toolNames).not.toContain('publish_agent_workspace');
+    expect(toolNames).not.toContain('update_agent_workspace_from_base');
+    expect(toolNames).not.toContain('start_ideation_session');
+    expect(toolNames).not.toContain('create_child_session');
+    expect(toolNames).not.toContain('create_task_proposal');
+    expect(toolNames).not.toContain('update_plan_artifact');
+  });
+
+  it('should let the general edit worker propose a Plan-mode handoff without exposing ideation tools', () => {
+    setAgentType(GENERAL_WORKER);
+    const tools = getFilteredTools();
+    const toolNames = tools.map((t) => t.name);
+
+    expect(toolNames).toContain('propose_plan_mode');
     expect(toolNames).not.toContain('start_ideation_session');
     expect(toolNames).not.toContain('create_child_session');
     expect(toolNames).not.toContain('create_task_proposal');
@@ -1369,6 +1459,47 @@ describe('agent workspace PR description tool', () => {
   });
 });
 
+describe('plan complexity assessment tool', () => {
+  const allTools = getAllTools();
+  const tool = allTools.find((t) => t.name === 'submit_plan_complexity_assessment');
+
+  it('should exist in ALL_TOOLS', () => {
+    expect(tool).toBeDefined();
+  });
+
+  it('should require the current approved plan assessment fields', () => {
+    expect(tool?.inputSchema.type).toBe('object');
+    expect(tool?.inputSchema.properties).toHaveProperty('session_id');
+    expect(tool?.inputSchema.properties).toHaveProperty('artifact_id');
+    expect(tool?.inputSchema.properties).toHaveProperty('artifact_version');
+    expect(tool?.inputSchema.properties).toHaveProperty('level');
+    expect(tool?.inputSchema.properties).toHaveProperty('score');
+    expect(tool?.inputSchema.properties).toHaveProperty('recommended_action');
+    expect(tool?.inputSchema.properties).toHaveProperty('confidence');
+    expect(tool?.inputSchema.properties).toHaveProperty('reason_summary');
+    expect(tool?.inputSchema.required).toEqual(
+      expect.arrayContaining([
+        'session_id',
+        'artifact_id',
+        'artifact_version',
+        'level',
+        'score',
+        'recommended_action',
+        'confidence',
+        'reason_summary',
+      ])
+    );
+  });
+
+  it('exposes the submit tool only through the utility assessor metadata', () => {
+    setAgentType(PLAN_COMPLEXITY_ASSESSOR);
+
+    const toolNames = getFilteredTools().map((candidate) => candidate.name);
+    expect(toolNames).toEqual(loadCanonicalMcpTools(PLAN_COMPLEXITY_ASSESSOR));
+    expect(toolNames).toEqual(['submit_plan_complexity_assessment']);
+  });
+});
+
 describe('agent workspace publish tool transport', () => {
   it('routes publish status reads to the agent workspace endpoint', async () => {
     const callTauriGet = vi.fn().mockResolvedValue({ success: true });
@@ -1518,6 +1649,156 @@ describe('agent workspace publish tool transport', () => {
 
     expect(callTauriGet).toHaveBeenCalledWith(
       'agent-workspaces/conversation-1/pr-fix-context'
+    );
+  });
+
+  it('routes Review PR context reads to the current runtime workspace conversation', async () => {
+    const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callGetPrReviewContextTool(
+        callTauriGet,
+        {},
+        { parentConversationId: 'conversation-from-runtime' }
+      )
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauriGet).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-from-runtime/pr-review-context'
+    );
+  });
+
+  it('routes proposed Review PR actions to the agent workspace endpoint', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callProposePrReviewActionTool(
+        callTauri,
+        {
+          conversation_id: 'conversation-1',
+          head_sha: 'abc123',
+          proposed_action: 'request_changes',
+          summary: 'Found blocking issues',
+          review_body: 'Please fix the blocking issues.',
+          findings_json: '[{"path":"src/lib.rs"}]',
+          created_by_run_id: 'run-1',
+        },
+        { parentConversationId: 'conversation-from-runtime' }
+      )
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauri).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-1/pr-review-actions',
+      {
+        head_sha: 'abc123',
+        proposed_action: 'request_changes',
+        summary: 'Found blocking issues',
+        review_body: 'Please fix the blocking issues.',
+        findings_json: '[{"path":"src/lib.rs"}]',
+        created_by_run_id: 'run-1',
+      }
+    );
+  });
+
+  it('routes Review PR run completion to the runtime workspace conversation', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callCompletePrReviewRunTool(
+        callTauri,
+        {
+          head_sha: 'abc123',
+          outcome: 'request_changes',
+          summary: 'Review completed',
+          blocker: undefined,
+          created_by_run_id: 'run-1',
+        },
+        { parentConversationId: 'conversation-from-runtime' }
+      )
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauri).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-from-runtime/complete-pr-review-run',
+      {
+        head_sha: 'abc123',
+        outcome: 'request_changes',
+        summary: 'Review completed',
+        blocker: undefined,
+        created_by_run_id: 'run-1',
+      }
+    );
+  });
+
+  it('routes PR comment reads to the encoded comment endpoint', async () => {
+    const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callReadAgentWorkspacePrCommentTool(callTauriGet, {
+        conversation_id: 'conversation-1',
+        comment_id: 'comment/with/slash',
+      })
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauriGet).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-1/pr-comments/comment%2Fwith%2Fslash'
+    );
+  });
+
+  it('dispatches Review PR tools through the generic agent workspace router', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+    const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callAgentWorkspaceTool(
+        'get_pr_review_context',
+        callTauri,
+        callTauriGet,
+        {},
+        { parentConversationId: 'conversation-from-runtime' }
+      )
+    ).resolves.toEqual({ success: true });
+    await expect(
+      callAgentWorkspaceTool(
+        'propose_pr_review_action',
+        callTauri,
+        callTauriGet,
+        { summary: 'Ready to submit' },
+        { parentConversationId: 'conversation-from-runtime' }
+      )
+    ).resolves.toEqual({ success: true });
+    await expect(
+      callAgentWorkspaceTool(
+        'complete_pr_review_run',
+        callTauri,
+        callTauriGet,
+        { outcome: 'approved' },
+        { parentConversationId: 'conversation-from-runtime' }
+      )
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauriGet).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-from-runtime/pr-review-context'
+    );
+    expect(callTauri).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-from-runtime/pr-review-actions',
+      {
+        head_sha: undefined,
+        proposed_action: undefined,
+        summary: 'Ready to submit',
+        review_body: undefined,
+        findings_json: undefined,
+        created_by_run_id: undefined,
+      }
+    );
+    expect(callTauri).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-from-runtime/complete-pr-review-run',
+      {
+        head_sha: undefined,
+        outcome: 'approved',
+        summary: undefined,
+        blocker: undefined,
+        created_by_run_id: undefined,
+      }
     );
   });
 
@@ -1767,6 +2048,19 @@ describe('agent task tools', () => {
     );
     expect(tool?.inputSchema.properties).not.toHaveProperty('context_type');
     expect(tool?.inputSchema.properties).not.toHaveProperty('actor_agent');
+  });
+
+  it('agent task tool descriptions explain single-task cleanup and decomposition', () => {
+    const createTool = allTools.find((entry) => entry.name === 'create_agent_task');
+    const updateTool = allTools.find((entry) => entry.name === 'update_agent_task');
+    const claimTool = allTools.find((entry) => entry.name === 'claim_agent_task');
+    const completeTool = allTools.find((entry) => entry.name === 'complete_agent_task');
+
+    expect(createTool?.description).toContain('Do not create a task for genuinely single-step work');
+    expect(createTool?.description).toContain('decomposed into multiple concrete tasks');
+    expect(updateTool?.description).toContain('state=dropped');
+    expect(claimTool?.description).toContain('only one meaningful task');
+    expect(completeTool?.description).toContain('single-task ledger');
   });
 
   it.each([ORCHESTRATOR_IDEATION, CHAT_PROJECT, GENERAL_WORKER, WORKER])(

@@ -12,9 +12,10 @@ use crate::domain::agents::{
 use crate::domain::execution::{ExecutionSettings, GlobalExecutionSettings};
 use crate::infrastructure::agents::harness_agent_catalog::{
     internal_mcp_server_name, list_canonical_prompt_backed_agents, load_canonical_agent_definition,
+    load_canonical_agent_definition_for_profile,
     resolve_harness_agent_prompt_path, resolve_project_root_from_catalog_path,
     resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata,
-    AgentPromptHarness, CanonicalClaudeToolSpec,
+    try_load_canonical_claude_metadata_for_profile, AgentPromptHarness, CanonicalClaudeToolSpec,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -351,6 +352,7 @@ fn default_file_logging() -> bool {
 struct LoadedConfig {
     agents: Vec<AgentConfig>,
     claude: ClaudeRuntimeConfig,
+    tool_sets: HashMap<String, Vec<String>>,
     process_mapping: ProcessMapping,
     team_constraints: TeamConstraintsConfig,
     defer_merge_enabled: bool,
@@ -1178,6 +1180,7 @@ fn resolve_loaded_config_with_lookup(
     Some(LoadedConfig {
         agents: resolved,
         claude,
+        tool_sets: parsed.tool_sets,
         process_mapping,
         team_constraints,
         defer_merge_enabled: parsed.defer_merge_enabled,
@@ -1623,6 +1626,7 @@ fn load_config() -> LoadedConfig {
                     settings: None,
                     default_effort: "medium".to_string(),
                 },
+                tool_sets: canonical_claude_tool_sets().clone(),
                 process_mapping: ProcessMapping::default(),
                 team_constraints: TeamConstraintsConfig::default(),
                 defer_merge_enabled: true,
@@ -1660,6 +1664,49 @@ pub fn get_agent_config(agent_name: &str) -> Option<&'static AgentConfig> {
     agent_configs().iter().find(|c| c.name == lookup_name)
 }
 
+pub fn get_agent_config_for_profile(
+    agent_name: &str,
+    profile_name: Option<&str>,
+) -> Option<AgentConfig> {
+    let loaded = LOADED_CONFIG_CELL.get_or_init(load_config);
+    let lookup_name = super::canonical_short_agent_name(agent_name);
+    let mut config = loaded
+        .agents
+        .iter()
+        .find(|c| c.name == lookup_name)?
+        .clone();
+    let Some(profile_name) = profile_name else {
+        return Some(config);
+    };
+    let project_root = canonical_agent_project_root();
+    let definition =
+        load_canonical_agent_definition_for_profile(&project_root, lookup_name, Some(profile_name))?;
+    let metadata =
+        try_load_canonical_claude_metadata_for_profile(&project_root, lookup_name, Some(profile_name))
+            .ok()?;
+
+    if !definition.capabilities.mcp_tools.is_empty() {
+        config.allowed_mcp_tools = definition.capabilities.mcp_tools;
+    }
+    if let Some(spec) = metadata.tools.as_ref() {
+        let tools = runtime_tools_spec_from_canonical(spec);
+        config.mcp_only = tools.mcp_only;
+        config.resolved_cli_tools =
+            resolve_tools_from_spec(lookup_name, &tools, &loaded.tool_sets);
+    }
+    config.preapproved_cli_tools = metadata.preapproved_cli_tools;
+    if metadata.model.is_some() {
+        config.model = metadata.model;
+    }
+    if metadata.effort.is_some() {
+        config.effort = metadata.effort;
+    }
+    if metadata.permission_mode.is_some() {
+        config.permission_mode = metadata.permission_mode;
+    }
+    Some(config)
+}
+
 pub fn get_effective_settings(agent_name: Option<&str>) -> Option<&'static serde_json::Value> {
     let loaded = LOADED_CONFIG_CELL.get_or_init(load_config);
     if let Some(name) = agent_name {
@@ -1683,7 +1730,14 @@ pub fn get_effective_settings_profile(agent_name: Option<&str>) -> Option<&'stat
 }
 
 pub fn get_allowed_tools(agent_name: &str) -> Option<String> {
-    get_agent_config(agent_name).map(|c| {
+    get_allowed_tools_for_profile(agent_name, None)
+}
+
+pub fn get_allowed_tools_for_profile(
+    agent_name: &str,
+    profile_name: Option<&str>,
+) -> Option<String> {
+    get_agent_config_for_profile(agent_name, profile_name).map(|c| {
         if c.mcp_only {
             String::new()
         } else {
@@ -1790,11 +1844,23 @@ pub fn ideation_activity_threshold_secs() -> u64 {
 }
 
 pub fn get_preapproved_tools(agent_name: &str) -> Option<String> {
-    get_agent_config(agent_name).and_then(|c| {
+    get_preapproved_tools_for_profile(agent_name, None)
+}
+
+pub fn get_preapproved_tools_for_profile(
+    agent_name: &str,
+    profile_name: Option<&str>,
+) -> Option<String> {
+    get_agent_config_for_profile(agent_name, profile_name).and_then(|c| {
         let mut tools: Vec<String> = Vec::new();
         let mcp_server = &claude_runtime_config().mcp_server_name;
         let lookup_name = super::canonical_short_agent_name(agent_name);
-        let metadata = try_load_canonical_claude_metadata(&canonical_agent_project_root(), lookup_name).ok();
+        let metadata = try_load_canonical_claude_metadata_for_profile(
+            &canonical_agent_project_root(),
+            lookup_name,
+            profile_name,
+        )
+        .ok();
         let uses_external_transport = metadata
             .as_ref()
             .and_then(|metadata| metadata.mcp_transport.as_deref())
@@ -1839,15 +1905,22 @@ pub fn get_preapproved_tools(agent_name: &str) -> Option<String> {
         let mut seen = HashSet::new();
         tools.retain(|t| seen.insert(t.clone()));
 
-        // Always inject permission_request when an internal server is present — required
-        // infrastructure tool, not agent-scoped.
-        if !uses_external_transport || !internal_tools.is_empty() {
-            let permission_server = if uses_external_transport {
-                internal_server.as_str()
-            } else {
-                mcp_server.as_str()
-            };
-            let permission_tool = format!("mcp__{}__permission_request", permission_server);
+        // Inject permission_request on the transport that actually exposes it:
+        // external agents with an internal sidecar get the sidecar tool, non-external
+        // agents get it on the primary server, and external agents without internal
+        // tools inject nothing. This stays in lockstep with
+        // `resolve_permission_prompt_tool` so the `--permission-prompt-tool` flag
+        // never names a tool absent from this surface (the Claude CLI aborts before
+        // any MCP call when it does).
+        let permission_tool = internal_sidecar_permission_request_tool(
+            uses_external_transport,
+            !internal_tools.is_empty(),
+            mcp_server,
+        )
+        .or_else(|| {
+            (!uses_external_transport).then(|| format!("mcp__{mcp_server}__permission_request"))
+        });
+        if let Some(permission_tool) = permission_tool {
             if !seen.contains(&permission_tool) {
                 tools.push(permission_tool);
             }
@@ -1859,6 +1932,70 @@ pub fn get_preapproved_tools(agent_name: &str) -> Option<String> {
             Some(tools.join(","))
         }
     })
+}
+
+/// Returns the fully-qualified `permission_request` MCP tool name an
+/// external-transport agent exposes on its internal MCP sidecar, or `None` when the
+/// agent's `permission_request` does not live on the sidecar (no external transport,
+/// or external transport without internal sidecar tools).
+///
+/// This is the shared decision used by both [`get_preapproved_tools_for_profile`]
+/// (which injects the tool into `--allowed-tools`) and [`resolve_permission_prompt_tool`]
+/// (which feeds `--permission-prompt-tool`), so the flag always points at the same
+/// sidecar server the surface exposes.
+fn internal_sidecar_permission_request_tool(
+    uses_external_transport: bool,
+    has_internal_tools: bool,
+    mcp_server: &str,
+) -> Option<String> {
+    (uses_external_transport && has_internal_tools).then(|| {
+        format!(
+            "mcp__{}__permission_request",
+            internal_mcp_server_name(mcp_server)
+        )
+    })
+}
+
+/// Resolves the `--permission-prompt-tool` value for `agent_name` (under
+/// `agent_profile`) so it matches the `permission_request` tool injected into that
+/// agent's `--allowed-tools` surface by [`get_preapproved_tools_for_profile`].
+///
+/// Only overrides the configured `default` when `permission_request` lives on the
+/// agent's internal MCP sidecar (external transport + internal tools). For every
+/// other case it returns `default`, preserving an operator's configured
+/// `claude.permission_prompt_tool` (including fully-qualified custom values). The
+/// lookup is profile-aware so a profile overriding `mcp_transport` /
+/// `internal_mcp_tools` resolves against the profile's actual MCP surface.
+pub(crate) fn resolve_permission_prompt_tool(
+    agent_name: Option<&str>,
+    agent_profile: Option<&str>,
+    default: &str,
+) -> String {
+    let Some(agent_name) = agent_name else {
+        return default.to_string();
+    };
+    let mcp_server = &claude_runtime_config().mcp_server_name;
+    let lookup_name = super::canonical_short_agent_name(agent_name);
+    let metadata = try_load_canonical_claude_metadata_for_profile(
+        &canonical_agent_project_root(),
+        lookup_name,
+        agent_profile,
+    )
+    .ok();
+    let uses_external_transport = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.mcp_transport.as_deref())
+        == Some("external");
+    let has_internal_tools = metadata
+        .as_ref()
+        .map(|metadata| !metadata.internal_mcp_tools.is_empty())
+        .unwrap_or(false);
+    internal_sidecar_permission_request_tool(
+        uses_external_transport,
+        has_internal_tools,
+        mcp_server,
+    )
+    .unwrap_or_else(|| default.to_string())
 }
 
 #[cfg(test)]

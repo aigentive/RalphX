@@ -628,6 +628,7 @@ async fn test_start_ideation_tauri_parent_workspace_binds_analysis_and_links_wor
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
         },
     )
     .await
@@ -4594,5 +4595,1126 @@ async fn test_get_plan_verification_external_no_child_returns_null() {
     assert!(
         result.0.verification_child.is_none(),
         "no child → verification_child must be null"
+    );
+}
+
+// ============================================================================
+// Plan import integration tests
+// ============================================================================
+
+/// Shared setup for plan import tests: creates a project with git repo,
+/// a source ideation session with a Specification artifact, a parent
+/// conversation with an Ideation workspace, and a user message containing
+/// a plan artifact reference in metadata.
+async fn setup_plan_import_test() -> PlanImportTestFixture {
+    setup_plan_import_test_with_state(setup_test_state().await).await
+}
+
+async fn setup_plan_import_test_sqlite() -> PlanImportTestFixture {
+    setup_plan_import_test_with_state(setup_sqlite_test_state().await).await
+}
+
+async fn setup_plan_import_test_with_state(state: HttpServerState) -> PlanImportTestFixture {
+    use ralphx_lib::application::agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+    };
+    use ralphx_lib::domain::entities::{
+        AgentConversationWorkspaceMode, ChatConversation, IdeationAnalysisBaseRefKind,
+    };
+    use ralphx_lib::domain::entities::artifact::{Artifact, ArtifactType};
+
+    let repo_dir = tempfile::TempDir::new().unwrap();
+    let repo_path = repo_dir.path();
+    std::process::Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(repo_path)
+        .output()
+        .expect("git init");
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(repo_path)
+        .output()
+        .expect("git config email");
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(repo_path)
+        .output()
+        .expect("git config name");
+    std::process::Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(repo_path)
+        .output()
+        .expect("git commit");
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+
+    let project_id = ProjectId::from_string(format!("proj-plan-import-{}", uuid::Uuid::new_v4()));
+    let mut project = Project::new(
+        "Plan Import Project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.id = project_id.clone();
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory =
+        Some(worktree_parent.path().to_string_lossy().to_string());
+    let project = state.app_state.project_repo.create(project).await.unwrap();
+
+    let source_artifact = Artifact::new_inline(
+        "Source Plan",
+        ArtifactType::Specification,
+        "# Plan Content\n\n## Task 1\nImplement feature X\n\n## Task 2\nAdd tests",
+        "test",
+    );
+    let source_artifact = state
+        .app_state
+        .artifact_repo
+        .create(source_artifact)
+        .await
+        .unwrap();
+
+    let source_session = IdeationSessionBuilder::new()
+        .project_id(project_id.clone())
+        .title("Source Session".to_string())
+        .status(IdeationSessionStatus::Active)
+        .plan_artifact_id(source_artifact.id.clone())
+        .build();
+    let source_session = state
+        .app_state
+        .ideation_session_repo
+        .create(source_session)
+        .await
+        .unwrap();
+
+    let conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("create project conversation");
+
+    let workspace = prepare_agent_conversation_workspace(
+        &project,
+        &conversation.id,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            base_ref: Some("main".to_string()),
+            display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
+        },
+    )
+    .await
+    .expect("prepare agent workspace");
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("save agent workspace");
+
+    let mut msg = ChatMessage::user_in_session(
+        IdeationSessionId::from_string("dummy".to_string()),
+        "Start from plan",
+    );
+    msg.conversation_id = Some(conversation.id.clone());
+    msg.metadata = Some(
+        serde_json::json!({
+            "composer_artifact_references": [{
+                "artifactId": source_artifact.id.as_str(),
+                "kind": "plan",
+                "sessionId": source_session.id.as_str(),
+                "title": "Source Plan"
+            }]
+        })
+        .to_string(),
+    );
+    state.app_state.chat_message_repo.create(msg).await.unwrap();
+
+    PlanImportTestFixture {
+        state,
+        project_id,
+        source_session_id: source_session.id.clone(),
+        source_artifact_id: source_artifact.id.clone(),
+        conversation_id: conversation.id.clone(),
+        _repo_dir: repo_dir,
+        _worktree_parent: worktree_parent,
+    }
+}
+
+struct PlanImportTestFixture {
+    state: HttpServerState,
+    project_id: ProjectId,
+    source_session_id: IdeationSessionId,
+    source_artifact_id: ralphx_lib::domain::entities::artifact::ArtifactId,
+    conversation_id: ralphx_lib::domain::entities::ChatConversationId,
+    _repo_dir: tempfile::TempDir,
+    _worktree_parent: tempfile::TempDir,
+}
+
+impl PlanImportTestFixture {
+    fn make_headers(&self) -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-ralphx-tauri-mcp", "1".parse().unwrap());
+        headers.insert(
+            "x-ralphx-parent-conversation-id",
+            self.conversation_id.as_str().parse().unwrap(),
+        );
+        headers
+    }
+
+    fn make_request(&self) -> StartIdeationRequest {
+        StartIdeationRequest {
+            project_id: self.project_id.as_str().to_string(),
+            title: Some("Plan import test".to_string()),
+            prompt: None,
+            initial_prompt: None,
+            idempotency_key: None,
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_plan_import_happy_path() {
+    let fix = setup_plan_import_test().await;
+
+    let result = start_ideation_http(
+        State(fix.state.clone()),
+        unrestricted_scope(),
+        fix.make_headers(),
+        Json(fix.make_request()),
+    )
+    .await
+    .expect("start ideation with plan import should succeed")
+    .0;
+
+    assert_eq!(result.plan_imported, Some(true));
+    assert_eq!(
+        result.source_plan_artifact_id.as_deref(),
+        Some(fix.source_artifact_id.as_str())
+    );
+    let cloned_id = result
+        .cloned_plan_artifact_id
+        .as_ref()
+        .expect("cloned_plan_artifact_id should be set");
+    assert_ne!(
+        cloned_id.as_str(),
+        fix.source_artifact_id.as_str(),
+        "cloned artifact must have a different ID from source"
+    );
+
+    let cloned_artifact = fix
+        .state
+        .app_state
+        .artifact_repo
+        .get_by_id(&ralphx_lib::domain::entities::artifact::ArtifactId::from_string(
+            cloned_id.clone(),
+        ))
+        .await
+        .unwrap()
+        .expect("cloned artifact should exist");
+    let source_artifact = fix
+        .state
+        .app_state
+        .artifact_repo
+        .get_by_id(&fix.source_artifact_id)
+        .await
+        .unwrap()
+        .expect("source artifact should exist");
+    assert_eq!(cloned_artifact.content, source_artifact.content);
+    assert!(
+        cloned_artifact.derived_from.contains(&fix.source_artifact_id),
+        "cloned artifact should be derived from source"
+    );
+
+    let new_session = fix
+        .state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&IdeationSessionId::from_string(result.session_id.clone()))
+        .await
+        .unwrap()
+        .expect("new session should exist");
+    assert_eq!(
+        new_session.plan_artifact_id.as_ref().map(|a| a.as_str()),
+        Some(cloned_id.as_str()),
+        "new session's plan_artifact_id should point to the clone"
+    );
+}
+
+#[tokio::test]
+async fn test_plan_import_isolation_no_inherited_state() {
+    let fix = setup_plan_import_test().await;
+
+    let result = start_ideation_http(
+        State(fix.state.clone()),
+        unrestricted_scope(),
+        fix.make_headers(),
+        Json(fix.make_request()),
+    )
+    .await
+    .expect("plan import should succeed")
+    .0;
+
+    let new_session = fix
+        .state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&IdeationSessionId::from_string(result.session_id.clone()))
+        .await
+        .unwrap()
+        .expect("new session should exist");
+
+    assert!(
+        new_session.inherited_plan_artifact_id.is_none(),
+        "imported session must not inherit plan artifact"
+    );
+    assert!(
+        new_session.parent_session_id.is_none(),
+        "imported session must not have parent_session_id"
+    );
+    assert_eq!(
+        new_session.verification_status,
+        VerificationStatus::Unverified,
+        "imported session must start with unverified status"
+    );
+    assert!(
+        !new_session.verification_in_progress,
+        "imported session must not have verification in progress"
+    );
+    assert_eq!(
+        new_session.verification_generation, 0,
+        "imported session must start with verification_generation 0"
+    );
+}
+
+#[tokio::test]
+async fn test_plan_import_source_unchanged() {
+    let fix = setup_plan_import_test().await;
+
+    let source_before = fix
+        .state
+        .app_state
+        .artifact_repo
+        .get_by_id(&fix.source_artifact_id)
+        .await
+        .unwrap()
+        .expect("source artifact before import");
+    let source_session_before = fix
+        .state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&fix.source_session_id)
+        .await
+        .unwrap()
+        .expect("source session before import");
+
+    let _result = start_ideation_http(
+        State(fix.state.clone()),
+        unrestricted_scope(),
+        fix.make_headers(),
+        Json(fix.make_request()),
+    )
+    .await
+    .expect("plan import should succeed");
+
+    let source_after = fix
+        .state
+        .app_state
+        .artifact_repo
+        .get_by_id(&fix.source_artifact_id)
+        .await
+        .unwrap()
+        .expect("source artifact after import");
+    let source_session_after = fix
+        .state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&fix.source_session_id)
+        .await
+        .unwrap()
+        .expect("source session after import");
+
+    assert_eq!(source_before.content, source_after.content);
+    assert_eq!(
+        source_before.id, source_after.id,
+        "source artifact ID must not change"
+    );
+    assert_eq!(
+        source_session_before.plan_artifact_id, source_session_after.plan_artifact_id,
+        "source session plan_artifact_id must not change"
+    );
+    assert_eq!(
+        source_session_before.status, source_session_after.status,
+        "source session status must not change"
+    );
+}
+
+#[tokio::test]
+async fn test_plan_import_approved_source_propagates_approval() {
+    let fix = setup_plan_import_test_sqlite().await;
+
+    // Update source session to Accepted status
+    fix.state
+        .app_state
+        .ideation_session_repo
+        .update_status(&fix.source_session_id, IdeationSessionStatus::Accepted)
+        .await
+        .unwrap();
+
+    // Insert source approval into plan_artifact_approvals table
+    let source_sid = fix.source_session_id.as_str().to_string();
+    let source_aid = fix.source_artifact_id.as_str().to_string();
+    fix.state
+        .app_state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "INSERT INTO plan_artifact_approvals (session_id, artifact_id, artifact_version, status, approved_at) VALUES (?1, ?2, 1, 'approved', datetime('now'))",
+                rusqlite::params![source_sid, source_aid],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let result = start_ideation_http(
+        State(fix.state.clone()),
+        unrestricted_scope(),
+        fix.make_headers(),
+        Json(fix.make_request()),
+    )
+    .await
+    .expect("plan import should succeed")
+    .0;
+
+    let new_session_id = result.session_id.clone();
+    let approval_count: i64 = fix
+        .state
+        .app_state
+        .db
+        .run(move |conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM plan_artifact_approvals WHERE session_id = ?1 AND status = 'approved'",
+                    [new_session_id.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            Ok(count)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        approval_count, 1,
+        "accepted source should propagate approval to cloned plan"
+    );
+}
+
+#[tokio::test]
+async fn test_plan_import_draft_source_no_approval() {
+    let fix = setup_plan_import_test_sqlite().await;
+
+    let result = start_ideation_http(
+        State(fix.state.clone()),
+        unrestricted_scope(),
+        fix.make_headers(),
+        Json(fix.make_request()),
+    )
+    .await
+    .expect("plan import should succeed")
+    .0;
+
+    let new_session_id = result.session_id.clone();
+    let approval_count: i64 = fix
+        .state
+        .app_state
+        .db
+        .run(move |conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM plan_artifact_approvals WHERE session_id = ?1 AND status = 'approved'",
+                    [new_session_id.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            Ok(count)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        approval_count, 0,
+        "draft source should not propagate approval"
+    );
+}
+
+#[tokio::test]
+async fn test_plan_import_multiple_refs_error() {
+    use ralphx_lib::domain::entities::artifact::{Artifact, ArtifactType};
+
+    let fix = setup_plan_import_test().await;
+
+    let second_artifact = Artifact::new_inline(
+        "Second Plan",
+        ArtifactType::Specification,
+        "# Second plan content",
+        "test",
+    );
+    let second_artifact = fix
+        .state
+        .app_state
+        .artifact_repo
+        .create(second_artifact)
+        .await
+        .unwrap();
+
+    // Replace the message with one containing two plan references
+    let mut msg = ChatMessage::user_in_session(
+        IdeationSessionId::from_string("dummy".to_string()),
+        "Start from two plans",
+    );
+    msg.conversation_id = Some(fix.conversation_id.clone());
+    msg.metadata = Some(
+        serde_json::json!({
+            "composer_artifact_references": [
+                {
+                    "artifactId": fix.source_artifact_id.as_str(),
+                    "kind": "plan",
+                    "sessionId": fix.source_session_id.as_str(),
+                    "title": "Plan 1"
+                },
+                {
+                    "artifactId": second_artifact.id.as_str(),
+                    "kind": "plan",
+                    "sessionId": fix.source_session_id.as_str(),
+                    "title": "Plan 2"
+                }
+            ]
+        })
+        .to_string(),
+    );
+    fix.state
+        .app_state
+        .chat_message_repo
+        .create(msg)
+        .await
+        .unwrap();
+
+    let err = start_ideation_http(
+        State(fix.state.clone()),
+        unrestricted_scope(),
+        fix.make_headers(),
+        Json(fix.make_request()),
+    )
+    .await
+    .expect_err("multiple plan references should fail");
+
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_plan_import_missing_artifact_error() {
+    use ralphx_lib::domain::entities::ChatConversation;
+
+    let fix = setup_plan_import_test().await;
+
+    // Create a new conversation with a message pointing to a non-existent artifact
+    let conv2 = fix
+        .state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(fix.project_id.clone()))
+        .await
+        .unwrap();
+
+    use ralphx_lib::application::agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+    };
+    use ralphx_lib::domain::entities::{
+        AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind,
+    };
+    let project = fix
+        .state
+        .app_state
+        .project_repo
+        .get_by_id(&fix.project_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let ws2 = prepare_agent_conversation_workspace(
+        &project,
+        &conv2.id,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            base_ref: Some("main".to_string()),
+            display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
+        },
+    )
+    .await
+    .unwrap();
+    fix.state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(ws2)
+        .await
+        .unwrap();
+
+    let mut msg = ChatMessage::user_in_session(
+        IdeationSessionId::from_string("dummy".to_string()),
+        "Missing artifact",
+    );
+    msg.conversation_id = Some(conv2.id.clone());
+    msg.metadata = Some(
+        serde_json::json!({
+            "composer_artifact_references": [{
+                "artifactId": "nonexistent-artifact-id",
+                "kind": "plan",
+                "sessionId": fix.source_session_id.as_str(),
+                "title": "Ghost Plan"
+            }]
+        })
+        .to_string(),
+    );
+    fix.state
+        .app_state
+        .chat_message_repo
+        .create(msg)
+        .await
+        .unwrap();
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("x-ralphx-tauri-mcp", "1".parse().unwrap());
+    headers.insert(
+        "x-ralphx-parent-conversation-id",
+        conv2.id.as_str().parse().unwrap(),
+    );
+
+    let err = start_ideation_http(
+        State(fix.state.clone()),
+        unrestricted_scope(),
+        headers,
+        Json(StartIdeationRequest {
+            project_id: fix.project_id.as_str().to_string(),
+            title: Some("Missing artifact test".to_string()),
+            prompt: None,
+            initial_prompt: None,
+            idempotency_key: None,
+        }),
+    )
+    .await
+    .expect_err("missing source artifact should fail");
+
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_plan_import_wrong_project_error() {
+    let fix = setup_plan_import_test().await;
+
+    // Create a session in a different project
+    let other_project_id = ProjectId::from_string("proj-other-project".to_string());
+    let mut other_project = Project::new(
+        "Other Project".to_string(),
+        "/tmp/other".to_string(),
+    );
+    other_project.id = other_project_id.clone();
+    fix.state
+        .app_state
+        .project_repo
+        .create(other_project)
+        .await
+        .unwrap();
+
+    let other_session = IdeationSessionBuilder::new()
+        .project_id(other_project_id)
+        .title("Other Project Session".to_string())
+        .plan_artifact_id(fix.source_artifact_id.clone())
+        .build();
+    let other_session = fix
+        .state
+        .app_state
+        .ideation_session_repo
+        .create(other_session)
+        .await
+        .unwrap();
+
+    // Create a new conversation with reference to the other-project session
+    use ralphx_lib::domain::entities::ChatConversation;
+    let conv2 = fix
+        .state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(fix.project_id.clone()))
+        .await
+        .unwrap();
+
+    use ralphx_lib::application::agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+    };
+    use ralphx_lib::domain::entities::{
+        AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind,
+    };
+    let project = fix
+        .state
+        .app_state
+        .project_repo
+        .get_by_id(&fix.project_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let ws2 = prepare_agent_conversation_workspace(
+        &project,
+        &conv2.id,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            base_ref: Some("main".to_string()),
+            display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
+        },
+    )
+    .await
+    .unwrap();
+    fix.state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(ws2)
+        .await
+        .unwrap();
+
+    let mut msg = ChatMessage::user_in_session(
+        IdeationSessionId::from_string("dummy".to_string()),
+        "Wrong project",
+    );
+    msg.conversation_id = Some(conv2.id.clone());
+    msg.metadata = Some(
+        serde_json::json!({
+            "composer_artifact_references": [{
+                "artifactId": fix.source_artifact_id.as_str(),
+                "kind": "plan",
+                "sessionId": other_session.id.as_str(),
+                "title": "Cross-project Plan"
+            }]
+        })
+        .to_string(),
+    );
+    fix.state
+        .app_state
+        .chat_message_repo
+        .create(msg)
+        .await
+        .unwrap();
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("x-ralphx-tauri-mcp", "1".parse().unwrap());
+    headers.insert(
+        "x-ralphx-parent-conversation-id",
+        conv2.id.as_str().parse().unwrap(),
+    );
+
+    let err = start_ideation_http(
+        State(fix.state.clone()),
+        unrestricted_scope(),
+        headers,
+        Json(StartIdeationRequest {
+            project_id: fix.project_id.as_str().to_string(),
+            title: Some("Wrong project test".to_string()),
+            prompt: None,
+            initial_prompt: None,
+            idempotency_key: None,
+        }),
+    )
+    .await
+    .expect_err("cross-project plan import should fail");
+
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_plan_import_archived_source_error() {
+    let fix = setup_plan_import_test().await;
+
+    fix.state
+        .app_state
+        .ideation_session_repo
+        .update_status(&fix.source_session_id, IdeationSessionStatus::Archived)
+        .await
+        .unwrap();
+
+    let err = start_ideation_http(
+        State(fix.state.clone()),
+        unrestricted_scope(),
+        fix.make_headers(),
+        Json(fix.make_request()),
+    )
+    .await
+    .expect_err("archived source should fail");
+
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_plan_import_verification_child_error() {
+    use ralphx_lib::application::agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+    };
+    use ralphx_lib::domain::entities::{
+        AgentConversationWorkspaceMode, ChatConversation, IdeationAnalysisBaseRefKind,
+    };
+    use ralphx_lib::domain::entities::artifact::{Artifact, ArtifactType};
+
+    let state = setup_test_state().await;
+
+    let repo_dir = tempfile::TempDir::new().unwrap();
+    let repo_path = repo_dir.path();
+    std::process::Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(repo_path)
+        .output()
+        .expect("git init");
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(repo_path)
+        .output()
+        .expect("git config email");
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(repo_path)
+        .output()
+        .expect("git config name");
+    std::process::Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(repo_path)
+        .output()
+        .expect("git commit");
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+
+    let project_id = ProjectId::from_string(format!("proj-verif-child-{}", uuid::Uuid::new_v4()));
+    let mut project = Project::new(
+        "Verif Child Project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.id = project_id.clone();
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory =
+        Some(worktree_parent.path().to_string_lossy().to_string());
+    let project = state.app_state.project_repo.create(project).await.unwrap();
+
+    let source_artifact = Artifact::new_inline(
+        "Verif Plan",
+        ArtifactType::Specification,
+        "# Verification plan",
+        "test",
+    );
+    let source_artifact = state
+        .app_state
+        .artifact_repo
+        .create(source_artifact)
+        .await
+        .unwrap();
+
+    // Create source session as a verification child
+    let verif_session = IdeationSessionBuilder::new()
+        .project_id(project_id.clone())
+        .title("Verification Session".to_string())
+        .plan_artifact_id(source_artifact.id.clone())
+        .session_purpose(SessionPurpose::Verification)
+        .build();
+    let verif_session = state
+        .app_state
+        .ideation_session_repo
+        .create(verif_session)
+        .await
+        .unwrap();
+
+    let conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .unwrap();
+
+    let workspace = prepare_agent_conversation_workspace(
+        &project,
+        &conversation.id,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            base_ref: Some("main".to_string()),
+            display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
+        },
+    )
+    .await
+    .unwrap();
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let mut msg = ChatMessage::user_in_session(
+        IdeationSessionId::from_string("dummy".to_string()),
+        "From verification child",
+    );
+    msg.conversation_id = Some(conversation.id.clone());
+    msg.metadata = Some(
+        serde_json::json!({
+            "composer_artifact_references": [{
+                "artifactId": source_artifact.id.as_str(),
+                "kind": "plan",
+                "sessionId": verif_session.id.as_str(),
+                "title": "Verif Plan"
+            }]
+        })
+        .to_string(),
+    );
+    state.app_state.chat_message_repo.create(msg).await.unwrap();
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("x-ralphx-tauri-mcp", "1".parse().unwrap());
+    headers.insert(
+        "x-ralphx-parent-conversation-id",
+        conversation.id.as_str().parse().unwrap(),
+    );
+
+    let err = start_ideation_http(
+        State(state),
+        unrestricted_scope(),
+        headers,
+        Json(StartIdeationRequest {
+            project_id: project_id.as_str().to_string(),
+            title: Some("Verif child test".to_string()),
+            prompt: None,
+            initial_prompt: None,
+            idempotency_key: None,
+        }),
+    )
+    .await
+    .expect_err("verification child source should fail");
+
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_plan_import_non_spec_artifact_error() {
+    use ralphx_lib::domain::entities::artifact::{Artifact, ArtifactType};
+    use ralphx_lib::domain::entities::ChatConversation;
+
+    let fix = setup_plan_import_test().await;
+
+    // Create a non-specification artifact
+    let research_artifact = Artifact::new_inline(
+        "Research Doc",
+        ArtifactType::ResearchDocument,
+        "# Research findings",
+        "test",
+    );
+    let research_artifact = fix
+        .state
+        .app_state
+        .artifact_repo
+        .create(research_artifact)
+        .await
+        .unwrap();
+
+    let conv2 = fix
+        .state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(fix.project_id.clone()))
+        .await
+        .unwrap();
+
+    use ralphx_lib::application::agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+    };
+    use ralphx_lib::domain::entities::{
+        AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind,
+    };
+    let project = fix
+        .state
+        .app_state
+        .project_repo
+        .get_by_id(&fix.project_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let ws2 = prepare_agent_conversation_workspace(
+        &project,
+        &conv2.id,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            base_ref: Some("main".to_string()),
+            display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
+        },
+    )
+    .await
+    .unwrap();
+    fix.state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(ws2)
+        .await
+        .unwrap();
+
+    let mut msg = ChatMessage::user_in_session(
+        IdeationSessionId::from_string("dummy".to_string()),
+        "Non-spec artifact",
+    );
+    msg.conversation_id = Some(conv2.id.clone());
+    msg.metadata = Some(
+        serde_json::json!({
+            "composer_artifact_references": [{
+                "artifactId": research_artifact.id.as_str(),
+                "kind": "plan",
+                "sessionId": fix.source_session_id.as_str(),
+                "title": "Research Doc"
+            }]
+        })
+        .to_string(),
+    );
+    fix.state
+        .app_state
+        .chat_message_repo
+        .create(msg)
+        .await
+        .unwrap();
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("x-ralphx-tauri-mcp", "1".parse().unwrap());
+    headers.insert(
+        "x-ralphx-parent-conversation-id",
+        conv2.id.as_str().parse().unwrap(),
+    );
+
+    let err = start_ideation_http(
+        State(fix.state.clone()),
+        unrestricted_scope(),
+        headers,
+        Json(StartIdeationRequest {
+            project_id: fix.project_id.as_str().to_string(),
+            title: Some("Non-spec test".to_string()),
+            prompt: None,
+            initial_prompt: None,
+            idempotency_key: None,
+        }),
+    )
+    .await
+    .expect_err("non-specification artifact should fail");
+
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_plan_import_idempotency() {
+    let fix = setup_plan_import_test_sqlite().await;
+
+    let make_idem_request = || StartIdeationRequest {
+        project_id: fix.project_id.as_str().to_string(),
+        title: Some("Plan import test".to_string()),
+        prompt: None,
+        initial_prompt: None,
+        idempotency_key: Some("plan-import-idem-key".to_string()),
+    };
+
+    let make_idem_headers = || {
+        let mut headers = fix.make_headers();
+        headers.insert("x-ralphx-key-id", "test-api-key".parse().unwrap());
+        headers
+    };
+
+    let result1 = start_ideation_http(
+        State(fix.state.clone()),
+        unrestricted_scope(),
+        make_idem_headers(),
+        Json(make_idem_request()),
+    )
+    .await
+    .expect("first plan import should succeed")
+    .0;
+
+    assert_eq!(result1.plan_imported, Some(true));
+
+    let result2 = start_ideation_http(
+        State(fix.state.clone()),
+        unrestricted_scope(),
+        make_idem_headers(),
+        Json(make_idem_request()),
+    )
+    .await
+    .expect("second plan import with same key should succeed")
+    .0;
+
+    assert_eq!(
+        result1.session_id, result2.session_id,
+        "idempotent retry must return the same session"
+    );
+    assert_eq!(
+        result2.exists,
+        Some(true),
+        "idempotent retry should set exists=true"
+    );
+}
+
+#[tokio::test]
+async fn test_plan_import_bypasses_similarity_dedup() {
+    let fix = setup_plan_import_test().await;
+
+    // Create an existing active session with similar title
+    let existing_session = IdeationSessionBuilder::new()
+        .project_id(fix.project_id.clone())
+        .title("Plan import test".to_string())
+        .status(IdeationSessionStatus::Active)
+        .origin(SessionOrigin::External)
+        .build();
+    let existing_session = fix
+        .state
+        .app_state
+        .ideation_session_repo
+        .create(existing_session)
+        .await
+        .unwrap();
+
+    // Seed a first user message for the existing session so similarity has something to compare
+    let seed_msg = ChatMessage::user_in_session(
+        existing_session.id.clone(),
+        "Plan import test",
+    );
+    fix.state
+        .app_state
+        .chat_message_repo
+        .create(seed_msg)
+        .await
+        .unwrap();
+
+    let mut req = fix.make_request();
+    req.title = Some("Plan import test".to_string());
+    req.prompt = Some("Plan import test".to_string());
+
+    let result = start_ideation_http(
+        State(fix.state.clone()),
+        unrestricted_scope(),
+        fix.make_headers(),
+        Json(req),
+    )
+    .await
+    .expect("plan import should bypass similarity dedup")
+    .0;
+
+    assert_eq!(result.plan_imported, Some(true));
+    assert_ne!(
+        result.session_id,
+        existing_session.id.as_str(),
+        "plan import must create a new session, not reuse the similar one"
+    );
+    assert!(
+        result.duplicate_detected.is_none() || result.duplicate_detected == Some(false),
+        "duplicate_detected should not be set for plan imports"
     );
 }

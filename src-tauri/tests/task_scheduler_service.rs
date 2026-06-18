@@ -371,6 +371,7 @@ async fn test_scheduler_skips_project_at_capacity_and_picks_other_project() {
                 project_ideation_max: 1,
                 auto_commit: true,
                 pause_on_failure: true,
+                ..ExecutionSettings::default()
             },
         )
         .await

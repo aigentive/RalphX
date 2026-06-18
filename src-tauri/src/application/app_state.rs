@@ -18,35 +18,39 @@ use crate::application::runtime_factory::{
 use crate::application::startup_git_auth_preflight::StartupGitAuthRecoveryState;
 use crate::application::AgentClientBundle;
 use crate::application::AgentTerminalService;
+use crate::application::AtlassianIntegrationService;
+use crate::application::EmptyAtlassianApiClient;
 use crate::application::PermissionState;
 use crate::application::QuestionState;
 use crate::application::ResumeValidator;
 use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
+use crate::application::UnavailableAtlassianApiClient;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
     default_approval_policy_for_harness, default_sandbox_mode_for_harness,
-    lightweight_model_for_provider, AgentHarnessKind, AgenticClient, LogicalEffort,
-    DEFAULT_AGENT_HARNESS,
+    lightweight_model_for_provider, AgentHarnessKind, AgentProviderCliManagementMode,
+    AgentProviderSettings, AgenticClient, LogicalEffort, DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{ChatContextType, ChatConversation, IdeationSession};
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
-    ActivePlanRepository, ActivityEventRepository, AgentConversationWorkspaceRepository,
-    AgentLaneSettingsRepository, AgentModelRegistryRepository, AgentProfileRepository,
-    AgentProviderSettingsRepository, AgentRunRepository, AgentTaskRepository, ApiKeyRepository,
-    AppStateRepository, ArtifactBucketRepository, ArtifactFlowRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ChatTimelineRepository, DelegatedSessionRepository, ExecutionPlanRepository,
-    ExecutionSettingsRepository, ExternalEventsRepository, GlobalExecutionSettingsRepository,
-    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    IdeationSettingsRepository, MemoryArchiveRepository, MemoryEntryRepository,
-    MemoryEventRepository, MethodologyRepository, OrphanWorktreeCleanupMarkerRepository,
-    PlanBranchRepository, PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
-    ProposalDependencyRepository, ReviewRepository, ReviewSettingsRepository,
-    SessionLinkRepository, TaskDependencyRepository, TaskProposalRepository, TaskQARepository,
-    TaskRepository, TaskStepRepository, TeamMessageRepository, TeamSessionRepository,
-    WebhookRegistrationRepository, WorkflowRepository,
+    ActivePlanRepository, ActivityEventRepository, AgentConversationJiraIssueRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    AgentModelRegistryRepository, AgentProfileRepository, AgentProviderSettingsRepository,
+    AgentRunRepository, AgentTaskRepository, ApiKeyRepository, AppStateRepository,
+    ArtifactBucketRepository, ArtifactFlowRepository, ArtifactRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
+    DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
+    ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
+    IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
+    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
+    OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository, PlanSelectionStatsRepository,
+    ProcessRepository, ProjectRepository, ProposalDependencyRepository, ReviewRepository,
+    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
+    TeamMessageRepository, TeamSessionRepository, WebhookRegistrationRepository,
+    WorkflowRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -54,13 +58,15 @@ use crate::domain::services::{
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     InMemoryMemoryEntryRepository, InMemoryMemoryEventRepository, MemoryActivePlanRepository,
-    MemoryActivityEventRepository, MemoryAgentConversationWorkspaceRepository,
-    MemoryAgentLaneSettingsRepository, MemoryAgentModelRegistryRepository,
-    MemoryAgentProfileRepository, MemoryAgentProviderSettingsRepository, MemoryAgentRunRepository,
-    MemoryAgentTaskRepository, MemoryApiKeyRepository, MemoryAppStateRepository,
-    MemoryArtifactBucketRepository, MemoryArtifactFlowRepository, MemoryArtifactRepository,
-    MemoryChatAttachmentRepository, MemoryChatConversationRepository, MemoryChatMessageRepository,
-    MemoryChatTimelineRepository, MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
+    MemoryActivityEventRepository, MemoryAgentConversationJiraIssueRepository,
+    MemoryAgentConversationWorkspaceRepository, MemoryAgentLaneSettingsRepository,
+    MemoryAgentModelRegistryRepository, MemoryAgentProfileRepository,
+    MemoryAgentProviderSettingsRepository, MemoryAgentRunRepository, MemoryAgentTaskRepository,
+    MemoryApiKeyRepository, MemoryAppStateRepository, MemoryArtifactBucketRepository,
+    MemoryArtifactFlowRepository, MemoryArtifactRepository,
+    MemoryAtlassianIntegrationSettingsRepository, MemoryChatAttachmentRepository,
+    MemoryChatConversationRepository, MemoryChatMessageRepository, MemoryChatTimelineRepository,
+    MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
     MemoryExecutionSettingsRepository, MemoryExternalEventsRepository,
     MemoryGlobalExecutionSettingsRepository, MemoryIdeationEffortSettingsRepository,
     MemoryIdeationModelSettingsRepository, MemoryIdeationSessionRepository,
@@ -69,20 +75,22 @@ use crate::infrastructure::memory::{
     MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
     MemoryProjectRepository, MemoryProposalDependencyRepository, MemoryQuestionRepository,
     MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
-    MemorySessionLinkRepository, MemoryTaskDependencyRepository, MemoryTaskProposalRepository,
-    MemoryTaskQARepository, MemoryTaskRepository, MemoryTaskStepRepository,
-    MemoryTeamMessageRepository, MemoryTeamSessionRepository, MemoryWebhookRegistrationRepository,
-    MemoryWorkflowRepository,
+    MemorySecretStore, MemorySessionLinkRepository, MemoryTaskDependencyRepository,
+    MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
+    MemoryTaskStepRepository, MemoryTeamMessageRepository, MemoryTeamSessionRepository,
+    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
 };
+use crate::infrastructure::secret_store::MacosKeychainSecretStore;
 use crate::infrastructure::sqlite::ReviewIssueRepository;
 use crate::infrastructure::sqlite::{
     get_app_data_db_path, get_default_db_path, open_connection, run_migrations,
     SqliteActivePlanRepository, SqliteActivityEventRepository,
-    SqliteAgentConversationWorkspaceRepository, SqliteAgentLaneSettingsRepository,
-    SqliteAgentModelRegistryRepository, SqliteAgentProfileRepository,
-    SqliteAgentProviderSettingsRepository, SqliteAgentRunRepository, SqliteAgentTaskRepository,
-    SqliteApiKeyRepository, SqliteAppStateRepository, SqliteArtifactBucketRepository,
-    SqliteArtifactFlowRepository, SqliteArtifactRepository, SqliteChatAttachmentRepository,
+    SqliteAgentConversationJiraIssueRepository, SqliteAgentConversationWorkspaceRepository,
+    SqliteAgentLaneSettingsRepository, SqliteAgentModelRegistryRepository,
+    SqliteAgentProfileRepository, SqliteAgentProviderSettingsRepository, SqliteAgentRunRepository,
+    SqliteAgentTaskRepository, SqliteApiKeyRepository, SqliteAppStateRepository,
+    SqliteArtifactBucketRepository, SqliteArtifactFlowRepository, SqliteArtifactRepository,
+    SqliteAtlassianIntegrationSettingsRepository, SqliteChatAttachmentRepository,
     SqliteChatConversationRepository, SqliteChatMessageRepository, SqliteChatTimelineRepository,
     SqliteDelegatedSessionRepository, SqliteExecutionPlanRepository,
     SqliteExecutionSettingsRepository, SqliteExternalEventsRepository,
@@ -100,11 +108,13 @@ use crate::infrastructure::sqlite::{
     SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
 };
 use crate::infrastructure::GhCliGithubService;
+use crate::infrastructure::HyperAtlassianApiClient;
 
 pub(crate) struct ResolvedBackgroundAgentRuntime {
     pub client: Arc<dyn AgenticClient>,
     pub harness: Option<AgentHarnessKind>,
     pub model: Option<String>,
+    pub cli_path_override: Option<PathBuf>,
     pub logical_effort: Option<LogicalEffort>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
@@ -121,6 +131,8 @@ pub struct AppState {
     pub project_repo: Arc<dyn ProjectRepository>,
     /// API key repository for external API authentication
     pub api_key_repo: Arc<dyn ApiKeyRepository>,
+    /// Native Atlassian/Jira/Confluence integration service.
+    pub atlassian_integration_service: Arc<AtlassianIntegrationService>,
     /// Agent profile repository (SQLite in production)
     pub agent_profile_repo: Arc<dyn AgentProfileRepository>,
     /// TaskQA repository for QA artifacts
@@ -172,6 +184,8 @@ pub struct AppState {
     pub chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     /// Conversation-owned branch/worktree repository for Agents starter workspaces
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    /// Conversation-owned primary Jira assignment/cache repository
+    pub agent_conversation_jira_issue_repo: Arc<dyn AgentConversationJiraIssueRepository>,
     /// Startup orphan agent-worktree cleanup backoff markers
     pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     /// In-memory PTY session manager for Agents conversation terminals
@@ -270,6 +284,37 @@ impl AppState {
         AgentClientBundle::standard_mock_runtime_clients()
     }
 
+    fn production_atlassian_integration_service(
+        shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+    ) -> Arc<AtlassianIntegrationService> {
+        let client: Arc<dyn crate::application::AtlassianApiClient> =
+            match HyperAtlassianApiClient::new() {
+                Ok(client) => Arc::new(client),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "Atlassian HTTP client unavailable; integration validation will fail until TLS roots are available"
+                    );
+                    Arc::new(UnavailableAtlassianApiClient::new(error))
+                }
+            };
+        Arc::new(AtlassianIntegrationService::new(
+            Arc::new(SqliteAtlassianIntegrationSettingsRepository::from_shared(
+                Arc::clone(shared_conn),
+            )),
+            Arc::new(MacosKeychainSecretStore::new()),
+            client,
+        ))
+    }
+
+    fn memory_atlassian_integration_service() -> Arc<AtlassianIntegrationService> {
+        Arc::new(AtlassianIntegrationService::new(
+            Arc::new(MemoryAtlassianIntegrationSettingsRepository::new()),
+            Arc::new(MemorySecretStore::new()),
+            Arc::new(EmptyAtlassianApiClient),
+        ))
+    }
+
     fn enable_claude_test_mode() {
         std::env::set_var("RALPHX_TEST_MODE", "1");
     }
@@ -279,6 +324,7 @@ impl AppState {
         client: Arc<dyn AgenticClient>,
         harness: AgentHarnessKind,
         model: Option<String>,
+        cli_path_override: Option<PathBuf>,
         logical_effort: Option<LogicalEffort>,
         approval_policy: Option<String>,
         sandbox_mode: Option<String>,
@@ -287,6 +333,7 @@ impl AppState {
             client,
             harness: Some(harness),
             model,
+            cli_path_override,
             logical_effort,
             approval_policy: approval_policy
                 .or_else(|| default_approval_policy_for_harness(harness).map(str::to_string)),
@@ -295,7 +342,7 @@ impl AppState {
         }
     }
 
-    fn lock_utility_agent_runtime_model(
+    pub(crate) fn lock_utility_agent_runtime_model(
         runtime: ResolvedBackgroundAgentRuntime,
     ) -> ResolvedBackgroundAgentRuntime {
         let harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
@@ -306,7 +353,56 @@ impl AppState {
         }
     }
 
-    async fn resolve_background_agent_runtime_for_harness(
+    pub(crate) fn managed_cli_path_override_for_provider(
+        provider_settings: &AgentProviderSettings,
+        purpose: &str,
+    ) -> AppResult<Option<PathBuf>> {
+        let Some(launch_path) =
+            crate::application::managed_provider_cli::checked_managed_provider_cli_launch_path(
+                provider_settings,
+                purpose,
+            )
+        else {
+            return Ok(None);
+        };
+
+        launch_path.map(Some).map_err(AppError::Infrastructure)
+    }
+
+    async fn resolve_background_agent_client_and_cli_path_override(
+        &self,
+        harness: AgentHarnessKind,
+        purpose: &str,
+        provider_settings: &AgentProviderSettings,
+    ) -> AppResult<(Arc<dyn AgenticClient>, Option<PathBuf>)> {
+        let cli_path_override =
+            Self::managed_cli_path_override_for_provider(provider_settings, purpose)?;
+
+        if harness == self.agent_clients.default_harness {
+            return Ok((
+                Arc::clone(&self.agent_clients.default_client),
+                cli_path_override,
+            ));
+        }
+
+        if cli_path_override.is_some() {
+            if let Some(client) = self.agent_clients.explicit_harness_client(harness) {
+                return Ok((client, cli_path_override));
+            }
+        } else if let Some(client) = self
+            .agent_clients
+            .explicit_available_harness_client(harness)
+            .await
+        {
+            return Ok((client, None));
+        }
+
+        Err(AppError::Infrastructure(format!(
+            "{purpose} harness unavailable: {harness}"
+        )))
+    }
+
+    pub(crate) async fn resolve_background_agent_runtime_for_harness(
         &self,
         harness: AgentHarnessKind,
         purpose: &str,
@@ -326,36 +422,23 @@ impl AppState {
             .unwrap_or_else(|| {
                 crate::domain::agents::AgentProviderSettings::disabled_defaults(harness)
             });
-
-        if harness == self.agent_clients.default_harness {
-            return Ok(self.background_agent_runtime_for_harness(
-                Arc::clone(&self.agent_clients.default_client),
+        let (client, cli_path_override) = self
+            .resolve_background_agent_client_and_cli_path_override(
                 harness,
-                provider_settings.model,
-                provider_settings.effort,
-                provider_settings.approval_policy,
-                provider_settings.sandbox_mode,
-            ));
-        }
+                purpose,
+                &provider_settings,
+            )
+            .await?;
 
-        if let Some(client) = self
-            .agent_clients
-            .explicit_available_harness_client(harness)
-            .await
-        {
-            return Ok(self.background_agent_runtime_for_harness(
-                client,
-                harness,
-                provider_settings.model,
-                provider_settings.effort,
-                provider_settings.approval_policy,
-                provider_settings.sandbox_mode,
-            ));
-        }
-
-        Err(AppError::Infrastructure(format!(
-            "{purpose} harness unavailable: {harness}"
-        )))
+        Ok(self.background_agent_runtime_for_harness(
+            client,
+            harness,
+            provider_settings.model,
+            cli_path_override,
+            provider_settings.effort,
+            provider_settings.approval_policy,
+            provider_settings.sandbox_mode,
+        ))
     }
 
     pub fn build_chat_service(&self) -> AppChatService {
@@ -399,11 +482,21 @@ impl AppState {
         );
 
         let started_at = Instant::now();
-        let service = build_transition_service_from_deps(app_handle, execution_state, &deps);
+        let mut service = build_transition_service_from_deps(app_handle, execution_state, &deps);
         tracing::info!(
             elapsed_ms = started_at.elapsed().as_millis(),
             "AppState transition service built"
         );
+
+        let drafter = Arc::new(
+            crate::application::plan_pr_description::AppStatePlanPrDescriptionDrafter::new(
+                Arc::clone(&self.agent_conversation_workspace_repo),
+                Arc::clone(&self.agent_provider_settings_repo),
+                self.agent_clients.clone(),
+            ),
+        );
+        service = service.with_plan_pr_description_drafter(drafter);
+
         service
     }
 
@@ -432,59 +525,73 @@ impl AppState {
         )
         .await;
 
-        if let Some(client) = self
-            .agent_clients
-            .explicit_available_harness_client(resolved.effective_harness)
-            .await
-        {
-            crate::application::ensure_provider_spawn_enabled(
-                &self.agent_provider_settings_repo,
-                resolved.effective_harness,
-                "ideation sidecar runtime",
-            )
-            .await
-            .map_err(AppError::Infrastructure)?;
-            return Ok(self.background_agent_runtime_for_harness(
-                client,
-                resolved.effective_harness,
-                Some(resolved.model),
-                resolved.logical_effort,
-                resolved.approval_policy,
-                resolved.sandbox_mode,
-            ));
-        }
-
-        if resolved.effective_harness != self.agent_clients.default_harness {
-            return Err(crate::error::AppError::Infrastructure(format!(
-                "Configured ideation sidecar harness unavailable for project {}: {}",
-                project_id.unwrap_or(""),
-                resolved.effective_harness
-            )));
-        }
-
-        if resolved.effective_harness == AgentHarnessKind::Codex {
-            crate::application::ensure_provider_spawn_enabled(
-                &self.agent_provider_settings_repo,
-                resolved.effective_harness,
-                "ideation sidecar runtime",
-            )
-            .await
-            .map_err(AppError::Infrastructure)?;
-            return Ok(self.background_agent_runtime_for_harness(
-                Arc::clone(&self.agent_clients.default_client),
-                resolved.effective_harness,
-                Some(resolved.model),
-                resolved.logical_effort,
-                resolved.approval_policy,
-                resolved.sandbox_mode,
-            ));
-        }
-
-        self.resolve_background_agent_runtime_for_harness(
-            self.agent_clients.default_harness,
+        crate::application::ensure_provider_spawn_enabled(
+            &self.agent_provider_settings_repo,
+            resolved.effective_harness,
             "ideation sidecar runtime",
         )
         .await
+        .map_err(AppError::Infrastructure)?;
+        let provider_settings = self
+            .agent_provider_settings_repo
+            .get(resolved.effective_harness)
+            .await
+            .map_err(|error| AppError::Infrastructure(error.to_string()))?
+            .unwrap_or_else(|| {
+                crate::domain::agents::AgentProviderSettings::disabled_defaults(
+                    resolved.effective_harness,
+                )
+            });
+        let preserve_resolution_error =
+            provider_settings.cli_management_mode == AgentProviderCliManagementMode::RxManaged;
+        let (client, cli_path_override) = self
+            .resolve_background_agent_client_and_cli_path_override(
+                resolved.effective_harness,
+                "ideation sidecar runtime",
+                &provider_settings,
+            )
+            .await
+            .map_err(|error| {
+                if resolved.effective_harness != self.agent_clients.default_harness
+                    && !preserve_resolution_error
+                {
+                    AppError::Infrastructure(format!(
+                        "Configured ideation sidecar harness unavailable for project {}: {}",
+                        project_id.unwrap_or(""),
+                        resolved.effective_harness
+                    ))
+                } else {
+                    error
+                }
+            })?;
+        let use_resolved_lane_settings = resolved.effective_harness
+            != self.agent_clients.default_harness
+            || resolved.effective_harness == AgentHarnessKind::Codex;
+        let (model, logical_effort, approval_policy, sandbox_mode) = if use_resolved_lane_settings {
+            (
+                Some(resolved.model),
+                resolved.logical_effort,
+                resolved.approval_policy,
+                resolved.sandbox_mode,
+            )
+        } else {
+            (
+                provider_settings.model,
+                provider_settings.effort,
+                provider_settings.approval_policy,
+                provider_settings.sandbox_mode,
+            )
+        };
+
+        Ok(self.background_agent_runtime_for_harness(
+            client,
+            resolved.effective_harness,
+            model,
+            cli_path_override,
+            logical_effort,
+            approval_policy,
+            sandbox_mode,
+        ))
     }
 
     pub(crate) async fn resolve_session_namer_runtime_for_project(
@@ -533,6 +640,30 @@ impl AppState {
         conversation: &ChatConversation,
         project_id: Option<&str>,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        self.resolve_session_namer_runtime_for_conversation_with_requested_harness(
+            conversation,
+            project_id,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn resolve_session_namer_runtime_for_conversation_with_requested_harness(
+        &self,
+        conversation: &ChatConversation,
+        project_id: Option<&str>,
+        requested_harness: Option<AgentHarnessKind>,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        if let Some(harness) = requested_harness {
+            let runtime = self
+                .resolve_background_agent_runtime_for_harness(
+                    harness,
+                    "session namer requested provider",
+                )
+                .await?;
+            return Ok(Self::lock_utility_agent_runtime_model(runtime));
+        }
+
         if let Some(harness) = conversation.provider_harness {
             let runtime = self
                 .resolve_background_agent_runtime_for_harness(
@@ -574,6 +705,28 @@ impl AppState {
             )
             .await?;
         Ok(Self::lock_utility_agent_runtime_model(runtime))
+    }
+
+    pub(crate) async fn resolve_plan_complexity_runtime_for_session(
+        &self,
+        session: &IdeationSession,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        if let Some(conversation) = self
+            .chat_conversation_repo
+            .get_active_for_context(ChatContextType::Ideation, session.id.as_str())
+            .await?
+        {
+            let runtime = self
+                .resolve_session_namer_runtime_for_conversation(
+                    &conversation,
+                    Some(session.project_id.as_str()),
+                )
+                .await?;
+            return Ok(Self::lock_utility_agent_runtime_model(runtime));
+        }
+
+        self.resolve_session_namer_runtime_for_project(Some(session.project_id.as_str()))
+            .await
     }
 
     /// Create AppState for production use with SQLite repositories.
@@ -634,6 +787,9 @@ impl AppState {
             api_key_repo: Arc::new(SqliteApiKeyRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
+            atlassian_integration_service: Self::production_atlassian_integration_service(
+                &shared_conn,
+            ),
             agent_profile_repo: Arc::new(SqliteAgentProfileRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -702,6 +858,9 @@ impl AppState {
             )),
             agent_conversation_workspace_repo: Arc::new(
                 SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            agent_conversation_jira_issue_repo: Arc::new(
+                SqliteAgentConversationJiraIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 SqliteOrphanWorktreeCleanupMarkerRepository::from_shared(Arc::clone(&shared_conn)),
@@ -850,6 +1009,7 @@ impl AppState {
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            atlassian_integration_service: Self::memory_atlassian_integration_service(),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -888,6 +1048,9 @@ impl AppState {
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
+            ),
+            agent_conversation_jira_issue_repo: Arc::new(
+                MemoryAgentConversationJiraIssueRepository::new(),
             ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
@@ -972,6 +1135,7 @@ impl AppState {
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            atlassian_integration_service: Self::memory_atlassian_integration_service(),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1010,6 +1174,9 @@ impl AppState {
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
+            ),
+            agent_conversation_jira_issue_repo: Arc::new(
+                MemoryAgentConversationJiraIssueRepository::new(),
             ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
@@ -1104,6 +1271,7 @@ impl AppState {
                 &shared_conn,
             ))),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            atlassian_integration_service: Self::memory_atlassian_integration_service(),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1144,6 +1312,9 @@ impl AppState {
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            agent_conversation_jira_issue_repo: Arc::new(
+                SqliteAgentConversationJiraIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 SqliteOrphanWorktreeCleanupMarkerRepository::from_shared(Arc::clone(&shared_conn)),
@@ -1230,6 +1401,7 @@ impl AppState {
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo,
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            atlassian_integration_service: Self::memory_atlassian_integration_service(),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1260,6 +1432,9 @@ impl AppState {
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
+            ),
+            agent_conversation_jira_issue_repo: Arc::new(
+                MemoryAgentConversationJiraIssueRepository::new(),
             ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),

@@ -71,6 +71,14 @@ pub trait ChatConversationRepository: Send + Sync {
         context_id: &str,
     ) -> AppResult<Option<ChatConversation>>;
 
+    /// List recent active conversations for a context type that still have a
+    /// resumable provider session.
+    async fn list_recent_resumable_by_context_type(
+        &self,
+        context_type: ChatContextType,
+        limit: u32,
+    ) -> AppResult<Vec<ChatConversation>>;
+
     /// Update the provider session reference for a conversation.
     async fn update_provider_session_ref(
         &self,

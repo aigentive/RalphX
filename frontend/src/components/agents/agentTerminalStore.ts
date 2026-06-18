@@ -4,11 +4,13 @@ import { immer } from "zustand/middleware/immer";
 
 export type AgentTerminalPlacement = "auto" | "chat" | "panel";
 export type AgentTerminalDock = "chat" | "panel";
+export type AgentTerminalCachedStatus = "closed" | "running" | "exited" | "error";
 
 interface AgentTerminalUiState {
   openByConversationId: Record<string, boolean>;
   heightByConversationId: Record<string, number>;
   activeTerminalByConversationId: Record<string, string>;
+  statusByConversationId: Record<string, AgentTerminalCachedStatus>;
   placement: AgentTerminalPlacement;
   draggingConversationId: string | null;
   dragOverDock: AgentTerminalDock | null;
@@ -19,6 +21,7 @@ interface AgentTerminalUiActions {
   toggleOpen: (conversationId: string) => void;
   setHeight: (conversationId: string, height: number) => void;
   setActiveTerminal: (conversationId: string, terminalId: string) => void;
+  setStatus: (conversationId: string, status: AgentTerminalCachedStatus) => void;
   setPlacement: (placement: AgentTerminalPlacement) => void;
   setDraggingConversation: (conversationId: string | null) => void;
   setDragOverDock: (dock: AgentTerminalDock | null) => void;
@@ -38,6 +41,7 @@ export const useAgentTerminalStore = create<
       openByConversationId: {},
       heightByConversationId: {},
       activeTerminalByConversationId: {},
+      statusByConversationId: {},
       placement: "auto",
       draggingConversationId: null,
       dragOverDock: null,
@@ -64,6 +68,11 @@ export const useAgentTerminalStore = create<
       setActiveTerminal: (conversationId, terminalId) =>
         set((state) => {
           state.activeTerminalByConversationId[conversationId] = terminalId;
+        }),
+
+      setStatus: (conversationId, status) =>
+        set((state) => {
+          state.statusByConversationId[conversationId] = status;
         }),
 
       setPlacement: (placement) =>

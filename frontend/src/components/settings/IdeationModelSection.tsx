@@ -17,12 +17,22 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SectionCard, ErrorBanner } from "./SettingsView.shared";
+import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useIdeationModelSettings } from "@/hooks/useIdeationModelSettings";
 import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
 
 // ============================================================================
 // Constants
 // ============================================================================
+
+const CLAUDE_FABLE_MIN_VERSION = "2.1.170";
+
+interface ModelOption {
+  value: string;
+  label: string;
+  description: string;
+  disabled?: boolean;
+}
 
 const MODEL_OPTIONS = [
   {
@@ -45,7 +55,12 @@ const MODEL_OPTIONS = [
     label: "Haiku",
     description: "Fastest, lowest cost",
   },
-] as const;
+  {
+    value: "fable",
+    label: "Fable",
+    description: `Claude Fable 5, requires Claude Code ${CLAUDE_FABLE_MIN_VERSION}+`,
+  },
+] as const satisfies readonly ModelOption[];
 
 // ============================================================================
 // Helpers
@@ -68,6 +83,33 @@ function formatSource(source: string): string {
   }
 }
 
+function claudeSupportsFable(
+  providers: readonly {
+    provider: string;
+    supportedModelAliases?: readonly string[] | null | undefined;
+  }[],
+): boolean {
+  const aliases =
+    providers.find((provider) => provider.provider === "claude")
+      ?.supportedModelAliases ?? null;
+  return (
+    aliases?.some((alias) => {
+      const normalized = alias.trim().toLowerCase();
+      return normalized === "fable" || normalized === "claude-fable-5";
+    }) ?? false
+  );
+}
+
+function modelOptionsForFableAvailability(
+  isFableAvailable: boolean,
+): readonly ModelOption[] {
+  return MODEL_OPTIONS.map((option) =>
+    option.value !== "fable" || isFableAvailable
+      ? option
+      : { ...option, disabled: true },
+  );
+}
+
 // ============================================================================
 // ModelRow — Custom row with optional effective value hint
 // ============================================================================
@@ -82,6 +124,7 @@ interface ModelRowProps {
   effectiveValue: string;
   effectiveSource: string;
   isPlaceholderData: boolean;
+  modelOptions: readonly ModelOption[];
   isLast?: boolean;
 }
 
@@ -95,6 +138,7 @@ function ModelRow({
   effectiveValue,
   effectiveSource,
   isPlaceholderData,
+  modelOptions,
   isLast = false,
 }: ModelRowProps) {
   const showHint = value === "inherit" && !isPlaceholderData && !!effectiveValue;
@@ -132,10 +176,11 @@ function ModelRow({
               <SelectValue placeholder="Select model" />
             </SelectTrigger>
             <SelectContent className="bg-[var(--bg-elevated)] border-[var(--border-default)]">
-              {MODEL_OPTIONS.map((opt) => (
+              {modelOptions.map((opt) => (
                 <SelectItem
                   key={opt.value}
                   value={opt.value}
+                  disabled={opt.disabled === true}
                   className="focus:bg-[var(--accent-muted)]"
                 >
                   <div className="flex flex-col">
@@ -164,7 +209,11 @@ function ModelRow({
 // GlobalModelSubsection
 // ============================================================================
 
-function GlobalModelSubsection() {
+function GlobalModelSubsection({
+  modelOptions,
+}: {
+  modelOptions: readonly ModelOption[];
+}) {
   const [showError, setShowError] = useState(false);
   const { settings, isPlaceholderData, updateSettings, saveError } = useIdeationModelSettings(null);
 
@@ -219,6 +268,7 @@ function GlobalModelSubsection() {
           effectiveValue={settings.effectivePrimaryModel}
           effectiveSource={settings.primaryModelSource}
           isPlaceholderData={isPlaceholderData}
+          modelOptions={modelOptions}
         />
         <ModelRow
           id="global-verifier-model"
@@ -230,6 +280,7 @@ function GlobalModelSubsection() {
           effectiveValue={settings.effectiveVerifierModel}
           effectiveSource={settings.verifierModelSource}
           isPlaceholderData={isPlaceholderData}
+          modelOptions={modelOptions}
         />
         <ModelRow
           id="verifier-subagent-model"
@@ -241,6 +292,7 @@ function GlobalModelSubsection() {
           effectiveValue={settings.effectiveVerifierSubagentModel}
           effectiveSource={settings.verifierSubagentModelSource}
           isPlaceholderData={isPlaceholderData}
+          modelOptions={modelOptions}
         />
         <ModelRow
           id="ideation-subagent-model"
@@ -252,6 +304,7 @@ function GlobalModelSubsection() {
           effectiveValue={settings.effectiveIdeationSubagentModel ?? ""}
           effectiveSource={settings.ideationSubagentModelSource ?? ""}
           isPlaceholderData={isPlaceholderData}
+          modelOptions={modelOptions}
           isLast
         />
       </div>
@@ -266,11 +319,13 @@ function GlobalModelSubsection() {
 interface ProjectModelSubsectionProps {
   projectId: string | null;
   projectName: string | null;
+  modelOptions: readonly ModelOption[];
 }
 
 function ProjectModelSubsection({
   projectId,
   projectName,
+  modelOptions,
 }: ProjectModelSubsectionProps) {
   const [showError, setShowError] = useState(false);
   const { settings, isPlaceholderData, updateSettings, saveError } = useIdeationModelSettings(projectId);
@@ -341,6 +396,7 @@ function ProjectModelSubsection({
           effectiveValue={settings.effectivePrimaryModel}
           effectiveSource={settings.primaryModelSource}
           isPlaceholderData={isPlaceholderData}
+          modelOptions={modelOptions}
         />
         <ModelRow
           id="project-verifier-model"
@@ -352,6 +408,7 @@ function ProjectModelSubsection({
           effectiveValue={settings.effectiveVerifierModel}
           effectiveSource={settings.verifierModelSource}
           isPlaceholderData={isPlaceholderData}
+          modelOptions={modelOptions}
         />
         <ModelRow
           id="project-verifier-subagent-model"
@@ -363,6 +420,7 @@ function ProjectModelSubsection({
           effectiveValue={settings.effectiveVerifierSubagentModel}
           effectiveSource={settings.verifierSubagentModelSource}
           isPlaceholderData={isPlaceholderData}
+          modelOptions={modelOptions}
         />
         <ModelRow
           id="project-ideation-subagent-model"
@@ -374,6 +432,7 @@ function ProjectModelSubsection({
           effectiveValue={settings.effectiveIdeationSubagentModel ?? ""}
           effectiveSource={settings.ideationSubagentModelSource ?? ""}
           isPlaceholderData={isPlaceholderData}
+          modelOptions={modelOptions}
           isLast
         />
       </div>
@@ -387,6 +446,10 @@ function ProjectModelSubsection({
 
 export function IdeationModelSection() {
   const activeProject = useProjectStore(selectActiveProject);
+  const { providers } = useHarnessProviders({ refreshRuntime: true });
+  const modelOptions = modelOptionsForFableAvailability(
+    claudeSupportsFable(providers),
+  );
 
   return (
     <SectionCard
@@ -396,11 +459,12 @@ export function IdeationModelSection() {
       title="Ideation Model"
       description="Configure AI model for ideation and verification agents"
     >
-      <GlobalModelSubsection />
+      <GlobalModelSubsection modelOptions={modelOptions} />
       <Separator className="my-4 bg-[var(--border-subtle)]" />
       <ProjectModelSubsection
         projectId={activeProject?.id ?? null}
         projectName={activeProject?.name ?? null}
+        modelOptions={modelOptions}
       />
     </SectionCard>
   );

@@ -1,9 +1,9 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "sonner";
-import { Download, FileText, Sparkles } from "lucide-react";
+import { Download, Sparkles } from "lucide-react";
 import {
   getCurrentReleaseNotes,
   getLastSeenReleaseNotesVersion,
@@ -13,14 +13,7 @@ import {
   clearPostUpdatePreparing,
   markPostUpdatePreparing,
 } from "@/lib/postUpdatePreparing";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
+import { ReleaseNotesDialog } from "@/components/ReleaseNotesDialog";
 import { useUiStore } from "@/stores/uiStore";
 
 const INITIAL_UPDATE_CHECK_DELAY_MS = 3_000;
@@ -29,6 +22,7 @@ const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1_000;
 const LIFECYCLE_UPDATE_CHECK_COOLDOWN_MS = 5 * 60 * 1_000;
 const UPDATE_CHECK_EVENT = "ralphx://check-for-updates";
 const RELEASE_NOTES_EVENT = "ralphx://show-release-notes";
+const UPDATE_CHECK_RESULT_TOAST_ID = "update-check-result";
 const GITHUB_RELEASE_METADATA_MARKERS =
   /^[ \t]*<!--\s*github-release-metadata:(?:start|end)\s*-->[ \t]*\n?/gm;
 
@@ -38,35 +32,22 @@ interface ReleaseNotesView {
   context: "current" | "update";
 }
 
+interface ReleaseDialogState {
+  open: boolean;
+  version?: string | undefined;
+  body?: string | null | undefined;
+  context?: "current" | "update" | undefined;
+}
+
 interface CheckForUpdatesOptions {
   manual?: boolean;
   force?: boolean;
 }
 
-const LazyReleaseNotesMarkdown = lazy(async () => {
-  const [{ default: ReactMarkdown }, { default: remarkGfm }] = await Promise.all([
-    import("react-markdown"),
-    import("remark-gfm"),
-  ]);
-
-  return {
-    default: function ReleaseNotesMarkdown({ body }: { body: string }) {
-      return (
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={markdownComponents}
-          skipHtml
-        >
-          {body}
-        </ReactMarkdown>
-      );
-    },
-  };
-});
-
 export function UpdateChecker() {
   const activeModal = useUiStore((s) => s.activeModal);
   const checkInFlight = useRef(false);
+  const manualCheckRequested = useRef(false);
   const notifiedVersion = useRef<string | null>(null);
   const lastCheckAt = useRef<number | null>(null);
   const whatsNewVersion = useRef<string | null>(null);
@@ -74,7 +55,7 @@ export function UpdateChecker() {
   const visibleWhatsNew = useRef<ReleaseNotesView | null>(null);
   const visibleWhatsNewToastId = useRef<string | null>(null);
   const isGlobalModalOpen = useRef(activeModal !== null);
-  const [releaseNotes, setReleaseNotes] = useState<ReleaseNotesView | null>(null);
+  const [dialogState, setDialogState] = useState<ReleaseDialogState>({ open: false });
 
   const clearVisibleWhatsNew = useCallback((version?: string) => {
     if (version !== undefined && visibleWhatsNew.current?.version !== version) {
@@ -91,7 +72,12 @@ export function UpdateChecker() {
         pendingWhatsNew.current = null;
         clearVisibleWhatsNew(notes.version);
       }
-      setReleaseNotes(notes);
+      setDialogState({
+        open: true,
+        version: notes.version,
+        body: notes.body,
+        context: notes.context,
+      });
     },
     [clearVisibleWhatsNew],
   );
@@ -112,28 +98,38 @@ export function UpdateChecker() {
     [clearVisibleWhatsNew, openReleaseNotes],
   );
 
-  const openCurrentReleaseNotes = useCallback(async () => {
+  const openCurrentReleaseNotes = useCallback(() => {
+    setDialogState({ open: true, context: "current" });
+  }, []);
+
+  const handleUpdateFromDialog = useCallback(async () => {
+    setDialogState({ open: false });
+    showCheckingForUpdatesToast();
     try {
-      const notes = await getCurrentReleaseNotes();
-      openReleaseNotes({
-        version: notes.version,
-        body: sanitizeReleaseNotesBody(notes.body),
-        context: "current",
-      });
-    } catch (error) {
-      console.error("Failed to load release notes:", error);
-      toast.error("Failed to open release notes. Please try again later.", {
-        id: "release-notes-error",
-      });
+      const update = await check();
+      if (update) {
+        toast.dismiss(UPDATE_CHECK_RESULT_TOAST_ID);
+        void installUpdate(update);
+      } else {
+        toast.success("RalphX is up to date.", { id: UPDATE_CHECK_RESULT_TOAST_ID });
+      }
+    } catch {
+      toast.error("Failed to check for updates.", { id: UPDATE_CHECK_RESULT_TOAST_ID });
     }
-  }, [openReleaseNotes]);
+  }, []);
 
   const checkForUpdates = useCallback(
     async ({ manual = false, force = false }: CheckForUpdatesOptions = {}) => {
+      if (manual) {
+        manualCheckRequested.current = true;
+        showCheckingForUpdatesToast();
+      }
+
       if (checkInFlight.current) return;
 
       const now = Date.now();
       if (
+        !manual &&
         !force &&
         lastCheckAt.current !== null &&
         now - lastCheckAt.current < LIFECYCLE_UPDATE_CHECK_COOLDOWN_MS
@@ -146,21 +142,29 @@ export function UpdateChecker() {
 
       try {
         const update = await check();
-        if (update && notifiedVersion.current !== update.version) {
+        const shouldShowManualResult = manualCheckRequested.current;
+        if (
+          update &&
+          (shouldShowManualResult || notifiedVersion.current !== update.version)
+        ) {
           notifiedVersion.current = update.version;
+          if (shouldShowManualResult) {
+            toast.dismiss(UPDATE_CHECK_RESULT_TOAST_ID);
+          }
           showUpdateNotification(update, openReleaseNotes);
-        } else if (manual && !update) {
-          toast.success("RalphX is up to date.", { id: "update-check-result" });
+        } else if (shouldShowManualResult && !update) {
+          toast.success("RalphX is up to date.", { id: UPDATE_CHECK_RESULT_TOAST_ID });
         }
       } catch (error) {
         console.debug("Update check failed:", error);
-        if (manual) {
+        if (manualCheckRequested.current) {
           toast.error("Failed to check for updates. Please try again later.", {
-            id: "update-check-result",
+            id: UPDATE_CHECK_RESULT_TOAST_ID,
           });
         }
       } finally {
         checkInFlight.current = false;
+        manualCheckRequested.current = false;
       }
     },
     [openReleaseNotes],
@@ -277,10 +281,18 @@ export function UpdateChecker() {
 
   return (
     <ReleaseNotesDialog
-      notes={releaseNotes}
-      onClose={() => setReleaseNotes(null)}
+      open={dialogState.open}
+      onClose={() => setDialogState({ open: false })}
+      initialVersion={dialogState.version}
+      initialBody={dialogState.body}
+      initialContext={dialogState.context}
+      onRequestUpdate={handleUpdateFromDialog}
     />
   );
+}
+
+function showCheckingForUpdatesToast() {
+  toast.loading("Checking for updates...", { id: UPDATE_CHECK_RESULT_TOAST_ID });
 }
 
 function showUpdateNotification(
@@ -436,59 +448,6 @@ function releaseNotesPreview(body: string | null): string {
     .filter(Boolean)
     .slice(0, 2)
     .join(" ");
-}
-
-function ReleaseNotesDialog({
-  notes,
-  onClose,
-}: {
-  notes: ReleaseNotesView | null;
-  onClose: () => void;
-}) {
-  return (
-    <Dialog open={Boolean(notes)} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent
-        className="max-h-[82vh] max-w-2xl overflow-hidden"
-        style={{
-          backgroundColor: "var(--dialog-bg, var(--bg-elevated))",
-          borderColor: "var(--border-subtle)",
-        }}
-      >
-        <DialogHeader>
-          <div className="flex min-w-0 items-center gap-2">
-            <FileText
-              className="h-4 w-4 shrink-0"
-              style={{ color: "var(--accent-primary)" }}
-            />
-            <div className="min-w-0">
-              <DialogTitle className="truncate">RalphX {notes?.version}</DialogTitle>
-              <DialogDescription>
-                {notes?.context === "update" ? "Available update" : "Current version"}
-              </DialogDescription>
-            </div>
-          </div>
-        </DialogHeader>
-        <div
-          className="max-h-[64vh] overflow-y-auto px-6 py-5 text-[0.8125rem] leading-relaxed text-[var(--text-primary)]"
-          data-testid="release-notes-dialog-body"
-        >
-          {notes?.body ? (
-            <Suspense fallback={<PlainReleaseNotes body={notes.body} />}>
-              <LazyReleaseNotesMarkdown body={notes.body} />
-            </Suspense>
-          ) : (
-            <p style={{ color: "var(--text-muted)" }}>
-              Release notes are not available for this version.
-            </p>
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function PlainReleaseNotes({ body }: { body: string }) {
-  return <pre className="whitespace-pre-wrap font-sans">{body}</pre>;
 }
 
 async function installUpdate(update: Update) {

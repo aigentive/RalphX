@@ -12,8 +12,8 @@
 
 use rusqlite::Connection;
 
-use crate::error::AppResult;
 use super::helpers;
+use crate::error::AppResult;
 
 pub fn migrate(conn: &Connection) -> AppResult<()> {
     helpers::create_index_if_not_exists(

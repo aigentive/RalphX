@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::domain::services::github_service::{
     GithubServiceTrait, PrBranchMatch, PrDiffAnnotations, PrHealth, PrReviewFeedback, PrStatus,
-    PrSyncState,
+    PrSearchResult, PrSyncState,
 };
 use crate::error::AppError;
 use crate::AppResult;
@@ -37,6 +37,7 @@ pub struct MockGithubState {
     pub fetch_remote_result: Option<AppResult<()>>,
     pub get_pr_diff_patch_result: Option<AppResult<String>>,
     pub find_pr_by_head_branch_result: Option<AppResult<Option<(i64, String)>>>,
+    pub search_pull_requests_result: Option<AppResult<Vec<PrSearchResult>>>,
     pub find_latest_pr_by_head_branch_result: Option<AppResult<Option<PrBranchMatch>>>,
 
     // --- Call tracking ---
@@ -59,6 +60,7 @@ pub struct MockGithubState {
     pub fetch_remote_calls: u32,
     pub get_pr_diff_patch_calls: u32,
     pub find_pr_by_head_branch_calls: u32,
+    pub search_pull_requests_calls: u32,
     pub find_latest_pr_by_head_branch_calls: u32,
 
     // --- Last arguments recorded ---
@@ -84,6 +86,7 @@ pub struct MockGithubState {
     pub last_get_pr_diff_patch_number: Option<i64>,
     pub last_get_pr_diff_patch_url: Option<String>,
     pub last_find_pr_by_head_branch_name: Option<String>,
+    pub last_search_pull_requests_args: Option<(Option<String>, usize)>,
     pub last_find_latest_pr_by_head_branch_name: Option<String>,
 }
 
@@ -163,6 +166,12 @@ impl MockGithubService {
     #[allow(dead_code)]
     pub fn set_find_pr_by_head_branch(&self, result: AppResult<Option<(i64, String)>>) {
         self.state().find_pr_by_head_branch_result = Some(result);
+    }
+
+    /// Shorthand: configure pull request search to return the given results.
+    #[allow(dead_code)]
+    pub fn will_return_pull_request_search(&self, results: Vec<PrSearchResult>) {
+        self.state().search_pull_requests_result = Some(Ok(results));
     }
 
     /// Shorthand: configure all-state head branch lookup to return the given result.
@@ -413,6 +422,20 @@ impl GithubServiceTrait for MockGithubService {
         s.find_pr_by_head_branch_calls += 1;
         s.last_find_pr_by_head_branch_name = Some(head.to_string());
         s.find_pr_by_head_branch_result.take().unwrap_or(Ok(None))
+    }
+
+    async fn search_pull_requests(
+        &self,
+        _working_dir: &Path,
+        query: Option<&str>,
+        limit: usize,
+    ) -> AppResult<Vec<PrSearchResult>> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.search_pull_requests_calls += 1;
+        s.last_search_pull_requests_args = Some((query.map(str::to_string), limit));
+        s.search_pull_requests_result
+            .take()
+            .unwrap_or_else(|| Ok(Vec::new()))
     }
 
     async fn find_latest_pr_by_head_branch(

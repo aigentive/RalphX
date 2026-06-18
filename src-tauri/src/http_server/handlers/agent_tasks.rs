@@ -2,15 +2,16 @@ use axum::{extract::State, Json};
 
 use crate::application::AgentTaskService;
 use crate::domain::entities::{
-    AgentTaskCreate, AgentTaskDetail, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
-    AgentTaskSummary, ProjectId,
+    AgentTaskCreate, AgentTaskDetail, AgentTaskListId, AgentTaskListSummary,
+    AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope, AgentTaskSummary, ProjectId,
 };
 use crate::domain::repositories::AgentTaskListOptions;
 use crate::http_server::{
     AgentTaskContextFields, AgentTaskDto, AgentTaskGetResponse, AgentTaskListResponse,
-    AgentTaskMutationResponse, AgentTaskStateChangeDto, AgentTaskSummaryDto, ClaimAgentTaskRequest,
-    CompleteAgentTaskRequest, CreateAgentTaskRequest, GetAgentTaskRequest, HttpServerState,
-    ListAgentTasksRequest, UpdateAgentTaskRequest,
+    AgentTaskListSummaryDto, AgentTaskListsResponse, AgentTaskMutationResponse,
+    AgentTaskStateChangeDto, AgentTaskSummaryDto, ClaimAgentTaskRequest, CompleteAgentTaskRequest,
+    CreateAgentTaskRequest, GetAgentTaskRequest, HttpServerState, ListAgentTaskListsRequest,
+    ListAgentTasksForListRequest, ListAgentTasksRequest, UpdateAgentTaskRequest,
 };
 
 pub async fn create_agent_task(
@@ -69,6 +70,56 @@ pub async fn list_agent_tasks(
         match service
             .list_tasks(
                 &scope,
+                AgentTaskListOptions {
+                    include_done: request.include_done,
+                },
+            )
+            .await
+        {
+            Ok(tasks) => AgentTaskListResponse {
+                success: true,
+                tasks: tasks.into_iter().map(summary_dto).collect(),
+                error: None,
+            },
+            Err(error) => list_error(error.to_string()),
+        },
+    )
+}
+
+pub async fn list_agent_task_lists(
+    State(state): State<HttpServerState>,
+    Json(request): Json<ListAgentTaskListsRequest>,
+) -> Json<AgentTaskListsResponse> {
+    let scope = match resolve_scope(&request.context) {
+        Ok(scope) => scope,
+        Err(error) => return Json(lists_error(error)),
+    };
+    let service = AgentTaskService::new(state.app_state.agent_task_repo.clone());
+    Json(match service.list_task_lists(&scope).await {
+        Ok(lists) => AgentTaskListsResponse {
+            success: true,
+            lists: lists.into_iter().map(list_summary_dto).collect(),
+            error: None,
+        },
+        Err(error) => lists_error(error.to_string()),
+    })
+}
+
+pub async fn list_agent_tasks_for_list(
+    State(state): State<HttpServerState>,
+    Json(request): Json<ListAgentTasksForListRequest>,
+) -> Json<AgentTaskListResponse> {
+    let scope = match resolve_scope(&request.context) {
+        Ok(scope) => scope,
+        Err(error) => return Json(list_error(error)),
+    };
+    let service = AgentTaskService::new(state.app_state.agent_task_repo.clone());
+    let list_id = AgentTaskListId::from_string(request.list_id);
+    Json(
+        match service
+            .list_tasks_for_list(
+                &scope,
+                &list_id,
                 AgentTaskListOptions {
                     include_done: request.include_done,
                 },
@@ -223,6 +274,14 @@ fn list_error(error: String) -> AgentTaskListResponse {
     }
 }
 
+fn lists_error(error: String) -> AgentTaskListsResponse {
+    AgentTaskListsResponse {
+        success: false,
+        lists: Vec::new(),
+        error: Some(error),
+    }
+}
+
 fn task_dto(task: AgentTaskDetail) -> AgentTaskDto {
     let availability = task.availability().to_string();
     AgentTaskDto {
@@ -256,5 +315,19 @@ fn summary_dto(task: AgentTaskSummary) -> AgentTaskSummaryDto {
         blocks: task.blocks,
         availability: task.availability,
         updated_at: task.updated_at.to_rfc3339(),
+    }
+}
+
+fn list_summary_dto(list: AgentTaskListSummary) -> AgentTaskListSummaryDto {
+    AgentTaskListSummaryDto {
+        list_id: list.list_id.to_string(),
+        list_sequence: list.list_sequence,
+        task_count: list.task_count,
+        open_count: list.open_count,
+        active_count: list.active_count,
+        done_count: list.done_count,
+        dropped_count: list.dropped_count,
+        created_at: list.created_at.to_rfc3339(),
+        updated_at: list.updated_at.to_rfc3339(),
     }
 }

@@ -3,7 +3,7 @@ import { useUiStore } from "./uiStore";
 import type { AskUserQuestionPayload } from "@/types/ask-user-question";
 import type { FeatureFlags } from "@/types/feature-flags";
 
-const ALL_ENABLED: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true };
+const ALL_ENABLED: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, atlassianOauth: false };
 
 // ============================================================================
 // Mocks for per-project route persistence (cross-store reads)
@@ -57,6 +57,7 @@ describe("uiStore", () => {
       selectedTaskByProject: {},
       taskHistoryState: null,
       boardSearchQuery: null,
+      kanbanCardDisplayMode: "default",
       activityFilter: { taskId: null, sessionId: null },
       featureFlags: ALL_ENABLED,
     });
@@ -884,6 +885,15 @@ describe("uiStore", () => {
       expect(() => useUiStore.getState().cleanupProjectRoute("proj-unknown")).not.toThrow();
 
       expect(useUiStore.getState().viewByProject["proj-b"]).toBe("graph");
+    });
+  });
+
+  describe("Kanban card display mode", () => {
+    it("persists the app-wide card display preference to localStorage", () => {
+      useUiStore.getState().setKanbanCardDisplayMode("mini");
+
+      expect(useUiStore.getState().kanbanCardDisplayMode).toBe("mini");
+      expect(localStorage.getItem("ralphx-kanban-card-display-mode")).toBe("mini");
     });
   });
 

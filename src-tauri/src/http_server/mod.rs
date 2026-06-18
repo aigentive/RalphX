@@ -161,6 +161,16 @@ pub async fn start_http_server(
         .route("/api/create_plan_artifact", post(create_plan_artifact))
         .route("/api/update_plan_artifact", post(update_plan_artifact))
         .route("/api/edit_plan_artifact", post(edit_plan_artifact))
+        // UI-owned Plan-mode action; intentionally not exposed as an agent MCP tool.
+        .route("/api/approve_plan_artifact", post(approve_plan_artifact))
+        .route(
+            "/api/plan_complexity_assessment/:session_id",
+            get(get_plan_complexity_assessment),
+        )
+        .route(
+            "/api/submit_plan_complexity_assessment",
+            post(submit_plan_complexity_assessment),
+        )
         .route(
             "/api/artifact/:artifact_id/history",
             get(get_artifact_history),
@@ -244,6 +254,11 @@ pub async fn start_http_server(
         .route("/api/agent_tasks/create", post(create_agent_task))
         .route("/api/agent_tasks/get", post(get_agent_task))
         .route("/api/agent_tasks/list", post(list_agent_tasks))
+        .route("/api/agent_tasks/lists", post(list_agent_task_lists))
+        .route(
+            "/api/agent_tasks/list_for_list",
+            post(list_agent_tasks_for_list),
+        )
         .route("/api/agent_tasks/update", post(update_agent_task))
         .route("/api/agent_tasks/claim", post(claim_agent_task))
         .route("/api/agent_tasks/complete", post(complete_agent_task))
@@ -329,6 +344,26 @@ pub async fn start_http_server(
             get(get_agent_workspace_pr_fix_context),
         )
         .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-context",
+            get(get_agent_workspace_pr_review_context),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-actions",
+            post(propose_agent_workspace_pr_review_action),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/complete-pr-review-run",
+            post(complete_agent_workspace_pr_review_run),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-actions/:action_id/submit",
+            post(submit_agent_workspace_pr_review_action),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-actions/:action_id/skip",
+            post(skip_agent_workspace_pr_review_action),
+        )
+        .route(
             "/api/agent-workspaces/:conversation_id/pr-comments/:comment_id",
             get(read_agent_workspace_pr_comment),
         )
@@ -368,6 +403,10 @@ pub async fn start_http_server(
         .route(
             "/api/agent-workspaces/:conversation_id/file-content-range",
             get(get_agent_workspace_file_content_range),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/file-diff-page",
+            get(get_agent_workspace_file_diff_page),
         )
         .route("/api/git/tasks/:id/report-conflict", post(report_conflict))
         .route(

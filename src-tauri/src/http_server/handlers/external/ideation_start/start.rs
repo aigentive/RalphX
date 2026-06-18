@@ -5,9 +5,11 @@ use crate::application::ideation_workspace::{
     IdeationAnalysisBaseSelection,
 };
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
-    IdeationAnalysisState, Project,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactId,
+    ArtifactMetadata, ArtifactRelation, ArtifactType, ChatConversationId, ChatMessage,
+    IdeationAnalysisState, IdeationSessionStatus, MessageRole, Project, SessionPurpose,
 };
+use crate::domain::services::message_queue::ComposerArtifactReference;
 use crate::http_server::handlers::external_auth::TAURI_MCP_HEADER;
 
 const PARENT_CONVERSATION_HEADER: &str = "x-ralphx-parent-conversation-id";
@@ -61,6 +63,12 @@ pub struct StartIdeationResponse {
     pub parent_conversation_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_imported: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_plan_artifact_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloned_plan_artifact_id: Option<String>,
 }
 
 struct ParentWorkspaceBinding {
@@ -173,6 +181,261 @@ async fn resolve_parent_workspace_binding(
     }))
 }
 
+struct ResolvedPlanImport {
+    source_artifact: Artifact,
+    source_session_id: String,
+    source_session_status: IdeationSessionStatus,
+}
+
+fn extract_plan_references_from_metadata(
+    metadata: &Option<String>,
+) -> Vec<ComposerArtifactReference> {
+    let Some(meta_str) = metadata else {
+        return Vec::new();
+    };
+    let Ok(meta_value) = serde_json::from_str::<serde_json::Value>(meta_str) else {
+        return Vec::new();
+    };
+    let Some(refs_value) = meta_value.get("composer_artifact_references") else {
+        return Vec::new();
+    };
+    serde_json::from_value::<Vec<ComposerArtifactReference>>(refs_value.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.kind == "plan")
+        .collect()
+}
+
+async fn resolve_plan_import(
+    state: &HttpServerState,
+    parent_conversation_id: &ChatConversationId,
+    project_id: &ProjectId,
+) -> Result<Option<ResolvedPlanImport>, HttpError> {
+    let messages: Vec<ChatMessage> = state
+        .app_state
+        .chat_message_repo
+        .get_by_conversation(parent_conversation_id)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to load messages for parent conversation {}: {}",
+                parent_conversation_id.as_str(),
+                e
+            );
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("Failed to load parent conversation messages".to_string()),
+            }
+        })?;
+
+    let plan_refs: Vec<ComposerArtifactReference> = messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == MessageRole::User)
+        .flat_map(|m| extract_plan_references_from_metadata(&m.metadata))
+        .collect();
+
+    if plan_refs.is_empty() {
+        return Ok(None);
+    }
+
+    if plan_refs.len() > 1 {
+        return Err(HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some(
+                "Multiple plan references found. Exactly one plan reference is required for plan import.".to_string(),
+            ),
+        });
+    }
+
+    let plan_ref = &plan_refs[0];
+    let source_artifact_id = ArtifactId::from_string(&plan_ref.artifact_id);
+
+    let source_artifact = state
+        .app_state
+        .artifact_repo
+        .get_by_id(&source_artifact_id)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to load source plan artifact {}: {}",
+                plan_ref.artifact_id, e
+            );
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("Failed to load source plan artifact".to_string()),
+            }
+        })?
+        .ok_or_else(|| HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some(format!(
+                "Source plan artifact not found: {}",
+                plan_ref.artifact_id
+            )),
+        })?;
+
+    if !matches!(source_artifact.artifact_type, ArtifactType::Specification) {
+        return Err(HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some("Source artifact is not a specification/plan type".to_string()),
+        });
+    }
+
+    let source_session_id = plan_ref.session_id.as_deref().ok_or_else(|| HttpError {
+        status: StatusCode::BAD_REQUEST,
+        message: Some("Plan reference is missing session_id".to_string()),
+    })?;
+
+    let source_session = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&IdeationSessionId::from_string(
+            source_session_id.to_string(),
+        ))
+        .await
+        .map_err(|e| {
+            error!("Failed to load source session {}: {}", source_session_id, e);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("Failed to load source session".to_string()),
+            }
+        })?
+        .ok_or_else(|| HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some(format!("Source session not found: {}", source_session_id)),
+        })?;
+
+    if source_session.project_id != *project_id {
+        return Err(HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some("Source session belongs to a different project".to_string()),
+        });
+    }
+
+    if source_session.status == IdeationSessionStatus::Archived {
+        return Err(HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some("Cannot import from an archived session".to_string()),
+        });
+    }
+
+    if source_session.session_purpose == SessionPurpose::Verification {
+        return Err(HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some("Cannot import from a verification child session".to_string()),
+        });
+    }
+
+    Ok(Some(ResolvedPlanImport {
+        source_artifact,
+        source_session_id: source_session_id.to_string(),
+        source_session_status: source_session.status,
+    }))
+}
+
+async fn clone_plan_artifact(
+    state: &HttpServerState,
+    source: &Artifact,
+) -> Result<Artifact, HttpError> {
+    let new_artifact = Artifact {
+        id: ArtifactId::new(),
+        artifact_type: source.artifact_type,
+        name: source.name.clone(),
+        content: source.content.clone(),
+        metadata: ArtifactMetadata::new("plan_import").with_version(1),
+        derived_from: vec![source.id.clone()],
+        bucket_id: source.bucket_id.clone(),
+        archived_at: None,
+    };
+
+    let created = state
+        .app_state
+        .artifact_repo
+        .create(new_artifact)
+        .await
+        .map_err(|e| {
+            error!("Failed to create cloned plan artifact: {}", e);
+            HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some("Failed to clone plan artifact".to_string()),
+            }
+        })?;
+
+    let relation = ArtifactRelation::derived_from(created.id.clone(), source.id.clone());
+    if let Err(e) = state.app_state.artifact_repo.add_relation(relation).await {
+        tracing::warn!(
+            "Failed to record derived_from relation for cloned artifact: {}",
+            e
+        );
+    }
+
+    Ok(created)
+}
+
+async fn clone_plan_approval_if_approved(
+    state: &HttpServerState,
+    source_session_id: &str,
+    source_session_status: IdeationSessionStatus,
+    new_session_id: &str,
+    cloned_artifact: &Artifact,
+) {
+    let is_approved_source = source_session_status == IdeationSessionStatus::Accepted;
+
+    let source_sid = source_session_id.to_string();
+    let should_approve = if is_approved_source {
+        true
+    } else {
+        state
+            .app_state
+            .db
+            .run(move |conn| {
+                let count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM plan_artifact_approvals
+                         WHERE session_id = ?1 AND status = 'approved'",
+                        [source_sid.as_str()],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                Ok(count > 0)
+            })
+            .await
+            .unwrap_or(false)
+    };
+
+    if !should_approve {
+        return;
+    }
+
+    let new_sid = new_session_id.to_string();
+    let artifact_id = cloned_artifact.id.as_str().to_string();
+    let artifact_version = i64::from(cloned_artifact.metadata.version);
+    let now = chrono::Utc::now().to_rfc3339();
+
+    if let Err(e) = state
+        .app_state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "INSERT INTO plan_artifact_approvals (
+                    session_id, artifact_id, artifact_version, status, approved_at, approved_by
+                 ) VALUES (?1, ?2, ?3, 'approved', ?4, 'plan_import')
+                 ON CONFLICT(session_id) DO UPDATE SET
+                    artifact_id = excluded.artifact_id,
+                    artifact_version = excluded.artifact_version,
+                    status = excluded.status,
+                    approved_at = excluded.approved_at,
+                    approved_by = excluded.approved_by",
+                rusqlite::params![new_sid, artifact_id, artifact_version, now],
+            )?;
+            Ok(())
+        })
+        .await
+    {
+        tracing::warn!("Failed to clone plan approval for imported session: {}", e);
+    }
+}
+
 /// POST /api/external/start_ideation
 /// Create a new ideation session for a project.
 pub async fn start_ideation_http(
@@ -207,12 +470,16 @@ pub async fn start_ideation_http(
             message: e.message,
         })?;
 
-    let parent_workspace_binding = resolve_parent_workspace_binding(
-        &state,
-        &project,
-        parent_conversation_id_from_headers(&headers),
-    )
-    .await?;
+    let parent_conversation_id = parent_conversation_id_from_headers(&headers);
+    let parent_workspace_binding =
+        resolve_parent_workspace_binding(&state, &project, parent_conversation_id.clone()).await?;
+
+    let plan_import = match parent_conversation_id.as_ref() {
+        Some(conv_id) if is_tauri_mcp_request(&headers) => {
+            resolve_plan_import(&state, conv_id, &project_id).await?
+        }
+        _ => None,
+    };
 
     let api_key_id = headers
         .get(crate::http_server::handlers::external_auth::EXTERNAL_KEY_ID_HEADER)
@@ -255,6 +522,9 @@ pub async fn start_ideation_http(
                 hint: Some("Idempotent retry: returning existing session.".to_string()),
                 parent_conversation_id: None,
                 workspace_branch: None,
+                plan_imported: None,
+                source_plan_artifact_id: None,
+                cloned_plan_artifact_id: None,
             }));
         }
     }
@@ -269,7 +539,7 @@ pub async fn start_ideation_http(
     let effective_prompt = req.prompt.clone().or_else(|| req.initial_prompt.clone());
     let has_candidate_text = req.prompt.is_some() || req.title.is_some();
 
-    if has_candidate_text && !active_sessions.is_empty() {
+    if has_candidate_text && !active_sessions.is_empty() && plan_import.is_none() {
         let candidate_text = format!(
             "{} {}",
             req.prompt.as_deref().unwrap_or(""),
@@ -328,6 +598,9 @@ pub async fn start_ideation_http(
                 hint: Some(hint_msg),
                 parent_conversation_id: None,
                 workspace_branch: None,
+                plan_imported: None,
+                source_plan_artifact_id: None,
+                cloned_plan_artifact_id: None,
             }));
         }
     }
@@ -347,6 +620,12 @@ pub async fn start_ideation_http(
         })?,
     };
 
+    let cloned_artifact = if let Some(ref import) = plan_import {
+        Some(clone_plan_artifact(&state, &import.source_artifact).await?)
+    } else {
+        None
+    };
+
     let mut session_builder = match req.title.clone() {
         None => IdeationSession::new_with_title(
             project_id.clone(),
@@ -363,6 +642,14 @@ pub async fn start_ideation_http(
     }
     if let Some(ref idem_key) = req.idempotency_key {
         session_builder.idempotency_key = Some(idem_key.clone());
+    }
+    if let Some(ref import) = plan_import {
+        if let Some(ref cloned) = cloned_artifact {
+            session_builder.plan_artifact_id = Some(cloned.id.clone());
+        }
+        session_builder.session_flow = IdeationSessionFlow::Planning;
+        session_builder.source_session_id = Some(import.source_session_id.clone());
+        session_builder.source_project_id = Some(project_id.as_str().to_string());
     }
     let created = match state
         .app_state
@@ -412,6 +699,9 @@ pub async fn start_ideation_http(
                         ),
                         parent_conversation_id: None,
                         workspace_branch: None,
+                        plan_imported: None,
+                        source_plan_artifact_id: None,
+                        cloned_plan_artifact_id: None,
                     }));
                 }
             }
@@ -453,6 +743,17 @@ pub async fn start_ideation_http(
                     message: Some("Failed to link parent workspace".to_string()),
                 }
             })?;
+    }
+
+    if let (Some(ref import), Some(ref cloned)) = (&plan_import, &cloned_artifact) {
+        clone_plan_approval_if_approved(
+            &state,
+            &import.source_session_id,
+            import.source_session_status,
+            &session_id_str,
+            cloned,
+        )
+        .await;
     }
 
     {
@@ -606,5 +907,14 @@ pub async fn start_ideation_http(
         workspace_branch: parent_workspace_binding
             .as_ref()
             .map(|binding| binding.workspace.branch_name.clone()),
+        plan_imported: if plan_import.is_some() {
+            Some(true)
+        } else {
+            None
+        },
+        source_plan_artifact_id: plan_import
+            .as_ref()
+            .map(|import| import.source_artifact.id.as_str().to_string()),
+        cloned_plan_artifact_id: cloned_artifact.as_ref().map(|a| a.id.as_str().to_string()),
     }))
 }

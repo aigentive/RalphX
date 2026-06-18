@@ -11,8 +11,10 @@ use tracing::Instrument;
 
 use super::chat_service_context;
 use super::chat_service_helpers::get_assistant_role;
-use super::chat_service_streaming::process_stream_background;
-use super::chat_service_types::{AgentMessageCreatedPayload, AgentRunCompletedPayload};
+use super::chat_service_streaming::{is_completion_tool_name, process_stream_background};
+use super::chat_service_types::{
+    AgentMessageCreatedPayload, AgentMessageRenderReadyPayload, AgentRunCompletedPayload,
+};
 use super::{event_context, has_meaningful_output, EventContextPayload, StreamingStateCache};
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
@@ -24,21 +26,22 @@ use crate::application::runtime_factory::{
 };
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
-use crate::domain::entities::ChatConversation;
 use crate::domain::entities::{
     AgentRunId, ChatContextType, ChatConversationId, ChatMessageAttribution, InternalStatus,
     SessionPurpose, TaskId,
 };
+use crate::domain::entities::{ChatConversation, ChatTimelineItem};
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
-    AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ActivityEventRepository, AgentConversationJiraIssueRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository, AgentRunRepository,
+    ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
     ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
     IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
     ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
     TaskStepRepository,
 };
-use crate::domain::services::{MessageQueue, RunningAgentKey, RunningAgentRegistry};
+use crate::domain::services::{MessageQueue, QueuedMessage, RunningAgentKey, RunningAgentRegistry};
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 use tokio_util::sync::CancellationToken;
 
@@ -60,6 +63,7 @@ pub(super) struct BackgroundRunRepos {
     pub ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     pub ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
     pub agent_conversation_workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
+    pub agent_conversation_jira_issue_repo: Option<Arc<dyn AgentConversationJiraIssueRepository>>,
     pub task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
@@ -98,6 +102,7 @@ pub(super) struct BackgroundRunContext<R: Runtime> {
     // Run metadata
     pub is_retry_attempt: bool,
     pub user_message_content: Option<String>,
+    pub turn_metadata: Option<String>,
     pub conversation: Option<ChatConversation>,
     pub agent_name: Option<String>,
     pub team_mode: bool,
@@ -158,6 +163,18 @@ const AGENT_TASK_LEDGER_MUTATING_WORK_TOOL_NAMES: &[&str] = &[
     "exec_command",
     "write_stdin",
 ];
+
+const SILENT_COMPLETION_RECOVERY_REASON: &str = "silent_completion_after_tool_activity";
+const SILENT_COMPLETION_RECOVERY_MAX_ATTEMPTS: u32 = 3;
+const SILENT_COMPLETION_RECOVERY_INITIAL_BACKOFF_MS: u64 = 1_000;
+const SILENT_COMPLETION_RECOVERY_MAX_BACKOFF_MS: u64 = 8_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SilentCompletionRecoveryEnqueue {
+    NotNeeded,
+    Queued { attempt: u32, backoff_ms: u64 },
+    Exhausted { attempts: u32 },
+}
 
 fn maybe_warn_missing_agent_task_ledger(
     conversation: Option<&ChatConversation>,
@@ -222,6 +239,186 @@ fn is_mutating_work_tool(tool_name: &str) -> bool {
     AGENT_TASK_LEDGER_MUTATING_WORK_TOOL_NAMES
         .iter()
         .any(|work_tool| tool_name == *work_tool)
+}
+
+fn is_nonrecoverable_terminal_tool(tool_name: &str) -> bool {
+    if is_completion_tool_name(tool_name) {
+        return true;
+    }
+
+    let normalized = tool_name.trim().to_ascii_lowercase();
+    normalized.ends_with("ask_user_question")
+        || normalized.ends_with("permission_request")
+        || normalized.ends_with("resolve_permission_request")
+}
+
+fn is_recoverable_terminal_tool_activity(tool_name: &str) -> bool {
+    !is_nonrecoverable_terminal_tool(tool_name)
+}
+
+fn has_recoverable_tool_activity_after_final_text(
+    response_text: &str,
+    tool_calls: &[ToolCall],
+    content_blocks: &[ContentBlockItem],
+) -> bool {
+    if content_blocks.is_empty() {
+        return response_text.trim().is_empty()
+            && tool_calls
+                .last()
+                .is_some_and(|tool_call| is_recoverable_terminal_tool_activity(&tool_call.name));
+    }
+
+    let mut recoverable_tool_after_last_text = false;
+    for block in content_blocks {
+        match block {
+            ContentBlockItem::Text { text } if !text.trim().is_empty() => {
+                recoverable_tool_after_last_text = false;
+            }
+            ContentBlockItem::Text { .. } => {}
+            ContentBlockItem::ToolUse { name, .. } => {
+                recoverable_tool_after_last_text = is_recoverable_terminal_tool_activity(name);
+            }
+        }
+    }
+
+    recoverable_tool_after_last_text
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn should_recover_silent_completion(
+    context_type: ChatContextType,
+    response_text: &str,
+    tool_calls: &[ToolCall],
+    content_blocks: &[ContentBlockItem],
+    turns_finalized: usize,
+    silent_interactive_exit: bool,
+    cancellation_requested: bool,
+    has_session_for_queue: bool,
+) -> bool {
+    context_type == ChatContextType::Project
+        && has_session_for_queue
+        && turns_finalized == 0
+        && !silent_interactive_exit
+        && !cancellation_requested
+        && has_recoverable_tool_activity_after_final_text(response_text, tool_calls, content_blocks)
+}
+
+pub(crate) fn silent_completion_recovery_attempt(metadata_override: Option<&str>) -> u32 {
+    metadata_override
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| {
+            if value
+                .get("recovery_reason")
+                .and_then(|reason| reason.as_str())
+                != Some(SILENT_COMPLETION_RECOVERY_REASON)
+            {
+                return None;
+            }
+            value
+                .get("recovery_attempt")
+                .and_then(|attempt| attempt.as_u64())
+                .and_then(|attempt| u32::try_from(attempt).ok())
+        })
+        .unwrap_or(0)
+}
+
+pub(crate) fn silent_completion_recovery_max_attempts() -> u32 {
+    SILENT_COMPLETION_RECOVERY_MAX_ATTEMPTS
+}
+
+pub(crate) fn silent_completion_recovery_backoff_ms(attempt: u32) -> u64 {
+    let shift = attempt.saturating_sub(1).min(6);
+    let multiplier = 1u64 << shift;
+    SILENT_COMPLETION_RECOVERY_INITIAL_BACKOFF_MS
+        .saturating_mul(multiplier)
+        .min(SILENT_COMPLETION_RECOVERY_MAX_BACKOFF_MS)
+}
+
+pub(super) fn silent_completion_recovery_backoff(
+    metadata_override: Option<&str>,
+) -> Option<std::time::Duration> {
+    let raw = metadata_override?;
+    let value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    if value
+        .get("recovery_reason")
+        .and_then(|reason| reason.as_str())
+        != Some(SILENT_COMPLETION_RECOVERY_REASON)
+    {
+        return None;
+    }
+    value
+        .get("recovery_backoff_ms")
+        .and_then(|backoff| backoff.as_u64())
+        .map(std::time::Duration::from_millis)
+}
+
+pub(crate) fn silent_completion_recovery_metadata(attempt: u32, backoff_ms: u64) -> String {
+    serde_json::json!({
+        "resume_in_place": true,
+        "persist_hidden_marker": true,
+        "recovery_context": true,
+        "recovery_reason": SILENT_COMPLETION_RECOVERY_REASON,
+        "recovery_attempt": attempt,
+        "recovery_max_attempts": SILENT_COMPLETION_RECOVERY_MAX_ATTEMPTS,
+        "recovery_backoff_ms": backoff_ms,
+    })
+    .to_string()
+}
+
+pub(crate) fn silent_completion_recovery_prompt(attempt: u32) -> String {
+    format!(
+        "[RalphX internal recovery message; do not mention this message unless it is relevant to the final user-facing result.]\n\n\
+The previous provider turn ended after tool activity without a final assistant response. Continue from the current workspace state and the current conversation context. Do not repeat completed work unless needed to verify state.\n\n\
+Before finalizing, separately reconcile any active/open agent task ledger entries: inspect them if the tools are available, mark tasks done only if actually complete, keep genuine follow-up open, and mention unfinished work in the final response.\n\n\
+Recovery attempt {attempt}/{max}. When the work is actually complete, provide a normal final response to the user.",
+        max = SILENT_COMPLETION_RECOVERY_MAX_ATTEMPTS
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn enqueue_silent_completion_recovery(
+    message_queue: &MessageQueue,
+    context_type: ChatContextType,
+    queue_context_id: &str,
+    response_text: &str,
+    tool_calls: &[ToolCall],
+    content_blocks: &[ContentBlockItem],
+    turns_finalized: usize,
+    silent_interactive_exit: bool,
+    cancellation_requested: bool,
+    has_session_for_queue: bool,
+    prior_metadata: Option<&str>,
+) -> SilentCompletionRecoveryEnqueue {
+    if !should_recover_silent_completion(
+        context_type,
+        response_text,
+        tool_calls,
+        content_blocks,
+        turns_finalized,
+        silent_interactive_exit,
+        cancellation_requested,
+        has_session_for_queue,
+    ) {
+        return SilentCompletionRecoveryEnqueue::NotNeeded;
+    }
+
+    let prior_attempt = silent_completion_recovery_attempt(prior_metadata);
+    if prior_attempt >= SILENT_COMPLETION_RECOVERY_MAX_ATTEMPTS {
+        return SilentCompletionRecoveryEnqueue::Exhausted {
+            attempts: prior_attempt,
+        };
+    }
+
+    let attempt = prior_attempt + 1;
+    let backoff_ms = silent_completion_recovery_backoff_ms(attempt);
+    let mut queued = QueuedMessage::new(silent_completion_recovery_prompt(attempt));
+    queued.metadata_override = Some(silent_completion_recovery_metadata(attempt, backoff_ms));
+    message_queue.queue_front_existing(context_type, queue_context_id.to_string(), queued);
+
+    SilentCompletionRecoveryEnqueue::Queued {
+        attempt,
+        backoff_ms,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -355,6 +552,19 @@ pub(super) async fn finalize_no_output_assistant_message<R: Runtime>(
     message_id: &str,
     role: &str,
 ) {
+    let placeholder_blocks = vec![
+        crate::infrastructure::agents::claude::ContentBlockItem::Text {
+            text: NO_OUTPUT_NOTE.to_string(),
+        },
+    ];
+    let timeline_items = super::chat_service_streaming::persist_timeline_snapshot(
+        chat_timeline_repo,
+        &conversation_id.as_str(),
+        &Some(message_id.to_string()),
+        &placeholder_blocks,
+        crate::domain::entities::ChatTimelineItemStatus::Finalized,
+    )
+    .await;
     finalize_assistant_message(
         chat_message_repo,
         app_handle,
@@ -364,20 +574,7 @@ pub(super) async fn finalize_no_output_assistant_message<R: Runtime>(
         NO_OUTPUT_NOTE,
         None,
         None,
-    )
-    .await;
-
-    let placeholder_blocks = vec![
-        crate::infrastructure::agents::claude::ContentBlockItem::Text {
-            text: NO_OUTPUT_NOTE.to_string(),
-        },
-    ];
-    super::chat_service_streaming::persist_timeline_snapshot(
-        chat_timeline_repo,
-        &conversation_id.as_str(),
-        &Some(message_id.to_string()),
-        &placeholder_blocks,
-        crate::domain::entities::ChatTimelineItemStatus::Finalized,
+        timeline_items,
     )
     .await;
 }
@@ -391,10 +588,13 @@ pub(super) async fn finalize_assistant_message<R: Runtime>(
     content: &str,
     tool_calls_json: Option<&str>,
     content_blocks_json: Option<&str>,
+    timeline_items: Vec<ChatTimelineItem>,
 ) {
+    let message_id_entity =
+        crate::domain::entities::ChatMessageId::from_string(message_id.to_string());
     let _ = chat_message_repo
         .update_content(
-            &crate::domain::entities::ChatMessageId::from_string(message_id.to_string()),
+            &message_id_entity,
             content,
             tool_calls_json,
             content_blocks_json,
@@ -402,6 +602,21 @@ pub(super) async fn finalize_assistant_message<R: Runtime>(
         .await;
 
     if let Some(handle) = app_handle {
+        let render_ready = if timeline_items.is_empty() {
+            None
+        } else {
+            chat_message_repo
+                .get_by_id(&message_id_entity)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|message| {
+                    AgentMessageRenderReadyPayload::from_message_and_timeline_items(
+                        &message,
+                        timeline_items,
+                    )
+                })
+        };
         let _ = handle.emit(
             "agent:message_created",
             AgentMessageCreatedPayload {
@@ -413,6 +628,7 @@ pub(super) async fn finalize_assistant_message<R: Runtime>(
                 content: content.to_string(),
                 created_at: None,
                 metadata: None,
+                render_ready,
             },
         );
     }
@@ -420,6 +636,7 @@ pub(super) async fn finalize_assistant_message<R: Runtime>(
 
 pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
     app_handle: Option<&AppHandle<R>>,
     context_type: ChatContextType,
     context_id: &str,
@@ -447,6 +664,14 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
             if let Some(first_segment) = segments.first() {
                 let tool_calls_json = serde_json::to_string(&first_segment.tool_calls).ok();
                 let content_blocks_json = serde_json::to_string(&first_segment.content_blocks).ok();
+                let timeline_items = super::chat_service_streaming::persist_timeline_snapshot(
+                    chat_timeline_repo,
+                    &conversation_id.as_str(),
+                    &Some(message_id.to_string()),
+                    &first_segment.content_blocks,
+                    crate::domain::entities::ChatTimelineItemStatus::Finalized,
+                )
+                .await;
                 finalize_assistant_message(
                     chat_message_repo,
                     app_handle,
@@ -456,6 +681,7 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
                     &first_segment.content,
                     tool_calls_json.as_deref(),
                     content_blocks_json.as_deref(),
+                    timeline_items,
                 )
                 .await;
             }
@@ -474,6 +700,14 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
                 }
 
                 if let Ok(created_message) = chat_message_repo.create(extra_message).await {
+                    let timeline_items = super::chat_service_streaming::persist_timeline_snapshot(
+                        chat_timeline_repo,
+                        &conversation_id.as_str(),
+                        &Some(created_message.id.as_str().to_string()),
+                        &segment.content_blocks,
+                        crate::domain::entities::ChatTimelineItemStatus::Finalized,
+                    )
+                    .await;
                     if let Some(handle) = app_handle {
                         let _ = handle.emit(
                             "agent:message_created",
@@ -486,6 +720,11 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
                                 content: created_message.content.clone(),
                                 created_at: None,
                                 metadata: None,
+                                render_ready:
+                                    AgentMessageRenderReadyPayload::from_message_and_timeline_items(
+                                        &created_message,
+                                        timeline_items,
+                                    ),
                             },
                         );
                     }
@@ -497,6 +736,14 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
 
     let tool_calls_json = serde_json::to_string(tool_calls).ok();
     let content_blocks_json = serde_json::to_string(content_blocks).ok();
+    let timeline_items = super::chat_service_streaming::persist_timeline_snapshot(
+        chat_timeline_repo,
+        &conversation_id.as_str(),
+        &Some(message_id.to_string()),
+        content_blocks,
+        crate::domain::entities::ChatTimelineItemStatus::Finalized,
+    )
+    .await;
     finalize_assistant_message(
         chat_message_repo,
         app_handle,
@@ -506,6 +753,7 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
         content,
         tool_calls_json.as_deref(),
         content_blocks_json.as_deref(),
+        timeline_items,
     )
     .await;
 }
@@ -565,6 +813,7 @@ pub async fn finalize_assistant_message_for_test<R: Runtime>(
         content,
         tool_calls_json,
         content_blocks_json,
+        Vec::new(),
     )
     .await;
 }
@@ -585,6 +834,7 @@ pub async fn finalize_structured_assistant_message_for_test<R: Runtime>(
 ) {
     finalize_structured_assistant_message(
         chat_message_repo,
+        &None,
         app_handle,
         context_type,
         context_id,
@@ -636,6 +886,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             run_chain_id,
             is_retry_attempt,
             user_message_content,
+            turn_metadata,
             conversation,
             agent_name,
             team_mode,
@@ -664,6 +915,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             ideation_effort_settings_repo,
             ideation_model_settings_repo,
             agent_conversation_workspace_repo,
+            agent_conversation_jira_issue_repo,
             task_proposal_repo,
             activity_event_repo,
             memory_event_repo,
@@ -985,6 +1237,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 } else if has_output {
                     finalize_structured_assistant_message(
                         &chat_message_repo,
+                        &chat_timeline_repo,
                         app_handle.as_ref(),
                         context_type,
                         &context_id,
@@ -1177,6 +1430,9 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         )
                         .with_agent_conversation_workspace_repo(
                             agent_conversation_workspace_repo.as_ref().map(Arc::clone),
+                        )
+                        .with_agent_conversation_jira_issue_repo(
+                            agent_conversation_jira_issue_repo.as_ref().map(Arc::clone),
                         );
 
                         let chat_svc: Arc<dyn super::ChatService> = Arc::new(
@@ -1246,11 +1502,49 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 // Use the stream's session_id if available, otherwise fall back to stored session_id
                 let effective_session_id =
                     provider_session_id.clone().or(stored_session_id.clone());
+                let has_session_for_queue = effective_session_id.is_some();
+                let cancellation_requested = cancellation_token.is_cancelled();
+                match enqueue_silent_completion_recovery(
+                    message_queue.as_ref(),
+                    context_type,
+                    &runtime_context_id,
+                    &response_text,
+                    &tool_calls,
+                    &content_blocks,
+                    turns_finalized,
+                    outcome.silent_interactive_exit,
+                    cancellation_requested,
+                    has_session_for_queue,
+                    turn_metadata.as_deref(),
+                ) {
+                    SilentCompletionRecoveryEnqueue::Queued {
+                        attempt,
+                        backoff_ms,
+                    } => {
+                        tracing::warn!(
+                            %context_type,
+                            context_id = %context_id,
+                            runtime_context_id = %runtime_context_id,
+                            attempt,
+                            max_attempts = SILENT_COMPLETION_RECOVERY_MAX_ATTEMPTS,
+                            backoff_ms,
+                            "[RECOVERY] Queued hidden silent-completion continuation"
+                        );
+                    }
+                    SilentCompletionRecoveryEnqueue::Exhausted { attempts } => {
+                        tracing::error!(
+                            %context_type,
+                            context_id = %context_id,
+                            runtime_context_id = %runtime_context_id,
+                            attempts,
+                            "[RECOVERY] Silent-completion recovery attempts exhausted"
+                        );
+                    }
+                    SilentCompletionRecoveryEnqueue::NotNeeded => {}
+                }
                 let initial_queue_count = message_queue
                     .get_queued(context_type, &runtime_context_id)
                     .len();
-                let has_session_for_queue = effective_session_id.is_some();
-                let cancellation_requested = cancellation_token.is_cancelled();
                 let will_process_queue = should_process_stream_queue(
                     initial_queue_count,
                     has_session_for_queue,
@@ -1382,6 +1676,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         conversation_id,
                         sess_id,
                         &message_queue,
+                        &running_agent_registry,
+                        &agent_run_repo,
                         &chat_message_repo,
                         chat_timeline_repo.clone(),
                         &chat_attachment_repo,
@@ -1583,6 +1879,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                 conversation_id,
                                 session_id,
                                 &message_queue,
+                                &running_agent_registry,
+                                &agent_run_repo,
                                 &chat_message_repo,
                                 chat_timeline_repo.clone(),
                                 &chat_attachment_repo,

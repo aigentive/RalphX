@@ -45,7 +45,8 @@ impl ExecutionSettingsRepository for SqliteExecutionSettingsRepository {
             .run(move |conn| {
                 if let Some(ref pid) = project_id_str {
                     let mut stmt = conn.prepare(
-                        "SELECT max_concurrent_tasks, project_ideation_max, auto_commit, pause_on_failure
+                        "SELECT max_concurrent_tasks, project_ideation_max, auto_commit, pause_on_failure,
+                                agent_workspace_pr_autofix_default, agent_workspace_pr_auto_merge_default
                          FROM execution_settings WHERE project_id = ?1",
                     )?;
                     let result = stmt.query_row([pid.as_str()], |row| {
@@ -53,11 +54,17 @@ impl ExecutionSettingsRepository for SqliteExecutionSettingsRepository {
                         let project_ideation_max: i64 = row.get(1)?;
                         let auto_commit: i64 = row.get(2)?;
                         let pause_on_failure: i64 = row.get(3)?;
+                        let agent_workspace_pr_autofix_default: i64 = row.get(4)?;
+                        let agent_workspace_pr_auto_merge_default: i64 = row.get(5)?;
                         Ok(ExecutionSettings {
                             max_concurrent_tasks: max_concurrent_tasks as u32,
                             project_ideation_max: project_ideation_max as u32,
                             auto_commit: auto_commit != 0,
                             pause_on_failure: pause_on_failure != 0,
+                            agent_workspace_pr_autofix_default:
+                                agent_workspace_pr_autofix_default != 0,
+                            agent_workspace_pr_auto_merge_default:
+                                agent_workspace_pr_auto_merge_default != 0,
                         })
                     });
                     match result {
@@ -69,7 +76,8 @@ impl ExecutionSettingsRepository for SqliteExecutionSettingsRepository {
 
                 // Get global defaults (id=1, project_id IS NULL)
                 let mut stmt = conn.prepare(
-                    "SELECT max_concurrent_tasks, project_ideation_max, auto_commit, pause_on_failure
+                    "SELECT max_concurrent_tasks, project_ideation_max, auto_commit, pause_on_failure,
+                            agent_workspace_pr_autofix_default, agent_workspace_pr_auto_merge_default
                      FROM execution_settings WHERE id = 1 AND project_id IS NULL",
                 )?;
                 let result = stmt.query_row([], |row| {
@@ -77,11 +85,17 @@ impl ExecutionSettingsRepository for SqliteExecutionSettingsRepository {
                     let project_ideation_max: i64 = row.get(1)?;
                     let auto_commit: i64 = row.get(2)?;
                     let pause_on_failure: i64 = row.get(3)?;
+                    let agent_workspace_pr_autofix_default: i64 = row.get(4)?;
+                    let agent_workspace_pr_auto_merge_default: i64 = row.get(5)?;
                     Ok(ExecutionSettings {
                         max_concurrent_tasks: max_concurrent_tasks as u32,
                         project_ideation_max: project_ideation_max as u32,
                         auto_commit: auto_commit != 0,
                         pause_on_failure: pause_on_failure != 0,
+                        agent_workspace_pr_autofix_default:
+                            agent_workspace_pr_autofix_default != 0,
+                        agent_workspace_pr_auto_merge_default:
+                            agent_workspace_pr_auto_merge_default != 0,
                     })
                 });
                 match result {
@@ -113,26 +127,41 @@ impl ExecutionSettingsRepository for SqliteExecutionSettingsRepository {
                              project_ideation_max = ?2,
                              auto_commit = ?3,
                              pause_on_failure = ?4,
+                             agent_workspace_pr_autofix_default = ?5,
+                             agent_workspace_pr_auto_merge_default = ?6,
                              updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
-                         WHERE project_id = ?5",
+                         WHERE project_id = ?7",
                         rusqlite::params![
                             settings.max_concurrent_tasks as i64,
                             settings.project_ideation_max as i64,
                             settings.auto_commit as i64,
                             settings.pause_on_failure as i64,
+                            settings.agent_workspace_pr_autofix_default as i64,
+                            settings.agent_workspace_pr_auto_merge_default as i64,
                             pid.as_str(),
                         ],
                     )?;
 
                     if rows_updated == 0 {
                         conn.execute(
-                            "INSERT INTO execution_settings (max_concurrent_tasks, project_ideation_max, auto_commit, pause_on_failure, updated_at, project_id)
-                             VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'), ?5)",
+                            "INSERT INTO execution_settings (
+                                max_concurrent_tasks,
+                                project_ideation_max,
+                                auto_commit,
+                                pause_on_failure,
+                                agent_workspace_pr_autofix_default,
+                                agent_workspace_pr_auto_merge_default,
+                                updated_at,
+                                project_id
+                             )
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'), ?7)",
                             rusqlite::params![
                                 settings.max_concurrent_tasks as i64,
                                 settings.project_ideation_max as i64,
                                 settings.auto_commit as i64,
                                 settings.pause_on_failure as i64,
+                                settings.agent_workspace_pr_autofix_default as i64,
+                                settings.agent_workspace_pr_auto_merge_default as i64,
                                 pid.as_str(),
                             ],
                         )?;
@@ -144,6 +173,8 @@ impl ExecutionSettingsRepository for SqliteExecutionSettingsRepository {
                              project_ideation_max = ?2,
                              auto_commit = ?3,
                              pause_on_failure = ?4,
+                             agent_workspace_pr_autofix_default = ?5,
+                             agent_workspace_pr_auto_merge_default = ?6,
                              updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
                          WHERE id = 1 AND project_id IS NULL",
                         rusqlite::params![
@@ -151,6 +182,8 @@ impl ExecutionSettingsRepository for SqliteExecutionSettingsRepository {
                             settings.project_ideation_max as i64,
                             settings.auto_commit as i64,
                             settings.pause_on_failure as i64,
+                            settings.agent_workspace_pr_autofix_default as i64,
+                            settings.agent_workspace_pr_auto_merge_default as i64,
                         ],
                     )?;
                 }

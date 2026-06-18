@@ -28,6 +28,9 @@ import {
 // ============================================================================
 
 const SHOW_MERGE_TASKS_KEY = "ralphx-show-merge-tasks";
+const KANBAN_CARD_DISPLAY_MODE_KEY = "ralphx-kanban-card-display-mode";
+
+export type KanbanCardDisplayMode = "default" | "mini";
 
 function loadShowMergeTasks(): boolean {
   try {
@@ -44,6 +47,26 @@ function loadShowMergeTasks(): boolean {
 function saveShowMergeTasks(show: boolean): void {
   try {
     localStorage.setItem(SHOW_MERGE_TASKS_KEY, JSON.stringify(show));
+  } catch {
+    /* ignore write errors */
+  }
+}
+
+function loadKanbanCardDisplayMode(): KanbanCardDisplayMode {
+  try {
+    const saved = localStorage.getItem(KANBAN_CARD_DISPLAY_MODE_KEY);
+    if (saved === "default" || saved === "mini") {
+      return saved;
+    }
+  } catch {
+    /* ignore read errors */
+  }
+  return "default";
+}
+
+function saveKanbanCardDisplayMode(mode: KanbanCardDisplayMode): void {
+  try {
+    localStorage.setItem(KANBAN_CARD_DISPLAY_MODE_KEY, mode);
   } catch {
     /* ignore write errors */
   }
@@ -138,6 +161,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   extensibilityPage: true,
   battleMode: true,
   teamMode: false,
+  atlassianOauth: false,
 };
 
 // ============================================================================
@@ -217,6 +241,8 @@ interface UiState {
   showMergeTasks: boolean;
   /** Current search query for the task board */
   boardSearchQuery: string | null;
+  /** App-wide Kanban card density preference */
+  kanbanCardDisplayMode: KanbanCardDisplayMode;
   /** Whether a search request is in flight */
   isSearching: boolean;
   /** ID of selected task for split-screen overlay (kanban view only) */
@@ -333,6 +359,8 @@ interface UiActions {
   setShowMergeTasks: (show: boolean) => void;
   /** Set the board search query */
   setBoardSearchQuery: (query: string | null) => void;
+  /** Set app-wide Kanban card density preference */
+  setKanbanCardDisplayMode: (mode: KanbanCardDisplayMode) => void;
   /** Set whether a search is in progress */
   setIsSearching: (searching: boolean) => void;
   /** Set selected task ID for split-screen overlay */
@@ -453,6 +481,7 @@ export const useUiStore = create<UiState & UiActions>()(
     showArchived: false,
     showMergeTasks: loadShowMergeTasks(),
     boardSearchQuery: null,
+    kanbanCardDisplayMode: loadKanbanCardDisplayMode(),
     isSearching: false,
     selectedTaskId: null,
     graphSelection: null,
@@ -632,6 +661,12 @@ export const useUiStore = create<UiState & UiActions>()(
     setBoardSearchQuery: (query) =>
       set((state) => {
         state.boardSearchQuery = query;
+      }),
+
+    setKanbanCardDisplayMode: (mode) =>
+      set((state) => {
+        state.kanbanCardDisplayMode = mode;
+        saveKanbanCardDisplayMode(mode);
       }),
 
     setIsSearching: (searching) =>

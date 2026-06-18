@@ -56,6 +56,118 @@ async fn claim_task_rejects_unresolved_blockers() {
 }
 
 #[tokio::test]
+async fn claim_task_rejects_single_task_ledger_until_it_is_cleaned_up() {
+    let service = service();
+    let scope = scope();
+    service
+        .create_task(&scope, create("Umbrella task"))
+        .await
+        .unwrap();
+
+    let err = service.claim_task(&scope, "1", None).await.unwrap_err();
+    assert!(
+        err.to_string().contains("single-task agent task ledger"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.to_string()
+            .contains("decompose it into multiple concrete tasks"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.to_string().contains("mark it dropped"),
+        "unexpected error: {err}"
+    );
+
+    let default_list = service
+        .list_tasks(&scope, AgentTaskListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(default_list.len(), 1);
+    assert_eq!(default_list[0].state, AgentTaskState::Open);
+
+    let dropped = service
+        .update_task(
+            &scope,
+            "1",
+            AgentTaskPatch {
+                state: Some(AgentTaskState::Dropped),
+                metadata_patch: Some(json!({"reason": "single_step_no_ledger_needed"})),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(dropped.task.state, AgentTaskState::Dropped);
+
+    let unresolved = service
+        .list_tasks(&scope, AgentTaskListOptions::default())
+        .await
+        .unwrap();
+    assert!(
+        unresolved.is_empty(),
+        "dropped cleanup should hide the accidental single-task ledger"
+    );
+}
+
+#[tokio::test]
+async fn update_task_rejects_single_task_activation_but_allows_decomposed_claims() {
+    let service = service();
+    let scope = scope();
+    service
+        .create_task(&scope, create("Only task"))
+        .await
+        .unwrap();
+
+    let err = service
+        .update_task(
+            &scope,
+            "1",
+            AgentTaskPatch {
+                state: Some(AgentTaskState::Active),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("single-task agent task ledger"),
+        "unexpected error: {err}"
+    );
+
+    service
+        .create_task(&scope, create("Validation task"))
+        .await
+        .unwrap();
+    let claimed = service
+        .claim_task(&scope, "1", None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.task.state, AgentTaskState::Active);
+}
+
+#[tokio::test]
+async fn complete_task_rejects_single_task_ledger() {
+    let service = service();
+    let scope = scope();
+    service
+        .create_task(&scope, create("Only task"))
+        .await
+        .unwrap();
+
+    let err = service
+        .complete_task(&scope, "1", Some(json!({"verified": true})))
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("single-task agent task ledger"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
 async fn service_forwards_crud_operations() {
     let service = service();
     let scope = scope();
@@ -68,6 +180,18 @@ async fn service_forwards_crud_operations() {
         .await
         .unwrap();
     assert_eq!(listed.len(), 1);
+
+    let task_lists = service.list_task_lists(&scope).await.unwrap();
+    assert_eq!(task_lists.len(), 1);
+    let list_tasks = service
+        .list_tasks_for_list(
+            &scope,
+            &task_lists[0].list_id,
+            AgentTaskListOptions { include_done: true },
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_tasks.len(), 1);
 
     let updated = service
         .update_task(
@@ -93,6 +217,10 @@ async fn claim_task_uses_scope_actor_or_explicit_owner() {
     let scope = scope();
     service
         .create_task(&scope, create("Claim me"))
+        .await
+        .unwrap();
+    service
+        .create_task(&scope, create("Validate the claim"))
         .await
         .unwrap();
 
@@ -144,6 +272,10 @@ async fn complete_task_marks_done_and_merges_metadata() {
                 ..create("Complete me")
             },
         )
+        .await
+        .unwrap();
+    service
+        .create_task(&scope, create("Follow-up validation"))
         .await
         .unwrap();
 

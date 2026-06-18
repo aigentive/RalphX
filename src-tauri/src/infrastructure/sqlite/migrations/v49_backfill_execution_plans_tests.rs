@@ -88,7 +88,10 @@ fn test_creates_execution_plan_for_accepted_session() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(count, 1, "should create one execution_plan for accepted session");
+    assert_eq!(
+        count, 1,
+        "should create one execution_plan for accepted session"
+    );
 
     let status: String = conn
         .query_row(
@@ -119,7 +122,10 @@ fn test_creates_execution_plan_for_archived_session() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(count, 1, "should create one execution_plan for archived session");
+    assert_eq!(
+        count, 1,
+        "should create one execution_plan for archived session"
+    );
 }
 
 #[test]
@@ -137,7 +143,10 @@ fn test_skips_active_session() {
     let count: i32 = conn
         .query_row("SELECT COUNT(*) FROM execution_plans", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 0, "should not create execution_plan for active session");
+    assert_eq!(
+        count, 0,
+        "should not create execution_plan for active session"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +194,11 @@ fn test_links_tasks_to_execution_plan() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(t1_ep, Some(ep_id.clone()), "task t1 should be linked to execution_plan");
+    assert_eq!(
+        t1_ep,
+        Some(ep_id.clone()),
+        "task t1 should be linked to execution_plan"
+    );
 
     let t2_ep: Option<String> = conn
         .query_row(
@@ -194,7 +207,11 @@ fn test_links_tasks_to_execution_plan() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(t2_ep, Some(ep_id), "task t2 should be linked to execution_plan");
+    assert_eq!(
+        t2_ep,
+        Some(ep_id),
+        "task t2 should be linked to execution_plan"
+    );
 }
 
 #[test]
@@ -231,7 +248,11 @@ fn test_links_plan_branches_to_execution_plan() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(pb_ep, Some(ep_id), "plan_branch should be linked to execution_plan");
+    assert_eq!(
+        pb_ep,
+        Some(ep_id),
+        "plan_branch should be linked to execution_plan"
+    );
 }
 
 #[test]
@@ -280,7 +301,11 @@ fn test_does_not_overwrite_existing_task_execution_plan_id() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(t1_ep, Some("ep-existing".to_string()), "existing task link should not be overwritten");
+    assert_eq!(
+        t1_ep,
+        Some("ep-existing".to_string()),
+        "existing task link should not be overwritten"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -370,7 +395,10 @@ fn test_migration_is_idempotent() {
     let count: i32 = conn
         .query_row("SELECT COUNT(*) FROM execution_plans", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 1, "idempotent: should not create duplicate execution_plans");
+    assert_eq!(
+        count, 1,
+        "idempotent: should not create duplicate execution_plans"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -405,7 +433,10 @@ fn test_multiple_sessions_get_separate_execution_plans() {
     let ep_count: i32 = conn
         .query_row("SELECT COUNT(*) FROM execution_plans", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(ep_count, 3, "each session should get its own execution_plan");
+    assert_eq!(
+        ep_count, 3,
+        "each session should get its own execution_plan"
+    );
 
     // All tasks should be linked
     let unlinked: i32 = conn
@@ -415,7 +446,10 @@ fn test_multiple_sessions_get_separate_execution_plans() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(unlinked, 0, "all tasks should be linked to an execution_plan");
+    assert_eq!(
+        unlinked, 0,
+        "all tasks should be linked to an execution_plan"
+    );
 
     // Each execution_plan has a unique id
     let distinct_ep_ids: i32 = conn
@@ -425,7 +459,10 @@ fn test_multiple_sessions_get_separate_execution_plans() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(distinct_ep_ids, 3, "each execution_plan should have a unique id");
+    assert_eq!(
+        distinct_ep_ids, 3,
+        "each execution_plan should have a unique id"
+    );
 }
 
 // ---------------------------------------------------------------------------

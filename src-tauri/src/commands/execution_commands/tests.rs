@@ -69,6 +69,55 @@ fn test_execution_state_decrement_no_underflow() {
     assert_eq!(state.running_count(), 0);
 }
 
+#[test]
+fn test_queued_message_to_send_options_preserves_references_and_attachments() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let project_reference = crate::domain::services::ComposerProjectReference {
+        path: "src/main.rs".to_string(),
+        kind: Some(crate::domain::services::ComposerProjectReferenceKind::File),
+    };
+    let integration_reference = crate::domain::services::ComposerIntegrationReference {
+        provider: "atlassian".to_string(),
+        kind: "jira".to_string(),
+        id: "RX-42".to_string(),
+        key: Some("RX-42".to_string()),
+        title: Some("Fix queued replay".to_string()),
+        url: Some("https://example.atlassian.net/browse/RX-42".to_string()),
+    };
+    let attachment_id = crate::domain::entities::ChatAttachmentId::new();
+
+    let queued = queue.queue_with_overrides_and_project_references(
+        ChatContextType::Project,
+        "project-1",
+        "queued".to_string(),
+        Some(r#"{"source":"test"}"#.to_string()),
+        Some("2026-03-11T10:00:00Z".to_string()),
+        Some(crate::domain::agents::AgentHarnessKind::Codex),
+        vec![project_reference.clone()],
+        vec![integration_reference.clone()],
+        Vec::new(),
+        vec![attachment_id],
+    );
+
+    let options = queued_message_to_send_options(&queued);
+
+    assert_eq!(options.metadata.as_deref(), Some(r#"{"source":"test"}"#));
+    assert_eq!(
+        options.created_at.map(|ts| ts.to_rfc3339()),
+        Some("2026-03-11T10:00:00+00:00".to_string())
+    );
+    assert_eq!(
+        options.harness_override,
+        Some(crate::domain::agents::AgentHarnessKind::Codex)
+    );
+    assert_eq!(options.composer_project_references, vec![project_reference]);
+    assert_eq!(
+        options.composer_integration_references,
+        vec![integration_reference]
+    );
+    assert_eq!(options.attachment_ids, vec![attachment_id]);
+}
+
 #[tokio::test]
 async fn test_active_project_state_set_if_changed_dedupes_same_project() {
     let state = ActiveProjectState::new();
@@ -434,6 +483,8 @@ fn test_execution_settings_response_serialization() {
         project_ideation_max: 2,
         auto_commit: true,
         pause_on_failure: false,
+        agent_workspace_pr_autofix_default: true,
+        agent_workspace_pr_auto_merge_default: false,
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -443,6 +494,8 @@ fn test_execution_settings_response_serialization() {
     assert!(json.contains("\"project_ideation_max\":2"));
     assert!(json.contains("\"auto_commit\":true"));
     assert!(json.contains("\"pause_on_failure\":false"));
+    assert!(json.contains("\"agent_workspace_pr_autofix_default\":true"));
+    assert!(json.contains("\"agent_workspace_pr_auto_merge_default\":false"));
 }
 
 #[test]
@@ -452,6 +505,8 @@ fn test_execution_settings_response_from_domain() {
         project_ideation_max: 1,
         auto_commit: false,
         pause_on_failure: true,
+        agent_workspace_pr_autofix_default: true,
+        agent_workspace_pr_auto_merge_default: false,
     };
 
     let response = ExecutionSettingsResponse::from(settings);
@@ -460,11 +515,13 @@ fn test_execution_settings_response_from_domain() {
     assert_eq!(response.project_ideation_max, 1);
     assert!(!response.auto_commit);
     assert!(response.pause_on_failure);
+    assert!(response.agent_workspace_pr_autofix_default);
+    assert!(!response.agent_workspace_pr_auto_merge_default);
 }
 
 #[test]
 fn test_update_execution_settings_input_deserialization() {
-    let json = r#"{"max_concurrent_tasks":5,"project_ideation_max":2,"auto_commit":false,"pause_on_failure":true}"#;
+    let json = r#"{"max_concurrent_tasks":5,"project_ideation_max":2,"auto_commit":false,"pause_on_failure":true,"agent_workspace_pr_autofix_default":true,"agent_workspace_pr_auto_merge_default":false}"#;
 
     let input: UpdateExecutionSettingsInput =
         serde_json::from_str(json).expect("Failed to deserialize input");
@@ -473,6 +530,8 @@ fn test_update_execution_settings_input_deserialization() {
     assert_eq!(input.project_ideation_max, 2);
     assert!(!input.auto_commit);
     assert!(input.pause_on_failure);
+    assert!(input.agent_workspace_pr_autofix_default);
+    assert!(!input.agent_workspace_pr_auto_merge_default);
 }
 
 #[test]
@@ -548,12 +607,14 @@ async fn test_sync_project_quota_explicit_project_priority() {
         project_ideation_max: 2,
         auto_commit: true,
         pause_on_failure: true,
+        ..ExecutionSettings::default()
     };
     let settings2 = ExecutionSettings {
         max_concurrent_tasks: 10,
         project_ideation_max: 2,
         auto_commit: true,
         pause_on_failure: true,
+        ..ExecutionSettings::default()
     };
 
     app_state
@@ -605,6 +666,7 @@ async fn test_sync_project_quota_active_project_fallback() {
         project_ideation_max: 2,
         auto_commit: true,
         pause_on_failure: true,
+        ..ExecutionSettings::default()
     };
     app_state
         .execution_settings_repo
@@ -661,6 +723,7 @@ async fn test_sync_project_quota_updates_execution_state() {
         project_ideation_max: 2,
         auto_commit: true,
         pause_on_failure: true,
+        ..ExecutionSettings::default()
     };
     app_state
         .execution_settings_repo
@@ -703,6 +766,7 @@ async fn test_sync_project_quota_multiple_calls_idempotent() {
         project_ideation_max: 2,
         auto_commit: true,
         pause_on_failure: true,
+        ..ExecutionSettings::default()
     };
     app_state
         .execution_settings_repo
@@ -752,12 +816,14 @@ async fn test_sync_project_quota_switching_between_projects() {
         project_ideation_max: 1,
         auto_commit: true,
         pause_on_failure: true,
+        ..ExecutionSettings::default()
     };
     let settings2 = ExecutionSettings {
         max_concurrent_tasks: 12,
         project_ideation_max: 2,
         auto_commit: true,
         pause_on_failure: true,
+        ..ExecutionSettings::default()
     };
 
     app_state
@@ -1499,6 +1565,7 @@ async fn test_resume_respects_project_ideation_cap_for_same_project() {
                 project_ideation_max: 1,
                 auto_commit: true,
                 pause_on_failure: true,
+                ..ExecutionSettings::default()
             },
         )
         .await
@@ -1589,6 +1656,7 @@ async fn test_resume_skips_project_capped_ideation_queue_and_relaunches_other_pr
                 project_ideation_max: 1,
                 auto_commit: true,
                 pause_on_failure: true,
+                ..ExecutionSettings::default()
             },
         )
         .await
@@ -1983,6 +2051,7 @@ async fn test_resume_respects_project_capacity_for_same_project_slot_queue() {
                 project_ideation_max: 1,
                 auto_commit: true,
                 pause_on_failure: true,
+                ..ExecutionSettings::default()
             },
         )
         .await
@@ -2086,6 +2155,7 @@ async fn test_resume_skips_project_capped_slot_queue_and_relaunches_other_projec
                 project_ideation_max: 1,
                 auto_commit: true,
                 pause_on_failure: true,
+                ..ExecutionSettings::default()
             },
         )
         .await
@@ -2311,6 +2381,7 @@ async fn test_resume_mixed_load_relaunches_execution_then_ideation_while_blocked
                 project_ideation_max: 1,
                 auto_commit: true,
                 pause_on_failure: true,
+                ..ExecutionSettings::default()
             },
         )
         .await
@@ -2582,6 +2653,7 @@ async fn test_project_has_execution_capacity_for_state_ignores_other_projects() 
                 project_ideation_max: 1,
                 auto_commit: true,
                 pause_on_failure: true,
+                ..ExecutionSettings::default()
             },
         )
         .await
@@ -3085,6 +3157,7 @@ async fn test_execution_settings_repo_update() {
         project_ideation_max: 2,
         auto_commit: false,
         pause_on_failure: false,
+        ..ExecutionSettings::default()
     };
 
     let updated = app_state
@@ -3125,6 +3198,7 @@ async fn test_execution_settings_update_syncs_execution_state() {
         project_ideation_max: 2,
         auto_commit: true,
         pause_on_failure: true,
+        ..ExecutionSettings::default()
     };
 
     app_state
@@ -3688,6 +3762,7 @@ async fn test_get_execution_status_syncs_quota_from_project() {
         project_ideation_max: 2,
         auto_commit: false,
         pause_on_failure: false,
+        ..ExecutionSettings::default()
     };
     app_state
         .execution_settings_repo
@@ -3733,6 +3808,7 @@ async fn test_resume_execution_syncs_quota_before_can_start_task() {
         project_ideation_max: 2,
         auto_commit: false,
         pause_on_failure: false,
+        ..ExecutionSettings::default()
     };
     app_state
         .execution_settings_repo
@@ -3781,6 +3857,7 @@ async fn test_pause_execution_syncs_quota() {
         project_ideation_max: 2,
         auto_commit: false,
         pause_on_failure: false,
+        ..ExecutionSettings::default()
     };
     app_state
         .execution_settings_repo
@@ -3887,6 +3964,7 @@ async fn test_stop_execution_syncs_quota() {
         project_ideation_max: 2,
         auto_commit: false,
         pause_on_failure: false,
+        ..ExecutionSettings::default()
     };
     app_state
         .execution_settings_repo
@@ -3932,6 +4010,7 @@ async fn test_set_active_project_syncs_quota_and_updates_execution_state() {
         project_ideation_max: 2,
         auto_commit: false,
         pause_on_failure: false,
+        ..ExecutionSettings::default()
     };
     app_state
         .execution_settings_repo
@@ -3951,6 +4030,7 @@ async fn test_set_active_project_syncs_quota_and_updates_execution_state() {
         project_ideation_max: 2,
         auto_commit: true,
         pause_on_failure: true,
+        ..ExecutionSettings::default()
     };
     app_state
         .execution_settings_repo

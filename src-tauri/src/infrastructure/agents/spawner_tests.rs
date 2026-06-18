@@ -2,8 +2,9 @@ use super::*;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
     AgentConfig, AgentHandle, AgentHarnessKind, AgentLane, AgentLaneSettings, AgentOutput,
-    AgentProviderSettings, AgentResponse, AgentResult, AgenticClient, ClientCapabilities,
-    ClientType, ResponseChunk, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
+    AgentProviderCliManagementMode, AgentProviderSettings, AgentResponse, AgentResult,
+    AgenticClient, ClientCapabilities, ClientType, ResponseChunk, CODEX_DEFAULT_APPROVAL_POLICY,
+    CODEX_DEFAULT_SANDBOX_MODE,
 };
 use crate::domain::entities::{GitMode, Project, ProjectId, Task, TaskId};
 use crate::domain::execution::ExecutionSettings;
@@ -49,6 +50,19 @@ fn make_runtime_plugin_layout() -> (tempfile::TempDir, PathBuf, PathBuf) {
     .expect("write agent prompt");
 
     (dir, plugin_dir, generated_dir)
+}
+
+fn write_executable(path: &PathBuf, contents: &str) {
+    fs::write(path, contents).expect("write executable");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)
+            .expect("executable metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("mark executable");
+    }
 }
 
 /// Minimal mock TaskRepository that returns a configurable task
@@ -892,6 +906,7 @@ fn test_build_agent_config_for_mock_client_omits_claude_plugin_wiring() {
         None,
         None,
         None,
+        None,
     );
 
     assert_eq!(config.role, AgentRole::Worker);
@@ -923,6 +938,7 @@ fn test_build_agent_config_for_claude_client_sets_plugin_and_agent() {
         "qa-refiner",
         "task-456",
         PathBuf::from("/tmp/task-456"),
+        None,
         None,
         None,
         None,
@@ -960,6 +976,7 @@ fn test_build_agent_config_for_codex_client_uses_process_mapping() {
         Some(crate::domain::agents::LogicalEffort::XHigh),
         Some("on-request".to_string()),
         Some("workspace-write".to_string()),
+        None,
     );
 
     assert_eq!(config.harness, Some(AgentHarnessKind::Codex));
@@ -1034,6 +1051,94 @@ async fn test_spawn_uses_codex_client_when_execution_lane_resolves_to_codex() {
         Some("ralphx:ralphx-execution-worker")
     );
     assert_eq!(config.model.as_deref(), Some("gpt-5.4"));
+}
+
+#[tokio::test]
+async fn test_spawn_uses_rx_managed_codex_cli_path_override() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp = tempfile::tempdir().expect("temp dir");
+    let managed_codex_path = temp.path().join("codex");
+    write_executable(
+        &managed_codex_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 0.116.0\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+    );
+    let _managed_codex_override =
+        crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests(
+            managed_codex_path.clone(),
+        );
+    let default_client = Arc::new(TestAgentClient::new(ClientType::ClaudeCode, true));
+    let codex_client = Arc::new(TestAgentClient::new(ClientType::Codex, false));
+    let exec_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let settings_repo = Arc::new(MemoryExecutionSettingsRepository::new());
+    let ideation_session_repo = Arc::new(MemoryIdeationSessionRepository::new());
+    let agent_lane_settings_repo = Arc::new(MemoryAgentLaneSettingsRepository::new());
+    let running_agent_registry = Arc::new(MemoryRunningAgentRegistry::new());
+    let provider_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+
+    let mut codex_provider = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex_provider.enabled = true;
+    codex_provider.is_default = true;
+    codex_provider.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
+    provider_repo.upsert(&codex_provider).await.unwrap();
+
+    let project_id = ProjectId::from_string("project-managed-codex".to_string());
+    let mut project = Project::new(
+        "Managed Codex Project".to_string(),
+        "/tmp/project-managed-codex".to_string(),
+    );
+    project.id = project_id.clone();
+    project_repo.create(project).await.unwrap();
+
+    let mut task = Task::new(project_id.clone(), "Managed Codex lane task".to_string());
+    task.id = TaskId::from_string("task-managed-codex".to_string());
+    task.worktree_path = Some("/tmp/task-managed-codex".to_string());
+    task_repo.create(task).await.unwrap();
+
+    agent_lane_settings_repo
+        .upsert_for_project(
+            project_id.as_str(),
+            AgentLane::ExecutionWorker,
+            &AgentLaneSettings::new(AgentHarnessKind::Codex),
+        )
+        .await
+        .unwrap();
+
+    let provider_repo: Arc<dyn AgentProviderSettingsRepository> = provider_repo;
+    let spawner = AgenticClientSpawner::new(default_client.clone())
+        .with_harness_client(AgentHarnessKind::Codex, codex_client.clone())
+        .with_repos(task_repo, project_repo)
+        .with_execution_state(exec_state)
+        .with_runtime_admission_context(
+            settings_repo,
+            agent_lane_settings_repo,
+            ideation_session_repo,
+            running_agent_registry,
+        )
+        .with_agent_provider_settings_repo(provider_repo)
+        .with_working_dir("/tmp");
+
+    spawner.spawn("worker", "task-managed-codex").await;
+
+    assert_eq!(default_client.spawn_count().await, 0);
+    assert_eq!(codex_client.spawn_count().await, 1);
+    let config = codex_client.last_spawn().await.expect("codex spawn config");
+    assert_eq!(config.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(config.cli_path_override, Some(managed_codex_path));
 }
 
 #[tokio::test]

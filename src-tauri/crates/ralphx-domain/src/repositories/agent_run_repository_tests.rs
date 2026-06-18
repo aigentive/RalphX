@@ -1,6 +1,7 @@
 use super::*;
 use crate::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{AgentRun, AgentRunAttribution, AgentRunUsage, ChatConversationId};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 // Mock implementation for testing trait object usage
@@ -147,4 +148,24 @@ fn test_mock_with_runs() {
     assert_eq!(repo.runs.len(), 1);
     assert_eq!(repo.runs[0].id, run.id);
     assert_eq!(repo.runs[0].harness, Some(AgentHarnessKind::Codex));
+}
+
+#[tokio::test]
+async fn test_default_get_by_ids_returns_matching_runs() {
+    let conversation_id = ChatConversationId::new();
+    let run1 = AgentRun::new(conversation_id);
+    let run1_id = run1.id;
+    let run2 = AgentRun::new(conversation_id);
+    let run2_id = run2.id;
+    let repo = MockAgentRunRepository::with_runs(vec![run1, run2]);
+
+    let runs = repo
+        .get_by_ids(&[run2_id, AgentRunId::new(), run1_id])
+        .await
+        .unwrap();
+    let ids: HashSet<_> = runs.iter().map(|run| run.id).collect();
+
+    assert_eq!(runs.len(), 2);
+    assert!(ids.contains(&run1_id));
+    assert!(ids.contains(&run2_id));
 }

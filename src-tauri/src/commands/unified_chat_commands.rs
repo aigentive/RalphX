@@ -25,15 +25,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use tauri::{Emitter, Manager, Runtime, State};
 
+use crate::application::agent_conversation_fork::{
+    fork_agent_conversation as fork_agent_conversation_in_state, AgentConversationForkResult,
+};
 use crate::application::agent_conversation_workspace::{
-    agent_name_for_workspace_mode, is_terminal_agent_conversation_publication_status,
-    prepare_agent_conversation_workspace, prepare_agent_conversation_workspace_with_setup_mode,
+    agent_name_for_workspace_mode, ensure_linked_plan_branch_agent_worktree,
+    is_terminal_agent_conversation_publication_status,
+    prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
     resolve_agent_conversation_workspace_path_for_send,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
-    AgentConversationWorkspaceSetupMode,
+    AgentConversationWorkspacePrAutomationDefaults, AgentConversationWorkspaceSetupMode,
 };
 use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base, BaseResolutionResult, BaseStatus,
+};
+use crate::application::agent_planning_session_titles::{
+    hydrate_agent_conversation_planning_session_title,
+    sync_linked_planning_session_title_from_conversation,
 };
 use crate::application::agent_workspace_bridge::{
     wake_agent_workspace_for_bridge_events,
@@ -53,19 +61,24 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
 };
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
 use crate::application::chat_service::tool_result_preview::{
-    preview_tool_result_object, tool_detail_ref,
+    preview_tool_arguments_object, preview_tool_result_object, tool_detail_ref,
 };
-use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
+use crate::application::chat_service::{
+    message_metadata_hidden_from_ui, AgentConversationCreatedPayload, AgentRunningState,
+    SendMessageOptions,
+};
 use crate::application::git_service::{
     git_cmd::{self, GitCommandLane},
     GitService,
 };
+use crate::application::ideation_workspace::prepare_ideation_analysis_state_from_agent_workspace;
 use crate::application::publish_resilience::{
     classify_publish_failure, count_publish_reviewable_commits, count_unpublished_publish_commits,
     ensure_plan_publish_branch_fresh, ensure_publish_branch_fresh,
-    inspect_publish_branch_freshness_for_source_after_fetch, publish_push_status_for_failure,
-    push_publish_branch, remote_tracking_ref_for_publish, review_base_for_publish,
-    PublishBranchFreshnessOutcome, PublishBranchFreshnessStatus, PublishFailureClass,
+    inspect_publish_branch_freshness_for_source,
+    inspect_publish_branch_freshness_for_source_after_fetch, push_publish_branch,
+    remote_tracking_ref_for_publish, review_base_for_publish, PublishBranchFreshnessOutcome,
+    PublishBranchFreshnessStatus, PublishFailureClass,
 };
 use crate::application::services::pr_merge_poller::sync_agent_workspace_auto_merge_preference_for_workspace;
 use crate::application::{AppChatService, AppState, ChatService, ChatServiceError, SendResult};
@@ -77,15 +90,18 @@ use crate::domain::agents::{
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
-    AgentRunStatus, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
+    AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ArtifactContent,
+    ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
     ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchStatus, Project,
-    ProjectId, TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
+    PlanBranch, PlanBranchStatus, Project, ProjectId, TaskCategory, TaskId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::services::{
-    AgentWorkspacePrPublisher, ComposerProjectReference, QueuedMessage, RunningAgentKey,
-    RunningAgentRegistry,
+    normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
+    AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerIntegrationReference,
+    ComposerProjectReference, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -96,8 +112,18 @@ const AGENT_WORKSPACE_REPAIR_SENT_STEP: &str = "repair_sent";
 const AGENT_WORKSPACE_REPAIR_ACTION_PREFIX: &str = "agent_fixable:";
 const AGENT_WORKSPACE_REPAIR_ACTION_PUBLISH: &str = "publish";
 const AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY: &str = "update_only";
+const AGENT_WORKSPACE_BASE_UPDATE_RUNNING_MESSAGE: &str =
+    "Cannot change workspace base while the agent is responding";
 pub const AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE: &str =
     "Agent workspace publish is already in progress";
+
+fn agent_workspace_interactive_slot_key(conversation_id: &ChatConversationId) -> String {
+    format!(
+        "{}/{}",
+        ChatContextType::Project.to_string(),
+        conversation_id.as_str()
+    )
+}
 
 // ============================================================================
 // Request/Response types
@@ -112,15 +138,25 @@ pub struct SendAgentMessageInput {
     pub content: String,
     /// Optional existing conversation to continue.
     pub conversation_id: Option<String>,
-    /// Optional provider harness override for the first spawn of a conversation.
+    /// Optional provider harness selected for this send. Existing conversations switch
+    /// provider by starting a fresh provider-native session when the harness changes.
     pub provider_harness: Option<String>,
     /// Optional explicit model override for the spawned agent.
     pub model_override: Option<String>,
     /// Optional provider-neutral reasoning effort override for the spawned agent.
     pub logical_effort: Option<LogicalEffort>,
+    /// Internal handoff messages should reach the runtime without rendering as user chat.
+    #[serde(default)]
+    pub suppress_user_message: bool,
     /// Structured composer project references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_project_references: Vec<ComposerProjectReference>,
+    /// Structured external integration references for runtime-only prompt expansion.
+    #[serde(default)]
+    pub composer_integration_references: Vec<ComposerIntegrationReference>,
+    /// Structured artifact references for runtime-only prompt expansion.
+    #[serde(default)]
+    pub composer_artifact_references: Vec<ComposerArtifactReference>,
     /// Attachment IDs selected by the composer for this message.
     #[serde(default)]
     pub attachment_ids: Vec<String>,
@@ -128,6 +164,17 @@ pub struct SendAgentMessageInput {
     /// When set to a teammate name, the message is routed to that teammate's stdin
     /// instead of the lead's. "lead" or None routes to the lead (default behavior).
     pub target: Option<String>,
+}
+
+fn hidden_user_message_metadata() -> String {
+    serde_json::json!({
+        "source": "hidden_user_message",
+        "resume_in_place": true,
+        "persist_hidden_marker": true,
+        "hidden_from_ui": true,
+        "recovery_context": true,
+    })
+    .to_string()
 }
 
 /// Response from send_agent_message command
@@ -156,8 +203,11 @@ fn parse_chat_attachment_ids(raw_ids: &[String]) -> Result<Vec<ChatAttachmentId>
 
 #[cfg(test)]
 mod chat_attachment_id_parser_tests {
-    use super::parse_chat_attachment_ids;
+    use super::{
+        parse_chat_attachment_ids, visible_queued_message_responses, QueuedMessageResponse,
+    };
     use crate::domain::entities::ChatAttachmentId;
+    use crate::domain::services::QueuedMessage;
 
     #[test]
     fn parses_chat_attachment_ids_and_reports_invalid_values() {
@@ -172,6 +222,29 @@ mod chat_attachment_id_parser_tests {
             parse_chat_attachment_ids(&["not-a-uuid".to_string()]).unwrap_err(),
             "Invalid attachment id: not-a-uuid"
         );
+    }
+
+    #[test]
+    fn queued_message_response_includes_attachment_ids() {
+        let attachment_id = ChatAttachmentId::new();
+        let mut queued = QueuedMessage::new("queued with file".to_string());
+        queued.attachment_ids = vec![attachment_id];
+
+        let response = QueuedMessageResponse::from(queued);
+
+        assert_eq!(response.attachment_ids, vec![attachment_id.to_string()]);
+    }
+
+    #[test]
+    fn visible_queued_message_responses_omits_hidden_messages() {
+        let visible = QueuedMessage::new("visible follow-up".to_string());
+        let mut hidden = QueuedMessage::new("internal handoff".to_string());
+        hidden.metadata_override = Some(r#"{"hidden_from_ui":true}"#.to_string());
+
+        let responses = visible_queued_message_responses(vec![visible, hidden]);
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].content, "visible follow-up");
     }
 }
 
@@ -189,6 +262,17 @@ impl From<SendResult> for SendAgentMessageResponse {
 }
 
 /// Input for creating a project-backed agent conversation with an isolated workspace.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentWorkspaceSourcePullRequestInput {
+    pub number: i64,
+    pub url: Option<String>,
+    pub title: Option<String>,
+    pub head_ref_name: String,
+    pub base_ref_name: Option<String>,
+    pub head_ref_oid: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartAgentConversationInput {
@@ -196,14 +280,14 @@ pub struct StartAgentConversationInput {
     pub content: String,
     /// Optional draft conversation to use after uploading pending attachments.
     pub conversation_id: Option<String>,
-    /// Optional provider harness override for the first spawn of the conversation.
+    /// Optional provider harness selected for the initial conversation send.
     pub provider_harness: Option<String>,
     /// Optional explicit model override for the spawned agent.
     pub model_override: Option<String>,
     /// Optional provider-neutral reasoning effort override for the spawned agent.
     pub logical_effort: Option<LogicalEffort>,
     /// Agent mode: "chat" routes to a read-only explorer in the project root;
-    /// edit/ideation modes create a selected-base workspace for runtime CWD.
+    /// edit/plan/ideation modes create a selected-base workspace for runtime CWD.
     pub mode: Option<String>,
     /// Optional base ref kind using ideation naming: project_default, current_branch, local_branch.
     pub base_ref_kind: Option<String>,
@@ -211,13 +295,44 @@ pub struct StartAgentConversationInput {
     pub base_ref: Option<String>,
     /// Optional user-facing base ref label.
     pub base_display_name: Option<String>,
+    /// Optional source pull request metadata when the selected base came from a PR head branch.
+    pub base_source_pull_request: Option<AgentWorkspaceSourcePullRequestInput>,
     /// Structured composer project references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_project_references: Vec<ComposerProjectReference>,
+    /// Structured external integration references for runtime-only prompt expansion.
+    #[serde(default)]
+    pub composer_integration_references: Vec<ComposerIntegrationReference>,
+    /// Structured artifact references for runtime-only prompt expansion.
+    #[serde(default)]
+    pub composer_artifact_references: Vec<ComposerArtifactReference>,
 }
 
 /// Response for an agent conversation workspace.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentWorkspaceSourcePullRequestResponse {
+    pub number: i64,
+    pub url: Option<String>,
+    pub title: Option<String>,
+    pub head_ref_name: String,
+    pub base_ref_name: Option<String>,
+    pub head_ref_oid: Option<String>,
+}
+
+impl From<AgentWorkspaceSourcePullRequest> for AgentWorkspaceSourcePullRequestResponse {
+    fn from(pull_request: AgentWorkspaceSourcePullRequest) -> Self {
+        Self {
+            number: pull_request.number,
+            url: pull_request.url,
+            title: pull_request.title,
+            head_ref_name: pull_request.head_ref_name,
+            base_ref_name: pull_request.base_ref_name,
+            head_ref_oid: pull_request.head_ref_oid,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AgentConversationWorkspaceResponse {
     pub conversation_id: String,
     pub project_id: String,
@@ -230,10 +345,15 @@ pub struct AgentConversationWorkspaceResponse {
     pub worktree_path: String,
     pub linked_ideation_session_id: Option<String>,
     pub linked_plan_branch_id: Option<String>,
+    pub source_pull_request: Option<AgentWorkspaceSourcePullRequestResponse>,
     pub publication_pr_number: Option<i64>,
     pub publication_pr_url: Option<String>,
     pub publication_pr_status: Option<String>,
     pub publication_push_status: Option<String>,
+    pub auto_publish_enabled: bool,
+    pub auto_publish_initial_pr_enabled: bool,
+    pub auto_publish_paused_pr_autofix_enabled: Option<bool>,
+    pub auto_publish_paused_pr_auto_merge_desired: Option<bool>,
     pub pr_autofix_enabled: bool,
     pub pr_auto_merge_desired: bool,
     pub pr_auto_merge_method: String,
@@ -256,6 +376,36 @@ pub struct AgentConversationWorkspacePrSupervisionInput {
     pub auto_merge_method: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationWorkspaceAutoPublishInput {
+    pub auto_publish_enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkAgentConversationInput {
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ForkAgentConversationResponse {
+    pub parent_conversation: AgentConversationResponse,
+    pub conversation: AgentConversationResponse,
+    pub workspace: Option<AgentConversationWorkspaceResponse>,
+    pub provider_session_forked: bool,
+    pub copied_message_count: usize,
+    pub copied_timeline_item_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentConversationForkedPayload {
+    pub parent_conversation_id: String,
+    pub conversation_id: String,
+    pub context_type: String,
+    pub context_id: String,
+}
+
 impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
     fn from(workspace: AgentConversationWorkspace) -> Self {
         Self {
@@ -274,10 +424,19 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             linked_plan_branch_id: workspace
                 .linked_plan_branch_id
                 .map(|id| id.as_str().to_string()),
+            source_pull_request: workspace
+                .source_pull_request
+                .map(AgentWorkspaceSourcePullRequestResponse::from),
             publication_pr_number: workspace.publication_pr_number,
             publication_pr_url: workspace.publication_pr_url,
             publication_pr_status: workspace.publication_pr_status,
             publication_push_status: workspace.publication_push_status,
+            auto_publish_enabled: workspace.auto_publish_enabled,
+            auto_publish_initial_pr_enabled: workspace.auto_publish_initial_pr_enabled,
+            auto_publish_paused_pr_autofix_enabled: workspace
+                .auto_publish_paused_pr_autofix_enabled,
+            auto_publish_paused_pr_auto_merge_desired: workspace
+                .auto_publish_paused_pr_auto_merge_desired,
             pr_autofix_enabled: workspace.pr_autofix_enabled,
             pr_auto_merge_desired: workspace.pr_auto_merge_desired,
             pr_auto_merge_method: workspace.pr_auto_merge_method,
@@ -382,6 +541,10 @@ async fn resolve_agent_conversation_workspace_mode_lock(
             return Ok(AgentConversationWorkspaceModeLock::unlocked());
         };
 
+        if session.session_flow == IdeationSessionFlow::Planning {
+            return Ok(AgentConversationWorkspaceModeLock::unlocked());
+        }
+
         if session.is_active() && session.archived_at.is_none() && session.converted_at.is_none() {
             return Ok(AgentConversationWorkspaceModeLock::locked(
                 "Ideation session is still active",
@@ -390,6 +553,101 @@ async fn resolve_agent_conversation_workspace_mode_lock(
     }
 
     Ok(AgentConversationWorkspaceModeLock::unlocked())
+}
+
+async fn linked_ideation_session_is_planning(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> Result<bool, String> {
+    let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
+        return Ok(false);
+    };
+
+    let Some(session) = state
+        .ideation_session_repo
+        .get_by_id(session_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(false);
+    };
+
+    Ok(session.session_flow == IdeationSessionFlow::Planning)
+}
+
+async fn ensure_plan_workspace_planning_session_link(
+    state: &AppState,
+    project: &Project,
+    workspace: &mut AgentConversationWorkspace,
+) -> Result<bool, String> {
+    if workspace.mode != AgentConversationWorkspaceMode::Plan {
+        return Ok(false);
+    }
+
+    if linked_ideation_session_is_planning(state, workspace).await? {
+        return Ok(false);
+    }
+
+    let analysis = prepare_ideation_analysis_state_from_agent_workspace(project, workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    let session = IdeationSession::builder()
+        .project_id(workspace.project_id.clone())
+        .session_flow(IdeationSessionFlow::Planning)
+        .source_context_type("agent_conversation")
+        .source_context_id(workspace.conversation_id.as_str())
+        .spawn_reason("agent_plan_mode")
+        .analysis(analysis)
+        .build();
+    let session = hydrate_agent_conversation_planning_session_title(state, session)
+        .await
+        .map_err(|error| error.to_string())?;
+    let session = state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    workspace.linked_ideation_session_id = Some(session.id);
+    workspace.linked_plan_branch_id = None;
+    workspace.updated_at = chrono::Utc::now();
+    Ok(true)
+}
+
+pub(crate) async fn ensure_plan_workspace_planning_session_link_for_send(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Result<bool, String> {
+    let Some(mut workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(false);
+    };
+
+    if workspace.mode != AgentConversationWorkspaceMode::Plan {
+        return Ok(false);
+    }
+
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
+
+    if !ensure_plan_workspace_planning_session_link(state, &project, &mut workspace).await? {
+        return Ok(false);
+    }
+
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(true)
 }
 
 fn plan_branch_base_ref(plan_branch: &PlanBranch, project: &Project) -> String {
@@ -447,8 +705,11 @@ pub(crate) async fn resolve_agent_workspace_publish_target(
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Plan branch not found: {}", plan_branch_id))?;
         let base_ref = plan_branch_base_ref(&plan_branch, project);
+        let worktree_path = ensure_linked_plan_branch_agent_worktree(project, &plan_branch)
+            .await
+            .map_err(|error| error.to_string())?;
         return Ok(AgentConversationWorkspacePublishTarget {
-            worktree_path: PathBuf::from(&project.working_directory),
+            worktree_path,
             branch_name: plan_branch.branch_name.clone(),
             base_display_name: plan_branch_base_display_name(&base_ref),
             base_ref,
@@ -554,6 +815,7 @@ struct ExplicitPublishBaseSelection {
     kind: IdeationAnalysisBaseRefKind,
     base_ref: String,
     display_name: String,
+    source_pull_request: Option<AgentWorkspaceSourcePullRequest>,
 }
 
 fn normalize_explicit_publish_base_selection(
@@ -575,6 +837,22 @@ fn normalize_explicit_publish_base_selection(
                 .to_string(),
         );
     }
+    if let Some(source_pull_request) = selection.source_pull_request.as_ref() {
+        if kind != IdeationAnalysisBaseRefKind::LocalBranch {
+            return Err(
+                "Source pull request metadata requires a local_branch base ref".to_string(),
+            );
+        }
+        let head_ref_name = source_pull_request.head_ref_name.trim();
+        if head_ref_name.is_empty() {
+            return Err("Source pull request head branch is required".to_string());
+        }
+        if head_ref_name != base_ref {
+            return Err(
+                "Source pull request head branch must match the selected base ref".to_string(),
+            );
+        }
+    }
     let display_name = selection
         .display_name
         .map(|value| value.trim().to_string())
@@ -594,6 +872,7 @@ fn normalize_explicit_publish_base_selection(
         kind,
         base_ref,
         display_name,
+        source_pull_request: selection.source_pull_request,
     }))
 }
 
@@ -798,6 +1077,8 @@ pub struct SwitchAgentConversationModeInput {
     pub base_ref: Option<String>,
     /// Optional user-facing base ref label.
     pub base_display_name: Option<String>,
+    /// Optional source pull request metadata when the selected base came from a PR head branch.
+    pub base_source_pull_request: Option<AgentWorkspaceSourcePullRequestInput>,
 }
 
 /// Response from switch_agent_conversation_mode command.
@@ -1341,6 +1622,7 @@ pub struct QueuedMessageResponse {
     pub content: String,
     pub created_at: String,
     pub is_editing: bool,
+    pub attachment_ids: Vec<String>,
 }
 
 impl From<QueuedMessage> for QueuedMessageResponse {
@@ -1350,12 +1632,24 @@ impl From<QueuedMessage> for QueuedMessageResponse {
             content: msg.content,
             created_at: msg.created_at,
             is_editing: msg.is_editing,
+            attachment_ids: msg
+                .attachment_ids
+                .into_iter()
+                .map(|attachment_id| attachment_id.to_string())
+                .collect(),
         }
     }
 }
 
+fn visible_queued_message_responses(msgs: Vec<QueuedMessage>) -> Vec<QueuedMessageResponse> {
+    msgs.into_iter()
+        .filter(|msg| !message_metadata_hidden_from_ui(msg.metadata_override.as_deref()))
+        .map(QueuedMessageResponse::from)
+        .collect()
+}
+
 /// Response for conversation listing
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AgentConversationResponse {
     pub id: String,
     pub context_type: String,
@@ -1365,7 +1659,12 @@ pub struct AgentConversationResponse {
     pub provider_harness: Option<String>,
     pub upstream_provider: Option<String>,
     pub provider_profile: Option<String>,
+    pub logical_model: Option<String>,
+    pub effective_model_id: Option<String>,
+    pub logical_effort: Option<String>,
+    pub effective_effort: Option<String>,
     pub agent_mode: Option<String>,
+    pub parent_conversation_id: Option<String>,
     pub title: Option<String>,
     pub message_count: i64,
     pub last_message_at: Option<String>,
@@ -1388,7 +1687,12 @@ impl From<ChatConversation> for AgentConversationResponse {
             provider_harness: provider_harness.map(|harness| harness.to_string()),
             upstream_provider: c.upstream_provider,
             provider_profile: c.provider_profile,
+            logical_model: None,
+            effective_model_id: None,
+            logical_effort: None,
+            effective_effort: None,
             agent_mode: c.agent_mode.map(|mode| mode.to_string()),
+            parent_conversation_id: c.parent_conversation_id,
             title: c.title,
             message_count: c.message_count,
             last_message_at: c.last_message_at.map(|dt| dt.to_rfc3339()),
@@ -1397,6 +1701,143 @@ impl From<ChatConversation> for AgentConversationResponse {
             archived_at: c.archived_at.map(|dt| dt.to_rfc3339()),
         }
     }
+}
+
+impl AgentConversationResponse {
+    fn apply_runtime_attribution(&mut self, attribution: ConversationRuntimeAttribution) {
+        self.logical_model = attribution.logical_model;
+        self.effective_model_id = attribution.effective_model_id;
+        self.logical_effort = attribution.logical_effort.map(|value| value.to_string());
+        self.effective_effort = attribution.effective_effort;
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ConversationRuntimeAttribution {
+    logical_model: Option<String>,
+    effective_model_id: Option<String>,
+    logical_effort: Option<LogicalEffort>,
+    effective_effort: Option<String>,
+}
+
+impl ConversationRuntimeAttribution {
+    fn is_empty(&self) -> bool {
+        self.logical_model.is_none()
+            && self.effective_model_id.is_none()
+            && self.logical_effort.is_none()
+            && self.effective_effort.is_none()
+    }
+}
+
+fn runtime_attribution_from_run(run: &AgentRun) -> Option<ConversationRuntimeAttribution> {
+    let attribution = ConversationRuntimeAttribution {
+        logical_model: run.logical_model.clone(),
+        effective_model_id: run.effective_model_id.clone(),
+        logical_effort: run.logical_effort,
+        effective_effort: run.effective_effort.clone(),
+    };
+    (!attribution.is_empty()).then_some(attribution)
+}
+
+fn runtime_attribution_from_message(
+    message: &ChatMessage,
+) -> Option<ConversationRuntimeAttribution> {
+    let attribution = ConversationRuntimeAttribution {
+        logical_model: message.logical_model.clone(),
+        effective_model_id: message.effective_model_id.clone(),
+        logical_effort: message.logical_effort,
+        effective_effort: message.effective_effort.clone(),
+    };
+    (!attribution.is_empty()).then_some(attribution)
+}
+
+async fn latest_conversation_runtime_attribution(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Result<Option<ConversationRuntimeAttribution>, String> {
+    let runs = state
+        .agent_run_repo
+        .get_by_conversation(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(attribution) = runs.iter().find_map(runtime_attribution_from_run) {
+        return Ok(Some(attribution));
+    }
+
+    let messages = state
+        .chat_message_repo
+        .get_recent_by_conversation_paginated(conversation_id, 200, 0)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(messages.iter().find_map(runtime_attribution_from_message))
+}
+
+pub(crate) async fn agent_conversation_response_for_state(
+    state: &AppState,
+    conversation: ChatConversation,
+) -> Result<AgentConversationResponse, String> {
+    let conversation_id = conversation.id;
+    let mut response = AgentConversationResponse::from(conversation);
+    if let Some(attribution) =
+        latest_conversation_runtime_attribution(state, &conversation_id).await?
+    {
+        response.apply_runtime_attribution(attribution);
+    }
+    Ok(response)
+}
+
+async fn agent_conversation_responses_for_state(
+    state: &AppState,
+    conversations: Vec<ChatConversation>,
+) -> Result<Vec<AgentConversationResponse>, String> {
+    let mut responses = Vec::with_capacity(conversations.len());
+    for conversation in conversations {
+        responses.push(agent_conversation_response_for_state(state, conversation).await?);
+    }
+    Ok(responses)
+}
+
+async fn fork_agent_conversation_response_for_state(
+    state: &AppState,
+    result: AgentConversationForkResult,
+) -> Result<ForkAgentConversationResponse, String> {
+    Ok(ForkAgentConversationResponse {
+        parent_conversation: agent_conversation_response_for_state(
+            state,
+            result.parent_conversation,
+        )
+        .await?,
+        conversation: agent_conversation_response_for_state(state, result.conversation).await?,
+        workspace: result
+            .workspace
+            .map(AgentConversationWorkspaceResponse::from),
+        provider_session_forked: result.provider_session.is_some(),
+        copied_message_count: result.copied_message_count,
+        copied_timeline_item_count: result.copied_timeline_item_count,
+    })
+}
+
+fn emit_agent_conversation_fork_events<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    response: &ForkAgentConversationResponse,
+) {
+    let _ = app.emit(
+        "agent:conversation_created",
+        AgentConversationCreatedPayload {
+            conversation_id: response.conversation.id.clone(),
+            context_type: response.conversation.context_type.clone(),
+            context_id: response.conversation.context_id.clone(),
+        },
+    );
+    let _ = app.emit(
+        "agent:conversation_forked",
+        AgentConversationForkedPayload {
+            parent_conversation_id: response.parent_conversation.id.clone(),
+            conversation_id: response.conversation.id.clone(),
+            context_type: response.conversation.context_type.clone(),
+            context_id: response.conversation.context_id.clone(),
+        },
+    );
 }
 
 /// Response for paginated conversation listing
@@ -1502,7 +1943,7 @@ impl From<ChatTimelineItem> for AgentTimelineItemResponse {
         let conversation_id = item.conversation_id.as_str();
         let content = item.text.clone().unwrap_or_default();
         let content_block =
-            timeline_item_content_block(&item, &conversation_id, message_id.as_deref());
+            timeline_item_content_block(&item, &conversation_id, message_id.as_deref(), true);
         let content_blocks = serde_json::Value::Array(vec![content_block.clone()]);
         let tool_call = if item.kind.to_string() == "tool_use" {
             Some(content_block)
@@ -1537,6 +1978,7 @@ fn timeline_item_content_block(
     item: &ChatTimelineItem,
     conversation_id: &str,
     message_id: Option<&str>,
+    preview_arguments: bool,
 ) -> serde_json::Value {
     if item.kind.to_string() == "text" {
         return serde_json::json!({
@@ -1582,6 +2024,13 @@ fn timeline_item_content_block(
     {
         if let Some(diff_context) = raw.get("diff_context").cloned() {
             block["diff_context"] = diff_context;
+        }
+    }
+
+    if preview_arguments {
+        let detail_ref = block.get("detail_ref").cloned();
+        if let Some(object) = block.as_object_mut() {
+            preview_tool_arguments_object(object, detail_ref);
         }
     }
 
@@ -1976,7 +2425,8 @@ fn maybe_preview_tool_result(
         tool_call_id.as_deref(),
         content_block_index,
     );
-    preview_tool_result_object(object, Some(detail_ref));
+    preview_tool_result_object(object, Some(detail_ref.clone()));
+    preview_tool_arguments_object(object, Some(detail_ref));
 }
 
 fn preview_tool_call_array(value: &mut JsonValue, conversation_id: &str, message_id: &str) {
@@ -2112,11 +2562,80 @@ fn parse_agent_workspace_base_kind(
         .transpose()
 }
 
+fn trim_optional_input(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_agent_workspace_source_pull_request(
+    input: Option<AgentWorkspaceSourcePullRequestInput>,
+    base_ref_kind: Option<IdeationAnalysisBaseRefKind>,
+    base_ref: Option<&str>,
+) -> Result<Option<AgentWorkspaceSourcePullRequest>, String> {
+    let Some(input) = input else {
+        return Ok(None);
+    };
+
+    if input.number <= 0 {
+        return Err("Source pull request number must be positive".to_string());
+    }
+    if base_ref_kind != Some(IdeationAnalysisBaseRefKind::LocalBranch) {
+        return Err("Source pull request metadata requires a local_branch base ref".to_string());
+    }
+
+    let head_ref_name = input.head_ref_name.trim().to_string();
+    if head_ref_name.is_empty() {
+        return Err("Source pull request head branch is required".to_string());
+    }
+    if let Some(base_ref) = base_ref.map(str::trim).filter(|value| !value.is_empty()) {
+        if base_ref != head_ref_name {
+            return Err(
+                "Source pull request head branch must match the selected base ref".to_string(),
+            );
+        }
+    }
+
+    Ok(Some(AgentWorkspaceSourcePullRequest {
+        number: input.number,
+        url: trim_optional_input(input.url),
+        title: trim_optional_input(input.title),
+        head_ref_name,
+        base_ref_name: trim_optional_input(input.base_ref_name),
+        head_ref_oid: trim_optional_input(input.head_ref_oid),
+    }))
+}
+
 fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {
     matches!(
         mode,
-        AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Ideation
+        AgentConversationWorkspaceMode::Edit
+            | AgentConversationWorkspaceMode::Plan
+            | AgentConversationWorkspaceMode::Ideation
+            | AgentConversationWorkspaceMode::ReviewPr
     )
+}
+
+fn agent_mode_should_create_workspace(
+    mode: AgentConversationWorkspaceMode,
+    source_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
+) -> bool {
+    agent_mode_requires_workspace(mode)
+        || (mode == AgentConversationWorkspaceMode::Chat && source_pull_request.is_some())
+}
+
+async fn agent_workspace_pr_automation_defaults_for_project(
+    state: &AppState,
+    project_id: &ProjectId,
+) -> Result<AgentConversationWorkspacePrAutomationDefaults, String> {
+    let settings = state
+        .execution_settings_repo
+        .get_settings(Some(project_id))
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(AgentConversationWorkspacePrAutomationDefaults::from(
+        &settings,
+    ))
 }
 
 fn validate_agent_conversation_mode_transition(
@@ -2147,61 +2666,80 @@ mod agent_mode_workspace_tests {
             AgentConversationWorkspaceMode::Edit
         ));
         assert!(agent_mode_requires_workspace(
+            AgentConversationWorkspaceMode::Plan
+        ));
+        assert!(agent_mode_requires_workspace(
             AgentConversationWorkspaceMode::Ideation
         ));
     }
 
     #[test]
+    fn source_pr_backed_chat_mode_creates_workspace() {
+        let source_pull_request = AgentWorkspaceSourcePullRequest {
+            number: 123,
+            url: None,
+            title: None,
+            head_ref_name: "feature/source-pr".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: None,
+        };
+
+        assert!(agent_mode_should_create_workspace(
+            AgentConversationWorkspaceMode::Chat,
+            Some(&source_pull_request),
+        ));
+        assert!(!agent_mode_should_create_workspace(
+            AgentConversationWorkspaceMode::Chat,
+            None,
+        ));
+        assert!(agent_mode_should_create_workspace(
+            AgentConversationWorkspaceMode::Edit,
+            None,
+        ));
+    }
+
+    #[test]
+    fn plan_agent_conversation_mode_round_trips_through_api_string() {
+        let mode = "plan"
+            .parse::<AgentConversationWorkspaceMode>()
+            .expect("plan mode should parse");
+
+        assert_eq!(mode, AgentConversationWorkspaceMode::Plan);
+        assert_eq!(mode.to_string(), "plan");
+    }
+
+    #[test]
+    fn review_pr_agent_conversation_mode_round_trips_through_api_string() {
+        let mode = "review_pr"
+            .parse::<AgentConversationWorkspaceMode>()
+            .expect("review_pr mode should parse");
+
+        assert_eq!(mode, AgentConversationWorkspaceMode::ReviewPr);
+        assert_eq!(mode.to_string(), "review_pr");
+    }
+
+    #[test]
     fn active_agent_conversations_support_expected_valid_mode_transition_matrix() {
-        let valid_transitions = [
-            (
-                AgentConversationWorkspaceMode::Chat,
-                AgentConversationWorkspaceMode::Chat,
-            ),
-            (
-                AgentConversationWorkspaceMode::Chat,
-                AgentConversationWorkspaceMode::Edit,
-            ),
-            (
-                AgentConversationWorkspaceMode::Chat,
-                AgentConversationWorkspaceMode::Ideation,
-            ),
-            (
-                AgentConversationWorkspaceMode::Edit,
-                AgentConversationWorkspaceMode::Chat,
-            ),
-            (
-                AgentConversationWorkspaceMode::Edit,
-                AgentConversationWorkspaceMode::Edit,
-            ),
-            (
-                AgentConversationWorkspaceMode::Edit,
-                AgentConversationWorkspaceMode::Ideation,
-            ),
-            (
-                AgentConversationWorkspaceMode::Ideation,
-                AgentConversationWorkspaceMode::Ideation,
-            ),
-            (
-                AgentConversationWorkspaceMode::Ideation,
-                AgentConversationWorkspaceMode::Chat,
-            ),
-            (
-                AgentConversationWorkspaceMode::Ideation,
-                AgentConversationWorkspaceMode::Edit,
-            ),
+        let modes = [
+            AgentConversationWorkspaceMode::Chat,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceMode::Plan,
+            AgentConversationWorkspaceMode::Ideation,
+            AgentConversationWorkspaceMode::ReviewPr,
         ];
 
-        for (current_mode, target_mode) in valid_transitions {
-            assert!(
-                validate_agent_conversation_mode_transition(
-                    current_mode,
-                    target_mode,
-                    &AgentConversationWorkspaceModeLock::unlocked()
+        for current_mode in modes {
+            for target_mode in modes {
+                assert!(
+                    validate_agent_conversation_mode_transition(
+                        current_mode,
+                        target_mode,
+                        &AgentConversationWorkspaceModeLock::unlocked()
+                    )
+                    .is_ok(),
+                    "{current_mode} -> {target_mode} should be allowed"
                 )
-                .is_ok(),
-                "{current_mode} -> {target_mode} should be allowed"
-            );
+            }
         }
     }
 
@@ -2210,6 +2748,8 @@ mod agent_mode_workspace_tests {
         for target_mode in [
             AgentConversationWorkspaceMode::Chat,
             AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceMode::Plan,
+            AgentConversationWorkspaceMode::ReviewPr,
         ] {
             let error = validate_agent_conversation_mode_transition(
                 AgentConversationWorkspaceMode::Ideation,
@@ -2227,6 +2767,8 @@ mod agent_mode_workspace_tests {
         for target_mode in [
             AgentConversationWorkspaceMode::Chat,
             AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceMode::Plan,
+            AgentConversationWorkspaceMode::ReviewPr,
         ] {
             let error = validate_agent_conversation_mode_transition(
                 AgentConversationWorkspaceMode::Chat,
@@ -2412,6 +2954,15 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
     let parse_input_started = Instant::now();
     let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
     let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
+    let base_ref = trim_optional_input(input.base_ref);
+    let base_display_name = trim_optional_input(input.base_display_name);
+    let source_pull_request = normalize_agent_workspace_source_pull_request(
+        input.base_source_pull_request,
+        base_ref_kind,
+        base_ref.as_deref(),
+    )?;
+    let should_create_workspace =
+        agent_mode_should_create_workspace(mode, source_pull_request.as_ref());
     let project_id = ProjectId::from_string(input.project_id.clone());
     log_start_agent_conversation_phase(&input.project_id, None, "parse_input", parse_input_started);
 
@@ -2474,7 +3025,7 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
             "Creating chat",
         );
     }
-    if agent_mode_requires_workspace(mode) {
+    if should_create_workspace {
         emit_start_agent_conversation_progress(
             &app,
             &input.project_id,
@@ -2483,28 +3034,26 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
             "Setup workspace",
         );
     }
-    let workspace = if agent_mode_requires_workspace(mode) {
-        Some(
-            prepare_agent_conversation_workspace_with_setup_mode(
-                &project,
-                &conversation.id,
-                mode,
-                AgentConversationWorkspaceBaseSelection {
-                    kind: base_ref_kind,
-                    base_ref: input
-                        .base_ref
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty()),
-                    display_name: input
-                        .base_display_name
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty()),
-                },
-                AgentConversationWorkspaceSetupMode::Deferred,
-            )
-            .await
-            .map_err(|error| error.to_string())?,
+    let workspace = if should_create_workspace {
+        let pr_automation_defaults =
+            agent_workspace_pr_automation_defaults_for_project(&state, &project.id).await?;
+        let mut workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
+            &project,
+            &conversation.id,
+            mode,
+            AgentConversationWorkspaceBaseSelection {
+                kind: base_ref_kind,
+                base_ref,
+                display_name: base_display_name,
+                source_pull_request,
+            },
+            AgentConversationWorkspaceSetupMode::Deferred,
+            pr_automation_defaults,
         )
+        .await
+        .map_err(|error| error.to_string())?;
+        ensure_plan_workspace_planning_session_link(&state, &project, &mut workspace).await?;
+        Some(workspace)
     } else {
         None
     };
@@ -2662,6 +3211,8 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
                 conversation_id_override: Some(conversation.id),
                 working_directory_override,
                 composer_project_references: input.composer_project_references.clone(),
+                composer_integration_references: input.composer_integration_references.clone(),
+                composer_artifact_references: input.composer_artifact_references.clone(),
                 ..Default::default()
             },
         )
@@ -2696,10 +3247,30 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
     );
 
     Ok(StartAgentConversationResponse {
-        conversation: AgentConversationResponse::from(conversation),
+        conversation: agent_conversation_response_for_state(state.inner(), conversation).await?,
         workspace: workspace_response,
         send_result,
     })
+}
+
+/// Fork a project-backed agent conversation into a new conversation/workspace branch.
+#[tauri::command]
+pub async fn fork_agent_conversation<R: Runtime + 'static>(
+    input: ForkAgentConversationInput,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle<R>,
+) -> Result<ForkAgentConversationResponse, String> {
+    let parent_conversation_id = ChatConversationId::from_string(input.conversation_id);
+    let result = fork_agent_conversation_in_state(state.inner(), &parent_conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let response = fork_agent_conversation_response_for_state(state.inner(), result).await?;
+    emit_agent_conversation_fork_events(&app, &response);
+    invalidate_agent_workspace_pr_description_cache(&parent_conversation_id);
+    invalidate_agent_workspace_pr_description_cache(&ChatConversationId::from_string(
+        response.conversation.id.clone(),
+    ));
+    Ok(response)
 }
 
 /// Switch a project-backed agent conversation between chat/edit/ideation modes.
@@ -2716,9 +3287,34 @@ pub async fn switch_agent_conversation_mode_for_state(
     input: SwitchAgentConversationModeInput,
     state: &AppState,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
+    switch_agent_conversation_mode_for_state_with_running_policy(input, state, false).await
+}
+
+#[doc(hidden)]
+pub(crate) async fn switch_agent_conversation_mode_for_state_allowing_running(
+    input: SwitchAgentConversationModeInput,
+    state: &AppState,
+) -> Result<SwitchAgentConversationModeResponse, String> {
+    switch_agent_conversation_mode_for_state_with_running_policy(input, state, true).await
+}
+
+async fn switch_agent_conversation_mode_for_state_with_running_policy(
+    input: SwitchAgentConversationModeInput,
+    state: &AppState,
+    allow_running_agent: bool,
+) -> Result<SwitchAgentConversationModeResponse, String> {
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let target_mode = parse_agent_workspace_mode(Some(input.mode.as_str()))?;
     let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
+    let base_ref = trim_optional_input(input.base_ref);
+    let base_display_name = trim_optional_input(input.base_display_name);
+    let source_pull_request = normalize_agent_workspace_source_pull_request(
+        input.base_source_pull_request,
+        base_ref_kind,
+        base_ref.as_deref(),
+    )?;
+    let should_create_workspace =
+        agent_mode_should_create_workspace(target_mode, source_pull_request.as_ref());
 
     let mut conversation = state
         .chat_conversation_repo
@@ -2734,8 +3330,16 @@ pub async fn switch_agent_conversation_mode_for_state(
         ChatContextType::Project.to_string(),
         conversation.id.as_str(),
     );
-    if state.running_agent_registry.is_running(&running_key).await {
+    let agent_is_running = state.running_agent_registry.is_running(&running_key).await;
+    if agent_is_running && !allow_running_agent {
         return Err("Cannot change mode while the agent is running".to_string());
+    }
+    if agent_is_running {
+        tracing::info!(
+            conversation_id = %conversation.id,
+            target_mode = %target_mode,
+            "Switching project agent conversation mode while its current run is still registered"
+        );
     }
 
     let existing_workspace = state
@@ -2756,17 +3360,39 @@ pub async fn switch_agent_conversation_mode_for_state(
 
     let workspace = match existing_workspace {
         Some(mut workspace) => {
+            let preserve_planning_session_link = if target_mode
+                != AgentConversationWorkspaceMode::Ideation
+                && workspace.linked_plan_branch_id.is_none()
+            {
+                linked_ideation_session_is_planning(state, &workspace).await?
+            } else {
+                false
+            };
+            let linked_plan_handoff_changed = if target_mode == AgentConversationWorkspaceMode::Edit
+                && !workspace_mode_lock.locked
+                && workspace.linked_plan_branch_id.is_some()
+            {
+                apply_linked_plan_branch_edit_handoff(state, &mut workspace).await?
+            } else {
+                false
+            };
             let should_detach_inactive_owner = target_mode
                 != AgentConversationWorkspaceMode::Ideation
                 && !workspace_mode_lock.locked
                 && (workspace.linked_ideation_session_id.is_some()
-                    || workspace.linked_plan_branch_id.is_some());
-            if workspace.mode != target_mode || should_detach_inactive_owner {
+                    || workspace.linked_plan_branch_id.is_some())
+                && !preserve_planning_session_link;
+            let changed = workspace.mode != target_mode
+                || should_detach_inactive_owner
+                || linked_plan_handoff_changed;
+            if workspace.mode != target_mode {
                 workspace.mode = target_mode;
-                if should_detach_inactive_owner {
-                    workspace.linked_ideation_session_id = None;
-                    workspace.linked_plan_branch_id = None;
-                }
+            }
+            if should_detach_inactive_owner {
+                workspace.linked_ideation_session_id = None;
+                workspace.linked_plan_branch_id = None;
+            }
+            if changed {
                 workspace.updated_at = chrono::Utc::now();
                 Some(
                     state
@@ -2780,7 +3406,7 @@ pub async fn switch_agent_conversation_mode_for_state(
             }
         }
         None => {
-            if agent_mode_requires_workspace(target_mode) {
+            if should_create_workspace {
                 let project_id = ProjectId::from_string(conversation.context_id.clone());
                 let project = state
                     .project_repo
@@ -2788,21 +3414,20 @@ pub async fn switch_agent_conversation_mode_for_state(
                     .await
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| format!("Project not found: {}", conversation.context_id))?;
-                let workspace = prepare_agent_conversation_workspace(
+                let pr_automation_defaults =
+                    agent_workspace_pr_automation_defaults_for_project(&state, &project.id).await?;
+                let workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
                     &project,
                     &conversation.id,
                     target_mode,
                     AgentConversationWorkspaceBaseSelection {
                         kind: base_ref_kind,
-                        base_ref: input
-                            .base_ref
-                            .map(|value| value.trim().to_string())
-                            .filter(|value| !value.is_empty()),
-                        display_name: input
-                            .base_display_name
-                            .map(|value| value.trim().to_string())
-                            .filter(|value| !value.is_empty()),
+                        base_ref,
+                        display_name: base_display_name,
+                        source_pull_request,
                     },
+                    AgentConversationWorkspaceSetupMode::Blocking,
+                    pr_automation_defaults,
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -2839,7 +3464,7 @@ pub async fn switch_agent_conversation_mode_for_state(
     };
 
     Ok(SwitchAgentConversationModeResponse {
-        conversation: AgentConversationResponse::from(conversation),
+        conversation: agent_conversation_response_for_state(state, conversation).await?,
         workspace: workspace_response,
     })
 }
@@ -2856,6 +3481,37 @@ pub async fn switch_agent_conversation_mode_for_state(
 /// - agent:message_created - When messages are persisted
 /// - agent:run_completed or agent:turn_completed (interactive) - When agent finishes
 /// - agent:error - On failure
+async fn fork_terminal_agent_conversation_for_send<R: Runtime>(
+    state: &AppState,
+    app: &tauri::AppHandle<R>,
+    conversation_id: Option<&ChatConversationId>,
+) -> Result<Option<ChatConversationId>, String> {
+    let Some(parent_conversation_id) = conversation_id else {
+        return Ok(None);
+    };
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(parent_conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    if !workspace.has_terminal_publication_pr_status() {
+        return Ok(None);
+    }
+
+    let result = fork_agent_conversation_in_state(state, parent_conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let response = fork_agent_conversation_response_for_state(state, result).await?;
+    emit_agent_conversation_fork_events(app, &response);
+    invalidate_agent_workspace_pr_description_cache(parent_conversation_id);
+    let child_conversation_id = ChatConversationId::from_string(response.conversation.id.clone());
+    invalidate_agent_workspace_pr_description_cache(&child_conversation_id);
+    Ok(Some(child_conversation_id))
+}
+
 #[tauri::command]
 pub async fn send_agent_message(
     input: SendAgentMessageInput,
@@ -2880,7 +3536,7 @@ pub async fn send_agent_message(
 
     let mut service = create_chat_service(
         &state,
-        app,
+        app.clone(),
         &execution_state,
         Some(team_service.inner().clone()),
     );
@@ -2978,35 +3634,81 @@ pub async fn send_agent_message(
         input.logical_effort,
     )
     .await?;
-    let conversation_id_override = input
+    let mut conversation_id_override = input
         .conversation_id
         .as_deref()
         .map(str::trim)
         .filter(|conversation_id| !conversation_id.is_empty())
         .map(ChatConversationId::from_string);
+    let mut auto_forked_terminal_conversation = false;
+    if context_type == ChatContextType::Project {
+        let parent_conversation_id = conversation_id_override.clone();
+        if let Some(forked_conversation_id) = fork_terminal_agent_conversation_for_send(
+            state.inner(),
+            &app,
+            parent_conversation_id.as_ref(),
+        )
+        .await?
+        {
+            if let Some(parent_id) = parent_conversation_id.as_ref() {
+                let reparented = state
+                    .chat_attachment_repo
+                    .reparent_pending_attachments(parent_id, &forked_conversation_id)
+                    .await;
+                if let Err(error) = &reparented {
+                    tracing::warn!(
+                        parent_conversation_id = %parent_id,
+                        child_conversation_id = %forked_conversation_id,
+                        %error,
+                        "Failed to reparent pending attachments during terminal fork"
+                    );
+                }
+            }
+            conversation_id_override = Some(forked_conversation_id);
+            auto_forked_terminal_conversation = true;
+        }
+    }
     if let Some(conversation_id) = conversation_id_override.as_ref() {
         invalidate_agent_workspace_pr_description_cache(conversation_id);
+        if context_type == ChatContextType::Project
+            && ensure_plan_workspace_planning_session_link_for_send(state.inner(), conversation_id)
+                .await?
+        {
+            let _ = app.emit(
+                "agent:workspace_changed",
+                serde_json::json!({ "conversation_id": conversation_id.as_str() }),
+            );
+        }
     }
     let attachment_ids = parse_chat_attachment_ids(&input.attachment_ids)?;
 
-    service
+    let mut response = service
         .send_message(
             context_type,
             &input.context_id,
             &input.content,
             SendMessageOptions {
+                metadata: input
+                    .suppress_user_message
+                    .then(hidden_user_message_metadata),
                 harness_override,
                 model_override,
                 logical_effort_override,
                 conversation_id_override,
                 composer_project_references: input.composer_project_references,
+                composer_integration_references: input.composer_integration_references,
+                composer_artifact_references: input.composer_artifact_references,
                 attachment_ids,
                 ..Default::default()
             },
         )
         .await
         .map(SendAgentMessageResponse::from)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if auto_forked_terminal_conversation {
+        response.is_new_conversation = true;
+    }
+    Ok(response)
 }
 
 /// Queue a message to be sent when the current agent run completes
@@ -3061,7 +3763,7 @@ pub async fn get_queued_agent_messages(
     service
         .get_queued_messages(context_type, &context_id)
         .await
-        .map(|msgs| msgs.into_iter().map(QueuedMessageResponse::from).collect())
+        .map(visible_queued_message_responses)
         .map_err(|e| e.to_string())
 }
 
@@ -3083,6 +3785,78 @@ pub async fn delete_queued_agent_message(
         .delete_queued_message(context_type, &context_id, &message_id)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Send a queued message immediately, interrupting the active provider process.
+async fn send_queued_agent_message_now_for_state<R: Runtime + 'static>(
+    context_type: String,
+    context_id: String,
+    message_id: String,
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    team_service: std::sync::Arc<crate::application::TeamService>,
+    app: tauri::AppHandle<R>,
+) -> Result<SendAgentMessageResponse, String> {
+    let context_type = parse_context_type(&context_type)?;
+    let mut service = create_chat_service(state, app, execution_state, Some(team_service));
+
+    if context_type == ChatContextType::Ideation {
+        let session_id = IdeationSessionId::from_string(&context_id);
+        if let Ok(Some(session)) = state.ideation_session_repo.get_by_id(&session_id).await {
+            let is_team = session.team_mode.as_deref().is_some_and(|m| m != "solo");
+            if is_team {
+                service = service.with_team_mode(true);
+            }
+        }
+    }
+
+    if context_type == ChatContextType::TaskExecution {
+        let task_id = TaskId::from_string(context_id.clone());
+        if let Ok(Some(task)) = state.task_repo.get_by_id(&task_id).await {
+            let is_team = task
+                .metadata
+                .as_ref()
+                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                .and_then(|meta| {
+                    meta.get("agent_variant")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == "team")
+                })
+                .unwrap_or(false);
+            if is_team {
+                service = service.with_team_mode(true);
+            }
+        }
+    }
+
+    service
+        .send_queued_message_now(context_type, &context_id, &message_id)
+        .await
+        .map(SendAgentMessageResponse::from)
+        .map_err(|e| e.to_string())
+}
+
+/// Send a queued message immediately, interrupting the active provider process.
+#[tauri::command]
+pub async fn send_queued_agent_message_now(
+    context_type: String,
+    context_id: String,
+    message_id: String,
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
+    app: tauri::AppHandle,
+) -> Result<SendAgentMessageResponse, String> {
+    send_queued_agent_message_now_for_state(
+        context_type,
+        context_id,
+        message_id,
+        &state,
+        &execution_state,
+        team_service.inner().clone(),
+        app,
+    )
+    .await
 }
 
 /// List all conversations for a context
@@ -3112,10 +3886,7 @@ pub async fn list_agent_conversations(
             .map_err(|e| e.to_string())?
     };
 
-    Ok(conversations
-        .into_iter()
-        .map(AgentConversationResponse::from)
-        .collect())
+    agent_conversation_responses_for_state(state.inner(), conversations).await
 }
 
 /// List a page of conversations for a context with optional title search.
@@ -3152,11 +3923,8 @@ pub async fn list_agent_conversations_page(
     let has_more = page.has_more();
 
     Ok(AgentConversationListPageResponse {
-        conversations: page
-            .conversations
-            .into_iter()
-            .map(AgentConversationResponse::from)
-            .collect(),
+        conversations: agent_conversation_responses_for_state(state.inner(), page.conversations)
+            .await?,
         total: page.total_count,
         limit: page.limit,
         offset: page.offset,
@@ -3252,13 +4020,13 @@ pub async fn archive_agent_conversation(
     let conversation_id = ChatConversationId::from_string(conversation_id);
     archive_agent_conversation_inner(&conversation_id, &state).await?;
 
-    state
+    let conversation = state
         .chat_conversation_repo
         .get_by_id(&conversation_id)
         .await
         .map_err(|e| e.to_string())?
-        .map(AgentConversationResponse::from)
-        .ok_or_else(|| "Conversation not found".to_string())
+        .ok_or_else(|| "Conversation not found".to_string())?;
+    agent_conversation_response_for_state(state.inner(), conversation).await
 }
 
 /// Restore an archived conversation.
@@ -3273,13 +4041,13 @@ pub async fn restore_agent_conversation(
         .restore(&conversation_id)
         .await
         .map_err(|e| e.to_string())?;
-    state
+    let conversation = state
         .chat_conversation_repo
         .get_by_id(&conversation_id)
         .await
         .map_err(|e| e.to_string())?
-        .map(AgentConversationResponse::from)
-        .ok_or_else(|| "Conversation not found".to_string())
+        .ok_or_else(|| "Conversation not found".to_string())?;
+    agent_conversation_response_for_state(state.inner(), conversation).await
 }
 
 /// Get workspace metadata for a project-backed agent conversation.
@@ -3329,24 +4097,183 @@ fn normalize_agent_workspace_auto_merge_method(method: Option<String>) -> Result
     }
 }
 
+#[derive(Debug, Clone)]
+struct AgentWorkspacePrAutomationTarget {
+    project: Option<Project>,
+    working_dir: PathBuf,
+    pr_number: i64,
+    pr_url: Option<String>,
+    pr_status: Option<String>,
+    push_status: Option<String>,
+}
+
+fn plan_branch_publication_status(plan_branch: &PlanBranch) -> Option<String> {
+    if plan_branch.status == PlanBranchStatus::Merged {
+        Some("merged".to_string())
+    } else {
+        plan_branch
+            .pr_status
+            .as_ref()
+            .map(|status| status.to_db_string().to_ascii_lowercase())
+    }
+}
+
+async fn apply_linked_plan_branch_edit_handoff(
+    state: &AppState,
+    workspace: &mut AgentConversationWorkspace,
+) -> Result<bool, String> {
+    let Some(plan_branch_id) = workspace.linked_plan_branch_id.as_ref() else {
+        return Ok(false);
+    };
+    let Some(plan_branch) = state
+        .plan_branch_repo
+        .get_by_id(plan_branch_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(false);
+    };
+    if plan_branch.status != PlanBranchStatus::Active || plan_branch.pr_number.is_none() {
+        return Ok(false);
+    }
+    let Some(project) = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Err(format!("Project not found: {}", workspace.project_id));
+    };
+
+    let base_ref = plan_branch_base_ref(&plan_branch, &project);
+    let base_display_name = plan_branch_base_display_name(&base_ref);
+    let worktree_path = ensure_linked_plan_branch_agent_worktree(&project, &plan_branch)
+        .await
+        .map_err(|error| error.to_string())?;
+    let worktree_path = worktree_path.to_string_lossy().to_string();
+    let publication_pr_status = plan_branch_publication_status(&plan_branch);
+    let publication_push_status = Some(plan_branch.pr_push_status.to_db_string().to_string());
+
+    let changed = workspace.branch_name != plan_branch.branch_name
+        || workspace.worktree_path != worktree_path
+        || workspace.base_ref != base_ref
+        || workspace.base_display_name != base_display_name
+        || workspace.publication_pr_number != plan_branch.pr_number
+        || workspace.publication_pr_url != plan_branch.pr_url
+        || workspace.publication_pr_status != publication_pr_status
+        || workspace.publication_push_status != publication_push_status;
+
+    workspace.branch_name = plan_branch.branch_name;
+    workspace.worktree_path = worktree_path;
+    workspace.base_ref = base_ref;
+    workspace.base_display_name = base_display_name;
+    workspace.publication_pr_number = plan_branch.pr_number;
+    workspace.publication_pr_url = plan_branch.pr_url;
+    workspace.publication_pr_status = publication_pr_status;
+    workspace.publication_push_status = publication_push_status;
+
+    Ok(changed)
+}
+
+async fn resolve_agent_workspace_pr_automation_target(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> Result<Option<AgentWorkspacePrAutomationTarget>, String> {
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if workspace.mode == AgentConversationWorkspaceMode::Ideation {
+        let Some(project) = project else {
+            return Ok(None);
+        };
+        let Some(plan_branch_id) = workspace.linked_plan_branch_id.as_ref() else {
+            return Ok(None);
+        };
+        let Some(plan_branch) = state
+            .plan_branch_repo
+            .get_by_id(plan_branch_id)
+            .await
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(None);
+        };
+        let Some(pr_number) = plan_branch.pr_number else {
+            return Ok(None);
+        };
+        let working_dir = ensure_linked_plan_branch_agent_worktree(&project, &plan_branch)
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(Some(AgentWorkspacePrAutomationTarget {
+            project: Some(project),
+            working_dir,
+            pr_number,
+            pr_url: plan_branch.pr_url.clone(),
+            pr_status: plan_branch_publication_status(&plan_branch),
+            push_status: Some(plan_branch.pr_push_status.to_db_string().to_string()),
+        }));
+    }
+
+    let Some(pr_number) = workspace.publication_pr_number else {
+        return Ok(None);
+    };
+    let working_dir = PathBuf::from(&workspace.worktree_path);
+    Ok(Some(AgentWorkspacePrAutomationTarget {
+        project,
+        working_dir,
+        pr_number,
+        pr_url: workspace.publication_pr_url.clone(),
+        pr_status: workspace.publication_pr_status.clone(),
+        push_status: workspace.publication_push_status.clone(),
+    }))
+}
+
+async fn sync_agent_workspace_publication_from_pr_automation_target(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    target: &AgentWorkspacePrAutomationTarget,
+) -> Result<(), String> {
+    if workspace.publication_pr_number == Some(target.pr_number)
+        && workspace.publication_pr_url == target.pr_url
+        && workspace.publication_pr_status == target.pr_status
+        && workspace.publication_push_status == target.push_status
+    {
+        return Ok(());
+    }
+
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(
+            conversation_id,
+            Some(target.pr_number),
+            target.pr_url.as_deref(),
+            target.pr_status.as_deref(),
+            target.push_status.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
 async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
     state: &AppState,
     conversation_id: &ChatConversationId,
     workspace: &AgentConversationWorkspace,
+    target: Option<&AgentWorkspacePrAutomationTarget>,
     auto_merge_desired: bool,
     auto_merge_method: &str,
 ) -> Result<(), String> {
-    let (Some(github), Some(pr_number)) = (
-        state.github_service.as_ref(),
-        workspace.publication_pr_number,
-    ) else {
+    let (Some(github), Some(target)) = (state.github_service.as_ref(), target) else {
         return Ok(());
     };
 
-    let working_dir = Path::new(&workspace.worktree_path);
+    let pr_number = target.pr_number;
+    let working_dir = target.working_dir.as_path();
     if auto_merge_desired {
         let enable_result = async {
-            if workspace.publication_pr_status.as_deref() == Some("draft") {
+            if target.pr_status.as_deref() == Some("draft") {
                 github.mark_pr_ready(working_dir, pr_number).await?;
             }
             github
@@ -3456,14 +4383,35 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
         return Err("Agent conversation workspace not found".to_string());
     };
 
-    if workspace.has_terminal_publication_pr_status() {
+    let automation_target = resolve_agent_workspace_pr_automation_target(state, &workspace).await?;
+    let terminal_publication_status = workspace.has_terminal_publication_pr_status()
+        || automation_target.as_ref().is_some_and(|target| {
+            is_terminal_agent_conversation_publication_status(target.pr_status.as_deref())
+        });
+    if terminal_publication_status {
         return Err("PR supervision cannot be changed for a closed or merged PR".to_string());
+    }
+    if !workspace.auto_publish_enabled && (input.auto_fix_enabled || input.auto_merge_desired) {
+        return Err(
+            "Auto Publish is paused for this workspace. Turn Auto Publish back on before enabling PR supervision."
+                .to_string(),
+        );
     }
 
     let _workspace_changed_guard = state
         .app_handle
         .as_ref()
         .map(|app| emit_workspace_changed_when_done(app, &conversation_id));
+
+    if let Some(target) = automation_target.as_ref() {
+        sync_agent_workspace_publication_from_pr_automation_target(
+            state,
+            &conversation_id,
+            &workspace,
+            target,
+        )
+        .await?;
+    }
 
     state
         .agent_conversation_workspace_repo
@@ -3480,10 +4428,28 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
         state,
         &conversation_id,
         &workspace,
+        automation_target.as_ref(),
         input.auto_merge_desired,
         &auto_merge_method,
     )
     .await?;
+
+    if input.auto_fix_enabled || input.auto_merge_desired {
+        if let Some(target) = automation_target.as_ref() {
+            if let Some(project) = target.project.clone() {
+                let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
+                state.pr_poller_registry.start_agent_workspace_polling(
+                    conversation_id.clone(),
+                    target.pr_number,
+                    project,
+                    target.working_dir.clone(),
+                    Arc::clone(&state.agent_conversation_workspace_repo),
+                    Arc::clone(&state.agent_run_repo),
+                    chat_service,
+                );
+            }
+        }
+    }
 
     state
         .agent_conversation_workspace_repo
@@ -3505,6 +4471,241 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
                 "RalphX PR supervision is disabled."
             },
             Some("pr_supervision_preferences".to_string()),
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let updated = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+    agent_workspace_response_for_state(state, updated).await
+}
+
+/// Enable or pause automatic publish behavior for a project-backed agent workspace.
+#[tauri::command]
+pub async fn set_agent_conversation_workspace_auto_publish(
+    conversation_id: String,
+    input: AgentConversationWorkspaceAutoPublishInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    set_agent_conversation_workspace_auto_publish_for_state(conversation_id, input, state.inner())
+        .await
+}
+
+pub async fn set_agent_conversation_workspace_auto_publish_for_state(
+    conversation_id: String,
+    input: AgentConversationWorkspaceAutoPublishInput,
+    state: &AppState,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Err("Agent conversation workspace not found".to_string());
+    };
+
+    let automation_target = resolve_agent_workspace_pr_automation_target(state, &workspace).await?;
+    let terminal_publication_status = workspace.has_terminal_publication_pr_status()
+        || automation_target.as_ref().is_some_and(|target| {
+            is_terminal_agent_conversation_publication_status(target.pr_status.as_deref())
+        });
+    if terminal_publication_status {
+        return Err("Auto Publish cannot be changed for a closed or merged PR".to_string());
+    }
+
+    let _workspace_changed_guard = state
+        .app_handle
+        .as_ref()
+        .map(|app| emit_workspace_changed_when_done(app, &conversation_id));
+
+    if let Some(target) = automation_target.as_ref() {
+        sync_agent_workspace_publication_from_pr_automation_target(
+            state,
+            &conversation_id,
+            &workspace,
+            target,
+        )
+        .await?;
+    }
+
+    if automation_target.is_none() && workspace.publication_pr_number.is_none() {
+        if input.auto_publish_enabled == workspace.auto_publish_initial_pr_enabled {
+            return agent_workspace_response_for_state(state, workspace).await;
+        }
+
+        state
+            .agent_conversation_workspace_repo
+            .update_auto_publish_initial_pr_preference(&conversation_id, input.auto_publish_enabled)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "auto_publish",
+                if input.auto_publish_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                if input.auto_publish_enabled {
+                    "Auto Publish is enabled for the first pull request."
+                } else {
+                    "Auto Publish is disabled for the first pull request."
+                },
+                Some("auto_publish_preferences".to_string()),
+            ))
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let updated = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+        return agent_workspace_response_for_state(state, updated).await;
+    }
+
+    if input.auto_publish_enabled == workspace.auto_publish_enabled {
+        return agent_workspace_response_for_state(state, workspace).await;
+    }
+
+    let auto_merge_method = workspace.pr_auto_merge_method.clone();
+    let (
+        paused_pr_autofix_enabled,
+        paused_pr_auto_merge_desired,
+        pr_autofix_enabled,
+        pr_auto_merge_desired,
+        supervision_status,
+        supervision_summary,
+        event_status,
+        event_summary,
+    ) = if input.auto_publish_enabled {
+        let restored_autofix = workspace
+            .auto_publish_paused_pr_autofix_enabled
+            .unwrap_or(workspace.pr_autofix_enabled);
+        let restored_auto_merge = workspace
+            .auto_publish_paused_pr_auto_merge_desired
+            .unwrap_or(workspace.pr_auto_merge_desired);
+        let summary = if restored_autofix || restored_auto_merge {
+            Some("RalphX PR supervision is enabled.")
+        } else {
+            None
+        };
+        (
+            None,
+            None,
+            restored_autofix,
+            restored_auto_merge,
+            Some(if restored_autofix || restored_auto_merge {
+                "monitoring"
+            } else {
+                "disabled"
+            }),
+            summary,
+            "enabled",
+            if restored_autofix || restored_auto_merge {
+                "Auto Publish is enabled; previous PR supervision preferences were restored."
+            } else {
+                "Auto Publish is enabled."
+            },
+        )
+    } else {
+        (
+            Some(workspace.pr_autofix_enabled),
+            Some(workspace.pr_auto_merge_desired),
+            false,
+            false,
+            Some("paused"),
+            Some("Auto Publish is paused. Manual Commit & Publish is still available."),
+            "disabled",
+            "Auto Publish is paused. Background publish, PR autofix, and auto-merge automation are disabled.",
+        )
+    };
+
+    state
+        .agent_conversation_workspace_repo
+        .update_auto_publish_preferences(
+            &conversation_id,
+            input.auto_publish_enabled,
+            paused_pr_autofix_enabled,
+            paused_pr_auto_merge_desired,
+            pr_autofix_enabled,
+            pr_auto_merge_desired,
+            supervision_status,
+            supervision_summary,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if input.auto_publish_enabled && pr_auto_merge_desired {
+        reconcile_agent_workspace_auto_merge_for_supervision_toggle(
+            state,
+            &conversation_id,
+            &workspace,
+            automation_target.as_ref(),
+            true,
+            &auto_merge_method,
+        )
+        .await?;
+    } else if !input.auto_publish_enabled {
+        let refreshed_for_sync = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+        if let (Some(github), Some(pr_number)) = (
+            state.github_service.as_ref(),
+            automation_target
+                .as_ref()
+                .map(|target| target.pr_number)
+                .or(refreshed_for_sync.publication_pr_number),
+        ) {
+            if let Err(error) = sync_agent_workspace_auto_merge_preference_for_workspace(
+                Arc::clone(github),
+                automation_target
+                    .as_ref()
+                    .map(|target| target.working_dir.as_path())
+                    .unwrap_or_else(|| Path::new(&refreshed_for_sync.worktree_path)),
+                pr_number,
+                &refreshed_for_sync,
+                Arc::clone(&state.agent_conversation_workspace_repo),
+            )
+            .await
+            {
+                state
+                    .agent_conversation_workspace_repo
+                    .update_pr_auto_merge_state(
+                        &conversation_id,
+                        refreshed_for_sync.pr_auto_merge_current,
+                        Some("waiting"),
+                        Some(&format!(
+                            "GitHub auto-merge state could not be refreshed while pausing Auto Publish: {error}"
+                        )),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "auto_publish",
+            event_status,
+            event_summary,
+            Some("auto_publish_preferences".to_string()),
         ))
         .await
         .map_err(|e| e.to_string())?;
@@ -4003,6 +5204,7 @@ pub async fn update_agent_conversation_workspace_from_base(
     base_ref_kind: Option<String>,
     base_ref: Option<String>,
     base_display_name: Option<String>,
+    base_source_pull_request: Option<AgentWorkspaceSourcePullRequestInput>,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
     team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
@@ -4010,10 +5212,17 @@ pub async fn update_agent_conversation_workspace_from_base(
 ) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let _workspace_changed_event = emit_workspace_changed_when_done(&app, &conversation_id);
+    let kind = parse_agent_workspace_base_kind(base_ref_kind.as_deref())?;
+    let source_pull_request = normalize_agent_workspace_source_pull_request(
+        base_source_pull_request,
+        kind,
+        base_ref.as_deref(),
+    )?;
     let selection = AgentConversationWorkspaceBaseSelection {
-        kind: parse_agent_workspace_base_kind(base_ref_kind.as_deref())?,
+        kind,
         base_ref,
         display_name: base_display_name,
+        source_pull_request,
     };
     update_agent_conversation_workspace_from_base_for_app_state(
         state.inner(),
@@ -4033,6 +5242,14 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
     conversation_id: ChatConversationId,
     selection: AgentConversationWorkspaceBaseSelection,
 ) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        conversation_id.as_str(),
+    );
+    let interactive_slot_key = agent_workspace_interactive_slot_key(&conversation_id);
+    let running_agent_blocks_update = state.running_agent_registry.is_running(&running_key).await
+        && !execution_state.is_interactive_idle(&interactive_slot_key);
+
     let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let _pr_description_invalidation =
         AgentWorkspacePrDescriptionInvalidationGuard::new(&conversation_id, true);
@@ -4047,6 +5264,27 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
                 conversation_id
             )
         })?;
+
+    let mut repair_service =
+        state.build_chat_service_with_execution_state(Arc::clone(execution_state));
+    if let Some(team_service) = team_service {
+        repair_service = repair_service.with_team_service(team_service);
+    }
+
+    if running_agent_blocks_update {
+        let repair_target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+        mark_agent_workspace_agent_fixable_update_failure_with_target(
+            state,
+            &workspace,
+            AGENT_WORKSPACE_BASE_UPDATE_RUNNING_MESSAGE,
+            None,
+            &repair_service,
+            &repair_target,
+        )
+        .await;
+        return Err(AGENT_WORKSPACE_BASE_UPDATE_RUNNING_MESSAGE.to_string());
+    }
+
     let explicit_base = normalize_explicit_publish_base_selection(selection)?;
 
     let project = state
@@ -4068,20 +5306,41 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
                             crate::domain::entities::AgentConversationWorkspaceStatus::Missing,
                         )
                         .await;
+                } else {
+                    let repair_target =
+                        AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+                    mark_agent_workspace_update_failure_with_target(
+                        state,
+                        &workspace,
+                        &error,
+                        None,
+                        &repair_service,
+                        &repair_target,
+                    )
+                    .await;
                 }
                 return Err(error);
             }
         };
 
-    let mut repair_service =
-        state.build_chat_service_with_execution_state(Arc::clone(execution_state));
-    if let Some(team_service) = team_service {
-        repair_service = repair_service.with_team_service(team_service);
-    }
-
     let base_resolution = if let Some(explicit_base) = explicit_base.as_ref() {
         publish_target.base_ref = explicit_base.base_ref.clone();
         publish_target.base_display_name = Some(explicit_base.display_name.clone());
+        if explicit_base.source_pull_request.is_some() {
+            if let Err(error) = GitService::fetch_origin(&publish_target.worktree_path).await {
+                let message = format!("Failed to refresh selected pull request branch: {error}");
+                mark_agent_workspace_update_failure_with_target(
+                    state,
+                    &workspace,
+                    &message,
+                    None,
+                    &repair_service,
+                    &publish_target.repair_target(),
+                )
+                .await;
+                return Err(message);
+            }
+        }
         if let Err(message) = validate_explicit_publish_base_ref(
             &publish_target.worktree_path,
             &explicit_base.base_ref,
@@ -4277,6 +5536,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
         workspace.base_ref_kind = explicit_base.kind;
         workspace.base_ref = explicit_base.base_ref.clone();
         workspace.base_display_name = Some(explicit_base.display_name.clone());
+        workspace.source_pull_request = explicit_base.source_pull_request.clone();
         workspace.updated_at = chrono::Utc::now();
     } else if let Some(base_resolution) = base_resolution.as_ref() {
         persist_workspace_base_resolution_if_retargeted(state, &mut workspace, base_resolution)
@@ -4619,6 +5879,506 @@ pub async fn close_agent_workspace_pr(
     agent_workspace_response_for_state(&state, updated).await
 }
 
+async fn linked_plan_branch_has_unfinished_regular_tasks(
+    state: &AppState,
+    plan_branch: &PlanBranch,
+) -> Result<bool, String> {
+    let tasks = if let Some(execution_plan_id) = plan_branch.execution_plan_id.as_ref() {
+        state
+            .task_repo
+            .list_paginated(
+                &plan_branch.project_id,
+                None,
+                0,
+                10_000,
+                false,
+                None,
+                Some(execution_plan_id.as_str()),
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        state
+            .task_repo
+            .get_by_ideation_session(&plan_branch.session_id)
+            .await
+            .map_err(|e| e.to_string())?
+    };
+
+    Ok(tasks
+        .iter()
+        .filter(|task| task.archived_at.is_none())
+        .filter(|task| task.category == TaskCategory::Regular)
+        .any(|task| !task.internal_status.is_terminal()))
+}
+
+async fn sync_workspace_publication_from_plan_branch_for_publish(
+    state: &AppState,
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    publish_target: &AgentConversationWorkspacePublishTarget,
+    plan_branch: &PlanBranch,
+    push_status: PrPushStatus,
+) -> Result<(), String> {
+    let pr_number = plan_branch
+        .pr_number
+        .ok_or_else(|| "No PR associated with this linked plan branch".to_string())?;
+    let target = AgentWorkspacePrAutomationTarget {
+        project: Some(project.clone()),
+        working_dir: publish_target.worktree_path.clone(),
+        pr_number,
+        pr_url: plan_branch.pr_url.clone(),
+        pr_status: plan_branch_publication_status(plan_branch),
+        push_status: Some(push_status.to_db_string().to_string()),
+    };
+    sync_agent_workspace_publication_from_pr_automation_target(
+        state,
+        &workspace.conversation_id,
+        workspace,
+        &target,
+    )
+    .await
+}
+
+async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    team_service: Option<Arc<crate::application::TeamService>>,
+    mut workspace: AgentConversationWorkspace,
+    route_fixable_failures_to_agent: bool,
+) -> Result<PublishAgentConversationWorkspaceResponse, String> {
+    let publish_started = Instant::now();
+    let conversation_id = workspace.conversation_id.clone();
+
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Conversation not found: {}", conversation_id))?;
+    if conversation.context_type != ChatContextType::Project
+        || conversation.context_id != workspace.project_id.as_str()
+    {
+        return Err(format!(
+            "Conversation {} does not match agent workspace project {}",
+            conversation.id, workspace.project_id
+        ));
+    }
+
+    let mut repair_service =
+        state.build_chat_service_with_execution_state(Arc::clone(execution_state));
+    if let Some(team_service) = team_service {
+        repair_service = repair_service.with_team_service(team_service);
+    }
+
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
+    let publish_target = resolve_agent_workspace_publish_target(state, &project, &workspace)
+        .await
+        .map_err(|error| {
+            format!("Linked ideation workspace cannot be published from its plan branch: {error}")
+        })?;
+    let plan_branch = publish_target.plan_branch.as_ref().ok_or_else(|| {
+        "Linked ideation publish target did not include a plan branch".to_string()
+    })?;
+    let pr_number = plan_branch
+        .pr_number
+        .ok_or_else(|| "No PR associated with this linked plan branch".to_string())?;
+    if plan_branch.status != PlanBranchStatus::Active {
+        return Err("Cannot publish a plan branch that is no longer active".to_string());
+    }
+    if is_terminal_agent_conversation_publication_status(
+        plan_branch_publication_status(plan_branch).as_deref(),
+    ) {
+        sync_workspace_publication_from_plan_branch_for_publish(
+            state,
+            &project,
+            &workspace,
+            &publish_target,
+            plan_branch,
+            plan_branch.pr_push_status,
+        )
+        .await?;
+        return Err("Cannot publish a workspace whose PR is already closed or merged".to_string());
+    }
+    if linked_plan_branch_has_unfinished_regular_tasks(state, plan_branch).await? {
+        return Err(
+            "This plan branch still has active task work; finish the task pipeline before using Commit & Publish"
+                .to_string(),
+        );
+    }
+
+    sync_workspace_publication_from_plan_branch_for_publish(
+        state,
+        &project,
+        &workspace,
+        &publish_target,
+        plan_branch,
+        plan_branch.pr_push_status,
+    )
+    .await?;
+    workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or(workspace);
+
+    let repair_target = publish_target.repair_target();
+    let github = match state.github_service.as_ref() {
+        Some(github) => github,
+        None => {
+            let error = "GitHub integration is not available".to_string();
+            mark_agent_workspace_publish_failure_with_routing(
+                state,
+                &workspace,
+                &error,
+                None,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+
+    let current_branch = match GitService::get_current_branch(&publish_target.worktree_path).await {
+        Ok(branch) => branch,
+        Err(error) => {
+            let error = error.to_string();
+            mark_agent_workspace_publish_failure_with_routing(
+                state,
+                &workspace,
+                &error,
+                None,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    if current_branch != publish_target.branch_name {
+        let error = format!(
+            "Commit & Publish for this task-managed PR must run from the isolated linked plan branch '{}' worktree but that worktree is on '{}'",
+            publish_target.branch_name, current_branch
+        );
+        mark_agent_workspace_publish_failure_with_routing(
+            state,
+            &workspace,
+            &error,
+            None,
+            &repair_service,
+            false,
+            &repair_target,
+        )
+        .await;
+        return Err(error);
+    }
+
+    mark_agent_workspace_publish_status(state, &workspace, "checking")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let has_uncommitted_changes =
+        match GitService::has_uncommitted_changes(&publish_target.worktree_path).await {
+            Ok(has_changes) => has_changes,
+            Err(error) => {
+                let error = error.to_string();
+                mark_agent_workspace_publish_failure_with_routing(
+                    state,
+                    &workspace,
+                    &error,
+                    None,
+                    &repair_service,
+                    route_fixable_failures_to_agent,
+                    &repair_target,
+                )
+                .await;
+                return Err(error);
+            }
+        };
+
+    let commit_sha = if has_uncommitted_changes {
+        mark_agent_workspace_publish_status(state, &workspace, "committing")
+            .await
+            .map_err(|e| e.to_string())?;
+        let message = build_agent_workspace_commit_message(&conversation);
+        match GitService::commit_all_including_deletions(&publish_target.worktree_path, &message)
+            .await
+        {
+            Ok(commit_sha) => commit_sha,
+            Err(error) => {
+                let error = error.to_string();
+                mark_agent_workspace_publish_failure_with_routing(
+                    state,
+                    &workspace,
+                    &error,
+                    None,
+                    &repair_service,
+                    route_fixable_failures_to_agent,
+                    &repair_target,
+                )
+                .await;
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
+
+    mark_agent_workspace_publish_status(state, &workspace, "refreshing")
+        .await
+        .map_err(|e| e.to_string())?;
+    let freshness = match inspect_publish_branch_freshness_for_source(
+        &publish_target.worktree_path,
+        &publish_target.base_ref,
+        &publish_target.branch_name,
+        workspace.base_commit.as_deref(),
+    )
+    .await
+    {
+        Ok(freshness) => freshness,
+        Err(error) => {
+            let error = error.to_string();
+            mark_agent_workspace_publish_failure_with_routing(
+                state,
+                &workspace,
+                &error,
+                None,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    if freshness.is_base_ahead {
+        let error = format!(
+            "Plan branch '{}' is behind '{}'. Update from base before publishing this PR.",
+            publish_target.branch_name, freshness.target_ref
+        );
+        mark_agent_workspace_publish_failure_with_routing(
+            state,
+            &workspace,
+            &error,
+            None,
+            &repair_service,
+            false,
+            &repair_target,
+        )
+        .await;
+        return Err(error);
+    }
+    if workspace.base_commit.as_deref() != Some(freshness.target_base_commit.as_str()) {
+        workspace.base_commit = Some(freshness.target_base_commit.clone());
+        workspace = state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    mark_agent_workspace_publish_status(state, &workspace, "checking")
+        .await
+        .map_err(|e| e.to_string())?;
+    let reviewable_commit_count = match count_publish_reviewable_commits(
+        &publish_target.worktree_path,
+        &publish_target.branch_name,
+        &freshness.target_base_commit,
+    )
+    .await
+    {
+        Ok(count) => count,
+        Err(error) => {
+            let error = error.to_string();
+            mark_agent_workspace_publish_failure_with_routing(
+                state,
+                &workspace,
+                &error,
+                None,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    if reviewable_commit_count == 0 {
+        let _ = mark_agent_workspace_publish_status(state, &workspace, "no_changes").await;
+        return Err("No committed changes to publish on this plan branch".to_string());
+    }
+
+    mark_agent_workspace_publish_status(state, &workspace, "pushing")
+        .await
+        .map_err(|e| e.to_string())?;
+    let push_started = Instant::now();
+    if let Err(error) = push_publish_branch(
+        github,
+        &publish_target.worktree_path,
+        &publish_target.branch_name,
+    )
+    .await
+    {
+        let error = error.to_string();
+        tracing::warn!(
+            target: "ralphx_lib::commands::agent_workspace_publish",
+            conversation_id = %workspace.conversation_id,
+            project_id = %workspace.project_id,
+            branch = %publish_target.branch_name,
+            elapsed_ms = push_started.elapsed().as_millis(),
+            error = %error,
+            "Failed to push linked ideation plan publish branch"
+        );
+        let _ = state
+            .plan_branch_repo
+            .update_pr_push_status(&plan_branch.id, PrPushStatus::Failed)
+            .await;
+        mark_agent_workspace_publish_failure_with_routing(
+            state,
+            &workspace,
+            &error,
+            None,
+            &repair_service,
+            route_fixable_failures_to_agent,
+            &repair_target,
+        )
+        .await;
+        return Err(error);
+    }
+    tracing::info!(
+        target: "ralphx_lib::commands::agent_workspace_publish",
+        conversation_id = %workspace.conversation_id,
+        project_id = %workspace.project_id,
+        branch = %publish_target.branch_name,
+        elapsed_ms = push_started.elapsed().as_millis(),
+        "Pushed linked ideation plan publish branch"
+    );
+
+    state
+        .plan_branch_repo
+        .update_pr_push_status(&plan_branch.id, PrPushStatus::Pushed)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(
+            &workspace.conversation_id,
+            Some(pr_number),
+            plan_branch.pr_url.as_deref(),
+            plan_branch_publication_status(plan_branch).as_deref(),
+            Some("pushed"),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    append_agent_workspace_publication_event(
+        state,
+        &workspace.conversation_id,
+        "published",
+        "succeeded",
+        "Plan branch pull request is up to date",
+        None,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut refreshed = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or(workspace);
+
+    if refreshed.auto_publish_enabled && refreshed.pr_auto_merge_desired {
+        match sync_agent_workspace_auto_merge_preference_for_workspace(
+            Arc::clone(github),
+            &publish_target.worktree_path,
+            pr_number,
+            &refreshed,
+            Arc::clone(&state.agent_conversation_workspace_repo),
+        )
+        .await
+        {
+            Ok(_) => {
+                refreshed = state
+                    .agent_conversation_workspace_repo
+                    .get_by_conversation_id(&refreshed.conversation_id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .unwrap_or(refreshed);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "ralphx_lib::commands::agent_workspace_publish",
+                    conversation_id = %refreshed.conversation_id,
+                    project_id = %refreshed.project_id,
+                    pr_number,
+                    error = %error,
+                    "Deferred linked ideation plan PR auto-merge synchronization after publish"
+                );
+                state
+                    .agent_conversation_workspace_repo
+                    .update_pr_auto_merge_state(
+                        &refreshed.conversation_id,
+                        Some(false),
+                        Some("waiting"),
+                        Some(&format!(
+                            "GitHub auto-merge state could not be refreshed yet: {error}"
+                        )),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                refreshed = state
+                    .agent_conversation_workspace_repo
+                    .get_by_conversation_id(&refreshed.conversation_id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .unwrap_or(refreshed);
+            }
+        }
+    }
+
+    let review_chat_service: Arc<dyn ChatService> = Arc::new(repair_service);
+    state.pr_poller_registry.start_agent_workspace_polling(
+        refreshed.conversation_id.clone(),
+        pr_number,
+        project.clone(),
+        publish_target.worktree_path.clone(),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
+        review_chat_service,
+    );
+
+    tracing::info!(
+        target: "ralphx_lib::commands::agent_workspace_publish",
+        conversation_id = %conversation_id,
+        project_id = %project.id,
+        branch = %publish_target.branch_name,
+        reviewable_commit_count,
+        pr_number,
+        elapsed_ms = publish_started.elapsed().as_millis(),
+        "Completed linked ideation plan branch publish"
+    );
+
+    Ok(PublishAgentConversationWorkspaceResponse {
+        workspace: agent_workspace_response_for_state(state, refreshed).await?,
+        commit_sha,
+        pushed: true,
+        created_pr: false,
+        pr_number: Some(pr_number),
+        pr_url: plan_branch.pr_url.clone(),
+    })
+}
+
 #[doc(hidden)]
 pub async fn publish_agent_conversation_workspace_for_app_state(
     state: &AppState,
@@ -4644,11 +6404,19 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
             )
         })?;
 
+    if workspace.mode == AgentConversationWorkspaceMode::Ideation {
+        return publish_linked_ideation_plan_branch_workspace_for_app_state(
+            state,
+            execution_state,
+            team_service,
+            workspace,
+            route_fixable_failures_to_agent,
+        )
+        .await;
+    }
+
     if workspace.mode != AgentConversationWorkspaceMode::Edit {
-        return Err(
-            "Ideation-mode agent conversations are published through the execution pipeline"
-                .to_string(),
-        );
+        return Err("Only Edit-mode agent conversations can be directly published".to_string());
     }
     if workspace.is_execution_owned() {
         return Err(
@@ -5075,7 +6843,12 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .await
         .map_err(|e| e.to_string())?;
 
-    let publisher = AgentWorkspacePrPublisher::new(github);
+    let plan_markdown =
+        resolve_linked_plan_markdown(state, &workspace).await;
+    let mut publisher = AgentWorkspacePrPublisher::new(github);
+    if let Some(markdown) = plan_markdown {
+        publisher = publisher.with_plan_markdown(markdown);
+    }
     let publish_pr_started = Instant::now();
     let pr_result = publisher
         .publish_draft_pr(&worktree_path, &conversation, &workspace, &pr_description)
@@ -5148,7 +6921,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .map_err(|e| e.to_string())?
         .unwrap_or(workspace);
 
-    if refreshed.pr_auto_merge_desired {
+    if refreshed.auto_publish_enabled && refreshed.pr_auto_merge_desired {
         match sync_agent_workspace_auto_merge_preference_for_workspace(
             Arc::clone(github),
             &worktree_path,
@@ -5228,6 +7001,35 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         pr_number: Some(outcome.pr_number),
         pr_url: Some(outcome.pr_url),
     })
+}
+
+async fn resolve_linked_plan_markdown(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> Option<String> {
+    let session_id = workspace.linked_ideation_session_id.as_ref()?;
+    let session = state
+        .ideation_session_repo
+        .get_by_id(session_id)
+        .await
+        .ok()
+        .flatten()?;
+    let artifact_id = session.plan_artifact_id?;
+    let artifact = state
+        .artifact_repo
+        .get_by_id(&artifact_id)
+        .await
+        .ok()
+        .flatten()?;
+    let raw = match artifact.content {
+        ArtifactContent::Inline { text } => text,
+        ArtifactContent::File { path } => tokio::fs::read_to_string(path).await.ok()?,
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 async fn mark_agent_workspace_publish_status(
@@ -5540,6 +7342,30 @@ async fn mark_agent_workspace_update_failure_with_target<S>(
     .await;
 }
 
+async fn mark_agent_workspace_agent_fixable_update_failure_with_target<S>(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    error: &str,
+    pr_status_override: Option<&str>,
+    repair_service: &S,
+    target: &AgentConversationWorkspaceRepairTarget,
+) where
+    S: ChatService + ?Sized,
+{
+    mark_agent_workspace_failure_with_routing_and_action_classified(
+        state,
+        workspace,
+        error,
+        pr_status_override,
+        repair_service,
+        true,
+        target,
+        AgentWorkspacePostRepairAction::UpdateOnly,
+        PublishFailureClass::AgentFixable,
+    )
+    .await;
+}
+
 async fn mark_agent_workspace_publish_failure_with_routing<S>(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -5576,8 +7402,38 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
 ) where
     S: ChatService + ?Sized,
 {
-    let push_status = publish_push_status_for_failure(error);
     let failure_class = classify_publish_failure(error);
+    mark_agent_workspace_failure_with_routing_and_action_classified(
+        state,
+        workspace,
+        error,
+        pr_status_override,
+        repair_service,
+        route_fixable_failures_to_agent,
+        target,
+        post_repair_action,
+        failure_class,
+    )
+    .await;
+}
+
+async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    error: &str,
+    pr_status_override: Option<&str>,
+    repair_service: &S,
+    route_fixable_failures_to_agent: bool,
+    target: &AgentConversationWorkspaceRepairTarget,
+    post_repair_action: AgentWorkspacePostRepairAction,
+    failure_class: PublishFailureClass,
+) where
+    S: ChatService + ?Sized,
+{
+    let push_status = match failure_class {
+        PublishFailureClass::AgentFixable => "needs_agent",
+        PublishFailureClass::Operational => "failed",
+    };
     let classification = match failure_class {
         PublishFailureClass::AgentFixable => "agent_fixable",
         PublishFailureClass::Operational => "operational",
@@ -5679,9 +7535,15 @@ async fn should_defer_agent_workspace_repair_message(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> bool {
+    let execution_state = state
+        .app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<Arc<ExecutionState>>())
+        .map(|state| state.inner().clone());
     should_defer_agent_workspace_repair_message_for_registry(
         state.app_handle.is_some(),
         &state.running_agent_registry,
+        execution_state.as_ref(),
         workspace,
     )
     .await
@@ -5690,6 +7552,7 @@ async fn should_defer_agent_workspace_repair_message(
 async fn should_defer_agent_workspace_repair_message_for_registry(
     app_handle_available: bool,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    execution_state: Option<&Arc<ExecutionState>>,
     workspace: &AgentConversationWorkspace,
 ) -> bool {
     if !app_handle_available {
@@ -5700,7 +7563,29 @@ async fn should_defer_agent_workspace_repair_message_for_registry(
         ChatContextType::Project.to_string(),
         workspace.conversation_id.as_str(),
     );
-    running_agent_registry.is_running(&key).await
+    if !running_agent_registry.is_running(&key).await {
+        return false;
+    }
+
+    let interactive_slot_key = agent_workspace_interactive_slot_key(&workspace.conversation_id);
+    !execution_state
+        .map(|state| state.is_interactive_idle(&interactive_slot_key))
+        .unwrap_or(false)
+}
+
+async fn agent_workspace_repair_wait_released(
+    state: &AppState,
+    execution_state: Option<&Arc<ExecutionState>>,
+    key: &RunningAgentKey,
+    interactive_slot_key: &str,
+) -> bool {
+    if !state.running_agent_registry.is_running(key).await {
+        return true;
+    }
+
+    execution_state
+        .map(|state| state.is_interactive_idle(interactive_slot_key))
+        .unwrap_or(false)
 }
 
 async fn spawn_deferred_agent_workspace_repair_message(
@@ -5731,6 +7616,7 @@ async fn spawn_deferred_agent_workspace_repair_message(
             ChatContextType::Project.to_string(),
             conversation_id.as_str(),
         );
+        let interactive_slot_key = agent_workspace_interactive_slot_key(&conversation_id);
         let wait_started = Instant::now();
         loop {
             let Some(state) = app_handle.try_state::<AppState>() else {
@@ -5740,7 +7626,17 @@ async fn spawn_deferred_agent_workspace_repair_message(
                 );
                 return;
             };
-            if !state.running_agent_registry.is_running(&key).await {
+            let execution_state = app_handle
+                .try_state::<Arc<ExecutionState>>()
+                .map(|state| state.inner().clone());
+            if agent_workspace_repair_wait_released(
+                state.inner(),
+                execution_state.as_ref(),
+                &key,
+                &interactive_slot_key,
+            )
+            .await
+            {
                 break;
             }
             if wait_started.elapsed() >= Duration::from_secs(300) {
@@ -5943,7 +7839,8 @@ pub async fn get_agent_conversation(
     }
 
     Ok(Some(AgentConversationWithMessagesResponse {
-        conversation: AgentConversationResponse::from(cwm.conversation),
+        conversation: agent_conversation_response_for_state(state.inner(), cwm.conversation)
+            .await?,
         messages,
     }))
 }
@@ -5962,12 +7859,17 @@ pub async fn get_agent_conversation_summary_for_app_state(
     conversation_id: String,
 ) -> Result<Option<AgentConversationResponse>, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    state
+    let conversation = state
         .chat_conversation_repo
         .get_by_id(&conversation_id)
         .await
-        .map(|conversation| conversation.map(AgentConversationResponse::from))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    match conversation {
+        Some(conversation) => Ok(Some(
+            agent_conversation_response_for_state(state, conversation).await?,
+        )),
+        None => Ok(None),
+    }
 }
 
 /// Get a tail-first page of conversation messages for fast conversation switching.
@@ -6072,7 +7974,7 @@ pub async fn get_agent_conversation_messages_page_for_app_state(
     let has_older = fetched_count < total_message_count;
 
     Ok(Some(AgentConversationMessagesPageResponse {
-        conversation: AgentConversationResponse::from(conversation),
+        conversation: agent_conversation_response_for_state(state, conversation).await?,
         messages,
         limit,
         offset,
@@ -6140,7 +8042,7 @@ pub async fn get_agent_conversation_timeline_page_for_app_state(
         .map_err(|e| e.to_string())?;
 
     Ok(Some(AgentConversationTimelinePageResponse {
-        conversation: AgentConversationResponse::from(conversation),
+        conversation: agent_conversation_response_for_state(state, conversation).await?,
         items: page
             .items
             .into_iter()
@@ -6238,6 +8140,7 @@ pub async fn get_agent_timeline_item_tool_call_detail_for_app_state(
         &item,
         &conversation_id.as_str(),
         detail_message_id.as_deref(),
+        false,
     );
     Ok(Some(AgentToolCallDetailResponse { tool_call: block }))
 }
@@ -6355,7 +8258,7 @@ pub async fn get_agent_running_states(
     context_ids: Vec<String>,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-) -> Result<HashMap<String, bool>, String> {
+) -> Result<HashMap<String, AgentRunningState>, String> {
     let service =
         state.build_chat_service_with_execution_state(Arc::clone(execution_state.inner()));
 
@@ -6367,7 +8270,7 @@ pub async fn get_agent_running_states_for_service(
     service: &dyn ChatService,
     context_type: String,
     context_ids: Vec<String>,
-) -> Result<HashMap<String, bool>, String> {
+) -> Result<HashMap<String, AgentRunningState>, String> {
     let context_type = parse_context_type(&context_type)?;
 
     Ok(service
@@ -6437,12 +8340,12 @@ pub async fn create_agent_conversation(
         conversation.set_title(title.to_string());
     }
 
-    state
+    let conversation = state
         .chat_conversation_repo
         .create(conversation)
         .await
-        .map(AgentConversationResponse::from)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    agent_conversation_response_for_state(state.inner(), conversation).await
 }
 
 /// Update an existing conversation title.
@@ -6451,75 +8354,109 @@ pub async fn update_agent_conversation_title(
     input: UpdateAgentConversationTitleInput,
     state: State<'_, AppState>,
 ) -> Result<AgentConversationResponse, String> {
-    let title = input.title.trim();
+    let mut title = input.title.trim().to_string();
     if title.is_empty() {
         return Err("Conversation title cannot be empty".to_string());
     }
 
     let conversation_id = ChatConversationId::from_string(input.conversation_id);
+    if let Some(jira_key) = primary_jira_key_for_conversation(state.inner(), &conversation_id).await
+    {
+        title = normalize_title_with_jira_key(&title, &jira_key);
+    }
     state
         .chat_conversation_repo
-        .update_title(&conversation_id, title)
+        .update_title(&conversation_id, &title)
+        .await
+        .map_err(|e| e.to_string())?;
+    sync_linked_planning_session_title_from_conversation(state.inner(), &conversation_id, &title)
         .await
         .map_err(|e| e.to_string())?;
 
-    state
+    let conversation = state
         .chat_conversation_repo
         .get_by_id(&conversation_id)
         .await
         .map_err(|e| e.to_string())?
-        .map(AgentConversationResponse::from)
-        .ok_or_else(|| "Conversation not found".to_string())
+        .ok_or_else(|| "Conversation not found".to_string())?;
+    agent_conversation_response_for_state(state.inner(), conversation).await
+}
+
+async fn primary_jira_key_for_conversation(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Option<String> {
+    state
+        .chat_message_repo
+        .get_recent_by_conversation_paginated(conversation_id, 50, 0)
+        .await
+        .ok()?
+        .into_iter()
+        .find_map(|message| primary_jira_key_from_composer_metadata(message.metadata.as_deref()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
+        agent_conversation_response_for_state, agent_conversation_responses_for_state,
         agent_workspace_freshness_cache, agent_workspace_freshness_cache_key,
-        agent_workspace_post_repair_action_from_events, agent_workspace_response_for_state,
-        apply_base_resolution_to_publish_target,
+        agent_workspace_interactive_slot_key, agent_workspace_post_repair_action_from_events,
+        agent_workspace_repair_wait_released, agent_workspace_response_for_state,
+        apply_base_resolution_to_publish_target, archive_agent_conversation,
         build_agent_workspace_publish_repair_message_for_target,
         build_agent_workspace_repair_message_for_target, cached_agent_workspace_freshness,
-        existing_pr_retarget_block_reason, get_agent_conversation_timeline_page_for_app_state,
+        create_agent_conversation, emit_agent_conversation_fork_events,
+        ensure_plan_workspace_planning_session_link_for_send, existing_pr_retarget_block_reason,
+        fork_agent_conversation, fork_agent_conversation_response_for_state,
+        fork_terminal_agent_conversation_for_send, get_agent_conversation_summary_for_app_state,
+        get_agent_conversation_timeline_page_for_app_state,
         get_agent_conversation_workspace_freshness,
-        get_agent_timeline_item_tool_call_detail_for_app_state,
-        invalidate_agent_workspace_freshness_cache,
+        get_agent_timeline_item_tool_call_detail_for_app_state, hidden_user_message_metadata,
+        invalidate_agent_workspace_freshness_cache, list_agent_conversations_page,
         mark_agent_workspace_failure_with_routing_and_action, merge_delegated_snapshot_into_result,
-        normalize_agent_runtime_selection, normalize_explicit_publish_base_selection,
-        normalized_effort_for_supported, parse_wrapped_mcp_result_object,
-        persist_workspace_base_resolution_if_retargeted,
+        normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
+        normalize_explicit_publish_base_selection, normalized_effort_for_supported,
+        parse_wrapped_mcp_result_object, persist_workspace_base_resolution_if_retargeted,
         precompute_agent_conversation_workspace_pr_description_for_app_state,
-        project_plan_branch_publication_into_workspace_response,
+        preview_tool_payloads_for_message, project_plan_branch_publication_into_workspace_response,
         publication_event_status_for_push_status, publication_event_summary_for_push_status,
-        publish_agent_conversation_workspace_for_app_state,
+        publish_agent_conversation_workspace_for_app_state, restore_agent_conversation,
         retarget_existing_workspace_pr_base_if_needed,
         schedule_external_pr_reconciliation_for_conversation_id,
         schedule_external_pr_reconciliation_for_workspace,
         schedule_pr_supervision_recovery_for_conversation_id,
         send_agent_workspace_publish_repair_message_for_target,
+        send_queued_agent_message_now_for_state,
+        set_agent_conversation_workspace_auto_publish_for_state,
         set_agent_conversation_workspace_pr_supervision_for_state,
         should_defer_agent_workspace_repair_message_for_registry,
         spawn_deferred_agent_workspace_repair_message, store_agent_workspace_freshness,
-        switch_agent_conversation_mode_for_state, try_acquire_agent_workspace_publish_guard,
+        switch_agent_conversation_mode_for_state,
+        switch_agent_conversation_mode_for_state_allowing_running,
+        try_acquire_agent_workspace_publish_guard,
         update_agent_conversation_workspace_from_base_for_app_state,
         validate_explicit_publish_base_ref, AgentConversationResponse,
-        AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePrSupervisionInput,
-        AgentConversationWorkspacePublishTarget, AgentConversationWorkspaceRepairTarget,
-        AgentConversationWorkspaceResponse, AgentTimelineItemResponse,
-        AgentWorkspaceExternalPrReconciliationTrigger, AgentWorkspaceFreshnessCacheEntry,
-        AgentWorkspaceFreshnessCacheStatus, AgentWorkspaceFreshnessInvalidationGuard,
-        AgentWorkspaceFreshnessScope, AgentWorkspacePostRepairAction,
-        AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
-        DelegatedToolRuntimeSnapshot, SwitchAgentConversationModeInput,
+        AgentConversationWorkspaceAutoPublishInput, AgentConversationWorkspaceFreshnessResponse,
+        AgentConversationWorkspacePrSupervisionInput, AgentConversationWorkspacePublishTarget,
+        AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
+        AgentTimelineItemResponse, AgentWorkspaceExternalPrReconciliationTrigger,
+        AgentWorkspaceFreshnessCacheEntry, AgentWorkspaceFreshnessCacheStatus,
+        AgentWorkspaceFreshnessInvalidationGuard, AgentWorkspaceFreshnessScope,
+        AgentWorkspacePostRepairAction, AgentWorkspacePrDescriptionInvalidationGuard,
+        AgentWorkspaceRepairRuntimeOverrides, AgentWorkspaceSourcePullRequestInput,
+        CreateAgentConversationInput, DelegatedToolRuntimeSnapshot, ForkAgentConversationInput,
+        ForkAgentConversationResponse, SwitchAgentConversationModeInput,
         AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     };
     use crate::application::agent_conversation_workspace::{
-        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+        ensure_linked_plan_branch_agent_worktree, prepare_agent_conversation_workspace,
+        resolve_linked_plan_branch_agent_worktree_path, AgentConversationWorkspaceBaseSelection,
     };
     use crate::application::agent_conversation_workspace_base::{
         BaseResolutionResult, BaseStatus, BLOCK_REASON_MISSING_BASE_COMMIT,
     };
     use crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRecoveryTrigger;
+    use crate::application::git_service::GitService;
     use crate::application::publish_resilience::PublishBranchFreshnessStatus;
     use crate::application::{
         chat_service::MockChatService, AppState, TeamService, TeamStateTracker,
@@ -6533,13 +8470,15 @@ mod tests {
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
-        AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ArtifactId,
-        ChatContextType, ChatConversation, ChatConversationId, ChatMessageId, ChatTimelineItem,
-        ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan,
-        ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId,
-        MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId,
-        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+        AgentConversationWorkspacePublicationEvent, AgentRun, AgentWorkspacePrDescription,
+        AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
+        ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
+        ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan, ExecutionPlanStatus,
+        IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
+        InternalStatus, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project,
+        ProjectId, Task, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
+    use crate::domain::execution::ExecutionSettings;
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
     use crate::domain::services::github_service::PrHealth;
     use crate::domain::services::{
@@ -6560,6 +8499,93 @@ mod tests {
     use std::time::{Duration, Instant};
     use tauri::test::{mock_builder, mock_context, noop_assets};
     use tauri::Manager;
+
+    #[test]
+    fn hidden_user_message_metadata_suppresses_visible_chat_message() {
+        let metadata: serde_json::Value =
+            serde_json::from_str(&hidden_user_message_metadata()).expect("metadata json");
+
+        assert_eq!(metadata["source"], "hidden_user_message");
+        assert_eq!(metadata["resume_in_place"], true);
+        assert_eq!(metadata["persist_hidden_marker"], true);
+        assert_eq!(metadata["hidden_from_ui"], true);
+        assert_eq!(metadata["recovery_context"], true);
+    }
+
+    fn build_send_now_command_app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
+        mock_builder()
+            .manage(state)
+            .manage(Arc::new(ExecutionState::new()))
+            .manage(Arc::new(TeamService::new_without_events(Arc::new(
+                TeamStateTracker::new(),
+            ))))
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build")
+    }
+
+    #[tokio::test]
+    async fn send_queued_agent_message_now_command_enables_ideation_team_mode() {
+        let state = AppState::new_test();
+        let session = IdeationSession::builder()
+            .project_id(ProjectId::new())
+            .team_mode("team")
+            .build();
+        let session_id = session.id.as_str().to_string();
+        state
+            .ideation_session_repo
+            .create(session)
+            .await
+            .expect("session should persist");
+        let app = build_send_now_command_app(state);
+        let app_state = app.state::<AppState>();
+        let execution_state = app.state::<Arc<ExecutionState>>();
+        let team_service = app.state::<Arc<TeamService>>().inner().clone();
+
+        let error = send_queued_agent_message_now_for_state(
+            "ideation".to_string(),
+            session_id,
+            "missing-message".to_string(),
+            app_state.inner(),
+            execution_state.inner(),
+            team_service,
+            app.handle().clone(),
+        )
+        .await
+        .expect_err("missing queued message should fail after command setup");
+
+        assert!(error.contains("Queued message not found"));
+    }
+
+    #[tokio::test]
+    async fn send_queued_agent_message_now_command_enables_task_team_mode() {
+        let state = AppState::new_test();
+        let mut task = Task::new(ProjectId::new(), "Team execution".to_string());
+        task.metadata = Some(r#"{"agent_variant":"team"}"#.to_string());
+        let task_id = task.id.as_str().to_string();
+        state
+            .task_repo
+            .create(task)
+            .await
+            .expect("task should persist");
+        let app = build_send_now_command_app(state);
+        let app_state = app.state::<AppState>();
+        let execution_state = app.state::<Arc<ExecutionState>>();
+        let team_service = app.state::<Arc<TeamService>>().inner().clone();
+
+        let error = send_queued_agent_message_now_for_state(
+            "task_execution".to_string(),
+            task_id,
+            "missing-message".to_string(),
+            app_state.inner(),
+            execution_state.inner(),
+            team_service,
+            app.handle().clone(),
+        )
+        .await
+        .expect_err("missing queued message should fail after command setup");
+
+        assert!(error.contains("Queued message not found"));
+    }
 
     #[test]
     fn normalized_effort_for_supported_keeps_supported_request_or_default() {
@@ -6588,6 +8614,74 @@ mod tests {
         assert_eq!(
             normalized_effort_for_supported(None, &supported, LogicalEffort::Low),
             LogicalEffort::Low
+        );
+    }
+
+    #[test]
+    fn normalize_agent_workspace_source_pull_request_trims_and_maps_valid_metadata() {
+        let normalized = normalize_agent_workspace_source_pull_request(
+            Some(AgentWorkspaceSourcePullRequestInput {
+                number: 123,
+                url: Some(" https://github.com/owner/repo/pull/123 ".to_string()),
+                title: Some(" Add PR source context ".to_string()),
+                head_ref_name: " feature/source-pr ".to_string(),
+                base_ref_name: Some(" main ".to_string()),
+                head_ref_oid: Some(" abc123 ".to_string()),
+            }),
+            Some(IdeationAnalysisBaseRefKind::LocalBranch),
+            Some("feature/source-pr"),
+        )
+        .expect("valid source PR metadata should normalize")
+        .expect("source PR metadata should be present");
+
+        assert_eq!(normalized.number, 123);
+        assert_eq!(
+            normalized.url.as_deref(),
+            Some("https://github.com/owner/repo/pull/123")
+        );
+        assert_eq!(normalized.title.as_deref(), Some("Add PR source context"));
+        assert_eq!(normalized.head_ref_name, "feature/source-pr");
+        assert_eq!(normalized.base_ref_name.as_deref(), Some("main"));
+        assert_eq!(normalized.head_ref_oid.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn normalize_agent_workspace_source_pull_request_validates_pr_base_contract() {
+        let input = AgentWorkspaceSourcePullRequestInput {
+            number: 123,
+            url: None,
+            title: None,
+            head_ref_name: "feature/source-pr".to_string(),
+            base_ref_name: None,
+            head_ref_oid: None,
+        };
+
+        assert_eq!(
+            normalize_agent_workspace_source_pull_request(
+                Some(input.clone()),
+                Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                Some("main"),
+            )
+            .expect_err("source PR metadata must use local branch base"),
+            "Source pull request metadata requires a local_branch base ref"
+        );
+        assert_eq!(
+            normalize_agent_workspace_source_pull_request(
+                Some(input.clone()),
+                Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                Some("different-branch"),
+            )
+            .expect_err("source PR head must match selected base"),
+            "Source pull request head branch must match the selected base ref"
+        );
+        assert_eq!(
+            normalize_agent_workspace_source_pull_request(
+                Some(AgentWorkspaceSourcePullRequestInput { number: 0, ..input }),
+                Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                Some("feature/source-pr"),
+            )
+            .expect_err("source PR number must be positive"),
+            "Source pull request number must be positive"
         );
     }
 
@@ -6667,7 +8761,7 @@ mod tests {
     #[tokio::test]
     async fn normalize_agent_runtime_falls_back_when_provider_models_disabled() {
         let state = AppState::new_test();
-        for model_id in ["sonnet", "opus", "haiku"] {
+        for model_id in ["sonnet", "opus", "haiku", "fable"] {
             state
                 .agent_model_registry_repo
                 .upsert_custom_model(&AgentModelDefinition::custom(
@@ -6710,10 +8804,15 @@ mod tests {
             worktree_path: "/tmp/workspace".to_string(),
             linked_ideation_session_id: Some("session-1".to_string()),
             linked_plan_branch_id: Some("plan-branch-1".to_string()),
+            source_pull_request: None,
             publication_pr_number: None,
             publication_pr_url: None,
             publication_pr_status: None,
             publication_push_status: None,
+            auto_publish_enabled: true,
+            auto_publish_initial_pr_enabled: false,
+            auto_publish_paused_pr_autofix_enabled: None,
+            auto_publish_paused_pr_auto_merge_desired: None,
             pr_autofix_enabled: false,
             pr_auto_merge_desired: false,
             pr_auto_merge_method: DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
@@ -6771,10 +8870,15 @@ mod tests {
             worktree_path: "/tmp/workspace".to_string(),
             linked_ideation_session_id: Some("session-1".to_string()),
             linked_plan_branch_id: Some("plan-branch-1".to_string()),
+            source_pull_request: None,
             publication_pr_number: Some(12),
             publication_pr_url: Some("https://github.com/mock/project/pull/12".to_string()),
             publication_pr_status: Some("open".to_string()),
             publication_push_status: Some("needs_agent".to_string()),
+            auto_publish_enabled: true,
+            auto_publish_initial_pr_enabled: false,
+            auto_publish_paused_pr_autofix_enabled: None,
+            auto_publish_paused_pr_auto_merge_desired: None,
             pr_autofix_enabled: false,
             pr_auto_merge_desired: false,
             pr_auto_merge_method: DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
@@ -7018,6 +9122,7 @@ mod tests {
             should_defer_agent_workspace_repair_message_for_registry(
                 true,
                 &registry_trait,
+                None,
                 &workspace
             )
             .await
@@ -7026,6 +9131,20 @@ mod tests {
             !should_defer_agent_workspace_repair_message_for_registry(
                 false,
                 &registry_trait,
+                None,
+                &workspace
+            )
+            .await
+        );
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.mark_interactive_idle(&agent_workspace_interactive_slot_key(
+            &workspace.conversation_id,
+        ));
+        assert!(
+            !should_defer_agent_workspace_repair_message_for_registry(
+                true,
+                &registry_trait,
+                Some(&execution_state),
                 &workspace
             )
             .await
@@ -7037,9 +9156,68 @@ mod tests {
             !should_defer_agent_workspace_repair_message_for_registry(
                 true,
                 &idle_registry,
+                None,
                 &workspace
             )
             .await
+        );
+    }
+
+    #[tokio::test]
+    async fn repair_wait_releases_when_ipr_is_idle_or_process_exited() {
+        let state = AppState::new_test();
+        let workspace = command_test_workspace();
+        let key = RunningAgentKey::new(
+            ChatContextType::Project.to_string(),
+            workspace.conversation_id.as_str(),
+        );
+        let interactive_slot_key = agent_workspace_interactive_slot_key(&workspace.conversation_id);
+        let execution_state = Arc::new(ExecutionState::new());
+
+        assert!(
+            agent_workspace_repair_wait_released(
+                &state,
+                Some(&execution_state),
+                &key,
+                &interactive_slot_key,
+            )
+            .await,
+            "Codex-style process exit should release the deferred repair"
+        );
+
+        state
+            .running_agent_registry
+            .register(
+                key.clone(),
+                123,
+                workspace.conversation_id.as_str(),
+                "run-repair-wait".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        assert!(
+            !agent_workspace_repair_wait_released(
+                &state,
+                Some(&execution_state),
+                &key,
+                &interactive_slot_key,
+            )
+            .await,
+            "active generation should keep the repair deferred"
+        );
+
+        execution_state.mark_interactive_idle(&interactive_slot_key);
+        assert!(
+            agent_workspace_repair_wait_released(
+                &state,
+                Some(&execution_state),
+                &key,
+                &interactive_slot_key,
+            )
+            .await,
+            "Claude-style reusable idle process should release the deferred repair"
         );
     }
 
@@ -7201,6 +9379,120 @@ mod tests {
                 && event.status == "enabled"
                 && event.classification.as_deref() == Some("pr_supervision_preferences")
         }));
+    }
+
+    #[tokio::test]
+    async fn pr_supervision_enable_uses_linked_plan_branch_pr_for_ideation_workspace() {
+        let mut state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_trait);
+
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_publish_repo(&repo_path);
+        let plan_branch_name = "ralphx/test/plan-pr-supervision";
+        git(&repo_path, &["checkout", "-b", plan_branch_name]);
+        git(&repo_path, &["checkout", "main"]);
+
+        let mut project = Project::new(
+            "Plan PR supervision".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should persist");
+
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-plan-pr-supervision"),
+            IdeationSessionId::from_string("session-plan-pr-supervision"),
+            project.id.clone(),
+            plan_branch_name.to_string(),
+            "main".to_string(),
+        );
+        plan_branch.status = PlanBranchStatus::Active;
+        plan_branch.pr_number = Some(377);
+        plan_branch.pr_url = Some("https://github.com/owner/repo/pull/377".to_string());
+        plan_branch.pr_status = Some(PrStatus::Draft);
+        plan_branch.pr_push_status = PrPushStatus::Pushed;
+        let plan_branch_id = plan_branch.id.clone();
+        let expected_plan_worktree =
+            resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
+                .expect("plan worktree path should resolve");
+        state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .expect("plan branch should persist");
+
+        let mut workspace = command_test_workspace();
+        workspace.project_id = project.id.clone();
+        workspace.mode = AgentConversationWorkspaceMode::Ideation;
+        workspace.linked_ideation_session_id = Some(IdeationSessionId::from_string(
+            "session-plan-pr-supervision",
+        ));
+        workspace.linked_plan_branch_id = Some(plan_branch_id);
+        workspace.publication_pr_number = None;
+        workspace.publication_pr_url = None;
+        workspace.publication_pr_status = None;
+        workspace.publication_push_status = None;
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let response = set_agent_conversation_workspace_pr_supervision_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspacePrSupervisionInput {
+                auto_fix_enabled: true,
+                auto_merge_desired: true,
+                auto_merge_method: Some("squash".to_string()),
+            },
+            &state,
+        )
+        .await
+        .expect("linked plan branch PR supervision should enable");
+
+        assert_eq!(response.publication_pr_number, Some(377));
+        assert_eq!(
+            response.publication_pr_url.as_deref(),
+            Some("https://github.com/owner/repo/pull/377")
+        );
+        assert_eq!(response.publication_pr_status.as_deref(), Some("draft"));
+        assert_eq!(response.publication_push_status.as_deref(), Some("pushed"));
+        assert!(response.pr_autofix_enabled);
+        assert!(response.pr_auto_merge_desired);
+        assert_eq!(response.pr_auto_merge_current, Some(true));
+
+        let persisted = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(persisted.publication_pr_number, Some(377));
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+        assert_eq!(
+            GitService::get_current_branch(&expected_plan_worktree)
+                .await
+                .expect("plan worktree branch should be readable"),
+            plan_branch_name
+        );
+
+        let github_state = github.state();
+        assert_eq!(github_state.mark_pr_ready_calls, 1);
+        assert_eq!(github_state.last_mark_pr_ready_number, Some(377));
+        assert_eq!(github_state.enable_pr_auto_merge_calls, 1);
+        assert_eq!(
+            github_state.last_enable_pr_auto_merge_args.as_ref(),
+            Some(&(377, "squash".to_string()))
+        );
     }
 
     #[tokio::test]
@@ -7389,6 +9681,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auto_publish_pause_disables_and_restores_pr_supervision_preferences() {
+        let state = AppState::new_test();
+        let mut workspace = command_test_workspace();
+        workspace.publication_pr_number = Some(256);
+        workspace.publication_pr_status = Some("open".to_string());
+        workspace.pr_autofix_enabled = true;
+        workspace.pr_auto_merge_desired = true;
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let paused = set_agent_conversation_workspace_auto_publish_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspaceAutoPublishInput {
+                auto_publish_enabled: false,
+            },
+            &state,
+        )
+        .await
+        .expect("Auto Publish should pause");
+
+        assert!(!paused.auto_publish_enabled);
+        assert_eq!(paused.auto_publish_paused_pr_autofix_enabled, Some(true));
+        assert_eq!(paused.auto_publish_paused_pr_auto_merge_desired, Some(true));
+        assert!(!paused.pr_autofix_enabled);
+        assert!(!paused.pr_auto_merge_desired);
+        assert_eq!(paused.pr_supervision_status.as_deref(), Some("paused"));
+
+        let resumed = set_agent_conversation_workspace_auto_publish_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspaceAutoPublishInput {
+                auto_publish_enabled: true,
+            },
+            &state,
+        )
+        .await
+        .expect("Auto Publish should resume");
+
+        assert!(resumed.auto_publish_enabled);
+        assert_eq!(resumed.auto_publish_paused_pr_autofix_enabled, None);
+        assert_eq!(resumed.auto_publish_paused_pr_auto_merge_desired, None);
+        assert!(resumed.pr_autofix_enabled);
+        assert!(resumed.pr_auto_merge_desired);
+        assert_eq!(resumed.pr_supervision_status.as_deref(), Some("monitoring"));
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should list");
+        assert!(events.iter().any(|event| {
+            event.step == "auto_publish"
+                && event.status == "disabled"
+                && event.classification.as_deref() == Some("auto_publish_preferences")
+        }));
+        assert!(events
+            .iter()
+            .any(|event| event.step == "auto_publish" && event.status == "enabled"));
+    }
+
+    #[tokio::test]
+    async fn auto_publish_enable_before_pr_sets_initial_pr_opt_in() {
+        let state = AppState::new_test();
+        let workspace = command_test_workspace();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let updated = set_agent_conversation_workspace_auto_publish_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspaceAutoPublishInput {
+                auto_publish_enabled: true,
+            },
+            &state,
+        )
+        .await
+        .expect("Auto Publish should enable before PR publication");
+
+        assert!(updated.auto_publish_enabled);
+        assert!(updated.auto_publish_initial_pr_enabled);
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should list");
+        assert!(events.iter().any(|event| {
+            event.step == "auto_publish"
+                && event.status == "enabled"
+                && event.summary == "Auto Publish is enabled for the first pull request."
+        }));
+    }
+
+    #[tokio::test]
+    async fn pr_supervision_rejects_enable_when_auto_publish_is_paused() {
+        let state = AppState::new_test();
+        let mut workspace = command_test_workspace();
+        workspace.publication_pr_number = Some(257);
+        workspace.publication_pr_status = Some("open".to_string());
+        workspace.auto_publish_enabled = false;
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let error = set_agent_conversation_workspace_pr_supervision_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspacePrSupervisionInput {
+                auto_fix_enabled: true,
+                auto_merge_desired: false,
+                auto_merge_method: Some("squash".to_string()),
+            },
+            &state,
+        )
+        .await
+        .expect_err("PR supervision enable should be rejected while paused");
+
+        assert!(error.contains("Auto Publish is paused"));
+    }
+
+    #[tokio::test]
     async fn pr_supervision_rejects_terminal_pr_and_invalid_merge_method() {
         let state = AppState::new_test();
         let mut workspace = command_test_workspace();
@@ -7482,6 +9900,7 @@ mod tests {
                 kind: None,
                 base_ref: Some("  ".to_string()),
                 display_name: Some("ignored".to_string()),
+                source_pull_request: None,
             }
         )
         .expect("blank base ref should be allowed as no explicit selection")
@@ -7492,6 +9911,7 @@ mod tests {
                 kind: None,
                 base_ref: Some("  release/0.8  ".to_string()),
                 display_name: None,
+                source_pull_request: None,
             })
             .expect("local branch should normalize")
             .expect("local branch should produce a selection");
@@ -7504,6 +9924,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: Some("  ".to_string()),
+                source_pull_request: None,
             })
             .expect("project default should normalize")
             .expect("project default should produce a selection");
@@ -7514,16 +9935,40 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::CurrentBranch),
                 base_ref: Some("feature/base".to_string()),
                 display_name: None,
+                source_pull_request: None,
             })
             .expect("current branch should normalize")
             .expect("current branch should produce a selection");
         assert_eq!(current.display_name, "Current branch (feature/base)");
+
+        let source_pull_request = AgentWorkspaceSourcePullRequest {
+            number: 42,
+            url: Some("https://github.com/mock/repo/pull/42".to_string()),
+            title: Some("Add PR base".to_string()),
+            head_ref_name: "feature/pr-base".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: Some("pr-head-sha".to_string()),
+        };
+        let pr_base =
+            normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                base_ref: Some("feature/pr-base".to_string()),
+                display_name: Some("PR #42: Add PR base".to_string()),
+                source_pull_request: Some(source_pull_request.clone()),
+            })
+            .expect("PR-backed local branch should normalize")
+            .expect("PR-backed local branch should produce a selection");
+        assert_eq!(pr_base.kind, IdeationAnalysisBaseRefKind::LocalBranch);
+        assert_eq!(pr_base.base_ref, "feature/pr-base");
+        assert_eq!(pr_base.display_name, "PR #42: Add PR base");
+        assert_eq!(pr_base.source_pull_request, Some(source_pull_request));
 
         let error =
             normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::PullRequest),
                 base_ref: Some("123".to_string()),
                 display_name: None,
+                source_pull_request: None,
             })
             .expect_err("pull-request bases should be rejected");
         assert!(error.contains("Pull-request base refs are not supported"));
@@ -7893,6 +10338,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await
@@ -7927,6 +10373,121 @@ mod tests {
             .expect("workspace should be persisted");
 
         (temp, state, conversation_id, github)
+    }
+
+    async fn setup_linked_plan_publish_command_state(
+        suffix: &str,
+        active_regular_task: bool,
+        github: Arc<MockGithubService>,
+    ) -> (
+        tempfile::TempDir,
+        AppState,
+        ChatConversationId,
+        PlanBranchId,
+        Arc<MockGithubService>,
+    ) {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        let main_sha = setup_publish_repo(&repo_path);
+        let origin_path = repo_path.to_string_lossy().to_string();
+        git(
+            &repo_path,
+            &["remote", "add", "origin", origin_path.as_str()],
+        );
+        let plan_branch_name = format!("feature/plan-publish-{suffix}");
+        git(&repo_path, &["checkout", "-b", &plan_branch_name]);
+        std::fs::write(repo_path.join("plan.txt"), "plan branch change\n")
+            .expect("plan fixture should be written");
+        git(&repo_path, &["add", "plan.txt"]);
+        git(&repo_path, &["commit", "-m", "plan branch change"]);
+        git(&repo_path, &["checkout", "main"]);
+
+        let mut project = Project::new(
+            format!("Plan Publish {suffix}"),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let conversation_id = ChatConversationId::from_string(uuid::Uuid::new_v4().to_string());
+        let session_id = IdeationSessionId::from_string(format!("session-plan-publish-{suffix}"));
+        let execution_plan = ExecutionPlan::new(session_id.clone());
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string(format!("artifact-plan-publish-{suffix}")),
+            session_id.clone(),
+            project.id.clone(),
+            plan_branch_name.clone(),
+            "main".to_string(),
+        );
+        plan_branch.execution_plan_id = Some(execution_plan.id.clone());
+        plan_branch.pr_number = Some(77);
+        plan_branch.pr_url = Some("https://github.com/mock/repo/pull/77".to_string());
+        plan_branch.pr_status = Some(PrStatus::Open);
+        plan_branch.pr_push_status = PrPushStatus::Pending;
+        let plan_branch_id = plan_branch.id.clone();
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some(main_sha),
+            "agent-shell-plan-publish".to_string(),
+            temp.path()
+                .join("agent-shell-plan-publish")
+                .to_string_lossy()
+                .to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(session_id.clone());
+        workspace.linked_plan_branch_id = Some(plan_branch_id.clone());
+
+        let mut task = Task::new(project.id.clone(), "Plan task".to_string());
+        task.ideation_session_id = Some(session_id);
+        task.execution_plan_id = Some(execution_plan.id.clone());
+        task.internal_status = if active_regular_task {
+            InternalStatus::Executing
+        } else {
+            InternalStatus::Merged
+        };
+
+        let mut state = AppState::new_test();
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_trait);
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should be persisted");
+        state
+            .execution_plan_repo
+            .create(execution_plan)
+            .await
+            .expect("execution plan should be persisted");
+        state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .expect("plan branch should be persisted");
+        state
+            .task_repo
+            .create(task)
+            .await
+            .expect("task should be persisted");
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = conversation_id.clone();
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should be persisted");
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be persisted");
+
+        (temp, state, conversation_id, plan_branch_id, github)
     }
 
     #[tokio::test]
@@ -8765,6 +11326,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
                 base_ref: Some("release/0.8".to_string()),
                 display_name: Some("release/0.8".to_string()),
+                source_pull_request: None,
             },
         )
         .await
@@ -8783,6 +11345,347 @@ mod tests {
         assert_eq!(
             response.workspace.base_commit.as_deref(),
             Some(release_sha.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_base_rejects_running_conversation() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "update-running-conversation",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new(
+                    ChatContextType::Project.to_string(),
+                    conversation_id.as_str(),
+                ),
+                123,
+                conversation_id.as_str(),
+                "run-update-base".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let error = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                base_ref: None,
+                display_name: None,
+                source_pull_request: None,
+            },
+        )
+        .await
+        .expect_err("running conversation should reject workspace base update");
+
+        assert_eq!(
+            error,
+            "Cannot change workspace base while the agent is responding"
+        );
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_ne!(
+            stored.publication_push_status.as_deref(),
+            Some("refreshing")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_base_queues_repair_when_agent_is_running() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "update-running-conversation-repair",
+            true,
+            Some(404),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace status should update");
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new(
+                    ChatContextType::Project.to_string(),
+                    conversation_id.as_str(),
+                ),
+                123,
+                conversation_id.as_str(),
+                "run-update-base".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let error = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                base_ref: None,
+                display_name: None,
+                source_pull_request: None,
+            },
+        )
+        .await
+        .expect_err("running conversation should still reject immediate base update");
+
+        assert_eq!(
+            error,
+            "Cannot change workspace base while the agent is responding"
+        );
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("events should list");
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.publication_push_status.as_deref(), Some("needs_agent"));
+        assert!(events.iter().any(|event| {
+            event.step == "repair_requested"
+                && event.status == "started"
+                && event.classification.as_deref() == Some("agent_fixable:update_only")
+        }));
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_base_allows_interactive_idle_conversation() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "update-interactive-idle-conversation",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new(
+                    ChatContextType::Project.to_string(),
+                    conversation_id.as_str(),
+                ),
+                123,
+                conversation_id.as_str(),
+                "run-update-base-idle".to_string(),
+                None,
+                None,
+            )
+            .await;
+        execution_state.mark_interactive_idle(&format!(
+            "{}/{}",
+            ChatContextType::Project.to_string(),
+            conversation_id.as_str()
+        ));
+
+        let result = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                base_ref: None,
+                display_name: None,
+                source_pull_request: None,
+            },
+        )
+        .await
+        .expect("interactive-idle conversation should allow workspace base update");
+
+        assert_eq!(result.workspace.conversation_id, conversation_id.as_str());
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_base_pr_selection_persists_source_pull_request() {
+        let (temp, state, conversation_id, _github) = setup_publish_command_state(
+            "update-pr-base",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let repo_path = temp.path().join("repo");
+        let head = git(&repo_path, &["rev-parse", "HEAD"]);
+        git(
+            &repo_path,
+            &["update-ref", "refs/heads/feature/pr-base", &head],
+        );
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let source_pull_request = AgentWorkspaceSourcePullRequest {
+            number: 42,
+            url: Some("https://github.com/mock/repo/pull/42".to_string()),
+            title: Some("Add PR base".to_string()),
+            head_ref_name: "feature/pr-base".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: Some("pr-head-sha".to_string()),
+        };
+
+        let result = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                base_ref: Some("feature/pr-base".to_string()),
+                display_name: Some("PR #42: Add PR base".to_string()),
+                source_pull_request: Some(source_pull_request.clone()),
+            },
+        )
+        .await
+        .expect("PR-backed base update should succeed");
+
+        assert_eq!(result.workspace.base_ref_kind, "local_branch");
+        assert_eq!(result.workspace.base_ref, "feature/pr-base");
+        assert_eq!(
+            result.workspace.base_display_name.as_deref(),
+            Some("PR #42: Add PR base")
+        );
+        let response_source = result
+            .workspace
+            .source_pull_request
+            .as_ref()
+            .expect("response should include source PR metadata");
+        assert_eq!(response_source.number, 42);
+        assert_eq!(response_source.head_ref_name, "feature/pr-base");
+
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.source_pull_request, Some(source_pull_request));
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_base_pr_selection_fetches_remote_head_before_validation() {
+        let (temp, state, conversation_id, _github) = setup_publish_command_state(
+            "update-pr-base-remote-only",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let repo_path = temp.path().join("repo");
+        let origin_path = temp.path().join("origin.git");
+        git(
+            &repo_path,
+            &["init", "--bare", origin_path.to_str().expect("origin path")],
+        );
+        git(
+            &repo_path,
+            &[
+                "remote",
+                "add",
+                "origin",
+                origin_path.to_str().expect("origin path"),
+            ],
+        );
+        git(&repo_path, &["push", "origin", "main"]);
+        git(&repo_path, &["checkout", "-b", "feature/pr-remote-only"]);
+        std::fs::write(repo_path.join("pr.txt"), "remote pr head\n")
+            .expect("fixture file should be written");
+        git(&repo_path, &["add", "pr.txt"]);
+        git(&repo_path, &["commit", "-m", "remote pr head"]);
+        let pr_head = git(&repo_path, &["rev-parse", "HEAD"]);
+        git(&repo_path, &["push", "origin", "feature/pr-remote-only"]);
+        git(&repo_path, &["checkout", "main"]);
+        git(&repo_path, &["branch", "-D", "feature/pr-remote-only"]);
+        git(
+            &repo_path,
+            &[
+                "update-ref",
+                "-d",
+                "refs/remotes/origin/feature/pr-remote-only",
+            ],
+        );
+        assert!(
+            !GitService::ref_exists(&repo_path, "feature/pr-remote-only")
+                .await
+                .expect("local branch check should succeed")
+        );
+        assert!(
+            !GitService::ref_exists(&repo_path, "origin/feature/pr-remote-only")
+                .await
+                .expect("remote tracking check should succeed")
+        );
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+
+        let result = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                base_ref: Some("feature/pr-remote-only".to_string()),
+                display_name: Some("PR #43: Remote-only PR base".to_string()),
+                source_pull_request: Some(AgentWorkspaceSourcePullRequest {
+                    number: 43,
+                    url: Some("https://github.com/mock/repo/pull/43".to_string()),
+                    title: Some("Remote-only PR base".to_string()),
+                    head_ref_name: "feature/pr-remote-only".to_string(),
+                    base_ref_name: Some("main".to_string()),
+                    head_ref_oid: Some(pr_head),
+                }),
+            },
+        )
+        .await
+        .expect("PR-backed remote-only base update should fetch and succeed");
+
+        assert_eq!(result.workspace.base_ref, "feature/pr-remote-only");
+        assert!(
+            GitService::ref_exists(&repo_path, "origin/feature/pr-remote-only")
+                .await
+                .expect("remote tracking check should succeed after update")
         );
     }
 
@@ -8824,6 +11727,7 @@ mod tests {
                 kind: None,
                 base_ref: None,
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await
@@ -8931,12 +11835,16 @@ mod tests {
                 kind: None,
                 base_ref: None,
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await
         .expect_err("primary checkout plan branch should not be updated in place");
 
-        assert!(error.contains("Refusing to update plan branch"));
+        assert!(
+            error.to_ascii_lowercase().contains("primary checkout"),
+            "unexpected primary checkout refusal: {error}"
+        );
         assert_eq!(
             git(&repo_path, &["branch", "--show-current"]),
             plan_branch_name
@@ -8976,6 +11884,7 @@ mod tests {
                 kind: None,
                 base_ref: None,
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await
@@ -9020,6 +11929,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
                 base_ref: Some("release/0.8".to_string()),
                 display_name: Some("release/0.8".to_string()),
+                source_pull_request: None,
             },
         )
         .await
@@ -9063,6 +11973,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
                 base_ref: Some("release/missing".to_string()),
                 display_name: Some("release/missing".to_string()),
+                source_pull_request: None,
             },
         )
         .await
@@ -9078,6 +11989,132 @@ mod tests {
             .expect("workspace should exist");
         assert_eq!(stored.base_ref, "feature/deleted-base");
         assert_eq!(stored.publication_push_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn publish_linked_ideation_plan_branch_commits_and_pushes_existing_pr() {
+        let (temp, state, conversation_id, plan_branch_id, github) =
+            setup_linked_plan_publish_command_state(
+                "success",
+                false,
+                Arc::new(MockGithubService::new()),
+            )
+            .await;
+        let repo_path = temp.path().join("repo");
+        let project = state
+            .project_repo
+            .get_all()
+            .await
+            .expect("project lookup should succeed")
+            .pop()
+            .expect("project should exist");
+        let plan_branch = state
+            .plan_branch_repo
+            .get_by_id(&plan_branch_id)
+            .await
+            .expect("plan branch lookup should succeed")
+            .expect("plan branch should exist");
+        let plan_worktree = ensure_linked_plan_branch_agent_worktree(&project, &plan_branch)
+            .await
+            .expect("linked plan worktree should resolve");
+        std::fs::write(plan_worktree.join("manual-fix.txt"), "manual follow-up\n")
+            .expect("manual plan fix should be written");
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+        assert_eq!(git(&repo_path, &["status", "--short"]), "");
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let response = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect("linked ideation plan publish should succeed");
+        state
+            .pr_poller_registry
+            .stop_agent_workspace_polling(&conversation_id);
+
+        assert_eq!(response.pr_number, Some(77));
+        assert!(!response.created_pr);
+        assert!(response.commit_sha.is_some());
+        assert_eq!(
+            response.workspace.publication_push_status.as_deref(),
+            Some("pushed")
+        );
+        assert_eq!(github.state().push_branch_calls, 1);
+        assert_eq!(
+            github.state().last_push_branch_name.as_deref(),
+            Some("feature/plan-publish-success")
+        );
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+        assert_eq!(git(&repo_path, &["status", "--short"]), "");
+        assert_eq!(git(&plan_worktree, &["status", "--short"]), "");
+        let stored_plan = state
+            .plan_branch_repo
+            .get_by_id(&plan_branch_id)
+            .await
+            .expect("plan branch lookup should succeed")
+            .expect("plan branch should exist");
+        assert_eq!(stored_plan.pr_push_status, PrPushStatus::Pushed);
+        let stored_workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored_workspace.publication_pr_number, Some(77));
+        assert_eq!(
+            stored_workspace.publication_push_status.as_deref(),
+            Some("pushed")
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_linked_ideation_plan_branch_rejects_active_regular_tasks() {
+        let (temp, state, conversation_id, _plan_branch_id, github) =
+            setup_linked_plan_publish_command_state(
+                "active-task",
+                true,
+                Arc::new(MockGithubService::new()),
+            )
+            .await;
+        let repo_path = temp.path().join("repo");
+        let project = state
+            .project_repo
+            .get_all()
+            .await
+            .expect("project lookup should succeed")
+            .pop()
+            .expect("project should exist");
+        let plan_branch = state
+            .plan_branch_repo
+            .get_by_id(&_plan_branch_id)
+            .await
+            .expect("plan branch lookup should succeed")
+            .expect("plan branch should exist");
+        let plan_worktree = ensure_linked_plan_branch_agent_worktree(&project, &plan_branch)
+            .await
+            .expect("linked plan worktree should resolve");
+        std::fs::write(plan_worktree.join("manual-fix.txt"), "manual follow-up\n")
+            .expect("manual plan fix should be written");
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect_err("active regular task should retain publish ownership");
+
+        assert!(error.contains("active task work"));
+        assert_eq!(github.state().push_branch_calls, 0);
+        assert_eq!(git(&repo_path, &["status", "--short"]), "");
+        assert_ne!(git(&plan_worktree, &["status", "--short"]), "");
     }
 
     #[tokio::test]
@@ -9541,6 +12578,551 @@ mod tests {
         assert_eq!(response.provider_harness, Some("claude".to_string()));
     }
 
+    #[tokio::test]
+    async fn agent_conversation_response_hydrates_runtime_from_copied_message_attribution() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let conversation = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("conversation should be created");
+        let mut message = ChatMessage::user_in_project(project_id, "assistant response");
+        message.role = MessageRole::Orchestrator;
+        message.conversation_id = Some(conversation.id);
+        message.logical_model = Some("gpt-5.5".to_string());
+        message.effective_model_id = Some("gpt-5.5".to_string());
+        message.logical_effort = Some(LogicalEffort::High);
+        message.effective_effort = Some("high".to_string());
+        state
+            .chat_message_repo
+            .create(message)
+            .await
+            .expect("message should be created");
+
+        let response = agent_conversation_response_for_state(&state, conversation)
+            .await
+            .expect("response should hydrate runtime attribution");
+
+        assert_eq!(response.logical_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(response.effective_model_id.as_deref(), Some("gpt-5.5"));
+        assert_eq!(response.logical_effort.as_deref(), Some("high"));
+        assert_eq!(response.effective_effort.as_deref(), Some("high"));
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_response_prefers_latest_run_runtime_over_message_attribution() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let conversation = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("conversation should be created");
+        let mut message = ChatMessage::user_in_project(project_id, "assistant response");
+        message.role = MessageRole::Orchestrator;
+        message.conversation_id = Some(conversation.id);
+        message.effective_model_id = Some("sonnet".to_string());
+        state
+            .chat_message_repo
+            .create(message)
+            .await
+            .expect("message should be created");
+
+        let mut run = AgentRun::new(conversation.id);
+        run.logical_model = Some("opus".to_string());
+        run.effective_model_id = Some("opus".to_string());
+        run.logical_effort = Some(LogicalEffort::Medium);
+        run.effective_effort = Some("medium".to_string());
+        state
+            .agent_run_repo
+            .create(run)
+            .await
+            .expect("run should be created");
+
+        let response = agent_conversation_response_for_state(&state, conversation)
+            .await
+            .expect("response should hydrate runtime attribution");
+
+        assert_eq!(response.logical_model.as_deref(), Some("opus"));
+        assert_eq!(response.effective_model_id.as_deref(), Some("opus"));
+        assert_eq!(response.logical_effort.as_deref(), Some("medium"));
+        assert_eq!(response.effective_effort.as_deref(), Some("medium"));
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_responses_for_state_hydrates_each_conversation() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-response-list".to_string());
+        let first = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("first conversation should be created");
+        let second = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("second conversation should be created");
+        let first_id = first.id.as_str();
+        let second_id = second.id.as_str();
+
+        let mut first_run = AgentRun::new(first.id);
+        first_run.logical_model = Some("gpt-5.5".to_string());
+        first_run.effective_model_id = Some("gpt-5.5".to_string());
+        first_run.logical_effort = Some(LogicalEffort::High);
+        first_run.effective_effort = Some("high".to_string());
+        state
+            .agent_run_repo
+            .create(first_run)
+            .await
+            .expect("first run should be created");
+
+        let mut second_message = ChatMessage::user_in_project(project_id, "copied attribution");
+        second_message.role = MessageRole::Orchestrator;
+        second_message.conversation_id = Some(second.id);
+        second_message.logical_model = Some("claude-sonnet".to_string());
+        second_message.effective_model_id = Some("claude-sonnet-4".to_string());
+        second_message.logical_effort = Some(LogicalEffort::Medium);
+        second_message.effective_effort = Some("medium".to_string());
+        state
+            .chat_message_repo
+            .create(second_message)
+            .await
+            .expect("second message should be created");
+
+        let responses = agent_conversation_responses_for_state(&state, vec![first, second])
+            .await
+            .expect("responses should hydrate runtime attribution");
+
+        let first_response = responses
+            .iter()
+            .find(|response| response.id == first_id)
+            .expect("first response should be present");
+        assert_eq!(first_response.logical_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(
+            first_response.effective_model_id.as_deref(),
+            Some("gpt-5.5")
+        );
+        assert_eq!(first_response.logical_effort.as_deref(), Some("high"));
+        assert_eq!(first_response.effective_effort.as_deref(), Some("high"));
+
+        let second_response = responses
+            .iter()
+            .find(|response| response.id == second_id)
+            .expect("second response should be present");
+        assert_eq!(
+            second_response.logical_model.as_deref(),
+            Some("claude-sonnet")
+        );
+        assert_eq!(
+            second_response.effective_model_id.as_deref(),
+            Some("claude-sonnet-4")
+        );
+        assert_eq!(second_response.logical_effort.as_deref(), Some("medium"));
+        assert_eq!(second_response.effective_effort.as_deref(), Some("medium"));
+    }
+
+    #[tokio::test]
+    async fn fork_response_for_state_includes_workspace_counts_parent_and_runtime() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-fork-response".to_string());
+        let mut parent = ChatConversation::new_project(project_id.clone());
+        parent.set_title("[Fork] Source conversation");
+        let parent_id = parent.id.as_str();
+        let mut child = ChatConversation::new_project(project_id.clone());
+        child.parent_conversation_id = Some(parent_id.clone());
+        child.set_provider_session_ref(ProviderSessionRef {
+            harness: AgentHarnessKind::Codex,
+            provider_session_id: "child-thread".to_string(),
+        });
+        let child_id = child.id.as_str();
+
+        let mut run = AgentRun::new(child.id);
+        run.logical_model = Some("gpt-5.5".to_string());
+        run.effective_model_id = Some("gpt-5.5".to_string());
+        run.logical_effort = Some(LogicalEffort::High);
+        run.effective_effort = Some("high".to_string());
+        state
+            .agent_run_repo
+            .create(run)
+            .await
+            .expect("child run should be created");
+
+        let workspace = AgentConversationWorkspace::new(
+            child.id,
+            project_id,
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/test/fork-response".to_string(),
+            "/tmp/fork-response".to_string(),
+        );
+        let result = crate::application::agent_conversation_fork::AgentConversationForkResult {
+            parent_conversation: parent,
+            conversation: child,
+            workspace: Some(workspace),
+            provider_session: Some(
+                crate::application::provider_session_fork::ProviderSessionForkResult {
+                    session_ref: ProviderSessionRef {
+                        harness: AgentHarnessKind::Codex,
+                        provider_session_id: "child-thread".to_string(),
+                    },
+                    source_path: PathBuf::from("/tmp/source.jsonl"),
+                    destination_path: PathBuf::from("/tmp/dest.jsonl"),
+                },
+            ),
+            copied_message_count: 2,
+            copied_timeline_item_count: 3,
+        };
+
+        let response = fork_agent_conversation_response_for_state(&state, result)
+            .await
+            .expect("fork response should be built");
+
+        assert_eq!(response.parent_conversation.id, parent_id);
+        assert_eq!(response.conversation.id, child_id);
+        assert_eq!(
+            response.conversation.parent_conversation_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+        assert_eq!(
+            response.conversation.provider_harness.as_deref(),
+            Some("codex")
+        );
+        assert_eq!(
+            response.conversation.provider_session_id.as_deref(),
+            Some("child-thread")
+        );
+        assert_eq!(
+            response.conversation.logical_model.as_deref(),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            response.conversation.logical_effort.as_deref(),
+            Some("high")
+        );
+        assert!(response.provider_session_forked);
+        assert_eq!(response.copied_message_count, 2);
+        assert_eq!(response.copied_timeline_item_count, 3);
+        assert_eq!(
+            response
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.mode.as_str()),
+            Some("edit")
+        );
+    }
+
+    #[test]
+    fn emit_agent_conversation_fork_events_accepts_response_payload() {
+        let project_id = ProjectId::from_string("project-fork-events".to_string());
+        let parent =
+            AgentConversationResponse::from(ChatConversation::new_project(project_id.clone()));
+        let mut child_conversation = ChatConversation::new_project(project_id);
+        child_conversation.parent_conversation_id = Some(parent.id.clone());
+        let child = AgentConversationResponse::from(child_conversation);
+        let response = ForkAgentConversationResponse {
+            parent_conversation: parent,
+            conversation: child,
+            workspace: None,
+            provider_session_forked: false,
+            copied_message_count: 0,
+            copied_timeline_item_count: 0,
+        };
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        emit_agent_conversation_fork_events(app.handle(), &response);
+    }
+
+    #[tokio::test]
+    async fn fork_terminal_agent_conversation_for_send_skips_without_terminal_workspace() {
+        let state = AppState::new_test();
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+        assert!(
+            fork_terminal_agent_conversation_for_send(&state, app.handle(), None)
+                .await
+                .expect("missing conversation id should be ignored")
+                .is_none()
+        );
+
+        let project_id = ProjectId::from_string("project-terminal-fork-skip".to_string());
+        let mut project = Project::new(
+            "Terminal Fork Skip".to_string(),
+            "/tmp/terminal-fork-skip".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should be created");
+        let conversation = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("conversation should be created");
+        assert!(fork_terminal_agent_conversation_for_send(
+            &state,
+            app.handle(),
+            Some(&conversation.id)
+        )
+        .await
+        .expect("missing workspace should be ignored")
+        .is_none());
+
+        let workspace = AgentConversationWorkspace::new(
+            conversation.id,
+            project_id,
+            AgentConversationWorkspaceMode::Chat,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/test/non-terminal".to_string(),
+            "/tmp/non-terminal".to_string(),
+        );
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be created");
+
+        assert!(fork_terminal_agent_conversation_for_send(
+            &state,
+            app.handle(),
+            Some(&conversation.id)
+        )
+        .await
+        .expect("non-terminal workspace should be ignored")
+        .is_none());
+    }
+
+    #[tokio::test]
+    async fn fork_terminal_agent_conversation_for_send_forks_terminal_workspace() {
+        let state = AppState::new_test();
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+        let project_id = ProjectId::from_string("project-terminal-fork".to_string());
+        let mut project = Project::new(
+            "Terminal Fork".to_string(),
+            "/tmp/terminal-fork".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should be created");
+        let parent = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("parent conversation should be created");
+        let parent_id = parent.id.as_str();
+        let mut workspace = AgentConversationWorkspace::new(
+            parent.id,
+            project_id,
+            AgentConversationWorkspaceMode::Chat,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/test/terminal".to_string(),
+            "/tmp/terminal".to_string(),
+        );
+        workspace.publication_pr_status = Some("merged".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be created");
+
+        let child_id =
+            fork_terminal_agent_conversation_for_send(&state, app.handle(), Some(&parent.id))
+                .await
+                .expect("terminal workspace should fork")
+                .expect("forked conversation id should be returned");
+        let child = state
+            .chat_conversation_repo
+            .get_by_id(&child_id)
+            .await
+            .expect("child lookup should succeed")
+            .expect("child conversation should exist");
+
+        assert_eq!(
+            child.parent_conversation_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+        assert_eq!(child.agent_mode, Some(AgentConversationWorkspaceMode::Chat));
+        assert!(state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&child_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn fork_agent_conversation_command_returns_hydrated_child_response() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-fork-command".to_string());
+        let mut project = Project::new(
+            "Fork Command Project".to_string(),
+            "/tmp/fork-command-project".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should be created");
+        let mut parent = ChatConversation::new_project(project_id.clone());
+        parent.set_title("Source conversation");
+        parent.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
+        let parent = state
+            .chat_conversation_repo
+            .create(parent)
+            .await
+            .expect("parent conversation should be created");
+        let mut message = ChatMessage::user_in_project(project_id, "copied runtime");
+        message.conversation_id = Some(parent.id);
+        message.logical_model = Some("gpt-5.4".to_string());
+        message.effective_model_id = Some("gpt-5.4".to_string());
+        message.logical_effort = Some(LogicalEffort::Medium);
+        message.effective_effort = Some("medium".to_string());
+        state
+            .chat_message_repo
+            .create(message)
+            .await
+            .expect("message should be created");
+        let parent_id = parent.id.as_str();
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response = fork_agent_conversation(
+            ForkAgentConversationInput {
+                conversation_id: parent.id.as_str(),
+            },
+            app.state(),
+            app.handle().clone(),
+        )
+        .await
+        .expect("fork command should succeed");
+
+        assert_eq!(response.parent_conversation.id, parent_id);
+        assert_eq!(
+            response.conversation.parent_conversation_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+        assert_eq!(
+            response.conversation.title.as_deref(),
+            Some("[Fork] Source conversation")
+        );
+        assert_eq!(response.conversation.agent_mode.as_deref(), Some("chat"));
+        assert_eq!(response.copied_message_count, 1);
+        assert!(response.workspace.is_none());
+        assert_eq!(
+            response.conversation.logical_model.as_deref(),
+            Some("gpt-5.4")
+        );
+        assert_eq!(
+            response.conversation.logical_effort.as_deref(),
+            Some("medium")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_page_create_archive_restore_and_summary_hydrate_runtime_attribution() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-command-runtime".to_string());
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.set_title("Runtime conversation");
+        let conversation = state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should be created");
+        let conversation_id = conversation.id.as_str();
+        let mut run = AgentRun::new(conversation.id);
+        run.logical_model = Some("gpt-5.5".to_string());
+        run.effective_model_id = Some("gpt-5.5".to_string());
+        run.logical_effort = Some(LogicalEffort::High);
+        run.effective_effort = Some("high".to_string());
+        state
+            .agent_run_repo
+            .create(run)
+            .await
+            .expect("run should be created");
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let page = list_agent_conversations_page(
+            ChatContextType::Project.to_string(),
+            project_id.as_str().to_string(),
+            Some(true),
+            Some(false),
+            Some(0),
+            Some(10),
+            None,
+            app.state(),
+        )
+        .await
+        .expect("conversation page should load");
+        let page_conversation = page
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == conversation_id)
+            .expect("seeded conversation should be listed");
+        assert_eq!(page_conversation.logical_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(page_conversation.logical_effort.as_deref(), Some("high"));
+
+        let summary = get_agent_conversation_summary_for_app_state(
+            app.state::<AppState>().inner(),
+            conversation_id.clone(),
+        )
+        .await
+        .expect("summary should load")
+        .expect("summary should exist");
+        assert_eq!(summary.effective_model_id.as_deref(), Some("gpt-5.5"));
+        assert_eq!(summary.effective_effort.as_deref(), Some("high"));
+
+        let created = create_agent_conversation(
+            CreateAgentConversationInput {
+                context_type: ChatContextType::Project.to_string(),
+                context_id: project_id.as_str().to_string(),
+                title: Some("Created from command".to_string()),
+            },
+            app.state(),
+        )
+        .await
+        .expect("conversation should be created");
+        assert_eq!(created.title.as_deref(), Some("Created from command"));
+
+        let archived = archive_agent_conversation(conversation_id.clone(), app.state())
+            .await
+            .expect("conversation should be archived");
+        assert!(archived.archived_at.is_some());
+        assert_eq!(archived.logical_model.as_deref(), Some("gpt-5.5"));
+
+        let restored = restore_agent_conversation(conversation_id, app.state())
+            .await
+            .expect("conversation should be restored");
+        assert!(restored.archived_at.is_none());
+        assert_eq!(restored.logical_effort.as_deref(), Some("high"));
+    }
+
     fn mode_lock_test_workspace(
         conversation_id: ChatConversationId,
         project_id: ProjectId,
@@ -9581,6 +13163,34 @@ mod tests {
             response.mode_switch_lock_reason.as_deref(),
             Some("Ideation session is still active")
         );
+    }
+
+    #[tokio::test]
+    async fn workspace_response_keeps_active_planning_session_unlocked() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-planning-mode-unlocked".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("77777777-7777-4777-8777-777777777778");
+        let session = state
+            .ideation_session_repo
+            .create(
+                IdeationSession::builder()
+                    .project_id(project_id.clone())
+                    .session_flow(IdeationSessionFlow::Planning)
+                    .build(),
+            )
+            .await
+            .expect("planning session persisted");
+        let mut workspace = mode_lock_test_workspace(conversation_id, project_id);
+        workspace.mode = AgentConversationWorkspaceMode::Plan;
+        workspace.linked_ideation_session_id = Some(session.id);
+
+        let response = agent_workspace_response_for_state(&state, workspace)
+            .await
+            .expect("workspace response resolves mode lock");
+
+        assert!(!response.mode_switch_locked);
+        assert!(response.mode_switch_lock_reason.is_none());
     }
 
     #[tokio::test]
@@ -9678,6 +13288,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -9710,6 +13321,18 @@ mod tests {
             .create(project)
             .await
             .expect("project persisted");
+        state
+            .execution_settings_repo
+            .update_settings(
+                Some(&project_id),
+                &ExecutionSettings {
+                    agent_workspace_pr_autofix_default: true,
+                    agent_workspace_pr_auto_merge_default: true,
+                    ..ExecutionSettings::default()
+                },
+            )
+            .await
+            .expect("settings persisted");
         let mut conversation = ChatConversation::new_project(project_id);
         conversation.id = conversation_id;
         conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
@@ -9726,6 +13349,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -9733,13 +13357,447 @@ mod tests {
         .expect("edit mode switch creates workspace");
 
         assert_eq!(response.conversation.agent_mode.as_deref(), Some("edit"));
-        assert_eq!(
-            response
-                .workspace
-                .as_ref()
-                .map(|workspace| workspace.mode.as_str()),
-            Some("edit")
+        let workspace = response.workspace.expect("workspace should be returned");
+        assert_eq!(workspace.mode.as_str(), "edit");
+        assert!(workspace.pr_autofix_enabled);
+        assert!(workspace.pr_auto_merge_desired);
+    }
+
+    #[tokio::test]
+    async fn switching_branchless_chat_to_edit_persists_source_pull_request_metadata() {
+        let state = AppState::new_test();
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_publish_repo(&repo_path);
+        git(&repo_path, &["checkout", "-b", "feature/source-pr"]);
+        std::fs::write(repo_path.join("README.md"), "source pr\n")
+            .expect("fixture update should be written");
+        git(&repo_path, &["add", "README.md"]);
+        git(&repo_path, &["commit", "-m", "source pr"]);
+        let source_sha = git(&repo_path, &["rev-parse", "HEAD"]);
+        git(&repo_path, &["checkout", "main"]);
+
+        let project_id = ProjectId::from_string("project-source-pr-switch".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
+        let mut project = Project::new(
+            "Mode Switch Source PR".to_string(),
+            repo_path.to_string_lossy().to_string(),
         );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project persisted");
+        let mut conversation = ChatConversation::new_project(project_id);
+        conversation.id = conversation_id.clone();
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation persisted");
+
+        let response = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "edit".to_string(),
+                base_ref_kind: Some("local_branch".to_string()),
+                base_ref: Some("feature/source-pr".to_string()),
+                base_display_name: Some("PR #456: Source PR".to_string()),
+                base_source_pull_request: Some(AgentWorkspaceSourcePullRequestInput {
+                    number: 456,
+                    url: Some("https://github.com/owner/repo/pull/456".to_string()),
+                    title: Some("Source PR".to_string()),
+                    head_ref_name: "feature/source-pr".to_string(),
+                    base_ref_name: Some("main".to_string()),
+                    head_ref_oid: Some(source_sha.clone()),
+                }),
+            },
+            &state,
+        )
+        .await
+        .expect("edit mode switch should create source PR workspace");
+
+        let workspace = response.workspace.expect("workspace should be returned");
+        assert_eq!(workspace.mode, "edit");
+        assert_eq!(workspace.base_ref, "feature/source-pr");
+        let source = workspace
+            .source_pull_request
+            .expect("source PR metadata should be returned");
+        assert_eq!(source.number, 456);
+        assert_eq!(source.head_ref_name, "feature/source-pr");
+        assert_eq!(source.head_ref_oid.as_deref(), Some(source_sha.as_str()));
+
+        let persisted = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup succeeds")
+            .expect("workspace should persist");
+        assert_eq!(
+            persisted
+                .source_pull_request
+                .as_ref()
+                .map(|source| source.number),
+            Some(456)
+        );
+        assert!(persisted.publication_pr_number.is_none());
+    }
+
+    #[tokio::test]
+    async fn accepted_plan_proposal_switch_can_bypass_running_agent_guard() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-running-plan-switch".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("12121212-1212-4121-8121-121212121212");
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.id = conversation_id.clone();
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation persisted");
+
+        let workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project_id,
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::CurrentBranch,
+            "feature/agent-screen".to_string(),
+            Some("Current branch (feature/agent-screen)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/project/agent-12121212".to_string(),
+            "/tmp/ralphx-agent-12121212".to_string(),
+        );
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace persisted");
+
+        let running_key = RunningAgentKey::new(
+            ChatContextType::Project.to_string(),
+            conversation_id.as_str(),
+        );
+        state
+            .running_agent_registry
+            .register(
+                running_key,
+                123,
+                conversation_id.as_str(),
+                "run-plan-proposal".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let public_result = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "plan".to_string(),
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+                base_source_pull_request: None,
+            },
+            &state,
+        )
+        .await;
+        assert_eq!(
+            public_result.expect_err("public switch should reject running agents"),
+            "Cannot change mode while the agent is running"
+        );
+
+        let response = switch_agent_conversation_mode_for_state_allowing_running(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "plan".to_string(),
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+                base_source_pull_request: None,
+            },
+            &state,
+        )
+        .await
+        .expect("accepted proposal switch should bypass running guard");
+
+        assert_eq!(response.conversation.agent_mode.as_deref(), Some("plan"));
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup succeeds")
+            .expect("workspace exists");
+        assert_eq!(stored.mode, AgentConversationWorkspaceMode::Plan);
+    }
+
+    #[tokio::test]
+    async fn switching_unlocked_linked_plan_ideation_to_edit_uses_plan_worktree() {
+        let state = AppState::new_test();
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        let main_sha = setup_publish_repo(&repo_path);
+        let plan_branch_name = "plan/manual-agent-handoff";
+        git(&repo_path, &["branch", plan_branch_name]);
+
+        let project_id = ProjectId::from_string("project-linked-plan-mode-switch".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
+        let mut project = Project::new(
+            "Linked Plan Mode Switch".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project persisted");
+
+        let session = state
+            .ideation_session_repo
+            .create(IdeationSession::new(project_id.clone()))
+            .await
+            .expect("ideation session persisted");
+        let mut execution_plan = ExecutionPlan::new(session.id.clone());
+        execution_plan.status = ExecutionPlanStatus::Superseded;
+        let execution_plan = state
+            .execution_plan_repo
+            .create(execution_plan)
+            .await
+            .expect("execution plan persisted");
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-linked-plan-mode-switch"),
+            session.id.clone(),
+            project_id.clone(),
+            plan_branch_name.to_string(),
+            "main".to_string(),
+        );
+        plan_branch.status = PlanBranchStatus::Active;
+        plan_branch.execution_plan_id = Some(execution_plan.id);
+        plan_branch.pr_number = Some(123);
+        plan_branch.pr_url = Some("https://github.com/mock/repo/pull/123".to_string());
+        plan_branch.pr_status = Some(PrStatus::Open);
+        plan_branch.pr_push_status = PrPushStatus::Pushed;
+        let plan_branch_id = plan_branch.id.clone();
+        let expected_plan_worktree =
+            resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
+                .expect("expected plan worktree path should resolve");
+        state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .expect("plan branch persisted");
+
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.id = conversation_id.clone();
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Ideation));
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation persisted");
+
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project_id,
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some(main_sha),
+            "agent-shell-linked-plan".to_string(),
+            temp.path()
+                .join("agent-shell-linked-plan")
+                .to_string_lossy()
+                .to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(session.id);
+        workspace.linked_plan_branch_id = Some(plan_branch_id);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace persisted");
+
+        let response = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "edit".to_string(),
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+                base_source_pull_request: None,
+            },
+            &state,
+        )
+        .await
+        .expect("linked plan ideation workspace should switch to edit");
+
+        assert_eq!(response.conversation.agent_mode.as_deref(), Some("edit"));
+        let switched = response.workspace.expect("workspace should be returned");
+
+        assert_eq!(switched.mode, "edit");
+        assert_eq!(switched.branch_name, plan_branch_name);
+        assert_eq!(
+            switched.worktree_path,
+            expected_plan_worktree.to_string_lossy()
+        );
+        assert_eq!(switched.linked_ideation_session_id, None);
+        assert_eq!(switched.linked_plan_branch_id, None);
+        assert_eq!(switched.publication_pr_number, Some(123));
+        assert_eq!(
+            switched.publication_pr_url.as_deref(),
+            Some("https://github.com/mock/repo/pull/123")
+        );
+        assert_eq!(switched.publication_pr_status.as_deref(), Some("open"));
+        assert_eq!(switched.publication_push_status.as_deref(), Some("pushed"));
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+        assert_eq!(
+            GitService::get_current_branch(&expected_plan_worktree)
+                .await
+                .expect("plan worktree branch should be readable"),
+            plan_branch_name
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_preserves_it() {
+        let state = AppState::new_test();
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_publish_repo(&repo_path);
+        let project_id = ProjectId::from_string("project-plan-new-workspace".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+        let mut project = Project::new(
+            "Mode Switch Plan Project".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project persisted");
+        let mut conversation = ChatConversation::new_project(project_id);
+        conversation.id = conversation_id.clone();
+        conversation.title = Some("Review CLI gaps".to_string());
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation persisted");
+
+        let plan_response = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "plan".to_string(),
+                base_ref_kind: Some("project_default".to_string()),
+                base_ref: None,
+                base_display_name: None,
+                base_source_pull_request: None,
+            },
+            &state,
+        )
+        .await
+        .expect("plan mode switch creates workspace");
+
+        let plan_workspace = plan_response
+            .workspace
+            .as_ref()
+            .expect("plan workspace should be returned");
+        assert_eq!(plan_workspace.mode, "plan");
+        assert!(
+            plan_workspace.linked_ideation_session_id.is_none(),
+            "idle Plan mode should not create an empty planning session"
+        );
+        assert!(plan_workspace.linked_plan_branch_id.is_none());
+
+        let created_for_send =
+            ensure_plan_workspace_planning_session_link_for_send(&state, &conversation_id)
+                .await
+                .expect("first Plan send should ensure a planning session");
+        assert!(created_for_send);
+        let second_ensure =
+            ensure_plan_workspace_planning_session_link_for_send(&state, &conversation_id)
+                .await
+                .expect("existing planning session should be reused");
+        assert!(!second_ensure);
+
+        let plan_workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup succeeds")
+            .expect("plan workspace should persist");
+        let session_id = plan_workspace
+            .linked_ideation_session_id
+            .as_ref()
+            .expect("first Plan send should link a planning session")
+            .clone();
+        let session = state
+            .ideation_session_repo
+            .get_by_id(&session_id)
+            .await
+            .expect("planning session lookup succeeds")
+            .expect("planning session should exist");
+        let conversation_id_string = conversation_id.as_str();
+        assert_eq!(session.session_flow, IdeationSessionFlow::Planning);
+        assert_eq!(session.title.as_deref(), Some("Review CLI gaps"));
+        assert_eq!(session.title_source.as_deref(), Some("auto"));
+        assert_eq!(
+            session.source_context_type.as_deref(),
+            Some("agent_conversation")
+        );
+        assert_eq!(
+            session.source_context_id.as_deref(),
+            Some(conversation_id_string.as_str())
+        );
+        assert_eq!(
+            session.analysis.workspace_path.as_deref(),
+            Some(plan_workspace.worktree_path.as_str())
+        );
+        assert!(plan_workspace.linked_plan_branch_id.is_none());
+
+        let edit_response = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "edit".to_string(),
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+                base_source_pull_request: None,
+            },
+            &state,
+        )
+        .await
+        .expect("edit mode switch preserves planning link");
+
+        let edit_workspace = edit_response
+            .workspace
+            .as_ref()
+            .expect("edit workspace should be returned");
+        assert_eq!(edit_workspace.mode, "edit");
+        assert_eq!(
+            edit_workspace.linked_ideation_session_id.as_deref(),
+            Some(session_id.as_str())
+        );
+        assert!(edit_workspace.linked_plan_branch_id.is_none());
     }
 
     #[tokio::test]
@@ -9785,6 +13843,7 @@ mod tests {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             &state,
         )
@@ -10032,6 +14091,257 @@ mod tests {
             Some(message_id.as_str())
         );
         assert_eq!(tool["diff_context"]["file_path"], "src/lib.rs");
+    }
+
+    #[test]
+    fn preview_tool_payloads_preserves_parseable_mcp_artifact_preview() {
+        let artifact_content = "Detailed artifact line.\n".repeat(600);
+        let artifact = json!({
+            "id": "artifact-preview-1",
+            "title": "Previewable Artifact",
+            "artifact_type": "design_doc",
+            "content": artifact_content,
+            "version": 3
+        });
+        let tool_calls = json!([{
+            "id": "tool-artifact-1",
+            "name": "mcp__ralphx__get_artifact",
+            "arguments": { "artifact_id": "artifact-preview-1" },
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&artifact).expect("artifact json")
+                }]
+            }
+        }]);
+
+        let (tool_calls, _) = preview_tool_payloads_for_message(
+            "conversation-1",
+            "message-1",
+            Some(tool_calls),
+            None,
+        );
+        let tool_calls = tool_calls.expect("previewed tool calls");
+        let tool = &tool_calls.as_array().expect("tool call array")[0];
+        let preview_text = tool["result"]["content"][0]["text"]
+            .as_str()
+            .expect("mcp text content preview");
+        let parsed_preview: serde_json::Value =
+            serde_json::from_str(preview_text).expect("preview text remains valid JSON");
+
+        assert_eq!(tool["result_preview_truncated"], true);
+        assert_eq!(parsed_preview["title"], "Previewable Artifact");
+        assert_eq!(parsed_preview["artifact_type"], "design_doc");
+        assert_eq!(parsed_preview["version"], 3);
+        assert!(
+            parsed_preview["content"]
+                .as_str()
+                .expect("content preview string")
+                .len()
+                < artifact_content.len(),
+            "artifact content should stay bounded in the paginated preview"
+        );
+        assert_eq!(
+            tool["detail_ref"],
+            json!({
+                "conversation_id": "conversation-1",
+                "message_id": "message-1",
+                "tool_call_id": "tool-artifact-1",
+                "content_block_index": null
+            })
+        );
+    }
+
+    #[test]
+    fn preview_tool_payloads_replaces_edit_arguments_with_first_diff_hunk() {
+        let old_content = [
+            "line 1", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7", "line 8",
+            "line 9", "line 10", "line 11", "line 12",
+        ]
+        .join("\n");
+        let new_content = [
+            "line 1",
+            "line 2 changed",
+            "line 3",
+            "line 4",
+            "line 5",
+            "line 6",
+            "line 7",
+            "line 8",
+            "line 9",
+            "line 10 changed",
+            "line 11",
+            "line 12",
+        ]
+        .join("\n");
+        let tool_calls = json!([{
+            "id": "tool-edit-1",
+            "name": "edit",
+            "arguments": {
+                "file_path": "src/example.ts",
+                "old_string": old_content,
+                "new_string": new_content,
+                "replace_all": false
+            },
+            "result": { "status": "ok" }
+        }]);
+
+        let (tool_calls, _) = preview_tool_payloads_for_message(
+            "conversation-1",
+            "message-1",
+            Some(tool_calls),
+            None,
+        );
+        let tool_calls = tool_calls.expect("previewed tool calls");
+        let tool = &tool_calls.as_array().expect("tool call array")[0];
+        let diff_preview_text =
+            serde_json::to_string(&tool["diff_preview"]).expect("diff preview serializes");
+
+        assert_eq!(tool["arguments_preview_truncated"], true);
+        assert_eq!(tool["arguments"]["file_path"], "src/example.ts");
+        assert_eq!(tool["arguments"]["replace_all"], false);
+        assert!(tool["arguments"]["old_string"].is_null());
+        assert!(tool["arguments"]["new_string"].is_null());
+        assert_eq!(
+            tool["detail_ref"],
+            json!({
+                "conversation_id": "conversation-1",
+                "message_id": "message-1",
+                "tool_call_id": "tool-edit-1",
+                "content_block_index": null
+            })
+        );
+        assert_eq!(tool["diff_preview"]["file_path"], "src/example.ts");
+        assert_eq!(tool["diff_preview"]["language"], "typescript");
+        assert!(diff_preview_text.contains("line 2 changed"));
+        assert!(!diff_preview_text.contains("line 10 changed"));
+    }
+
+    #[test]
+    fn preview_tool_payloads_replaces_write_content_and_diff_context_with_diff_preview() {
+        let content_blocks = json!([{
+            "type": "tool_use",
+            "id": "tool-write-1",
+            "name": "write",
+            "arguments": {
+                "file_path": "src/lib.rs",
+                "content": "fn main() {\n    println!(\"new\");\n}"
+            },
+            "diff_context": {
+                "file_path": "src/lib.rs",
+                "old_content": "fn main() {\n    println!(\"old\");\n}"
+            },
+            "result": { "status": "ok" }
+        }]);
+
+        let (_, content_blocks) = preview_tool_payloads_for_message(
+            "conversation-1",
+            "message-1",
+            None,
+            Some(content_blocks),
+        );
+        let content_blocks = content_blocks.expect("previewed content blocks");
+        let tool = &content_blocks.as_array().expect("content block array")[0];
+
+        assert_eq!(tool["arguments_preview_truncated"], true);
+        assert_eq!(tool["arguments"]["file_path"], "src/lib.rs");
+        assert!(tool["arguments"]["content"].is_null());
+        assert_eq!(tool["diff_context"]["file_path"], "src/lib.rs");
+        assert!(tool["diff_context"]["old_content"].is_null());
+        assert_eq!(tool["diff_preview"]["file_path"], "src/lib.rs");
+        assert_eq!(
+            tool["detail_ref"]["content_block_index"],
+            serde_json::json!(0)
+        );
+    }
+
+    #[test]
+    fn preview_tool_payloads_renders_new_write_as_added_diff() {
+        let content_blocks = json!([{
+            "type": "tool_use",
+            "id": "tool-write-new",
+            "name": "write",
+            "arguments": {
+                "file_path": "src/new.rs",
+                "content": "pub fn new() {}\n"
+            },
+            "diff_context": {
+                "file_path": "src/new.rs",
+                "old_file_exists": false
+            },
+            "result": { "status": "ok" }
+        }]);
+
+        let (_, content_blocks) = preview_tool_payloads_for_message(
+            "conversation-1",
+            "message-1",
+            None,
+            Some(content_blocks),
+        );
+        let content_blocks = content_blocks.expect("previewed content blocks");
+        let tool = &content_blocks.as_array().expect("content block array")[0];
+
+        assert_eq!(tool["arguments_preview_truncated"], true);
+        assert_eq!(tool["arguments"]["file_path"], "src/new.rs");
+        assert!(tool["arguments"]["content"].is_null());
+        assert_eq!(tool["diff_context"]["old_file_exists"], false);
+        assert_eq!(tool["diff_preview"]["old_total_lines"], 0);
+        assert_eq!(tool["diff_preview"]["new_total_lines"], 2);
+        assert_eq!(
+            tool["diff_preview"]["hunks"][0]["lines"][0]["kind"],
+            "addition"
+        );
+    }
+
+    #[tokio::test]
+    async fn timeline_item_response_previews_edit_arguments_but_detail_returns_full_payload() {
+        let state = AppState::new_test();
+        let conversation_id = ChatConversationId::new();
+        let message_id = ChatMessageId::from_string("assistant-message-edit");
+        let mut item = ChatTimelineItem::for_message_block(
+            message_id.clone(),
+            conversation_id,
+            0,
+            MessageRole::Orchestrator,
+            ChatTimelineItemKind::ToolUse,
+        );
+        item.tool_call_id = Some("tool-edit-timeline".to_string());
+        item.tool_name = Some("edit".to_string());
+        item.input_json = Some(
+            json!({
+                "file_path": "src/example.ts",
+                "old_string": "old line",
+                "new_string": "new line"
+            })
+            .to_string(),
+        );
+
+        let response = AgentTimelineItemResponse::from(item.clone());
+        let preview_tool = response.tool_call.expect("timeline tool preview");
+        assert_eq!(preview_tool["arguments_preview_truncated"], true);
+        assert!(preview_tool["arguments"]["old_string"].is_null());
+        assert_eq!(
+            preview_tool["detail_ref"]["timeline_item_id"].as_str(),
+            Some(response.id.as_str())
+        );
+
+        let item = state
+            .chat_timeline_repo
+            .upsert_item(item)
+            .await
+            .expect("insert timeline edit item");
+        let detail = get_agent_timeline_item_tool_call_detail_for_app_state(
+            &state,
+            conversation_id,
+            item.id,
+        )
+        .await
+        .expect("timeline edit detail lookup")
+        .expect("timeline edit detail");
+
+        assert_eq!(detail.tool_call["arguments"]["old_string"], "old line");
+        assert_eq!(detail.tool_call["arguments"]["new_string"], "new line");
+        assert!(detail.tool_call["arguments_preview_truncated"].is_null());
     }
 
     #[test]

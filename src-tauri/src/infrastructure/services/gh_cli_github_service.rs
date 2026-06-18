@@ -21,8 +21,8 @@ use tracing::{debug, warn};
 use crate::domain::services::github_service::{
     GithubServiceTrait, PrAnnotationSourceUnavailable, PrAutoMergeRequest, PrBranchMatch,
     PrDiffAnnotation, PrDiffAnnotations, PrHealth, PrHealthCheck, PrIssueCommentSummary,
-    PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback, PrReviewFeedback, PrStatus,
-    PrSyncState,
+    PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback, PrReviewFeedback,
+    PrReviewSubmissionEvent, PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
 };
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -335,6 +335,23 @@ fn build_pr_reviews_api_args(pr_number: i64) -> Vec<String> {
         format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews"),
         "--paginate".to_string(),
         "--slurp".to_string(),
+    ]
+}
+
+fn build_submit_pr_review_api_args(
+    pr_number: i64,
+    event: PrReviewSubmissionEvent,
+    body: &str,
+) -> Vec<String> {
+    vec![
+        "api".to_string(),
+        format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews"),
+        "-X".to_string(),
+        "POST".to_string(),
+        "-f".to_string(),
+        format!("event={event}"),
+        "-f".to_string(),
+        format!("body={body}"),
     ]
 }
 
@@ -774,6 +791,23 @@ impl GithubServiceTrait for GhCliGithubService {
         Ok(payload)
     }
 
+    async fn submit_pr_review(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+        event: PrReviewSubmissionEvent,
+        body: &str,
+    ) -> AppResult<PrSubmittedReview> {
+        let stdout = self
+            .runner
+            .run_gh(
+                working_dir,
+                &build_submit_pr_review_api_args(pr_number, event, body),
+            )
+            .await?;
+        parse_submit_pr_review_output(&stdout.join("\n"))
+    }
+
     async fn fetch_pr_health(&self, working_dir: &Path, pr_number: i64) -> AppResult<PrHealth> {
         let view_stdout = self
             .runner
@@ -938,6 +972,33 @@ impl GithubServiceTrait for GhCliGithubService {
         parse_pr_list_output(&json_str)
     }
 
+    async fn search_pull_requests(
+        &self,
+        working_dir: &Path,
+        query: Option<&str>,
+        limit: usize,
+    ) -> AppResult<Vec<PrSearchResult>> {
+        let limit = limit.clamp(1, 50);
+        let mut args = vec![
+            "pr".to_string(),
+            "list".to_string(),
+            "--state".to_string(),
+            "open".to_string(),
+            "--limit".to_string(),
+            limit.to_string(),
+            "--json".to_string(),
+            "number,title,url,headRefName,headRefOid,baseRefName,isDraft,updatedAt,author,isCrossRepository".to_string(),
+        ];
+        if let Some(query) = query.map(str::trim).filter(|value| !value.is_empty()) {
+            args.push("--search".to_string());
+            args.push(query.to_string());
+        }
+        let stdout = self.runner.run_gh(working_dir, &args).await?;
+
+        let json_str = stdout.join("\n");
+        parse_pr_search_output(&json_str)
+    }
+
     async fn find_latest_pr_by_head_branch(
         &self,
         working_dir: &Path,
@@ -1080,6 +1141,58 @@ pub(crate) fn parse_pr_branch_match_output(
     });
 
     Ok(matches.into_iter().next())
+}
+
+pub(crate) fn parse_pr_search_output(json_str: &str) -> AppResult<Vec<PrSearchResult>> {
+    let arr: Value = serde_json::from_str(json_str).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh pr list search JSON: {e}\nRaw: {json_str}"
+        ))
+    })?;
+
+    let items = arr.as_array().ok_or_else(|| {
+        AppError::Infrastructure(format!(
+            "gh pr list search: expected JSON array, got: {json_str}"
+        ))
+    })?;
+
+    items.iter().map(parse_pr_search_item).collect()
+}
+
+fn parse_pr_search_item(item: &Value) -> AppResult<PrSearchResult> {
+    let context = "gh pr list search";
+    let number = item["number"].as_i64().ok_or_else(|| {
+        AppError::Infrastructure("gh pr list search: missing 'number' field".to_string())
+    })?;
+
+    Ok(PrSearchResult {
+        number,
+        title: required_string(item, "title", context)?,
+        url: required_string(item, "url", context)?,
+        head_ref_name: required_string(item, "headRefName", context)?,
+        head_ref_oid: item
+            .get("headRefOid")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        base_ref_name: required_string(item, "baseRefName", context)?,
+        is_draft: item
+            .get("isDraft")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        updated_at: item
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        author_login: item
+            .get("author")
+            .and_then(|author| author.get("login"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        is_cross_repository: item
+            .get("isCrossRepository")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
 }
 
 fn parse_pr_branch_match_item(item: &Value) -> AppResult<PrBranchMatch> {
@@ -1386,6 +1499,22 @@ pub(crate) fn parse_pr_review_decision_output(json_str: &str) -> AppResult<bool>
     })?;
 
     Ok(v["reviewDecision"].as_str() == Some("CHANGES_REQUESTED"))
+}
+
+pub(crate) fn parse_submit_pr_review_output(json_str: &str) -> AppResult<PrSubmittedReview> {
+    let value: Value = serde_json::from_str(json_str).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse submitted PR review JSON: {e}\nRaw: {json_str}"
+        ))
+    })?;
+    let id = json_id_to_string(value.get("id")).ok_or_else(|| {
+        AppError::Infrastructure("submitted PR review response missing id".to_string())
+    })?;
+    let url = value
+        .get("html_url")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok(PrSubmittedReview { id, url })
 }
 
 pub(crate) fn parse_pr_review_feedback_output(

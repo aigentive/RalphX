@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -123,13 +123,22 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
 }));
 
 vi.mock("./AgentsPublishFileDiff", () => ({
+  isLargeInlineDiff: (file: { additions: number; deletions: number }) =>
+    file.additions + file.deletions >= 1_000,
+  requiresExplicitDiffHydration: (file: {
+    additions: number;
+    deletions: number;
+    isGenerated: boolean;
+  }) => file.isGenerated,
   AgentsPublishFileDiff: ({
     file,
     diff,
     isExpanded,
+    onToggle,
     onCopyPath,
     onOpenFullscreen,
     refKind,
+    diffPageRefKind,
     conversationId,
     shouldHydrate,
     annotations,
@@ -144,6 +153,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     onOpenFullscreen: (p: string) => void;
     onRetry?: () => void;
     refKind?: { kind: string };
+    diffPageRefKind?: { kind: string };
     conversationId?: string;
     shouldHydrate: boolean;
     annotations?: unknown[];
@@ -155,11 +165,18 @@ vi.mock("./AgentsPublishFileDiff", () => ({
       data-expanded={String(isExpanded)}
       data-diff-status={typeof diff === "string" ? diff : diff ? "loaded" : "undefined"}
       data-ref-kind={refKind?.kind}
+      data-diff-page-ref-kind={diffPageRefKind?.kind}
       data-conversation-id={conversationId}
       data-should-hydrate={String(shouldHydrate)}
       data-annotation-count={String(annotations?.length ?? 0)}
       data-show-anyway-overridden={String(isShowAnywayOverridden)}
     >
+      <button
+        data-testid={`mock-file-toggle-${file.path.replace(/\//g, "-")}`}
+        onClick={onToggle}
+      >
+        toggle {file.path}
+      </button>
       <button onClick={() => onCopyPath(file.path)}>copy</button>
       <button onClick={() => onOpenFullscreen(file.path)}>fullscreen</button>
       <button
@@ -432,10 +449,34 @@ describe("AgentsPublishInlineDiffs", () => {
         "overflow-x-hidden",
       );
       expect(list).toHaveClass("overflow-x-hidden");
-      expect(list).toHaveStyle({ overflowX: "hidden" });
-      expect(screen.getByTestId("mock-virtuoso-item-0").firstElementChild).toHaveClass(
+      expect(list).not.toHaveClass("pl-3");
+      expect(list).not.toHaveClass("pr-5");
+      expect(list).toHaveStyle({ overflowX: "hidden", scrollbarGutter: "stable" });
+      expect(screen.getByTestId("inline-diffs-file-row-0")).toHaveClass(
+        "box-border",
         "overflow-x-hidden",
+        "px-3",
+        "w-full",
       );
+    });
+
+    it("uses compact item padding instead of first/last variants inside virtual rows", () => {
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("inline-diffs-file-row-0")).toHaveClass("pt-2", "pb-0.5");
+      expect(screen.getByTestId("inline-diffs-file-row-1")).toHaveClass("pt-0.5", "pb-2");
+      expect(screen.getByTestId("inline-diffs-file-row-0").className).not.toContain("first:");
+      expect(screen.getByTestId("inline-diffs-file-row-0").className).not.toContain("last:");
     });
 
     it("only renders the active virtual range of file cards", () => {
@@ -723,6 +764,91 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
         "data-expanded",
         "true",
+      );
+    });
+
+    it("keeps collapse-all active for newly loaded mode files", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      mockGetCommitFiles.mockResolvedValue([makeFileChange("src/CommitOnly.tsx")]);
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[makeCommit("sha-abc-full")]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByTestId("inline-diffs-collapse-all"));
+      await user.click(screen.getByRole("button", { name: "Commit sha-abc" }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-CommitOnly.tsx")).toHaveAttribute(
+          "data-expanded",
+          "false",
+        ),
+      );
+    });
+
+    it("keeps expand-all active for newly loaded mode files", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      mockGetCommitFiles.mockResolvedValue([makeFileChange("src/CommitOnly.tsx")]);
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[makeCommit("sha-abc-full")]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByTestId("inline-diffs-collapse-all"));
+      await user.click(screen.getByTestId("inline-diffs-expand-all"));
+      await user.click(screen.getByRole("button", { name: "Commit sha-abc" }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-CommitOnly.tsx")).toHaveAttribute(
+          "data-expanded",
+          "true",
+        ),
+      );
+    });
+
+    it("manual file toggles switch bulk state to custom for newly loaded files", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      mockGetCommitFiles.mockResolvedValue([makeFileChange("src/CommitOnly.tsx")]);
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[makeCommit("sha-abc-full")]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByTestId("inline-diffs-collapse-all"));
+      await user.click(screen.getByTestId("mock-file-toggle-src-Foo.tsx"));
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+        "data-expanded",
+        "true",
+      );
+
+      await user.click(screen.getByRole("button", { name: "Commit sha-abc" }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-CommitOnly.tsx")).toHaveAttribute(
+          "data-expanded",
+          "true",
+        ),
       );
     });
   });
@@ -1418,9 +1544,87 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.queryByTestId("inline-diffs-loading")).toBeNull();
       expect(screen.queryByTestId("inline-diffs-empty")).toBeNull();
     });
+
+    it("defaults merged workspaces to All commits while preserving manual mode changes", async () => {
+      const user = userEvent.setup();
+      mockGetCumulativeFiles.mockResolvedValue([makeFileChange("src/MergedFile.tsx")]);
+
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-merged"
+            review={makeReview([])}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+            defaultMode="cumulative"
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+        "data-mode",
+        "cumulative",
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-MergedFile.tsx")).toBeInTheDocument(),
+      );
+
+      await user.click(screen.getByRole("button", { name: "Workspace changes" }));
+
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+        "data-mode",
+        "uncommitted",
+      );
+      expect(screen.getByText("No workspace changes")).toBeInTheDocument();
+    });
   });
 
   describe("openInDialog", () => {
+    it("renders the full-dialog action after jump-to-file in the diff header", () => {
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            onOpenInDialog={vi.fn()}
+          />,
+        ),
+      );
+
+      const stickyBar = screen.getByTestId("inline-diffs-sticky-bar");
+      const jumpToFile = within(stickyBar).getByTestId("inline-diffs-jump-to-file");
+      const openDialog = within(stickyBar).getByTestId("agents-review-changes");
+
+      expect(openDialog).toHaveAttribute("aria-label", "Open changes in full diff dialog");
+      expect(
+        jumpToFile.compareDocumentPosition(openDialog) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it("calls onOpenInDialog from the diff header action", async () => {
+      const user = userEvent.setup();
+      const onOpenInDialog = vi.fn();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            onOpenInDialog={onOpenInDialog}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByTestId("agents-review-changes"));
+      expect(onOpenInDialog).toHaveBeenCalledOnce();
+      expect(onOpenInDialog.mock.calls[0]).toEqual([]);
+    });
+
     it("calls onOpenInDialog when fullscreen button is clicked in a card", async () => {
       const user = userEvent.setup();
       const onOpenInDialog = vi.fn();
@@ -1757,6 +1961,69 @@ describe("AgentsPublishInlineDiffs", () => {
 
       await waitFor(() =>
         expect(mockGetUncommittedDiff).toHaveBeenCalledWith("conv-1", "src/Foo.tsx"),
+      );
+    });
+
+    it("keeps large file diffs off the full-diff fetch path without Show anyway", async () => {
+      const changes = [
+        makeFileChange("src/Huge.tsx", { additions: 1_250, deletions: 25 }),
+      ];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      fireVirtualRange(0, 0);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockGetUncommittedDiff).not.toHaveBeenCalled();
+      expect(screen.getByTestId("mock-file-diff-src-Huge.tsx")).toHaveAttribute(
+        "data-show-anyway-overridden",
+        "false",
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Huge.tsx")).toHaveAttribute(
+        "data-diff-page-ref-kind",
+        "head",
+      );
+    });
+
+    it("still fetches generated non-large file diffs after Show anyway", async () => {
+      const user = userEvent.setup();
+      const changes = [
+        makeFileChange("src/generated.ts", {
+          isGenerated: true,
+          additions: 25,
+          deletions: 5,
+        }),
+      ];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      fireVirtualRange(0, 0);
+      await user.click(screen.getByTestId("show-anyway-src-generated.ts"));
+
+      await waitFor(() =>
+        expect(mockGetUncommittedDiff).toHaveBeenCalledWith(
+          "conv-1",
+          "src/generated.ts",
+        ),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-generated.ts")).toHaveAttribute(
+        "data-show-anyway-overridden",
+        "true",
       );
     });
 

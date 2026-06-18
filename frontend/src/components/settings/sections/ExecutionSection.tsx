@@ -3,6 +3,7 @@ import type { ExecutionSettings } from "@/types/settings";
 import {
   NumberSettingRow,
   SectionCard,
+  ToggleSettingRow,
 } from "../SettingsView.shared";
 
 interface ExecutionSectionProps {
@@ -45,6 +46,26 @@ export default function ExecutionSection({
         unit=""
         disabled={disabled}
         onChange={(value) => onChange({ project_ideation_max: value })}
+      />
+      <ToggleSettingRow
+        id="agent-workspace-pr-autofix-default"
+        label="Default Autofix CI & Reviews"
+        description="RalphX monitors this PR for failing checks and review feedback, then publishes follow-up fixes from the workspace automatically."
+        checked={settings.agent_workspace_pr_autofix_default}
+        disabled={disabled}
+        onChange={(checked) =>
+          onChange({ agent_workspace_pr_autofix_default: checked })
+        }
+      />
+      <ToggleSettingRow
+        id="agent-workspace-pr-auto-merge-default"
+        label="Default GitHub auto-merge"
+        description="RalphX asks GitHub to merge the PR after required checks and review requirements pass."
+        checked={settings.agent_workspace_pr_auto_merge_default}
+        disabled={disabled}
+        onChange={(checked) =>
+          onChange({ agent_workspace_pr_auto_merge_default: checked })
+        }
       />
     </SectionCard>
   );

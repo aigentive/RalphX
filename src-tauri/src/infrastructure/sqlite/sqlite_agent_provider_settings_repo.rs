@@ -6,7 +6,9 @@ use rusqlite::Connection;
 use tokio::sync::Mutex;
 
 use super::DbConnection;
-use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings, LogicalEffort};
+use crate::domain::agents::{
+    AgentHarnessKind, AgentProviderCliManagementMode, AgentProviderSettings, LogicalEffort,
+};
 use crate::domain::repositories::AgentProviderSettingsRepository;
 use crate::error::{AppError, AppResult};
 
@@ -53,6 +55,11 @@ fn parse_row(row: &rusqlite::Row<'_>) -> AppResult<AgentProviderSettings> {
         &row.get::<_, String>("updated_at")
             .map_err(|e| AppError::Database(e.to_string()))?,
     );
+    let cli_management_mode = row
+        .get::<_, String>("cli_management_mode")
+        .map_err(|e| AppError::Database(e.to_string()))?
+        .parse::<AgentProviderCliManagementMode>()
+        .map_err(AppError::Database)?;
 
     Ok(AgentProviderSettings {
         provider,
@@ -85,6 +92,11 @@ fn parse_row(row: &rusqlite::Row<'_>) -> AppResult<AgentProviderSettings> {
             .get::<_, i64>("claude_allow_dangerously_skip_permissions")
             .map_err(|e| AppError::Database(e.to_string()))?
             != 0,
+        cli_management_mode,
+        auto_update_enabled: row
+            .get::<_, i64>("auto_update_enabled")
+            .map_err(|e| AppError::Database(e.to_string()))?
+            != 0,
         updated_at,
     })
 }
@@ -92,7 +104,8 @@ fn parse_row(row: &rusqlite::Row<'_>) -> AppResult<AgentProviderSettings> {
 fn select_columns() -> &'static str {
     "provider, enabled, is_default, model, effort, approval_policy, sandbox_mode,
      claude_permission_mode, claude_dangerously_skip_permissions,
-     claude_allow_dangerously_skip_permissions, updated_at"
+     claude_allow_dangerously_skip_permissions, cli_management_mode,
+     auto_update_enabled, updated_at"
 }
 
 fn fetch_optional<P: rusqlite::Params>(
@@ -210,8 +223,9 @@ impl AgentProviderSettingsRepository for SqliteAgentProviderSettingsRepository {
                         provider, enabled, is_default, model, effort, approval_policy,
                         sandbox_mode, claude_permission_mode,
                         claude_dangerously_skip_permissions,
-                        claude_allow_dangerously_skip_permissions, updated_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                        claude_allow_dangerously_skip_permissions, cli_management_mode,
+                        auto_update_enabled, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                         strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'))
                      ON CONFLICT(provider) DO UPDATE SET
                         enabled = excluded.enabled,
@@ -225,6 +239,8 @@ impl AgentProviderSettingsRepository for SqliteAgentProviderSettingsRepository {
                             excluded.claude_dangerously_skip_permissions,
                         claude_allow_dangerously_skip_permissions =
                             excluded.claude_allow_dangerously_skip_permissions,
+                        cli_management_mode = excluded.cli_management_mode,
+                        auto_update_enabled = excluded.auto_update_enabled,
                         updated_at = excluded.updated_at",
                     rusqlite::params![
                         settings.provider.to_string(),
@@ -237,6 +253,8 @@ impl AgentProviderSettingsRepository for SqliteAgentProviderSettingsRepository {
                         settings.claude_permission_mode,
                         settings.claude_dangerously_skip_permissions as i64,
                         settings.claude_allow_dangerously_skip_permissions as i64,
+                        settings.cli_management_mode.to_string(),
+                        settings.auto_update_enabled as i64,
                     ],
                 )
                 .map_err(|e| AppError::Database(e.to_string()))?;

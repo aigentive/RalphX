@@ -44,6 +44,7 @@ vi.mock("@/types/status", () => ({
 }));
 
 vi.mock("@/api/chat", () => ({
+  parseToolCalls: (raw: unknown) => Array.isArray(raw) ? raw : [],
   chatApi: {
     isAgentRunning: vi.fn(),
     getConversationActiveState: vi.fn(),
@@ -56,6 +57,8 @@ vi.mock("@/api/chat", () => ({
 
 import { useChatRecovery } from "./useChatRecovery";
 import type { ContextType } from "@/types/chat-conversation";
+import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
+import type { StreamingContentBlock } from "@/types/streaming-task";
 import { chatApi } from "@/api/chat";
 
 const mockIsAgentRunning = vi.mocked(chatApi.isAgentRunning);
@@ -77,6 +80,8 @@ interface DefaultProps {
   agentRunStatus: string | undefined;
   isVisible: boolean;
   setAgentRunning: ReturnType<typeof vi.fn>;
+  setStreamingToolCalls?: ReturnType<typeof vi.fn>;
+  setStreamingContentBlocks?: ReturnType<typeof vi.fn>;
   setStreamingTasks?: ReturnType<typeof vi.fn>;
   selectedTaskId: string | undefined;
   ideationSessionId: string | undefined;
@@ -150,8 +155,100 @@ describe("useChatRecovery", () => {
   });
 
   describe("active-state hydration", () => {
+    it("hydrates project conversation active state after switching back to an in-flight Agents conversation", async () => {
+      const setStreamingToolCalls = vi.fn();
+      const setStreamingContentBlocks = vi.fn();
+      const setStreamingTasks = vi.fn();
+      mockGetConversationActiveState.mockResolvedValueOnce({
+        is_active: true,
+        tool_calls: [],
+        streaming_tasks: [],
+        partial_text: "Still working on the follow-up",
+      });
+
+      const props = makeProps({
+        activeConversationId: "conversation-a",
+        storeContextKey: "project:conversation-a",
+        currentContextType: "project",
+        currentContextId: "conversation-a",
+        isAgentContext: false,
+        selectedTaskId: undefined,
+        effectiveStatus: undefined,
+        setStreamingToolCalls,
+        setStreamingContentBlocks,
+        setStreamingTasks,
+      });
+      renderHook(() => useChatRecovery(props));
+
+      await act(async () => {});
+
+      expect(mockGetConversationActiveState).toHaveBeenCalledWith("conversation-a");
+      expect(setStreamingContentBlocks).toHaveBeenCalledTimes(1);
+      const updater = setStreamingContentBlocks.mock.calls[0][0] as (
+        prev: StreamingContentBlock[]
+      ) => StreamingContentBlock[];
+      expect(updater([])).toEqual([
+        { type: "text", text: "Still working on the follow-up" },
+      ]);
+    });
+
+    it("hydrates partial text and active tool calls from active-state", async () => {
+      const setStreamingToolCalls = vi.fn();
+      const setStreamingContentBlocks = vi.fn();
+      mockGetConversationActiveState.mockResolvedValueOnce({
+        is_active: true,
+        tool_calls: [
+          {
+            id: "toolu_read",
+            name: "Read",
+            arguments: { file_path: "src/main.ts" },
+          },
+        ],
+        streaming_tasks: [],
+        partial_text: "Inspecting the current implementation",
+      });
+
+      const props = makeProps({
+        setStreamingToolCalls,
+        setStreamingContentBlocks,
+        setStreamingTasks: vi.fn(),
+      });
+      renderHook(() => useChatRecovery(props));
+
+      await act(async () => {});
+
+      expect(setStreamingToolCalls).toHaveBeenCalledTimes(1);
+      const toolUpdater = setStreamingToolCalls.mock.calls[0][0] as (
+        prev: ToolCall[]
+      ) => ToolCall[];
+      expect(toolUpdater([])).toEqual([
+        {
+          id: "toolu_read",
+          name: "Read",
+          arguments: { file_path: "src/main.ts" },
+        },
+      ]);
+
+      expect(setStreamingContentBlocks).toHaveBeenCalledTimes(1);
+      const blockUpdater = setStreamingContentBlocks.mock.calls[0][0] as (
+        prev: StreamingContentBlock[]
+      ) => StreamingContentBlock[];
+      expect(blockUpdater([])).toEqual([
+        { type: "text", text: "Inspecting the current implementation" },
+        {
+          type: "tool_use",
+          toolCall: {
+            id: "toolu_read",
+            name: "Read",
+            arguments: { file_path: "src/main.ts" },
+          },
+        },
+      ]);
+    });
+
     it("hydrates delegated streaming task metadata from active-state", async () => {
       const setStreamingTasks = vi.fn();
+      const setStreamingContentBlocks = vi.fn();
       mockGetConversationActiveState.mockResolvedValueOnce({
         is_active: true,
         tool_calls: [],
@@ -190,7 +287,7 @@ describe("useChatRecovery", () => {
         partial_text: "",
       });
 
-      const props = makeProps({ setStreamingTasks });
+      const props = makeProps({ setStreamingTasks, setStreamingContentBlocks });
       renderHook(() => useChatRecovery(props));
 
       await act(async () => {});
@@ -210,6 +307,14 @@ describe("useChatRecovery", () => {
       expect(task?.inputTokens).toBe(10);
       expect(task?.estimatedUsd).toBe(0.12);
       expect(task?.textOutput).toBe("delegate done");
+
+      expect(setStreamingContentBlocks).toHaveBeenCalledTimes(1);
+      const blockUpdater = setStreamingContentBlocks.mock.calls[0][0] as (
+        prev: StreamingContentBlock[]
+      ) => StreamingContentBlock[];
+      expect(blockUpdater([])).toEqual([
+        { type: "task", toolUseId: "toolu_delegate" },
+      ]);
     });
 
     it("skips active-state hydration in history mode", () => {

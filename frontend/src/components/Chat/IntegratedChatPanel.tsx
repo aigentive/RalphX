@@ -35,6 +35,7 @@ import { useChatPanelContext } from "@/hooks/useChatPanelContext";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   chatApi,
+  type ComposerIntegrationReference,
   type ComposerProjectReference,
   type SendAgentMessageResult,
 } from "@/api/chat";
@@ -64,9 +65,16 @@ import { useChatActions } from "@/hooks/useChatActions";
 import { useChatEvents } from "@/hooks/useChatEvents";
 import { useChatRecovery } from "@/hooks/useChatRecovery";
 // useAgentEvents is already called inside useChat — no direct import needed
-import { useAskUserQuestion } from "@/hooks/useAskUserQuestion";
+import {
+  useAskUserQuestion,
+  type SubmitQuestionAnswerResult,
+} from "@/hooks/useAskUserQuestion";
 import { useQuestionInput } from "@/hooks/useQuestionInput";
 import { QuestionInputBanner } from "./QuestionInputBanner";
+import type {
+  AskUserQuestionPayload,
+  AskUserQuestionResponse,
+} from "@/types/ask-user-question";
 import { RecoveryPromptDialog } from "@/components/recovery/RecoveryPromptDialog";
 import { useEventBus } from "@/providers/EventProvider";
 import { logger } from "@/lib/logger";
@@ -126,6 +134,13 @@ interface IntegratedChatPanelProps {
   contentWidthClassName?: string;
   /** Extra session ids whose ask-user prompts should surface in this chat. */
   additionalQuestionSessionIds?: string[];
+  /** Optional Plan-mode approval action rendered in the active question banner. */
+  planApprovalAction?: {
+    label: string;
+    onClick: () => void;
+    disabled?: boolean;
+    isPending?: boolean;
+  };
   /** Called when Escape is pressed with input blurred - used to close the panel */
   onClose?: () => void;
   /** Whether to autofocus chat input on mount */
@@ -155,13 +170,22 @@ interface IntegratedChatPanelProps {
   onUserMessageSent?: (payload: {
     content: string;
     result: SendAgentMessageResult;
+    composerIntegrationReferences?: ComposerIntegrationReference[];
   }) => void | Promise<void>;
+  onQuestionAnswered?: (
+    question: AskUserQuestionPayload,
+    response: AskUserQuestionResponse,
+    result: SubmitQuestionAnswerResult,
+  ) => void | Promise<void>;
 }
 
 export interface IntegratedChatComposerRenderProps {
   onSend: (
     message: string,
-    options?: { projectReferences?: ComposerProjectReference[] },
+    options?: {
+      projectReferences?: ComposerProjectReference[];
+      integrationReferences?: ComposerIntegrationReference[];
+    },
   ) => Promise<void>;
   onStop: () => Promise<void>;
   agentStatus: AgentStatus;
@@ -198,6 +222,7 @@ export function IntegratedChatPanel({
   surfaceBackground,
   contentWidthClassName,
   additionalQuestionSessionIds,
+  planApprovalAction,
   onClose,
   autoFocusInput = true,
   isVisible = true,
@@ -210,6 +235,7 @@ export function IntegratedChatPanel({
   onChildSessionNavigate,
   renderComposer,
   onUserMessageSent,
+  onQuestionAnswered,
 }: IntegratedChatPanelProps) {
   const bus = useEventBus();
   const queryClient = useQueryClient();
@@ -679,6 +705,8 @@ export function IntegratedChatPanel({
     agentRunStatus: agentRunQuery.data?.status ?? undefined,
     isVisible,
     setStreamingTasks,
+    setStreamingToolCalls,
+    setStreamingContentBlocks,
     setAgentRunning,
     selectedTaskId: selectedTaskId ?? undefined,
     ideationSessionId,
@@ -699,6 +727,38 @@ export function IntegratedChatPanel({
   );
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const inputContainerRef = useRef<HTMLDivElement | null>(null);
+  const inputContainerHeightRef = useRef<number | null>(null);
+  const [inputLayoutVersion, setInputLayoutVersion] = useState(0);
+
+  useLayoutEffect(() => {
+    const container = inputContainerRef.current;
+    if (!container || typeof ResizeObserver === "undefined") {
+      return undefined;
+    }
+
+    const updateInputHeight = (height: number) => {
+      const nextHeight = Math.round(height);
+      if (inputContainerHeightRef.current === nextHeight) {
+        return;
+      }
+      inputContainerHeightRef.current = nextHeight;
+      setInputLayoutVersion((version) => version + 1);
+    };
+
+    updateInputHeight(container.getBoundingClientRect().height);
+
+    const observer = new ResizeObserver((entries) => {
+      updateInputHeight(
+        entries[0]?.contentRect.height ?? container.getBoundingClientRect().height,
+      );
+    });
+    observer.observe(container);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
 
   // File attachments - use activeConversationId for attachment association
   // Only enable attachments when there's an active conversation (not in history mode)
@@ -787,6 +847,7 @@ export function IntegratedChatPanel({
     handleSend: handleSendBase,
     handleEditLastQueued,
     handleDeleteQueuedMessage,
+    handleSendQueuedMessageNow,
     handleEditQueuedMessage,
     handleStopAgent,
   } = useChatActions({
@@ -808,7 +869,10 @@ export function IntegratedChatPanel({
   // "new user message → scrollToBottom" effect).
   const handleSend = useCallback(async (
     message: string,
-    options?: { projectReferences?: ComposerProjectReference[] },
+    options?: {
+      projectReferences?: ComposerProjectReference[];
+      integrationReferences?: ComposerIntegrationReference[];
+    },
   ) => {
     const attachmentIds = attachments.map(a => a.id);
     logger.debug("[ChatScroll] handleSend firing", {
@@ -847,6 +911,8 @@ export function IntegratedChatPanel({
     activeConversationId: effectiveConversationId,
     contextId: currentContextId,
     contextType: currentContextType,
+    streamingToolCalls,
+    streamingContentBlocks,
     setStreamingToolCalls,
     setStreamingContentBlocks,
     setStreamingTasks,
@@ -874,6 +940,17 @@ export function IntegratedChatPanel({
     clearAnswered,
     isLoading: isSubmittingAnswer,
   } = questionState;
+  const handleSubmitQuestionAnswer = useCallback(
+    async (response: AskUserQuestionResponse): Promise<SubmitQuestionAnswerResult> => {
+      const question = activeQuestion ?? null;
+      const result = await submitAnswer(response);
+      if (question && result.success) {
+        await onQuestionAnswered?.(question, response, result);
+      }
+      return result;
+    },
+    [activeQuestion, onQuestionAnswered, submitAnswer],
+  );
 
   // Question UI state — chip selection, input sync, question-aware send
   const {
@@ -883,9 +960,10 @@ export function IntegratedChatPanel({
     handleChipClick,
     handleMatchedOptions,
     handleQuestionSend,
+    handleQuestionSkip,
   } = useQuestionInput({
     activeQuestion: activeQuestion ?? null,
-    submitAnswer,
+    submitAnswer: handleSubmitQuestionAnswer,
     handleSend,
   });
 
@@ -996,6 +1074,12 @@ export function IntegratedChatPanel({
     () => sortedMessages.some((message) => message.timelineStatus === "streaming"),
     [sortedMessages]
   );
+  const hasClientLiveStreamingState =
+    streamingToolCalls.length > 0 ||
+    (streamingContentBlocks?.length ?? 0) > 0 ||
+    streamingTasks.size > 0;
+  const shouldUsePersistedStreamingTimelineItems =
+    hasPersistedStreamingTimelineItems && !hasClientLiveStreamingState;
   const statsFallbackMessages = useMemo(
     () =>
       effectiveConversationId
@@ -1212,11 +1296,11 @@ export function IntegratedChatPanel({
               isAgentRunning={agentStatus === "generating"}
               typingIndicatorLabel={agentActivityLabel}
               streamingToolCalls={
-                hasPersistedStreamingTimelineItems ? [] : streamingToolCalls
+                shouldUsePersistedStreamingTimelineItems ? [] : streamingToolCalls
               }
-              streamingTasks={hasPersistedStreamingTimelineItems ? new Map() : streamingTasks}
+              streamingTasks={shouldUsePersistedStreamingTimelineItems ? new Map() : streamingTasks}
               streamingContentBlocks={
-                hasPersistedStreamingTimelineItems ? [] : streamingContentBlocks
+                shouldUsePersistedStreamingTimelineItems ? [] : streamingContentBlocks
               }
               scrollToTimestamp={isHistoryMode ? taskHistoryState?.timestamp : null}
               isFinalizing={isFinalizing}
@@ -1241,6 +1325,7 @@ export function IntegratedChatPanel({
                   ? teammateConversationHistory.fetchOlderMessages
                   : primaryConversationHistory.fetchOlderMessages
               }
+              externalLayoutVersion={inputLayoutVersion}
             />
           )}
 
@@ -1330,6 +1415,7 @@ export function IntegratedChatPanel({
              chrome rhythm. Previous bg-base@50 collapsed on HC and shaded
              darker than body on Dark, producing a three-tier sandwich. */}
           <div
+            ref={inputContainerRef}
             data-testid="chat-input-container"
             className={inputContainerClassName ?? "shrink-0"}
             style={inputContainerClassName ? undefined : {
@@ -1348,6 +1434,7 @@ export function IntegratedChatPanel({
                     messages={queuedMessages}
                     onEdit={handleEditQueuedMessage}
                     onDelete={handleDeleteQueuedMessage}
+                    onSendNow={handleSendQueuedMessageNow}
                   />
                 </div>
               )}
@@ -1359,9 +1446,11 @@ export function IntegratedChatPanel({
                   question={activeQuestion ?? null}
                   selectedIndices={selectedOptions}
                   onChipClick={handleChipClick}
+                  onSkip={handleQuestionSkip}
                   onDismiss={dismissQuestion}
                   answeredValue={answeredQuestion}
                   onDismissAnswered={clearAnswered}
+                  {...(planApprovalAction !== undefined && { planApprovalAction })}
                 />
               )}
 

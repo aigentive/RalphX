@@ -1,9 +1,10 @@
 use super::{
-    agent_run_usage_from_codex_usage, codex_tool_call_content_block, flush_content_before_error,
-    format_agent_exit_stderr, normalize_codex_cumulative_usage_for_persistence,
-    normalize_codex_stream_usage_for_persistence, persist_assistant_message_snapshot,
-    persist_message_text_timeline_item, persist_timeline_snapshot, process_codex_stream_background,
-    process_exit_details, process_stream_background, provider_session_ref_for_harness,
+    agent_run_usage_from_codex_usage, capture_file_diff_baseline, codex_tool_call_content_block,
+    flush_content_before_error, format_agent_exit_stderr,
+    normalize_codex_cumulative_usage_for_persistence, normalize_codex_stream_usage_for_persistence,
+    persist_assistant_message_snapshot, persist_message_text_timeline_item,
+    persist_timeline_snapshot, process_codex_stream_background, process_exit_details,
+    process_stream_background, provider_session_ref_for_harness,
     resolve_codex_file_change_tool_call_snapshots, stream_mode_for_harness,
     upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome, StreamingStateCache,
 };
@@ -13,9 +14,11 @@ use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, HarnessStreamMode};
 use crate::domain::entities::{
     AgentRun, AgentRunUsage, ChatContextType, ChatConversationId, ChatMessage, ChatMessageId,
-    ChatTimelineItemStatus, IdeationSessionId, MessageRole,
+    ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemStatus, ChatTimelinePage,
+    IdeationSessionId, MessageRole,
 };
-use crate::domain::repositories::AgentRunRepository;
+use crate::domain::repositories::{AgentRunRepository, ChatTimelineRepository};
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::{
     AssistantContent, AssistantMessage, ContentBlockItem, StreamMessage, StreamProcessor, ToolCall,
 };
@@ -31,6 +34,51 @@ use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
+
+struct FailingTimelineRepository;
+
+#[async_trait::async_trait]
+impl ChatTimelineRepository for FailingTimelineRepository {
+    async fn upsert_item(&self, _item: ChatTimelineItem) -> AppResult<ChatTimelineItem> {
+        Err(AppError::Infrastructure("timeline write failed".to_string()))
+    }
+
+    async fn get_by_id(&self, _id: &ChatTimelineItemId) -> AppResult<Option<ChatTimelineItem>> {
+        Ok(None)
+    }
+
+    async fn get_page(
+        &self,
+        _conversation_id: &ChatConversationId,
+        limit: u32,
+        before_sequence: Option<i64>,
+    ) -> AppResult<ChatTimelinePage> {
+        Ok(ChatTimelinePage {
+            items: Vec::new(),
+            limit,
+            before_sequence,
+            total_item_count: 0,
+            has_older: false,
+            oldest_loaded_sequence: None,
+            newest_loaded_sequence: None,
+        })
+    }
+
+    async fn count_by_conversation(&self, _conversation_id: &ChatConversationId) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    async fn get_by_conversation(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<ChatTimelineItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn mark_message_items_finalized(&self, _message_id: &ChatMessageId) -> AppResult<()> {
+        Ok(())
+    }
+}
 
 async fn spawn_jsonl_process(lines: &[&str]) -> tokio::process::Child {
     let mut payload = String::new();
@@ -54,6 +102,40 @@ async fn spawn_jsonl_process(lines: &[&str]) -> tokio::process::Child {
     drop(stdin);
 
     child
+}
+
+async fn spawn_interactive_jsonl_process_that_stays_alive(line: &str) -> tokio::process::Child {
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg("printf '%s\\n' \"$RALPHX_STREAM_LINE\"; sleep 10")
+        .env("RALPHX_STREAM_LINE", line)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    command.spawn().expect("spawn interactive jsonl fixture")
+}
+
+async fn spawn_codex_jsonl_process_that_stays_alive(lines: &[&str]) -> tokio::process::Child {
+    let mut payload = String::new();
+    for line in lines {
+        payload.push_str(line);
+        payload.push('\n');
+    }
+
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg("printf '%s' \"$RALPHX_STREAM_LINES\"; exec sleep 10")
+        .env("RALPHX_STREAM_LINES", payload)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    command.spawn().expect("spawn codex jsonl fixture")
 }
 
 async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamError> {
@@ -93,6 +175,59 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
     .await
 }
 
+#[tokio::test]
+async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout() {
+    let child = spawn_interactive_jsonl_process_that_stays_alive(
+        r#"{"type":"result","session_id":"sess-overloaded","is_error":true,"errors":["API Error: 529 Overloaded. This is a server-side issue, usually temporary - try again in a moment."],"result":"API Error: 529 Overloaded. This is a server-side issue, usually temporary - try again in a moment.","cost_usd":0.0}"#,
+    )
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        process_stream_background::<MockRuntime>(
+            child,
+            AgentHarnessKind::Claude,
+            ChatContextType::Ideation,
+            context_id.as_str(),
+            &conversation_id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            CancellationToken::new(),
+            None,
+            false,
+            StreamingStateCache::new(),
+            None,
+            None,
+            Some("stream-run-id".to_string()),
+            None,
+            None,
+            false,
+            false,
+        ),
+    )
+    .await
+    .expect("error TurnComplete should not wait for the interactive line-read timeout");
+
+    let error = result.expect_err("error result should fail the stream");
+    assert!(
+        matches!(
+            error,
+            StreamError::ProviderError {
+                category: ProviderErrorCategory::Overloaded,
+                ..
+            }
+        ),
+        "expected overloaded provider error, got {error:?}"
+    );
+}
+
 async fn run_codex_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamError> {
     let child = spawn_jsonl_process(lines).await;
     let conversation_id = ChatConversationId::new();
@@ -121,6 +256,51 @@ async fn run_codex_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamE
         false,
     )
     .await
+}
+
+#[tokio::test]
+async fn codex_stream_turn_completed_finishes_without_waiting_for_process_exit() {
+    let child = spawn_codex_jsonl_process_that_stays_alive(&[
+        r#"{"type":"thread.started","thread_id":"codex-thread-queue"}"#,
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"Done."}}"#,
+        r#"{"type":"turn.completed","usage":{"last_token_usage":{"input_tokens":3,"output_tokens":2}}}"#,
+    ])
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        process_codex_stream_background::<MockRuntime>(
+            child,
+            ChatContextType::Ideation,
+            context_id.as_str(),
+            &conversation_id,
+            None::<tauri::AppHandle<MockRuntime>>,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            CancellationToken::new(),
+            StreamingStateCache::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+        ),
+    )
+    .await
+    .expect("Codex turn.completed should not wait for process EOF")
+    .expect("Codex turn.completed should complete successfully");
+
+    assert_eq!(outcome.response_text, "Done.");
+    assert_eq!(outcome.session_id, Some("codex-thread-queue".to_string()));
+    assert_eq!(outcome.turns_finalized, 0);
 }
 
 #[tokio::test]
@@ -257,7 +437,7 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         },
     ];
 
-    persist_timeline_snapshot(
+    let streaming_items = persist_timeline_snapshot(
         &Some(state.chat_timeline_repo.clone()),
         &conversation_id.as_str(),
         &message_id,
@@ -265,6 +445,9 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         ChatTimelineItemStatus::Streaming,
     )
     .await;
+    assert_eq!(streaming_items.len(), 3);
+    assert_eq!(streaming_items[0].status, ChatTimelineItemStatus::Streaming);
+    assert_eq!(streaming_items[1].tool_call_id.as_deref(), Some("tool-1"));
 
     let page = state
         .chat_timeline_repo
@@ -289,7 +472,7 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
     );
     assert!(page.items[2].tool_result_preview.is_none());
 
-    persist_timeline_snapshot(
+    let finalized_items = persist_timeline_snapshot(
         &Some(state.chat_timeline_repo.clone()),
         &conversation_id.as_str(),
         &message_id,
@@ -297,6 +480,10 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         ChatTimelineItemStatus::Finalized,
     )
     .await;
+    assert_eq!(finalized_items.len(), 3);
+    assert!(finalized_items
+        .iter()
+        .all(|item| item.status == ChatTimelineItemStatus::Finalized));
 
     let finalized = state
         .chat_timeline_repo
@@ -312,6 +499,27 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         .items
         .iter()
         .all(|item| item.finalized_at.is_some()));
+}
+
+#[tokio::test]
+async fn persist_timeline_snapshot_returns_empty_when_any_item_write_fails() {
+    let conversation_id = ChatConversationId::new();
+    let message_id = Some("assistant-message-write-fails".to_string());
+    let repo: Arc<dyn ChatTimelineRepository> = Arc::new(FailingTimelineRepository);
+    let blocks = vec![ContentBlockItem::Text {
+        text: "will fail".to_string(),
+    }];
+
+    let persisted = persist_timeline_snapshot(
+        &Some(repo),
+        &conversation_id.as_str(),
+        &message_id,
+        &blocks,
+        ChatTimelineItemStatus::Finalized,
+    )
+    .await;
+
+    assert!(persisted.is_empty());
 }
 
 #[tokio::test]
@@ -360,7 +568,7 @@ async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() 
         text: "ignored".to_string(),
     }];
 
-    persist_timeline_snapshot(
+    let missing_repo_items = persist_timeline_snapshot(
         &None,
         &conversation_id.as_str(),
         &Some("assistant-message-missing-repo".to_string()),
@@ -368,7 +576,7 @@ async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() 
         ChatTimelineItemStatus::Streaming,
     )
     .await;
-    persist_timeline_snapshot(
+    let missing_message_items = persist_timeline_snapshot(
         &Some(state.chat_timeline_repo.clone()),
         &conversation_id.as_str(),
         &None,
@@ -376,6 +584,8 @@ async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() 
         ChatTimelineItemStatus::Streaming,
     )
     .await;
+    assert!(missing_repo_items.is_empty());
+    assert!(missing_message_items.is_empty());
 
     let mut no_conversation = ChatMessage::user_in_session(IdeationSessionId::new(), "ignored");
     no_conversation.conversation_id = None;
@@ -800,6 +1010,7 @@ fn codex_tool_call_content_block_preserves_orderable_tool_payload() {
         parent_tool_use_id: Some("toolu-parent-1".to_string()),
         diff_context: Some(crate::infrastructure::agents::claude::DiffContext {
             old_content: Some("before".to_string()),
+            old_file_exists: None,
             file_path: "/tmp/example.txt".to_string(),
         }),
         stats: None,
@@ -857,6 +1068,7 @@ fn upsert_codex_tool_call_snapshot_updates_existing_tool_call_in_place() {
             parent_tool_use_id: Some("toolu-parent-1".to_string()),
             diff_context: Some(crate::infrastructure::agents::claude::DiffContext {
                 old_content: Some("before".to_string()),
+                old_file_exists: None,
                 file_path: "/tmp/example.txt".to_string(),
             }),
             stats: None,
@@ -999,6 +1211,13 @@ fn resolve_codex_file_change_tool_call_snapshots_turns_update_into_edit() {
             .and_then(|ctx| ctx.old_content.as_deref()),
         Some("alpha\n")
     );
+    assert_eq!(
+        tool_call
+            .diff_context
+            .as_ref()
+            .and_then(|ctx| ctx.old_file_exists),
+        Some(true)
+    );
 }
 
 #[test]
@@ -1070,6 +1289,92 @@ fn resolve_codex_file_change_tool_call_snapshots_turns_add_into_write() {
         .as_ref()
         .and_then(|ctx| ctx.old_content.as_deref())
         .is_none());
+    assert_eq!(
+        tool_call
+            .diff_context
+            .as_ref()
+            .and_then(|ctx| ctx.old_file_exists),
+        Some(false)
+    );
+}
+
+#[test]
+fn capture_file_diff_baseline_reports_existing_missing_and_unreadable_paths() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let existing_path = temp_dir.path().join("existing.txt");
+    std::fs::write(&existing_path, "alpha\n").expect("seed existing file");
+
+    assert_eq!(
+        capture_file_diff_baseline(&existing_path.to_string_lossy()),
+        (Some("alpha\n".to_string()), Some(true))
+    );
+
+    let missing_path = temp_dir.path().join("missing.txt");
+    assert_eq!(
+        capture_file_diff_baseline(&missing_path.to_string_lossy()),
+        (None, Some(false))
+    );
+
+    assert_eq!(
+        capture_file_diff_baseline(&temp_dir.path().to_string_lossy()),
+        (None, Some(true))
+    );
+}
+
+#[test]
+fn resolve_codex_file_change_tool_call_snapshots_turns_missing_update_into_write() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let file_path = temp_dir.path().join("created-by-update.txt");
+
+    let mut pending = std::collections::HashMap::new();
+    let started = resolve_codex_file_change_tool_call_snapshots(
+        CodexFileChangeSnapshot {
+            id: Some("item_3".to_string()),
+            phase: CodexToolCallPhase::Started,
+            status: Some("in_progress".to_string()),
+            changes: vec![CodexFileChange {
+                path: file_path.display().to_string(),
+                kind: "update".to_string(),
+            }],
+        },
+        &mut pending,
+    );
+
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].tool_call.name, "file_change");
+
+    std::fs::write(&file_path, "created\n").expect("create file");
+
+    let completed = resolve_codex_file_change_tool_call_snapshots(
+        CodexFileChangeSnapshot {
+            id: Some("item_3".to_string()),
+            phase: CodexToolCallPhase::Completed,
+            status: Some("completed".to_string()),
+            changes: vec![CodexFileChange {
+                path: file_path.display().to_string(),
+                kind: "update".to_string(),
+            }],
+        },
+        &mut pending,
+    );
+
+    assert_eq!(completed.len(), 1);
+    let tool_call = &completed[0].tool_call;
+    assert_eq!(tool_call.name, "write");
+    assert_eq!(
+        tool_call.arguments,
+        serde_json::json!({
+            "file_path": file_path.display().to_string(),
+            "content": "created\n",
+        })
+    );
+    assert_eq!(
+        tool_call
+            .diff_context
+            .as_ref()
+            .and_then(|ctx| ctx.old_file_exists),
+        Some(false)
+    );
 }
 
 #[tokio::test]

@@ -45,7 +45,12 @@ import {
   permissionRequestTool,
   handlePermissionRequest,
 } from "./permission-handler.js";
-import { handleAskUserQuestion, AskUserQuestionArgs } from "./question-handler.js";
+import {
+  handleAskUserQuestion,
+  handleProposePlanMode,
+  AskUserQuestionArgs,
+  ProposePlanModeArgs,
+} from "./question-handler.js";
 import { handleRequestTeamPlan, RequestTeamPlanArgs } from "./team-plan-handler.js";
 import {
   hydrateRalphxRuntimeEnvFromCli,
@@ -416,6 +421,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     try {
       const result = await handleAskUserQuestion(args as unknown as AskUserQuestionArgs);
+      safeTrace("tool.success", {
+        name,
+        result: summarizeResult(result),
+      });
+      return result;
+    } catch (error) {
+      safeTrace("tool.error", {
+        name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: "text", text: `ERROR: Unexpected error: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  // Special handling for propose_plan_mode (register + long-poll through question UI)
+  if (name === "propose_plan_mode") {
+    // Still check authorization (must be in agent's allowlist)
+    if (!isToolAllowed(name)) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `ERROR: Tool "${name}" is not available for agent type "${AGENT_TYPE}".`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    try {
+      const result = await handleProposePlanMode(args as unknown as ProposePlanModeArgs);
       safeTrace("tool.success", {
         name,
         result: summarizeResult(result),

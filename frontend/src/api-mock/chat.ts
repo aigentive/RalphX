@@ -308,6 +308,7 @@ export async function mockListAgentSidebarConversations(
   const includeArchived = input.includeArchived ?? false;
   const archivedOnly = input.archivedOnly ?? false;
   const pinnedConversationIds = new Set(input.pinnedConversationIds ?? []);
+  const priorityConversationIds = new Set(input.priorityConversationIds ?? []);
 
   const rows = projectIds
     .flatMap((projectId) =>
@@ -347,7 +348,13 @@ export async function mockListAgentSidebarConversations(
         .filter((row) => publicationStates.includes(row.publicationState))
     )
     .sort((left, right) =>
-      compareMockSidebarRows(left, right, input.sort ?? "latest", pinnedConversationIds)
+      compareMockSidebarRows(
+        left,
+        right,
+        input.sort ?? "latest",
+        pinnedConversationIds,
+        priorityConversationIds
+      )
     );
 
   const groupBy = input.groupBy ?? "project";
@@ -385,12 +392,17 @@ function compareMockSidebarRows(
   left: AgentSidebarConversationGroupsResponse["groups"][number]["rows"][number],
   right: AgentSidebarConversationGroupsResponse["groups"][number]["rows"][number],
   sort: AgentSidebarSort,
-  pinnedConversationIds: Set<string>
+  pinnedConversationIds: Set<string>,
+  priorityConversationIds: Set<string>
 ): number {
   const pinnedDelta =
     Number(pinnedConversationIds.has(right.conversation.id)) -
     Number(pinnedConversationIds.has(left.conversation.id));
   if (pinnedDelta !== 0) return pinnedDelta;
+  const priorityDelta =
+    Number(priorityConversationIds.has(right.conversation.id)) -
+    Number(priorityConversationIds.has(left.conversation.id));
+  if (priorityDelta !== 0) return priorityDelta;
 
   if (sort === "az" || sort === "za") {
     const leftTitle = (left.conversation.title ?? "Untitled agent").toLowerCase();
@@ -1046,6 +1058,28 @@ export async function mockDeleteQueuedAgentMessage(
   return existing.length !== filtered.length;
 }
 
+export async function mockSendQueuedAgentMessageNow(
+  contextType: ContextType,
+  contextId: string,
+  messageId: string
+): Promise<SendAgentMessageResult> {
+  const key = `${contextType}:${contextId}`;
+  const existing = mockQueuedMessages.get(key) ?? [];
+  const selected = existing.find((message) => message.id === messageId);
+  mockQueuedMessages.set(
+    key,
+    existing.filter((message) => message.id !== messageId)
+  );
+  return {
+    conversationId: contextId,
+    agentRunId: `mock-run-${messageId}`,
+    isNewConversation: false,
+    wasQueued: false,
+    queuedAsPending: false,
+    queuedMessageId: selected ? null : undefined,
+  };
+}
+
 export async function mockIsChatServiceAvailable(): Promise<boolean> {
   // Chat is not available in mock mode
   return false;
@@ -1070,8 +1104,13 @@ export async function mockIsAgentRunning(
 export async function mockGetAgentRunningStates(
   _contextType: ContextType,
   contextIds: string[]
-): Promise<Record<string, boolean>> {
-  return Object.fromEntries(contextIds.map((contextId) => [contextId, false]));
+): Promise<Record<string, { isRunning: boolean; agentStatus: "idle" }>> {
+  return Object.fromEntries(
+    contextIds.map((contextId) => [
+      contextId,
+      { isRunning: false, agentStatus: "idle" },
+    ])
+  );
 }
 
 export async function mockGetBulkWorkspacePublicationStates(
@@ -1120,6 +1159,7 @@ export const mockChatApi = {
   sendAgentMessage: mockSendAgentMessage,
   getQueuedAgentMessages: mockGetQueuedAgentMessages,
   deleteQueuedAgentMessage: mockDeleteQueuedAgentMessage,
+  sendQueuedAgentMessageNow: mockSendQueuedAgentMessageNow,
   isChatServiceAvailable: mockIsChatServiceAvailable,
   stopAgent: mockStopAgent,
   isAgentRunning: mockIsAgentRunning,
