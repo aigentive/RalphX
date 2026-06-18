@@ -3,7 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgentsPublishProgressToast } from "./AgentsPublishProgressToast";
 
-const { toastErrorMock, toastLoadingMock, toastSuccessMock } = vi.hoisted(() => ({
+const {
+  toastDismissMock,
+  toastErrorMock,
+  toastLoadingMock,
+  toastSuccessMock,
+} = vi.hoisted(() => ({
+  toastDismissMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastLoadingMock: vi.fn(),
   toastSuccessMock: vi.fn(),
@@ -11,6 +17,7 @@ const { toastErrorMock, toastLoadingMock, toastSuccessMock } = vi.hoisted(() => 
 
 vi.mock("sonner", () => ({
   toast: {
+    dismiss: (...args: unknown[]) => toastDismissMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
     loading: (...args: unknown[]) => toastLoadingMock(...args),
     success: (...args: unknown[]) => toastSuccessMock(...args),
@@ -21,6 +28,7 @@ describe("AgentsPublishProgressToast", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(10_000);
+    toastDismissMock.mockClear();
     toastErrorMock.mockClear();
     toastLoadingMock.mockClear();
     toastSuccessMock.mockClear();
@@ -83,6 +91,9 @@ describe("AgentsPublishProgressToast", () => {
     );
     vi.advanceTimersByTime(1_000);
 
+    expect(toastDismissMock).toHaveBeenCalledWith(
+      "agent-workspace-operation:conversation-1:publish",
+    );
     expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
   });
 });
