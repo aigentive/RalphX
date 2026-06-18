@@ -66,7 +66,13 @@ function issue(
   };
 }
 
-function renderPanel() {
+function renderPanel({
+  conversationId = "conversation-1",
+  projectId = "project-1",
+}: {
+  conversationId?: string | null;
+  projectId?: string | null;
+} = {}) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -79,7 +85,7 @@ function renderPanel() {
     </QueryClientProvider>
   );
   render(
-    <AgentsLinearIssuePanel conversationId="conversation-1" projectId="project-1" />,
+    <AgentsLinearIssuePanel conversationId={conversationId} projectId={projectId} />,
     { wrapper },
   );
   return queryClient;
@@ -148,6 +154,18 @@ describe("AgentsLinearIssuePanel", () => {
         issueUrl: "https://linear.app/acme/issue/LIN-456/assign-this-issue",
       }),
     );
+  });
+
+  it("does not search or assign before a conversation is selected", async () => {
+    getIssueMock.mockResolvedValue(null);
+
+    renderPanel({ conversationId: null });
+
+    expect(await screen.findByText("No conversation selected")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Search Linear issues")).not.toBeInTheDocument();
+    expect(getIssueMock).not.toHaveBeenCalled();
+    expect(searchIssuesMock).not.toHaveBeenCalled();
+    expect(assignIssueMock).not.toHaveBeenCalled();
   });
 
   it("exposes accessible refresh, unlink, and open-link actions", async () => {

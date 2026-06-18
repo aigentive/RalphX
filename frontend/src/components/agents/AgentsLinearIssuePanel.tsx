@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Loader2, RefreshCw, Search, Ticket, Unlink } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
@@ -52,7 +52,7 @@ export function AgentsLinearIssuePanel({
   const searchQuery = useQuery({
     queryKey: ["agents", "linear-issue-search", query.trim()] as const,
     queryFn: () => linearApi.searchIssues({ query: query.trim(), limit: 12 }),
-    enabled: showSearch && query.trim().length >= 2,
+    enabled: Boolean(conversationId) && showSearch && query.trim().length >= 2,
     staleTime: 10_000,
   });
   const assignMutation = useMutation({
@@ -125,6 +125,15 @@ export function AgentsLinearIssuePanel({
       toast.error(err instanceof Error ? err.message : "Failed to unlink Linear issue");
     },
   });
+  const isMutating =
+    assignMutation.isPending || refreshMutation.isPending || clearMutation.isPending;
+  const handleAssign = useCallback(
+    (resource: LinearIssueSummary) => {
+      if (!conversationId || isMutating) return;
+      assignMutation.mutate(resource);
+    },
+    [assignMutation, conversationId, isMutating],
+  );
 
   return (
     <div
@@ -160,14 +169,14 @@ export function AgentsLinearIssuePanel({
             <IconButton
               label="Refresh Linear issue"
               onClick={() => refreshIssue({ silent: false })}
-              disabled={refreshMutation.isPending}
+              disabled={!conversationId || isMutating}
             >
               <RefreshCw className={cn("h-4 w-4", refreshMutation.isPending && "animate-spin")} />
             </IconButton>
             <IconButton
               label="Unlink Linear issue"
               onClick={() => clearMutation.mutate()}
-              disabled={clearMutation.isPending}
+              disabled={!conversationId || isMutating}
             >
               <Unlink className="h-4 w-4" />
             </IconButton>
@@ -176,13 +185,15 @@ export function AgentsLinearIssuePanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        {issueQuery.isLoading ? (
+        {!conversationId ? (
+          <PanelStatus label="No conversation selected" busy={false} />
+        ) : issueQuery.isLoading ? (
           <PanelStatus label="Loading Linear issue" />
         ) : issue ? (
           <IssueDetails issue={issue} onReassign={() => setIsReassigning(true)} />
         ) : null}
 
-        {showSearch ? (
+        {conversationId && showSearch ? (
           <div className={cn("space-y-3", issue && "mt-4 border-t pt-4")} style={{ borderColor: "var(--border-subtle)" }}>
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
@@ -206,8 +217,8 @@ export function AgentsLinearIssuePanel({
                     borderStyle: "solid",
                     borderWidth: 1,
                   }}
-                  onClick={() => assignMutation.mutate(resource)}
-                  disabled={assignMutation.isPending}
+                  onClick={() => handleAssign(resource)}
+                  disabled={isMutating}
                 >
                   <div className="flex items-center justify-between gap-3">
                     <span className="truncate text-sm font-medium">
@@ -290,10 +301,10 @@ function IssueDetails({
   );
 }
 
-function PanelStatus({ label }: { label: string }) {
+function PanelStatus({ label, busy = true }: { label: string; busy?: boolean }) {
   return (
     <div className="flex items-center gap-2 text-sm" style={{ color: "var(--text-muted)" }}>
-      <Loader2 className="h-4 w-4 animate-spin" />
+      {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
       <span>{label}</span>
     </div>
   );
