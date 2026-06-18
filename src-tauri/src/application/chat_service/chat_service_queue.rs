@@ -23,7 +23,8 @@ use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
-    ChatContextType, ChatConversationId, InternalStatus, MessageRole, TaskId,
+    ChatContextType, ChatConversationId, ChatMessageId, InternalStatus, MessageRole, ProjectId,
+    TaskId,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatMessageRepository,
@@ -802,6 +803,35 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 if chat_message_repo.create(user_msg.clone()).await.is_ok() {
                     persist_message_text_timeline_item(&chat_timeline_repo, &user_msg).await;
                 }
+                if let Some(handle) = app_handle.as_ref() {
+                    let app_state = handle.state::<AppState>();
+                    let assignment_project_id = project_id
+                        .map(str::to_string)
+                        .or_else(|| {
+                            (context_type == ChatContextType::Project)
+                                .then(|| context_id.to_string())
+                        })
+                        .map(ProjectId::from_string);
+                    if let Some(project_id) = assignment_project_id {
+                        let repo = Arc::clone(&app_state.agent_conversation_jira_issue_repo);
+                        if let Err(error) = crate::application::agent_conversation_jira_issue::assign_primary_jira_issue_if_absent(
+                            &repo,
+                            &conversation_id,
+                            &project_id,
+                            &queued_msg.composer_integration_references,
+                            Some(ChatMessageId::from_string(user_msg_id.clone())),
+                            user_msg.created_at,
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                conversation_id = %conversation_id.as_str(),
+                                error = %error,
+                                "[QUEUE] failed to auto-assign primary Jira issue from composer references"
+                            );
+                        }
+                    }
+                }
 
                 if context_type == ChatContextType::Ideation {
                     let _ = ideation_session_repo.touch_updated_at(context_id).await;
@@ -870,6 +900,32 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.atlassian_integration_service)
             });
+            let agent_conversation_jira_issue_repo = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<AppState>();
+                Arc::clone(&app_state.agent_conversation_jira_issue_repo)
+            });
+            let assigned_jira_issue =
+                if let Some(repo) = agent_conversation_jira_issue_repo.as_ref() {
+                    repo.get_by_conversation_id(&conversation_id)
+                        .await
+                        .map_err(|error| {
+                            tracing::warn!(
+                                conversation_id = %conversation_id.as_str(),
+                                error = %error,
+                                "[QUEUE] failed to load agent conversation Jira assignment"
+                            );
+                            error
+                        })
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
+            let merged_integration_references =
+                crate::application::agent_conversation_jira_issue::merge_assigned_jira_reference(
+                    assigned_jira_issue.as_ref(),
+                    &queued_msg.composer_integration_references,
+                );
 
             let runtime_content =
                 super::chat_service_composer_references::expand_project_references_for_prompt(
@@ -877,14 +933,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     &queued_msg.composer_project_references,
                     working_directory,
                 );
-            let runtime_content = if queued_msg.composer_integration_references.is_empty() {
+            let runtime_content = if merged_integration_references.is_empty() {
                 runtime_content
             } else if let Some(service) = atlassian_integration_service.as_ref() {
                 service
-                    .expand_references_for_prompt(
-                        &runtime_content,
-                        &queued_msg.composer_integration_references,
-                    )
+                    .expand_references_for_prompt(&runtime_content, &merged_integration_references)
                     .await
             } else {
                 runtime_content

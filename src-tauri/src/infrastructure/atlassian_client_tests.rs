@@ -9,9 +9,9 @@ use crate::application::{AtlassianApiClient, AtlassianAuthContext, AtlassianCred
 use crate::domain::services::ComposerIntegrationReference;
 
 use super::atlassian_client::{
-    build_confluence_search_cql, build_jira_search_jql, confluence_page_id_query,
-    fetch_confluence, fetch_jira, search_confluence, search_jira, AtlassianJsonRequester,
-    HyperAtlassianApiClient, RequestAuth,
+    build_confluence_search_cql, build_jira_search_jql, confluence_page_id_query, fetch_confluence,
+    fetch_jira, search_confluence, search_jira, AtlassianJsonRequester, HyperAtlassianApiClient,
+    RequestAuth,
 };
 
 #[derive(Clone, Debug)]
@@ -52,11 +52,7 @@ impl AtlassianJsonRequester for FakeAtlassianRequester {
         self.requests
             .lock()
             .expect("requests")
-            .push(RecordedAtlassianRequest {
-                method,
-                url,
-                body,
-            });
+            .push(RecordedAtlassianRequest { method, url, body });
         self.responses
             .lock()
             .expect("responses")
@@ -172,7 +168,10 @@ async fn jira_search_exact_key_fetches_jql_and_picker_without_duplicates() {
         .expect("jira search");
 
     assert_eq!(
-        results.iter().map(|resource| resource.id.as_str()).collect::<Vec<_>>(),
+        results
+            .iter()
+            .map(|resource| resource.id.as_str())
+            .collect::<Vec<_>>(),
         vec!["PDM-81", "PDM-82", "PDM-83"]
     );
     assert_eq!(results[0].title, "Exact issue");
@@ -273,7 +272,10 @@ async fn confluence_search_merges_page_id_and_search_results() {
         .expect("confluence search");
 
     assert_eq!(
-        results.iter().map(|resource| resource.id.as_str()).collect::<Vec<_>>(),
+        results
+            .iter()
+            .map(|resource| resource.id.as_str())
+            .collect::<Vec<_>>(),
         vec!["123456", "789"]
     );
     assert_eq!(results[0].title, "Runbook");
@@ -350,10 +352,183 @@ async fn fetch_jira_renders_issue_fields_and_recent_comments() {
     assert_eq!(content.title, "Fix reference search");
     assert!(content.body.contains("Key: PDM-81"));
     assert!(content.body.contains("Status: Done"));
-    assert!(content.body.contains("Description:\nSelected references should be valid"));
+    assert!(content
+        .body
+        .contains("Description:\nSelected references should be valid"));
     assert!(!content.body.contains("first comment"));
     assert!(content.body.contains("second comment"));
     assert!(content.body.contains("fourth comment"));
+}
+
+#[tokio::test]
+async fn fetch_jira_parses_adf_description_comments_and_attachments() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!({
+        "fields": {
+            "summary": "Build Jira tab",
+            "status": { "name": "In Review" },
+            "assignee": { "displayName": "Ada Lovelace" },
+            "reporter": { "displayName": "Grace Hopper" },
+            "updated": "2026-06-17T10:00:00.000+0000",
+            "description": {
+                "type": "doc",
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            { "type": "text", "text": "Render " },
+                            {
+                                "type": "text",
+                                "text": "rich Jira",
+                                "marks": [{ "type": "strong" }]
+                            }
+                        ]
+                    },
+                    {
+                        "type": "heading",
+                        "attrs": { "level": 2 },
+                        "content": [{ "type": "text", "text": "Acceptance Criteria" }]
+                    },
+                    {
+                        "type": "bulletList",
+                        "content": [
+                            {
+                                "type": "listItem",
+                                "content": [{
+                                    "type": "paragraph",
+                                    "content": [{ "type": "text", "text": "Primary ticket is visible" }]
+                                }]
+                            },
+                            {
+                                "type": "listItem",
+                                "content": [{
+                                    "type": "paragraph",
+                                    "content": [
+                                        { "type": "text", "text": "Agents receive " },
+                                        {
+                                            "type": "text",
+                                            "text": "prompt context",
+                                            "marks": [{ "type": "code" }]
+                                        }
+                                    ]
+                                }]
+                            }
+                        ]
+                    },
+                    {
+                        "type": "heading",
+                        "attrs": { "level": 2 },
+                        "content": [{ "type": "text", "text": "Notes:" }]
+                    },
+                    {
+                        "type": "paragraph",
+                        "content": [{ "type": "text", "text": "Not part of AC" }]
+                    }
+                ]
+            },
+            "comment": {
+                "comments": [
+                    {
+                        "id": "c1",
+                        "author": { "displayName": "Reviewer" },
+                        "created": "2026-06-17T10:01:00.000+0000",
+                        "updated": "2026-06-17T10:02:00.000+0000",
+                        "body": {
+                            "type": "doc",
+                            "content": [{
+                                "type": "paragraph",
+                                "content": [{ "type": "text", "text": "Please cover parser" }]
+                            }]
+                        }
+                    },
+                    {
+                        "id": "c2",
+                        "author": { "displayName": "Implementer" },
+                        "body": {
+                            "type": "doc",
+                            "content": [{
+                                "type": "paragraph",
+                                "content": [{ "type": "text", "text": "Added focused tests" }]
+                            }]
+                        }
+                    }
+                ]
+            },
+            "attachment": [
+                {
+                    "id": "a1",
+                    "filename": "design.png",
+                    "mimeType": "image/png",
+                    "size": 2048,
+                    "author": { "displayName": "Designer" },
+                    "content": "https://example.atlassian.net/secure/attachment/a1/design.png",
+                    "thumbnail": "https://example.atlassian.net/secure/thumbnail/a1",
+                    "created": "2026-06-17T10:03:00.000+0000"
+                },
+                {
+                    "id": "a2",
+                    "filename": "   "
+                }
+            ]
+        }
+    }))]);
+
+    let content = fetch_jira(
+        &requester,
+        &auth_context(),
+        &ComposerIntegrationReference {
+            key: Some("RX-42".to_string()),
+            ..integration_reference("jira", "ignored-id")
+        },
+    )
+    .await
+    .expect("jira fetch");
+
+    assert_eq!(content.title, "Build Jira tab");
+    assert_eq!(content.status.as_deref(), Some("In Review"));
+    assert_eq!(content.assignee.as_deref(), Some("Ada Lovelace"));
+    assert_eq!(content.reporter.as_deref(), Some("Grace Hopper"));
+    assert_eq!(
+        content.updated_at_remote.as_deref(),
+        Some("2026-06-17T10:00:00.000+0000")
+    );
+    assert_eq!(
+        content.description_markdown.as_deref(),
+        Some(
+            "Render **rich Jira**\n## Acceptance Criteria\n- Primary ticket is visible\n- Agents receive `prompt context`\n## Notes:\nNot part of AC"
+        )
+    );
+    assert_eq!(
+        content.description_text.as_deref(),
+        Some(
+            "Render rich Jira\nAcceptance Criteria\nPrimary ticket is visible\nAgents receive prompt context\nNotes:\nNot part of AC"
+        )
+    );
+    assert_eq!(
+        content.acceptance_criteria_markdown.as_deref(),
+        Some("- Primary ticket is visible\n- Agents receive `prompt context`")
+    );
+    assert_eq!(
+        content.acceptance_criteria_text.as_deref(),
+        Some("Primary ticket is visible\nAgents receive prompt context")
+    );
+    assert_eq!(content.comments.len(), 2);
+    assert_eq!(content.comments[0].id.as_deref(), Some("c1"));
+    assert_eq!(content.comments[0].author.as_deref(), Some("Reviewer"));
+    assert_eq!(content.comments[0].body_text, "Please cover parser");
+    assert_eq!(
+        content.comments[0].updated_at.as_deref(),
+        Some("2026-06-17T10:02:00.000+0000")
+    );
+    assert_eq!(content.attachments.len(), 1);
+    assert_eq!(content.attachments[0].filename, "design.png");
+    assert_eq!(
+        content.attachments[0].mime_type.as_deref(),
+        Some("image/png")
+    );
+    assert_eq!(content.attachments[0].size, Some(2048));
+    assert_eq!(content.attachments[0].author.as_deref(), Some("Designer"));
+    assert!(content.body.contains("Comment:\nPlease cover parser"));
+    assert!(content.body.contains("Comment:\nAdded focused tests"));
 }
 
 #[tokio::test]

@@ -70,6 +70,30 @@ pub struct AtlassianResourceSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AtlassianJiraComment {
+    pub id: Option<String>,
+    pub author: Option<String>,
+    pub body_markdown: String,
+    pub body_text: String,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlassianJiraAttachment {
+    pub id: Option<String>,
+    pub filename: String,
+    pub mime_type: Option<String>,
+    pub size: Option<i64>,
+    pub author: Option<String>,
+    pub content_url: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AtlassianResourceContent {
     pub kind: AtlassianResourceKind,
     pub id: String,
@@ -77,6 +101,26 @@ pub struct AtlassianResourceContent {
     pub title: String,
     pub url: Option<String>,
     pub body: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub assignee: Option<String>,
+    #[serde(default)]
+    pub reporter: Option<String>,
+    #[serde(default)]
+    pub updated_at_remote: Option<String>,
+    #[serde(default)]
+    pub description_markdown: Option<String>,
+    #[serde(default)]
+    pub description_text: Option<String>,
+    #[serde(default)]
+    pub acceptance_criteria_markdown: Option<String>,
+    #[serde(default)]
+    pub acceptance_criteria_text: Option<String>,
+    #[serde(default)]
+    pub comments: Vec<AtlassianJiraComment>,
+    #[serde(default)]
+    pub attachments: Vec<AtlassianJiraAttachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -223,6 +267,16 @@ impl AtlassianApiClient for EmptyAtlassianApiClient {
                 .unwrap_or_else(|| reference.id.clone()),
             url: reference.url.clone(),
             body: String::new(),
+            status: None,
+            assignee: None,
+            reporter: None,
+            updated_at_remote: None,
+            description_markdown: None,
+            description_text: None,
+            acceptance_criteria_markdown: None,
+            acceptance_criteria_text: None,
+            comments: Vec::new(),
+            attachments: Vec::new(),
         })
     }
 
@@ -631,6 +685,14 @@ impl AtlassianIntegrationService {
         self.client
             .search(&auth, kind, query, limit.clamp(1, 25))
             .await
+    }
+
+    pub async fn fetch_resource_content(
+        &self,
+        reference: &ComposerIntegrationReference,
+    ) -> Result<AtlassianResourceContent, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.fetch(&auth, reference).await
     }
 
     pub async fn expand_references_for_prompt(
