@@ -1097,5 +1097,25 @@ describe("AgentComposerSurface", () => {
       );
       expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass("h-10");
     });
+
+    it("loads minimal: does not auto-focus or expand on mount even with autoFocus", () => {
+      renderComposer({
+        dataTestId: "agent-composer",
+        collapsible: true,
+        autoFocus: true,
+      });
+
+      expect(screen.getByTestId("agent-composer")).toHaveAttribute(
+        "data-collapsed",
+        "true",
+      );
+      expect(screen.getByLabelText("Message input")).not.toHaveFocus();
+    });
+
+    it("still auto-focuses a non-collapsible composer on mount", () => {
+      renderComposer({ dataTestId: "agent-composer", autoFocus: true });
+
+      expect(screen.getByLabelText("Message input")).toHaveFocus();
+    });
   });
 });

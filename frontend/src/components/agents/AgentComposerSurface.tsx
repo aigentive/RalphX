@@ -369,10 +369,13 @@ export function AgentComposerSurface({
   });
 
   useEffect(() => {
-    if (autoFocus && textareaRef.current) {
+    // A collapsible composer must load in its minimal/resting state, so it never
+    // auto-focuses on mount (focusing would expand it). The user expands it by
+    // clicking. Non-collapsible composers (e.g. the start composer) keep autofocus.
+    if (autoFocus && !collapsible && textareaRef.current) {
       textareaRef.current.focus();
     }
-  }, [autoFocus]);
+  }, [autoFocus, collapsible]);
 
   const matchOptionsFromInput = useCallback(
     (input: string) => {
@@ -1447,7 +1450,7 @@ export function AgentComposerSurface({
             <Button
               type="button"
               className={cn(
-                "agent-composer-action-button ml-auto shrink-0 rounded-md text-[0.75rem] font-semibold tracking-[-0.01em] transition-[height,min-width,padding] duration-150 ease-out",
+                "agent-composer-action-button ml-auto shrink-0 rounded-full text-[0.75rem] font-semibold tracking-[-0.01em] transition-[height,min-width,padding] duration-150 ease-out",
                 compact ? "h-8 px-3" : "h-10 px-4",
                 compact
                   ? "min-w-0"
