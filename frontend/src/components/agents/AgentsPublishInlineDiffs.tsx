@@ -57,6 +57,7 @@ export interface AgentsPublishInlineDiffsProps {
   error?: unknown;
   onOpenInDialog?: ((filePath?: string) => void) | undefined;
   focusRequest?: AgentPublishFocusRequest | null | undefined;
+  defaultMode?: DiffFilterMode | undefined;
   workspaceChangeLabel?: string | undefined;
 }
 
@@ -184,6 +185,7 @@ export function AgentsPublishInlineDiffs({
   error,
   onOpenInDialog,
   focusRequest,
+  defaultMode,
   workspaceChangeLabel,
 }: AgentsPublishInlineDiffsProps) {
   // Set of collapsed file paths; empty = all expanded (default).
@@ -221,7 +223,7 @@ export function AgentsPublishInlineDiffs({
     totalDeletions,
     workspaceChangeCount,
     unstagedCount,
-  } = useAgentWorkspaceChangeSummary({ conversationId, review });
+  } = useAgentWorkspaceChangeSummary({ conversationId, review, defaultMode });
   const rangeRefKind =
     review?.headRef.startsWith(PATCH_BACKED_HEAD_REF_PREFIX) === true
       ? undefined

@@ -252,6 +252,8 @@ export function AgentPublishPanel({
     getAgentWorkspaceTerminalPublicationStatus(workspace);
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(workspace);
+  const inlineDiffDefaultMode =
+    terminalPublicationStatus === "merged" ? "cumulative" : undefined;
   const isPipelineOwnedWorkspace = isPipelineOwnedAgentWorkspace(workspace);
   const isPipelinePrAutomationWorkspace =
     workspace?.mode === "ideation" && isPipelineOwnedWorkspace && hasPublishedPr;
@@ -1163,6 +1165,7 @@ export function AgentPublishPanel({
               error={reviewQuery.error}
               onOpenInDialog={() => setReviewOpen(true)}
               focusRequest={publishFocusRequest}
+              {...(inlineDiffDefaultMode !== undefined && { defaultMode: inlineDiffDefaultMode })}
               {...(isPublishCurrent && { workspaceChangeLabel: "Published changes" })}
             />
           </section>
