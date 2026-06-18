@@ -144,13 +144,25 @@ fn upgrades_only_non_revoked_permissions_3_keys() {
     migrate(&conn).unwrap();
 
     let p1: i64 = conn
-        .query_row("SELECT permissions FROM api_keys WHERE id = 'k1'", [], |r| r.get(0))
+        .query_row(
+            "SELECT permissions FROM api_keys WHERE id = 'k1'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     let p2: i64 = conn
-        .query_row("SELECT permissions FROM api_keys WHERE id = 'k2'", [], |r| r.get(0))
+        .query_row(
+            "SELECT permissions FROM api_keys WHERE id = 'k2'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     let p3: i64 = conn
-        .query_row("SELECT permissions FROM api_keys WHERE id = 'k3'", [], |r| r.get(0))
+        .query_row(
+            "SELECT permissions FROM api_keys WHERE id = 'k3'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
 
     assert_eq!(p1, 7, "active permissions=3 key should be upgraded to 7");

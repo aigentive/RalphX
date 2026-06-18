@@ -1,5 +1,5 @@
-use rusqlite::Connection;
 use crate::error::AppResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> AppResult<()> {
     conn.execute_batch("

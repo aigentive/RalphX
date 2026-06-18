@@ -16,6 +16,7 @@ pub enum AgentConversationWorkspaceMode {
     Edit,
     Plan,
     Ideation,
+    ReviewPr,
 }
 
 impl std::fmt::Display for AgentConversationWorkspaceMode {
@@ -25,6 +26,7 @@ impl std::fmt::Display for AgentConversationWorkspaceMode {
             AgentConversationWorkspaceMode::Edit => write!(f, "edit"),
             AgentConversationWorkspaceMode::Plan => write!(f, "plan"),
             AgentConversationWorkspaceMode::Ideation => write!(f, "ideation"),
+            AgentConversationWorkspaceMode::ReviewPr => write!(f, "review_pr"),
         }
     }
 }
@@ -38,6 +40,7 @@ impl FromStr for AgentConversationWorkspaceMode {
             "edit" => Ok(Self::Edit),
             "plan" => Ok(Self::Plan),
             "ideation" => Ok(Self::Ideation),
+            "review_pr" => Ok(Self::ReviewPr),
             _ => Err(format!(
                 "unknown agent conversation workspace mode: '{value}'"
             )),
@@ -78,6 +81,120 @@ impl FromStr for AgentConversationWorkspaceStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspacePrReviewMonitorStatus {
+    Idle,
+    Reviewing,
+    AwaitingUser,
+    Watching,
+    Submitting,
+    Blocked,
+    Terminal,
+}
+
+impl std::fmt::Display for AgentWorkspacePrReviewMonitorStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Idle => write!(f, "idle"),
+            Self::Reviewing => write!(f, "reviewing"),
+            Self::AwaitingUser => write!(f, "awaiting_user"),
+            Self::Watching => write!(f, "watching"),
+            Self::Submitting => write!(f, "submitting"),
+            Self::Blocked => write!(f, "blocked"),
+            Self::Terminal => write!(f, "terminal"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspacePrReviewMonitorStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "idle" => Ok(Self::Idle),
+            "reviewing" => Ok(Self::Reviewing),
+            "awaiting_user" => Ok(Self::AwaitingUser),
+            "watching" => Ok(Self::Watching),
+            "submitting" => Ok(Self::Submitting),
+            "blocked" => Ok(Self::Blocked),
+            "terminal" => Ok(Self::Terminal),
+            _ => Err(format!("unknown PR review monitor status: '{value}'")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspacePrReviewActionKind {
+    RequestChanges,
+    Approve,
+    Comment,
+}
+
+impl std::fmt::Display for AgentWorkspacePrReviewActionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RequestChanges => write!(f, "request_changes"),
+            Self::Approve => write!(f, "approve"),
+            Self::Comment => write!(f, "comment"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspacePrReviewActionKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "request_changes" => Ok(Self::RequestChanges),
+            "approve" => Ok(Self::Approve),
+            "comment" => Ok(Self::Comment),
+            _ => Err(format!("unknown PR review action: '{value}'")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspacePrReviewActionStatus {
+    Pending,
+    Approved,
+    Skipped,
+    Submitting,
+    Submitted,
+    Failed,
+}
+
+impl std::fmt::Display for AgentWorkspacePrReviewActionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending => write!(f, "pending"),
+            Self::Approved => write!(f, "approved"),
+            Self::Skipped => write!(f, "skipped"),
+            Self::Submitting => write!(f, "submitting"),
+            Self::Submitted => write!(f, "submitted"),
+            Self::Failed => write!(f, "failed"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspacePrReviewActionStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "approved" => Ok(Self::Approved),
+            "skipped" => Ok(Self::Skipped),
+            "submitting" => Ok(Self::Submitting),
+            "submitted" => Ok(Self::Submitted),
+            "failed" => Ok(Self::Failed),
+            _ => Err(format!("unknown PR review action status: '{value}'")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWorkspaceSourcePullRequest {
     pub number: i64,
@@ -86,6 +203,100 @@ pub struct AgentWorkspaceSourcePullRequest {
     pub head_ref_name: String,
     pub base_ref_name: Option<String>,
     pub head_ref_oid: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspacePrReviewMonitor {
+    pub conversation_id: ChatConversationId,
+    pub project_id: ProjectId,
+    pub pr_number: i64,
+    pub status: AgentWorkspacePrReviewMonitorStatus,
+    pub monitor_enabled: bool,
+    pub first_review_completed: bool,
+    pub last_seen_head_sha: Option<String>,
+    pub last_reviewed_head_sha: Option<String>,
+    pub last_review_run_id: Option<String>,
+    pub last_review_outcome: Option<String>,
+    pub last_submitted_review_id: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl AgentWorkspacePrReviewMonitor {
+    pub fn new(
+        conversation_id: ChatConversationId,
+        project_id: ProjectId,
+        pr_number: i64,
+        head_sha: Option<String>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            conversation_id,
+            project_id,
+            pr_number,
+            status: AgentWorkspacePrReviewMonitorStatus::Idle,
+            monitor_enabled: false,
+            first_review_completed: false,
+            last_seen_head_sha: head_sha,
+            last_reviewed_head_sha: None,
+            last_review_run_id: None,
+            last_review_outcome: None,
+            last_submitted_review_id: None,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspacePrReviewAction {
+    pub id: String,
+    pub conversation_id: ChatConversationId,
+    pub pr_number: i64,
+    pub head_sha: String,
+    pub proposed_action: AgentWorkspacePrReviewActionKind,
+    pub summary: String,
+    pub review_body: String,
+    pub findings_json: Option<String>,
+    pub status: AgentWorkspacePrReviewActionStatus,
+    pub submitted_review_id: Option<String>,
+    pub created_by_run_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+impl AgentWorkspacePrReviewAction {
+    pub fn new(
+        conversation_id: ChatConversationId,
+        pr_number: i64,
+        head_sha: String,
+        proposed_action: AgentWorkspacePrReviewActionKind,
+        summary: String,
+        review_body: String,
+        findings_json: Option<String>,
+        created_by_run_id: Option<String>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            conversation_id,
+            pr_number,
+            head_sha,
+            proposed_action,
+            summary,
+            review_body,
+            findings_json,
+            status: AgentWorkspacePrReviewActionStatus::Pending,
+            submitted_review_id: None,
+            created_by_run_id,
+            created_at: now,
+            updated_at: now,
+            resolved_at: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

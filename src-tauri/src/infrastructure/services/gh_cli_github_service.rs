@@ -22,7 +22,7 @@ use crate::domain::services::github_service::{
     GithubServiceTrait, PrAnnotationSourceUnavailable, PrAutoMergeRequest, PrBranchMatch,
     PrDiffAnnotation, PrDiffAnnotations, PrHealth, PrHealthCheck, PrIssueCommentSummary,
     PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback, PrReviewFeedback,
-    PrSearchResult, PrStatus, PrSyncState,
+    PrReviewSubmissionEvent, PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
 };
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -335,6 +335,23 @@ fn build_pr_reviews_api_args(pr_number: i64) -> Vec<String> {
         format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews"),
         "--paginate".to_string(),
         "--slurp".to_string(),
+    ]
+}
+
+fn build_submit_pr_review_api_args(
+    pr_number: i64,
+    event: PrReviewSubmissionEvent,
+    body: &str,
+) -> Vec<String> {
+    vec![
+        "api".to_string(),
+        format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews"),
+        "-X".to_string(),
+        "POST".to_string(),
+        "-f".to_string(),
+        format!("event={event}"),
+        "-f".to_string(),
+        format!("body={body}"),
     ]
 }
 
@@ -772,6 +789,23 @@ impl GithubServiceTrait for GhCliGithubService {
                 .then(left.id.cmp(&right.id))
         });
         Ok(payload)
+    }
+
+    async fn submit_pr_review(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+        event: PrReviewSubmissionEvent,
+        body: &str,
+    ) -> AppResult<PrSubmittedReview> {
+        let stdout = self
+            .runner
+            .run_gh(
+                working_dir,
+                &build_submit_pr_review_api_args(pr_number, event, body),
+            )
+            .await?;
+        parse_submit_pr_review_output(&stdout.join("\n"))
     }
 
     async fn fetch_pr_health(&self, working_dir: &Path, pr_number: i64) -> AppResult<PrHealth> {
@@ -1465,6 +1499,22 @@ pub(crate) fn parse_pr_review_decision_output(json_str: &str) -> AppResult<bool>
     })?;
 
     Ok(v["reviewDecision"].as_str() == Some("CHANGES_REQUESTED"))
+}
+
+pub(crate) fn parse_submit_pr_review_output(json_str: &str) -> AppResult<PrSubmittedReview> {
+    let value: Value = serde_json::from_str(json_str).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse submitted PR review JSON: {e}\nRaw: {json_str}"
+        ))
+    })?;
+    let id = json_id_to_string(value.get("id")).ok_or_else(|| {
+        AppError::Infrastructure("submitted PR review response missing id".to_string())
+    })?;
+    let url = value
+        .get("html_url")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok(PrSubmittedReview { id, url })
 }
 
 pub(crate) fn parse_pr_review_feedback_output(

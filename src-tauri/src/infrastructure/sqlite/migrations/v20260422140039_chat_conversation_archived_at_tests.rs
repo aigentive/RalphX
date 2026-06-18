@@ -20,7 +20,9 @@ fn test_migration_runs() {
 
     v20260422140039_chat_conversation_archived_at::migrate(&conn).unwrap();
 
-    let mut stmt = conn.prepare("PRAGMA table_info(chat_conversations)").unwrap();
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(chat_conversations)")
+        .unwrap();
     let columns = stmt
         .query_map([], |row| row.get::<_, String>(1))
         .unwrap()

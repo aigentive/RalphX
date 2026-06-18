@@ -671,9 +671,7 @@ impl IdeationSession {
             source_context_id: row
                 .get::<_, Option<String>>("source_context_id")
                 .unwrap_or(None),
-            spawn_reason: row
-                .get::<_, Option<String>>("spawn_reason")
-                .unwrap_or(None),
+            spawn_reason: row.get::<_, Option<String>>("spawn_reason").unwrap_or(None),
             blocker_fingerprint: row
                 .get::<_, Option<String>>("blocker_fingerprint")
                 .unwrap_or(None),
@@ -714,9 +712,7 @@ impl IdeationSession {
             auto_accept_started_at: row
                 .get::<_, Option<String>>("auto_accept_started_at")
                 .unwrap_or(None),
-            api_key_id: row
-                .get::<_, Option<String>>("api_key_id")
-                .unwrap_or(None),
+            api_key_id: row.get::<_, Option<String>>("api_key_id").unwrap_or(None),
             idempotency_key: row
                 .get::<_, Option<String>>("idempotency_key")
                 .unwrap_or(None),

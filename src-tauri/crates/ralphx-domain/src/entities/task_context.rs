@@ -219,11 +219,16 @@ pub fn generate_task_context_hints(
     }
 
     if has_proposal {
-        hints.push("Task was created from ideation proposal - check acceptance criteria".to_string());
+        hints.push(
+            "Task was created from ideation proposal - check acceptance criteria".to_string(),
+        );
     }
 
     if has_plan {
-        hints.push("Implementation plan available - use get_artifact to read full plan before starting".to_string());
+        hints.push(
+            "Implementation plan available - use get_artifact to read full plan before starting"
+                .to_string(),
+        );
     }
 
     if related_count > 0 {

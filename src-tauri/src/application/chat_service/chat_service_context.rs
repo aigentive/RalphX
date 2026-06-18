@@ -4841,6 +4841,11 @@ exit 0
                 agent_names::AGENT_CHAT_PROJECT,
                 None,
             ),
+            (
+                AgentConversationWorkspaceMode::ReviewPr,
+                agent_names::AGENT_PR_REVIEWER,
+                None,
+            ),
         ];
         let harness_clis = [
             (
@@ -4926,6 +4931,11 @@ exit 0
             (
                 AgentConversationWorkspaceMode::Ideation,
                 agent_names::AGENT_CHAT_PROJECT,
+                None,
+            ),
+            (
+                AgentConversationWorkspaceMode::ReviewPr,
+                agent_names::AGENT_PR_REVIEWER,
                 None,
             ),
         ];

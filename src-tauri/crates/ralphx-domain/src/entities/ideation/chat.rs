@@ -5,12 +5,10 @@ use rusqlite::Row;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
+use super::types::parse_datetime_helper;
 use crate::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
 use crate::entities::AgentRunUsage;
-use super::types::parse_datetime_helper;
-use crate::entities::{
-    ChatConversationId, ChatMessageId, IdeationSessionId, ProjectId, TaskId,
-};
+use crate::entities::{ChatConversationId, ChatMessageId, IdeationSessionId, ProjectId, TaskId};
 
 // ============================================================================
 // ChatMessage and Related Types
@@ -444,8 +442,7 @@ impl ChatMessage {
         let effective_effort: Option<String> = row.get("effective_effort").ok().flatten();
         let input_tokens: Option<u64> = row.get("input_tokens").ok().flatten();
         let output_tokens: Option<u64> = row.get("output_tokens").ok().flatten();
-        let cache_creation_tokens: Option<u64> =
-            row.get("cache_creation_tokens").ok().flatten();
+        let cache_creation_tokens: Option<u64> = row.get("cache_creation_tokens").ok().flatten();
         let cache_read_tokens: Option<u64> = row.get("cache_read_tokens").ok().flatten();
         let estimated_usd: Option<f64> = row.get("estimated_usd").ok().flatten();
         let created_at_str: String = row.get("created_at")?;

@@ -142,8 +142,14 @@ fn pr_status_to_db_string() {
 fn pr_status_from_db_string_all_variants() {
     assert_eq!(PrStatus::from_db_string("Draft").unwrap(), PrStatus::Draft);
     assert_eq!(PrStatus::from_db_string("Open").unwrap(), PrStatus::Open);
-    assert_eq!(PrStatus::from_db_string("Merged").unwrap(), PrStatus::Merged);
-    assert_eq!(PrStatus::from_db_string("Closed").unwrap(), PrStatus::Closed);
+    assert_eq!(
+        PrStatus::from_db_string("Merged").unwrap(),
+        PrStatus::Merged
+    );
+    assert_eq!(
+        PrStatus::from_db_string("Closed").unwrap(),
+        PrStatus::Closed
+    );
 }
 
 #[test]
@@ -176,9 +182,18 @@ fn pr_push_status_to_db_string() {
 
 #[test]
 fn pr_push_status_from_db_string_all_variants() {
-    assert_eq!(PrPushStatus::from_db_string("pending").unwrap(), PrPushStatus::Pending);
-    assert_eq!(PrPushStatus::from_db_string("pushed").unwrap(), PrPushStatus::Pushed);
-    assert_eq!(PrPushStatus::from_db_string("failed").unwrap(), PrPushStatus::Failed);
+    assert_eq!(
+        PrPushStatus::from_db_string("pending").unwrap(),
+        PrPushStatus::Pending
+    );
+    assert_eq!(
+        PrPushStatus::from_db_string("pushed").unwrap(),
+        PrPushStatus::Pushed
+    );
+    assert_eq!(
+        PrPushStatus::from_db_string("failed").unwrap(),
+        PrPushStatus::Failed
+    );
 }
 
 #[test]

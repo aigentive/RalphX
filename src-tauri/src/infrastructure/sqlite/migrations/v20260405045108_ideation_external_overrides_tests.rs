@@ -41,9 +41,18 @@ fn test_migration_adds_three_columns() {
         )
         .expect("Failed to query new columns");
 
-    assert_eq!(row.0, None, "ext_require_verification_for_accept should default to NULL");
-    assert_eq!(row.1, None, "ext_require_verification_for_proposals should default to NULL");
-    assert_eq!(row.2, None, "ext_require_accept_for_finalize should default to NULL");
+    assert_eq!(
+        row.0, None,
+        "ext_require_verification_for_accept should default to NULL"
+    );
+    assert_eq!(
+        row.1, None,
+        "ext_require_verification_for_proposals should default to NULL"
+    );
+    assert_eq!(
+        row.2, None,
+        "ext_require_accept_for_finalize should default to NULL"
+    );
 }
 
 #[test]
@@ -67,6 +76,13 @@ fn test_migration_existing_row_retains_values() {
         )
         .expect("Failed to query existing columns");
 
-    assert_eq!(rva, 1, "require_verification_for_accept should retain value");
-    assert_eq!(raf, Some(1), "require_accept_for_finalize should retain value");
+    assert_eq!(
+        rva, 1,
+        "require_verification_for_accept should retain value"
+    );
+    assert_eq!(
+        raf,
+        Some(1),
+        "require_accept_for_finalize should retain value"
+    );
 }

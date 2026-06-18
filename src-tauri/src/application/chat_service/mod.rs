@@ -72,6 +72,7 @@ use crate::domain::services::{
 };
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER, AGENT_ORCHESTRATOR_IDEATION,
+    AGENT_PR_REVIEWER,
 };
 use async_trait::async_trait;
 use serde::Serialize;
@@ -468,6 +469,7 @@ fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> &'s
         AgentConversationWorkspaceMode::Edit => AGENT_GENERAL_WORKER,
         AgentConversationWorkspaceMode::Plan => AGENT_ORCHESTRATOR_IDEATION,
         AgentConversationWorkspaceMode::Ideation => AGENT_CHAT_PROJECT,
+        AgentConversationWorkspaceMode::ReviewPr => AGENT_PR_REVIEWER,
     }
 }
 
@@ -3210,7 +3212,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             Some(
                 AgentConversationWorkspaceMode::Edit
                     | AgentConversationWorkspaceMode::Plan
-                    | AgentConversationWorkspaceMode::Ideation,
+                    | AgentConversationWorkspaceMode::Ideation
+                    | AgentConversationWorkspaceMode::ReviewPr,
             )
         ) && agent_workspace.is_none()
         {
