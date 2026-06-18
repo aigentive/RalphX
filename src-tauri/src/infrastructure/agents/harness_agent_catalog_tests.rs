@@ -1204,6 +1204,70 @@ fn canonical_mcp_tools_match_runtime_yaml_for_current_owned_agents() {
 }
 
 #[test]
+fn plan_verifier_canonical_surface_exposes_all_backend_verification_helpers() {
+    let root = project_root();
+    let definition = load_canonical_agent_definition(&root, "ralphx-plan-verifier")
+        .expect("expected canonical definition for ralphx-plan-verifier");
+    let runtime_config = get_agent_config("ralphx-plan-verifier")
+        .expect("expected runtime config for ralphx-plan-verifier");
+
+    // The verifier child reaches these backend-owned helpers through the MCP runtime and the
+    // recovery/retry path (verification-runtime.ts, tool-recovery.ts). A helper missing from the
+    // canonical grant surfaces to the child as "No such tool available" and leaves the parent
+    // plan with no verification rounds, so each one must be present in BOTH the canonical
+    // capability list (MCP TOOL_ALLOWLIST source) and the runtime grant (--allowed-tools source).
+    // report_verification_round in particular was previously omitted; this guards against
+    // dropping any verifier-owned helper again.
+    for required_tool in [
+        "get_session_plan",
+        "get_parent_session_context",
+        "get_plan_verification",
+        "run_verification_enrichment",
+        "run_verification_round",
+        "report_verification_round",
+        "complete_plan_verification",
+        "update_plan_artifact",
+        "edit_plan_artifact",
+    ] {
+        assert!(
+            definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == required_tool),
+            "verifier canonical surface should include {required_tool}"
+        );
+        assert!(
+            runtime_config
+                .allowed_mcp_tools
+                .iter()
+                .any(|tool| tool == required_tool),
+            "verifier runtime surface should include {required_tool}"
+        );
+    }
+
+    // No-self-nudge invariant: the verifier must not expose chat-nudge tools to itself,
+    // delegates, or the parent session (ideation-verification-architecture.md).
+    for forbidden_tool in ["send_ideation_session_message"] {
+        assert!(
+            !definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == forbidden_tool),
+            "verifier canonical surface must not expose {forbidden_tool}"
+        );
+        assert!(
+            !runtime_config
+                .allowed_mcp_tools
+                .iter()
+                .any(|tool| tool == forbidden_tool),
+            "verifier runtime surface must not expose {forbidden_tool}"
+        );
+    }
+}
+
+#[test]
 fn chat_and_edit_agents_expose_plan_mode_proposal_contract() {
     let root = project_root();
 

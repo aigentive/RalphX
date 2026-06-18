@@ -13,6 +13,7 @@ capabilities:
     - get_plan_verification
     - run_verification_enrichment
     - run_verification_round
+    - report_verification_round
     - complete_plan_verification
     - update_plan_artifact
     - edit_plan_artifact
