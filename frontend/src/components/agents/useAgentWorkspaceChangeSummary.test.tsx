@@ -183,4 +183,38 @@ describe("useAgentWorkspaceChangeSummary", () => {
     expect(result.current.effectiveMode).toBe("uncommitted");
     expect(result.current.refKind).toEqual({ kind: "head" });
   });
+
+  it("resets explicit mode selection when the conversation changes", async () => {
+    const { result, rerender } = renderHook(
+      ({ conversationId, defaultMode }) =>
+        useAgentWorkspaceChangeSummary({
+          conversationId,
+          review: makeReview(),
+          defaultMode,
+        }),
+      {
+        initialProps: {
+          conversationId: "conversation-1",
+          defaultMode: "cumulative",
+        },
+        wrapper: makeWrapper(),
+      },
+    );
+
+    expect(result.current.effectiveMode).toBe("cumulative");
+
+    act(() => {
+      result.current.setMode("uncommitted");
+    });
+
+    expect(result.current.effectiveMode).toBe("uncommitted");
+
+    rerender({
+      conversationId: "conversation-2",
+      defaultMode: "cumulative",
+    });
+
+    await waitFor(() => expect(result.current.effectiveMode).toBe("cumulative"));
+    expect(result.current.refKind).toEqual({ kind: "cumulative_head" });
+  });
 });
