@@ -606,18 +606,6 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   }
 }
 
-@container (max-width: 860px) {
-  .agent-composer-chat-focus-slot {
-    order: 10;
-    flex-basis: 100%;
-  }
-
-  .agent-composer-chat-focus-slot > button {
-    width: 100%;
-    justify-content: flex-start;
-  }
-}
-
 /* Collapsible composer: honor reduced-motion by swapping the resting ↔ active
    state instantly instead of animating the height/padding/opacity transitions. */
 @media (prefers-reduced-motion: reduce) {

@@ -1409,24 +1409,9 @@ export function AgentComposerSurface({
               {...(mode ? { mode } : {})}
             />
 
-            {chatFocus && chatFocus.options.length > 1 && (
-              <div className="agent-composer-chat-focus-slot flex min-w-0 shrink-0">
-                <ComposerChatFocusPill chatFocus={chatFocus} compact={compact} />
-              </div>
-            )}
-
-            <div className="flex min-w-0 flex-[0_1_auto] items-stretch gap-2">
-              <ComposerRuntimePill
-                provider={provider}
-                model={model}
-                effort={effort}
-                compact={compact}
-                className="max-w-[34rem]"
-              />
-            </div>
-
-            {/* Workflow (mode) selector sits to the right of the model/runtime
-                pill per product direction. */}
+            {/* Control order per product direction: mode → model → chat focus.
+                The chat-focus (workspace) selector sits inline to the right of
+                the model/runtime pill rather than wrapping to its own row. */}
             {mode && (
               <ComposerModeChip
                 mode={mode}
@@ -1441,6 +1426,22 @@ export function AgentComposerSurface({
                   })
                 }
               />
+            )}
+
+            <div className="flex min-w-0 flex-[0_1_auto] items-stretch gap-2">
+              <ComposerRuntimePill
+                provider={provider}
+                model={model}
+                effort={effort}
+                compact={compact}
+                className="max-w-[34rem]"
+              />
+            </div>
+
+            {chatFocus && chatFocus.options.length > 1 && (
+              <div className="agent-composer-chat-focus-slot flex min-w-0 shrink-0">
+                <ComposerChatFocusPill chatFocus={chatFocus} compact={compact} />
+              </div>
             )}
 
             <Button

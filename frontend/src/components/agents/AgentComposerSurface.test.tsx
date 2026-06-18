@@ -929,6 +929,34 @@ describe("AgentComposerSurface", () => {
     expect(screen.queryByTestId("chat-composer-drop-overlay")).not.toBeInTheDocument();
   });
 
+  it("orders the footer controls mode → model → chat focus", () => {
+    renderComposer({
+      chatFocus: {
+        value: "workspace",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "workspace", label: "Workspace" },
+          { id: "verification", label: "Verification" },
+        ],
+      },
+    });
+
+    const modeChip = screen.getByTestId("agent-composer-mode-chip");
+    const runtimePill = screen.getByTestId("agent-composer-runtime-pill");
+    const chatPill = screen.getByTestId("agent-composer-chat-focus-pill");
+
+    // mode precedes model
+    expect(
+      modeChip.compareDocumentPosition(runtimePill) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // model precedes chat focus
+    expect(
+      runtimePill.compareDocumentPosition(chatPill) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   describe("collapsible resting state", () => {
     it("rests in a minimal one-row state when idle and empty", () => {
       renderComposer({ dataTestId: "agent-composer", collapsible: true });
