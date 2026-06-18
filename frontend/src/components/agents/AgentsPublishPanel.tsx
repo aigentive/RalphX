@@ -94,6 +94,7 @@ import {
   agentWorkspaceOperationErrorDetail,
   agentWorkspaceOperationToastId,
   agentWorkspaceOperationToastDescription,
+  markAgentWorkspaceOperationToastSettled,
 } from "./agentWorkspaceOperationToast";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
 
@@ -717,10 +718,15 @@ export function AgentPublishPanel({
     setLocalPublishInFlight(true);
     void Promise.resolve(onPublishWorkspace!(workspace.conversationId))
       .catch((error) => {
+        const publishToastId = agentWorkspaceOperationToastId(
+          workspace.conversationId,
+          "publish",
+        );
         const description = agentWorkspaceOperationToastDescription(
           toastConversationTitle,
           agentWorkspaceOperationErrorDetail(error, "Failed to publish branch"),
         );
+        markAgentWorkspaceOperationToastSettled(publishToastId);
         toast.error(
           "Failed to publish branch",
           {
@@ -728,7 +734,7 @@ export function AgentPublishPanel({
             ...(description ? { description } : {}),
             dismissible: true,
             duration: AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
-            id: agentWorkspaceOperationToastId(workspace.conversationId, "publish"),
+            id: publishToastId,
           },
         );
       })

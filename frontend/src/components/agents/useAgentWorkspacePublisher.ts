@@ -13,6 +13,7 @@ import {
   agentWorkspaceOperationErrorDetail,
   agentWorkspaceOperationToastDescription,
   agentWorkspaceOperationToastId,
+  markAgentWorkspaceOperationToastSettled,
 } from "./agentWorkspaceOperationToast";
 import { invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
 
@@ -51,6 +52,7 @@ export function useAgentWorkspacePublisher({
           ["agents", "conversation-workspace", conversationId],
           result.workspace
         );
+        markAgentWorkspaceOperationToastSettled(publishToastId);
         toast.success(prLabel ? `Published ${prLabel}` : "Published branch", {
           ...(conversationTitle ? { description: conversationTitle } : {}),
           duration: AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS,
@@ -88,6 +90,7 @@ export function useAgentWorkspacePublisher({
             conversationTitle,
             errorMessage,
           );
+          markAgentWorkspaceOperationToastSettled(publishToastId);
           toast.error("Publish failed. Sent the error to the agent to fix.", {
             closeButton: true,
             ...(description ? { description } : {}),
@@ -104,6 +107,7 @@ export function useAgentWorkspacePublisher({
             conversationTitle,
             errorMessage,
           );
+          markAgentWorkspaceOperationToastSettled(publishToastId);
           toast.error("Failed to publish branch", {
             closeButton: true,
             ...(description ? { description } : {}),
