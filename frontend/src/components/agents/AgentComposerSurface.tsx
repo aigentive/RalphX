@@ -1949,11 +1949,8 @@ function ComposerChatFocusPill({
           )}
           style={triggerStyle}
         >
-          {!compact && (
-            <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
-              Chat
-            </span>
-          )}
+          {/* No "CHAT" eyebrow label — the icon + value carry the meaning;
+              the accessible name is provided via aria-label above. */}
           <span className="flex min-w-0 items-center gap-1.5 text-[0.8125rem] font-medium">
             {ActiveIcon ? <ActiveIcon className="h-3.5 w-3.5" /> : null}
             <span className="truncate">{activeOption?.label ?? "—"}</span>
