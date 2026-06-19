@@ -12,10 +12,12 @@ use crate::domain::entities::{
     ChatContextType, ChatConversationId, ChatMessage, IdeationSessionId, VerificationGap,
     VerificationRunSnapshot, VerificationStatus,
 };
-use crate::domain::repositories::{ChatConversationRepository, ChatMessageRepository};
-use crate::domain::services::MessageQueue;
+use crate::domain::repositories::{
+    ChatConversationRepository, ChatMessageRepository, QueuedMessageRepository,
+};
+use crate::domain::services::{MessageQueue, QueueKey};
 use crate::infrastructure::memory::{
-    MemoryChatConversationRepository, MemoryChatMessageRepository,
+    MemoryChatConversationRepository, MemoryChatMessageRepository, MemoryQueuedMessageRepository,
 };
 
 fn make_gap(severity: &str, description: &str) -> VerificationGap {
@@ -68,9 +70,16 @@ async fn needs_revision_max_rounds_synthesizes_message() {
         Arc::new(MemoryChatConversationRepository::new());
     let msg_repo: Arc<dyn ChatMessageRepository> = Arc::new(MemoryChatMessageRepository::new());
     let queue = Arc::new(MessageQueue::new());
+    let queued_repo: Arc<dyn QueuedMessageRepository> =
+        Arc::new(MemoryQueuedMessageRepository::new());
 
     maybe_inject_verification_result_message(
-        &parent_id, &result, &conv_repo, &msg_repo, &queue, None,
+        &parent_id,
+        &result,
+        &conv_repo,
+        &msg_repo,
+        &queue,
+        Some(&queued_repo),
     )
     .await;
 
@@ -100,6 +109,15 @@ async fn needs_revision_max_rounds_synthesizes_message() {
     assert!(queued
         .content
         .contains("<recommended_next_action>revise_plan</recommended_next_action>"));
+    let durable = queued_repo
+        .list(&QueueKey::new(
+            ChatContextType::Ideation,
+            parent_id.as_str(),
+        ))
+        .await
+        .expect("durable handoff queue lookup should not fail");
+    assert_eq!(durable.len(), 1);
+    assert_eq!(durable[0].id, queued.id);
 }
 
 // ---------------------------------------------------------------------------
