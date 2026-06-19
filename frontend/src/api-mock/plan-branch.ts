@@ -38,6 +38,7 @@ function ensureMockData(): void {
     prPollingActive: false,
     prEligible: false,
     baseBranchOverride: null,
+    executionPlanId: null,
   };
   mockPlanBranches.set(branch.id, branch);
 }
@@ -84,6 +85,7 @@ export const mockPlanBranchApi = {
       prPollingActive: false,
       prEligible: false,
       baseBranchOverride: input.baseBranchOverride ?? null,
+      executionPlanId: null,
     };
     mockPlanBranches.set(branch.id, branch);
     return branch;

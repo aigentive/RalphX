@@ -1067,7 +1067,14 @@ describe("AgentsArtifactPane", () => {
       { taskMode: "kanban" },
     );
 
-    fireEvent.click(await screen.findByTestId("mock-agent-task-card"));
+    await waitFor(() =>
+      expect(screen.getByTestId("mock-agent-task-card")).toHaveAttribute(
+        "data-execution-plan-id",
+        "execution-plan-1",
+      ),
+    );
+
+    fireEvent.click(screen.getByTestId("mock-agent-task-card"));
 
     expect(await screen.findByTestId("mock-agent-task-detail")).toHaveAttribute(
       "data-task-id",

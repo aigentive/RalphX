@@ -60,9 +60,7 @@ impl From<PlanBranch> for PlanBranchResponse {
             pr_eligible: pb.pr_eligible,
             merge_commit_sha: pb.merge_commit_sha,
             base_branch_override: pb.base_branch_override,
-            execution_plan_id: pb
-                .execution_plan_id
-                .map(|id| id.as_str().to_string()),
+            execution_plan_id: pb.execution_plan_id.map(|id| id.as_str().to_string()),
         }
     }
 }
