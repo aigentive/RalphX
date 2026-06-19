@@ -2504,6 +2504,10 @@ describe("getConversationActiveState", () => {
     last_review_run_id: "run-1",
     last_review_outcome: null,
     last_submitted_review_id: null,
+    review_artifact_id: "review-artifact-1",
+    review_artifact_head_sha: "abcdef1234567890",
+    review_artifact_version: 1,
+    review_artifact_updated_at: "2026-06-18T12:00:00Z",
     last_error: null,
     created_at: "2026-06-18T12:00:00Z",
     updated_at: "2026-06-18T12:00:00Z",
@@ -2681,6 +2685,7 @@ describe("getConversationActiveState", () => {
     expect(result.workspace.conversationId).toBe("conversation-1");
     expect(result.events[0]?.conversationId).toBe("conversation-1");
     expect(result.monitor?.lastReviewRunId).toBe("run-1");
+    expect(result.monitor?.reviewArtifactHeadSha).toBe("abcdef1234567890");
     expect(result.pendingAction?.proposedAction).toBe("request_changes");
     expect(result.recentActions[0]?.status).toBe("skipped");
     expect(result.issueCommentEvidence).toEqual([{ comment_id: "comment-1" }]);

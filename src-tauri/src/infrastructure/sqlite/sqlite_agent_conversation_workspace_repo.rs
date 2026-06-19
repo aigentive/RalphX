@@ -12,8 +12,8 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
+    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -168,6 +168,16 @@ fn row_to_pr_review_monitor(
         last_review_run_id: row.get("last_review_run_id")?,
         last_review_outcome: row.get("last_review_outcome")?,
         last_submitted_review_id: row.get("last_submitted_review_id")?,
+        review_artifact_id: row
+            .get::<_, Option<String>>("review_artifact_id")?
+            .map(ArtifactId::from_string),
+        review_artifact_head_sha: row.get("review_artifact_head_sha")?,
+        review_artifact_version: row
+            .get::<_, Option<i64>>("review_artifact_version")?
+            .and_then(|value| u32::try_from(value).ok()),
+        review_artifact_updated_at: row
+            .get::<_, Option<String>>("review_artifact_updated_at")?
+            .map(|value| parse_datetime(&value)),
         last_error: row.get("last_error")?,
         created_at: parse_datetime(&created_at),
         updated_at: parse_datetime(&updated_at),
@@ -1247,6 +1257,15 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let last_review_run_id = monitor.last_review_run_id.clone();
         let last_review_outcome = monitor.last_review_outcome.clone();
         let last_submitted_review_id = monitor.last_submitted_review_id.clone();
+        let review_artifact_id = monitor
+            .review_artifact_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
+        let review_artifact_head_sha = monitor.review_artifact_head_sha.clone();
+        let review_artifact_version = monitor.review_artifact_version.map(i64::from);
+        let review_artifact_updated_at = monitor
+            .review_artifact_updated_at
+            .map(|value| value.to_rfc3339());
         let last_error = monitor.last_error.clone();
         let created_at = monitor.created_at.to_rfc3339();
         let updated_at = Utc::now().to_rfc3339();
@@ -1259,9 +1278,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         conversation_id, project_id, pr_number, status, monitor_enabled,
                         first_review_completed, last_seen_head_sha, last_reviewed_head_sha,
                         last_review_run_id, last_review_outcome, last_submitted_review_id,
-                        last_error, created_at, updated_at
+                        review_artifact_id, review_artifact_head_sha, review_artifact_version,
+                        review_artifact_updated_at, last_error, created_at, updated_at
                     ) VALUES (
-                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
                     )
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id = excluded.project_id,
@@ -1274,6 +1294,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         last_review_run_id = excluded.last_review_run_id,
                         last_review_outcome = excluded.last_review_outcome,
                         last_submitted_review_id = excluded.last_submitted_review_id,
+                        review_artifact_id = COALESCE(excluded.review_artifact_id, agent_workspace_pr_review_monitors.review_artifact_id),
+                        review_artifact_head_sha = COALESCE(excluded.review_artifact_head_sha, agent_workspace_pr_review_monitors.review_artifact_head_sha),
+                        review_artifact_version = COALESCE(excluded.review_artifact_version, agent_workspace_pr_review_monitors.review_artifact_version),
+                        review_artifact_updated_at = COALESCE(excluded.review_artifact_updated_at, agent_workspace_pr_review_monitors.review_artifact_updated_at),
                         last_error = excluded.last_error,
                         updated_at = excluded.updated_at",
                     rusqlite::params![
@@ -1288,6 +1312,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         last_review_run_id,
                         last_review_outcome,
                         last_submitted_review_id,
+                        review_artifact_id,
+                        review_artifact_head_sha,
+                        review_artifact_version,
+                        review_artifact_updated_at,
                         last_error,
                         created_at,
                         updated_at,

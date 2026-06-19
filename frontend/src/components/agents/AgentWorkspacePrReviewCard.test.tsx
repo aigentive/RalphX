@@ -52,6 +52,10 @@ function monitor(
     lastReviewRunId: null,
     lastReviewOutcome: null,
     lastSubmittedReviewId: null,
+    reviewArtifactId: "review-artifact-1",
+    reviewArtifactHeadSha: "abcdef1234567890",
+    reviewArtifactVersion: 1,
+    reviewArtifactUpdatedAt: now,
     lastError: null,
     createdAt: now,
     updatedAt: now,
@@ -236,6 +240,36 @@ describe("AgentWorkspacePrReviewCard", () => {
       id: "older-action",
       status: "skipped",
     });
+  });
+
+  it("blocks submitting a pending action until the review artifact matches the action head", async () => {
+    const user = userEvent.setup();
+    const pending = reviewAction({
+      id: "stale-action",
+      headSha: "new-head-sha",
+    });
+
+    renderCard({
+      context: reviewContext({
+        monitor: monitor({
+          reviewArtifactId: "review-artifact-1",
+          reviewArtifactHeadSha: "old-head-sha",
+        }),
+        pendingAction: pending,
+      }),
+    });
+
+    expect(
+      screen.getByText("Write the Review artifact for this PR head before submitting."),
+    ).toBeInTheDocument();
+
+    const submitButton = screen.getByRole("button", { name: /Request Changes/i });
+    expect(submitButton).toBeDisabled();
+
+    await user.click(submitButton);
+
+    expect(chatApi.submitAgentWorkspacePrReviewAction).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Skip" })).toBeEnabled();
   });
 
   it("skips a proposed comment and shows the last resolved action summary", async () => {
