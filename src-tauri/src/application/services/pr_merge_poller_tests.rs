@@ -24,7 +24,9 @@ use crate::application::git_service::GitService;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind,
+    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
+    AgentWorkspaceSourcePullRequest, ChatConversationId, IdeationAnalysisBaseRefKind,
     IdeationSessionId, PlanBranchId, Project, TaskId,
 };
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
@@ -164,6 +166,33 @@ fn supervised_workspace(
     workspace
 }
 
+fn review_pr_workspace(
+    conversation_id: &str,
+    project_id: &str,
+    worktree_path: &std::path::Path,
+) -> AgentConversationWorkspace {
+    let mut workspace = AgentConversationWorkspace::new(
+        ChatConversationId::from_string(conversation_id),
+        crate::domain::entities::ProjectId::from_string(project_id.to_string()),
+        AgentConversationWorkspaceMode::ReviewPr,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some("base-sha".to_string()),
+        format!("ralphx/test/{conversation_id}"),
+        worktree_path.to_string_lossy().to_string(),
+    );
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 101,
+        url: Some("https://github.com/owner/repo/pull/101".to_string()),
+        title: Some("Improve feature".to_string()),
+        head_ref_name: "feature/pr".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("old-head".to_string()),
+    });
+    workspace
+}
+
 fn codecov_comment(body: &str) -> PrIssueCommentSummary {
     PrIssueCommentSummary {
         id: "codecov-comment".to_string(),
@@ -177,8 +206,8 @@ fn codecov_comment(body: &str) -> PrIssueCommentSummary {
     }
 }
 
-#[test]
-fn refreshed_agent_workspace_pr_remains_pollable_for_terminal_status() {
+#[tokio::test]
+async fn refreshed_agent_workspace_pr_remains_pollable_for_terminal_status() {
     let repo = init_cleanup_repo();
     let worktree_parent = repo.path().join("worktrees");
     let project = cleanup_project(repo.path(), &worktree_parent);
@@ -190,9 +219,14 @@ fn refreshed_agent_workspace_pr_remains_pollable_for_terminal_status() {
     workspace.publication_pr_status = Some("open".to_string());
     workspace.publication_push_status = Some("refreshed".to_string());
 
-    assert!(super::agent_workspace_pr_polling_is_current(
-        &workspace, 101
-    ));
+    assert!(
+        super::agent_workspace_pr_polling_is_current(
+            Arc::new(MemoryAgentConversationWorkspaceRepository::new()),
+            &workspace,
+            101
+        )
+        .await
+    );
 }
 
 #[test]
@@ -425,6 +459,150 @@ async fn supervised_agent_workspace_pr_autofix_routes_failure_to_pr_fixer() {
                 .unwrap_or_default()
                 .starts_with("github_pr_autofix:101:routehead")
     }));
+}
+
+#[tokio::test]
+async fn review_pr_monitor_routes_new_head_to_reviewer_agent() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let workspace = review_pr_workspace(
+        "review-monitor-route-conversation",
+        "project-review-monitor-route",
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        conversation_id.clone(),
+        workspace.project_id.clone(),
+        101,
+        Some("old-head".to_string()),
+    );
+    monitor.monitor_enabled = true;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+    monitor.first_review_completed = true;
+    monitor.last_reviewed_head_sha = Some("old-head".to_string());
+    workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(open_pr_health("new-head")));
+    let chat = Arc::new(MockChatService::new());
+    let routed = super::route_agent_workspace_pr_review_monitor_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("review monitor routing should succeed");
+
+    assert!(routed);
+    let messages = chat.get_sent_messages().await;
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].contains("Review PR monitor detected new changes"));
+    assert!(messages[0].contains("Write the versioned Review artifact"));
+    let options = chat.get_sent_options().await;
+    assert_eq!(
+        options[0].agent_name_override.as_deref(),
+        Some(crate::infrastructure::agents::claude::agent_names::AGENT_PR_REVIEWER)
+    );
+    assert_eq!(
+        options[0].working_directory_override.as_deref(),
+        Some(worktree.path())
+    );
+    let monitor = workspace_repo
+        .get_pr_review_monitor(&conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    assert_eq!(
+        monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::Reviewing
+    );
+    assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("new-head"));
+    assert!(monitor.last_review_run_id.is_some());
+}
+
+#[tokio::test]
+async fn review_pr_monitor_skips_when_head_already_has_pending_action() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let workspace = review_pr_workspace(
+        "review-monitor-pending-conversation",
+        "project-review-monitor-pending",
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        conversation_id.clone(),
+        workspace.project_id.clone(),
+        101,
+        Some("old-head".to_string()),
+    );
+    monitor.monitor_enabled = true;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+    monitor.first_review_completed = true;
+    monitor.last_reviewed_head_sha = Some("old-head".to_string());
+    workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+    workspace_repo
+        .create_or_update_pr_review_action(AgentWorkspacePrReviewAction::new(
+            conversation_id.clone(),
+            101,
+            "new-head".to_string(),
+            AgentWorkspacePrReviewActionKind::RequestChanges,
+            "Needs changes".to_string(),
+            "Please address the findings.".to_string(),
+            None,
+            Some("run-review".to_string()),
+        ))
+        .await
+        .expect("pending action should persist");
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(open_pr_health("new-head")));
+    let chat = Arc::new(MockChatService::new());
+    let routed = super::route_agent_workspace_pr_review_monitor_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("review monitor routing should skip cleanly");
+
+    assert!(!routed);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let monitor = workspace_repo
+        .get_pr_review_monitor(&conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    assert_eq!(
+        monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::Watching
+    );
+    assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("new-head"));
 }
 
 #[tokio::test]

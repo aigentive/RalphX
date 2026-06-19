@@ -10,7 +10,9 @@ use axum::{
 use tauri::Emitter;
 
 use super::*;
-use crate::application::agent_conversation_workspace::AgentConversationWorkspaceBaseSelection;
+use crate::application::agent_conversation_workspace::{
+    resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
+};
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
@@ -29,7 +31,7 @@ use crate::commands::unified_chat_commands::{
 };
 use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::{
-    pr_comment_body_excerpt, AgentConversationWorkspace,
+    pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentWorkspacePrCommentEvidence,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
@@ -1015,6 +1017,7 @@ pub async fn complete_agent_workspace_pr_review_run(
         .upsert_pr_review_monitor(monitor)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    maybe_start_pr_review_monitor_polling(state.app_state.as_ref(), &workspace, &monitor).await;
 
     Ok(Json(CompleteAgentWorkspacePrReviewRunResponse {
         success: true,
@@ -1196,6 +1199,7 @@ pub async fn submit_agent_workspace_pr_review_action(
         .upsert_pr_review_monitor(monitor)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    maybe_start_pr_review_monitor_polling(state.app_state.as_ref(), &workspace, &monitor).await;
     let action = state
         .app_state
         .agent_conversation_workspace_repo
@@ -1275,6 +1279,7 @@ pub async fn skip_agent_workspace_pr_review_action(
         .upsert_pr_review_monitor(monitor)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    maybe_start_pr_review_monitor_polling(state.app_state.as_ref(), &workspace, &monitor).await;
     let action = state
         .app_state
         .agent_conversation_workspace_repo
@@ -1772,6 +1777,88 @@ fn review_pr_head_sha(workspace: &AgentConversationWorkspace) -> Option<String> 
         .source_pull_request
         .as_ref()
         .and_then(|pull_request| pull_request.head_ref_oid.clone())
+}
+
+async fn maybe_start_pr_review_monitor_polling(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    monitor: &AgentWorkspacePrReviewMonitor,
+) {
+    if workspace.mode != AgentConversationWorkspaceMode::ReviewPr
+        || !monitor.monitor_enabled
+        || monitor.status != AgentWorkspacePrReviewMonitorStatus::Watching
+    {
+        return;
+    }
+    if state
+        .pr_poller_registry
+        .is_agent_workspace_polling(&workspace.conversation_id)
+    {
+        return;
+    }
+
+    let Some(pr_number) = review_pr_number(workspace) else {
+        tracing::warn!(
+            conversation_id = workspace.conversation_id.as_str(),
+            "Review PR monitor could not start because the workspace has no PR number"
+        );
+        return;
+    };
+    if monitor.pr_number != pr_number {
+        tracing::warn!(
+            conversation_id = workspace.conversation_id.as_str(),
+            monitor_pr_number = monitor.pr_number,
+            workspace_pr_number = pr_number,
+            "Review PR monitor could not start because monitor/workspace PR numbers differ"
+        );
+        return;
+    }
+
+    let project = match state.project_repo.get_by_id(&workspace.project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            tracing::warn!(
+                conversation_id = workspace.conversation_id.as_str(),
+                project_id = workspace.project_id.as_str(),
+                "Review PR monitor could not start because the project was not found"
+            );
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = workspace.conversation_id.as_str(),
+                project_id = workspace.project_id.as_str(),
+                error = %error,
+                "Review PR monitor failed to load project before poller start"
+            );
+            return;
+        }
+    };
+    let worktree_path =
+        match resolve_valid_agent_conversation_workspace_path(&project, workspace).await {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "Review PR monitor could not start because the workspace path is not usable"
+                );
+                return;
+            }
+        };
+
+    let chat_service: Arc<dyn crate::application::chat_service::ChatService> =
+        Arc::new(state.build_chat_service());
+    state.pr_poller_registry.start_agent_workspace_polling(
+        workspace.conversation_id.clone(),
+        pr_number,
+        project,
+        worktree_path,
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
+        chat_service,
+    );
 }
 
 async fn fetch_review_pr_remote_context(
