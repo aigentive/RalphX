@@ -213,6 +213,43 @@ describe("chat api", () => {
     expect(parsed[0]?.detailRef).toBeUndefined();
   });
 
+  it("trims full plan artifact bodies from parsed plan tool calls", () => {
+    const largePlan = "# Plan\n\n".repeat(10_000);
+    const parsed = parseToolCalls([
+      {
+        id: "plan-tool",
+        name: "ralphx::create_plan_artifact",
+        arguments: {
+          title: "Conversation Branch/Base UX Improvements",
+          content: largePlan,
+        },
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                id: "artifact-1",
+                name: "Conversation Branch/Base UX Improvements",
+                version: 5,
+                content_text: largePlan,
+              }),
+            },
+          ],
+          structured_content: null,
+        },
+      },
+    ]);
+
+    expect(parsed[0]?.arguments).toEqual({
+      title: "Conversation Branch/Base UX Improvements",
+    });
+    expect(parsed[0]?.result).toEqual({
+      id: "artifact-1",
+      name: "Conversation Branch/Base UX Improvements",
+      version: 5,
+    });
+  });
+
   it("preserves tool call errors and snake/camel diff context variants", () => {
     const parsed = parseToolCalls([
       {
@@ -386,6 +423,42 @@ describe("chat api", () => {
         filePath: "src/main.rs",
         oldContent: "old",
         oldFileExists: false,
+      },
+    });
+  });
+
+  it("trims full plan artifact bodies from parsed content block tool uses", () => {
+    const largePlan = "# Plan\n\n".repeat(10_000);
+    const parsed = parseContentBlocks([
+      {
+        type: "tool_use",
+        id: "plan-tool",
+        name: "mcp__ralphx__update_plan_artifact",
+        arguments: {
+          artifact_id: "artifact-1",
+          content: largePlan,
+        },
+        result: {
+          id: "artifact-2",
+          name: "Updated Plan",
+          version: 6,
+          content: largePlan,
+          content_text: largePlan,
+        },
+      },
+    ]);
+
+    expect(parsed[0]).toMatchObject({
+      type: "tool_use",
+      id: "plan-tool",
+      name: "mcp__ralphx__update_plan_artifact",
+      arguments: {
+        artifact_id: "artifact-1",
+      },
+      result: {
+        id: "artifact-2",
+        name: "Updated Plan",
+        version: 6,
       },
     });
   });
