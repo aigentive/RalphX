@@ -22,6 +22,9 @@ pub struct CycleTimePhase {
 pub struct EmeEstimate {
     pub low_hours: f64,
     pub high_hours: f64,
+    /// Scope covered by this estimate. Direct agent workspaces are not included.
+    pub scope: String,
+    pub scope_label: String,
     /// Number of merged tasks used in the estimate
     pub task_count: i64,
     /// ISO date of the earliest merged task in the sample
@@ -88,12 +91,125 @@ pub struct WeeklyDataPoint {
 pub struct ProjectTrends {
     /// Count of tasks merged per week, last 12 weeks
     pub weekly_throughput: Vec<WeeklyDataPoint>,
+    /// Deduped delivery throughput for task completions plus direct agent workspace PR output.
+    pub weekly_delivery_throughput: Vec<DeliveryWeeklyThroughputPoint>,
     /// Average cycle time in hours for merged tasks per week, last 12 weeks
     pub weekly_cycle_time: Vec<WeeklyDataPoint>,
     /// Average pipeline cycle time (all non-terminal phases) in hours per week, last 12 weeks
     pub weekly_pipeline_cycle_time: Vec<WeeklyDataPoint>,
     /// Percentage of merged vs total terminal tasks per week, last 12 weeks
     pub weekly_success_rate: Vec<WeeklyDataPoint>,
+}
+
+/// A weekly delivery throughput point split by task pipeline and direct agent workspaces.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeliveryWeeklyThroughputPoint {
+    pub week_start: String,
+    pub unified_deliveries: i64,
+    pub task_deliveries: i64,
+    pub workspace_deliveries: i64,
+    pub merged_prs: i64,
+    pub sample_size: i64,
+}
+
+/// Pull-request and agent-workspace performance metrics for Insights.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectPrInsights {
+    pub summary: PrInsightsSummary,
+    pub origins: Vec<PrInsightOriginBreakdown>,
+    pub weekly_throughput: Vec<PrWeeklyThroughputPoint>,
+    pub workspace_dwell_times: Vec<WorkspaceStateDwellTime>,
+    pub latest_prs: Vec<PrInsightItem>,
+}
+
+/// Roll-up counters for PR velocity, outcomes, rework, and supervision.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrInsightsSummary {
+    pub total_prs: i64,
+    pub direct_workspace_prs: i64,
+    pub task_pipeline_prs: i64,
+    pub execution_owned_workspace_refs: i64,
+    pub merged_prs: i64,
+    pub open_prs: i64,
+    pub draft_prs: i64,
+    pub changes_requested_prs: i64,
+    pub closed_prs: i64,
+    pub needs_agent_prs: i64,
+    pub unpushed_workspace_prs: i64,
+    pub total_workspaces: i64,
+    pub direct_workspaces: i64,
+    pub direct_workspaces_with_prs: i64,
+    pub direct_workspace_pr_conversion_rate: f64,
+    pub terminal_merge_rate: f64,
+    pub avg_workspace_pr_cycle_hours: Option<f64>,
+    pub avg_plan_pr_wait_hours: Option<f64>,
+    pub requested_changes_events: i64,
+    pub autofix_needed_events: i64,
+    pub agent_fix_completed_events: i64,
+    pub supervision_enabled_workspaces: i64,
+    pub auto_merge_desired_workspaces: i64,
+    pub auto_merge_active_workspaces: i64,
+}
+
+/// PR counts for one source family.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrInsightOriginBreakdown {
+    pub origin: String,
+    pub label: String,
+    pub counted_in_totals: bool,
+    pub total_prs: i64,
+    pub merged_prs: i64,
+    pub open_prs: i64,
+    pub draft_prs: i64,
+    pub changes_requested_prs: i64,
+    pub closed_prs: i64,
+    pub needs_agent_prs: i64,
+    pub unpushed_workspace_prs: i64,
+}
+
+/// Weekly PR throughput for the last 12 weeks.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrWeeklyThroughputPoint {
+    pub week_start: String,
+    pub opened: i64,
+    pub merged: i64,
+    pub sample_size: i64,
+}
+
+/// Average time spent in an agent workspace/publication state.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceStateDwellTime {
+    pub state_family: String,
+    pub state: String,
+    pub label: String,
+    pub avg_minutes: f64,
+    pub sample_size: i64,
+}
+
+/// Latest PR/workspace facts for audit-oriented Insights surfaces.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrInsightItem {
+    pub origin: String,
+    pub label: String,
+    pub counted_in_totals: bool,
+    pub status: String,
+    pub pr_number: Option<i64>,
+    pub pr_url: Option<String>,
+    pub branch_name: String,
+    pub base_ref: String,
+    pub conversation_id: Option<String>,
+    pub task_id: Option<String>,
+    pub plan_branch_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: Option<String>,
+    pub merged_at: Option<String>,
 }
 
 /// Average dwell time per Kanban column, derived from task_state_history transitions.

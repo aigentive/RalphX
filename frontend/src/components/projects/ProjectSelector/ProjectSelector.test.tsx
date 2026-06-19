@@ -1,7 +1,7 @@
 /**
  * ProjectSelector component tests
  * Compact header dropdown for project selection with git mode indicators
- * Uses shadcn DropdownMenu (Radix menu primitives)
+ * Uses the shared searchable project popover.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -67,11 +67,10 @@ describe("ProjectSelector", () => {
       expect(screen.getByText("My Project")).toBeInTheDocument();
     });
 
-    it("has correct aria attributes (shadcn DropdownMenu uses menu)", () => {
+    it("has correct aria attributes", () => {
       render(<ProjectSelector onNewProject={() => {}} />);
       const trigger = screen.getByTestId("project-selector-trigger");
-      // shadcn DropdownMenu uses aria-haspopup="menu"
-      expect(trigger).toHaveAttribute("aria-haspopup", "menu");
+      expect(trigger).toHaveAttribute("aria-haspopup", "listbox");
       expect(trigger).toHaveAttribute("aria-expanded", "false");
     });
   });
@@ -155,6 +154,58 @@ describe("ProjectSelector", () => {
       });
       expect(screen.getByText("Project Alpha")).toBeInTheDocument();
       expect(screen.getByText("Project Beta")).toBeInTheDocument();
+    });
+
+    it("filters projects by search query", async () => {
+      const user = userEvent.setup();
+      const projects: Project[] = [
+        createMockProject({ id: "project-1", name: "Project Alpha", workingDirectory: "/alpha" }),
+        createMockProject({ id: "project-2", name: "Project Beta", workingDirectory: "/beta" }),
+      ];
+
+      useProjectStore.setState({
+        projects: Object.fromEntries(projects.map((p) => [p.id, p])),
+        activeProjectId: null,
+      });
+
+      render(<ProjectSelector onNewProject={() => {}} />);
+      await user.click(screen.getByTestId("project-selector-trigger"));
+      await user.type(screen.getByTestId("project-selector-search"), "beta");
+
+      await waitFor(() => {
+        expect(screen.queryByTestId("project-option-project-1")).not.toBeInTheDocument();
+        expect(screen.getByTestId("project-option-project-2")).toBeInTheDocument();
+      });
+    });
+
+    it("pages long project lists with Show more", async () => {
+      const user = userEvent.setup();
+      const projects: Project[] = Array.from({ length: 25 }, (_, index) =>
+        createMockProject({
+          id: `project-${index + 1}`,
+          name: `Project ${index + 1}`,
+          updatedAt: `2026-01-${String(index + 1).padStart(2, "0")}T12:00:00Z`,
+        })
+      );
+
+      useProjectStore.setState({
+        projects: Object.fromEntries(projects.map((p) => [p.id, p])),
+        activeProjectId: null,
+      });
+
+      render(<ProjectSelector onNewProject={() => {}} />);
+      await user.click(screen.getByTestId("project-selector-trigger"));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("project-selector-show-more")).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId("project-option-project-1")).not.toBeInTheDocument();
+
+      await user.click(screen.getByTestId("project-selector-show-more"));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("project-option-project-1")).toBeInTheDocument();
+      });
     });
 
     it("highlights active project with accent styling", async () => {
@@ -301,27 +352,25 @@ describe("ProjectSelector", () => {
         expect(screen.getByTestId("project-selector-dropdown")).toBeInTheDocument();
       });
 
-      // Radix handles keyboard navigation internally
-      // Just verify the dropdown is open and navigable
+      // Popover + listbox keeps the project list keyboard-reachable.
       expect(screen.getByTestId("project-option-project-1")).toBeInTheDocument();
       expect(screen.getByTestId("project-option-project-2")).toBeInTheDocument();
     });
   });
 
   describe("accessibility", () => {
-    it("dropdown has menu role (shadcn DropdownMenu)", async () => {
+    it("project list has listbox role", async () => {
       const user = userEvent.setup();
       render(<ProjectSelector onNewProject={() => {}} />);
       await user.click(screen.getByTestId("project-selector-trigger"));
 
       await waitFor(() => {
-        const dropdown = screen.getByTestId("project-selector-dropdown");
-        // shadcn DropdownMenu uses role="menu"
-        expect(dropdown).toHaveAttribute("role", "menu");
+        const list = screen.getByTestId("project-selector-list");
+        expect(list).toHaveAttribute("role", "listbox");
       });
     });
 
-    it("project options have menuitem role", async () => {
+    it("project options have option role", async () => {
       const user = userEvent.setup();
       const project = createMockProject({ id: "project-1", name: "Test" });
       useProjectStore.setState({
@@ -334,8 +383,7 @@ describe("ProjectSelector", () => {
 
       await waitFor(() => {
         const option = screen.getByTestId("project-option-project-1");
-        // shadcn DropdownMenuItem uses role="menuitem"
-        expect(option).toHaveAttribute("role", "menuitem");
+        expect(option).toHaveAttribute("role", "option");
       });
     });
   });
