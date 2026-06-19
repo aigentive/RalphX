@@ -7,6 +7,7 @@ import type {
 } from "@/api/chat";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
+import { cn } from "@/lib/utils";
 
 function mergeBranchBaseOptions(
   currentOption: BranchBaseOption,
@@ -21,6 +22,7 @@ function mergeBranchBaseOptions(
 }
 
 export const AgentConversationBaseLine = memo(function AgentConversationBaseLine({
+  className,
   disabled = false,
   editable = false,
   freshness,
@@ -33,9 +35,11 @@ export const AgentConversationBaseLine = memo(function AgentConversationBaseLine
   options,
   pullRequestMessage = null,
   pullRequestOptions,
+  prefixLabel = "Start from",
   value,
   workspace,
 }: {
+  className?: string;
   disabled?: boolean;
   editable?: boolean;
   freshness?: AgentConversationWorkspaceFreshness;
@@ -46,6 +50,7 @@ export const AgentConversationBaseLine = memo(function AgentConversationBaseLine
   onPullRequestSearch?: (query: string) => void;
   onValueChange?: (value: string) => void;
   options?: BranchBaseOption[];
+  prefixLabel?: string;
   pullRequestMessage?: string | null;
   pullRequestOptions?: BranchBaseOption[];
   value?: string;
@@ -58,7 +63,7 @@ export const AgentConversationBaseLine = memo(function AgentConversationBaseLine
   if (freshness?.baseStatus === "blocked" && !editable) {
     return (
       <div
-        className="flex min-w-0 justify-end"
+        className={cn("flex min-w-0 justify-end", className)}
         data-testid="agents-conversation-base"
       >
         <div
@@ -119,7 +124,7 @@ export const AgentConversationBaseLine = memo(function AgentConversationBaseLine
 
   return (
     <div
-      className="flex min-w-0 justify-end"
+      className={cn("flex min-w-0 justify-end", className)}
       data-testid="agents-conversation-base"
     >
       <BranchBasePicker
@@ -130,6 +135,7 @@ export const AgentConversationBaseLine = memo(function AgentConversationBaseLine
         readOnly={!editable}
         disabled={disabled}
         isLoading={isLoading}
+        prefixLabel={prefixLabel}
         enablePullRequests={editable}
         pullRequestOptions={pullRequestOptions ?? []}
         isLoadingPullRequests={isLoadingPullRequests}
