@@ -17,6 +17,7 @@ import { artifactApi } from "@/api/artifact";
 import { atlassianApi } from "@/api/atlassian";
 import { linearApi } from "@/api/linear";
 import { ideationApi, toTaskProposal } from "@/api/ideation";
+import { planBranchApi } from "@/api/plan-branch";
 import { verificationApi } from "@/api/verification";
 import {
   chatApi,
@@ -284,6 +285,15 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       linearSettingsQuery.data?.enabled &&
       linearSettingsQuery.data?.issueSearchAvailable,
   );
+  const planBranchesQuery = useQuery({
+    queryKey: ["plan-branches", conversation?.projectId ?? null],
+    queryFn: () => planBranchApi.getByProject(conversation!.projectId),
+    enabled: Boolean(conversation?.projectId && workspace?.linkedPlanBranchId),
+    staleTime: 10_000,
+  });
+  const linkedPlanBranchExecutionPlanId =
+    planBranchesQuery.data?.find((branch) => branch.id === workspace?.linkedPlanBranchId)
+      ?.executionPlanId ?? null;
   const [displayedVerificationStatus, setDisplayedVerificationStatus] = useState<{
     status: VerificationStatus;
     inProgress: boolean;
@@ -661,6 +671,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           session={session}
           sessionTitle={sessionData?.session.title ?? null}
           taskMode={taskMode}
+          executionPlanId={linkedPlanBranchExecutionPlanId}
           planArtifact={planArtifact}
           isPlanLoading={isPlanHydrating}
           onPlanUpdated={handlePlanUpdated}
@@ -695,6 +706,7 @@ type ArtifactContentProps = {
   session: IdeationSession | null;
   sessionTitle: string | null;
   taskMode: AgentTaskArtifactMode;
+  executionPlanId: string | null;
   planArtifact: Artifact | null;
   isPlanLoading: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
@@ -728,6 +740,7 @@ function ArtifactContent({
   session,
   sessionTitle,
   taskMode,
+  executionPlanId,
   planArtifact,
   isPlanLoading,
   onPlanUpdated,
@@ -909,6 +922,7 @@ function ArtifactContent({
     <TaskArtifactSurface
       projectId={projectId}
       sessionId={attachedSessionId}
+      executionPlanId={executionPlanId}
       mode={taskMode}
       selectedTaskId={taskArtifactSelectedId}
       onSelectedTaskIdChange={onTaskArtifactSelectedIdChange}
@@ -1241,12 +1255,14 @@ function AgentPlanPanel({
 function TaskArtifactSurface({
   projectId,
   sessionId,
+  executionPlanId,
   mode,
   selectedTaskId,
   onSelectedTaskIdChange,
 }: {
   projectId: string | null;
   sessionId: string;
+  executionPlanId: string | null;
   mode: AgentTaskArtifactMode;
   selectedTaskId: string | null;
   onSelectedTaskIdChange: (id: string | null) => void;
@@ -1286,6 +1302,7 @@ function TaskArtifactSurface({
           <LazyTaskBoard
             projectId={projectId}
             ideationSessionId={sessionId}
+            executionPlanId={executionPlanId}
             onTaskSelect={handleTaskSelect}
             fillWidth
           />
@@ -1301,6 +1318,7 @@ function TaskArtifactSurface({
         <LazyTaskGraphView
           projectId={projectId}
           ideationSessionId={sessionId}
+          executionPlanId={executionPlanId}
           hideCanvasControls
           onTaskSelect={handleTaskSelect}
         />

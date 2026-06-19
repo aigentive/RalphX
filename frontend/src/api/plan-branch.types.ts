@@ -22,6 +22,7 @@ export interface PlanBranch {
   prEligible: boolean;
   mergeCommitSha?: string | null;
   baseBranchOverride: string | null;
+  executionPlanId: string | null;
 }
 
 export interface EnableFeatureBranchInput {

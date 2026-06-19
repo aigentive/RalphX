@@ -3551,6 +3551,12 @@ pub async fn sync_agent_conversation_workspace_ideation_link_for_state(
         .await
         .map_err(|error| error.to_string())?
         .map(|plan_branch| plan_branch.id);
+    if linked_plan_branch_id.is_none() && workspace.linked_plan_branch_id.is_some() {
+        return Ok(SyncAgentConversationWorkspaceIdeationLinkResponse {
+            workspace: agent_workspace_response_for_state(state, workspace).await?,
+            updated: false,
+        });
+    }
     let updated = workspace.linked_ideation_session_id.as_ref() != Some(&ideation_session_id)
         || workspace.linked_plan_branch_id != linked_plan_branch_id;
     if updated {
@@ -10217,6 +10223,111 @@ mod tests {
         .expect("sync should succeed");
 
         assert!(response.updated);
+        assert_eq!(
+            response.workspace.linked_ideation_session_id.as_deref(),
+            Some(productive_session.id.as_str())
+        );
+        assert_eq!(
+            response.workspace.linked_plan_branch_id.as_deref(),
+            Some(productive_plan_branch.id.as_str())
+        );
+
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation.id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(
+            stored.linked_ideation_session_id.as_ref(),
+            Some(&productive_session.id)
+        );
+        assert_eq!(
+            stored.linked_plan_branch_id.as_ref(),
+            Some(&productive_plan_branch.id)
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_workspace_ideation_link_preserves_existing_plan_branch_for_blank_session() {
+        let state = AppState::new_test();
+        let mut project = Project::new(
+            "Project".to_string(),
+            "/tmp/project-sync-preserve-plan-branch".to_string(),
+        );
+        project.id = ProjectId::from_string("project-sync-preserve-plan-branch".to_string());
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should be persisted");
+
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = ChatConversationId::from_string("conversation-sync-preserve-plan");
+        state
+            .chat_conversation_repo
+            .create(conversation.clone())
+            .await
+            .expect("conversation should be persisted");
+
+        let productive_session = state
+            .ideation_session_repo
+            .create(IdeationSession::new_with_title(
+                project.id.clone(),
+                "Productive plan".to_string(),
+            ))
+            .await
+            .expect("productive session should be persisted");
+        let mut productive_plan_branch = PlanBranch::new(
+            ArtifactId::from_string("productive-artifact"),
+            productive_session.id.clone(),
+            project.id.clone(),
+            "ralphx/test/productive-plan".to_string(),
+            "main".to_string(),
+        );
+        productive_plan_branch.id = PlanBranchId::from_string("productive-plan-branch");
+        state
+            .plan_branch_repo
+            .create(productive_plan_branch.clone())
+            .await
+            .expect("productive plan branch should be persisted");
+        let blank_session = state
+            .ideation_session_repo
+            .create(IdeationSession::new_with_title(
+                project.id.clone(),
+                "Blank continuation".to_string(),
+            ))
+            .await
+            .expect("blank session should be persisted");
+
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation.id.clone(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/test/sync-link".to_string(),
+            "/tmp/sync-link".to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(productive_session.id.clone());
+        workspace.linked_plan_branch_id = Some(productive_plan_branch.id.clone());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be persisted");
+
+        let response = sync_agent_conversation_workspace_ideation_link_for_state(
+            &state,
+            conversation.id.clone(),
+            blank_session.id.clone(),
+        )
+        .await
+        .expect("sync should succeed");
+
+        assert!(!response.updated);
         assert_eq!(
             response.workspace.linked_ideation_session_id.as_deref(),
             Some(productive_session.id.as_str())

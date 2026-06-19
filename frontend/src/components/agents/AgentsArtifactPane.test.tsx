@@ -46,6 +46,7 @@ const {
   getLinearSettingsMock,
   getIdeationSessionMock,
   getIdeationChildrenMock,
+  getPlanBranchesMock,
   useConversationMock,
   useDependencyGraphMock,
   useVerificationStatusMock,
@@ -91,6 +92,7 @@ const {
   getLinearSettingsMock: vi.fn(),
   getIdeationSessionMock: vi.fn(),
   getIdeationChildrenMock: vi.fn(),
+  getPlanBranchesMock: vi.fn(),
   useConversationMock: vi.fn(),
   useDependencyGraphMock: vi.fn(),
   useVerificationStatusMock: vi.fn(),
@@ -182,6 +184,17 @@ vi.mock("@/api/ideation", async (importOriginal) => {
   };
 });
 
+vi.mock("@/api/plan-branch", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/plan-branch")>();
+  return {
+    ...actual,
+    planBranchApi: {
+      ...actual.planBranchApi,
+      getByProject: (...args: unknown[]) => getPlanBranchesMock(...args),
+    },
+  };
+});
+
 vi.mock("@/components/Ideation/VerificationPanel", () => ({
   VerificationPanel: ({ session }: { session: { id: string } }) => (
     <div data-testid="mock-verification-panel">{session.id}</div>
@@ -189,10 +202,17 @@ vi.mock("@/components/Ideation/VerificationPanel", () => ({
 }));
 
 vi.mock("@/components/tasks/TaskBoard", () => ({
-  TaskBoard: ({ onTaskSelect }: { onTaskSelect?: (taskId: string) => void }) => (
+  TaskBoard: ({
+    executionPlanId,
+    onTaskSelect,
+  }: {
+    executionPlanId?: string | null;
+    onTaskSelect?: (taskId: string) => void;
+  }) => (
     <button
       type="button"
       data-testid="mock-agent-task-card"
+      data-execution-plan-id={executionPlanId ?? ""}
       onClick={() => onTaskSelect?.("task-1")}
     >
       Open task
@@ -524,6 +544,30 @@ describe("AgentsArtifactPane", () => {
       }),
       updated: true,
     });
+    getPlanBranchesMock.mockResolvedValue([
+      {
+        id: "plan-branch-1",
+        planArtifactId: "artifact-1",
+        sessionId: "session-1",
+        projectId: "project-1",
+        branchName: "ralphx/test/plan",
+        sourceBranch: "main",
+        status: "active",
+        mergeTaskId: null,
+        createdAt: "2026-06-19T00:00:00Z",
+        mergedAt: null,
+        prNumber: null,
+        prUrl: null,
+        prDraft: null,
+        prPushStatus: null,
+        prStatus: null,
+        prPollingActive: false,
+        prEligible: true,
+        mergeCommitSha: null,
+        baseBranchOverride: null,
+        executionPlanId: "execution-plan-1",
+      },
+    ]);
     setWorkspacePrSupervisionMock.mockImplementation(
       async (
         conversationId: string,

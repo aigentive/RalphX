@@ -80,6 +80,8 @@ export interface TaskGraphViewProps {
   projectId: string;
   /** Optional ideation session ID to filter tasks by plan */
   ideationSessionId?: string | null;
+  /** Optional execution plan ID to filter tasks by accepted plan */
+  executionPlanId?: string | null;
   /** Hide graph canvas toolbar controls for embedded read-only surfaces. */
   hideCanvasControls?: boolean;
   /** Optional footer to render at the bottom of the left section (e.g., ExecutionControlBar) */
@@ -272,6 +274,8 @@ interface TaskGraphViewInnerProps {
   projectId: string;
   /** Optional ideation session ID to filter tasks by plan */
   ideationSessionId?: string | null;
+  /** Optional execution plan ID to filter tasks by accepted plan */
+  executionPlanId?: string | null;
   /** Hide graph canvas toolbar controls for embedded read-only surfaces. */
   hideCanvasControls?: boolean;
   /** Optional footer to render at the bottom of the left section (e.g., ExecutionControlBar) */
@@ -285,6 +289,7 @@ interface TaskGraphViewInnerProps {
 function TaskGraphViewInner({
   projectId,
   ideationSessionId,
+  executionPlanId,
   hideCanvasControls = false,
   footer,
   onTaskSelect,
@@ -303,12 +308,13 @@ function TaskGraphViewInner({
     usePlanStore.getState().loadActivePlan(projectId);
   }, [projectId]);
 
-  const effectiveExecutionPlanId = ideationSessionId ? null : activeExecutionPlanId;
+  const effectiveExecutionPlanId = executionPlanId ?? (ideationSessionId ? null : activeExecutionPlanId);
+  const effectiveIdeationSessionId = executionPlanId ? null : ideationSessionId ?? null;
   const { data: graphData, isLoading, error } = useTaskGraph(
     projectId,
     filters.showArchived,
     effectiveExecutionPlanId,
-    ideationSessionId ?? null,
+    effectiveIdeationSessionId,
   );
   const {
     fitNodeInView,
@@ -1631,7 +1637,7 @@ function TaskGraphViewInner({
       timelineContent={
         <FloatingTimeline
           projectId={projectId}
-          executionPlanId={activeExecutionPlanId}
+          executionPlanId={effectiveExecutionPlanId}
           onTaskClick={onTimelineTaskClick}
           highlightedTaskId={highlightedTaskId}
           variant={rightPanelMode === "overlay" || overlayClosing ? "overlay" : "panel"}
@@ -1749,6 +1755,7 @@ function TaskGraphViewInner({
 export function TaskGraphView({
   projectId,
   ideationSessionId,
+  executionPlanId,
   hideCanvasControls = false,
   footer,
   onTaskSelect,
@@ -1759,6 +1766,7 @@ export function TaskGraphView({
       <TaskGraphViewInner
         projectId={projectId}
         ideationSessionId={ideationSessionId ?? null}
+        executionPlanId={executionPlanId ?? null}
         hideCanvasControls={hideCanvasControls}
         footer={footer}
         {...(onTaskSelect ? { onTaskSelect } : {})}
