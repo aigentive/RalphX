@@ -391,6 +391,50 @@ async fn startup_agent_workspace_pr_recovery_restarts_review_pr_monitor_poller()
 }
 
 #[tokio::test]
+async fn startup_agent_workspace_pr_recovery_skips_orphaned_review_pr_monitor() {
+    init_tracing();
+
+    let project = cleanup_project();
+    let conversation_id = ChatConversationId::from_string("abababab-1010-1111-1212-cdcdcdcdcdcd");
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        conversation_id.clone(),
+        project.id.clone(),
+        101,
+        Some("old-head".to_string()),
+    );
+    monitor.monitor_enabled = true;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+    workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .expect("orphaned monitor should persist");
+
+    let project_repo: Arc<dyn ProjectRepository> =
+        Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let plan_branch_repo: Arc<dyn PlanBranchRepository> =
+        Arc::new(MemoryPlanBranchRepository::new());
+    let github = Arc::new(MockGithubService::new());
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::clone(&plan_branch_repo),
+    ));
+
+    recover_agent_workspace_pr_pollers(
+        workspace_repo,
+        project_repo,
+        plan_branch_repo,
+        Arc::clone(&registry),
+        Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MockChatService::new()),
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    assert!(!registry.is_agent_workspace_polling(&conversation_id));
+}
+
+#[tokio::test]
 async fn startup_agent_workspace_pr_recovery_restarts_supervised_ideation_poller() {
     init_tracing();
 
