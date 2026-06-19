@@ -53,16 +53,23 @@ export function useAgentsAttachedIdeation({
     ],
   );
   const attachedIdeationSessionQuery = useQuery({
-    queryKey: ideationKeys.sessionDetail(attachedIdeationSessionId ?? ""),
-    queryFn: () => ideationApi.sessions.get(attachedIdeationSessionId!),
+    queryKey: ideationKeys.sessionWithData(attachedIdeationSessionId ?? ""),
+    queryFn: () => ideationApi.sessions.getWithData(attachedIdeationSessionId!),
     enabled: shouldHydrateAttachedIdeation && !!attachedIdeationSessionId,
+    placeholderData: () => null,
     staleTime: 5_000,
   });
-  const attachedIdeationSession =
+  const attachedIdeationSessionData =
     attachedIdeationSessionId &&
-    attachedIdeationSessionQuery.data?.id === attachedIdeationSessionId
+    attachedIdeationSessionQuery.data?.session.id === attachedIdeationSessionId
       ? attachedIdeationSessionQuery.data
       : null;
+  const attachedIdeationSession = attachedIdeationSessionData?.session ?? null;
+  const attachedArtifactMode =
+    activeConversationMode ??
+    activeWorkspace?.mode ??
+    activeConversation?.agentMode ??
+    (activeConversation?.contextType === "ideation" ? "ideation" : null);
   const hasAutoOpenArtifacts = useMemo(() => {
     if (!attachedIdeationSession) {
       return false;
@@ -96,10 +103,17 @@ export function useAgentsAttachedIdeation({
     return getVisibleIdeationArtifactTabs({
       hasAttachedIdeationSession: Boolean(attachedIdeationSession),
       hasPlanArtifact,
+      hasProposals: Boolean(attachedIdeationSessionData?.proposals.length),
       hasVerificationEvidence,
       hasExecutionTasks,
+      artifactMode: attachedArtifactMode,
     });
-  }, [activeWorkspace?.linkedPlanBranchId, attachedIdeationSession]);
+  }, [
+    activeWorkspace?.linkedPlanBranchId,
+    attachedIdeationSession,
+    attachedIdeationSessionData?.proposals.length,
+    attachedArtifactMode,
+  ]);
   useEffect(() => {
     if (
       activeConversation?.contextType !== "project" ||

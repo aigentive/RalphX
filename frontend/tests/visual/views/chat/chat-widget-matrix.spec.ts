@@ -450,6 +450,7 @@ test.describe("Chat Widget Matrix", () => {
   });
 
   test("merge widget states", async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
     await setupTaskChatScenario(page, "merge_widget_matrix");
     await expandToolCallGroups(page.locator("body"));
 
