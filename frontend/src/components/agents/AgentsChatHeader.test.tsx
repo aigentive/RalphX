@@ -442,6 +442,30 @@ describe("AgentsChatHeader", () => {
     expect(screen.getByTestId("chat-session-chips")).toBeInTheDocument();
   });
 
+  it("renders a provided workspace control instead of the default status pill", () => {
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+        workspaceControl={
+          <div data-testid="agents-header-workspace-control">BASE: main</div>
+        }
+      />,
+    );
+
+    expect(screen.getByTestId("agents-chat-title-group")).toContainElement(
+      screen.getByTestId("agents-header-workspace-control"),
+    );
+    expect(
+      screen.queryByTestId("agents-workspace-status"),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows the workspace branch status inside the focus subheader", () => {
     renderWithProviders(
       <AgentsChatFocusBar
