@@ -251,11 +251,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const isDirectIdeationConversation = conversation?.contextType === "ideation";
   const canHydrateIdeationArtifacts = Boolean(
     isDirectIdeationConversation ||
-    focusedIdeationSessionId ||
-    workspace?.mode === "ideation" ||
-    workspace?.mode === "plan" ||
-    workspace?.linkedIdeationSessionId ||
-    workspace?.linkedPlanBranchId,
+      focusedIdeationSessionId ||
+      workspace?.mode === "ideation" ||
+      workspace?.mode === "plan" ||
+      workspace?.linkedIdeationSessionId ||
+      workspace?.linkedPlanBranchId,
   );
   const showPublishTab = shouldShowAgentWorkspacePublishSurface(workspace);
   const shouldLoadIdeationData = canHydrateIdeationArtifacts;
