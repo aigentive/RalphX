@@ -200,6 +200,7 @@ mod tests {
     use crate::domain::entities::{
         ChatContextType, IdeationSession, InternalStatus, Project, Task,
     };
+    use crate::domain::services::{QueueKey, QueuedMessage};
 
     #[tokio::test]
     async fn test_count_slot_consuming_queued_messages_for_project_counts_all_slot_contexts() {
@@ -257,5 +258,53 @@ mod tests {
             .expect("count queued messages");
 
         assert_eq!(count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_count_slot_consuming_queued_messages_merges_durable_rows_by_id() {
+        let app_state = AppState::new_test();
+        let project = Project::new(
+            "Durable Queue Count Project".to_string(),
+            "/test/durable-queue-count".to_string(),
+        );
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .unwrap();
+        let task = app_state
+            .task_repo
+            .create(Task {
+                internal_status: InternalStatus::Reviewing,
+                ..Task::new(project.id.clone(), "Review queued".to_string())
+            })
+            .await
+            .unwrap();
+        let key = QueueKey::new(ChatContextType::Review, task.id.as_str());
+        let shared = QueuedMessage::with_id("shared".to_string(), "Shared".to_string());
+        let durable_only =
+            QueuedMessage::with_id("durable-only".to_string(), "Durable only".to_string());
+
+        app_state.message_queue.queue_front_existing(
+            ChatContextType::Review,
+            task.id.as_str(),
+            shared.clone(),
+        );
+        app_state
+            .queued_message_repo
+            .enqueue_back(&key, &shared)
+            .await
+            .unwrap();
+        app_state
+            .queued_message_repo
+            .enqueue_back(&key, &durable_only)
+            .await
+            .unwrap();
+
+        let count = count_slot_consuming_queued_messages_for_project(&app_state, &project.id)
+            .await
+            .expect("count durable queued messages");
+
+        assert_eq!(count, 2);
     }
 }

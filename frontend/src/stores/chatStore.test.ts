@@ -728,6 +728,31 @@ describe("chatStore", () => {
       expect(useChatStore.getState().queuedMessages[contextKey]?.[0].isEditing).toBe(true);
     });
 
+    it("keeps the same queue reference when hydrated messages are unchanged", () => {
+      useChatStore.getState().setQueuedMessages(contextKey, [
+        {
+          id: "queued-id",
+          content: "Original",
+          createdAt: "2026-06-19T10:00:00Z",
+          isEditing: false,
+          attachmentIds: ["att-1"],
+        },
+      ]);
+      const before = useChatStore.getState().queuedMessages[contextKey];
+
+      useChatStore.getState().setQueuedMessages(contextKey, [
+        {
+          id: "queued-id",
+          content: "Original",
+          createdAt: "2026-06-19T10:00:00Z",
+          isEditing: false,
+          attachmentIds: ["att-1"],
+        },
+      ]);
+
+      expect(useChatStore.getState().queuedMessages[contextKey]).toBe(before);
+    });
+
     it("does not change other context queues", () => {
       useChatStore.getState().queueMessage(otherContextKey, "Other", "other-id");
 

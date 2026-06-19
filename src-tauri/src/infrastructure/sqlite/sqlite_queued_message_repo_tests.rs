@@ -100,3 +100,104 @@ async fn delete_removes_only_matching_context_row() {
     assert!(repo.list(&project_key).await.unwrap().is_empty());
     assert_eq!(repo.list(&task_key).await.unwrap(), vec![task]);
 }
+
+#[tokio::test]
+async fn list_keys_delete_by_id_and_clear_cover_durable_index_paths() {
+    let repo = setup_repo();
+    let first_key = QueueKey::new(ChatContextType::Project, "project-1");
+    let second_key = QueueKey::new(ChatContextType::Task, "task-1");
+    let first = QueuedMessage::with_id("first".to_string(), "First".to_string());
+    let second = QueuedMessage::with_id("second".to_string(), "Second".to_string());
+
+    assert!(repo.pop_front(&first_key).await.unwrap().is_none());
+    repo.enqueue_back(&first_key, &first).await.unwrap();
+    repo.enqueue_back(&second_key, &second).await.unwrap();
+
+    let keys = repo.list_keys().await.unwrap();
+    assert_eq!(keys.len(), 2);
+    assert!(keys.contains(&first_key));
+    assert!(keys.contains(&second_key));
+
+    assert!(!repo.delete_by_id("missing").await.unwrap());
+    assert!(repo.delete_by_id("first").await.unwrap());
+    assert!(repo.list(&first_key).await.unwrap().is_empty());
+    assert_eq!(repo.list(&second_key).await.unwrap(), vec![second]);
+
+    repo.clear(&second_key).await.unwrap();
+    assert!(repo.list_keys().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn remove_stale_drops_only_expired_parseable_rows() {
+    let repo = setup_repo();
+    let key = QueueKey::new(ChatContextType::Project, "project-1");
+    let mut stale = QueuedMessage::with_id("stale".to_string(), "Old".to_string());
+    stale.created_at = "2020-01-01T00:00:00Z".to_string();
+    let mut fresh = QueuedMessage::with_id("fresh".to_string(), "Fresh".to_string());
+    fresh.created_at = chrono::Utc::now().to_rfc3339();
+    let mut unparsable = QueuedMessage::with_id("unparsable".to_string(), "Keep".to_string());
+    unparsable.created_at = "not a timestamp".to_string();
+
+    repo.enqueue_back(&key, &stale).await.unwrap();
+    repo.enqueue_back(&key, &fresh).await.unwrap();
+    repo.enqueue_back(&key, &unparsable).await.unwrap();
+
+    let dropped = repo.remove_stale(&key, 60).await.unwrap();
+    assert_eq!(dropped, vec![stale]);
+    assert_eq!(
+        repo.list(&key)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>(),
+        vec!["fresh".to_string(), "unparsable".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn invalid_context_or_payload_rows_return_errors() {
+    let conn = Arc::new(Mutex::new(
+        Connection::open_in_memory().expect("create in-memory db"),
+    ));
+    {
+        let guard = conn.lock().await;
+        guard
+            .execute_batch(
+                "CREATE TABLE queued_messages (
+                    id TEXT PRIMARY KEY,
+                    context_type TEXT NOT NULL,
+                    context_id TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    is_editing INTEGER NOT NULL DEFAULT 0,
+                    sequence INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    inserted_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO queued_messages (
+                    id, context_type, context_id, content, created_at, is_editing,
+                    sequence, payload_json, inserted_at, updated_at
+                ) VALUES (
+                    'invalid-context', 'unknown', 'ctx', 'Bad', '2026-06-19T10:00:00Z',
+                    0, 1, '{}', '2026-06-19T10:00:00Z', '2026-06-19T10:00:00Z'
+                );
+                INSERT INTO queued_messages (
+                    id, context_type, context_id, content, created_at, is_editing,
+                    sequence, payload_json, inserted_at, updated_at
+                ) VALUES (
+                    'invalid-json', 'project', 'project-1', 'Bad', '2026-06-19T10:00:00Z',
+                    0, 1, '{', '2026-06-19T10:00:00Z', '2026-06-19T10:00:00Z'
+                );",
+            )
+            .unwrap();
+    }
+    let repo = SqliteQueuedMessageRepository::from_shared(conn);
+
+    assert!(repo.list_keys().await.is_err());
+    assert!(repo
+        .list(&QueueKey::new(ChatContextType::Project, "project-1"))
+        .await
+        .is_err());
+}

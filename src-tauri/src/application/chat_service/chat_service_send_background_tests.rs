@@ -13,6 +13,7 @@ use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentRunId, AgentRunStatus, ChatAttachment, ChatContextType,
     ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus, ProjectId,
 };
+use crate::domain::repositories::QueuedMessageRepository;
 use crate::domain::services::RunningAgentKey;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 use std::path::Path;
@@ -302,6 +303,52 @@ async fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
             .map(|duration| duration.as_millis()),
         Some(1_000)
     );
+}
+
+#[tokio::test]
+async fn silent_completion_recovery_keeps_memory_queue_when_durable_persist_fails() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let repo: Arc<dyn QueuedMessageRepository> = Arc::new(
+        crate::infrastructure::sqlite::SqliteQueuedMessageRepository::new(
+            rusqlite::Connection::open_in_memory().expect("create in-memory db"),
+        ),
+    );
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        Some(&repo),
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Queued {
+            attempt: 1,
+            backoff_ms: 1_000,
+        }
+    );
+    let queued = queue.get_queued(ChatContextType::Project, "conversation-1");
+    assert_eq!(queued.len(), 1);
+    assert!(queued[0].content.contains("ended after tool activity"));
 }
 
 #[tokio::test]
