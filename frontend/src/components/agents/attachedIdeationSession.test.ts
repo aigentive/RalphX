@@ -104,4 +104,34 @@ describe("resolveAttachedIdeationSessionId", () => {
 
     expect(result).toBe("session-linked");
   });
+
+  it("prefers productive spawned ideation sessions over stale workspace links", () => {
+    const result = resolveAttachedIdeationSessionId(
+      conversation,
+      [
+        messageWithToolCall(
+          {
+            sessions: [
+              {
+                id: "stale-shell-session",
+                title: "Continue ClickUp integration implementation",
+                status: "active",
+                proposal_count: 0,
+              },
+              {
+                id: "productive-session",
+                title: "Implement ClickUp integration",
+                status: "accepted",
+                proposal_count: 4,
+              },
+            ],
+          },
+          "ralphx::v1_list_ideation_sessions",
+        ),
+      ],
+      "stale-shell-session",
+    );
+
+    expect(result).toBe("productive-session");
+  });
 });
