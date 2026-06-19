@@ -6,10 +6,16 @@
 
 use rusqlite::Connection;
 
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::metrics_commands::{
-    compute_column_metrics, compute_project_stats, compute_task_metrics,
+    compute_column_metrics, compute_project_stats, compute_task_metrics, get_insights_pr_insights,
+    get_insights_stats, get_insights_trends, get_project_pr_insights,
     invalidate_project_stats_cache, ColumnMetric, ProjectStats, COLUMN_METRICS_CACHE, STATS_CACHE,
 };
+use ralphx_lib::domain::entities::Project;
+use ralphx_lib::error::AppResult;
+use tauri::test::{mock_builder, MockRuntime};
+use tauri::Manager;
 
 // ─── Schema helpers ───────────────────────────────────────────────────────────
 
@@ -112,6 +118,194 @@ fn insert_step(conn: &Connection, id: &str, task_id: &str) {
         rusqlite::params![id, task_id],
     )
     .unwrap();
+}
+
+fn metrics_command_app() -> tauri::App<MockRuntime> {
+    mock_builder()
+        .manage(AppState::new_sqlite_test())
+        .build(tauri::generate_context!())
+        .expect("mock metrics app should build")
+}
+
+async fn seed_command_metrics_rows(state: &AppState) -> (String, String) {
+    let project_one = state
+        .project_repo
+        .create(Project::new(
+            "Metrics Project One".to_string(),
+            "/tmp/metrics-project-one".to_string(),
+        ))
+        .await
+        .expect("create first metrics project");
+    let project_two = state
+        .project_repo
+        .create(Project::new(
+            "Metrics Project Two".to_string(),
+            "/tmp/metrics-project-two".to_string(),
+        ))
+        .await
+        .expect("create second metrics project");
+    let project_one_id = project_one.id.as_str().to_string();
+    let project_two_id = project_two.id.as_str().to_string();
+    let p1 = project_one_id.clone();
+    let p2 = project_two_id.clone();
+
+    state
+        .db
+        .clone()
+        .run(move |conn| -> AppResult<()> {
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, category, title, internal_status, created_at, updated_at)
+                 VALUES ('metrics-command-task-1', ?1, 'feature', 'Metrics task 1', 'merged',
+                         '2026-06-18T09:00:00+00:00', '2026-06-18T10:00:00+00:00')",
+                rusqlite::params![p1],
+            )?;
+            conn.execute(
+                "INSERT INTO task_state_history (id, task_id, to_status, changed_by, created_at)
+                 VALUES ('metrics-command-history-1', 'metrics-command-task-1', 'merged', 'system',
+                         '2026-06-18T10:00:00+00:00')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, category, title, internal_status, created_at, updated_at)
+                 VALUES ('metrics-command-task-2', ?1, 'feature', 'Metrics task 2', 'failed',
+                         '2026-06-18T11:00:00+00:00', '2026-06-18T12:00:00+00:00')",
+                rusqlite::params![p2],
+            )?;
+            conn.execute(
+                "INSERT INTO agent_conversation_workspaces (
+                    conversation_id, project_id, mode, base_ref_kind, base_ref, branch_name, worktree_path,
+                    publication_pr_number, publication_pr_url, publication_pr_status, publication_push_status,
+                    pr_autofix_enabled, pr_auto_merge_desired, pr_auto_merge_current, status, created_at, updated_at
+                 )
+                 VALUES (
+                    'metrics-command-workspace-1', ?1, 'edit', 'project_default', 'main',
+                    'rx/metrics-command-workspace-1', '/tmp/metrics-workspace-1', 301,
+                    'https://github.test/org/repo/pull/301', 'merged', 'pushed',
+                    1, 1, 1, 'active', '2026-06-18T09:00:00+00:00', '2026-06-18T11:00:00+00:00'
+                 )",
+                rusqlite::params![p1],
+            )?;
+            conn.execute(
+                "INSERT INTO agent_conversation_workspaces (
+                    conversation_id, project_id, mode, base_ref_kind, base_ref, branch_name, worktree_path,
+                    publication_pr_number, publication_pr_url, publication_pr_status, publication_push_status,
+                    pr_autofix_enabled, pr_auto_merge_desired, pr_auto_merge_current, status, created_at, updated_at
+                 )
+                 VALUES (
+                    'metrics-command-workspace-2', ?1, 'edit', 'project_default', 'main',
+                    'rx/metrics-command-workspace-2', '/tmp/metrics-workspace-2', 302,
+                    'https://github.test/org/repo/pull/302', 'open', 'pushed',
+                    0, 0, 0, 'active', '2026-06-18T12:00:00+00:00', '2026-06-18T12:30:00+00:00'
+                 )",
+                rusqlite::params![p2],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed metrics command rows");
+
+    (project_one_id, project_two_id)
+}
+
+#[tokio::test]
+async fn ipc_contract_insights_metric_commands_default_all_projects_and_filter_by_project() {
+    let app = metrics_command_app();
+    let (project_one_id, project_two_id) =
+        seed_command_metrics_rows(app.state::<AppState>().inner()).await;
+    invalidate_project_stats_cache(&project_one_id);
+    invalidate_project_stats_cache(&project_two_id);
+
+    let all_stats = get_insights_stats(None, Some(0), Some(0), app.state::<AppState>())
+        .await
+        .expect("all-project stats should load");
+    assert_eq!(all_stats.task_count, 2);
+    assert_eq!(all_stats.agent_success_count, 1);
+    assert_eq!(all_stats.agent_total_count, 2);
+
+    let cached_all_stats =
+        get_insights_stats(Some("   ".to_string()), Some(0), Some(0), app.state::<AppState>())
+            .await
+            .expect("blank project filter should use cached all-project stats");
+    assert_eq!(cached_all_stats.task_count, 2);
+
+    let filtered_stats = get_insights_stats(
+        Some(format!(" {} ", project_one_id)),
+        Some(0),
+        Some(0),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("project-filtered stats should load");
+    assert_eq!(filtered_stats.task_count, 1);
+    assert_eq!(filtered_stats.agent_success_count, 1);
+
+    let invalid_tz = get_insights_stats(None, Some(0), Some(900), app.state::<AppState>())
+        .await
+        .expect_err("invalid timezone should be rejected");
+    assert!(invalid_tz.contains("tz_offset_minutes"));
+
+    let all_trends = get_insights_trends(None, Some(0), Some(0), app.state::<AppState>())
+        .await
+        .expect("all-project trends should load");
+    assert_eq!(
+        all_trends
+            .weekly_delivery_throughput
+            .last()
+            .map(|point| point.unified_deliveries),
+        Some(3)
+    );
+    let filtered_trends = get_insights_trends(
+        Some(project_one_id.clone()),
+        Some(0),
+        Some(0),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("project-filtered trends should load");
+    assert_eq!(
+        filtered_trends
+            .weekly_delivery_throughput
+            .last()
+            .map(|point| point.unified_deliveries),
+        Some(2)
+    );
+
+    let all_prs = get_insights_pr_insights(None, Some(0), Some(0), app.state::<AppState>())
+        .await
+        .expect("all-project PR insights should load");
+    assert_eq!(all_prs.summary.total_prs, 2);
+    assert_eq!(all_prs.summary.direct_workspace_prs, 2);
+
+    let cached_all_prs =
+        get_insights_pr_insights(Some(" ".to_string()), Some(0), Some(0), app.state::<AppState>())
+            .await
+            .expect("blank project filter should use cached all-project PR insights");
+    assert_eq!(cached_all_prs.summary.total_prs, 2);
+
+    let filtered_prs = get_insights_pr_insights(
+        Some(project_one_id.clone()),
+        Some(0),
+        Some(0),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("project-filtered PR insights should load");
+    assert_eq!(filtered_prs.summary.total_prs, 1);
+    assert_eq!(filtered_prs.summary.merged_prs, 1);
+
+    let project_prs =
+        get_project_pr_insights(project_one_id.clone(), Some(0), Some(0), app.state::<AppState>())
+            .await
+            .expect("project PR insights should load");
+    assert_eq!(project_prs.summary.total_prs, 1);
+    let cached_project_prs =
+        get_project_pr_insights(project_one_id.clone(), Some(0), Some(0), app.state::<AppState>())
+            .await
+            .expect("project PR insights should be cached");
+    assert_eq!(cached_project_prs.summary.total_prs, 1);
+
+    invalidate_project_stats_cache(&project_one_id);
+    invalidate_project_stats_cache(&project_two_id);
 }
 
 // ─── Edge cases ───────────────────────────────────────────────────────────────
