@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import { setupTaskChatScenario } from "../../../fixtures/chat.fixtures";
 
 async function visibleY(locator: Locator, label: string) {
@@ -6,6 +6,22 @@ async function visibleY(locator: Locator, label: string) {
   const box = await locator.boundingBox();
   expect(box, `${label} should have a layout box`).not.toBeNull();
   return box!.y;
+}
+
+function collapsedToolCallGroupToggles(root: Locator) {
+  return root.getByRole("button", { name: /^Agent called \d+ tools$/ });
+}
+
+async function expandToolCallGroups(root: Locator) {
+  await expect(collapsedToolCallGroupToggles(root).first()).toBeVisible({ timeout: 10000 });
+
+  for (let index = 0; index < 20; index += 1) {
+    const toggles = collapsedToolCallGroupToggles(root);
+    if ((await toggles.count()) === 0) {
+      return;
+    }
+    await toggles.first().click();
+  }
 }
 
 const executionContractContextId = "task-mock-4";
@@ -474,6 +490,7 @@ test.describe("Task Chat Replay", () => {
     await expect(
       panel.getByText("Execution replay sampled from a compact two-message worker conversation."),
     ).toBeVisible();
+    await expandToolCallGroups(panel);
     await expect(
       panel.getByText("frontend/src/components/Chat/MessageItem.tsx"),
     ).toBeVisible();
