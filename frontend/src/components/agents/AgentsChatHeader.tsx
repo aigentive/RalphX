@@ -76,6 +76,7 @@ const HEADER_ARTIFACT_TABS: Array<{
   label: string;
   icon: ElementType;
 }> = [
+  { id: "review", label: "Review", icon: FileText },
   { id: "plan", label: "Plan", icon: FileText },
   { id: "verification", label: "Verification", icon: CheckCircle2 },
   { id: "proposal", label: "Proposals", icon: GitPullRequestArrow },
@@ -327,11 +328,13 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     visibleHeaderArtifactTabs.length > 0 &&
     (conversationMode === "ideation" ||
       conversationMode === "plan" ||
+      conversationMode === "review_pr" ||
       isLinkedPlanEditWorkspace);
   const showArtifactToggle =
     artifactOpen ||
     conversationMode === "ideation" ||
-    (conversationMode === "plan" && visibleHeaderArtifactTabs.length > 0);
+    (conversationMode === "plan" && visibleHeaderArtifactTabs.length > 0) ||
+    (conversationMode === "review_pr" && visibleHeaderArtifactTabs.length > 0);
   // Hide the publish shortcut whenever any artifact pane is open — the user
   // can already reach Commit & Publish via the artifact tab bar, so the
   // header CTA is redundant (and visually crowds the Update-from-base label).

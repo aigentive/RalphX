@@ -230,6 +230,14 @@ export function AgentWorkspacePrReviewCard({
   const ActionIcon = copy?.icon ?? GitPullRequestArrow;
   const isMutating = submitMutation.isPending || skipMutation.isPending;
   const headSha = pendingAction?.headSha ?? context.currentHeadSha;
+  const hasReviewArtifactForPendingAction = Boolean(
+    pendingAction &&
+      context.monitor?.reviewArtifactId &&
+      context.monitor.reviewArtifactHeadSha === pendingAction.headSha,
+  );
+  const isSubmitBlockedByMissingReviewArtifact = Boolean(
+    pendingAction && !hasReviewArtifactForPendingAction,
+  );
 
   return (
     <section
@@ -314,6 +322,18 @@ export function AgentWorkspacePrReviewCard({
                 {pendingAction.reviewBody}
               </pre>
             </details>
+            {isSubmitBlockedByMissingReviewArtifact ? (
+              <div
+                className="rounded-md border px-2.5 py-2 text-[0.75rem] leading-relaxed"
+                style={{
+                  background: "var(--status-warning-muted)",
+                  borderColor: "var(--status-warning-border)",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                Write the Review artifact for this PR head before submitting.
+              </div>
+            ) : null}
             <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
               <Button
                 type="button"
@@ -328,7 +348,7 @@ export function AgentWorkspacePrReviewCard({
                 type="button"
                 size="sm"
                 onClick={() => submitMutation.mutate(pendingAction)}
-                disabled={isMutating}
+                disabled={isMutating || isSubmitBlockedByMissingReviewArtifact}
               >
                 {submitMutation.isPending ? (
                   <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />

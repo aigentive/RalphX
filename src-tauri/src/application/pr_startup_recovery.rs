@@ -1083,7 +1083,7 @@ pub async fn recover_agent_workspace_pr_pollers(
     chat_service: Arc<dyn ChatService>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
-    let workspaces = match workspace_repo
+    let mut workspaces = match workspace_repo
         .list_active_pr_poller_recovery_workspaces()
         .await
     {
@@ -1093,19 +1093,60 @@ pub async fn recover_agent_workspace_pr_pollers(
                 error = %error,
                 "Agent workspace PR startup recovery: failed to list published workspaces"
             );
-            return;
+            Vec::new()
         }
     };
 
+    let mut seen_conversations = workspaces
+        .iter()
+        .map(|workspace| workspace.conversation_id.as_str().to_string())
+        .collect::<HashSet<_>>();
+    match workspace_repo.list_active_pr_review_monitors().await {
+        Ok(monitors) => {
+            for monitor in monitors {
+                if !seen_conversations.insert(monitor.conversation_id.as_str().to_string()) {
+                    continue;
+                }
+                match workspace_repo
+                    .get_by_conversation_id(&monitor.conversation_id)
+                    .await
+                {
+                    Ok(Some(workspace)) => workspaces.push(workspace),
+                    Ok(None) => {
+                        tracing::warn!(
+                            conversation_id = monitor.conversation_id.as_str(),
+                            pr_number = monitor.pr_number,
+                            "Agent workspace PR startup recovery: active Review PR monitor has no workspace"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            conversation_id = monitor.conversation_id.as_str(),
+                            pr_number = monitor.pr_number,
+                            error = %error,
+                            "Agent workspace PR startup recovery: failed to load Review PR monitor workspace"
+                        );
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "Agent workspace PR startup recovery: failed to list active Review PR monitors"
+            );
+        }
+    }
+
     if workspaces.is_empty() {
-        tracing::debug!("Agent workspace PR startup recovery: no published workspaces");
+        tracing::debug!("Agent workspace PR startup recovery: no PR poller workspaces");
         return;
     }
 
     tracing::info!(
         count = workspaces.len(),
         concurrency = AGENT_WORKSPACE_PR_POLLER_RECOVERY_CONCURRENCY,
-        "Agent workspace PR startup recovery: found active published workspaces"
+        "Agent workspace PR startup recovery: found active PR poller workspaces"
     );
 
     futures::stream::iter(workspaces)
@@ -1147,7 +1188,7 @@ async fn recover_one_agent_workspace_pr_poller(
     chat_service: Arc<dyn ChatService>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
-    let Some(pr_number) = workspace.publication_pr_number else {
+    let Some(pr_number) = agent_workspace_pr_poller_number(&workspace) else {
         return;
     };
 
@@ -1182,58 +1223,59 @@ async fn recover_one_agent_workspace_pr_poller(
         return;
     }
 
-    let worktree_path =
-        match resolve_agent_workspace_pr_poller_worktree_path(
-            &project,
-            &workspace,
-            plan_branch_repo.as_ref(),
-        )
-        .await
-        {
-            Ok(path) => path,
-            Err(error) => {
-                tracing::warn!(
-                    conversation_id = workspace.conversation_id.as_str(),
-                    pr_number,
-                    error = %error,
-                    "Agent workspace PR startup recovery: workspace path is not usable"
-                );
-                let _ = workspace_repo
-                    .update_status(
-                        &workspace.conversation_id,
-                        crate::domain::entities::AgentConversationWorkspaceStatus::Missing,
-                    )
-                    .await;
-                return;
-            }
-        };
-
-    match pr_poller_registry
-        .process_agent_workspace_review_feedback_once(
-            &workspace.conversation_id,
-            pr_number,
-            &worktree_path,
-            Arc::clone(&workspace_repo),
-            Arc::clone(&chat_service),
-        )
-        .await
+    let worktree_path = match resolve_agent_workspace_pr_poller_worktree_path(
+        &project,
+        &workspace,
+        plan_branch_repo.as_ref(),
+    )
+    .await
     {
-        Ok(true) => {
-            tracing::info!(
-                conversation_id = workspace.conversation_id.as_str(),
-                pr_number,
-                "Agent workspace PR startup recovery: routed GitHub requested-changes review before restarting poller"
-            );
-            return;
-        }
-        Ok(false) => {}
+        Ok(path) => path,
         Err(error) => {
             tracing::warn!(
                 conversation_id = workspace.conversation_id.as_str(),
                 pr_number,
                 error = %error,
-                "Agent workspace PR startup recovery: failed to inspect GitHub review feedback before poller restart"
+                "Agent workspace PR startup recovery: workspace path is not usable"
             );
+            let _ = workspace_repo
+                .update_status(
+                    &workspace.conversation_id,
+                    crate::domain::entities::AgentConversationWorkspaceStatus::Missing,
+                )
+                .await;
+            return;
+        }
+    };
+
+    if workspace.mode != AgentConversationWorkspaceMode::ReviewPr {
+        match pr_poller_registry
+            .process_agent_workspace_review_feedback_once(
+                &workspace.conversation_id,
+                pr_number,
+                &worktree_path,
+                Arc::clone(&workspace_repo),
+                Arc::clone(&chat_service),
+            )
+            .await
+        {
+            Ok(true) => {
+                tracing::info!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    "Agent workspace PR startup recovery: routed GitHub requested-changes review before restarting poller"
+                );
+                return;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "Agent workspace PR startup recovery: failed to inspect GitHub review feedback before poller restart"
+                );
+            }
         }
     }
 
@@ -1246,6 +1288,14 @@ async fn recover_one_agent_workspace_pr_poller(
         agent_run_repo,
         chat_service,
     );
+}
+
+fn agent_workspace_pr_poller_number(workspace: &AgentConversationWorkspace) -> Option<i64> {
+    workspace
+        .source_pull_request
+        .as_ref()
+        .map(|pull_request| pull_request.number)
+        .or(workspace.publication_pr_number)
 }
 
 async fn resolve_agent_workspace_pr_poller_worktree_path(

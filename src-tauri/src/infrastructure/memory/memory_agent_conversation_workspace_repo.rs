@@ -516,6 +516,12 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         let mut monitors = self.pr_review_monitors.write().await;
         if let Some(existing) = monitors.get(&monitor.conversation_id) {
             monitor.created_at = existing.created_at;
+            if monitor.review_artifact_id.is_none() {
+                monitor.review_artifact_id = existing.review_artifact_id.clone();
+                monitor.review_artifact_head_sha = existing.review_artifact_head_sha.clone();
+                monitor.review_artifact_version = existing.review_artifact_version;
+                monitor.review_artifact_updated_at = existing.review_artifact_updated_at;
+            }
         }
         monitor.updated_at = Utc::now();
         monitors.insert(monitor.conversation_id, monitor.clone());

@@ -13,7 +13,8 @@ use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentRunId, AgentRunStatus, ChatAttachment, ChatContextType,
     ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus, ProjectId,
 };
-use crate::domain::services::RunningAgentKey;
+use crate::domain::repositories::QueuedMessageRepository;
+use crate::domain::services::{QueueKey, RunningAgentKey};
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 use std::path::Path;
 use std::sync::Arc;
@@ -246,8 +247,8 @@ fn silent_completion_recovery_ignores_question_and_permission_tools() {
     }
 }
 
-#[test]
-fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
+#[tokio::test]
+async fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
     let queue = crate::domain::services::MessageQueue::new();
     queue.queue(
         ChatContextType::Project,
@@ -266,6 +267,7 @@ fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
 
     let result = enqueue_silent_completion_recovery(
         &queue,
+        None,
         ChatContextType::Project,
         "conversation-1",
         "",
@@ -276,7 +278,8 @@ fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
         false,
         true,
         None,
-    );
+    )
+    .await;
 
     assert_eq!(
         result,
@@ -302,8 +305,104 @@ fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
     );
 }
 
-#[test]
-fn silent_completion_recovery_enqueues_second_attempt_with_backoff() {
+#[tokio::test]
+async fn silent_completion_recovery_keeps_memory_queue_when_durable_persist_fails() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let repo: Arc<dyn QueuedMessageRepository> = Arc::new(
+        crate::infrastructure::sqlite::SqliteQueuedMessageRepository::new(
+            rusqlite::Connection::open_in_memory().expect("create in-memory db"),
+        ),
+    );
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        Some(&repo),
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Queued {
+            attempt: 1,
+            backoff_ms: 1_000,
+        }
+    );
+    let queued = queue.get_queued(ChatContextType::Project, "conversation-1");
+    assert_eq!(queued.len(), 1);
+    assert!(queued[0].content.contains("ended after tool activity"));
+}
+
+#[tokio::test]
+async fn silent_completion_recovery_persists_hidden_retry_to_durable_queue() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let repo: Arc<dyn QueuedMessageRepository> =
+        Arc::new(crate::infrastructure::memory::MemoryQueuedMessageRepository::new());
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        Some(&repo),
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Queued {
+            attempt: 1,
+            backoff_ms: 1_000,
+        }
+    );
+    let key = QueueKey::new(ChatContextType::Project, "conversation-1");
+    let durable = repo
+        .list(&key)
+        .await
+        .expect("durable recovery queue lookup should not fail");
+    assert_eq!(durable.len(), 1);
+    assert_eq!(
+        durable[0].metadata_override,
+        queue.get_queued_with_key(&key)[0].metadata_override
+    );
+}
+
+#[tokio::test]
+async fn silent_completion_recovery_enqueues_second_attempt_with_backoff() {
     let queue = crate::domain::services::MessageQueue::new();
     let metadata = serde_json::json!({
         "recovery_reason": "silent_completion_after_tool_activity",
@@ -322,6 +421,7 @@ fn silent_completion_recovery_enqueues_second_attempt_with_backoff() {
 
     let result = enqueue_silent_completion_recovery(
         &queue,
+        None,
         ChatContextType::Project,
         "conversation-1",
         "",
@@ -332,7 +432,8 @@ fn silent_completion_recovery_enqueues_second_attempt_with_backoff() {
         false,
         true,
         Some(&metadata),
-    );
+    )
+    .await;
 
     assert_eq!(
         result,
@@ -349,8 +450,8 @@ fn silent_completion_recovery_enqueues_second_attempt_with_backoff() {
     assert_eq!(metadata["recovery_backoff_ms"], 2_000);
 }
 
-#[test]
-fn silent_completion_recovery_enqueues_first_attempt_for_unrelated_prior_metadata() {
+#[tokio::test]
+async fn silent_completion_recovery_enqueues_first_attempt_for_unrelated_prior_metadata() {
     let queue = crate::domain::services::MessageQueue::new();
     let metadata = serde_json::json!({
         "recovery_reason": "other_recovery_path",
@@ -369,6 +470,7 @@ fn silent_completion_recovery_enqueues_first_attempt_for_unrelated_prior_metadat
 
     let result = enqueue_silent_completion_recovery(
         &queue,
+        None,
         ChatContextType::Project,
         "conversation-1",
         "",
@@ -379,7 +481,8 @@ fn silent_completion_recovery_enqueues_first_attempt_for_unrelated_prior_metadat
         false,
         true,
         Some(&metadata),
-    );
+    )
+    .await;
 
     assert_eq!(
         result,
@@ -395,8 +498,8 @@ fn silent_completion_recovery_enqueues_first_attempt_for_unrelated_prior_metadat
     assert_eq!(queued_metadata["recovery_attempt"], 1);
 }
 
-#[test]
-fn silent_completion_recovery_stops_at_max_attempts() {
+#[tokio::test]
+async fn silent_completion_recovery_stops_at_max_attempts() {
     let queue = crate::domain::services::MessageQueue::new();
     let metadata = serde_json::json!({
         "resume_in_place": true,
@@ -416,6 +519,7 @@ fn silent_completion_recovery_stops_at_max_attempts() {
 
     let result = enqueue_silent_completion_recovery(
         &queue,
+        None,
         ChatContextType::Project,
         "conversation-1",
         "",
@@ -426,7 +530,8 @@ fn silent_completion_recovery_stops_at_max_attempts() {
         false,
         true,
         Some(&metadata),
-    );
+    )
+    .await;
 
     assert_eq!(
         result,
@@ -437,8 +542,8 @@ fn silent_completion_recovery_stops_at_max_attempts() {
         .is_empty());
 }
 
-#[test]
-fn silent_completion_recovery_enqueue_skips_without_resumable_session() {
+#[tokio::test]
+async fn silent_completion_recovery_enqueue_skips_without_resumable_session() {
     let queue = crate::domain::services::MessageQueue::new();
     let tool_calls = vec![test_tool_call("apply_patch")];
     let content_blocks = vec![ContentBlockItem::ToolUse {
@@ -452,6 +557,7 @@ fn silent_completion_recovery_enqueue_skips_without_resumable_session() {
 
     let result = enqueue_silent_completion_recovery(
         &queue,
+        None,
         ChatContextType::Project,
         "conversation-1",
         "",
@@ -462,7 +568,8 @@ fn silent_completion_recovery_enqueue_skips_without_resumable_session() {
         false,
         false,
         None,
-    );
+    )
+    .await;
 
     assert_eq!(result, SilentCompletionRecoveryEnqueue::NotNeeded);
     assert!(queue
@@ -720,6 +827,7 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
         conversation_id,
         "session-cli",
         &app_state.message_queue,
+        None,
         &app_state.running_agent_registry,
         &app_state.agent_run_repo,
         &app_state.chat_message_repo,
@@ -796,6 +904,7 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
             conversation_id,
             "session-cli",
             &message_queue,
+            None,
             &running_agent_registry,
             &agent_run_repo,
             &chat_message_repo,
@@ -898,6 +1007,7 @@ EOF
             conversation_id,
             "session-cli",
             &message_queue,
+            None,
             &running_agent_registry,
             &agent_run_repo,
             &chat_message_repo,
@@ -1087,6 +1197,7 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
             conversation_id,
             "session-cli",
             &message_queue,
+            None,
             &running_agent_registry,
             &agent_run_repo,
             &chat_message_repo,

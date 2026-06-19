@@ -1,5 +1,7 @@
 use super::*;
 use crate::application::harness_runtime_registry::default_external_mcp_message_queue_cap;
+use crate::domain::services::QueueKey;
+use std::collections::HashSet;
 
 #[derive(Debug, Deserialize)]
 pub struct IdeationMessageRequest {
@@ -187,10 +189,29 @@ pub async fn ideation_message_http(
         .await
     {
         let cap = default_external_mcp_message_queue_cap();
-        let queued_count = state
+        let queue_key = QueueKey::new(ChatContextType::Ideation, &session_id_str);
+        let mut queued_ids: HashSet<String> = state
             .app_state
             .message_queue
-            .count_for_context("ideation", &session_id_str);
+            .get_queued_with_key(&queue_key)
+            .into_iter()
+            .map(|message| message.id)
+            .collect();
+        for message in state
+            .app_state
+            .queued_message_repo
+            .list(&queue_key)
+            .await
+            .map_err(|error| {
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": error.to_string() })),
+                )
+            })?
+        {
+            queued_ids.insert(message.id);
+        }
+        let queued_count = queued_ids.len();
         if queued_count >= cap {
             return Err((
                 axum::http::StatusCode::TOO_MANY_REQUESTS,
@@ -205,11 +226,22 @@ pub async fn ideation_message_http(
             ));
         }
 
-        state.app_state.message_queue.queue(
+        let queued = state.app_state.message_queue.queue(
             ChatContextType::Ideation,
             &session_id_str,
             req.message.clone(),
         );
+        state
+            .app_state
+            .queued_message_repo
+            .enqueue_back(&queue_key, &queued)
+            .await
+            .map_err(|error| {
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": error.to_string() })),
+                )
+            })?;
         maybe_transition_to_planning(
             Arc::clone(&state.app_state.ideation_session_repo),
             IdeationSessionId::from_string(session_id_str.clone()),

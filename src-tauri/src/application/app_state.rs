@@ -51,10 +51,11 @@ use crate::domain::repositories::{
     IdeationSettingsRepository, MemoryArchiveRepository, MemoryEntryRepository,
     MemoryEventRepository, MethodologyRepository, OrphanWorktreeCleanupMarkerRepository,
     PlanBranchRepository, PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
-    ProposalDependencyRepository, ReviewRepository, ReviewSettingsRepository,
-    SessionLinkRepository, TaskDependencyRepository, TaskProposalRepository, TaskQARepository,
-    TaskRepository, TaskStepRepository, TeamMessageRepository, TeamSessionRepository,
-    WebhookRegistrationRepository, WorkflowRepository,
+    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
+    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
+    TeamMessageRepository, TeamSessionRepository, WebhookRegistrationRepository,
+    WorkflowRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -79,11 +80,11 @@ use crate::infrastructure::memory::{
     MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
     MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
     MemoryProjectRepository, MemoryProposalDependencyRepository, MemoryQuestionRepository,
-    MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
-    MemorySecretStore, MemorySessionLinkRepository, MemoryTaskDependencyRepository,
-    MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
-    MemoryTaskStepRepository, MemoryTeamMessageRepository, MemoryTeamSessionRepository,
-    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
+    MemoryQueuedMessageRepository, MemoryReviewIssueRepository, MemoryReviewRepository,
+    MemoryReviewSettingsRepository, MemorySecretStore, MemorySessionLinkRepository,
+    MemoryTaskDependencyRepository, MemoryTaskProposalRepository, MemoryTaskQARepository,
+    MemoryTaskRepository, MemoryTaskStepRepository, MemoryTeamMessageRepository,
+    MemoryTeamSessionRepository, MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
 use crate::infrastructure::sqlite::ReviewIssueRepository;
@@ -108,11 +109,11 @@ use crate::infrastructure::sqlite::{
     SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
     SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
     SqliteProjectRepository, SqliteProposalDependencyRepository, SqliteQuestionRepository,
-    SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
-    SqliteRunningAgentRegistry, SqliteSessionLinkRepository, SqliteTaskDependencyRepository,
-    SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
-    SqliteTaskStepRepository, SqliteTeamMessageRepository, SqliteTeamSessionRepository,
-    SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqliteQueuedMessageRepository, SqliteReviewIssueRepository, SqliteReviewRepository,
+    SqliteReviewSettingsRepository, SqliteRunningAgentRegistry, SqliteSessionLinkRepository,
+    SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
+    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
+    SqliteTeamSessionRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
 };
 use crate::infrastructure::GhCliGithubService;
 use crate::infrastructure::HyperAtlassianApiClient;
@@ -229,6 +230,8 @@ pub struct AppState {
     pub question_state: Arc<QuestionState>,
     /// Unified message queue for all chat contexts
     pub message_queue: Arc<MessageQueue>,
+    /// Durable queued message storage used to hydrate pending queue rows after restart
+    pub queued_message_repo: Arc<dyn QueuedMessageRepository>,
     /// Registry for tracking running agent processes
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
     /// Plan branch repository for feature branch tracking
@@ -995,6 +998,9 @@ impl AppState {
                 SqliteQuestionRepository::from_shared(Arc::clone(&shared_conn)),
             ))),
             message_queue: Arc::new(MessageQueue::new()),
+            queued_message_repo: Arc::new(SqliteQueuedMessageRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             db: crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
             external_events_repo: Arc::new(SqliteExternalEventsRepository::from_shared(
                 Arc::clone(&shared_conn),
@@ -1158,6 +1164,9 @@ impl AppState {
                 MemoryQuestionRepository::new(),
             ))),
             message_queue: Arc::new(MessageQueue::new()),
+            queued_message_repo: Arc::new(SqliteQueuedMessageRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             db: crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
             external_events_repo: Arc::new(MemoryExternalEventsRepository::new()),
             running_agent_registry: Arc::new(MemoryRunningAgentRegistry::new()),
@@ -1289,6 +1298,9 @@ impl AppState {
                 MemoryQuestionRepository::new(),
             ))),
             message_queue: Arc::new(MessageQueue::new()),
+            queued_message_repo: Arc::new(SqliteQueuedMessageRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             db: crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
             external_events_repo: Arc::new(MemoryExternalEventsRepository::new()),
             running_agent_registry: registry,
@@ -1438,6 +1450,9 @@ impl AppState {
                 MemoryQuestionRepository::new(),
             ))),
             message_queue: Arc::new(MessageQueue::new()),
+            queued_message_repo: Arc::new(SqliteQueuedMessageRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             db: crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
             external_events_repo: Arc::new(MemoryExternalEventsRepository::new()),
             running_agent_registry: Arc::new(MemoryRunningAgentRegistry::new()),
@@ -1556,6 +1571,7 @@ impl AppState {
                 MemoryQuestionRepository::new(),
             ))),
             message_queue: Arc::new(MessageQueue::new()),
+            queued_message_repo: Arc::new(MemoryQueuedMessageRepository::new()),
             db: crate::infrastructure::sqlite::DbConnection::new(
                 open_connection(&std::path::PathBuf::from(":memory:"))
                     .expect("Failed to create in-memory connection for db field"),
