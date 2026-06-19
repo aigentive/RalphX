@@ -185,9 +185,8 @@ impl QueuedMessage {
 /// Unified in-memory queue for chat messages
 ///
 /// Stores queued messages per (context_type, context_id) pair.
-/// Messages are ephemeral and lost on app restart.
-/// This is intentional - queued messages are short-lived and should be sent
-/// when the agent responds. If the app restarts, the user can re-type their message.
+/// This is the live process buffer; durable restart-safe ownership lives in
+/// `QueuedMessageRepository` implementations.
 #[derive(Debug, Clone)]
 pub struct MessageQueue {
     queues: Arc<Mutex<HashMap<QueueKey, Vec<QueuedMessage>>>>,

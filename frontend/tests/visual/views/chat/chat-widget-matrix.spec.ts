@@ -236,14 +236,6 @@ test.describe("Chat Widget Matrix", () => {
     await expect(createPlanWidget).toBeVisible();
     await expect(updatePlanWidget).toBeVisible();
 
-    await sendMessageWidget.getByRole("button").click();
-
-    await expectAndAttachScreenshot(
-      sendMessageWidget,
-      "send-message-widget-broadcast.png",
-      "send-message-widget-broadcast",
-      testInfo.attach.bind(testInfo),
-    );
     await expectAndAttachScreenshot(
       askQuestionWidget,
       "ideation-widget-ask-question.png",
@@ -260,6 +252,14 @@ test.describe("Chat Widget Matrix", () => {
       updatePlanWidget,
       "ideation-widget-update-plan.png",
       "ideation-widget-update-plan",
+      testInfo.attach.bind(testInfo),
+    );
+
+    await sendMessageWidget.getByRole("button").click();
+    await expectAndAttachScreenshot(
+      sendMessageWidget,
+      "send-message-widget-broadcast.png",
+      "send-message-widget-broadcast",
       testInfo.attach.bind(testInfo),
     );
   });

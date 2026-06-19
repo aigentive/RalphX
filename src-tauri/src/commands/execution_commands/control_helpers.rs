@@ -1,4 +1,7 @@
 use super::*;
+use std::collections::HashSet;
+
+use crate::domain::services::{QueueKey, QueuedMessage};
 
 pub(super) async fn persist_execution_halt_mode(
     app_state: &AppState,
@@ -49,6 +52,87 @@ pub(super) fn queued_message_to_send_options(
         attachment_ids: message.attachment_ids.clone(),
         ..Default::default()
     }
+}
+
+async fn queued_keys(app_state: &AppState) -> Result<Vec<QueueKey>, String> {
+    let mut keys = app_state.message_queue.list_keys();
+    let mut seen: HashSet<QueueKey> = keys.iter().cloned().collect();
+    for key in app_state
+        .queued_message_repo
+        .list_keys()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        if seen.insert(key.clone()) {
+            keys.push(key);
+        }
+    }
+    Ok(keys)
+}
+
+async fn queued_messages_for_key(
+    app_state: &AppState,
+    key: &QueueKey,
+) -> Result<Vec<QueuedMessage>, String> {
+    let memory = app_state.message_queue.get_queued_with_key(key);
+    let durable = app_state
+        .queued_message_repo
+        .list(key)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut seen: HashSet<String> = durable.iter().map(|message| message.id.clone()).collect();
+    let mut merged = durable;
+    for message in memory {
+        if seen.insert(message.id.clone()) {
+            merged.push(message);
+        }
+    }
+    Ok(merged)
+}
+
+async fn clear_queued_key(app_state: &AppState, key: &QueueKey) -> Result<(), String> {
+    app_state.message_queue.clear_with_key(key);
+    app_state
+        .queued_message_repo
+        .clear(key)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn pop_queued_key(
+    app_state: &AppState,
+    key: &QueueKey,
+) -> Result<Option<QueuedMessage>, String> {
+    if let Some(message) = app_state.message_queue.pop_with_key(key) {
+        app_state
+            .queued_message_repo
+            .delete(key, &message.id)
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(Some(message));
+    }
+    app_state
+        .queued_message_repo
+        .pop_front(key)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn restore_queued_front(
+    app_state: &AppState,
+    key: &QueueKey,
+    message: QueuedMessage,
+) -> Result<(), String> {
+    app_state.message_queue.queue_front_existing(
+        key.context_type,
+        key.context_id.clone(),
+        message.clone(),
+    );
+    app_state
+        .queued_message_repo
+        .enqueue_front(key, &message)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 pub(super) fn session_is_team_mode(team_mode: Option<&str>) -> bool {
@@ -182,14 +266,14 @@ pub(super) async fn clear_slot_consuming_queues(
     app_state: &AppState,
 ) -> Result<u32, String> {
     let mut cleared = 0u32;
-    for key in app_state.message_queue.list_keys() {
+    for key in queued_keys(app_state).await? {
         if !uses_execution_slot(key.context_type) {
             continue;
         }
         if !queue_key_matches_project(&key, project_filter, app_state).await? {
             continue;
         }
-        app_state.message_queue.clear_with_key(&key);
+        clear_queued_key(app_state, &key).await?;
         cleared += 1;
     }
     Ok(cleared)
@@ -200,14 +284,14 @@ pub(super) async fn clear_paused_chat_queues(
     app_state: &AppState,
 ) -> Result<u32, String> {
     let mut cleared = 0u32;
-    for key in app_state.message_queue.list_keys() {
+    for key in queued_keys(app_state).await? {
         if !is_pause_managed_chat_context(key.context_type) {
             continue;
         }
         if !queue_key_matches_project(&key, project_filter, app_state).await? {
             continue;
         }
-        app_state.message_queue.clear_with_key(&key);
+        clear_queued_key(app_state, &key).await?;
         cleared += 1;
     }
     Ok(cleared)
@@ -218,14 +302,14 @@ pub(super) async fn count_slot_consuming_queued_messages(
     app_state: &AppState,
 ) -> Result<u32, String> {
     let mut count = 0u32;
-    for key in app_state.message_queue.list_keys() {
+    for key in queued_keys(app_state).await? {
         if !uses_execution_slot(key.context_type) {
             continue;
         }
         if !queue_key_matches_project(&key, project_filter, app_state).await? {
             continue;
         }
-        count += app_state.message_queue.get_queued_with_key(&key).len() as u32;
+        count += queued_messages_for_key(app_state, &key).await?.len() as u32;
     }
     Ok(count)
 }
@@ -393,7 +477,7 @@ pub(super) async fn has_runnable_execution_waiting(
         }
     }
 
-    for key in app_state.message_queue.list_keys() {
+    for key in queued_keys(app_state).await? {
         if !matches!(
             key.context_type,
             ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge
@@ -430,7 +514,7 @@ where
 {
     let mut resumed = 0u32;
     let mut ideation_keys = Vec::new();
-    for key in app_state.message_queue.list_keys() {
+    for key in queued_keys(app_state).await? {
         if key.context_type != ChatContextType::Ideation {
             continue;
         }
@@ -460,12 +544,12 @@ where
             .await
             .map_err(|e| e.to_string())?
         else {
-            app_state.message_queue.clear_with_key(&key);
+            clear_queued_key(app_state, &key).await?;
             continue;
         };
 
         if session.status != IdeationSessionStatus::Active {
-            app_state.message_queue.clear_with_key(&key);
+            clear_queued_key(app_state, &key).await?;
             continue;
         }
 
@@ -512,7 +596,7 @@ where
             continue;
         }
 
-        let Some(queued) = app_state.message_queue.pop_with_key(&key) else {
+        let Some(queued) = pop_queued_key(app_state, &key).await? else {
             continue;
         };
 
@@ -530,11 +614,7 @@ where
                 resumed += 1;
             }
             Err(error) => {
-                app_state.message_queue.queue_front_existing(
-                    ChatContextType::Ideation,
-                    session.id.as_str(),
-                    queued,
-                );
+                restore_queued_front(app_state, &key, queued).await?;
                 tracing::warn!(
                     session_id = session.id.as_str(),
                     error = %error,
@@ -559,7 +639,7 @@ where
     let mut resumed = 0u32;
     let mut chat_keys = Vec::new();
 
-    for key in app_state.message_queue.list_keys() {
+    for key in queued_keys(app_state).await? {
         if !matches!(
             key.context_type,
             ChatContextType::Task | ChatContextType::Project
@@ -597,7 +677,7 @@ where
     chat_keys.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
 
     for (_, _, _, key) in chat_keys {
-        let Some(queued) = app_state.message_queue.pop_with_key(&key) else {
+        let Some(queued) = pop_queued_key(app_state, &key).await? else {
             continue;
         };
 
@@ -606,6 +686,7 @@ where
             let Some((context_id, conversation_id)) =
                 resolve_project_queue_context(&key, app_state).await?
             else {
+                restore_queued_front(app_state, &key, queued).await?;
                 continue;
             };
             options.conversation_id_override = conversation_id;
@@ -627,11 +708,7 @@ where
                     error = %error,
                     "Failed to relaunch paused non-slot queued message"
                 );
-                app_state.message_queue.queue_front_existing(
-                    key.context_type,
-                    &key.context_id,
-                    queued,
-                );
+                restore_queued_front(app_state, &key, queued).await?;
             }
         }
     }
@@ -651,7 +728,7 @@ where
     let mut resumed = 0u32;
     let mut slot_keys = Vec::new();
 
-    for key in app_state.message_queue.list_keys() {
+    for key in queued_keys(app_state).await? {
         if !matches!(
             key.context_type,
             ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge
@@ -708,7 +785,7 @@ where
             continue;
         }
 
-        let Some(queued) = app_state.message_queue.pop_with_key(&key) else {
+        let Some(queued) = pop_queued_key(app_state, &key).await? else {
             continue;
         };
 
@@ -731,11 +808,7 @@ where
                     error = %error,
                     "Failed to relaunch paused slot-consuming queued message"
                 );
-                app_state.message_queue.queue_front_existing(
-                    key.context_type,
-                    &key.context_id,
-                    queued,
-                );
+                restore_queued_front(app_state, &key, queued).await?;
             }
         }
     }

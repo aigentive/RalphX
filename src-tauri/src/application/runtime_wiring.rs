@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
-use crate::AppState;
 use crate::infrastructure::ExternalMcpHandle;
+use crate::AppState;
 
 /// Visual height of the app's top navbar in points. Must match the frontend
 /// header (`h-12` → 48 in `frontend/src/App.tsx`). Traffic-light centering
@@ -182,6 +182,7 @@ pub fn build_http_app_state(
     let shared_question_state = Arc::clone(&app_state.question_state);
     let shared_permission_state = Arc::clone(&app_state.permission_state);
     let shared_message_queue = Arc::clone(&app_state.message_queue);
+    let shared_queued_message_repo = Arc::clone(&app_state.queued_message_repo);
     let shared_interactive_process_registry = Arc::clone(&app_state.interactive_process_registry);
     let shared_github_service = app_state.github_service.clone();
     let shared_pr_poller_registry = Arc::clone(&app_state.pr_poller_registry);
@@ -189,6 +190,7 @@ pub fn build_http_app_state(
     http_app_state_inner.question_state = shared_question_state;
     http_app_state_inner.permission_state = shared_permission_state;
     http_app_state_inner.message_queue = shared_message_queue;
+    http_app_state_inner.queued_message_repo = shared_queued_message_repo;
     http_app_state_inner.interactive_process_registry = shared_interactive_process_registry;
     http_app_state_inner.github_service = shared_github_service;
     http_app_state_inner.pr_poller_registry = shared_pr_poller_registry;
