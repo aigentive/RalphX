@@ -10,6 +10,7 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{AgentRun, ChatConversation, ChatConversationId, ProjectId};
 use crate::domain::services::RunningAgentKey;
+use crate::infrastructure::agents::{CodexCliCapabilities, ResolvedCodexCli};
 use tokio::process::Command;
 
 use super::{
@@ -22,7 +23,8 @@ use super::{
     probe_cli_version, read_managed_provider_cli_statuses, run_managed_claude_command,
     run_managed_claude_install_or_update, run_managed_claude_installer,
     run_managed_codex_installer, settings_for_provider, truncate_process_output,
-    user_managed_claude_observation, user_managed_codex_observation, ManagedCodexInstallPlan,
+    user_managed_claude_observation, user_managed_codex_observation,
+    user_managed_codex_observation_from_resolved_cli, ManagedCodexInstallPlan,
     ManagedProviderCliObservation,
 };
 
@@ -273,10 +275,7 @@ async fn provider_observations_probe_fake_clis_without_latest_lookup() {
     let managed_codex_path = crate::utils::runtime_log_paths::managed_codex_binary_path();
     let _managed_codex_cleanup = FileCleanup::new(managed_codex_path.clone());
 
-    write_executable_script(
-        &path_bin_dir.join("codex"),
-        "#!/bin/sh\nprintf 'codex-cli 0.141.0\\n'\n",
-    );
+    write_compatible_codex_script(&path_bin_dir.join("codex"), "0.141.0");
     write_executable_script(
         &path_bin_dir.join("claude"),
         "#!/bin/sh\nprintf '2.1.177 (Claude Code)\\n'\n",
@@ -333,6 +332,56 @@ async fn provider_observations_probe_fake_clis_without_latest_lookup() {
     );
     assert_eq!(user_claude.current_version.as_deref(), Some("2.1.177"));
     assert_eq!(user_claude.latest_version, None);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn user_managed_codex_observation_uses_resolved_runtime_cli_after_legacy_node_candidate() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let home_dir = temp_dir.path().join("home");
+    let legacy_codex_bin = home_dir
+        .join(".nvm")
+        .join("versions")
+        .join("node")
+        .join("v22.16.0")
+        .join("bin");
+    let runtime_codex_path = home_dir.join(".local").join("bin").join("codex");
+
+    write_executable_script(
+        &legacy_codex_bin.join("codex"),
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '0.1.2505172129\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Usage' '  $ codex [options] <prompt>' 'Options:' '  --version'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  exit 2
+else
+  exit 64
+fi
+"#,
+    );
+    write_compatible_codex_script(&runtime_codex_path, "0.142.0");
+
+    let _home = EnvGuard::set_os("HOME", &home_dir);
+    let _path = EnvGuard::set_os("PATH", OsStr::new(""));
+    let _nvm_bin = EnvGuard::unset("NVM_BIN");
+    let _volta_home = EnvGuard::unset("VOLTA_HOME");
+
+    let user_codex = user_managed_codex_observation(false).await;
+
+    assert!(user_codex.installed);
+    assert_eq!(
+        user_codex.binary_path.as_deref(),
+        Some(runtime_codex_path.as_path())
+    );
+    assert_eq!(user_codex.current_version.as_deref(), Some("0.142.0"));
+    assert_eq!(user_codex.latest_version, None);
+    assert_eq!(user_codex.error, None);
 }
 
 #[cfg(unix)]
@@ -480,7 +529,25 @@ async fn provider_observations_report_missing_and_probe_errors() {
         .unwrap_or_default()
         .contains("managed codex probe failed"));
 
-    let user_codex = user_managed_codex_observation(false).await;
+    let user_codex = user_managed_codex_observation_from_resolved_cli(
+        ResolvedCodexCli {
+            path: path_bin_dir.join("codex"),
+            capabilities: CodexCliCapabilities {
+                version: None,
+                supports_exec_subcommand: true,
+                supports_json_output: true,
+                supports_model_flag: true,
+                supports_config_override: true,
+                supports_sandbox_flag: true,
+                supports_add_dir: true,
+                supports_search_flag: true,
+                supports_resume_subcommand: true,
+                supports_mcp_subcommand: true,
+            },
+        },
+        false,
+    )
+    .await;
     assert!(user_codex.installed);
     assert_eq!(user_codex.current_version, None);
     assert!(user_codex
@@ -966,6 +1033,24 @@ fn write_executable_script(path: &Path, body: &str) {
     std::fs::write(path, body).expect("write executable script");
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
         .expect("chmod executable script");
+}
+
+#[cfg(unix)]
+fn write_compatible_codex_script(path: &Path, version: &str) {
+    let script = format!(
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli {version}\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+else
+  exit 64
+fi
+"#
+    );
+    write_executable_script(path, &script);
 }
 
 #[cfg(unix)]
