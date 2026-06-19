@@ -18,6 +18,7 @@ macro_rules! register_tauri_commands {
             commands::atlassian_commands::complete_atlassian_oauth_local_callback,
             commands::atlassian_commands::exchange_atlassian_oauth_code,
             commands::atlassian_commands::validate_atlassian_integration,
+            commands::atlassian_commands::disconnect_atlassian_integration,
             commands::atlassian_commands::search_atlassian_resources,
             commands::atlassian_commands::get_agent_conversation_jira_issue,
             commands::atlassian_commands::assign_agent_conversation_jira_issue,
@@ -238,6 +239,7 @@ macro_rules! register_tauri_commands {
             commands::linear_commands::save_linear_webhook_signing_secret,
             commands::linear_commands::search_linear_issues,
             commands::linear_commands::validate_linear_integration,
+            commands::linear_commands::disconnect_linear_integration,
             // Artifact commands
             commands::artifact_commands::get_artifacts,
             commands::artifact_commands::get_artifact,

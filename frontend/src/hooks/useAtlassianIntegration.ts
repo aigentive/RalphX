@@ -59,6 +59,13 @@ export function useAtlassianIntegration() {
     },
   });
 
+  const disconnectMutation = useMutation({
+    mutationFn: () => atlassianApi.disconnect(),
+    onSuccess: (settings) => {
+      queryClient.setQueryData(atlassianIntegrationKeys.settings(), settings);
+    },
+  });
+
   return {
     settings: settingsQuery.data,
     isLoading: settingsQuery.isLoading,
@@ -66,18 +73,21 @@ export function useAtlassianIntegration() {
     error: settingsQuery.error,
     saveAsync: saveMutation.mutateAsync,
     validateAsync: validateMutation.mutateAsync,
+    disconnectAsync: disconnectMutation.mutateAsync,
     buildOAuthAuthorizationAsync: buildOAuthAuthorizationMutation.mutateAsync,
     startOAuthLocalCallbackAsync: startOAuthLocalCallbackMutation.mutateAsync,
     completeOAuthLocalCallbackAsync: completeOAuthLocalCallbackMutation.mutateAsync,
     exchangeOAuthCodeAsync: exchangeOAuthCodeMutation.mutateAsync,
     isSaving: saveMutation.isPending,
     isValidating: validateMutation.isPending,
+    isDisconnecting: disconnectMutation.isPending,
     isBuildingOAuthAuthorization: buildOAuthAuthorizationMutation.isPending,
     isStartingOAuthLocalCallback: startOAuthLocalCallbackMutation.isPending,
     isCompletingOAuthLocalCallback: completeOAuthLocalCallbackMutation.isPending,
     isExchangingOAuthCode: exchangeOAuthCodeMutation.isPending,
     saveError: saveMutation.error,
     validateError: validateMutation.error,
+    disconnectError: disconnectMutation.error,
     buildOAuthAuthorizationError: buildOAuthAuthorizationMutation.error,
     startOAuthLocalCallbackError: startOAuthLocalCallbackMutation.error,
     completeOAuthLocalCallbackError: completeOAuthLocalCallbackMutation.error,
