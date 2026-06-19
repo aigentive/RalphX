@@ -4,8 +4,8 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
+    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -454,6 +454,10 @@ async fn pr_review_monitor_round_trips_and_active_listing_filters_terminal_rows(
     monitor.first_review_completed = true;
     monitor.last_reviewed_head_sha = Some("head-sha-1".to_string());
     monitor.last_review_outcome = Some("request_changes".to_string());
+    monitor.review_artifact_id = Some(ArtifactId::from_string("artifact-v1"));
+    monitor.review_artifact_head_sha = Some("head-sha-1".to_string());
+    monitor.review_artifact_version = Some(1);
+    monitor.review_artifact_updated_at = Some(chrono::Utc::now());
 
     let saved = repo
         .upsert_pr_review_monitor(monitor.clone())
@@ -469,10 +473,41 @@ async fn pr_review_monitor_round_trips_and_active_listing_filters_terminal_rows(
         .expect("monitor should exist");
     assert!(loaded.monitor_enabled);
     assert!(loaded.first_review_completed);
+    assert_eq!(
+        loaded.review_artifact_id.as_ref().map(|id| id.as_str()),
+        Some("artifact-v1")
+    );
+    assert_eq!(
+        loaded.review_artifact_head_sha.as_deref(),
+        Some("head-sha-1")
+    );
+    assert_eq!(loaded.review_artifact_version, Some(1));
+    assert!(loaded.review_artifact_updated_at.is_some());
 
     let active = repo.list_active_pr_review_monitors().await.unwrap();
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].conversation_id, conversation_id);
+
+    let mut status_only_update = AgentWorkspacePrReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+        267,
+        Some("head-sha-2".to_string()),
+    );
+    status_only_update.status = AgentWorkspacePrReviewMonitorStatus::Reviewing;
+    let preserved = repo
+        .upsert_pr_review_monitor(status_only_update)
+        .await
+        .unwrap();
+    assert_eq!(
+        preserved.review_artifact_id.as_ref().map(|id| id.as_str()),
+        Some("artifact-v1")
+    );
+    assert_eq!(
+        preserved.review_artifact_head_sha.as_deref(),
+        Some("head-sha-1")
+    );
+    assert_eq!(preserved.review_artifact_version, Some(1));
 
     monitor.status = AgentWorkspacePrReviewMonitorStatus::Terminal;
     repo.upsert_pr_review_monitor(monitor).await.unwrap();

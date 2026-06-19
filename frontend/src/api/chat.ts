@@ -1886,6 +1886,10 @@ export interface AgentWorkspacePrReviewMonitor {
   lastReviewRunId: string | null;
   lastReviewOutcome: string | null;
   lastSubmittedReviewId: string | null;
+  reviewArtifactId: string | null;
+  reviewArtifactHeadSha: string | null;
+  reviewArtifactVersion: number | null;
+  reviewArtifactUpdatedAt: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
@@ -2087,6 +2091,10 @@ const AgentWorkspacePrReviewMonitorResponseSchema = z.object({
   last_review_run_id: z.string().nullable(),
   last_review_outcome: z.string().nullable(),
   last_submitted_review_id: z.string().nullable(),
+  review_artifact_id: z.string().nullable().optional().default(null),
+  review_artifact_head_sha: z.string().nullable().optional().default(null),
+  review_artifact_version: z.number().nullable().optional().default(null),
+  review_artifact_updated_at: z.string().nullable().optional().default(null),
   last_error: z.string().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -2454,6 +2462,10 @@ function transformAgentWorkspacePrReviewMonitor(
     lastReviewRunId: raw.last_review_run_id,
     lastReviewOutcome: raw.last_review_outcome,
     lastSubmittedReviewId: raw.last_submitted_review_id,
+    reviewArtifactId: raw.review_artifact_id,
+    reviewArtifactHeadSha: raw.review_artifact_head_sha,
+    reviewArtifactVersion: raw.review_artifact_version,
+    reviewArtifactUpdatedAt: raw.review_artifact_updated_at,
     lastError: raw.last_error,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
