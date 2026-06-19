@@ -1387,16 +1387,20 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
 
 #[tokio::test]
 async fn test_handle_verification_child_completion_queues_hidden_auto_continue() {
-    let state = AppState::new_test();
+    let app_state = AppState::new_test();
     let project_id = ProjectId::new();
 
     let mut parent = crate::domain::entities::IdeationSession::new(project_id.clone());
     parent.verification_status = VerificationStatus::NeedsRevision;
     parent.verification_in_progress = true;
     let parent_id = parent.id.clone();
-    state.ideation_session_repo.create(parent).await.unwrap();
+    app_state
+        .ideation_session_repo
+        .create(parent)
+        .await
+        .unwrap();
 
-    state
+    app_state
         .ideation_session_repo
         .save_verification_run_snapshot(
             &parent_id,
@@ -1425,7 +1429,14 @@ async fn test_handle_verification_child_completion_queues_hidden_auto_continue()
     child.session_purpose = crate::domain::entities::SessionPurpose::Verification;
     child.parent_session_id = Some(parent_id.clone());
     let child_id = child.id.clone();
-    state.ideation_session_repo.create(child).await.unwrap();
+    app_state.ideation_session_repo.create(child).await.unwrap();
+
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = app.handle().clone();
+    let state = handle.state::<AppState>();
 
     handle_verification_child_completion::<MockRuntime>(
         &child_id,
@@ -1434,7 +1445,7 @@ async fn test_handle_verification_child_completion_queues_hidden_auto_continue()
         &state.chat_conversation_repo,
         &state.chat_message_repo,
         &state.message_queue,
-        &None,
+        &Some(handle.clone()),
         &None,
     )
     .await;
@@ -1457,6 +1468,13 @@ async fn test_handle_verification_child_completion_queues_hidden_auto_continue()
             .contains("Continue the active verification loop in this same session"),
         "queued control prompt must instruct the verifier to continue the same loop"
     );
+    let durable = state
+        .queued_message_repo
+        .list(&QueueKey::new(ChatContextType::Ideation, child_id.as_str()))
+        .await
+        .expect("durable auto-continue queue lookup should not fail");
+    assert_eq!(durable.len(), 1);
+    assert_eq!(durable[0].id, queued[0].id);
 
     let child_after = state
         .ideation_session_repo

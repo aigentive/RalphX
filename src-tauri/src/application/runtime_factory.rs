@@ -17,8 +17,8 @@ use crate::domain::repositories::{
     ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
     ExecutionPlanRepository, ExecutionSettingsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
-    TaskProposalRepository, TaskRepository, TaskStepRepository,
+    PlanBranchRepository, ProjectRepository, QueuedMessageRepository, ReviewRepository,
+    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{GithubServiceTrait, MessageQueue, RunningAgentRegistry};
 use crate::infrastructure::memory::MemoryDelegatedSessionRepository;
@@ -192,6 +192,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub delegated_session_repo: Option<Arc<dyn DelegatedSessionRepository>>,
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
     pub message_queue: Arc<MessageQueue>,
+    pub queued_message_repo: Option<Arc<dyn QueuedMessageRepository>>,
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
     pub execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
@@ -244,6 +245,7 @@ impl ChatRuntimeFactoryDeps {
             delegated_session_repo: None,
             activity_event_repo,
             message_queue,
+            queued_message_repo: None,
             running_agent_registry,
             memory_event_repo,
             execution_settings_repo: None,
@@ -275,6 +277,14 @@ impl ChatRuntimeFactoryDeps {
 
     pub(crate) fn with_chat_timeline_repo(mut self, repo: Arc<dyn ChatTimelineRepository>) -> Self {
         self.chat_timeline_repo = Some(repo);
+        self
+    }
+
+    pub(crate) fn with_queued_message_repo(
+        mut self,
+        repo: Arc<dyn QueuedMessageRepository>,
+    ) -> Self {
+        self.queued_message_repo = Some(repo);
         self
     }
 
@@ -470,6 +480,7 @@ impl ChatRuntimeFactoryDeps {
             Arc::clone(&state.memory_event_repo),
         )
         .with_chat_timeline_repo(Arc::clone(&state.chat_timeline_repo))
+        .with_queued_message_repo(Arc::clone(&state.queued_message_repo))
         .with_delegated_session_repo(Arc::clone(&state.delegated_session_repo))
         .with_runtime_support(
             Some(Arc::clone(&state.execution_settings_repo)),
@@ -532,6 +543,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     }
     if let Some(repo) = deps.chat_timeline_repo.as_ref() {
         service = service.with_chat_timeline_repo(Arc::clone(repo));
+    }
+    if let Some(repo) = deps.queued_message_repo.as_ref() {
+        service = service.with_queued_message_repo(Arc::clone(repo));
     }
     if let Some(handle) = app_handle {
         service = service.with_app_handle(handle);

@@ -38,10 +38,12 @@ use crate::domain::repositories::{
     ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
     DelegatedSessionRepository, ExecutionSettingsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
-    TaskProposalRepository, TaskRepository, TaskStepRepository,
+    PlanBranchRepository, ProjectRepository, QueuedMessageRepository, ReviewRepository,
+    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
-use crate::domain::services::{MessageQueue, QueuedMessage, RunningAgentKey, RunningAgentRegistry};
+use crate::domain::services::{
+    MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
+};
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 use tokio_util::sync::CancellationToken;
 
@@ -376,8 +378,9 @@ Recovery attempt {attempt}/{max}. When the work is actually complete, provide a 
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn enqueue_silent_completion_recovery(
+pub(super) async fn enqueue_silent_completion_recovery(
     message_queue: &MessageQueue,
+    queued_message_repo: Option<&Arc<dyn QueuedMessageRepository>>,
     context_type: ChatContextType,
     queue_context_id: &str,
     response_text: &str,
@@ -413,7 +416,19 @@ pub(super) fn enqueue_silent_completion_recovery(
     let backoff_ms = silent_completion_recovery_backoff_ms(attempt);
     let mut queued = QueuedMessage::new(silent_completion_recovery_prompt(attempt));
     queued.metadata_override = Some(silent_completion_recovery_metadata(attempt, backoff_ms));
-    message_queue.queue_front_existing(context_type, queue_context_id.to_string(), queued);
+    let key = QueueKey::new(context_type, queue_context_id);
+    message_queue.queue_front_existing(context_type, queue_context_id.to_string(), queued.clone());
+    if let Some(repo) = queued_message_repo {
+        if let Err(error) = repo.enqueue_front(&key, &queued).await {
+            tracing::warn!(
+                %context_type,
+                queue_context_id,
+                queued_message_id = %queued.id,
+                error = %error,
+                "[RECOVERY] Failed to persist hidden silent-completion continuation"
+            );
+        }
+    }
 
     SilentCompletionRecoveryEnqueue::Queued {
         attempt,
@@ -1171,11 +1186,26 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                             );
 
                             // Enqueue at front so history is sent before any pending user messages
-                            message_queue.queue_front(
+                            let queued = message_queue.queue_front(
                                 context_type,
                                 &context_id,
                                 rehydration_prompt,
                             );
+                            if let Some(handle) = app_handle.as_ref() {
+                                let app_state = handle.state::<crate::application::AppState>();
+                                let key = QueueKey::new(context_type, context_id.clone());
+                                if let Err(error) =
+                                    app_state.queued_message_repo.enqueue_front(&key, &queued).await
+                                {
+                                    tracing::warn!(
+                                        %context_type,
+                                        context_id = %context_id,
+                                        queued_message_id = %queued.id,
+                                        error = %error,
+                                        "[RESUME] Failed to persist session swap rehydration queued message"
+                                    );
+                                }
+                            }
 
                             tracing::info!(
                                 replay_turns = replay.turns.len(),
@@ -1491,9 +1521,41 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &runtime_context_id,
                     staleness_threshold_secs,
                 );
+                let durable_stale_dropped = if let Some(handle) = app_handle.as_ref() {
+                    let app_state = handle.state::<crate::application::AppState>();
+                    let key = QueueKey::new(context_type, runtime_context_id.clone());
+                    match app_state
+                        .queued_message_repo
+                        .remove_stale(&key, staleness_threshold_secs)
+                        .await
+                    {
+                        Ok(messages) => messages,
+                        Err(error) => {
+                            tracing::warn!(
+                                %context_type,
+                                context_id = %context_id,
+                                runtime_context_id = %runtime_context_id,
+                                error = %error,
+                                "[QUEUE] Failed to remove stale durable queued messages"
+                            );
+                            Vec::new()
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
                 for msg in &stale_dropped {
                     tracing::warn!(
                         "[QUEUE] Dropped stale queued message (age > {}s) id={} for context {}:{}",
+                        staleness_threshold_secs,
+                        msg.id,
+                        context_type,
+                        runtime_context_id,
+                    );
+                }
+                for msg in &durable_stale_dropped {
+                    tracing::warn!(
+                        "[QUEUE] Dropped stale durable queued message (age > {}s) id={} for context {}:{}",
                         staleness_threshold_secs,
                         msg.id,
                         context_type,
@@ -1508,8 +1570,13 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     provider_session_id.clone().or(stored_session_id.clone());
                 let has_session_for_queue = effective_session_id.is_some();
                 let cancellation_requested = cancellation_token.is_cancelled();
+                let queued_message_repo = app_handle.as_ref().map(|handle| {
+                    let app_state = handle.state::<crate::application::AppState>();
+                    Arc::clone(&app_state.queued_message_repo)
+                });
                 match enqueue_silent_completion_recovery(
                     message_queue.as_ref(),
+                    queued_message_repo.as_ref(),
                     context_type,
                     &runtime_context_id,
                     &response_text,
@@ -1520,7 +1587,9 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     cancellation_requested,
                     has_session_for_queue,
                     turn_metadata.as_deref(),
-                ) {
+                )
+                .await
+                {
                     SilentCompletionRecoveryEnqueue::Queued {
                         attempt,
                         backoff_ms,
@@ -1546,9 +1615,33 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     }
                     SilentCompletionRecoveryEnqueue::NotNeeded => {}
                 }
-                let initial_queue_count = message_queue
+                let initial_memory_queue_count = message_queue
                     .get_queued(context_type, &runtime_context_id)
                     .len();
+                let initial_durable_queue_count = if initial_memory_queue_count == 0 {
+                    if let Some(handle) = app_handle.as_ref() {
+                        let app_state = handle.state::<crate::application::AppState>();
+                        let key = QueueKey::new(context_type, runtime_context_id.clone());
+                        match app_state.queued_message_repo.list(&key).await {
+                            Ok(messages) => messages.len(),
+                            Err(error) => {
+                                tracing::warn!(
+                                    %context_type,
+                                    context_id = %context_id,
+                                    runtime_context_id = %runtime_context_id,
+                                    error = %error,
+                                    "[QUEUE] Failed to list durable queued messages before drain"
+                                );
+                                0
+                            }
+                        }
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+                let initial_queue_count = initial_memory_queue_count + initial_durable_queue_count;
                 let will_process_queue = should_process_stream_queue(
                     initial_queue_count,
                     has_session_for_queue,
@@ -1672,6 +1765,10 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     let Some(ref sess_id) = effective_session_id else {
                         unreachable!("will_process_queue requires has_session_for_queue=true");
                     };
+                    let queued_message_repo = app_handle.as_ref().map(|handle| {
+                        let app_state = handle.state::<crate::application::AppState>();
+                        Arc::clone(&app_state.queued_message_repo)
+                    });
                     let queue_outcome = super::chat_service_queue::process_queued_messages(
                         context_type,
                         harness,
@@ -1680,6 +1777,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         conversation_id,
                         sess_id,
                         &message_queue,
+                        queued_message_repo,
                         &running_agent_registry,
                         &agent_run_repo,
                         &chat_message_repo,
@@ -1875,6 +1973,10 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                 "[QUEUE] Processing resume-in-place verification continuation after handled stream error"
                             );
 
+                            let queued_message_repo = app_handle.as_ref().map(|handle| {
+                                let app_state = handle.state::<crate::application::AppState>();
+                                Arc::clone(&app_state.queued_message_repo)
+                            });
                             let total_processed = super::chat_service_queue::process_queued_messages(
                                 context_type,
                                 harness,
@@ -1883,6 +1985,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                 conversation_id,
                                 session_id,
                                 &message_queue,
+                                queued_message_repo,
                                 &running_agent_registry,
                                 &agent_run_repo,
                                 &chat_message_repo,

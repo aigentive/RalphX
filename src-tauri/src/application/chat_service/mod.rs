@@ -63,13 +63,13 @@ use crate::domain::repositories::{
     ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
     ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
     IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, StateHistoryMetadata, TaskDependencyRepository, TaskProposalRepository,
-    TaskRepository, TaskStepRepository,
+    QueuedMessageRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
-    ComposerProjectReference, MessageQueue, QueuedMessage, RunningAgentInfo, RunningAgentKey,
-    RunningAgentRegistry,
+    ComposerProjectReference, MessageQueue, QueueKey, QueuedMessage, RunningAgentInfo,
+    RunningAgentKey, RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER, AGENT_ORCHESTRATOR_IDEATION,
@@ -896,6 +896,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     activity_event_repo: Arc<dyn ActivityEventRepository>,
     message_queue: Arc<MessageQueue>,
+    queued_message_repo: Option<Arc<dyn QueuedMessageRepository>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
     app_handle: Option<AppHandle<R>>,
@@ -976,6 +977,7 @@ impl<R: Runtime> AppChatService<R> {
             ideation_session_repo,
             activity_event_repo,
             message_queue,
+            queued_message_repo: None,
             running_agent_registry,
             memory_event_repo,
             app_handle: None,
@@ -1009,6 +1011,142 @@ impl<R: Runtime> AppChatService<R> {
     pub fn with_chat_timeline_repo(mut self, repo: Arc<dyn ChatTimelineRepository>) -> Self {
         self.chat_timeline_repo = Some(repo);
         self
+    }
+
+    pub fn with_queued_message_repo(mut self, repo: Arc<dyn QueuedMessageRepository>) -> Self {
+        self.queued_message_repo = Some(repo);
+        self
+    }
+
+    fn queued_key(context_type: ChatContextType, context_id: &str) -> QueueKey {
+        QueueKey::new(context_type, context_id)
+    }
+
+    fn merge_queued_messages(
+        durable: Vec<QueuedMessage>,
+        memory: Vec<QueuedMessage>,
+    ) -> Vec<QueuedMessage> {
+        let mut seen: HashSet<String> = durable.iter().map(|message| message.id.clone()).collect();
+        let mut merged = durable;
+        for message in memory {
+            if seen.insert(message.id.clone()) {
+                merged.push(message);
+            }
+        }
+        merged
+    }
+
+    async fn persist_queued_back(
+        &self,
+        key: &QueueKey,
+        message: &QueuedMessage,
+    ) -> Result<(), ChatServiceError> {
+        if let Some(repo) = self.queued_message_repo.as_ref() {
+            repo.enqueue_back(key, message)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn persist_queued_front(
+        &self,
+        key: &QueueKey,
+        message: &QueuedMessage,
+    ) -> Result<(), ChatServiceError> {
+        if let Some(repo) = self.queued_message_repo.as_ref() {
+            repo.enqueue_front(key, message)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn delete_durable_queued(
+        &self,
+        key: &QueueKey,
+        message_id: &str,
+    ) -> Result<bool, ChatServiceError> {
+        match self.queued_message_repo.as_ref() {
+            Some(repo) => repo
+                .delete(key, message_id)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string())),
+            None => Ok(false),
+        }
+    }
+
+    async fn list_durable_queued(
+        &self,
+        key: &QueueKey,
+    ) -> Result<Vec<QueuedMessage>, ChatServiceError> {
+        match self.queued_message_repo.as_ref() {
+            Some(repo) => repo
+                .list(key)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string())),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    async fn list_queued_keys(&self) -> Result<Vec<QueueKey>, ChatServiceError> {
+        let mut keys = self.message_queue.list_keys();
+        let mut seen: HashSet<QueueKey> = keys.iter().cloned().collect();
+        if let Some(repo) = self.queued_message_repo.as_ref() {
+            let durable_keys = repo
+                .list_keys()
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+            for key in durable_keys {
+                if seen.insert(key.clone()) {
+                    keys.push(key);
+                }
+            }
+        }
+        Ok(keys)
+    }
+
+    async fn take_queued_message(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message_id: &str,
+    ) -> Result<QueuedMessage, ChatServiceError> {
+        let key = Self::queued_key(context_type, context_id);
+        if let Some(message) = self.message_queue.take(context_type, context_id, message_id) {
+            self.delete_durable_queued(&key, message_id).await?;
+            return Ok(message);
+        }
+
+        let durable = self.list_durable_queued(&key).await?;
+        let Some(message) = durable.into_iter().find(|message| message.id == message_id) else {
+            return Err(ChatServiceError::ContextNotFound(format!(
+                "Queued message not found for {}/{}: {}",
+                context_type, context_id, message_id
+            )));
+        };
+        self.delete_durable_queued(&key, message_id).await?;
+        Ok(message)
+    }
+
+    async fn restore_queued_front(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message: QueuedMessage,
+    ) {
+        let key = Self::queued_key(context_type, context_id);
+        self.message_queue
+            .queue_front_existing(context_type, context_id, message.clone());
+        if let Err(error) = self.persist_queued_front(&key, &message).await {
+            tracing::warn!(
+                %context_type,
+                context_id,
+                queued_message_id = %message.id,
+                error = %error,
+                "failed to restore durable queued message"
+            );
+        }
     }
 
     pub fn with_execution_settings_repo(
@@ -1067,14 +1205,14 @@ impl<R: Runtime> AppChatService<R> {
         self
     }
 
-    fn enqueue_pending_send(
+    async fn enqueue_pending_send(
         &self,
         context_type: ChatContextType,
         context_id: &str,
         message: &str,
         options: &SendMessageOptions,
         conversation_id: Option<String>,
-    ) -> QueuedMessage {
+    ) -> Result<QueuedMessage, ChatServiceError> {
         let queued = self
             .message_queue
             .queue_with_runtime_overrides_and_project_references(
@@ -1092,6 +1230,11 @@ impl<R: Runtime> AppChatService<R> {
                 options.composer_artifact_references.clone(),
                 options.attachment_ids.clone(),
             );
+        let key = Self::queued_key(context_type, context_id);
+        if let Err(error) = self.persist_queued_back(&key, &queued).await {
+            self.message_queue.delete(context_type, context_id, &queued.id);
+            return Err(error);
+        }
         if !message_metadata_hidden_from_ui(queued.metadata_override.as_deref()) {
             self.emit_event(
                 "agent:message_queued",
@@ -1110,7 +1253,7 @@ impl<R: Runtime> AppChatService<R> {
                 },
             );
         }
-        queued
+        Ok(queued)
     }
 
     async fn load_turn_attachments(
@@ -1641,7 +1784,7 @@ impl<R: Runtime> AppChatService<R> {
             }
         }
 
-        for key in self.message_queue.list_keys() {
+        for key in self.list_queued_keys().await? {
             if !matches!(
                 key.context_type,
                 ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge
@@ -2907,7 +3050,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 message,
                 &options,
                 Some(conversation.id.as_str()),
-            );
+            )
+            .await?;
             tracing::info!(
                 %context_type,
                 context_id,
@@ -3023,7 +3167,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     message,
                     &queued_options,
                     Some(existing.conversation_id.clone()),
-                );
+                )
+                .await?;
                 tracing::info!(
                     %context_type,
                     context_id,
@@ -3472,7 +3617,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 message,
                 &options,
                 Some(existing.conversation_id.clone()),
-            );
+            )
+            .await?;
             return Ok(SendResult {
                 conversation_id: existing.conversation_id.clone(),
                 agent_run_id: existing.agent_run_id.clone(),
@@ -4604,7 +4750,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         }
 
         // Normal queue path (no interactive process or stdin write failed)
-        Ok(match client_id {
+        let queued = match client_id {
             Some(id) => self.message_queue.queue_with_client_id(
                 context_type,
                 context_id,
@@ -4614,7 +4760,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             None => self
                 .message_queue
                 .queue(context_type, context_id, content.to_string()),
-        })
+        };
+        let key = Self::queued_key(context_type, context_id);
+        if let Err(error) = self.persist_queued_back(&key, &queued).await {
+            self.message_queue.delete(context_type, context_id, &queued.id);
+            return Err(error);
+        }
+        Ok(queued)
     }
 
     async fn get_queued_messages(
@@ -4622,7 +4774,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         context_type: ChatContextType,
         context_id: &str,
     ) -> Result<Vec<QueuedMessage>, ChatServiceError> {
-        Ok(self.message_queue.get_queued(context_type, context_id))
+        let key = Self::queued_key(context_type, context_id);
+        let durable = self.list_durable_queued(&key).await?;
+        let memory = self.message_queue.get_queued(context_type, context_id);
+        Ok(Self::merge_queued_messages(durable, memory))
     }
 
     async fn delete_queued_message(
@@ -4631,9 +4786,12 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         context_id: &str,
         message_id: &str,
     ) -> Result<bool, ChatServiceError> {
-        Ok(self
+        let key = Self::queued_key(context_type, context_id);
+        let memory_deleted = self
             .message_queue
-            .delete(context_type, context_id, message_id))
+            .delete(context_type, context_id, message_id);
+        let durable_deleted = self.delete_durable_queued(&key, message_id).await?;
+        Ok(memory_deleted || durable_deleted)
     }
 
     async fn send_queued_message_now(
@@ -4643,18 +4801,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         message_id: &str,
     ) -> Result<SendResult, ChatServiceError> {
         let queued_msg = self
-            .message_queue
-            .take(context_type, context_id, message_id)
-            .ok_or_else(|| {
-                ChatServiceError::ContextNotFound(format!(
-                    "Queued message not found for {}/{}: {}",
-                    context_type, context_id, message_id
-                ))
-            })?;
-
-        let restore_queued = |message_queue: &MessageQueue, queued_msg: QueuedMessage| {
-            message_queue.queue_front_existing(context_type, context_id, queued_msg);
-        };
+            .take_queued_message(context_type, context_id, message_id)
+            .await?;
 
         let (send_context_id, conversation_id_override) = if context_type
             == ChatContextType::Project
@@ -4669,7 +4817,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             {
                 Ok(Some(conversation)) => {
                     if conversation.context_type != context_type {
-                        restore_queued(&self.message_queue, queued_msg);
+                        self.restore_queued_front(context_type, context_id, queued_msg)
+                            .await;
                         return Err(ChatServiceError::ContextNotFound(format!(
                             "Conversation {} belongs to {} not {}",
                             conversation_id, conversation.context_type, context_type
@@ -4679,7 +4828,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 }
                 Ok(None) => (context_id.to_string(), None),
                 Err(error) => {
-                    restore_queued(&self.message_queue, queued_msg);
+                    self.restore_queued_front(context_type, context_id, queued_msg)
+                        .await;
                     return Err(error);
                 }
             }
@@ -4694,7 +4844,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 
         if has_running_process {
             if let Err(error) = self.stop_agent(context_type, context_id).await {
-                restore_queued(&self.message_queue, queued_msg);
+                self.restore_queued_front(context_type, context_id, queued_msg)
+                    .await;
                 return Err(error);
             }
         }
@@ -4730,7 +4881,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         {
             Ok(result) => result,
             Err(error) => {
-                restore_queued(&self.message_queue, queued_msg);
+                self.restore_queued_front(context_type, context_id, queued_msg)
+                    .await;
                 return Err(error);
             }
         };
