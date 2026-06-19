@@ -16,7 +16,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -247,7 +246,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onClose,
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
-  const syncedIdeationLinksRef = useRef<Set<string>>(new Set());
   const isDirectIdeationConversation = conversation?.contextType === "ideation";
   const canHydrateIdeationArtifacts = Boolean(
     isDirectIdeationConversation ||
@@ -399,52 +397,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         (displayedVerificationStatus.inProgress ||
           displayedVerificationStatus.status !== "unverified"))),
   );
-  const shouldSyncWorkspaceIdeationLink = Boolean(
-    conversationId &&
-    conversation?.contextType === "project" &&
-    workspace &&
-    (workspace.mode === "ideation" || workspace.mode === "plan") &&
-    attachedSessionId &&
-    sessionData?.session.id === attachedSessionId &&
-    (workspace.linkedIdeationSessionId !== attachedSessionId ||
-      (!workspace.linkedPlanBranchId && hasExecutionTasks)),
-  );
-  useEffect(() => {
-    if (
-      !shouldSyncWorkspaceIdeationLink ||
-      !conversationId ||
-      !attachedSessionId
-    ) {
-      return;
-    }
-
-    const syncKey = `${conversationId}:${attachedSessionId}:${workspace?.linkedPlanBranchId ?? "missing-branch"}`;
-    if (syncedIdeationLinksRef.current.has(syncKey)) {
-      return;
-    }
-    syncedIdeationLinksRef.current.add(syncKey);
-    void chatApi
-      .syncAgentConversationWorkspaceIdeationLink(
-        conversationId,
-        attachedSessionId,
-      )
-      .then((result) => {
-        queryClient.setQueryData(
-          agentWorkspaceKeys.workspace(conversationId),
-          result.workspace,
-        );
-        return invalidateWorkspaceQueries(queryClient, conversationId);
-      })
-      .catch(() => {
-        syncedIdeationLinksRef.current.delete(syncKey);
-      });
-  }, [
-    attachedSessionId,
-    conversationId,
-    queryClient,
-    shouldSyncWorkspaceIdeationLink,
-    workspace?.linkedPlanBranchId,
-  ]);
   const availableIdeationTabIds = useMemo(
     () =>
       getVisibleIdeationArtifactTabs({

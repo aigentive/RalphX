@@ -35,7 +35,6 @@ const {
   listPublicationEventsMock,
   getWorkspaceFreshnessMock,
   updateWorkspaceFromBaseMock,
-  syncWorkspaceIdeationLinkMock,
   setWorkspaceAutoPublishMock,
   setWorkspacePrSupervisionMock,
   precomputePrDescriptionMock,
@@ -81,7 +80,6 @@ const {
   listPublicationEventsMock: vi.fn(),
   getWorkspaceFreshnessMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
-  syncWorkspaceIdeationLinkMock: vi.fn(),
   setWorkspaceAutoPublishMock: vi.fn(),
   setWorkspacePrSupervisionMock: vi.fn(),
   precomputePrDescriptionMock: vi.fn(),
@@ -131,8 +129,6 @@ vi.mock("@/api/chat", async (importOriginal) => {
         getWorkspaceFreshnessMock(...args),
       updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>
         updateWorkspaceFromBaseMock(...args),
-      syncAgentConversationWorkspaceIdeationLink: (...args: unknown[]) =>
-        syncWorkspaceIdeationLinkMock(...args),
       setAgentConversationWorkspaceAutoPublish: (...args: unknown[]) =>
         setWorkspaceAutoPublishMock(...args),
       setAgentConversationWorkspacePrSupervision: (...args: unknown[]) =>
@@ -583,13 +579,6 @@ describe("AgentsArtifactPane", () => {
       updated: false,
       targetRef: "origin/main",
       baseCommit: "base-sha",
-    });
-    syncWorkspaceIdeationLinkMock.mockResolvedValue({
-      workspace: workspace({
-        linkedIdeationSessionId: "session-1",
-        linkedPlanBranchId: "plan-branch-1",
-      }),
-      updated: true,
     });
     getPlanBranchesMock.mockResolvedValue([
       {
@@ -1079,12 +1068,6 @@ describe("AgentsArtifactPane", () => {
 
     expect(tasksTab).toBeInTheDocument();
     expect(tasksTab.className).not.toContain("hidden");
-    await waitFor(() =>
-      expect(syncWorkspaceIdeationLinkMock).toHaveBeenCalledWith(
-        "conversation-1",
-        "session-1",
-      ),
-    );
   });
 
   it("opens task details inside the Agents tasks artifact surface", async () => {
@@ -1816,11 +1799,6 @@ describe("AgentsArtifactPane", () => {
       proposals: [],
       messages: [],
     });
-    syncWorkspaceIdeationLinkMock.mockResolvedValue({
-      workspace: workspace({ linkedIdeationSessionId: "productive-session" }),
-      updated: true,
-    });
-
     renderPane(
       "tasks",
       workspace({
@@ -1834,12 +1812,6 @@ describe("AgentsArtifactPane", () => {
 
     await waitFor(() =>
       expect(getIdeationSessionMock).toHaveBeenCalledWith("productive-session"),
-    );
-    await waitFor(() =>
-      expect(syncWorkspaceIdeationLinkMock).toHaveBeenCalledWith(
-        "conversation-1",
-        "productive-session",
-      ),
     );
   });
 

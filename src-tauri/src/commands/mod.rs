@@ -266,7 +266,6 @@ pub use unified_chat_commands::{
     send_agent_message, set_agent_conversation_workspace_auto_publish,
     set_agent_conversation_workspace_pr_supervision,
     start_agent_conversation, stop_agent, switch_agent_conversation_mode,
-    sync_agent_conversation_workspace_ideation_link,
     update_agent_conversation_title, update_agent_conversation_workspace_from_base,
     AgentConversationWorkspaceFreshnessResponse,
     AgentConversationWorkspaceAutoPublishInput,

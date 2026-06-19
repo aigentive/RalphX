@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 
 import { chatApi } from "@/api/chat";
 import type {
@@ -13,10 +13,6 @@ import { ideationKeys } from "@/hooks/useIdeation";
 
 import type { AgentConversation } from "./agentConversations";
 import { getVisibleIdeationArtifactTabs } from "./agentArtifactTabs";
-import {
-  agentWorkspaceKeys,
-  invalidateWorkspaceQueries,
-} from "./agentWorkspaceQueries";
 import { resolveAttachedIdeationSessionId } from "./attachedIdeationSession";
 
 interface UseAgentsAttachedIdeationArgs {
@@ -46,9 +42,7 @@ export function useAgentsAttachedIdeation({
   invalidateProjectConversations,
   selectedConversationMessages,
 }: UseAgentsAttachedIdeationArgs) {
-  const queryClient = useQueryClient();
   const childArchiveSyncRef = useRef<Set<string>>(new Set());
-  const syncedIdeationLinksRef = useRef<Set<string>>(new Set());
   const shouldHydrateAttachedIdeation =
     activeConversation?.contextType === "ideation" ||
     (activeConversation?.contextType === "project" &&
@@ -162,54 +156,6 @@ export function useAgentsAttachedIdeation({
       hasExecutionTasks,
     });
   }, [attachedIdeationSession, hasExecutionTasks]);
-  const shouldSyncWorkspaceIdeationLink = Boolean(
-    activeConversation?.id &&
-      activeConversation.contextType === "project" &&
-      activeWorkspace &&
-      (activeWorkspace.mode === "ideation" || activeWorkspace.mode === "plan") &&
-      attachedIdeationSessionId &&
-      attachedIdeationSession?.id === attachedIdeationSessionId &&
-      (activeWorkspace.linkedIdeationSessionId !== attachedIdeationSessionId ||
-        (!activeWorkspace.linkedPlanBranchId && hasExecutionTasks)),
-  );
-  useEffect(() => {
-    if (
-      !shouldSyncWorkspaceIdeationLink ||
-      !activeConversation?.id ||
-      !attachedIdeationSessionId
-    ) {
-      return;
-    }
-
-    const syncKey = `${activeConversation.id}:${attachedIdeationSessionId}:${activeWorkspace?.linkedPlanBranchId ?? "missing-branch"}`;
-    if (syncedIdeationLinksRef.current.has(syncKey)) {
-      return;
-    }
-    syncedIdeationLinksRef.current.add(syncKey);
-    void chatApi
-      .syncAgentConversationWorkspaceIdeationLink(
-        activeConversation.id,
-        attachedIdeationSessionId,
-      )
-      .then((result) => {
-        queryClient.setQueryData(
-          agentWorkspaceKeys.workspace(activeConversation.id),
-          result.workspace,
-        );
-        return invalidateWorkspaceQueries(queryClient, activeConversation.id);
-      })
-      .catch(() => {
-        syncedIdeationLinksRef.current.delete(syncKey);
-      });
-  }, [
-    activeConversation?.id,
-    activeWorkspace?.linkedPlanBranchId,
-    attachedIdeationSession?.id,
-    attachedIdeationSessionId,
-    hasExecutionTasks,
-    queryClient,
-    shouldSyncWorkspaceIdeationLink,
-  ]);
   useEffect(() => {
     if (
       activeConversation?.contextType !== "project" ||
