@@ -201,6 +201,68 @@ const defaultProps = {
   scrollToTimestamp: null,
 };
 
+const GENERIC_TOOL_NAME = "webfetch";
+
+function makeTimelineTextMessage({
+  id,
+  parentMessageId,
+  sequence,
+  text,
+}: {
+  id: string;
+  parentMessageId: string;
+  sequence: number;
+  text: string;
+}): ChatMessageData {
+  return {
+    id,
+    role: "assistant",
+    content: text,
+    createdAt: new Date(2026, 0, 1, 12, sequence).toISOString(),
+    parentMessageId,
+    contentBlocks: [{ type: "text", text }],
+    toolCalls: null,
+    providerHarness: "claude",
+    timelineSequence: sequence,
+  };
+}
+
+function makeTimelineToolMessage({
+  id,
+  parentMessageId,
+  sequence,
+  toolName = GENERIC_TOOL_NAME,
+}: {
+  id: string;
+  parentMessageId: string;
+  sequence: number;
+  toolName?: string;
+}): ChatMessageData {
+  const toolCall: ToolCall = {
+    id: `tool-${id}`,
+    name: toolName,
+    arguments: { url: `https://example.com/${id}` },
+    result: `result for ${id}`,
+  };
+  return {
+    id,
+    role: "assistant",
+    content: "",
+    createdAt: new Date(2026, 0, 1, 12, sequence).toISOString(),
+    parentMessageId,
+    contentBlocks: [{
+      type: "tool_use",
+      id: toolCall.id,
+      name: toolCall.name,
+      arguments: toolCall.arguments,
+      result: toolCall.result,
+    }],
+    toolCalls: [toolCall],
+    providerHarness: "claude",
+    timelineSequence: sequence,
+  };
+}
+
 function setMockScrollerGeometry(
   element: HTMLElement,
   {
@@ -1929,7 +1991,8 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(metadataRows[1]!.compareDocumentPosition(typingIndicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it("renders multiple non-diff tool calls in order", () => {
+    it("collapses and expands multiple consecutive live non-diff tool calls", async () => {
+      const user = userEvent.setup();
       const blocks: StreamingContentBlock[] = [
         {
           type: "tool_use",
@@ -1949,8 +2012,59 @@ describe("ChatMessageList - Scroll Behavior", () => {
         />
       );
 
-      const indicators = screen.getAllByTestId("tool-call-indicator");
-      expect(indicators).toHaveLength(2);
+      expect(screen.getByRole("button", { name: "Agent called 2 tools" })).toBeInTheDocument();
+      expect(screen.queryAllByTestId("tool-call-indicator")).toHaveLength(0);
+
+      await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+
+      expect(screen.getByRole("button", { name: "Hide 2 tool calls" })).toBeInTheDocument();
+      expect(screen.getAllByTestId("tool-call-indicator")).toHaveLength(2);
+
+      await user.click(screen.getByRole("button", { name: "Hide 2 tool calls" }));
+
+      expect(screen.getByRole("button", { name: "Agent called 2 tools" })).toBeInTheDocument();
+      expect(screen.queryAllByTestId("tool-call-indicator")).toHaveLength(0);
+    });
+
+    it("collapses separate live tool-call runs around streaming text", () => {
+      const blocks: StreamingContentBlock[] = [
+        { type: "text", text: "First I will inspect the files." },
+        {
+          type: "tool_use",
+          toolCall: { id: "tc-1", name: GENERIC_TOOL_NAME, arguments: { url: "https://a.com" }, result: "page a" },
+        },
+        {
+          type: "tool_use",
+          toolCall: { id: "tc-2", name: GENERIC_TOOL_NAME, arguments: { url: "https://b.com" }, result: "page b" },
+        },
+        { type: "text", text: "Now I will verify the result." },
+        {
+          type: "tool_use",
+          toolCall: { id: "tc-3", name: GENERIC_TOOL_NAME, arguments: { url: "https://c.com" }, result: "page c" },
+        },
+        {
+          type: "tool_use",
+          toolCall: { id: "tc-4", name: GENERIC_TOOL_NAME, arguments: { url: "https://d.com" }, result: "page d" },
+        },
+        {
+          type: "tool_use",
+          toolCall: { id: "tc-5", name: GENERIC_TOOL_NAME, arguments: { url: "https://e.com" }, result: "page e" },
+        },
+      ];
+
+      render(
+        <ChatMessageList
+          {...defaultProps}
+          isSending={true}
+          streamingContentBlocks={blocks}
+        />
+      );
+
+      expect(screen.getByText("First I will inspect the files.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Agent called 2 tools" })).toBeInTheDocument();
+      expect(screen.getByText("Now I will verify the result.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Agent called 3 tools" })).toBeInTheDocument();
+      expect(screen.queryAllByTestId("tool-call-indicator")).toHaveLength(0);
     });
   });
 
@@ -5555,7 +5669,8 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(liveAssistantRow!.compareDocumentPosition(typingIndicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it("(2b) shows multiple ToolCallIndicators when multiple pending tool calls and no content blocks", () => {
+    it("(2b) groups multiple pending tool calls when no content blocks have arrived", async () => {
+      const user = userEvent.setup();
       const toolCalls: ToolCall[] = [
         { id: "tc-1", name: GENERIC, arguments: { url: "https://a.com" } },
         { id: "tc-2", name: GENERIC, arguments: { url: "https://b.com" } },
@@ -5570,9 +5685,19 @@ describe("ChatMessageList - Scroll Behavior", () => {
         />
       );
 
-      const indicators = screen.getAllByTestId("tool-call-indicator");
-      expect(indicators).toHaveLength(2);
+      expect(screen.getByRole("button", { name: "Agent called 2 tools" })).toBeInTheDocument();
+      expect(screen.queryAllByTestId("tool-call-indicator")).toHaveLength(0);
       expect(screen.getByTestId("chat-typing-indicator")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+
+      expect(screen.getByRole("button", { name: "Hide 2 tool calls" })).toBeInTheDocument();
+      expect(screen.getAllByTestId("tool-call-indicator")).toHaveLength(2);
+
+      await user.click(screen.getByRole("button", { name: "Hide 2 tool calls" }));
+
+      expect(screen.getByRole("button", { name: "Agent called 2 tools" })).toBeInTheDocument();
+      expect(screen.queryAllByTestId("tool-call-indicator")).toHaveLength(0);
     });
 
     it("(3) agent running + content blocks → content blocks render and typing remains visible", () => {
@@ -6465,6 +6590,108 @@ describe("ChatMessageList - Virtuoso production render path", () => {
       />,
     );
     expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+
+  it("collapses separate consecutive tool-call runs into independent status rows", () => {
+    const parentMessageId = "assistant-turn-1";
+    const messages: ChatMessageData[] = [
+      makeTimelineTextMessage({
+        id: "text-1",
+        parentMessageId,
+        sequence: 1,
+        text: "First I will inspect the repo.",
+      }),
+      makeTimelineToolMessage({ id: "tool-a", parentMessageId, sequence: 2 }),
+      makeTimelineToolMessage({ id: "tool-b", parentMessageId, sequence: 3 }),
+      makeTimelineTextMessage({
+        id: "text-2",
+        parentMessageId,
+        sequence: 4,
+        text: "Now I will validate the result.",
+      }),
+      makeTimelineToolMessage({ id: "tool-c", parentMessageId, sequence: 5 }),
+      makeTimelineToolMessage({ id: "tool-d", parentMessageId, sequence: 6 }),
+      makeTimelineToolMessage({ id: "tool-e", parentMessageId, sequence: 7 }),
+    ];
+
+    render(<ChatMessageList {...defaultProps} messages={messages} />);
+
+    expect(screen.getByText("First I will inspect the repo.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Agent called 2 tools" })).toBeInTheDocument();
+    expect(screen.getByText("Now I will validate the result.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Agent called 3 tools" })).toBeInTheDocument();
+    expect(screen.queryAllByTestId("tool-call-indicator")).toHaveLength(0);
+  });
+
+  it("expands and hides a collapsed tool-call group without changing the tool widget renderer", async () => {
+    const user = userEvent.setup();
+    const parentMessageId = "assistant-turn-2";
+    const messages: ChatMessageData[] = [
+      makeTimelineTextMessage({
+        id: "text-1",
+        parentMessageId,
+        sequence: 1,
+        text: "I will fetch two files.",
+      }),
+      makeTimelineToolMessage({ id: "tool-a", parentMessageId, sequence: 2 }),
+      makeTimelineToolMessage({ id: "tool-b", parentMessageId, sequence: 3 }),
+    ];
+
+    render(<ChatMessageList {...defaultProps} messages={messages} />);
+
+    await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+
+    expect(screen.getByRole("button", { name: "Hide 2 tool calls" })).toBeInTheDocument();
+    expect(screen.getAllByTestId("tool-call-indicator")).toHaveLength(2);
+
+    await user.click(screen.getByRole("button", { name: "Hide 2 tool calls" }));
+
+    expect(screen.getByRole("button", { name: "Agent called 2 tools" })).toBeInTheDocument();
+    expect(screen.queryAllByTestId("tool-call-indicator")).toHaveLength(0);
+  });
+
+  it("keeps single tool-call rows ungrouped", () => {
+    const parentMessageId = "assistant-turn-3";
+    const messages: ChatMessageData[] = [
+      makeTimelineTextMessage({
+        id: "text-1",
+        parentMessageId,
+        sequence: 1,
+        text: "I only need one tool.",
+      }),
+      makeTimelineToolMessage({ id: "tool-a", parentMessageId, sequence: 2 }),
+      makeTimelineTextMessage({
+        id: "text-2",
+        parentMessageId,
+        sequence: 3,
+        text: "Done.",
+      }),
+    ];
+
+    render(<ChatMessageList {...defaultProps} messages={messages} />);
+
+    expect(screen.queryByRole("button", { name: /Agent called/i })).not.toBeInTheDocument();
+    expect(screen.getByTestId("tool-call-indicator")).toBeInTheDocument();
+  });
+
+  it("does not group adjacent tool calls from different assistant parent messages", () => {
+    const messages: ChatMessageData[] = [
+      makeTimelineToolMessage({
+        id: "tool-a",
+        parentMessageId: "assistant-turn-a",
+        sequence: 1,
+      }),
+      makeTimelineToolMessage({
+        id: "tool-b",
+        parentMessageId: "assistant-turn-b",
+        sequence: 2,
+      }),
+    ];
+
+    render(<ChatMessageList {...defaultProps} messages={messages} />);
+
+    expect(screen.queryByRole("button", { name: "Agent called 2 tools" })).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("tool-call-indicator")).toHaveLength(2);
   });
 
   it("renders Virtuoso path with failedRun banner", () => {
