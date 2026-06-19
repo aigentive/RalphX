@@ -193,6 +193,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app_handle, event| {
+            #[cfg(all(dev, target_os = "macos"))]
+            if matches!(&event, tauri::RunEvent::Ready) {
+                application::dev_dock_icon::set_light_dev_dock_icon();
+            }
+
             application::shutdown::handle_run_event(app_handle, &event);
         });
 }

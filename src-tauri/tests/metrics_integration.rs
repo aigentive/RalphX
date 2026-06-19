@@ -4,7 +4,10 @@
 // then seeds data via raw SQL inserts to verify end-to-end metric computation
 // against the real production schema.
 
-use ralphx_lib::commands::metrics_commands::{compute_project_stats, compute_project_trends};
+use ralphx_lib::commands::metrics_commands::{
+    compute_insights_stats, compute_insights_trends, compute_project_stats,
+    compute_project_trends,
+};
 use ralphx_lib::testing::SqliteTestDb;
 
 struct MetricsTestDb {
@@ -254,6 +257,39 @@ fn test_stats_scoped_to_project() {
     assert_eq!(s2.review_pass_count, 0);
 }
 
+#[test]
+fn test_insights_stats_aggregate_all_projects_from_raw_rows() {
+    let conn = setup_db();
+    insert_project(&conn, "proj1");
+    insert_project(&conn, "proj2");
+
+    for i in 1..=3 {
+        let task_id = format!("p1t{i}");
+        insert_task(&conn, &task_id, "proj1", "merged");
+        insert_step(&conn, &format!("p1s{i}a"), &task_id);
+        insert_merged_history_now(&conn, &format!("p1h{i}"), &task_id);
+    }
+    for i in 1..=2 {
+        let task_id = format!("p2t{i}");
+        insert_task(&conn, &task_id, "proj2", "merged");
+        insert_step(&conn, &format!("p2s{i}a"), &task_id);
+        insert_merged_history_now(&conn, &format!("p2h{i}"), &task_id);
+    }
+    insert_review(&conn, "p1r1", "proj1", "p1t1", "approved");
+    insert_review(&conn, "p2r1", "proj2", "p2t1", "changes_requested");
+
+    let stats = compute_insights_stats(&conn, 0, 0).expect("compute_insights_stats");
+
+    assert_eq!(stats.task_count, 5);
+    assert_eq!(stats.agent_success_count, 5);
+    assert_eq!(stats.agent_total_count, 5);
+    assert_eq!(stats.review_pass_count, 1);
+    assert_eq!(stats.review_total_count, 2);
+    let eme = stats.eme.expect("aggregate EME should use all projects");
+    assert_eq!(eme.task_count, 5);
+    assert_eq!(eme.scope_label, "All projects task pipeline");
+}
+
 // ─── compute_project_trends tests ────────────────────────────────────────────
 
 /// Seed tasks merged this week and verify weekly_throughput includes the current week
@@ -357,4 +393,34 @@ fn test_weekly_throughput_scoped_to_project() {
 
     assert_eq!(p1_total, 2.0, "proj1 should have 2 merged tasks total");
     assert_eq!(p2_total, 5.0, "proj2 should have 5 merged tasks total");
+}
+
+#[test]
+fn test_insights_trends_aggregate_task_and_delivery_throughput() {
+    let conn = setup_db();
+    insert_project(&conn, "proj1");
+    insert_project(&conn, "proj2");
+
+    for i in 1..=2 {
+        let task_id = format!("p1t{i}");
+        insert_task(&conn, &task_id, "proj1", "merged");
+        insert_merged_history_now(&conn, &format!("p1h{i}"), &task_id);
+    }
+    for i in 1..=3 {
+        let task_id = format!("p2t{i}");
+        insert_task(&conn, &task_id, "proj2", "merged");
+        insert_merged_history_now(&conn, &format!("p2h{i}"), &task_id);
+    }
+
+    let trends = compute_insights_trends(&conn, 0, 0).expect("compute_insights_trends");
+
+    let throughput_total: f64 = trends.weekly_throughput.iter().map(|point| point.value).sum();
+    let delivery_total: i64 = trends
+        .weekly_delivery_throughput
+        .iter()
+        .map(|point| point.unified_deliveries)
+        .sum();
+
+    assert_eq!(throughput_total, 5.0);
+    assert_eq!(delivery_total, 5);
 }
