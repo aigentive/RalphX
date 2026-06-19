@@ -221,7 +221,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
   const canHydrateIdeationArtifacts = Boolean(
-    focusedIdeationSessionId ||
+    conversation?.contextType === "ideation" ||
+      focusedIdeationSessionId ||
       workspace?.mode === "ideation" ||
       workspace?.mode === "plan" ||
       workspace?.linkedIdeationSessionId ||
