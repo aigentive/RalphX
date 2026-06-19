@@ -33,6 +33,13 @@ export function useLinearIntegration() {
     },
   });
 
+  const disconnectMutation = useMutation({
+    mutationFn: () => linearApi.disconnect(),
+    onSuccess: (settings) => {
+      queryClient.setQueryData(linearIntegrationKeys.settings(), settings);
+    },
+  });
+
   return {
     settings: settingsQuery.data,
     isLoading: settingsQuery.isLoading,
@@ -40,9 +47,12 @@ export function useLinearIntegration() {
     error: settingsQuery.error,
     saveSettingsAsync: saveSettingsMutation.mutateAsync,
     validateAsync: validateMutation.mutateAsync,
+    disconnectAsync: disconnectMutation.mutateAsync,
     isSavingSettings: saveSettingsMutation.isPending,
     isValidating: validateMutation.isPending,
+    isDisconnecting: disconnectMutation.isPending,
     saveSettingsError: saveSettingsMutation.error,
     validateError: validateMutation.error,
+    disconnectError: disconnectMutation.error,
   };
 }

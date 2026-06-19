@@ -391,6 +391,17 @@ pub async fn validate_atlassian_integration(
 }
 
 #[tauri::command]
+pub async fn disconnect_atlassian_integration(
+    state: State<'_, AppState>,
+) -> Result<AtlassianIntegrationSettingsResponse, String> {
+    state
+        .atlassian_integration_service
+        .disconnect()
+        .await
+        .map(AtlassianIntegrationSettingsResponse::from)
+}
+
+#[tauri::command]
 pub async fn search_atlassian_resources(
     input: SearchAtlassianResourcesInput,
     state: State<'_, AppState>,

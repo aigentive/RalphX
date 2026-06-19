@@ -193,6 +193,53 @@ async fn clearing_api_token_deletes_existing_secret_and_marks_not_configured() {
 }
 
 #[tokio::test]
+async fn disconnect_deletes_secret_and_resets_valid_connection() {
+    let repo = Arc::new(TestSettingsRepo::default());
+    let secrets = Arc::new(RecordingSecretStore::default());
+    let client = Arc::new(TestLinearClient::default());
+    let service = LinearIntegrationService::new(repo, secrets.clone(), client);
+
+    let saved = service
+        .save_settings(Some("lin-api-token".to_string()))
+        .await
+        .unwrap();
+    let secret_ref = saved.token_secret_ref.clone().unwrap();
+    let validated = service.validate_and_enable().await.unwrap();
+    assert!(validated.enabled);
+
+    let cleared = service.disconnect().await.unwrap();
+
+    assert!(!cleared.enabled);
+    assert!(cleared.token_secret_ref.is_none());
+    assert_eq!(
+        cleared.validation_status,
+        IntegrationValidationStatus::NotConfigured
+    );
+    assert!(!cleared.issue_search_available);
+    assert!(cleared.last_error.is_none());
+    assert!(cleared.last_validated_at.is_none());
+    assert_eq!(secrets.deleted.lock().await.as_slice(), &[secret_ref]);
+}
+
+#[tokio::test]
+async fn disconnect_is_noop_when_not_configured() {
+    let repo = Arc::new(TestSettingsRepo::default());
+    let secrets = Arc::new(RecordingSecretStore::default());
+    let client = Arc::new(TestLinearClient::default());
+    let service = LinearIntegrationService::new(repo, secrets.clone(), client);
+
+    let cleared = service.disconnect().await.unwrap();
+
+    assert!(!cleared.enabled);
+    assert!(cleared.token_secret_ref.is_none());
+    assert_eq!(
+        cleared.validation_status,
+        IntegrationValidationStatus::NotConfigured
+    );
+    assert!(secrets.deleted.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn validation_failure_disables_search() {
     let repo = Arc::new(TestSettingsRepo::default());
     let secrets = Arc::new(MemorySecretStore::new());
