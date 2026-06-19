@@ -1502,7 +1502,7 @@ describe("AgentsArtifactPane", () => {
     ).toBeGreaterThan(switchAgentConversationModeMock.mock.invocationCallOrder[0]!);
   });
 
-  it("omits the Verification tab for a plan session that has never run verification", async () => {
+  it("omits empty Proposals and Verification tabs for a plan session without evidence", async () => {
     getIdeationSessionMock.mockResolvedValue({
       session: {
         id: "session-1",
@@ -1565,8 +1565,171 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(await screen.findByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
-    expect(screen.getByTestId("agents-artifact-tab-proposal")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
+  });
+
+  it("shows the Proposals tab for a plan session once proposals exist", async () => {
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Planning session",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: null,
+      },
+      proposals: [
+        {
+          id: "proposal-1",
+          sessionId: "session-1",
+          title: "Gate proposal tab visibility",
+          description: "Show the Proposals tab only when it has content.",
+          category: "frontend",
+          steps: ["Update shared tab helper"],
+          acceptanceCriteria: ["Empty sessions do not show Proposals"],
+          suggestedPriority: "high",
+          priorityScore: 90,
+          priorityReason: "Avoids dead-end navigation",
+          estimatedComplexity: "simple",
+          userPriority: null,
+          userModified: false,
+          status: "pending",
+          createdTaskId: null,
+          planArtifactId: "artifact-1",
+          planVersionAtCreation: 1,
+          sortOrder: 0,
+          createdAt: "2026-04-23T09:15:00Z",
+          updatedAt: "2026-04-23T09:15:00Z",
+        },
+      ],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: "2026-04-23T09:30:00Z",
+      },
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    const proposalsTab = await screen.findByTestId("agents-artifact-tab-proposal");
+
+    expect(proposalsTab).toBeInTheDocument();
+    expect(within(proposalsTab).getByText("1")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the Plan tab when Proposals is active but no proposals exist", async () => {
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Planning session",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: null,
+      },
+      proposals: [],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: "2026-04-23T09:30:00Z",
+      },
+    });
+
+    renderPane(
+      "proposal",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    const planTab = await screen.findByTestId("agents-artifact-tab-plan");
+
+    expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
+    expect(
+      planTab.querySelector("span[style='background: var(--accent-primary);']"),
+    ).not.toBeNull();
+    expect(useDependencyGraphMock).toHaveBeenLastCalledWith("");
   });
 
   it("shows plan complexity guidance while still allowing direct implementation", async () => {
