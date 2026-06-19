@@ -55,11 +55,13 @@ mod tests {
             IntegrationValidationStatus::NotConfigured
         );
 
-        let mut settings = LinearIntegrationSettings::default();
-        settings.enabled = true;
-        settings.token_secret_ref = Some("linear-token-ref".to_string());
-        settings.validation_status = IntegrationValidationStatus::Valid;
-        settings.issue_search_available = true;
+        let settings = LinearIntegrationSettings {
+            enabled: true,
+            token_secret_ref: Some("linear-token-ref".to_string()),
+            validation_status: IntegrationValidationStatus::Valid,
+            issue_search_available: true,
+            ..Default::default()
+        };
 
         let saved = repo.upsert(&settings).await.unwrap();
         assert!(saved.enabled);

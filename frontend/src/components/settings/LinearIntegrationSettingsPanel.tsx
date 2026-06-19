@@ -1,12 +1,17 @@
 import { useState } from "react";
-import { CheckCircle2, KeyRound, Loader2, XCircle } from "lucide-react";
+import { KeyRound, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useLinearIntegration } from "@/hooks/useLinearIntegration";
 
-import { ErrorBanner, SectionCard } from "./SettingsView.shared";
+import {
+  ErrorBanner,
+  IntegrationDisconnectButton,
+  IntegrationStatusBanner,
+  SectionCard,
+} from "./SettingsView.shared";
 
 function errorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error) {
@@ -26,10 +31,13 @@ export function LinearIntegrationSettingsPanel() {
     error,
     saveSettingsAsync,
     validateAsync,
+    disconnectAsync,
     isSavingSettings,
     isValidating,
+    isDisconnecting,
     saveSettingsError,
     validateError,
+    disconnectError,
   } = useLinearIntegration();
   const [apiToken, setApiToken] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
@@ -39,13 +47,20 @@ export function LinearIntegrationSettingsPanel() {
     localError ??
     (isError && error instanceof Error ? error.message : null) ??
     (saveSettingsError instanceof Error ? saveSettingsError.message : null) ??
-    (validateError instanceof Error ? validateError.message : null);
+    (validateError instanceof Error ? validateError.message : null) ??
+    (disconnectError instanceof Error ? disconnectError.message : null);
   const isApiConfigured = Boolean(
     settings?.enabled &&
     settings.hasApiToken &&
     settings.validationStatus === "valid" &&
     settings.issueSearchAvailable,
   );
+  const hasConnection = Boolean(settings?.hasApiToken || settings?.enabled);
+  const statusChips = [
+    `API token ${settings?.hasApiToken ? "stored" : "missing"}`,
+    `Status ${settings?.validationStatus ?? "not_configured"}`,
+    `Search ${settings?.issueSearchAvailable ? "available" : "disabled"}`,
+  ];
 
   const saveApiToken = async () => {
     setLocalError(null);
@@ -98,6 +113,17 @@ export function LinearIntegrationSettingsPanel() {
     }
   };
 
+  const disconnect = async () => {
+    setLocalError(null);
+    setSaved(false);
+    setApiToken("");
+    try {
+      await disconnectAsync();
+    } catch (err) {
+      setLocalError(errorMessage(err, "Failed to disconnect Linear integration"));
+    }
+  };
+
   if (isLoading) {
     return (
       <SectionCard
@@ -126,39 +152,16 @@ export function LinearIntegrationSettingsPanel() {
       ) : null}
 
       <div className="space-y-4">
-        <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium text-[var(--text-primary)]">
-                {isApiConfigured
-                  ? "Issue references enabled"
-                  : "Issue references not ready"}
-              </div>
-              <div className="mt-1 flex flex-wrap gap-2 text-xs text-[var(--text-muted)]">
-                <span>
-                  API token {settings?.hasApiToken ? "stored" : "missing"}
-                </span>
-                <span>
-                  Status {settings?.validationStatus ?? "not_configured"}
-                </span>
-                <span>
-                  Search{" "}
-                  {settings?.issueSearchAvailable ? "available" : "disabled"}
-                </span>
-              </div>
-              {settings?.lastError ? (
-                <div className="mt-1 text-xs text-[var(--status-error)]">
-                  {settings.lastError}
-                </div>
-              ) : null}
-            </div>
-            {isApiConfigured ? (
-              <CheckCircle2 className="h-5 w-5 text-[var(--status-success)]" />
-            ) : (
-              <XCircle className="h-5 w-5 text-[var(--text-muted)]" />
-            )}
-          </div>
-        </div>
+        <IntegrationStatusBanner
+          connected={isApiConfigured}
+          title={
+            isApiConfigured
+              ? "Issue references enabled"
+              : "Issue references not ready"
+          }
+          chips={statusChips}
+          lastError={settings?.lastError ?? null}
+        />
 
         <div className="space-y-1.5">
           <Label htmlFor="linear-api-token">API token</Label>
@@ -203,6 +206,13 @@ export function LinearIntegrationSettingsPanel() {
             {isValidating ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             Validate
           </Button>
+          {hasConnection ? (
+            <IntegrationDisconnectButton
+              onDisconnect={disconnect}
+              disabled={isSavingSettings || isValidating}
+              isDisconnecting={isDisconnecting}
+            />
+          ) : null}
           {saved ? (
             <span className="text-xs text-[var(--status-success)]">Saved</span>
           ) : null}
