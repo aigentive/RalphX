@@ -17,10 +17,10 @@ import {
 // ============================================
 
 /**
- * All 18 artifact types organized by category:
+ * All 19 artifact types organized by category:
  * - Documents: prd, research_document, design_doc, specification
  * - Code: code_change, diff, test_result
- * - Process: task_spec, review_feedback, approval, findings, recommendations
+ * - Process: task_spec, review_feedback, approval, findings, recommendations, pr_review
  * - Context: context, previous_work, research_brief
  * - Logs: activity_log, alert, intervention
  */
@@ -37,6 +37,7 @@ export const ArtifactTypeSchema = z.enum([
   // Process
   "task_spec",
   "review_feedback",
+  "pr_review",
   "approval",
   "findings",
   "recommendations",
@@ -82,6 +83,7 @@ export const CODE_ARTIFACT_TYPES: readonly ArtifactType[] = [
 export const PROCESS_ARTIFACT_TYPES: readonly ArtifactType[] = [
   "task_spec",
   "review_feedback",
+  "pr_review",
   "approval",
   "findings",
   "recommendations",

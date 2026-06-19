@@ -8,7 +8,7 @@ import { canonicalAgentName, loadCanonicalMcpTools } from '../canonical-agent-me
 import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
 import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
-import { callAgentWorkspaceTool, callCheckAgentWorkspacePublishReadinessTool, callCompleteAgentWorkspacePrFixTool, callCompletePrReviewRunTool, callCompleteAgentWorkspaceRepairTool, callGetAgentWorkspacePrFixContextTool, callGetPrReviewContextTool, callGetAgentWorkspacePublishStatusTool, callPublishAgentWorkspaceTool, callProposePrReviewActionTool, callReadAgentWorkspacePrCommentTool, callSubmitAgentWorkspacePrDescriptionTool, callUpdateAgentWorkspaceFromBaseTool, isAgentWorkspaceToolName, } from '../agent-workspace-tools.js';
+import { callAgentWorkspaceTool, callCheckAgentWorkspacePublishReadinessTool, callCompleteAgentWorkspacePrFixTool, callCompletePrReviewRunTool, callCompleteAgentWorkspaceRepairTool, callGetAgentWorkspacePrFixContextTool, callGetPrReviewContextTool, callGetAgentWorkspacePublishStatusTool, callPublishAgentWorkspaceTool, callProposePrReviewActionTool, callReadAgentWorkspacePrCommentTool, callSubmitAgentWorkspacePrDescriptionTool, callUpdateAgentWorkspaceFromBaseTool, callWritePrReviewArtifactTool, isAgentWorkspaceToolName, } from '../agent-workspace-tools.js';
 import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, GENERAL_EXPLORER, GENERAL_WORKER, AGENT_WORKSPACE_PR_FIXER, PLAN_COMPLEXITY_ASSESSOR, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
 function toolsByAgent() {
     return getToolsByAgent();
@@ -1309,6 +1309,21 @@ describe('agent workspace publish tool transport', () => {
             created_by_run_id: 'run-1',
         });
     });
+    it('routes Review PR artifact writes to the runtime workspace conversation', async () => {
+        const callTauri = vi.fn().mockResolvedValue({ success: true });
+        await expect(callWritePrReviewArtifactTool(callTauri, {
+            title: 'PR #42 Review',
+            content: '## Review\n\nLooks good.',
+            head_sha: 'abc123',
+            created_by_run_id: 'run-1',
+        }, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
+        expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/pr-review-artifact', {
+            title: 'PR #42 Review',
+            content: '## Review\n\nLooks good.',
+            head_sha: 'abc123',
+            created_by_run_id: 'run-1',
+        });
+    });
     it('routes PR comment reads to the encoded comment endpoint', async () => {
         const callTauriGet = vi.fn().mockResolvedValue({ success: true });
         await expect(callReadAgentWorkspacePrCommentTool(callTauriGet, {
@@ -1323,6 +1338,7 @@ describe('agent workspace publish tool transport', () => {
         await expect(callAgentWorkspaceTool('get_pr_review_context', callTauri, callTauriGet, {}, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
         await expect(callAgentWorkspaceTool('propose_pr_review_action', callTauri, callTauriGet, { summary: 'Ready to submit' }, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
         await expect(callAgentWorkspaceTool('complete_pr_review_run', callTauri, callTauriGet, { outcome: 'approved' }, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
+        await expect(callAgentWorkspaceTool('write_pr_review_artifact', callTauri, callTauriGet, { content: '## Review' }, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
         expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/pr-review-context');
         expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/pr-review-actions', {
             head_sha: undefined,
@@ -1337,6 +1353,12 @@ describe('agent workspace publish tool transport', () => {
             outcome: 'approved',
             summary: undefined,
             blocker: undefined,
+            created_by_run_id: undefined,
+        });
+        expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/pr-review-artifact', {
+            title: undefined,
+            content: '## Review',
+            head_sha: undefined,
             created_by_run_id: undefined,
         });
     });
@@ -1389,6 +1411,17 @@ describe('agent workspace publish tool transport', () => {
             undefined,
         ],
         [
+            'write_pr_review_artifact',
+            'post',
+            'agent-workspaces/conversation-1/pr-review-artifact',
+            {
+                title: 'Generated title',
+                content: '## Review\n\nGenerated body',
+                head_sha: 'head-sha',
+                created_by_run_id: 'run-1',
+            },
+        ],
+        [
             'complete_agent_workspace_pr_fix',
             'post',
             'agent-workspaces/conversation-1/complete-pr-fix',
@@ -1433,6 +1466,9 @@ describe('agent workspace publish tool transport', () => {
             blocker: 'Needs maintainer decision',
             title: 'Generated title',
             body_markdown: '## Summary\n\nGenerated body',
+            content: '## Review\n\nGenerated body',
+            head_sha: 'head-sha',
+            created_by_run_id: 'run-1',
         };
         await expect(callAgentWorkspaceTool(toolName, callTauri, callTauriGet, args)).resolves.toEqual({ ok: method });
         expect(isAgentWorkspaceToolName(toolName)).toBe(true);

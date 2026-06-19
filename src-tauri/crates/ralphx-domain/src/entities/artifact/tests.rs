@@ -72,9 +72,9 @@ fn process_id_from_string_preserves_value() {
 // ===== ArtifactType Tests =====
 
 #[test]
-fn artifact_type_all_returns_22_types() {
+fn artifact_type_all_returns_23_types() {
     let all = ArtifactType::all();
-    assert_eq!(all.len(), 22);
+    assert_eq!(all.len(), 23);
 }
 
 #[test]
@@ -95,6 +95,10 @@ fn artifact_type_serializes_snake_case() {
         serde_json::to_string(&ArtifactType::ReviewFeedback).unwrap(),
         "\"review_feedback\""
     );
+    assert_eq!(
+        serde_json::to_string(&ArtifactType::PrReview).unwrap(),
+        "\"pr_review\""
+    );
 }
 
 #[test]
@@ -105,6 +109,8 @@ fn artifact_type_deserializes() {
     assert_eq!(t, ArtifactType::ResearchDocument);
     let t: ArtifactType = serde_json::from_str("\"verification_finding\"").unwrap();
     assert_eq!(t, ArtifactType::VerificationFinding);
+    let t: ArtifactType = serde_json::from_str("\"pr_review\"").unwrap();
+    assert_eq!(t, ArtifactType::PrReview);
 }
 
 #[test]
@@ -118,6 +124,10 @@ fn artifact_type_from_str() {
     assert_eq!(
         ArtifactType::from_str("design_doc").unwrap(),
         ArtifactType::DesignDoc
+    );
+    assert_eq!(
+        ArtifactType::from_str("pr_review").unwrap(),
+        ArtifactType::PrReview
     );
 }
 

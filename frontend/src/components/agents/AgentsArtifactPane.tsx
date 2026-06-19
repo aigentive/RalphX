@@ -128,6 +128,7 @@ const ARTIFACT_TABS: Array<{
   label: string;
   icon: ElementType;
 }> = [
+  { id: "review", label: "Review", icon: FileText },
   { id: "plan", label: "Plan", icon: FileText },
   { id: "verification", label: "Verification", icon: CheckCircle2 },
   { id: "proposal", label: "Proposals", icon: GitPullRequestArrow },
@@ -285,6 +286,24 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     inProgress: boolean;
   } | null>(null);
   const conversationId = conversation?.id ?? null;
+  const shouldLoadPrReviewContext = Boolean(
+    conversationId && workspace?.mode === "review_pr",
+  );
+  const prReviewContextQuery = useQuery({
+    queryKey: agentWorkspaceKeys.prReview(conversationId ?? ""),
+    queryFn: () => chatApi.getAgentWorkspacePrReviewContext(conversationId!),
+    enabled: shouldLoadPrReviewContext,
+    staleTime: 5_000,
+  });
+  const reviewArtifactId =
+    prReviewContextQuery.data?.monitor?.reviewArtifactId ?? null;
+  const reviewArtifactQuery = useQuery({
+    queryKey: ["agents", "artifact", reviewArtifactId],
+    queryFn: () => artifactApi.get(reviewArtifactId!),
+    enabled: Boolean(reviewArtifactId),
+    staleTime: 5_000,
+  });
+  const reviewArtifact = reviewArtifactQuery.data ?? null;
   const [taskArtifactSelectedId, setTaskArtifactSelectedIdState] =
     useState<string | null>(() => readSelectedTaskForConversation(conversationId));
   useEffect(() => {
@@ -354,19 +373,27 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       workspace?.linkedPlanBranchId,
     ],
   );
+  const availableArtifactTabIds = useMemo<IdeationArtifactTab[]>(() => {
+    if (!reviewArtifactId || availableIdeationTabIds.includes("review")) {
+      return availableIdeationTabIds;
+    }
+    return ["review", ...availableIdeationTabIds];
+  }, [availableIdeationTabIds, reviewArtifactId]);
   const visibleTabs = useMemo(
     () => [
-      ...ARTIFACT_TABS.filter((tab) => availableIdeationTabIds.includes(tab.id)),
+      ...ARTIFACT_TABS.filter((tab) => availableArtifactTabIds.includes(tab.id)),
       ...(showJiraTab ? [JIRA_TAB] : []),
       ...(showLinearTab ? [LINEAR_TAB] : []),
       ...(showPublishTab ? [PUBLISH_TAB] : []),
     ],
-    [availableIdeationTabIds, showJiraTab, showLinearTab, showPublishTab],
+    [availableArtifactTabIds, showJiraTab, showLinearTab, showPublishTab],
   );
   const effectiveActiveTab =
     visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
-      : showPublishTab
+      : reviewArtifactId
+        ? "review"
+        : showPublishTab
         ? "publish"
         : showJiraTab
           ? "jira"
@@ -631,6 +658,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           session={session}
           sessionTitle={sessionData?.session.title ?? null}
           taskMode={taskMode}
+          reviewArtifact={reviewArtifact}
+          isReviewLoading={
+            Boolean(reviewArtifactId) &&
+            !reviewArtifact &&
+            reviewArtifactQuery.isFetching
+          }
           planArtifact={planArtifact}
           isPlanLoading={isPlanHydrating}
           onPlanUpdated={handlePlanUpdated}
@@ -665,6 +698,8 @@ type ArtifactContentProps = {
   session: IdeationSession | null;
   sessionTitle: string | null;
   taskMode: AgentTaskArtifactMode;
+  reviewArtifact: Artifact | null;
+  isReviewLoading: boolean;
   planArtifact: Artifact | null;
   isPlanLoading: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
@@ -698,6 +733,8 @@ function ArtifactContent({
   session,
   sessionTitle,
   taskMode,
+  reviewArtifact,
+  isReviewLoading,
   planArtifact,
   isPlanLoading,
   onPlanUpdated,
@@ -782,6 +819,15 @@ function ArtifactContent({
           projectId={projectId}
         />
       </Suspense>
+    );
+  }
+
+  if (activeTab === "review") {
+    return (
+      <AgentReviewPanel
+        reviewArtifact={reviewArtifact}
+        isReviewLoading={isReviewLoading}
+      />
     );
   }
 
@@ -883,6 +929,48 @@ function ArtifactContent({
       selectedTaskId={taskArtifactSelectedId}
       onSelectedTaskIdChange={onTaskArtifactSelectedIdChange}
     />
+  );
+}
+
+function AgentReviewPanel({
+  reviewArtifact,
+  isReviewLoading,
+}: {
+  reviewArtifact: Artifact | null;
+  isReviewLoading: boolean;
+}) {
+  const [isReviewExpanded, setIsReviewExpanded] = useState(true);
+
+  useEffect(() => {
+    setIsReviewExpanded(true);
+  }, [reviewArtifact?.id, reviewArtifact?.metadata.version]);
+
+  if (isReviewLoading) {
+    return <EmptyArtifactState title="Loading review..." />;
+  }
+
+  if (!reviewArtifact) {
+    return (
+      <EmptyArtifactState
+        title="No review yet"
+        detail="Run Review PR mode to create a versioned markdown review for this pull request."
+      />
+    );
+  }
+
+  return (
+    <div className="min-h-full px-4 pb-4 pt-4">
+      <Suspense fallback={<EmptyArtifactState title="Loading review..." />}>
+        <LazyPlanDisplay
+          plan={reviewArtifact}
+          artifactLabel="Review"
+          linkedProposalsCount={0}
+          isExpanded={isReviewExpanded}
+          onExpandedChange={setIsReviewExpanded}
+          chromeless
+        />
+      </Suspense>
+    </div>
   );
 }
 

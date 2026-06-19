@@ -348,6 +348,10 @@ pub async fn start_http_server(
             get(get_agent_workspace_pr_review_context),
         )
         .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-artifact",
+            post(write_agent_workspace_pr_review_artifact),
+        )
+        .route(
             "/api/agent-workspaces/:conversation_id/pr-review-actions",
             post(propose_agent_workspace_pr_review_action),
         )

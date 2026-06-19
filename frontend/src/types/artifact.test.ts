@@ -52,7 +52,7 @@ import {
 // ============================================
 
 describe("ArtifactTypeSchema", () => {
-  it("validates all 18 artifact types", () => {
+  it("validates all 19 artifact types", () => {
     const types = [
       // Documents
       "prd",
@@ -66,6 +66,7 @@ describe("ArtifactTypeSchema", () => {
       // Process
       "task_spec",
       "review_feedback",
+      "pr_review",
       "approval",
       "findings",
       "recommendations",
@@ -91,8 +92,9 @@ describe("ArtifactTypeSchema", () => {
   });
 
   it("exports all artifact type values", () => {
-    expect(ARTIFACT_TYPE_VALUES).toHaveLength(18);
+    expect(ARTIFACT_TYPE_VALUES).toHaveLength(19);
     expect(ARTIFACT_TYPE_VALUES).toContain("prd");
+    expect(ARTIFACT_TYPE_VALUES).toContain("pr_review");
     expect(ARTIFACT_TYPE_VALUES).toContain("code_change");
     expect(ARTIFACT_TYPE_VALUES).toContain("activity_log");
   });
@@ -112,10 +114,11 @@ describe("Artifact type category helpers", () => {
     expect(CODE_ARTIFACT_TYPES).toEqual(["code_change", "diff", "test_result"]);
   });
 
-  it("PROCESS_ARTIFACT_TYPES has 5 types", () => {
+  it("PROCESS_ARTIFACT_TYPES has 6 types", () => {
     expect(PROCESS_ARTIFACT_TYPES).toEqual([
       "task_spec",
       "review_feedback",
+      "pr_review",
       "approval",
       "findings",
       "recommendations",
