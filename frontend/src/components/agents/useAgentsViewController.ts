@@ -51,6 +51,7 @@ import {
 import { agentConversationKeys } from "./useProjectAgentConversations";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
+import type { AgentIssueTab } from "./agentIssueTabs";
 import {
   getAgentChatFocusSwitchOptions,
   getFocusedArtifactIdeationSessionId,
@@ -82,6 +83,10 @@ export function useAgentsViewController({
   const [chatFocus, setChatFocus] = useState<AgentsChatFocus>({ type: "workspace" });
   const [publishFocusRequest, setPublishFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
+  const [issuePaneOpenByConversationId, setIssuePaneOpenByConversationId] =
+    useState<Record<string, boolean>>({});
+  const [issuePaneTabByConversationId, setIssuePaneTabByConversationId] =
+    useState<Record<string, AgentIssueTab>>({});
   const [lastVerificationFocus, setLastVerificationFocus] = useState<Extract<
     AgentsChatFocus,
     { type: "verification" }
@@ -378,6 +383,43 @@ export function useAgentsViewController({
     knownFocusIdeationSessionId ??
     lastVerificationFocus?.parentSessionId ??
     null;
+  const issuePaneOpen = selectedConversationId
+    ? issuePaneOpenByConversationId[selectedConversationId] ?? false
+    : false;
+  const issuePaneTab = selectedConversationId
+    ? issuePaneTabByConversationId[selectedConversationId] ?? "linear"
+    : "linear";
+  const handleToggleIssuePane = useCallback((conversationId: string) => {
+    setIssuePaneOpenByConversationId((current) => ({
+      ...current,
+      [conversationId]: !(current[conversationId] ?? false),
+    }));
+  }, []);
+  const handleCloseIssuePane = useCallback(() => {
+    if (!selectedConversationId) {
+      return;
+    }
+    setIssuePaneOpenByConversationId((current) => ({
+      ...current,
+      [selectedConversationId]: false,
+    }));
+  }, [selectedConversationId]);
+  const handleSelectIssueTab = useCallback(
+    (tab: AgentIssueTab) => {
+      if (!selectedConversationId) {
+        return;
+      }
+      setIssuePaneTabByConversationId((current) => ({
+        ...current,
+        [selectedConversationId]: tab,
+      }));
+      setIssuePaneOpenByConversationId((current) => ({
+        ...current,
+        [selectedConversationId]: true,
+      }));
+    },
+    [selectedConversationId],
+  );
   const verificationFocusTarget =
     lastVerificationFocus &&
     lastVerificationFocus.parentSessionId === focusSwitcherIdeationSessionId
@@ -743,6 +785,7 @@ export function useAgentsViewController({
       defaultRuntime,
       hasAutoOpenArtifacts,
       isLoadingProjects,
+      issuePaneOpen,
       modelRegistry,
       normalizedActiveRuntime,
       onActiveConversationModeChange: handleActiveConversationModeChange,
@@ -762,6 +805,7 @@ export function useAgentsViewController({
       onRenameConversation: handleRenameConversation,
       onRuntimePreferenceChange: handleStartRuntimePreferenceChange,
       onSelectArtifact: handleSelectArtifactWithChatFocus,
+      onToggleIssuePane: handleToggleIssuePane,
       onStartAgentConversation: handleStartAgentConversation,
       onToggleArtifacts: toggleArtifactPaneVisibility,
       onSelectChatFocus: handleSelectChatFocus,
@@ -794,6 +838,8 @@ export function useAgentsViewController({
       focusedIdeationSessionId: focusedArtifactIdeationSessionId,
       hasAutoOpenArtifacts,
       isArtifactResizing,
+      issuePaneOpen,
+      issuePaneTab,
       openArtifactTab,
       panelDockElement: terminalPanelDockElement,
       publishFocusRequest,
@@ -808,6 +854,8 @@ export function useAgentsViewController({
       onResizeReset: handleArtifactResizeReset,
       onResizeStart: handleArtifactResizeStart,
       onSelectArtifact: handleSelectArtifactWithChatFocus,
+      onCloseIssuePane: handleCloseIssuePane,
+      onSelectIssueTab: handleSelectIssueTab,
     },
   };
 }

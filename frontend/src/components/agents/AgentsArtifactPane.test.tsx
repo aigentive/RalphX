@@ -951,7 +951,7 @@ describe("AgentsArtifactPane", () => {
       { taskMode: "kanban" },
     );
 
-    expect(await screen.findByTestId("agents-artifact-tab-linear")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-linear")).not.toBeInTheDocument();
     expect(await screen.findByTestId("agents-artifact-tab-tasks")).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByTestId("agents-artifact-content-tasks")).toBeInTheDocument(),

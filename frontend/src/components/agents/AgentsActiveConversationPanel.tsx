@@ -380,6 +380,7 @@ interface AgentsActiveConversationPanelProps {
   chatFocus: AgentsChatFocus;
   chatFocusOptions: readonly AgentsChatFocusSwitchOption[];
   hasAutoOpenArtifacts: boolean;
+  issuePaneOpen: boolean;
   normalizedActiveRuntime: AgentRuntimeSelection;
   onActiveConversationModeChange: (mode: AgentConversationWorkspaceMode) => void;
   onActiveConversationModeMenuOpen: () => void;
@@ -418,6 +419,7 @@ interface AgentsActiveConversationPanelProps {
   onRenameConversation: (conversationId: string, title: string) => Promise<void>;
   onSelectArtifact: (tab: AgentArtifactTab) => void;
   onToggleArtifacts: (conversationId: string) => void;
+  onToggleIssuePane: (conversationId: string) => void;
   onSelectChatFocus: (type: AgentsChatFocusType) => void;
   publishShortcutLabel: string;
   publishingConversationId: string | null;
@@ -440,6 +442,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   chatFocus,
   chatFocusOptions,
   hasAutoOpenArtifacts,
+  issuePaneOpen,
   normalizedActiveRuntime,
   onActiveConversationModeChange,
   onActiveConversationModeMenuOpen,
@@ -457,6 +460,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onRenameConversation,
   onSelectArtifact,
   onToggleArtifacts,
+  onToggleIssuePane,
   onSelectChatFocus,
   publishShortcutLabel,
   publishingConversationId,
@@ -2003,6 +2007,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   label: normalizedActiveRuntime.modelId,
                 }}
                 hasAutoOpenArtifacts={hasAutoOpenArtifacts}
+                issuePaneOpen={issuePaneOpen}
                 terminalUnavailableReason={terminalUnavailableReason}
                 onRenameConversation={onRenameConversation}
                 onPublishWorkspace={onPublishWorkspace}
@@ -2011,6 +2016,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                 publishShortcutLabel={publishShortcutLabel}
                 isPublishingWorkspace={publishingConversationId === selectedConversationId}
                 onToggleArtifacts={onToggleArtifacts}
+                onToggleIssuePane={onToggleIssuePane}
                 onSelectArtifact={onSelectArtifact}
                 showTitle={false}
               />

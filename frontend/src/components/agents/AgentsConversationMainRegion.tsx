@@ -22,6 +22,7 @@ interface AgentsConversationMainRegionProps {
   defaultRuntime: StartConversationPanelProps["defaultRuntime"];
   hasAutoOpenArtifacts: ActiveConversationPanelProps["hasAutoOpenArtifacts"];
   isLoadingProjects: StartConversationPanelProps["isLoadingProjects"];
+  issuePaneOpen: ActiveConversationPanelProps["issuePaneOpen"];
   modelRegistry: StartConversationPanelProps["modelRegistry"];
   normalizedActiveRuntime: ActiveConversationPanelProps["normalizedActiveRuntime"];
   onActiveConversationModeChange: ActiveConversationPanelProps["onActiveConversationModeChange"];
@@ -41,6 +42,7 @@ interface AgentsConversationMainRegionProps {
   onRenameConversation: ActiveConversationPanelProps["onRenameConversation"];
   onRuntimePreferenceChange: StartConversationPanelProps["onRuntimePreferenceChange"];
   onSelectArtifact: ActiveConversationPanelProps["onSelectArtifact"];
+  onToggleIssuePane: ActiveConversationPanelProps["onToggleIssuePane"];
   onStartAgentConversation: StartConversationPanelProps["onStartAgentConversation"];
   onToggleArtifacts: ActiveConversationPanelProps["onToggleArtifacts"];
   onSelectChatFocus: ActiveConversationPanelProps["onSelectChatFocus"];
@@ -69,6 +71,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   defaultRuntime,
   hasAutoOpenArtifacts,
   isLoadingProjects,
+  issuePaneOpen,
   modelRegistry,
   normalizedActiveRuntime,
   onActiveConversationModeChange,
@@ -88,6 +91,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onRenameConversation,
   onRuntimePreferenceChange,
   onSelectArtifact,
+  onToggleIssuePane,
   onStartAgentConversation,
   onToggleArtifacts,
   onSelectChatFocus,
@@ -114,6 +118,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         chatFocus={chatFocus}
         chatFocusOptions={chatFocusOptions}
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
+        issuePaneOpen={issuePaneOpen}
         normalizedActiveRuntime={normalizedActiveRuntime}
         onActiveConversationModeChange={onActiveConversationModeChange}
         onActiveConversationModeMenuOpen={onActiveConversationModeMenuOpen}
@@ -130,6 +135,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onPublishWorkspace={onPublishWorkspace}
         onRenameConversation={onRenameConversation}
         onSelectArtifact={onSelectArtifact}
+        onToggleIssuePane={onToggleIssuePane}
         onToggleArtifacts={onToggleArtifacts}
         onSelectChatFocus={onSelectChatFocus}
         publishShortcutLabel={publishShortcutLabel}

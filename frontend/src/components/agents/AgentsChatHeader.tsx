@@ -15,6 +15,7 @@ import {
   PanelRightOpen,
   ShieldCheck,
   Terminal as TerminalIcon,
+  Ticket,
 } from "lucide-react";
 
 import type { AgentConversationWorkspace, WorkspaceOpenTarget } from "@/api/chat";
@@ -62,6 +63,7 @@ import {
   AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   agentWorkspaceKeys,
 } from "./agentWorkspaceQueries";
+import { useAgentIssueTabs } from "./agentIssueTabs";
 
 const HEADER_ARTIFACT_TABS: Array<{
   id: IdeationArtifactTab;
@@ -103,6 +105,7 @@ export interface AgentsChatHeaderProps {
   availableArtifactTabs?: readonly IdeationArtifactTab[] | undefined;
   artifactOpen: boolean;
   activeArtifactTab: AgentArtifactTab;
+  issuePaneOpen: boolean;
   terminalOpen?: boolean;
   terminalUnavailableReason?: string | null;
   onRenameConversation: (conversationId: string, title: string) => Promise<void>;
@@ -117,6 +120,7 @@ export interface AgentsChatHeaderProps {
   onToggleTerminal?: () => void;
   onPreloadTerminal?: () => void;
   onToggleArtifacts: () => void;
+  onToggleIssuePane: () => void;
   onSelectArtifact: (tab: AgentArtifactTab) => void;
   showTitle?: boolean;
 }
@@ -278,6 +282,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   availableArtifactTabs = [],
   artifactOpen,
   activeArtifactTab,
+  issuePaneOpen,
   terminalOpen = false,
   terminalUnavailableReason = null,
   onRenameConversation,
@@ -292,6 +297,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   onToggleTerminal,
   onPreloadTerminal,
   onToggleArtifacts,
+  onToggleIssuePane,
   onSelectArtifact,
   showTitle = true,
 }: AgentsChatHeaderProps) {
@@ -322,6 +328,10 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     artifactOpen ||
     conversationMode === "ideation" ||
     (conversationMode === "plan" && visibleHeaderArtifactTabs.length > 0);
+  const issueTabs = useAgentIssueTabs(
+    Boolean(conversation && conversation.contextType !== "ideation"),
+  );
+  const showIssueToggle = issueTabs.length > 0;
   // Hide the publish shortcut whenever any artifact pane is open — the user
   // can already reach Commit & Publish via the artifact tab bar, so the
   // header CTA is redundant (and visually crowds the Update-from-base label).
@@ -497,6 +507,33 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
             onOpenTarget={onOpenWorkspaceTarget}
           />
         )}
+
+        {showIssueToggle ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0"
+                onClick={onToggleIssuePane}
+                aria-label={issuePaneOpen ? "Close linked issues" : "Open linked issues"}
+                data-testid="agents-issue-pane-toggle"
+                style={{
+                  color: issuePaneOpen ? "var(--accent-primary)" : "var(--text-muted)",
+                  background: issuePaneOpen
+                    ? withAlpha("var(--accent-primary)", 12)
+                    : "transparent",
+                }}
+              >
+                <Ticket className="w-4 h-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              {issuePaneOpen ? "Close linked issues" : "Open linked issues"}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
 
         {showPublishShortcut && (
           <Tooltip>

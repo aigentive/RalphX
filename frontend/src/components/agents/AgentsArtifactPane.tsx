@@ -5,7 +5,6 @@ import {
   LayoutGrid,
   Network,
   ClipboardList,
-  Ticket,
   X,
 } from "lucide-react";
 import type { ElementType } from "react";
@@ -14,8 +13,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { artifactApi } from "@/api/artifact";
-import { atlassianApi } from "@/api/atlassian";
-import { linearApi } from "@/api/linear";
 import { ideationApi, toTaskProposal } from "@/api/ideation";
 import { planBranchApi } from "@/api/plan-branch";
 import { verificationApi } from "@/api/verification";
@@ -113,17 +110,6 @@ const LazyVerificationPanel = lazy(() =>
     default: module.VerificationPanel,
   })),
 );
-const LazyAgentsJiraIssuePanel = lazy(() =>
-  import("@/components/agents/AgentsJiraIssuePanel").then((module) => ({
-    default: module.AgentsJiraIssuePanel,
-  })),
-);
-const LazyAgentsLinearIssuePanel = lazy(() =>
-  import("@/components/agents/AgentsLinearIssuePanel").then((module) => ({
-    default: module.AgentsLinearIssuePanel,
-  })),
-);
-
 const ARTIFACT_TABS: Array<{
   id: IdeationArtifactTab;
   label: string;
@@ -141,26 +127,14 @@ const PUBLISH_TAB = {
   icon: GitPullRequestArrow,
 };
 
-const JIRA_TAB = {
-  id: "jira" as const,
-  label: "Jira",
-  icon: Ticket,
-};
-
-const LINEAR_TAB = {
-  id: "linear" as const,
-  label: "Linear",
-  icon: Ticket,
-};
-
-const EXTERNAL_ARTIFACT_TABS: readonly AgentArtifactTab[] = [
+const STALE_EXTERNAL_ARTIFACT_TABS: readonly AgentArtifactTab[] = [
   "jira",
   "linear",
   "publish",
 ];
 
-function isExternalArtifactTab(tab: AgentArtifactTab): boolean {
-  return EXTERNAL_ARTIFACT_TABS.includes(tab);
+function isStaleExternalArtifactTab(tab: AgentArtifactTab): boolean {
+  return STALE_EXTERNAL_ARTIFACT_TABS.includes(tab);
 }
 
 function preferredIdeationTab(
@@ -245,9 +219,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const queryClient = useQueryClient();
   const syncedIdeationLinksRef = useRef<Set<string>>(new Set());
   const manuallySelectedExternalTabRef = useRef<AgentArtifactTab | null>(null);
-  const isDirectIdeationConversation = conversation?.contextType === "ideation";
   const canHydrateIdeationArtifacts = Boolean(
-    isDirectIdeationConversation ||
+    conversation?.contextType === "ideation" ||
       focusedIdeationSessionId ||
       workspace?.mode === "ideation" ||
       workspace?.mode === "plan" ||
@@ -287,26 +260,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       shouldLoadIdeationData,
       workspace?.linkedIdeationSessionId,
     ],
-  );
-  const atlassianSettingsQuery = useQuery({
-    queryKey: ["atlassian", "settings"],
-    queryFn: () => atlassianApi.getSettings(),
-    staleTime: 30_000,
-  });
-  const showJiraTab = Boolean(
-    !isDirectIdeationConversation &&
-      atlassianSettingsQuery.data?.enabled &&
-      atlassianSettingsQuery.data?.jiraAvailable,
-  );
-  const linearSettingsQuery = useQuery({
-    queryKey: ["linear", "settings"],
-    queryFn: () => linearApi.getSettings(),
-    staleTime: 30_000,
-  });
-  const showLinearTab = Boolean(
-    !isDirectIdeationConversation &&
-      linearSettingsQuery.data?.enabled &&
-      linearSettingsQuery.data?.issueSearchAvailable,
   );
   const planBranchesQuery = useQuery({
     queryKey: ["plan-branches", conversation?.projectId ?? null],
@@ -430,16 +383,14 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const visibleTabs = useMemo(
     () => [
       ...ARTIFACT_TABS.filter((tab) => availableIdeationTabIds.includes(tab.id)),
-      ...(showJiraTab ? [JIRA_TAB] : []),
-      ...(showLinearTab ? [LINEAR_TAB] : []),
       ...(showPublishTab ? [PUBLISH_TAB] : []),
     ],
-    [availableIdeationTabIds, showJiraTab, showLinearTab, showPublishTab],
+    [availableIdeationTabIds, showPublishTab],
   );
   const preferredAvailableIdeationTab = preferredIdeationTab(availableIdeationTabIds);
   const shouldOverrideExternalActiveTab =
     preferredAvailableIdeationTab !== null &&
-    isExternalArtifactTab(activeTab) &&
+    isStaleExternalArtifactTab(activeTab) &&
     manuallySelectedExternalTabRef.current !== activeTab;
   const effectiveActiveTab =
     shouldOverrideExternalActiveTab
@@ -562,9 +513,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 key={id}
                 type="button"
                 onClick={() => {
-                  manuallySelectedExternalTabRef.current = isExternalArtifactTab(id)
-                    ? id
-                    : null;
+                  manuallySelectedExternalTabRef.current = id === "publish" ? id : null;
                   if (
                     id === "tasks" &&
                     effectiveActiveTab === "tasks" &&
@@ -698,7 +647,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         <ArtifactContent
           activeTab={effectiveActiveTab}
           workspace={workspace}
-          conversationId={conversationId}
           activeWorkspaceFreshness={activeWorkspaceFreshness}
           conversationTitle={conversation?.title ?? null}
           projectBaseBranch={projectBaseBranch}
@@ -733,7 +681,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 type ArtifactContentProps = {
   activeTab: AgentArtifactTab;
   workspace: AgentConversationWorkspace | null;
-  conversationId: string | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   conversationTitle: string | null;
   projectBaseBranch: string | null;
@@ -767,7 +714,6 @@ type ArtifactContentProps = {
 function ArtifactContent({
   activeTab,
   workspace,
-  conversationId,
   activeWorkspaceFreshness,
   conversationTitle,
   projectBaseBranch,
@@ -840,28 +786,6 @@ function ArtifactContent({
         isPublishingWorkspace={isPublishingWorkspace}
         publishFocusRequest={publishFocusRequest}
       />
-    );
-  }
-
-  if (activeTab === "jira") {
-    return (
-      <Suspense fallback={<EmptyArtifactState title="Loading Jira..." />}>
-        <LazyAgentsJiraIssuePanel
-          conversationId={conversationId}
-          projectId={projectId}
-        />
-      </Suspense>
-    );
-  }
-
-  if (activeTab === "linear") {
-    return (
-      <Suspense fallback={<EmptyArtifactState title="Loading Linear..." />}>
-        <LazyAgentsLinearIssuePanel
-          conversationId={conversationId}
-          projectId={projectId}
-        />
-      </Suspense>
     );
   }
 
