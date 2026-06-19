@@ -849,6 +849,63 @@ async fn review_pr_monitor_skips_awaiting_user_without_fetching_health() {
 }
 
 #[tokio::test]
+async fn review_pr_monitor_skips_when_current_head_sha_is_missing() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = review_pr_workspace(
+        "review-monitor-missing-head-conversation",
+        "project-review-monitor-missing-head",
+        worktree.path(),
+    );
+    workspace
+        .source_pull_request
+        .as_mut()
+        .expect("source PR should exist")
+        .head_ref_oid = None;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    workspace_repo
+        .upsert_pr_review_monitor(watching_review_monitor(&workspace, "old-head"))
+        .await
+        .expect("monitor should persist");
+
+    let github = Arc::new(MockGithubService::new());
+    let mut health = open_pr_health("new-head");
+    health.sync_state.head_ref_oid = None;
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::new());
+    let routed = super::route_agent_workspace_pr_review_monitor_if_needed(
+        github.clone() as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("missing-head route should skip cleanly");
+
+    assert!(!routed);
+    assert_eq!(github.state().fetch_pr_health_calls, 1);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let monitor = workspace_repo
+        .get_pr_review_monitor(&conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    assert_eq!(
+        monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::Watching
+    );
+    assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("old-head"));
+}
+
+#[tokio::test]
 async fn supervised_agent_workspace_pr_autofix_skips_when_auto_publish_is_paused() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let mut workspace = supervised_workspace(
@@ -1547,6 +1604,60 @@ async fn agent_workspace_review_feedback_uses_pr_fixer_when_autofix_enabled() {
             && event.status == "needs_agent"
             && event.classification.as_deref() == Some("github_pr_review:review-123")
     }));
+}
+
+#[tokio::test]
+async fn review_pr_monitor_skips_requested_changes_feedback_routing() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let workspace = review_pr_workspace(
+        "review-monitor-feedback-skip-conversation",
+        "project-review-monitor-feedback-skip",
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let feedback = PrReviewFeedback {
+        review_id: "review-456".to_string(),
+        author: "reviewer".to_string(),
+        submitted_at: Some("2026-05-17T12:00:00Z".to_string()),
+        body: Some("Please handle the edge case.".to_string()),
+        comments: vec![PrReviewCommentFeedback {
+            id: "comment-2".to_string(),
+            author: "reviewer".to_string(),
+            path: Some("src/lib.rs".to_string()),
+            line: Some(42),
+            body: "This branch is not covered.".to_string(),
+        }],
+    };
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_review_feedback(feedback);
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_review_feedback_if_present(
+        github.clone() as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("Review PR feedback routing should skip cleanly");
+
+    assert!(!routed);
+    assert_eq!(github.state().check_pr_review_feedback_calls, 0);
+    assert!(chat.get_sent_messages().await.is_empty());
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list")
+        .is_empty());
 }
 
 fn repo_error() -> AppError {
