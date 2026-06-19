@@ -41,6 +41,8 @@ const {
   getPlanComplexityAssessmentMock,
   confirmVerificationMock,
   getVerificationSpecialistsMock,
+  getAtlassianSettingsMock,
+  getLinearSettingsMock,
   getIdeationSessionMock,
   getIdeationChildrenMock,
   useConversationMock,
@@ -83,6 +85,8 @@ const {
   getPlanComplexityAssessmentMock: vi.fn(),
   confirmVerificationMock: vi.fn(),
   getVerificationSpecialistsMock: vi.fn(),
+  getAtlassianSettingsMock: vi.fn(),
+  getLinearSettingsMock: vi.fn(),
   getIdeationSessionMock: vi.fn(),
   getIdeationChildrenMock: vi.fn(),
   useConversationMock: vi.fn(),
@@ -234,6 +238,28 @@ vi.mock("@/api/verification", () => ({
     getSpecialists: (...args: unknown[]) => getVerificationSpecialistsMock(...args),
   },
 }));
+
+vi.mock("@/api/atlassian", async () => {
+  const actual = await vi.importActual<typeof import("@/api/atlassian")>("@/api/atlassian");
+  return {
+    ...actual,
+    atlassianApi: {
+      ...actual.atlassianApi,
+      getSettings: (...args: unknown[]) => getAtlassianSettingsMock(...args),
+    },
+  };
+});
+
+vi.mock("@/api/linear", async () => {
+  const actual = await vi.importActual<typeof import("@/api/linear")>("@/api/linear");
+  return {
+    ...actual,
+    linearApi: {
+      ...actual.linearApi,
+      getSettings: (...args: unknown[]) => getLinearSettingsMock(...args),
+    },
+  };
+});
 
 vi.mock("@/hooks/useChat", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/hooks/useChat")>();
@@ -585,6 +611,34 @@ describe("AgentsArtifactPane", () => {
     getPlanComplexityAssessmentMock.mockResolvedValue(null);
     confirmVerificationMock.mockResolvedValue({ status: "ok" });
     getVerificationSpecialistsMock.mockResolvedValue({ specialists: [] });
+    getAtlassianSettingsMock.mockResolvedValue({
+      enabled: false,
+      authMethod: "api_token",
+      siteUrl: null,
+      email: null,
+      hasApiToken: false,
+      oauthClientId: null,
+      oauthRedirectUri: null,
+      hasOauthClientSecret: false,
+      hasOauthToken: false,
+      oauthCloudId: null,
+      oauthScopes: null,
+      validationStatus: "not_configured",
+      jiraAvailable: false,
+      confluenceAvailable: false,
+      lastValidatedAt: null,
+      lastError: null,
+      updatedAt: "2026-04-23T09:00:00Z",
+    });
+    getLinearSettingsMock.mockResolvedValue({
+      enabled: false,
+      hasApiToken: false,
+      validationStatus: "not_configured",
+      issueSearchAvailable: false,
+      lastValidatedAt: null,
+      lastError: null,
+      updatedAt: "2026-04-23T09:00:00Z",
+    });
     getIdeationSessionMock.mockResolvedValue(null);
     getIdeationChildrenMock.mockResolvedValue([]);
     useConversationMock.mockReturnValue({
@@ -693,6 +747,103 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() => expect(getIdeationSessionMock).toHaveBeenCalledWith("session-1"));
     await waitFor(() => expect(getSessionPlanMock).toHaveBeenCalledWith("session-1"));
     expect(screen.queryByText("No plan yet")).not.toBeInTheDocument();
+  });
+
+  it("does not let Linear mask direct ideation artifacts", async () => {
+    getLinearSettingsMock.mockResolvedValue({
+      enabled: true,
+      hasApiToken: true,
+      validationStatus: "valid",
+      issueSearchAvailable: true,
+      lastValidatedAt: "2026-04-23T09:00:00Z",
+      lastError: null,
+      updatedAt: "2026-04-23T09:00:00Z",
+    });
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Planning session",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "needs_revision",
+        verificationInProgress: false,
+        gapScore: 7,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: null,
+      },
+      proposals: [
+        {
+          id: "proposal-1",
+          sessionId: "session-1",
+          title: "Backend task",
+          summary: "Wire the backend.",
+          rationale: null,
+          status: "pending",
+          executionOrder: 1,
+          dependsOn: [],
+          targetAreas: [],
+          estimatedComplexity: null,
+          sourcePlanVersion: null,
+          taskId: null,
+          createdAt: "2026-04-23T09:00:00Z",
+          updatedAt: "2026-04-23T09:00:00Z",
+        },
+      ],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "draft",
+      },
+    });
+
+    renderPane(
+      "linear",
+      null,
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        contextType: "ideation",
+        contextId: "session-1",
+        agentMode: "ideation",
+      },
+    );
+
+    expect(await screen.findByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-verification")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-proposal")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-linear")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-artifact-content-plan")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("agents-artifact-content-linear")).not.toBeInTheDocument();
   });
 
   it("anchors the active tab border to the bottom edge of the tab bar", async () => {

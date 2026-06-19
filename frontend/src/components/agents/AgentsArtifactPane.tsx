@@ -220,8 +220,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onClose,
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
+  const isDirectIdeationConversation = conversation?.contextType === "ideation";
   const canHydrateIdeationArtifacts = Boolean(
-    conversation?.contextType === "ideation" ||
+    isDirectIdeationConversation ||
       focusedIdeationSessionId ||
       workspace?.mode === "ideation" ||
       workspace?.mode === "plan" ||
@@ -268,7 +269,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     staleTime: 30_000,
   });
   const showJiraTab = Boolean(
-    atlassianSettingsQuery.data?.enabled &&
+    !isDirectIdeationConversation &&
+      atlassianSettingsQuery.data?.enabled &&
       atlassianSettingsQuery.data?.jiraAvailable,
   );
   const linearSettingsQuery = useQuery({
@@ -277,7 +279,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     staleTime: 30_000,
   });
   const showLinearTab = Boolean(
-    linearSettingsQuery.data?.enabled &&
+    !isDirectIdeationConversation &&
+      linearSettingsQuery.data?.enabled &&
       linearSettingsQuery.data?.issueSearchAvailable,
   );
   const [displayedVerificationStatus, setDisplayedVerificationStatus] = useState<{
@@ -366,13 +369,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const effectiveActiveTab =
     visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
-      : showPublishTab
-        ? "publish"
-        : showJiraTab
-          ? "jira"
-          : showLinearTab
-            ? "linear"
-            : "plan";
+      : visibleTabs[0]?.id ?? "plan";
   const shouldLoadVerificationData =
     shouldLoadIdeationData && effectiveActiveTab === "verification";
   const shouldLoadDependencyGraph =
