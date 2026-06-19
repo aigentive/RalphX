@@ -154,6 +154,11 @@ export function useAgentsAttachedIdeation({
     return getVisibleIdeationArtifactTabs({
       hasAttachedIdeationSession: Boolean(attachedIdeationSession),
       hasPlanArtifact,
+      hasVerificationArtifacts: Boolean(
+        attachedIdeationSession?.verificationInProgress ||
+          attachedIdeationSession?.verificationStatus !== "unverified" ||
+          attachedIdeationSession?.gapScore != null,
+      ),
       hasExecutionTasks,
     });
   }, [attachedIdeationSession, hasExecutionTasks]);

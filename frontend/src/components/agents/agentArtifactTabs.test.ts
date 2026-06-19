@@ -20,6 +20,17 @@ describe("getVisibleIdeationArtifactTabs", () => {
         hasPlanArtifact: true,
         hasExecutionTasks: false,
       }),
+    ).toEqual(["plan", "proposal"]);
+  });
+
+  it("adds verification only after verification artifacts exist", () => {
+    expect(
+      getVisibleIdeationArtifactTabs({
+        hasAttachedIdeationSession: true,
+        hasPlanArtifact: true,
+        hasVerificationArtifacts: true,
+        hasExecutionTasks: false,
+      }),
     ).toEqual(["plan", "verification", "proposal"]);
   });
 
@@ -30,6 +41,6 @@ describe("getVisibleIdeationArtifactTabs", () => {
         hasPlanArtifact: true,
         hasExecutionTasks: true,
       }),
-    ).toEqual(["plan", "verification", "proposal", "tasks"]);
+    ).toEqual(["plan", "proposal", "tasks"]);
   });
 });
