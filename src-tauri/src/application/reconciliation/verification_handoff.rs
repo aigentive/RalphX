@@ -14,8 +14,10 @@ use crate::domain::entities::{
     ChatContextType, ChatConversation, ChatConversationId, ChatMessage, IdeationSessionId,
     VerificationGap, VerificationRunSnapshot, VerificationStatus,
 };
-use crate::domain::repositories::{ChatConversationRepository, ChatMessageRepository};
-use crate::domain::services::MessageQueue;
+use crate::domain::repositories::{
+    ChatConversationRepository, ChatMessageRepository, QueuedMessageRepository,
+};
+use crate::domain::services::{MessageQueue, QueueKey};
 
 /// Dedup guard: skip synthesis when ralphx-plan-verifier already delivered a structured
 /// `<escalation type="verification">` message via the same parent session.
@@ -46,6 +48,7 @@ pub async fn maybe_inject_verification_result_message(
     conversation_repo: &Arc<dyn ChatConversationRepository>,
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
     message_queue: &Arc<MessageQueue>,
+    queued_message_repo: Option<&Arc<dyn QueuedMessageRepository>>,
 ) {
     // Only synthesize for NeedsRevision terminal status
     if result.terminal_status != VerificationStatus::NeedsRevision {
@@ -136,8 +139,8 @@ pub async fn maybe_inject_verification_result_message(
     };
 
     // Build and persist the user-facing system message
-    let mut message = ChatMessage::system_in_session(parent_id.clone(), content)
-        .with_metadata(metadata);
+    let mut message =
+        ChatMessage::system_in_session(parent_id.clone(), content).with_metadata(metadata);
     message.conversation_id = conversation_id;
 
     if let Err(e) = chat_message_repo.create(message).await {
@@ -152,7 +155,18 @@ pub async fn maybe_inject_verification_result_message(
     // Infra/runtime failures still persist a user-facing card but do not trigger
     // a bogus self-revision loop in the parent session.
     if actionable_for_parent {
-        message_queue.queue(ChatContextType::Ideation, parent_id.as_str(), payload);
+        let queued = message_queue.queue(ChatContextType::Ideation, parent_id.as_str(), payload);
+        if let Some(repo) = queued_message_repo {
+            let key = QueueKey::new(ChatContextType::Ideation, parent_id.as_str());
+            if let Err(error) = repo.enqueue_back(&key, &queued).await {
+                warn!(
+                    parent_id = %parent_id.as_str(),
+                    queued_message_id = %queued.id,
+                    error = %error,
+                    "Failed to persist verification-result queued handoff"
+                );
+            }
+        }
     }
 }
 
@@ -229,6 +243,7 @@ pub(crate) async fn inject_verification_handoff_if_missing(
         conversation_repo,
         chat_message_repo,
         message_queue,
+        None,
     )
     .await;
 }
@@ -431,9 +446,7 @@ pub(crate) fn derive_recommended_action(convergence_reason: Option<&str>) -> &'s
         | Some("critic_parse_failure")
         | Some("user_stopped")
         | Some("user_skipped")
-        | Some("user_reverted") => {
-            "rerun_verification"
-        }
+        | Some("user_reverted") => "rerun_verification",
         _ => "rerun_verification",
     }
 }

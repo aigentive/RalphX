@@ -1,5 +1,7 @@
 // Helper functions for task_commands module
 
+use std::collections::HashSet;
+
 use crate::application::chat_service::uses_execution_slot;
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -72,7 +74,20 @@ pub async fn count_slot_consuming_queued_messages_for_project(
     project_id: &ProjectId,
 ) -> Result<u32, String> {
     let mut count = 0u32;
-    for key in app_state.message_queue.list_keys() {
+    let mut keys = app_state.message_queue.list_keys();
+    let mut seen_keys: HashSet<_> = keys.iter().cloned().collect();
+    for key in app_state
+        .queued_message_repo
+        .list_keys()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        if seen_keys.insert(key.clone()) {
+            keys.push(key);
+        }
+    }
+
+    for key in keys {
         if !uses_execution_slot(key.context_type) {
             continue;
         }
@@ -109,7 +124,21 @@ pub async fn count_slot_consuming_queued_messages_for_project(
             continue;
         }
 
-        count += app_state.message_queue.get_queued_with_key(&key).len() as u32;
+        let mut ids: HashSet<String> = app_state
+            .message_queue
+            .get_queued_with_key(&key)
+            .into_iter()
+            .map(|message| message.id)
+            .collect();
+        for message in app_state
+            .queued_message_repo
+            .list(&key)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            ids.insert(message.id);
+        }
+        count += ids.len() as u32;
     }
 
     Ok(count)

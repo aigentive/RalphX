@@ -14,6 +14,7 @@ use crate::commands::unified_chat_commands::{
 };
 use crate::commands::ExecutionState;
 use crate::domain::entities::{ChatContextType, ChatConversationId};
+use crate::domain::services::QueueKey;
 use crate::AppState;
 
 pub(crate) const PLAN_MODE_PROPOSAL_KIND: &str = "plan_mode_proposal";
@@ -158,6 +159,12 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
             None,
             None,
         );
+        let queue_key = QueueKey::new(ChatContextType::Project, conversation_id.as_str());
+        state
+            .queued_message_repo
+            .enqueue_back(&queue_key, &queued)
+            .await
+            .map_err(|error| error.to_string())?;
 
         let ipr_key = InteractiveProcessKey::new(
             ChatContextType::Project.to_string(),

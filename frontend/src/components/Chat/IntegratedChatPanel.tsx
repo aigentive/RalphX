@@ -64,6 +64,7 @@ import {
 import { useChatActions } from "@/hooks/useChatActions";
 import { useChatEvents } from "@/hooks/useChatEvents";
 import { useChatRecovery } from "@/hooks/useChatRecovery";
+import { useQueuedMessagesHydration } from "@/hooks/useQueuedMessagesHydration";
 // useAgentEvents is already called inside useChat — no direct import needed
 import {
   useAskUserQuestion,
@@ -340,6 +341,12 @@ export function IntegratedChatPanel({
     isVisible,
   });
   const agentProcessContextId = agentProcessContextIdOverride ?? currentContextId;
+  useQueuedMessagesHydration({
+    contextType: currentContextType,
+    contextId: agentProcessContextId,
+    storeContextKey,
+    enabled: !isHistoryMode,
+  });
   const {
     ideationTeamModeAvailable,
     executionTeamModeAvailable,

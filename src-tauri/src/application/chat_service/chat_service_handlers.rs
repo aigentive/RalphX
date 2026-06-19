@@ -36,7 +36,7 @@ use crate::domain::repositories::{
     ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
     TaskStepRepository,
 };
-use crate::domain::services::{MessageQueue, RunningAgentRegistry};
+use crate::domain::services::{MessageQueue, QueueKey, QueuedMessage, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
@@ -65,10 +65,15 @@ fn queue_verification_auto_continue(
     message_queue: &Arc<MessageQueue>,
     child_id: &IdeationSessionId,
     continuation_message: String,
-) {
-    let mut queued = crate::domain::services::QueuedMessage::new(continuation_message);
+) -> QueuedMessage {
+    let mut queued = QueuedMessage::new(continuation_message);
     queued.metadata_override = Some(VERIFICATION_AUTO_CONTINUE_METADATA.to_string());
-    message_queue.queue_front_existing(ChatContextType::Ideation, child_id.as_str(), queued);
+    message_queue.queue_front_existing(
+        ChatContextType::Ideation,
+        child_id.as_str(),
+        queued.clone(),
+    );
+    queued
 }
 
 async fn handle_verification_child_completion<R: Runtime>(
@@ -93,12 +98,17 @@ async fn handle_verification_child_completion<R: Runtime>(
 
     match reconcile_result {
         Some(ReconcileVerificationChildCompletion::Terminal(result)) => {
+            let queued_message_repo = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<AppState>();
+                Arc::clone(&app_state.queued_message_repo)
+            });
             verification_handoff::maybe_inject_verification_result_message(
                 parent_id,
                 &result,
                 conversation_repo,
                 chat_message_repo,
                 message_queue,
+                queued_message_repo.as_ref(),
             )
             .await;
 
@@ -111,7 +121,27 @@ async fn handle_verification_child_completion<R: Runtime>(
             }
         }
         Some(ReconcileVerificationChildCompletion::AutoContinue(request)) => {
-            queue_verification_auto_continue(message_queue, child_id, request.continuation_message);
+            let queued = queue_verification_auto_continue(
+                message_queue,
+                child_id,
+                request.continuation_message,
+            );
+            if let Some(handle) = app_handle.as_ref() {
+                let app_state = handle.state::<AppState>();
+                let key = QueueKey::new(ChatContextType::Ideation, child_id.as_str());
+                if let Err(error) = app_state
+                    .queued_message_repo
+                    .enqueue_front(&key, &queued)
+                    .await
+                {
+                    tracing::warn!(
+                        context_id = child_id.as_str(),
+                        queued_message_id = queued.id.as_str(),
+                        error = %error,
+                        "Failed to persist verification auto-continue queued message"
+                    );
+                }
+            }
             tracing::info!(
                 context_id = child_id.as_str(),
                 current_round = request.snapshot.current_round,
@@ -2023,7 +2053,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
 
         if should_requeue_after_provider_pause(context_type) {
             if let Some(msg) = user_message_content {
-                let _ = message_queue.queue_with_overrides(
+                let queued = message_queue.queue_with_overrides(
                     context_type,
                     context_id.to_string(),
                     msg.to_string(),
@@ -2031,6 +2061,23 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     None,
                     Some(effective_harness),
                 );
+                if let Some(handle) = app_handle.as_ref() {
+                    let app_state = handle.state::<AppState>();
+                    let key = QueueKey::new(context_type, context_id);
+                    if let Err(error) = app_state
+                        .queued_message_repo
+                        .enqueue_back(&key, &queued)
+                        .await
+                    {
+                        tracing::warn!(
+                            %context_type,
+                            context_id,
+                            queued_message_id = queued.id.as_str(),
+                            error = %error,
+                            "Failed to persist provider-pause queued message"
+                        );
+                    }
+                }
             }
         }
     }

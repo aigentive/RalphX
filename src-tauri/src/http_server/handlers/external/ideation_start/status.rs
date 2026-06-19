@@ -1,4 +1,6 @@
 use super::*;
+use crate::domain::services::QueueKey;
+use std::collections::HashSet;
 
 #[derive(Debug, Serialize)]
 pub struct IdeationStatusResponse {
@@ -119,10 +121,20 @@ pub async fn get_ideation_status_http(
         .await
         .unwrap_or(0);
 
-    let queued_message_count = state
+    let queue_key = QueueKey::new(ChatContextType::Ideation, session_id.as_str());
+    let mut queued_ids: HashSet<String> = state
         .app_state
         .message_queue
-        .count_for_context("ideation", session_id.as_str()) as u32;
+        .get_queued_with_key(&queue_key)
+        .into_iter()
+        .map(|message| message.id)
+        .collect();
+    if let Ok(messages) = state.app_state.queued_message_repo.list(&queue_key).await {
+        for message in messages {
+            queued_ids.insert(message.id);
+        }
+    }
+    let queued_message_count = queued_ids.len() as u32;
 
     let (effective_verification_status, effective_verification_in_progress) =
         crate::domain::services::load_effective_verification_status(

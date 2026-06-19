@@ -124,6 +124,8 @@ interface ChatActions {
     clientId?: string,
     attachmentIds?: string[]
   ) => void;
+  /** Replace a context queue with backend-owned queued messages */
+  setQueuedMessages: (contextKey: string, messages: QueuedMessage[]) => void;
   /** Edit a queued message */
   editQueuedMessage: (contextKey: string, id: string, content: string) => void;
   /** Delete a queued message */
@@ -152,6 +154,28 @@ interface ChatActions {
   clearToolCallCompletionTimestamps: (storeKey: string) => void;
   /** Set the effective model for a context key (from agent:run_started event or session HTTP response) */
   setEffectiveModel: (storeKey: string, model: ModelDisplay) => void;
+}
+
+function queuedMessageListsEqual(
+  left: readonly QueuedMessage[],
+  right: readonly QueuedMessage[],
+): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((message, index) => {
+    const other = right[index];
+    if (!other) return false;
+    return (
+      message.id === other.id &&
+      message.content === other.content &&
+      message.createdAt === other.createdAt &&
+      message.isEditing === other.isEditing &&
+      message.attachmentIds.length === other.attachmentIds.length &&
+      message.attachmentIds.every(
+        (attachmentId, attachmentIndex) =>
+          attachmentId === other.attachmentIds[attachmentIndex],
+      )
+    );
+  });
 }
 
 // ============================================================================
@@ -345,6 +369,33 @@ export const useChatStore = create<ChatState & ChatActions>()(
           attachmentIds: [...(attachmentIds ?? [])],
         };
         state.queuedMessages[contextKey].push(queuedMessage);
+      }),
+
+    setQueuedMessages: (contextKey, messages) =>
+      set((state) => {
+        const currentMessages = state.queuedMessages[contextKey] ?? [];
+        const currentById = new Map(
+          currentMessages.map((message) => [message.id, message])
+        );
+        const hydratedMessages = messages.map((message) => {
+          const current = currentById.get(message.id);
+          return {
+            ...message,
+            isEditing: current?.isEditing ?? message.isEditing,
+            attachmentIds: [...(message.attachmentIds ?? [])],
+          };
+        });
+
+        if (queuedMessageListsEqual(currentMessages, hydratedMessages)) {
+          return;
+        }
+
+        if (hydratedMessages.length === 0) {
+          delete state.queuedMessages[contextKey];
+          return;
+        }
+
+        state.queuedMessages[contextKey] = hydratedMessages;
       }),
 
     editQueuedMessage: (contextKey, id, content) =>
