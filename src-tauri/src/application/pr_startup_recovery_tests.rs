@@ -435,6 +435,37 @@ async fn startup_agent_workspace_pr_recovery_skips_orphaned_review_pr_monitor() 
 }
 
 #[tokio::test]
+async fn startup_agent_workspace_pr_recovery_tolerates_workspace_and_monitor_listing_errors() {
+    init_tracing();
+
+    let project = cleanup_project();
+    let project_repo: Arc<dyn ProjectRepository> =
+        Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(WorkspaceLoadErrorRepository);
+    let plan_branch_repo: Arc<dyn PlanBranchRepository> =
+        Arc::new(MemoryPlanBranchRepository::new());
+    let github = Arc::new(MockGithubService::new());
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::clone(&plan_branch_repo),
+    ));
+
+    recover_agent_workspace_pr_pollers(
+        workspace_repo,
+        project_repo,
+        plan_branch_repo,
+        Arc::clone(&registry),
+        Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MockChatService::new()),
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
+}
+
+#[tokio::test]
 async fn startup_agent_workspace_pr_recovery_restarts_supervised_ideation_poller() {
     init_tracing();
 
@@ -801,6 +832,12 @@ impl AgentConversationWorkspaceRepository for WorkspaceLoadErrorRepository {
     async fn list_active_needs_agent_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(repo_error())
+    }
+
+    async fn list_active_pr_review_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspacePrReviewMonitor>> {
         Err(repo_error())
     }
 

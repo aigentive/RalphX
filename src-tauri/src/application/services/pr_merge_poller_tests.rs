@@ -623,6 +623,60 @@ async fn review_pr_monitor_skips_when_head_already_has_pending_action() {
 }
 
 #[tokio::test]
+async fn review_pr_monitor_skips_when_monitor_missing_or_disabled() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let workspace = review_pr_workspace(
+        "review-monitor-missing-conversation",
+        "project-review-monitor-missing",
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+
+    let github = Arc::new(MockGithubService::new());
+    let chat = Arc::new(MockChatService::new());
+    let routed = super::route_agent_workspace_pr_review_monitor_if_needed(
+        github.clone() as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("missing monitor should skip cleanly");
+    assert!(!routed);
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
+
+    let mut disabled = watching_review_monitor(&workspace, "old-head");
+    disabled.monitor_enabled = false;
+    workspace_repo
+        .upsert_pr_review_monitor(disabled)
+        .await
+        .expect("disabled monitor should persist");
+    let routed = super::route_agent_workspace_pr_review_monitor_if_needed(
+        github.clone() as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("disabled monitor should skip cleanly");
+    assert!(!routed);
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
+    assert!(chat.get_sent_messages().await.is_empty());
+}
+
+#[tokio::test]
 async fn review_pr_monitor_open_and_terminal_state_stays_monitor_scoped() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let workspace = review_pr_workspace(
@@ -736,6 +790,36 @@ async fn review_pr_polling_should_continue_requires_enabled_nonterminal_monitor(
         .upsert_pr_review_monitor(terminal)
         .await
         .expect("terminal monitor should persist");
+    assert!(
+        !super::agent_workspace_pr_polling_should_continue(
+            Arc::clone(&workspace_repo),
+            &conversation_id,
+            101,
+        )
+        .await
+    );
+
+    let mut disabled = watching_review_monitor(&workspace, "old-head");
+    disabled.monitor_enabled = false;
+    workspace_repo
+        .upsert_pr_review_monitor(disabled)
+        .await
+        .expect("disabled monitor should persist");
+    assert!(
+        !super::agent_workspace_pr_polling_should_continue(
+            Arc::clone(&workspace_repo),
+            &conversation_id,
+            101,
+        )
+        .await
+    );
+
+    let mut wrong_pr = watching_review_monitor(&workspace, "old-head");
+    wrong_pr.pr_number = 202;
+    workspace_repo
+        .upsert_pr_review_monitor(wrong_pr)
+        .await
+        .expect("wrong PR monitor should persist");
     assert!(
         !super::agent_workspace_pr_polling_should_continue(
             Arc::clone(&workspace_repo),
@@ -903,6 +987,27 @@ async fn review_pr_monitor_skips_when_current_head_sha_is_missing() {
         AgentWorkspacePrReviewMonitorStatus::Watching
     );
     assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("old-head"));
+}
+
+#[test]
+fn review_pr_monitor_message_uses_publication_url_and_unknown_head_fallbacks() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = review_pr_workspace(
+        "review-monitor-message-conversation",
+        "project-review-monitor-message",
+        worktree.path(),
+    );
+    workspace.source_pull_request = None;
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/202".to_string());
+    let mut health = open_pr_health("ignored-head");
+    health.sync_state.head_ref_oid = None;
+
+    let message = super::build_agent_workspace_pr_monitor_review_message(202, &workspace, &health);
+
+    assert!(message.contains("Review PR monitor detected new changes on GitHub PR #202"));
+    assert!(message.contains("Pull request: https://github.com/owner/repo/pull/202"));
+    assert!(message.contains("Current head SHA: unknown"));
+    assert!(message.contains("Write the versioned Review artifact"));
 }
 
 #[tokio::test]
