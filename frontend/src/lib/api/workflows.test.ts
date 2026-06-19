@@ -49,6 +49,22 @@ const createMockWorkflow = (overrides = {}) => ({
   ...overrides,
 });
 
+const createMockLinearSync = () => ({
+  provider: "linear",
+  mapping: {
+    "In Progress": {
+      external_status: "In Progress",
+      internal_status: "executing",
+      column_id: "in_progress",
+    },
+  },
+  sync: {
+    direction: "bidirectional",
+    webhook: true,
+  },
+  conflict_resolution: "external_wins",
+});
+
 describe("WorkflowColumnResponseSchema", () => {
   it("should parse valid column response", () => {
     const column = createMockWorkflowColumn();
@@ -89,10 +105,13 @@ describe("WorkflowResponseSchema", () => {
     const workflow = createMockWorkflow({
       worker_profile: "fast-worker",
       reviewer_profile: "strict-reviewer",
+      external_sync: createMockLinearSync(),
     });
     const result = WorkflowResponseSchema.parse(workflow);
     expect(result.worker_profile).toBe("fast-worker");
     expect(result.reviewer_profile).toBe("strict-reviewer");
+    expect(result.external_sync?.provider).toBe("linear");
+    expect(result.external_sync?.mapping["In Progress"]?.column_id).toBe("in_progress");
   });
 
   it("should parse workflow without description", () => {
@@ -139,10 +158,12 @@ describe("CreateWorkflowInputSchema", () => {
       is_default: true,
       worker_profile: "worker-1",
       reviewer_profile: "reviewer-1",
+      external_sync: createMockLinearSync(),
     };
     const result = CreateWorkflowInputSchema.parse(input);
     expect(result.is_default).toBe(true);
     expect(result.worker_profile).toBe("worker-1");
+    expect(result.external_sync?.provider).toBe("linear");
   });
 
   it("should reject input without name", () => {
@@ -203,10 +224,12 @@ describe("UpdateWorkflowInputSchema", () => {
       is_default: true,
       worker_profile: "new-worker",
       reviewer_profile: "new-reviewer",
+      external_sync: createMockLinearSync(),
     };
     const result = UpdateWorkflowInputSchema.parse(input);
     expect(result.name).toBe("Updated");
     expect(result.is_default).toBe(true);
+    expect(result.external_sync?.mapping["In Progress"]?.internal_status).toBe("executing");
   });
 
   it("should allow empty object (no changes)", () => {
@@ -466,6 +489,11 @@ describe("getBuiltinWorkflows", () => {
     mockInvoke.mockResolvedValue([
       createMockWorkflow({ id: "ralphx-default", name: "RalphX Default" }),
       createMockWorkflow({ id: "jira-compat", name: "Jira Compatible" }),
+      createMockWorkflow({
+        id: "linear-compat",
+        name: "Linear Compatible",
+        external_sync: createMockLinearSync(),
+      }),
     ]);
 
     await getBuiltinWorkflows();
@@ -477,14 +505,21 @@ describe("getBuiltinWorkflows", () => {
     const builtins = [
       createMockWorkflow({ id: "ralphx-default", name: "RalphX Default" }),
       createMockWorkflow({ id: "jira-compat", name: "Jira Compatible" }),
+      createMockWorkflow({
+        id: "linear-compat",
+        name: "Linear Compatible",
+        external_sync: createMockLinearSync(),
+      }),
     ];
     mockInvoke.mockResolvedValue(builtins);
 
     const result = await getBuiltinWorkflows();
 
-    expect(result).toHaveLength(2);
+    expect(result).toHaveLength(3);
     expect(result.map((w) => w.name)).toContain("RalphX Default");
     expect(result.map((w) => w.name)).toContain("Jira Compatible");
+    expect(result.map((w) => w.name)).toContain("Linear Compatible");
+    expect(result.find((w) => w.id === "linear-compat")?.externalSync?.provider).toBe("linear");
   });
 
   it("should throw on invalid response", async () => {

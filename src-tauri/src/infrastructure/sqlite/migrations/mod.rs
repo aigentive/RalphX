@@ -311,9 +311,18 @@ mod v20260611191722_agent_workspace_pr_automation_defaults_tests;
 mod v20260612124826_provider_cli_management_policy;
 #[cfg(test)]
 mod v20260612124826_provider_cli_management_policy_tests;
+mod v20260616182441_external_issue_links;
+#[cfg(test)]
+mod v20260616182441_external_issue_links_tests;
+mod v20260616182951_linear_webhook_reconciliation;
+#[cfg(test)]
+mod v20260616182951_linear_webhook_reconciliation_tests;
 mod v20260617121800_agent_conversation_jira_issue_links;
 #[cfg(test)]
 mod v20260617121800_agent_conversation_jira_issue_links_tests;
+mod v20260617122100_linear_integration_settings;
+#[cfg(test)]
+mod v20260617122100_linear_integration_settings_tests;
 mod v20260617122430_agent_workspace_initial_auto_publish;
 #[cfg(test)]
 mod v20260617122430_agent_workspace_initial_auto_publish_tests;
@@ -323,6 +332,9 @@ mod v20260618123000_agent_workspace_pr_review_monitoring_tests;
 mod v20260618134600_review_pr_mode_checks;
 #[cfg(test)]
 mod v20260618134600_review_pr_mode_checks_tests;
+mod v20260618181405_agent_conversation_linear_issue_links;
+#[cfg(test)]
+mod v20260618181405_agent_conversation_linear_issue_links_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -413,7 +425,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260618134600;
+pub const SCHEMA_VERSION: i64 = 20260618181405;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1134,9 +1146,24 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260612124826_provider_cli_management_policy::migrate,
     },
     Migration {
+        version: 20260616182441,
+        name: "external_issue_links",
+        migrate: v20260616182441_external_issue_links::migrate,
+    },
+    Migration {
+        version: 20260616182951,
+        name: "linear_webhook_reconciliation",
+        migrate: v20260616182951_linear_webhook_reconciliation::migrate,
+    },
+    Migration {
         version: 20260617121800,
         name: "agent_conversation_jira_issue_links",
         migrate: v20260617121800_agent_conversation_jira_issue_links::migrate,
+    },
+    Migration {
+        version: 20260617122100,
+        name: "linear_integration_settings",
+        migrate: v20260617122100_linear_integration_settings::migrate,
     },
     Migration {
         version: 20260617122430,
@@ -1152,6 +1179,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260618134600,
         name: "review_pr_mode_checks",
         migrate: v20260618134600_review_pr_mode_checks::migrate,
+    },
+    Migration {
+        version: 20260618181405,
+        name: "agent_conversation_linear_issue_links",
+        migrate: v20260618181405_agent_conversation_linear_issue_links::migrate,
     },
 ];
 

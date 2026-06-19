@@ -367,7 +367,7 @@ function deferred<T>() {
 
 function renderPane(
   activeTab: AgentArtifactTab = "tasks",
-  paneWorkspace = workspace(),
+  paneWorkspace: AgentConversationWorkspace | null = workspace(),
   onPublishWorkspace = vi.fn(),
   isPublishingWorkspace = false,
   paneConversation = null,
@@ -627,6 +627,72 @@ describe("AgentsArtifactPane", () => {
     toastLoadingMock.mockClear();
     toastSuccessMock.mockClear();
     useUiStore.setState({ activeModal: null, modalContext: undefined });
+  });
+
+  it("hydrates plan artifacts for an ideation conversation without a workspace link", async () => {
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Planning session",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: null,
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: null,
+      },
+      proposals: [],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "draft",
+      },
+    });
+
+    renderPane(
+      "plan",
+      null,
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        contextType: "ideation",
+        contextId: "session-1",
+        agentMode: "ideation",
+      },
+    );
+
+    await waitFor(() => expect(getIdeationSessionMock).toHaveBeenCalledWith("session-1"));
+    await waitFor(() => expect(getSessionPlanMock).toHaveBeenCalledWith("session-1"));
+    expect(screen.queryByText("No plan yet")).not.toBeInTheDocument();
   });
 
   it("anchors the active tab border to the bottom edge of the tab bar", async () => {
@@ -1971,7 +2037,7 @@ describe("AgentsArtifactPane", () => {
     });
   });
 
-  it("focuses the newest verification child when the verification tab opens", async () => {
+  it("keeps the parent plan conversation focused when the verification tab opens", async () => {
     const onFocusVerificationSession = vi.fn();
     getIdeationSessionMock.mockResolvedValue({
       session: {
@@ -2067,15 +2133,12 @@ describe("AgentsArtifactPane", () => {
       { onFocusVerificationSession },
     );
 
-    await waitFor(() =>
-      expect(getIdeationChildrenMock).toHaveBeenCalledWith("session-1", "verification")
+    await waitFor(() => expect(useVerificationStatusMock).toHaveBeenCalled());
+    expect(getIdeationChildrenMock).not.toHaveBeenCalledWith(
+      "session-1",
+      "verification",
     );
-    await waitFor(() =>
-      expect(onFocusVerificationSession).toHaveBeenCalledWith(
-        "session-1",
-        "verification-new",
-      )
-    );
+    expect(onFocusVerificationSession).not.toHaveBeenCalled();
   });
 
   it("hides plan-derived tabs until the attached ideation run has a plan", async () => {

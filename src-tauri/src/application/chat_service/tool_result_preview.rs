@@ -488,10 +488,10 @@ fn build_tool_argument_diff_preview(
     let mut old_line_num = old_context_start + 1;
     let mut new_line_num = new_context_start + 1;
 
-    for index in old_context_start..prefix {
+    for content in old_lines.iter().take(prefix).skip(old_context_start) {
         lines.push(serde_json::json!({
             "kind": "context",
-            "content": old_lines[index],
+            "content": *content,
             "old_line_num": old_line_num,
             "new_line_num": new_line_num,
         }));
@@ -499,20 +499,20 @@ fn build_tool_argument_diff_preview(
         new_line_num += 1;
     }
 
-    for index in prefix..old_changed_end {
+    for content in old_lines.iter().take(old_changed_end).skip(prefix) {
         lines.push(serde_json::json!({
             "kind": "deletion",
-            "content": old_lines[index],
+            "content": *content,
             "old_line_num": old_line_num,
             "new_line_num": null,
         }));
         old_line_num += 1;
     }
 
-    for index in prefix..new_changed_end {
+    for content in new_lines.iter().take(new_changed_end).skip(prefix) {
         lines.push(serde_json::json!({
             "kind": "addition",
-            "content": new_lines[index],
+            "content": *content,
             "old_line_num": null,
             "new_line_num": new_line_num,
         }));

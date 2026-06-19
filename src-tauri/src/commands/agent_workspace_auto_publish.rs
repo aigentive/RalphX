@@ -581,13 +581,15 @@ fn begin_auto_publish(conversation_id: &ChatConversationId) -> Option<AutoPublis
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
     use crate::domain::entities::{
         ArtifactId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId,
         ProjectId,
     };
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::process::Command;
     use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 

@@ -19,6 +19,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   "ideation-workflow": () => import("./IdeationSettingsPanel"),
   "ideation-harnesses": () => import("./IdeationHarnessSection"),
   integrations: () => import("./AtlassianIntegrationSettingsPanel"),
+  linear: () => import("./LinearIntegrationSettingsPanel"),
   "api-keys": () => import("./ApiKeysSection"),
   "external-mcp": () => import("./ExternalMcpSettingsPanel"),
   accessibility: () => import("./AccessibilitySection"),

@@ -922,14 +922,15 @@ async fn agent_workspace_auto_merge_sync_enables_draft_pr_and_records_state() {
     .expect("auto-merge sync should succeed");
 
     assert!(current);
-    let github_state = github.state();
-    assert_eq!(github_state.mark_pr_ready_calls, 1);
-    assert_eq!(github_state.enable_pr_auto_merge_calls, 1);
-    assert_eq!(
-        github_state.last_enable_pr_auto_merge_args.as_ref(),
-        Some(&(101, "squash".to_string()))
-    );
-    drop(github_state);
+    {
+        let github_state = github.state();
+        assert_eq!(github_state.mark_pr_ready_calls, 1);
+        assert_eq!(github_state.enable_pr_auto_merge_calls, 1);
+        assert_eq!(
+            github_state.last_enable_pr_auto_merge_args.as_ref(),
+            Some(&(101, "squash".to_string()))
+        );
+    }
     let updated = workspace_repo
         .get_by_conversation_id(&conversation_id)
         .await

@@ -166,8 +166,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
 
         self.db
             .run(move |conn| {
-                let placeholders = std::iter::repeat("?")
-                    .take(ids.len())
+                let placeholders = std::iter::repeat_n("?", ids.len())
                     .collect::<Vec<_>>()
                     .join(", ");
                 let sql = format!(

@@ -91,6 +91,33 @@ export const ExternalSyncConfigSchema = z.object({
 });
 export type ExternalSyncConfig = z.infer<typeof ExternalSyncConfigSchema>;
 
+/**
+ * Raw external status mapping response schema (snake_case from Rust)
+ */
+export const ExternalStatusMappingResponseSchema = z.object({
+  external_status: z.string(),
+  internal_status: InternalStatusSchema,
+  column_id: z.string(),
+});
+
+/**
+ * Raw sync settings response schema (snake_case from Rust)
+ */
+export const SyncSettingsResponseSchema = z.object({
+  direction: SyncDirectionSchema,
+  webhook: z.boolean().optional(),
+});
+
+/**
+ * Raw external sync configuration response schema (snake_case from Rust)
+ */
+export const ExternalSyncConfigResponseSchema = z.object({
+  provider: SyncProviderSchema,
+  mapping: z.record(z.string(), ExternalStatusMappingResponseSchema).default({}),
+  sync: SyncSettingsResponseSchema,
+  conflict_resolution: ConflictResolutionSchema,
+});
+
 // ============================================
 // State Grouping Types (Multi-State Columns)
 // ============================================
@@ -231,6 +258,7 @@ export const WorkflowResponseSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
   columns: z.array(WorkflowColumnResponseSchema),
+  external_sync: ExternalSyncConfigResponseSchema.optional(),
   is_default: z.boolean(),
   worker_profile: z.string().optional(),
   reviewer_profile: z.string().optional(),
@@ -281,6 +309,41 @@ export function transformWorkflowColumn(
 }
 
 /**
+ * Transform external status mapping from snake_case response to camelCase frontend type
+ */
+export function transformExternalStatusMapping(
+  raw: z.infer<typeof ExternalStatusMappingResponseSchema>
+): ExternalStatusMapping {
+  return {
+    externalStatus: raw.external_status,
+    internalStatus: raw.internal_status,
+    columnId: raw.column_id,
+  };
+}
+
+/**
+ * Transform external sync config from snake_case response to camelCase frontend type
+ */
+export function transformExternalSyncConfig(
+  raw: z.infer<typeof ExternalSyncConfigResponseSchema>
+): ExternalSyncConfig {
+  return {
+    provider: raw.provider,
+    mapping: Object.fromEntries(
+      Object.entries(raw.mapping).map(([key, value]) => [
+        key,
+        transformExternalStatusMapping(value),
+      ])
+    ),
+    sync: {
+      direction: raw.sync.direction,
+      webhook: raw.sync.webhook,
+    },
+    conflictResolution: raw.conflict_resolution,
+  };
+}
+
+/**
  * Transform workflow from snake_case response to camelCase frontend type
  */
 export function transformWorkflow(
@@ -291,6 +354,9 @@ export function transformWorkflow(
     name: raw.name,
     description: raw.description,
     columns: raw.columns.map(transformWorkflowColumn),
+    externalSync: raw.external_sync
+      ? transformExternalSyncConfig(raw.external_sync)
+      : undefined,
     isDefault: raw.is_default,
     defaults: (raw.worker_profile !== undefined || raw.reviewer_profile !== undefined)
       ? {
@@ -509,11 +575,90 @@ export const jiraCompatibleWorkflow: WorkflowSchema = {
 };
 
 /**
+ * Linear-compatible workflow with state mapping for webhook reconciliation
+ */
+export const linearCompatibleWorkflow: WorkflowSchema = {
+  id: "linear-compat",
+  name: "Linear Compatible",
+  description: "Linear-style workflow with external state mapping",
+  columns: [
+    { id: "backlog", name: "Backlog", mapsTo: "backlog" },
+    { id: "todo", name: "Todo", mapsTo: "ready" },
+    { id: "in_progress", name: "In Progress", mapsTo: "executing" },
+    { id: "in_review", name: "In Review", mapsTo: "pending_review" },
+    { id: "done", name: "Done", mapsTo: "approved" },
+    { id: "canceled", name: "Canceled", mapsTo: "cancelled" },
+  ],
+  externalSync: {
+    provider: "linear",
+    mapping: {
+      Backlog: {
+        externalStatus: "Backlog",
+        internalStatus: "backlog",
+        columnId: "backlog",
+      },
+      Triage: {
+        externalStatus: "Triage",
+        internalStatus: "backlog",
+        columnId: "backlog",
+      },
+      Todo: {
+        externalStatus: "Todo",
+        internalStatus: "ready",
+        columnId: "todo",
+      },
+      "To Do": {
+        externalStatus: "To Do",
+        internalStatus: "ready",
+        columnId: "todo",
+      },
+      "In Progress": {
+        externalStatus: "In Progress",
+        internalStatus: "executing",
+        columnId: "in_progress",
+      },
+      "In Review": {
+        externalStatus: "In Review",
+        internalStatus: "pending_review",
+        columnId: "in_review",
+      },
+      Review: {
+        externalStatus: "Review",
+        internalStatus: "pending_review",
+        columnId: "in_review",
+      },
+      Done: {
+        externalStatus: "Done",
+        internalStatus: "approved",
+        columnId: "done",
+      },
+      Canceled: {
+        externalStatus: "Canceled",
+        internalStatus: "cancelled",
+        columnId: "canceled",
+      },
+      Cancelled: {
+        externalStatus: "Cancelled",
+        internalStatus: "cancelled",
+        columnId: "canceled",
+      },
+    },
+    sync: {
+      direction: "bidirectional",
+      webhook: true,
+    },
+    conflictResolution: "external_wins",
+  },
+  isDefault: false,
+};
+
+/**
  * Built-in workflows array for easy iteration
  */
 export const BUILTIN_WORKFLOWS: readonly WorkflowSchema[] = [
   defaultWorkflow,
   jiraCompatibleWorkflow,
+  linearCompatibleWorkflow,
 ] as const;
 
 /**
