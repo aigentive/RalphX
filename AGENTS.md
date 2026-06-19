@@ -44,7 +44,7 @@ Primary project docs:
 - PR descriptions: follow `.claude/rules/pr-descriptions.md`; lead with context, user impact, decisions, and risks instead of local validation transcripts.
 - Legacy harness compatibility (NON-NEGOTIABLE): provider-neutral changes stay additive/derivable from legacy Claude-only persisted data until an explicit migration removes that requirement.
 - Minimal diffs: avoid formatter churn and opportunistic refactors.
-- Context-preservation trackers (NON-NEGOTIABLE): for multi-step investigations or fixes, create and keep updating a local tracker under `.artifacts/specs/<topic>/tracker.md`; fresh worktrees may not have `.artifacts`, so run `mkdir -p .artifacts/specs/<topic>` before reading or writing the tracker, and never run `sed`/`cat`/`rg` on a tracker path until `test -f` has confirmed it exists.
+- Context-preservation trackers (NON-NEGOTIABLE): for multi-step investigations or fixes, create and keep updating a local tracker under `.artifacts/specs/<topic>/tracker.md` so findings and decisions survive context compaction.
 - Agent tool alignment: keep prompt frontmatter, canonical agent metadata, `config/ralphx.yaml`, and MCP allowlists aligned. Source: `.claude/rules/agent-mcp-tools.md`.
 - Prompts are not migration diaries (NON-NEGOTIABLE): prompts are clean contracts for the live tool surface and role; migration notes, forbidden legacy paths, and compatibility ballast belong in backend validation, tests, or docs, not prompt prose.
 - Surface-local descriptions only (NON-NEGOTIABLE): tool schemas, recovery hints, and prompt prose must not mention tools that are not on the caller agent’s live tool surface.
@@ -59,7 +59,6 @@ Primary project docs:
 - Rustfmt scope safety: never run `rustfmt` on `mod.rs` roots unless recursive formatting is intentional.
 - Rustfmt edition safety: prefer `rustfmt --edition 2021 <leaf-file.rs>` for surgical work; avoid plain `cargo fmt` unless broad formatting is intended.
 - Cargo during refactors: run one targeted Cargo job at a time.
-- Rust manifest location: this repo has no root `Cargo.toml`; use `src-tauri/Cargo.toml` or discover manifests with `rg --files -g Cargo.toml`, never `rg Cargo.toml` as a required file read.
 - Rust test runner split: use `cargo test` for selective filters/doctests and `cargo nextest run` for broad lib runs. Source: `.claude/rules/rust-test-execution.md`.
 - Worktree-safe Rust helper: use `scripts/test-rust-fast.sh {ipc|lib-1|lib-2|pr|main}` from the current checkout/worktree; `*-parallel` modes isolate `CARGO_TARGET_DIR` per lane and the script refuses cross-checkout drift.
 - Rust toolchain source of truth: `rust-toolchain.toml` is authoritative.
@@ -72,7 +71,7 @@ Primary project docs:
 - Icon-only buttons: use an accessible name plus the app tooltip component; native `title` alone is not enough. Source: `.claude/rules/icon-only-buttons.md`.
 - Frontend interaction performance (NON-NEGOTIABLE): user-triggered panels/drawers/widgets must paint a lightweight shell before lazy imports, fetches, persistence, process startup, or heavy mount/unmount work; warm up likely heavy paths on safe intent/idle; fix safe current-scope opportunities with TDD. Source: `.claude/rules/frontend-interaction-performance.md`.
 - Refactor tracker hygiene: when a turn exposes real architectural debt, update `## High-Value Refactor Targets` in the same slice.
-- `.artifacts` tracker hygiene (NON-NEGOTIABLE): for any multi-step investigation/fix likely to outlive the current context window, create/update `.artifacts/specs/<slug>/tracker.md` as soon as substantive findings appear and keep it current before continuing; if the tracker is missing, treat that as an empty tracker and create it, not as a fatal error.
+- `.artifacts` tracker hygiene (NON-NEGOTIABLE): for any multi-step investigation/fix likely to outlive the current context window, create/update `.artifacts/specs/<slug>/tracker.md` as soon as substantive findings appear and keep it current before continuing.
 - Turn-level refactor discipline (NON-NEGOTIABLE): if production callsites repeat the same wiring/branching, centralize it or track it before continuing.
 - Factory-first runtime wiring: when scheduler/chat/transition assembly repeats in 3+ production callsites, extend a shared builder/factory instead of adding another copy.
 - Future harness readiness: prefer provider-neutral registries/factories keyed by `AgentHarnessKind` over one-off `claude+codex` branching when safe.
