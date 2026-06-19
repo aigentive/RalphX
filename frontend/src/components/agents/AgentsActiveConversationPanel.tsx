@@ -68,6 +68,7 @@ import {
   type ChatFocusFieldConfig,
 } from "./AgentComposerSurface";
 import { AgentConversationBaseLine } from "./AgentConversationBaseLine";
+import { AgentConversationWorkspaceLine } from "./AgentConversationWorkspaceLine";
 import { AgentWorkspacePrReviewCard } from "./AgentWorkspacePrReviewCard";
 import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceChangesCard";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
@@ -589,12 +590,28 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     focusedChatSessionId ??
     (activeConversation.contextType === "ideation" ? activeConversation.contextId : undefined);
   const isFocusedChildChat = chatFocus.type !== "workspace";
+  const activeConversationStoreKey = useMemo(
+    () => getAgentConversationStoreKey(activeConversation),
+    [activeConversation],
+  );
+  const activeConversationAgentStatus = useChatStore(
+    (state) => state.agentStatus[activeConversationStoreKey] ?? "idle",
+  );
+  const activeConversationIsSending = useChatStore(
+    (state) => state.isSending[activeConversationStoreKey] ?? false,
+  );
   const workspaceBaseSelectorAvailable =
     !isFocusedChildChat &&
     activeConversation.contextType === "project" &&
     Boolean(activeWorkspace?.conversationId) &&
     activeWorkspace?.status !== "missing" &&
     !getAgentWorkspaceTerminalPublicationStatus(activeWorkspace);
+  const workspaceBaseEditable =
+    workspaceBaseSelectorAvailable &&
+    activeConversationAgentStatus !== "generating" &&
+    !activeConversationIsSending &&
+    !isForkingConversation &&
+    !isUpdatingComposerWorkspaceBase;
   const fallbackWorkspaceBaseOptions = useMemo(
     () =>
       fallbackBranchBaseOptions(
@@ -757,6 +774,30 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       workspaceBaseSelectorAvailable,
     ],
   );
+  const workspaceBaseControl = !isFocusedChildChat ? (
+    <AgentConversationBaseLine
+      className="justify-start"
+      workspace={activeWorkspace}
+      editable={workspaceBaseSelectorAvailable}
+      disabled={!workspaceBaseEditable}
+      isLoading={
+        workspaceBaseOptionsQuery.isFetching || isUpdatingComposerWorkspaceBase
+      }
+      options={workspaceBaseOptions}
+      pullRequestOptions={workspaceBasePullRequestOptions}
+      isLoadingPullRequests={isLoadingWorkspaceBasePullRequests}
+      pullRequestMessage={workspaceBasePullRequestMessage}
+      prefixLabel="BASE:"
+      value={workspaceBasePickerValue}
+      onValueChange={handleWorkspaceBaseChange}
+      onIntent={handleWorkspaceBasePickerIntent}
+      onOpenChange={handleWorkspaceBasePickerOpenChange}
+      onPullRequestSearch={searchWorkspaceBasePullRequestOptions}
+      {...(activeWorkspaceFreshness
+        ? { freshness: activeWorkspaceFreshness }
+        : {})}
+    />
+  ) : null;
   const panelStoreKeyOverride = useMemo(() => {
     if (focusedChatSessionId) {
       return buildStoreKey("ideation", focusedChatSessionId);
@@ -1707,13 +1748,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
               };
               const shouldShowPlanComposerCta =
                 !!planComposerHint && composerProps.questionMode === undefined;
-              const workspaceBaseEditable =
-                workspaceBaseSelectorAvailable &&
-                composerProps.agentStatus !== "generating" &&
-                !composerProps.isSending &&
-                !isForkingConversation &&
-                !isUpdatingComposerWorkspaceBase;
-
               return (
                 <>
                   {!isFocusedChildChat &&
@@ -1962,23 +1996,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       placeholder="Current project"
                       disabled
                     />
-                    <AgentConversationBaseLine
+                    <AgentConversationWorkspaceLine
                       workspace={activeWorkspace}
-                      editable={workspaceBaseSelectorAvailable}
-                      disabled={!workspaceBaseEditable}
-                      isLoading={
-                        workspaceBaseOptionsQuery.isFetching ||
-                        isUpdatingComposerWorkspaceBase
-                      }
-                      options={workspaceBaseOptions}
-                      pullRequestOptions={workspaceBasePullRequestOptions}
-                      isLoadingPullRequests={isLoadingWorkspaceBasePullRequests}
-                      pullRequestMessage={workspaceBasePullRequestMessage}
-                      value={workspaceBasePickerValue}
-                      onValueChange={handleWorkspaceBaseChange}
-                      onIntent={handleWorkspaceBasePickerIntent}
-                      onOpenChange={handleWorkspaceBasePickerOpenChange}
-                      onPullRequestSearch={searchWorkspaceBasePullRequestOptions}
                       {...(activeWorkspaceFreshness
                         ? { freshness: activeWorkspaceFreshness }
                         : {})}
@@ -2012,6 +2031,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                 isPublishingWorkspace={publishingConversationId === selectedConversationId}
                 onToggleArtifacts={onToggleArtifacts}
                 onSelectArtifact={onSelectArtifact}
+                workspaceControl={workspaceBaseControl}
                 showTitle={false}
               />
             }

@@ -1,4 +1,12 @@
-import { memo, useCallback, useEffect, useMemo, useState, type ElementType } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ElementType,
+  type ReactNode,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   CheckCircle2,
@@ -119,6 +127,7 @@ export interface AgentsChatHeaderProps {
   onToggleArtifacts: () => void;
   onSelectArtifact: (tab: AgentArtifactTab) => void;
   showTitle?: boolean;
+  workspaceControl?: ReactNode;
 }
 
 export const AgentsChatFocusBar = memo(function AgentsChatFocusBar({
@@ -294,6 +303,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   onToggleArtifacts,
   onSelectArtifact,
   showTitle = true,
+  workspaceControl,
 }: AgentsChatHeaderProps) {
   const title = conversation?.title || "Untitled agent";
   const conversationMode = conversation
@@ -404,7 +414,8 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
             </TooltipContent>
           </Tooltip>
         )}
-        {workspace ? <AgentsWorkspaceStatusPill workspace={workspace} /> : null}
+        {workspaceControl ??
+          (workspace ? <AgentsWorkspaceStatusPill workspace={workspace} /> : null)}
         {showTitle ? (
           <div className="min-w-0 flex-1">
             {isEditing ? (
