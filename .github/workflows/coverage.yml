@@ -130,6 +130,7 @@ jobs:
             artifact_suffix: "2"
     env:
       CARGO_TERM_COLOR: never
+      CARGO_BUILD_JOBS: "2"
       RALPHX_TEST_MODE: "1"
       RUST_LIB_COVERAGE_ARTIFACT: coverage-rust-lib-${{ matrix.artifact_suffix }}
       RUST_LIB_COVERAGE_ROOT: coverage/coverage-rust-lib-${{ matrix.artifact_suffix }}
