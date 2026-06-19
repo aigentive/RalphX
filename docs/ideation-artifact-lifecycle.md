@@ -1,6 +1,6 @@
 # Ideation Artifact Lifecycle
 
-This document describes how Plan, Verification, Proposals, and Tasks appear in the Agents workspace right-side artifact pane, how they overlap with Linear/Jira/Publish, and the edge cases that matter when a top-level workspace conversation fails to surface ideation artifacts.
+This document describes how Plan, Verification, Proposals, and Tasks appear in the Agents workspace right-side artifact pane, how they overlap with Commit & Publish and the separate Jira/Linear linked-issues overlay, and the edge cases that matter when a top-level workspace conversation fails to surface ideation artifacts.
 
 ## Scope
 
@@ -11,11 +11,7 @@ The ideation artifact tabs are:
 - Proposals
 - Tasks
 
-They are shown in the same right-side pane as external and workspace tabs:
-
-- Jira
-- Linear
-- Commit & Publish
+They are shown in the same right-side artifact pane as Commit & Publish. Jira and Linear are not artifact-pane tabs; they live in a separate linked-issues overlay opened from the Ticket button in the chat header.
 
 Primary code paths:
 
@@ -205,7 +201,7 @@ Resolution order:
 Edge cases:
 
 - Optimistic active tab is intentionally preserved because it represents a current-session user click.
-- Persisted stale external tabs (`linear`, `jira`, `publish`) are sanitized to Tasks/Plan when ideation tabs are available.
+- Persisted stale external artifact tabs (`linear`, `jira`, `publish`) are sanitized to Tasks/Plan when ideation tabs are available. `linear` and `jira` are legacy artifact states after the linked-issues overlay split.
 - Snapshot reads used outside the hook can miss `availableArtifactTabs` unless explicitly passed, so repair effects must be checked carefully.
 
 ### 8. Artifact Pane Tab Assembly
@@ -213,9 +209,7 @@ Edge cases:
 `AgentsArtifactPane.tsx` assembles visible tabs in this order:
 
 1. Plan / Verification / Proposals / Tasks
-2. Jira
-3. Linear
-4. Commit & Publish
+2. Commit & Publish
 
 `effectiveActiveTab` is:
 
@@ -225,9 +219,9 @@ Edge cases:
 
 Edge cases:
 
-- If ideation tabs are empty and Linear is configured, `effectiveActiveTab` becomes `linear`.
-- If Linear has no assigned issue, the Linear panel appears empty/search-like, which can look like “the artifact pane is empty.”
-- If ideation tabs load after Linear, the pane must switch away from stale Linear. Persisted state is sanitized; optimistic Linear can still remain.
+- If ideation tabs are empty and Commit & Publish is visible, `effectiveActiveTab` can become `publish`.
+- If a legacy persisted `linear` or `jira` artifact tab is present, it is not visible and falls back to the preferred ideation tab when ideation tabs exist.
+- Jira/Linear settings can load independently, but they only affect the linked-issues overlay and cannot replace artifact pane content.
 
 ### 9. Plan Tab Content
 
@@ -327,34 +321,35 @@ Edge cases:
 - If the workspace is already poisoned with a blank session and no branch, backend cannot infer the productive old session unless transcript or another durable relation exposes it.
 - Frontend sync can race from both `useAgentsAttachedIdeation` and `AgentsArtifactPane`.
 
-## Overlap With Linear/Jira/Publish
+## Overlap With Linked Issues And Publish
 
-All artifact tabs share the same pane and active-tab state.
+Artifact tabs share the artifact pane and active-tab state. Jira/Linear no longer share that state.
 
-External tabs differ from ideation tabs:
+Issue tabs differ from ideation tabs:
 
-- Linear/Jira are settings-gated.
-- Linear/Jira can appear without an ideation session.
+- Linear/Jira are settings-gated and rendered in the linked-issues overlay.
+- Linear/Jira can appear without an ideation session, but only through the Ticket button.
 - Publish is workspace/PR-gated.
 - Ideation tabs are session/plan-gated.
 
-The primary overlap bug class is stale external active-tab state:
+The primary legacy overlap bug class is stale external active-tab state:
 
-- Linear can be visible because settings are valid.
+- A persisted artifact `linear` / `jira` value can exist from older builds.
 - Ideation tabs can be temporarily empty because attached session data is still loading or points to a stale session.
-- If active tab remains Linear, the right pane can look like ideation artifacts are missing.
+- If stale external active tab handling regresses, the right pane can look like ideation artifacts are missing.
 
 Expected UX:
 
 - When ideation tabs are available, stale persisted Linear/Jira/Publish should not hide Plan/Tasks.
-- Explicit user clicks on Linear/Jira/Publish should still be honored.
+- Explicit user clicks on Linear/Jira should open the separate linked-issues overlay.
+- Explicit user clicks on Commit & Publish should still be honored in the artifact pane.
 
 ## Edge Case Matrix
 
 | Area | Edge Case | Expected Behavior | Risk |
 |---|---|---|---|
 | Workspace | No linked ids and no recent transcript candidates | No ideation tabs | Running backend tasks may not surface in parent conversation |
-| Workspace | Linked session is blank continuation | No plan/tabs unless inherited plan exists | Linear can become first visible tab |
+| Workspace | Linked session is blank continuation | No plan/tabs unless inherited plan exists | Artifact pane can fall back to Publish or empty state |
 | Workspace | Linked branch exists but linked session stale | Backend sync should avoid branch downgrade | UI may still fetch stale session if branch cannot identify session |
 | History | Productive tool output older than 40 messages | Resolver misses it | Falls back to stale workspace link |
 | Session | `getWithData` returns stale session data | UI ignores it by id check | Temporary empty tabs while loading |
@@ -362,14 +357,14 @@ Expected UX:
 | Verification | Plan exists but verification unverified | Verification tab still visible | Content can show empty/unverified state |
 | Tasks | Plan accepted but no branch linked | Tasks visible via accepted/converted flags | Task scope may depend on session id |
 | Tasks | Branch linked but execution id unresolved | Task view falls back to session scope | Could miss execution-plan-only tasks |
-| Tab State | Persisted Linear active | Sanitized to Tasks/Plan when tabs are available | If available tabs stay empty, Linear remains |
-| Tab State | Optimistic Linear active | Linear remains active | Current-session user click can mask ideation tabs |
-| Settings | Linear loads before ideation | Linear can render first | Needs tab repair when ideation tabs arrive |
+| Tab State | Persisted Linear active | Sanitized to Tasks/Plan when tabs are available | Legacy persisted state can still appear in stores |
+| Issue Overlay | User opens Linear | Linked-issues overlay opens over the right edge | Artifact pane remains on ideation/publish content |
+| Settings | Linear loads before ideation | Ticket button can appear first | Does not change artifact pane content |
 | Direct Ideation | context type is ideation | session id is context id | Linear/Jira hidden |
 
 ## Debug Checklist
 
-For a top-level conversation that should show Plan/Verification/Tasks but shows Linear:
+For a top-level conversation that should show Plan/Verification/Tasks but does not:
 
 1. Check workspace row:
    - `linked_ideation_session_id`
@@ -392,6 +387,6 @@ For a top-level conversation that should show Plan/Verification/Tasks but shows 
    - `availableArtifactTabs` is non-empty,
    - `hasAutoOpenArtifacts` is true,
    - active tab is not optimistic `linear`.
-6. Check Linear:
-   - `showLinearTab` may be true, but it should not be first if ideation tabs are available.
-
+6. Check linked issues:
+   - Jira/Linear availability may show the Ticket button, but it should not affect artifact-pane tab selection.
+   - If the visible surface is Linear, confirm whether the linked-issues overlay is open rather than the artifact pane.

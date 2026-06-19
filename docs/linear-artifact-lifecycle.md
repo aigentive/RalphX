@@ -4,11 +4,18 @@ This document describes the lifecycle of the Linear artifact surface in the Agen
 
 ## Scope
 
-The Linear “artifact” is not a row in the generic `artifacts` table. It is an artifact-pane tab mounted alongside Plan, Verification, Proposals, Tasks, Jira, and Commit & Publish. Its durable state is a per-conversation Linear issue link stored in `agent_conversation_linear_issue_links`.
+The Linear “artifact” is not a row in the generic `artifacts` table. Its durable state is a per-conversation Linear issue link stored in `agent_conversation_linear_issue_links`.
+
+Current UI contract:
+
+- Plan, Verification, Proposals, Tasks, and Commit & Publish live in the artifact pane.
+- Jira and Linear live in a separate linked-issues overlay opened from the Ticket button in the chat header.
+- Legacy persisted artifact states may still contain `linear` or `jira`; those values are treated as stale external states and are redirected to the preferred ideation artifact tab when ideation tabs are available.
 
 Primary code paths:
 
-- Frontend tab shell: `frontend/src/components/agents/AgentsArtifactPane.tsx`
+- Linked-issues overlay: `frontend/src/components/agents/AgentsIssuePaneRegion.tsx`
+- Issue availability hook: `frontend/src/components/agents/agentIssueTabs.ts`
 - Linear panel: `frontend/src/components/agents/AgentsLinearIssuePanel.tsx`
 - Linear API client wrappers: `frontend/src/api/linear.ts`
 - Linear tab query keys: `frontend/src/components/agents/agentLinearIssueQueries.ts`
@@ -25,15 +32,15 @@ Primary code paths:
 There are three separate concepts that can look like one thing in the UI:
 
 1. Artifact-pane tabs:
-   Plan, Verification, Proposals, Tasks, Jira, Linear, and Commit & Publish share one right-side pane and one active-tab state.
+   Plan, Verification, Proposals, Tasks, and Commit & Publish share the ideation artifact pane and artifact active-tab state.
 
 2. Ideation artifacts:
    Plan/Verification/Proposals/Tasks are derived from an attached ideation session and plan branch. These are “real” ideation artifacts or task surfaces.
 
 3. External issue links:
-   Linear and Jira are external integration tabs. The Linear tab reads and writes an assigned Linear issue link for the selected conversation.
+   Linear and Jira are external integration tabs inside the standalone linked-issues overlay. The Linear tab reads and writes an assigned Linear issue link for the selected conversation.
 
-The Linear tab therefore overlaps the artifact pane, but it does not participate in ideation artifact availability. It is always external-integration state scoped to `conversation_id`.
+The Linear tab therefore no longer participates in artifact-pane tab assembly or ideation artifact availability. It is always external-integration state scoped to `conversation_id`.
 
 ## Lifecycle
 
@@ -51,40 +58,38 @@ The frontend calls `linearApi.getSettings()`, which invokes `get_linear_integrat
 - `lastError`
 - `updatedAt`
 
-The artifact pane shows the Linear tab only when:
+The chat header shows the Ticket button, and the linked-issues overlay shows the Linear tab, only when:
 
 - the conversation is not a direct ideation conversation, and
 - Linear settings are enabled, and
 - issue search is available.
 
-Code: `AgentsArtifactPane.tsx` computes `showLinearTab` from `linearApi.getSettings()`.
+Code: `agentIssueTabs.ts` computes Linear availability from `linearApi.getSettings()`.
 
 Edge cases:
 
-- If settings are still loading, the Linear tab may appear after the pane initially renders.
+- If settings are still loading, the Ticket button and Linear tab may appear after the header/overlay initially renders.
 - If validation fails or `issueSearchAvailable` is false, the Linear tab is absent even if a conversation already has a stored Linear link.
-- Direct ideation conversations suppress Linear/Jira tabs; project/workspace conversations can show them.
+- Direct ideation conversations suppress Linear/Jira issue tabs; project/workspace conversations can show them.
 
-### 2. Tab Assembly And Active Tab Selection
+### 2. Issue Overlay Tab Assembly
 
-`AgentsArtifactPane.tsx` assembles visible tabs in this order:
+`AgentsIssuePaneRegion.tsx` assembles visible linked-issue tabs in this order:
 
-1. Ideation tabs: Plan, Verification, Proposals, Tasks
-2. Jira, if configured
-3. Linear, if configured
-4. Commit & Publish, if the workspace supports publishing
+1. Jira, if configured
+2. Linear, if configured
 
-The pane receives `activeTab` from the per-conversation artifact state. If that tab is not currently visible, `effectiveActiveTab` falls back to the first visible tab, or `plan`.
+The overlay receives its own transient `AgentIssueTab` state from the Agents view controller. If that tab is not currently visible, it falls back to the first configured issue tab.
 
 Important overlap:
 
-- Linear shares the same persisted active-tab state as Plan/Tasks/etc.
-- A stale persisted `linear` tab can hide newly available Plan/Verification/Tasks unless sanitized.
-- Current behavior sanitizes persisted stale external tabs when ideation tabs are available, preferring `tasks`, then `plan`, then the first ideation tab. Optimistic/manual user tab clicks still win, so explicitly clicking Linear remains valid.
+- Linear no longer shares active-tab state with Plan/Tasks/etc.
+- A stale persisted artifact `linear` value can still exist from older builds; `AgentsArtifactPane.tsx` treats it as stale and prefers `tasks`, then `plan`, then the first ideation tab when ideation tabs are available.
+- Explicitly opening Linear now uses the linked-issues overlay state, not artifact pane state.
 
 ### 3. Opening The Linear Tab
 
-When `effectiveActiveTab === "linear"`, `ArtifactContent` lazy-loads `AgentsLinearIssuePanel`.
+When the Ticket button opens the linked-issues overlay and the effective issue tab is `linear`, `IssueContent` lazy-loads `AgentsLinearIssuePanel`.
 
 The panel receives:
 
@@ -401,18 +406,18 @@ Linear does not require:
 
 Overlap risk:
 
-- All tabs share a single right pane and a single `activeTab`.
-- Linear settings can load after ideation tabs, changing visible tabs.
-- Persisted `linear` can hide plan/task tabs unless stale external tabs are sanitized.
+- The old shared-tab design let Linear settings load after ideation tabs and replace the visible artifact content.
+- The current design separates Linear/Jira into the linked-issues overlay, so Linear cannot become the artifact pane’s effective content.
+- Persisted legacy `linear` / `jira` artifact states are still sanitized for compatibility.
 
 Expected UX:
 
-- If a top-level workspace conversation has active ideation artifacts, opening the artifact pane should prioritize Plan/Tasks over stale Linear.
-- The user can still explicitly click Linear.
+- If a top-level workspace conversation has active ideation artifacts, opening the artifact pane should prioritize Plan/Tasks.
+- The user can still explicitly open Linear from the Ticket button.
 
 ### Jira
 
-Jira and Linear are sibling external issue tabs.
+Jira and Linear are sibling external issue tabs inside the linked-issues overlay.
 
 Shared patterns:
 
@@ -434,9 +439,9 @@ Commit & Publish is workspace/PR lifecycle state, not issue state.
 
 Overlap:
 
-- It is also a tab in the same artifact pane.
+- It remains a tab in the artifact pane because it is workspace/publish lifecycle state rather than issue-link state.
 - The header hides the publish shortcut while any artifact pane is open.
-- Persisted `publish` can be a stale external tab in ideation contexts and is sanitized like Jira/Linear when ideation tabs are available.
+- Persisted `publish` can be a stale artifact tab in ideation contexts and is sanitized when ideation tabs are available.
 
 ### Header Shortcuts
 
@@ -444,18 +449,18 @@ Header artifact shortcuts only expose ideation tabs from `availableArtifactTabs`
 
 Implication:
 
-- Linear is reachable from the right artifact pane tab row, not the header shortcut row.
-- Header shortcut behavior can differ from pane tab availability.
+- Linear is reachable from the Ticket button and linked-issues overlay, not from the artifact tab row.
+- Header issue availability can differ from artifact-pane availability because it is settings-gated, not plan/session-gated.
 
 ## Edge Case Matrix
 
 | Area | Edge Case | Expected Behavior | Risk |
 |---|---|---|---|
-| Settings | Linear disabled after a link exists | Linear tab hidden; stored link remains | User may not see assigned issue until re-enabled |
-| Settings | Settings query resolves late | Linear tab appears after initial render | Active tab fallback may change visible content |
+| Settings | Linear disabled after a link exists | Linear issue tab hidden; stored link remains | User may not see assigned issue until re-enabled |
+| Settings | Settings query resolves late | Ticket button / Linear tab appears after initial render | Does not change artifact pane content |
 | Tab state | Persisted `linear` from prior session | Sanitized to Tasks/Plan when ideation tabs exist | Without sanitization, it hides active ideation artifacts |
-| Tab state | User explicitly clicks Linear | Optimistic state keeps Linear active | Manual choice must not be sanitized away |
-| Direct ideation | Conversation context is direct ideation | Linear tab hidden | External issue assignment is conversation/workspace-oriented |
+| Tab state | User explicitly opens Linear | Issue overlay opens independently | Artifact pane remains on ideation/publish tab |
+| Direct ideation | Conversation context is direct ideation | Linear issue tab hidden | External issue assignment is conversation/workspace-oriented |
 | Assignment | Empty/invalid issue id | Backend rejects assignment | Prevents malformed persisted link |
 | Assignment | No project can be resolved | Backend rejects assignment | Manual panel needs project/workspace context |
 | Auto-assignment | Multiple Linear references in one message | First valid reference wins | Later references are only runtime context, not primary assignment |
@@ -473,21 +478,21 @@ Implication:
 
 ## Debug Checklist
 
-When the Linear tab hides expected Plan/Verification/Tasks:
+When Linear appears to hide expected Plan/Verification/Tasks:
 
 1. Check `availableArtifactTabs` from `useAgentsAttachedIdeation`.
-2. Check persisted artifact state for the conversation in `agentSessionStore.artifactByConversationId`.
-3. Confirm `useResolvedAgentArtifactState(..., availableArtifactTabs)` is receiving the available tabs in `AgentsArtifactPaneRegion`.
-4. Confirm the user has not explicitly clicked Linear in the current session, because optimistic tab state intentionally wins.
+2. Confirm the visible panel is the artifact pane, not the linked-issues overlay.
+3. Check persisted artifact state for legacy `linear` / `jira` values in `agentSessionStore.artifactByConversationId`.
+4. Confirm `useResolvedAgentArtifactState(..., availableArtifactTabs)` is receiving the available tabs in `AgentsArtifactPaneRegion`.
 5. Confirm the workspace link points to the productive ideation session/plan branch, not a blank continuation session.
 
-When Linear tab is missing:
+When the Linear issue tab is missing:
 
 1. Check `linearApi.getSettings()`.
 2. Confirm `enabled === true`.
 3. Confirm `issueSearchAvailable === true`.
 4. Confirm the selected conversation is not a direct ideation conversation.
-5. Confirm the pane is mounted and `showLinearTab` is true.
+5. Confirm the linked-issues overlay is mounted and `useAgentIssueTabs()` includes `linear`.
 
 When assignment is missing:
 
@@ -498,7 +503,7 @@ When assignment is missing:
 
 ## Current Alignment Notes
 
-- Linear is correctly modeled as a sibling external tab, not as an ideation artifact.
-- The highest-risk overlap is shared active-tab state across external tabs and ideation tabs.
-- The current tab-state sanitizer should preserve expected UX: active ideation work shows Plan/Tasks instead of stale Linear, while explicit Linear selection remains possible.
+- Linear is correctly modeled as a sibling external issue tab, not as an ideation artifact.
+- The highest-risk overlap was shared active-tab state across external tabs and ideation tabs; current UI splits issue tabs into a standalone overlay.
+- The current tab-state sanitizer remains for legacy artifact state: active ideation work shows Plan/Tasks instead of stale Linear, while explicit Linear selection remains possible through the issue overlay.
 - Webhook reconciliation should not be treated as updating the conversation Linear artifact; it updates task/workflow state through external issue links.
