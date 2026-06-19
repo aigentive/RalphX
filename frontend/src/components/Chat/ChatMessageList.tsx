@@ -1351,11 +1351,14 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     }, []);
 
     const shouldKeepBottomPinned = useCallback(
-      (activeScrollToTimestamp: string | null | undefined = scrollToTimestampRef.current) => {
+      (
+        activeScrollToTimestamp: string | null | undefined = scrollToTimestampRef.current,
+        { requireLastItemVisible = true }: { requireLastItemVisible?: boolean } = {},
+      ) => {
         if (isUserScrollingAwayFromBottomRef.current) {
           return false;
         }
-        if (!isLastItemActuallyVisible()) {
+        if (requireLastItemVisible && !isLastItemActuallyVisible()) {
           return false;
         }
         if (!hasUserScrollInputRef.current) {
@@ -1887,8 +1890,23 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       if (externalLayoutVersion <= 0) {
         return;
       }
+      if (
+        shouldKeepBottomPinned(scrollToTimestampRef.current, {
+          requireLastItemVisible: false,
+        })
+      ) {
+        scheduleBottomPin("external layout changed", "auto", {
+          requireLastItemVisible: false,
+        });
+        return;
+      }
       handleScrollerResize();
-    }, [externalLayoutVersion, handleScrollerResize]);
+    }, [
+      externalLayoutVersion,
+      handleScrollerResize,
+      scheduleBottomPin,
+      shouldKeepBottomPinned,
+    ]);
 
     const handleTotalListHeightChanged = useCallback(
       (height: number) => {
