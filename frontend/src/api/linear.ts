@@ -134,6 +134,14 @@ export const linearApi = {
     );
   },
 
+  disconnect(): Promise<LinearIntegrationSettings> {
+    return typedInvoke(
+      "disconnect_linear_integration",
+      {},
+      LinearIntegrationSettingsSchema,
+    );
+  },
+
   async searchIssues(
     input: SearchLinearIssuesInput,
   ): Promise<LinearIssueSummary[]> {

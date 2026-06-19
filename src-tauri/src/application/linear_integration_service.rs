@@ -268,6 +268,23 @@ impl LinearIntegrationService {
             .map_err(|error| error.to_string())
     }
 
+    /// Clears the stored Linear API token and resets the integration to a
+    /// not-configured state so the user can disconnect a valid connection.
+    pub async fn disconnect(&self) -> Result<LinearIntegrationSettings, String> {
+        let settings = self.get_settings().await?;
+        if let Some(secret_ref) = settings.token_secret_ref.as_deref() {
+            self.secret_store
+                .delete_secret(secret_ref)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        let cleared = LinearIntegrationSettings::default();
+        self.settings_repo
+            .upsert(&cleared)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     pub async fn validate_and_enable(&self) -> Result<LinearIntegrationSettings, String> {
         let mut settings = self.get_settings().await?;
         let auth = self.auth_context(&settings).await?;

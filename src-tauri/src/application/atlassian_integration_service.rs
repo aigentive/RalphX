@@ -520,6 +520,33 @@ impl AtlassianIntegrationService {
             .map_err(|error| error.to_string())
     }
 
+    /// Clears all stored Atlassian secrets (API token, OAuth client secret and
+    /// OAuth access/refresh tokens) and resets the integration to a
+    /// not-configured state so the user can disconnect a valid connection.
+    pub async fn disconnect(&self) -> Result<AtlassianIntegrationSettings, String> {
+        self.shutdown_pending_oauth_callbacks().await;
+        let settings = self.get_settings().await?;
+        for secret_ref in [
+            settings.token_secret_ref.as_deref(),
+            settings.oauth_client_secret_ref.as_deref(),
+            settings.oauth_access_token_ref.as_deref(),
+            settings.oauth_refresh_token_ref.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            self.secret_store
+                .delete_secret(secret_ref)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        let cleared = AtlassianIntegrationSettings::default();
+        self.settings_repo
+            .upsert(&cleared)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     pub async fn build_oauth_authorization(&self) -> Result<AtlassianOAuthAuthorization, String> {
         let settings = self.get_settings().await?;
         let client_id = settings

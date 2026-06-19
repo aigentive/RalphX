@@ -7,6 +7,7 @@ import { LinearIntegrationSettingsPanel } from "./LinearIntegrationSettingsPanel
 const linearHook = vi.hoisted(() => ({
   saveSettingsAsync: vi.fn(),
   validateAsync: vi.fn(),
+  disconnectAsync: vi.fn(),
   state: {
     settings: {
       enabled: false,
@@ -22,8 +23,10 @@ const linearHook = vi.hoisted(() => ({
     error: null as Error | null,
     isSavingSettings: false,
     isValidating: false,
+    isDisconnecting: false,
     saveSettingsError: null as Error | null,
     validateError: null as Error | null,
+    disconnectError: null as Error | null,
   },
 }));
 
@@ -32,6 +35,7 @@ vi.mock("@/hooks/useLinearIntegration", () => ({
     ...linearHook.state,
     saveSettingsAsync: linearHook.saveSettingsAsync,
     validateAsync: linearHook.validateAsync,
+    disconnectAsync: linearHook.disconnectAsync,
   }),
 }));
 
@@ -52,8 +56,17 @@ describe("LinearIntegrationSettingsPanel", () => {
     linearHook.state.error = null;
     linearHook.state.isSavingSettings = false;
     linearHook.state.isValidating = false;
+    linearHook.state.isDisconnecting = false;
     linearHook.state.saveSettingsError = null;
     linearHook.state.validateError = null;
+    linearHook.state.disconnectError = null;
+    linearHook.disconnectAsync.mockResolvedValue({
+      enabled: false,
+      hasApiToken: false,
+      validationStatus: "not_configured",
+      issueSearchAvailable: false,
+      updatedAt: new Date(0).toISOString(),
+    });
     linearHook.saveSettingsAsync.mockResolvedValue({
       enabled: false,
       hasApiToken: true,
@@ -130,5 +143,54 @@ describe("LinearIntegrationSettingsPanel", () => {
         "Linear API token is missing from secure storage",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("does not offer disconnect when nothing is configured", () => {
+    render(<LinearIntegrationSettingsPanel />);
+
+    expect(screen.getByTestId("integration-status-banner")).toHaveAttribute(
+      "data-connected",
+      "false",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Disconnect" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("paints the status banner green when the connection is valid", () => {
+    linearHook.state.settings = {
+      enabled: true,
+      hasApiToken: true,
+      validationStatus: "valid",
+      issueSearchAvailable: true,
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
+    };
+
+    render(<LinearIntegrationSettingsPanel />);
+
+    expect(screen.getByText("Issue references enabled")).toBeInTheDocument();
+    expect(screen.getByTestId("integration-status-banner")).toHaveAttribute(
+      "data-connected",
+      "true",
+    );
+    expect(
+      screen.getByRole("button", { name: "Disconnect" }),
+    ).toBeInTheDocument();
+  });
+
+  it("clears the connection after confirming disconnect", async () => {
+    const user = userEvent.setup();
+    linearHook.state.settings.hasApiToken = true;
+    render(<LinearIntegrationSettingsPanel />);
+
+    await user.click(screen.getByRole("button", { name: "Disconnect" }));
+    // First click only reveals the confirmation step; nothing cleared yet.
+    expect(linearHook.disconnectAsync).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Confirm disconnect" }));
+
+    expect(linearHook.disconnectAsync).toHaveBeenCalledTimes(1);
   });
 });
