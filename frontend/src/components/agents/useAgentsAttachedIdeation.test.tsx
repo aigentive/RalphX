@@ -8,8 +8,8 @@ import { createTestQueryClient } from "@/test/store-utils";
 import type { AgentConversation } from "./agentConversations";
 import { useAgentsAttachedIdeation } from "./useAgentsAttachedIdeation";
 
-const { getIdeationSessionMock, useConversationHistoryWindowMock } = vi.hoisted(() => ({
-  getIdeationSessionMock: vi.fn(),
+const { getIdeationSessionWithDataMock, useConversationHistoryWindowMock } = vi.hoisted(() => ({
+  getIdeationSessionWithDataMock: vi.fn(),
   useConversationHistoryWindowMock: vi.fn(),
 }));
 
@@ -21,7 +21,7 @@ vi.mock("@/api/ideation", async (importOriginal) => {
       ...actual.ideationApi,
       sessions: {
         ...actual.ideationApi.sessions,
-        get: (...args: unknown[]) => getIdeationSessionMock(...args),
+        getWithData: (...args: unknown[]) => getIdeationSessionWithDataMock(...args),
       },
     },
   };
@@ -105,19 +105,23 @@ describe("useAgentsAttachedIdeation", () => {
         ],
       },
     });
-    getIdeationSessionMock.mockResolvedValue({
-      id: "productive-session",
-      projectId: "project-1",
-      title: "Implement ClickUp integration",
-      status: "accepted",
-      planArtifactId: "artifact-1",
-      inheritedPlanArtifactId: null,
-      acceptanceStatus: "accepted",
-      convertedAt: "2026-06-19T09:10:00Z",
-      verificationStatus: "unverified",
-      verificationInProgress: false,
-      gapScore: null,
-      archivedAt: null,
+    getIdeationSessionWithDataMock.mockResolvedValue({
+      session: {
+        id: "productive-session",
+        projectId: "project-1",
+        title: "Implement ClickUp integration",
+        status: "accepted",
+        planArtifactId: "artifact-1",
+        inheritedPlanArtifactId: null,
+        acceptanceStatus: "accepted",
+        convertedAt: "2026-06-19T09:10:00Z",
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        archivedAt: null,
+      },
+      proposals: [],
+      messages: [],
     });
   });
 
@@ -135,7 +139,7 @@ describe("useAgentsAttachedIdeation", () => {
     );
 
     await waitFor(() =>
-      expect(getIdeationSessionMock).toHaveBeenCalledWith("productive-session"),
+      expect(getIdeationSessionWithDataMock).toHaveBeenCalledWith("productive-session"),
     );
     await waitFor(() =>
       expect(result.current.availableArtifactTabs).toEqual([
@@ -147,5 +151,152 @@ describe("useAgentsAttachedIdeation", () => {
     );
     expect(result.current.attachedIdeationSessionId).toBe("productive-session");
     expect(result.current.hasAutoOpenArtifacts).toBe(true);
+  });
+
+  it("exposes task artifacts when richer session data has created task links", async () => {
+    getIdeationSessionWithDataMock.mockResolvedValueOnce({
+      session: {
+        id: "productive-session",
+        projectId: "project-1",
+        title: "Implement ClickUp integration",
+        status: "active",
+        planArtifactId: "artifact-1",
+        inheritedPlanArtifactId: null,
+        acceptanceStatus: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        archivedAt: null,
+      },
+      proposals: [
+        {
+          id: "proposal-1",
+          sessionId: "productive-session",
+          title: "Backend task",
+          description: null,
+          category: "backend",
+          steps: [],
+          acceptanceCriteria: [],
+          suggestedPriority: "medium",
+          priorityScore: 50,
+          priorityReason: null,
+          estimatedComplexity: "medium",
+          userPriority: null,
+          userModified: false,
+          status: "pending",
+          createdTaskId: "task-1",
+          planArtifactId: "artifact-1",
+          planVersionAtCreation: 1,
+          sortOrder: 0,
+          createdAt: "2026-06-19T09:10:00Z",
+          updatedAt: "2026-06-19T09:10:00Z",
+        },
+      ],
+      messages: [],
+    });
+
+    const { result } = renderHook(
+      () =>
+        useAgentsAttachedIdeation({
+          activeConversation: conversation(),
+          activeConversationMode: "ideation",
+          activeWorkspace: {
+            ...workspace(),
+            linkedPlanBranchId: null,
+          },
+          invalidateProjectConversations: vi.fn(),
+          selectedConversationMessages: [],
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(result.current.availableArtifactTabs).toEqual([
+        "plan",
+        "verification",
+        "proposal",
+        "tasks",
+      ]),
+    );
+    expect(result.current.hasAutoOpenArtifacts).toBe(true);
+  });
+
+  it("keeps merged history ordered so newer selected messages can win equal-score resolution", async () => {
+    useConversationHistoryWindowMock.mockReturnValueOnce({
+      data: {
+        conversation: conversation(),
+        messages: [
+          {
+            id: "older-history-message",
+            conversationId: "conversation-1",
+            role: "assistant",
+            content: "",
+            toolCalls: [
+              {
+                id: "tool-older",
+                name: "ralphx::v1_get_ideation_status",
+                arguments: { session_id: "older-session" },
+                result: { session_id: "older-session" },
+              },
+            ],
+            contentBlocks: [],
+            createdAt: "2026-06-19T09:00:00Z",
+          },
+        ],
+      },
+    });
+    getIdeationSessionWithDataMock.mockResolvedValueOnce({
+      session: {
+        id: "newer-session",
+        projectId: "project-1",
+        title: "Newer session",
+        status: "active",
+        planArtifactId: "artifact-1",
+        inheritedPlanArtifactId: null,
+        acceptanceStatus: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        archivedAt: null,
+      },
+      proposals: [],
+      messages: [],
+    });
+
+    const { result } = renderHook(
+      () =>
+        useAgentsAttachedIdeation({
+          activeConversation: conversation(),
+          activeConversationMode: "ideation",
+          activeWorkspace: workspace(),
+          invalidateProjectConversations: vi.fn(),
+          selectedConversationMessages: [
+            {
+              id: "newer-selected-message",
+              conversationId: "conversation-1",
+              role: "assistant",
+              content: "",
+              toolCalls: [
+                {
+                  id: "tool-newer",
+                  name: "ralphx::v1_get_ideation_status",
+                  arguments: { session_id: "newer-session" },
+                  result: { session_id: "newer-session" },
+                },
+              ],
+              contentBlocks: [],
+              createdAt: "2026-06-19T09:05:00Z",
+            },
+          ] as never,
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(getIdeationSessionWithDataMock).toHaveBeenCalledWith("newer-session"),
+    );
+    expect(result.current.attachedIdeationSessionId).toBe("newer-session");
   });
 });

@@ -172,4 +172,35 @@ describe("resolveAttachedIdeationSessionId", () => {
 
     expect(result).toBe("productive-session");
   });
+
+  it("prefers productive status results over a stale workspace link", () => {
+    const result = resolveAttachedIdeationSessionId(
+      conversation,
+      [
+        messageWithToolCall(
+          {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  session_id: "productive-session",
+                  project_id: "project-1",
+                  title: "Implement ClickUp integration",
+                  status: "accepted",
+                  proposal_count: 4,
+                  verification_status: "unverified",
+                  delivery_status: "in_progress",
+                }),
+              },
+            ],
+            structured_content: null,
+          },
+          "ralphx::v1_get_ideation_status",
+        ),
+      ],
+      "stale-shell-session",
+    );
+
+    expect(result).toBe("productive-session");
+  });
 });

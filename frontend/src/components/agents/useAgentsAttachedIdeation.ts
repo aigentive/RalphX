@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { chatApi } from "@/api/chat";
 import type {
@@ -13,6 +13,10 @@ import { ideationKeys } from "@/hooks/useIdeation";
 
 import type { AgentConversation } from "./agentConversations";
 import { getVisibleIdeationArtifactTabs } from "./agentArtifactTabs";
+import {
+  agentWorkspaceKeys,
+  invalidateWorkspaceQueries,
+} from "./agentWorkspaceQueries";
 import { resolveAttachedIdeationSessionId } from "./attachedIdeationSession";
 
 interface UseAgentsAttachedIdeationArgs {
@@ -23,6 +27,18 @@ interface UseAgentsAttachedIdeationArgs {
   selectedConversationMessages: ChatMessageResponse[];
 }
 
+function compareMessagesByCreatedAt(
+  left: ChatMessageResponse,
+  right: ChatMessageResponse,
+): number {
+  const leftTime = Date.parse(left.createdAt);
+  const rightTime = Date.parse(right.createdAt);
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) {
+    return leftTime - rightTime;
+  }
+  return 0;
+}
+
 export function useAgentsAttachedIdeation({
   activeConversation,
   activeConversationMode,
@@ -30,7 +46,9 @@ export function useAgentsAttachedIdeation({
   invalidateProjectConversations,
   selectedConversationMessages,
 }: UseAgentsAttachedIdeationArgs) {
+  const queryClient = useQueryClient();
   const childArchiveSyncRef = useRef<Set<string>>(new Set());
+  const syncedIdeationLinksRef = useRef<Set<string>>(new Set());
   const shouldHydrateAttachedIdeation =
     activeConversation?.contextType === "ideation" ||
     (activeConversation?.contextType === "project" &&
@@ -39,8 +57,7 @@ export function useAgentsAttachedIdeation({
         Boolean(activeWorkspace?.linkedIdeationSessionId || activeWorkspace?.linkedPlanBranchId)));
   const shouldLoadConversationHistory =
     shouldHydrateAttachedIdeation &&
-    activeConversation?.contextType === "project" &&
-    selectedConversationMessages.length === 0;
+    activeConversation?.contextType === "project";
   const conversationHistoryQuery = useConversationHistoryWindow(
     activeConversation?.id ?? null,
     {
@@ -49,14 +66,18 @@ export function useAgentsAttachedIdeation({
     },
   );
   const resolvedConversationMessages = useMemo(() => {
-    if (selectedConversationMessages.length > 0) {
-      return selectedConversationMessages;
-    }
     const historyData = conversationHistoryQuery.data;
     if (!historyData || historyData.conversation?.id !== activeConversation?.id) {
-      return [];
+      return selectedConversationMessages;
     }
-    return historyData.messages;
+    const byId = new Map<string, ChatMessageResponse>();
+    for (const message of selectedConversationMessages) {
+      byId.set(message.id, message);
+    }
+    for (const message of historyData.messages) {
+      byId.set(message.id, message);
+    }
+    return [...byId.values()].sort(compareMessagesByCreatedAt);
   }, [
     activeConversation?.id,
     conversationHistoryQuery.data,
@@ -79,16 +100,38 @@ export function useAgentsAttachedIdeation({
     ],
   );
   const attachedIdeationSessionQuery = useQuery({
-    queryKey: ideationKeys.sessionDetail(attachedIdeationSessionId ?? ""),
-    queryFn: () => ideationApi.sessions.get(attachedIdeationSessionId!),
+    queryKey: ideationKeys.sessionWithData(attachedIdeationSessionId ?? ""),
+    queryFn: () => ideationApi.sessions.getWithData(attachedIdeationSessionId!),
     enabled: shouldHydrateAttachedIdeation && !!attachedIdeationSessionId,
-    staleTime: 5_000,
+    staleTime: 0,
+    refetchInterval: (query) =>
+      query.state.data?.session.verificationInProgress ||
+      query.state.data?.session.acceptanceStatus === "pending"
+        ? 3_000
+        : false,
   });
-  const attachedIdeationSession =
+  const attachedIdeationSessionData =
     attachedIdeationSessionId &&
-    attachedIdeationSessionQuery.data?.id === attachedIdeationSessionId
+    attachedIdeationSessionQuery.data?.session.id === attachedIdeationSessionId
       ? attachedIdeationSessionQuery.data
       : null;
+  const attachedIdeationSession =
+    attachedIdeationSessionId &&
+    attachedIdeationSessionData?.session.id === attachedIdeationSessionId
+      ? attachedIdeationSessionData.session
+      : null;
+  const hasCreatedTasks = Boolean(
+    attachedIdeationSessionData?.proposals.some(
+      (proposal) => proposal.createdTaskId != null,
+    ),
+  );
+  const hasExecutionTasks = Boolean(
+    activeWorkspace?.linkedPlanBranchId ||
+      hasCreatedTasks ||
+      attachedIdeationSession?.status === "accepted" ||
+      attachedIdeationSession?.acceptanceStatus === "accepted" ||
+      attachedIdeationSession?.convertedAt,
+  );
   const hasAutoOpenArtifacts = useMemo(() => {
     if (!attachedIdeationSession) {
       return false;
@@ -98,27 +141,70 @@ export function useAgentsAttachedIdeation({
       attachedIdeationSession.planArtifactId ||
         attachedIdeationSession.inheritedPlanArtifactId ||
         attachedIdeationSession.acceptanceStatus === "pending" ||
+        hasExecutionTasks ||
         attachedIdeationSession.verificationInProgress ||
         attachedIdeationSession.verificationStatus !== "unverified"
     );
-  }, [attachedIdeationSession]);
+  }, [attachedIdeationSession, hasExecutionTasks]);
   const availableArtifactTabs = useMemo(() => {
     const hasPlanArtifact = Boolean(
       attachedIdeationSession?.planArtifactId ||
         attachedIdeationSession?.inheritedPlanArtifactId,
-    );
-    const hasExecutionTasks = Boolean(
-      activeWorkspace?.linkedPlanBranchId ||
-        attachedIdeationSession?.status === "accepted" ||
-        attachedIdeationSession?.acceptanceStatus === "accepted" ||
-        attachedIdeationSession?.convertedAt,
     );
     return getVisibleIdeationArtifactTabs({
       hasAttachedIdeationSession: Boolean(attachedIdeationSession),
       hasPlanArtifact,
       hasExecutionTasks,
     });
-  }, [activeWorkspace?.linkedPlanBranchId, attachedIdeationSession]);
+  }, [attachedIdeationSession, hasExecutionTasks]);
+  const shouldSyncWorkspaceIdeationLink = Boolean(
+    activeConversation?.id &&
+      activeConversation.contextType === "project" &&
+      activeWorkspace &&
+      (activeWorkspace.mode === "ideation" || activeWorkspace.mode === "plan") &&
+      attachedIdeationSessionId &&
+      attachedIdeationSession?.id === attachedIdeationSessionId &&
+      (activeWorkspace.linkedIdeationSessionId !== attachedIdeationSessionId ||
+        (!activeWorkspace.linkedPlanBranchId && hasExecutionTasks)),
+  );
+  useEffect(() => {
+    if (
+      !shouldSyncWorkspaceIdeationLink ||
+      !activeConversation?.id ||
+      !attachedIdeationSessionId
+    ) {
+      return;
+    }
+
+    const syncKey = `${activeConversation.id}:${attachedIdeationSessionId}:${activeWorkspace?.linkedPlanBranchId ?? "missing-branch"}`;
+    if (syncedIdeationLinksRef.current.has(syncKey)) {
+      return;
+    }
+    syncedIdeationLinksRef.current.add(syncKey);
+    void chatApi
+      .syncAgentConversationWorkspaceIdeationLink(
+        activeConversation.id,
+        attachedIdeationSessionId,
+      )
+      .then((result) => {
+        queryClient.setQueryData(
+          agentWorkspaceKeys.workspace(activeConversation.id),
+          result.workspace,
+        );
+        return invalidateWorkspaceQueries(queryClient, activeConversation.id);
+      })
+      .catch(() => {
+        syncedIdeationLinksRef.current.delete(syncKey);
+      });
+  }, [
+    activeConversation?.id,
+    activeWorkspace?.linkedPlanBranchId,
+    attachedIdeationSession?.id,
+    attachedIdeationSessionId,
+    hasExecutionTasks,
+    queryClient,
+    shouldSyncWorkspaceIdeationLink,
+  ]);
   useEffect(() => {
     if (
       activeConversation?.contextType !== "project" ||
