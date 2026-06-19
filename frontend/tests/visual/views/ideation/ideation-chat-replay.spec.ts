@@ -121,8 +121,10 @@ test.describe("Ideation Chat Replay", () => {
       };
     });
     const screenshot = await page.screenshot({ animations: "disabled", clip });
+    // The replay panel is a dense full-pane text snapshot; macOS CI font
+    // antialiasing/subpixel drift can exceed 1% without a visible regression.
     expect(screenshot).toMatchSnapshot("ideation-chat-replay.png", {
-      maxDiffPixelRatio: 0.01,
+      maxDiffPixelRatio: 0.025,
     });
   });
 });
