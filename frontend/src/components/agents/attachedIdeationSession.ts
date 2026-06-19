@@ -60,6 +60,7 @@ function extractAttachedSessionCandidates(toolCall: ToolCall): SessionCandidate[
     !name.includes("start_ideation_session") &&
     !name.includes("v1_start_ideation") &&
     !name.includes("v1_send_ideation_message") &&
+    !name.includes("v1_append_task_to_plan") &&
     !name.includes("v1_get_ideation_status") &&
     !name.includes("v1_list_ideation_sessions") &&
     !name.includes("v1_list_proposals") &&
@@ -173,6 +174,12 @@ function scoreSessionRecord(record: Record<string, unknown>): number {
   if ((proposalCount ?? 0) > 0) {
     score += 50 + Math.min(proposalCount ?? 0, 20);
   }
+  const createdTaskCount = arrayValue(record.created_task_ids)?.length ??
+    arrayValue(record.createdTaskIds)?.length ??
+    arrayValue(record.tasks)?.length;
+  if ((createdTaskCount ?? 0) > 0) {
+    score += 60 + Math.min(createdTaskCount ?? 0, 20);
+  }
   if (stringValue(record.status) === "accepted") {
     score += 40;
   }
@@ -194,6 +201,10 @@ function stringValue(value: unknown): string | null {
 
 function numericValue(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function arrayValue(value: unknown): unknown[] | null {
+  return Array.isArray(value) ? value : null;
 }
 
 function extractSessionIdFromText(text: string): string | null {

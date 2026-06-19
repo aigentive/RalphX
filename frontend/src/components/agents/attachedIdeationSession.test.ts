@@ -153,4 +153,23 @@ describe("resolveAttachedIdeationSessionId", () => {
 
     expect(result).toBe("productive-session");
   });
+
+  it("extracts productive sessions from appended task results", () => {
+    const result = resolveAttachedIdeationSessionId(
+      conversation,
+      [
+        messageWithToolCall(
+          {
+            session_id: "productive-session",
+            created_task_ids: ["task-1"],
+            session_status: "accepted",
+          },
+          "ralphx::v1_append_task_to_plan",
+        ),
+      ],
+      "stale-shell-session",
+    );
+
+    expect(result).toBe("productive-session");
+  });
 });
