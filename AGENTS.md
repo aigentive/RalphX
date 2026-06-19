@@ -44,7 +44,7 @@ Primary project docs:
 - PR descriptions: follow `.claude/rules/pr-descriptions.md`; lead with context, user impact, decisions, and risks instead of local validation transcripts.
 - Legacy harness compatibility (NON-NEGOTIABLE): provider-neutral changes stay additive/derivable from legacy Claude-only persisted data until an explicit migration removes that requirement.
 - Minimal diffs: avoid formatter churn and opportunistic refactors.
-- Context-preservation trackers (NON-NEGOTIABLE): for multi-step investigations or fixes, create and keep updating a local tracker under `.artifacts/specs/<topic>/tracker.md`; fresh worktrees may not have `.artifacts`, so run `mkdir -p .artifacts/specs/<topic>` before reading or writing the tracker.
+- Context-preservation trackers (NON-NEGOTIABLE): for multi-step investigations or fixes, create and keep updating a local tracker under `.artifacts/specs/<topic>/tracker.md`; fresh worktrees may not have `.artifacts`, so run `mkdir -p .artifacts/specs/<topic>` before reading or writing the tracker, and never run `sed`/`cat`/`rg` on a tracker path until `test -f` has confirmed it exists.
 - Agent tool alignment: keep prompt frontmatter, canonical agent metadata, `config/ralphx.yaml`, and MCP allowlists aligned. Source: `.claude/rules/agent-mcp-tools.md`.
 - Prompts are not migration diaries (NON-NEGOTIABLE): prompts are clean contracts for the live tool surface and role; migration notes, forbidden legacy paths, and compatibility ballast belong in backend validation, tests, or docs, not prompt prose.
 - Surface-local descriptions only (NON-NEGOTIABLE): tool schemas, recovery hints, and prompt prose must not mention tools that are not on the caller agent’s live tool surface.
@@ -72,7 +72,7 @@ Primary project docs:
 - Icon-only buttons: use an accessible name plus the app tooltip component; native `title` alone is not enough. Source: `.claude/rules/icon-only-buttons.md`.
 - Frontend interaction performance (NON-NEGOTIABLE): user-triggered panels/drawers/widgets must paint a lightweight shell before lazy imports, fetches, persistence, process startup, or heavy mount/unmount work; warm up likely heavy paths on safe intent/idle; fix safe current-scope opportunities with TDD. Source: `.claude/rules/frontend-interaction-performance.md`.
 - Refactor tracker hygiene: when a turn exposes real architectural debt, update `## High-Value Refactor Targets` in the same slice.
-- `.artifacts` tracker hygiene (NON-NEGOTIABLE): for any multi-step investigation/fix likely to outlive the current context window, create/update `.artifacts/specs/<slug>/tracker.md` as soon as substantive findings appear and keep it current before continuing.
+- `.artifacts` tracker hygiene (NON-NEGOTIABLE): for any multi-step investigation/fix likely to outlive the current context window, create/update `.artifacts/specs/<slug>/tracker.md` as soon as substantive findings appear and keep it current before continuing; if the tracker is missing, treat that as an empty tracker and create it, not as a fatal error.
 - Turn-level refactor discipline (NON-NEGOTIABLE): if production callsites repeat the same wiring/branching, centralize it or track it before continuing.
 - Factory-first runtime wiring: when scheduler/chat/transition assembly repeats in 3+ production callsites, extend a shared builder/factory instead of adding another copy.
 - Future harness readiness: prefer provider-neutral registries/factories keyed by `AgentHarnessKind` over one-off `claude+codex` branching when safe.
