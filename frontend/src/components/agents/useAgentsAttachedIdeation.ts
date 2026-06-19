@@ -8,6 +8,7 @@ import type {
   ChatMessageResponse,
 } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
+import { useConversationHistoryWindow } from "@/hooks/useChat";
 import { ideationKeys } from "@/hooks/useIdeation";
 
 import type { AgentConversation } from "./agentConversations";
@@ -36,19 +37,44 @@ export function useAgentsAttachedIdeation({
       (activeConversationMode === "ideation" ||
         activeConversationMode === "plan" ||
         Boolean(activeWorkspace?.linkedIdeationSessionId || activeWorkspace?.linkedPlanBranchId)));
+  const shouldLoadConversationHistory =
+    shouldHydrateAttachedIdeation &&
+    activeConversation?.contextType === "project" &&
+    selectedConversationMessages.length === 0;
+  const conversationHistoryQuery = useConversationHistoryWindow(
+    activeConversation?.id ?? null,
+    {
+      enabled: shouldLoadConversationHistory,
+      pageSize: 40,
+    },
+  );
+  const resolvedConversationMessages = useMemo(() => {
+    if (selectedConversationMessages.length > 0) {
+      return selectedConversationMessages;
+    }
+    const historyData = conversationHistoryQuery.data;
+    if (!historyData || historyData.conversation?.id !== activeConversation?.id) {
+      return [];
+    }
+    return historyData.messages;
+  }, [
+    activeConversation?.id,
+    conversationHistoryQuery.data,
+    selectedConversationMessages,
+  ]);
   const attachedIdeationSessionId = useMemo(
     () =>
       shouldHydrateAttachedIdeation
         ? resolveAttachedIdeationSessionId(
             activeConversation,
-            selectedConversationMessages,
+            resolvedConversationMessages,
             activeWorkspace?.linkedIdeationSessionId ?? null,
           )
         : null,
     [
       activeConversation,
       activeWorkspace?.linkedIdeationSessionId,
-      selectedConversationMessages,
+      resolvedConversationMessages,
       shouldHydrateAttachedIdeation,
     ],
   );
