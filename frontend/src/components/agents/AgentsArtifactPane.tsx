@@ -9,7 +9,7 @@ import {
   X,
 } from "lucide-react";
 import type { ElementType } from "react";
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -220,6 +220,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onClose,
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
+  const syncedIdeationLinksRef = useRef<Set<string>>(new Set());
   const isDirectIdeationConversation = conversation?.contextType === "ideation";
   const canHydrateIdeationArtifacts = Boolean(
     isDirectIdeationConversation ||
@@ -320,6 +321,44 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ? rawSessionData
       : null;
   const session = sessionData?.session ? (sessionData.session as IdeationSession) : null;
+  useEffect(() => {
+    if (
+      !conversationId ||
+      conversation?.contextType !== "project" ||
+      !workspace ||
+      (workspace.mode !== "ideation" && workspace.mode !== "plan") ||
+      !attachedSessionId ||
+      workspace.linkedIdeationSessionId === attachedSessionId ||
+      sessionData?.session.id !== attachedSessionId
+    ) {
+      return;
+    }
+
+    const syncKey = `${conversationId}:${attachedSessionId}`;
+    if (syncedIdeationLinksRef.current.has(syncKey)) {
+      return;
+    }
+    syncedIdeationLinksRef.current.add(syncKey);
+    void chatApi
+      .syncAgentConversationWorkspaceIdeationLink(conversationId, attachedSessionId)
+      .then((result) => {
+        queryClient.setQueryData(
+          agentWorkspaceKeys.workspace(conversationId),
+          result.workspace,
+        );
+        return invalidateWorkspaceQueries(queryClient, conversationId);
+      })
+      .catch(() => {
+        syncedIdeationLinksRef.current.delete(syncKey);
+      });
+  }, [
+    attachedSessionId,
+    conversation?.contextType,
+    conversationId,
+    queryClient,
+    sessionData?.session.id,
+    workspace,
+  ]);
   const proposals = useMemo<TaskProposal[]>(
     () => (sessionData?.proposals ?? []).map(toTaskProposal),
     [sessionData?.proposals],

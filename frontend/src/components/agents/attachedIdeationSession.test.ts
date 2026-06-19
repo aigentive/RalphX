@@ -72,6 +72,17 @@ describe("resolveAttachedIdeationSessionId", () => {
     expect(result).toBe("session-from-text");
   });
 
+  it("extracts session ids from plain text tool results", () => {
+    const result = resolveAttachedIdeationSessionId(conversation, [
+      messageWithToolCall(
+        "Productive session ae4249ec-43c6-4123-8c55-9b5ddd446889 is accepted.",
+        "ralphx::v1_get_ideation_status",
+      ),
+    ]);
+
+    expect(result).toBe("ae4249ec-43c6-4123-8c55-9b5ddd446889");
+  });
+
   it("extracts planning sessions from plan artifact tool results", () => {
     const result = resolveAttachedIdeationSessionId(conversation, [
       messageWithToolCall(
@@ -103,6 +114,14 @@ describe("resolveAttachedIdeationSessionId", () => {
     const result = resolveAttachedIdeationSessionId(conversation, [], "session-linked");
 
     expect(result).toBe("session-linked");
+  });
+
+  it("ignores recognized tool calls without session-bearing payloads", () => {
+    const result = resolveAttachedIdeationSessionId(conversation, [
+      messageWithToolCall(false, "ralphx::v1_get_ideation_status"),
+    ]);
+
+    expect(result).toBeNull();
   });
 
   it("prefers productive spawned ideation sessions over stale workspace links", () => {

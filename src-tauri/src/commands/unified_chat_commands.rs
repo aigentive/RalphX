@@ -1088,6 +1088,22 @@ pub struct SwitchAgentConversationModeResponse {
     pub workspace: Option<AgentConversationWorkspaceResponse>,
 }
 
+/// Input for synchronizing a project agent workspace to the ideation session
+/// discovered from its transcript.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncAgentConversationWorkspaceIdeationLinkInput {
+    pub conversation_id: String,
+    pub ideation_session_id: String,
+}
+
+/// Response from sync_agent_conversation_workspace_ideation_link command.
+#[derive(Debug, Serialize)]
+pub struct SyncAgentConversationWorkspaceIdeationLinkResponse {
+    pub workspace: AgentConversationWorkspaceResponse,
+    pub updated: bool,
+}
+
 /// Response from publishing a project-backed agent conversation workspace.
 #[derive(Debug, Serialize)]
 pub struct PublishAgentConversationWorkspaceResponse {
@@ -3466,6 +3482,86 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     Ok(SwitchAgentConversationModeResponse {
         conversation: agent_conversation_response_for_state(state, conversation).await?,
         workspace: workspace_response,
+    })
+}
+
+#[tauri::command]
+pub async fn sync_agent_conversation_workspace_ideation_link(
+    input: SyncAgentConversationWorkspaceIdeationLinkInput,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<SyncAgentConversationWorkspaceIdeationLinkResponse, String> {
+    let conversation_id = ChatConversationId::from_string(input.conversation_id);
+    let _workspace_changed_event = emit_workspace_changed_when_done(&app, &conversation_id);
+    sync_agent_conversation_workspace_ideation_link_for_state(
+        state.inner(),
+        conversation_id,
+        IdeationSessionId::from_string(input.ideation_session_id),
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn sync_agent_conversation_workspace_ideation_link_for_state(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    ideation_session_id: IdeationSessionId,
+) -> Result<SyncAgentConversationWorkspaceIdeationLinkResponse, String> {
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Conversation not found: {}", conversation_id))?;
+    if conversation.context_type != ChatContextType::Project {
+        return Err("Only project agent conversations can sync ideation links".to_string());
+    }
+
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "Agent conversation workspace not found for conversation {}",
+                conversation_id
+            )
+        })?;
+    if workspace.mode != AgentConversationWorkspaceMode::Ideation
+        && workspace.mode != AgentConversationWorkspaceMode::Plan
+    {
+        return Err("Only plan or ideation workspaces can sync ideation links".to_string());
+    }
+
+    let session = state
+        .ideation_session_repo
+        .get_by_id(&ideation_session_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Ideation session not found: {}", ideation_session_id))?;
+    if session.project_id != workspace.project_id
+        || conversation.context_id != workspace.project_id.as_str()
+    {
+        return Err("Ideation session does not belong to the workspace project".to_string());
+    }
+
+    let updated = workspace.linked_ideation_session_id.as_ref() != Some(&ideation_session_id)
+        || workspace.linked_plan_branch_id.is_some();
+    if updated {
+        state
+            .agent_conversation_workspace_repo
+            .update_links(&conversation_id, Some(&ideation_session_id), None)
+            .await
+            .map_err(|error| error.to_string())?;
+        workspace.linked_ideation_session_id = Some(ideation_session_id);
+        workspace.linked_plan_branch_id = None;
+        workspace.updated_at = chrono::Utc::now();
+    }
+
+    Ok(SyncAgentConversationWorkspaceIdeationLinkResponse {
+        workspace: agent_workspace_response_for_state(state, workspace).await?,
+        updated,
     })
 }
 
@@ -8433,6 +8529,7 @@ mod tests {
         spawn_deferred_agent_workspace_repair_message, store_agent_workspace_freshness,
         switch_agent_conversation_mode_for_state,
         switch_agent_conversation_mode_for_state_allowing_running,
+        sync_agent_conversation_workspace_ideation_link_for_state,
         try_acquire_agent_workspace_publish_guard,
         update_agent_conversation_workspace_from_base_for_app_state,
         validate_explicit_publish_base_ref, AgentConversationResponse,
@@ -10040,6 +10137,82 @@ mod tests {
             format!("ralphx/test/agent-{suffix}"),
             format!("/tmp/external-pr-command-{suffix}"),
         )
+    }
+
+    #[tokio::test]
+    async fn sync_workspace_ideation_link_updates_same_project_workspace() {
+        let state = AppState::new_test();
+        let mut project = Project::new("Project".to_string(), "/tmp/project-sync-link".to_string());
+        project.id = ProjectId::from_string("project-sync-link".to_string());
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should be persisted");
+
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = ChatConversationId::from_string("conversation-sync-link");
+        state
+            .chat_conversation_repo
+            .create(conversation.clone())
+            .await
+            .expect("conversation should be persisted");
+
+        let stale_session_id = IdeationSessionId::from_string("stale-session");
+        let productive_session = state
+            .ideation_session_repo
+            .create(IdeationSession::new_with_title(
+                project.id.clone(),
+                "Productive plan".to_string(),
+            ))
+            .await
+            .expect("productive session should be persisted");
+
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation.id.clone(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/test/sync-link".to_string(),
+            "/tmp/sync-link".to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(stale_session_id);
+        workspace.linked_plan_branch_id = Some(PlanBranchId::from_string("stale-plan-branch"));
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be persisted");
+
+        let response = sync_agent_conversation_workspace_ideation_link_for_state(
+            &state,
+            conversation.id.clone(),
+            productive_session.id.clone(),
+        )
+        .await
+        .expect("sync should succeed");
+
+        assert!(response.updated);
+        assert_eq!(
+            response.workspace.linked_ideation_session_id.as_deref(),
+            Some(productive_session.id.as_str())
+        );
+        assert_eq!(response.workspace.linked_plan_branch_id, None);
+
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation.id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(
+            stored.linked_ideation_session_id.as_ref(),
+            Some(&productive_session.id)
+        );
+        assert_eq!(stored.linked_plan_branch_id, None);
     }
 
     async fn wait_for_latest_pr_lookup_calls(github: &MockGithubService, expected: u32) {

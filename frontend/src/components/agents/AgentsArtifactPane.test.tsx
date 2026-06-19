@@ -28,6 +28,7 @@ const {
   listPublicationEventsMock,
   getWorkspaceFreshnessMock,
   updateWorkspaceFromBaseMock,
+  syncWorkspaceIdeationLinkMock,
   setWorkspaceAutoPublishMock,
   setWorkspacePrSupervisionMock,
   precomputePrDescriptionMock,
@@ -72,6 +73,7 @@ const {
   listPublicationEventsMock: vi.fn(),
   getWorkspaceFreshnessMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
+  syncWorkspaceIdeationLinkMock: vi.fn(),
   setWorkspaceAutoPublishMock: vi.fn(),
   setWorkspacePrSupervisionMock: vi.fn(),
   precomputePrDescriptionMock: vi.fn(),
@@ -120,6 +122,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
         getWorkspaceFreshnessMock(...args),
       updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>
         updateWorkspaceFromBaseMock(...args),
+      syncAgentConversationWorkspaceIdeationLink: (...args: unknown[]) =>
+        syncWorkspaceIdeationLinkMock(...args),
       setAgentConversationWorkspaceAutoPublish: (...args: unknown[]) =>
         setWorkspaceAutoPublishMock(...args),
       setAgentConversationWorkspacePrSupervision: (...args: unknown[]) =>
@@ -512,6 +516,10 @@ describe("AgentsArtifactPane", () => {
       updated: false,
       targetRef: "origin/main",
       baseCommit: "base-sha",
+    });
+    syncWorkspaceIdeationLinkMock.mockResolvedValue({
+      workspace: workspace({ linkedIdeationSessionId: "session-1" }),
+      updated: true,
     });
     setWorkspacePrSupervisionMock.mockImplementation(
       async (
@@ -1506,6 +1514,97 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() => expect(getIdeationSessionMock).toHaveBeenCalledWith("session-1"));
     await waitFor(() => expect(getSessionPlanMock).toHaveBeenCalledWith("session-1"));
     expect(screen.queryByText("No plan yet")).not.toBeInTheDocument();
+  });
+
+  it("syncs a productive transcript-resolved ideation session back to the workspace", async () => {
+    useConversationMock.mockReturnValue({
+      data: {
+        conversation: conversation(),
+        messages: [
+          {
+            id: "message-1",
+            conversationId: "conversation-1",
+            role: "assistant",
+            content: "",
+            toolCalls: [
+              {
+                id: "tool-1",
+                name: "ralphx::v1_list_ideation_sessions",
+                arguments: { project_id: "project-1" },
+                result: {
+                  sessions: [
+                    {
+                      id: "stale-shell-session",
+                      title: "Continue ClickUp integration implementation",
+                      status: "active",
+                      proposal_count: 0,
+                    },
+                    {
+                      id: "productive-session",
+                      title: "Implement ClickUp integration",
+                      status: "accepted",
+                      proposal_count: 4,
+                      plan_artifact_id: "artifact-1",
+                    },
+                  ],
+                },
+              },
+            ],
+            contentBlocks: [],
+            createdAt: "2026-04-23T09:00:00Z",
+          },
+        ],
+      },
+      isLoading: false,
+    });
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "productive-session",
+        projectId: "project-1",
+        title: "Implement ClickUp integration",
+        titleSource: "auto",
+        status: "accepted",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: "2026-04-23T09:10:00Z",
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        acceptanceStatus: "accepted",
+      },
+      proposals: [],
+      messages: [],
+    });
+    syncWorkspaceIdeationLinkMock.mockResolvedValue({
+      workspace: workspace({ linkedIdeationSessionId: "productive-session" }),
+      updated: true,
+    });
+
+    renderPane(
+      "tasks",
+      workspace({ mode: "ideation", linkedIdeationSessionId: "stale-shell-session" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await waitFor(() =>
+      expect(getIdeationSessionMock).toHaveBeenCalledWith("productive-session"),
+    );
+    await waitFor(() =>
+      expect(syncWorkspaceIdeationLinkMock).toHaveBeenCalledWith(
+        "conversation-1",
+        "productive-session",
+      ),
+    );
   });
 
   it("fetches the current planning-session plan even when session data has a stale null plan id", async () => {

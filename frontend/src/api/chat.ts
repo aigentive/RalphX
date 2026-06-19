@@ -1596,6 +1596,7 @@ export const chatApi = {
   getAgentConversationWorkspaceFreshness,
   reconcileAgentConversationWorkspacePublication,
   updateAgentConversationWorkspaceFromBase,
+  syncAgentConversationWorkspaceIdeationLink,
   precomputeAgentConversationWorkspacePrDescription,
   publishAgentConversationWorkspace,
   setAgentConversationWorkspaceAutoPublish,
@@ -1840,6 +1841,11 @@ export interface UpdateAgentConversationWorkspaceFromBaseResult {
   baseCommit: string;
   baseStatus: AgentConversationWorkspaceBaseStatus;
   effectiveBaseDisplayName: string | null;
+}
+
+export interface SyncAgentConversationWorkspaceIdeationLinkResult {
+  workspace: AgentConversationWorkspace;
+  updated: boolean;
 }
 
 export interface SetAgentConversationWorkspacePrSupervisionInput {
@@ -2192,6 +2198,10 @@ const UpdateAgentConversationWorkspaceFromBaseResponseSchema = z.object({
     .default("valid"),
   effective_base_display_name: z.string().nullable().optional().default(null),
 });
+const SyncAgentConversationWorkspaceIdeationLinkResponseSchema = z.object({
+  workspace: AgentConversationWorkspaceResponseSchema,
+  updated: z.boolean(),
+});
 
 type RawAgentConversationWorkspace = z.infer<
   typeof AgentConversationWorkspaceResponseSchema
@@ -2222,6 +2232,9 @@ type RawAgentConversationWorkspaceFreshness = z.infer<
 >;
 type RawUpdateAgentConversationWorkspaceFromBaseResponse = z.infer<
   typeof UpdateAgentConversationWorkspaceFromBaseResponseSchema
+>;
+type RawSyncAgentConversationWorkspaceIdeationLinkResponse = z.infer<
+  typeof SyncAgentConversationWorkspaceIdeationLinkResponseSchema
 >;
 type RawAgentWorkspacePrReviewMonitor = z.infer<
   typeof AgentWorkspacePrReviewMonitorResponseSchema
@@ -2539,6 +2552,15 @@ function transformUpdateAgentConversationWorkspaceFromBaseResponse(
   };
 }
 
+function transformSyncAgentConversationWorkspaceIdeationLinkResponse(
+  raw: RawSyncAgentConversationWorkspaceIdeationLinkResponse,
+): SyncAgentConversationWorkspaceIdeationLinkResult {
+  return {
+    workspace: transformAgentConversationWorkspace(raw.workspace),
+    updated: raw.updated,
+  };
+}
+
 export async function getAgentConversationWorkspace(
   conversationId: string,
 ): Promise<AgentConversationWorkspace | null> {
@@ -2766,6 +2788,23 @@ export async function updateAgentConversationWorkspaceFromBase(
     UpdateAgentConversationWorkspaceFromBaseResponseSchema,
   );
   return transformUpdateAgentConversationWorkspaceFromBaseResponse(raw);
+}
+
+export async function syncAgentConversationWorkspaceIdeationLink(
+  conversationId: string,
+  ideationSessionId: string,
+): Promise<SyncAgentConversationWorkspaceIdeationLinkResult> {
+  const raw = await typedInvoke(
+    "sync_agent_conversation_workspace_ideation_link",
+    {
+      input: {
+        conversationId,
+        ideationSessionId,
+      },
+    },
+    SyncAgentConversationWorkspaceIdeationLinkResponseSchema,
+  );
+  return transformSyncAgentConversationWorkspaceIdeationLinkResponse(raw);
 }
 
 export async function publishAgentConversationWorkspace(

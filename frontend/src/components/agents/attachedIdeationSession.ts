@@ -54,10 +54,6 @@ interface SessionCandidate {
   score: number;
 }
 
-function extractAttachedSessionId(toolCall: ToolCall): string | null {
-  return extractAttachedSessionCandidates(toolCall)[0]?.sessionId ?? null;
-}
-
 function extractAttachedSessionCandidates(toolCall: ToolCall): SessionCandidate[] {
   const name = toolCall.name.toLowerCase();
   if (
@@ -80,10 +76,6 @@ function extractAttachedSessionCandidates(toolCall: ToolCall): SessionCandidate[
     ...extractSessionCandidatesFromValue(toolCall.result),
     ...extractSessionCandidatesFromValue(toolCall.arguments),
   ];
-}
-
-function extractSessionIdFromValue(value: unknown): string | null {
-  return extractSessionCandidatesFromValue(value)[0]?.sessionId ?? null;
 }
 
 function extractSessionCandidatesFromValue(value: unknown): SessionCandidate[] {
