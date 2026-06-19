@@ -377,7 +377,7 @@ function renderPane(
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
+      <TooltipProvider delayDuration={0}>
         <div className="h-[480px]">
           <AgentsArtifactPane
             conversation={paneConversation}
@@ -1133,7 +1133,13 @@ describe("AgentsArtifactPane", () => {
       publish,
     );
 
-    expect(await screen.findByTestId("agents-base-stale")).toHaveTextContent(
+    expect(
+      await screen.findByTestId(
+        "agents-base-stale",
+        {},
+        deferredHydrationTimeout,
+      )
+    ).toHaveTextContent(
       "feature/agent-screen"
     );
     expect(screen.queryByTestId("agents-close-pr")).not.toBeInTheDocument();

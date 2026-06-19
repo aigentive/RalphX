@@ -292,7 +292,7 @@ describe("AgentsView start conversation", () => {
       expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
     );
     expect(screen.queryByTestId("agents-start-composer")).not.toBeInTheDocument();
-    expect(screen.getByTestId("agents-workspace-status")).toHaveTextContent(
+    expect(screen.getByTestId("agents-conversation-workspace-line")).toHaveTextContent(
       "agent-conversation-2"
     );
     expect(useAgentSessionStore.getState().selectedConversationId).toBe("conversation-2");
@@ -1479,7 +1479,7 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
     );
-    expect(screen.getByTestId("agents-workspace-status")).toHaveTextContent(
+    expect(screen.getByTestId("agents-conversation-workspace-line")).toHaveTextContent(
       "agent-conversation-chat"
     );
   });

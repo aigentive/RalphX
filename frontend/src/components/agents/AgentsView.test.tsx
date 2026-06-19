@@ -395,7 +395,9 @@ describe("AgentsView", () => {
     const panel = await screen.findByTestId("integrated-chat-panel");
     expect(panel).toHaveAttribute("data-conversation-id-override", "conversation-1");
     expect(panel).toHaveAttribute("data-ideation-session-id", "");
-    expect(await screen.findByTestId("agents-workspace-status")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-conversation-workspace-line"),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("mock-open-child-session"));
 
@@ -428,7 +430,9 @@ describe("AgentsView", () => {
         "conversation-1",
       );
     });
-    expect(await screen.findByTestId("agents-workspace-status")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-conversation-workspace-line"),
+    ).toBeInTheDocument();
   });
 
   it("shows the chat focus switcher on workspace chat when the latest archived/completed verification child is hydrated", async () => {
