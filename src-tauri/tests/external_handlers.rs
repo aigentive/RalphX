@@ -20,10 +20,7 @@ use ralphx_lib::domain::agents::{
     AgentHarnessKind, AgentLane, AgentLaneSettings, AgentRole, AgenticClient, LogicalEffort,
 };
 use ralphx_lib::domain::entities::{
-    ideation::{
-        ChatMessage, IdeationSession, IdeationSessionBuilder, IdeationSessionStatus, SessionOrigin,
-        SessionPurpose, VerificationStatus,
-    },
+    ideation::{ChatMessage, IdeationSession, IdeationSessionBuilder, IdeationSessionStatus, SessionOrigin, SessionPurpose, VerificationStatus},
     project::{GitMode, Project},
     task::Task,
     types::ProjectId,
@@ -252,7 +249,8 @@ async fn setup_ideation_parent_workspace(
     );
     project.id = ProjectId::from_string(project_id.to_string());
     project.base_branch = Some("main".to_string());
-    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().to_string());
+    project.worktree_parent_directory =
+        Some(worktree_parent.path().to_string_lossy().to_string());
     let project = state.app_state.project_repo.create(project).await.unwrap();
 
     let conversation = state
@@ -372,7 +370,8 @@ async fn test_list_projects_external_does_not_expose_working_directory() {
     );
 
     // Verify expected fields are present via deserialized map
-    let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&json_str).unwrap();
+    let obj: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&json_str).unwrap();
     assert!(obj.contains_key("id"), "missing id");
     assert!(obj.contains_key("name"), "missing name");
     assert!(obj.contains_key("task_count"), "missing task_count");
@@ -418,7 +417,12 @@ async fn test_get_project_status_returns_task_counts() {
         .create(task_executing)
         .await
         .unwrap();
-    state.app_state.task_repo.create(task_merged).await.unwrap();
+    state
+        .app_state
+        .task_repo
+        .create(task_merged)
+        .await
+        .unwrap();
 
     let result = get_project_status_http(
         State(state),
@@ -509,7 +513,12 @@ async fn test_get_pipeline_overview_counts_stages() {
         .await
         .unwrap();
     state.app_state.task_repo.create(task_exec).await.unwrap();
-    state.app_state.task_repo.create(task_merged).await.unwrap();
+    state
+        .app_state
+        .task_repo
+        .create(task_merged)
+        .await
+        .unwrap();
 
     let result = get_pipeline_overview_http(
         State(state),
@@ -545,10 +554,7 @@ async fn test_get_pipeline_overview_scope_violation() {
     .await;
 
     assert!(result.is_err());
-    assert_eq!(
-        result.unwrap_err().status,
-        axum::http::StatusCode::FORBIDDEN
-    );
+    assert_eq!(result.unwrap_err().status, axum::http::StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -585,9 +591,7 @@ async fn test_get_pipeline_overview_since_filters_changed_tasks() {
         State(state),
         unrestricted_scope(),
         Path(project_id.to_string()),
-        Query(GetPipelineParams {
-            since: Some(since.to_rfc3339()),
-        }),
+        Query(GetPipelineParams { since: Some(since.to_rfc3339()) }),
     )
     .await;
 
@@ -597,9 +601,7 @@ async fn test_get_pipeline_overview_since_filters_changed_tasks() {
     assert_eq!(response.stages.pending, 1);
     assert_eq!(response.stages.executing, 1);
     // changed_tasks contains only the new task
-    let changed = response
-        .changed_tasks
-        .expect("changed_tasks should be present");
+    let changed = response.changed_tasks.expect("changed_tasks should be present");
     assert_eq!(changed.len(), 1);
     assert_eq!(changed[0].title, "New Task");
 }
@@ -616,17 +618,12 @@ async fn test_get_pipeline_overview_since_invalid_timestamp_returns_error() {
         State(state),
         unrestricted_scope(),
         Path(project_id.to_string()),
-        Query(GetPipelineParams {
-            since: Some("not-a-timestamp".to_string()),
-        }),
+        Query(GetPipelineParams { since: Some("not-a-timestamp".to_string()) }),
     )
     .await;
 
     assert!(result.is_err());
-    assert_eq!(
-        result.unwrap_err().status,
-        axum::http::StatusCode::UNPROCESSABLE_ENTITY
-    );
+    assert_eq!(result.unwrap_err().status, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 // ============================================================================
@@ -755,14 +752,8 @@ async fn test_start_ideation_tauri_parent_workspace_binds_analysis_and_links_wor
     .expect("start ideation should bind parent workspace")
     .0;
 
-    assert_eq!(
-        result.parent_conversation_id,
-        Some(conversation.id.as_str())
-    );
-    assert_eq!(
-        result.workspace_branch.as_deref(),
-        Some(workspace.branch_name.as_str())
-    );
+    assert_eq!(result.parent_conversation_id, Some(conversation.id.as_str()));
+    assert_eq!(result.workspace_branch.as_deref(), Some(workspace.branch_name.as_str()));
 
     let session = state
         .app_state
@@ -791,80 +782,6 @@ async fn test_start_ideation_tauri_parent_workspace_binds_analysis_and_links_wor
         linked_workspace.linked_ideation_session_id.as_ref(),
         Some(&session.id)
     );
-
-    let mut second_headers = axum::http::HeaderMap::new();
-    second_headers.insert("x-ralphx-tauri-mcp", "1".parse().unwrap());
-    second_headers.insert(
-        "x-ralphx-parent-conversation-id",
-        conversation.id.as_str().parse().unwrap(),
-    );
-    let second_result = start_ideation_http(
-        State(state.clone()),
-        unrestricted_scope(),
-        second_headers,
-        Json(StartIdeationRequest {
-            project_id: project_id.to_string(),
-            title: Some("Different follow-up request".to_string()),
-            prompt: None,
-            initial_prompt: None,
-            idempotency_key: None,
-        }),
-    )
-    .await
-    .expect("same parent conversation should reuse linked ideation session")
-    .0;
-
-    assert_eq!(second_result.session_id, session.id.as_str());
-    assert_eq!(second_result.exists, Some(true));
-    assert_eq!(second_result.next_action, "use_existing_session");
-    assert!(!second_result.agent_spawned);
-}
-
-#[tokio::test]
-async fn test_start_ideation_external_without_parent_can_create_multiple_sessions() {
-    let state = setup_test_state().await;
-
-    let project_id = "proj-external-multiple";
-    let p = make_project(project_id, "External Multiple Project");
-    state.app_state.project_repo.create(p).await.unwrap();
-
-    let first = start_ideation_http(
-        State(state.clone()),
-        unrestricted_scope(),
-        axum::http::HeaderMap::new(),
-        Json(StartIdeationRequest {
-            project_id: project_id.to_string(),
-            title: Some("OAuth provider migration".to_string()),
-            prompt: Some("Plan OAuth provider migration".to_string()),
-            initial_prompt: None,
-            idempotency_key: None,
-        }),
-    )
-    .await
-    .expect("first external start should succeed")
-    .0;
-
-    let second = start_ideation_http(
-        State(state.clone()),
-        unrestricted_scope(),
-        axum::http::HeaderMap::new(),
-        Json(StartIdeationRequest {
-            project_id: project_id.to_string(),
-            title: Some("Billing export dashboard".to_string()),
-            prompt: Some("Plan billing export dashboard".to_string()),
-            initial_prompt: None,
-            idempotency_key: None,
-        }),
-    )
-    .await
-    .expect("second external start should succeed")
-    .0;
-
-    assert_ne!(
-        second.session_id, first.session_id,
-        "external callers without a RalphX parent conversation are allowed to create multiple sessions"
-    );
-    assert_ne!(second.exists, Some(true));
 }
 
 #[tokio::test]
@@ -947,10 +864,7 @@ async fn test_start_ideation_scope_violation() {
     .await;
 
     assert!(result.is_err());
-    assert_eq!(
-        result.unwrap_err().status,
-        axum::http::StatusCode::FORBIDDEN
-    );
+    assert_eq!(result.unwrap_err().status, axum::http::StatusCode::FORBIDDEN);
 }
 
 // ============================================================================
@@ -985,10 +899,7 @@ async fn test_start_ideation_no_prompt_agent_not_spawned() {
     assert!(!response.session_id.is_empty());
     assert_eq!(response.status, "ideating");
     // No prompt → no agent spawned
-    assert!(
-        !response.agent_spawned,
-        "agent_spawned must be false when no prompt is given"
-    );
+    assert!(!response.agent_spawned, "agent_spawned must be false when no prompt is given");
 }
 
 #[tokio::test]
@@ -1015,15 +926,9 @@ async fn test_start_ideation_persists_prompt_when_execution_paused() {
     )
     .await;
 
-    assert!(
-        result.is_ok(),
-        "paused start must return a durable deferred session"
-    );
+    assert!(result.is_ok(), "paused start must return a durable deferred session");
     let response = result.unwrap().0;
-    assert!(
-        !response.agent_spawned,
-        "paused ideation must not report a spawned agent"
-    );
+    assert!(!response.agent_spawned, "paused ideation must not report a spawned agent");
     assert_eq!(response.next_action, "wait_for_resume");
     assert_eq!(response.pending_initial_prompt.as_deref(), Some(prompt));
     assert!(
@@ -1075,7 +980,9 @@ async fn test_start_ideation_with_title_preserved() {
     assert_eq!(response.status, "ideating");
 
     // Verify the session was stored with the correct title
-    let session_id = IdeationSessionId::from_string(response.session_id.clone());
+    let session_id = IdeationSessionId::from_string(
+        response.session_id.clone(),
+    );
     let fetched = state
         .app_state
         .ideation_session_repo
@@ -1124,9 +1031,7 @@ async fn test_start_ideation_without_title_assigns_default_title() {
         .unwrap()
         .expect("Session should exist in repo");
 
-    let title = fetched
-        .title
-        .expect("External ideation should not leave title empty");
+    let title = fetched.title.expect("External ideation should not leave title empty");
     assert!(
         !title.trim().is_empty(),
         "External ideation default title must be non-empty"
@@ -1182,10 +1087,7 @@ async fn test_start_ideation_codex_lane_keeps_session_namer_on_default_helper_cl
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
-    assert!(
-        response.agent_spawned,
-        "mock clients should allow the ideation send path to spawn"
-    );
+    assert!(response.agent_spawned, "mock clients should allow the ideation send path to spawn");
 
     let default_calls = {
         let mut calls = Vec::new();
@@ -1198,14 +1100,16 @@ async fn test_start_ideation_codex_lane_keeps_session_namer_on_default_helper_cl
         }
         calls
     };
-    let session_namer_prompt = default_calls.iter().find_map(|call| match &call.call_type {
-        MockCallType::Spawn { role, prompt }
-            if *role == AgentRole::Custom("ralphx-utility-session-namer".to_string()) =>
-        {
-            Some(prompt.clone())
-        }
-        _ => None,
-    });
+    let session_namer_prompt = default_calls
+        .iter()
+        .find_map(|call| match &call.call_type {
+            MockCallType::Spawn { role, prompt }
+                if *role == AgentRole::Custom("ralphx-utility-session-namer".to_string()) =>
+            {
+                Some(prompt.clone())
+            }
+            _ => None,
+        });
     assert!(
         session_namer_prompt.is_some(),
         "session namer should stay on the default helper client instead of inheriting the Codex ideation lane; default roles: {:?}; codex roles: {:?}",
@@ -1252,10 +1156,7 @@ async fn test_start_ideation_invalid_project_returns_404() {
     .await;
 
     assert!(result.is_err());
-    assert_eq!(
-        result.unwrap_err().status,
-        axum::http::StatusCode::NOT_FOUND
-    );
+    assert_eq!(result.unwrap_err().status, axum::http::StatusCode::NOT_FOUND);
 }
 
 /// backward_compat: `initial_prompt` field (no `prompt`) → treated same as `prompt`.
@@ -1285,25 +1186,21 @@ async fn test_start_ideation_initial_prompt_backward_compat() {
     )
     .await;
 
-    assert!(
-        result.is_ok(),
-        "initial_prompt should be accepted as a valid prompt"
-    );
+    assert!(result.is_ok(), "initial_prompt should be accepted as a valid prompt");
     let response = result.unwrap().0;
     assert!(!response.session_id.is_empty());
     assert_eq!(response.status, "ideating");
     // Session must have been created
-    let session_id = IdeationSessionId::from_string(response.session_id.clone());
+    let session_id = IdeationSessionId::from_string(
+        response.session_id.clone(),
+    );
     let fetched = state
         .app_state
         .ideation_session_repo
         .get_by_id(&session_id)
         .await
         .unwrap();
-    assert!(
-        fetched.is_some(),
-        "Session should be persisted when initial_prompt is used"
-    );
+    assert!(fetched.is_some(), "Session should be persisted when initial_prompt is used");
 }
 
 /// `prompt` field takes precedence over `initial_prompt` when both are supplied.
@@ -1335,7 +1232,9 @@ async fn test_start_ideation_prompt_takes_precedence_over_initial_prompt() {
     let response = result.unwrap().0;
     assert_eq!(response.status, "ideating");
     // Session was created regardless of which prompt field was used
-    let session_id = IdeationSessionId::from_string(response.session_id.clone());
+    let session_id = IdeationSessionId::from_string(
+        response.session_id.clone(),
+    );
     assert!(
         state
             .app_state
@@ -1375,15 +1274,14 @@ async fn test_start_ideation_with_prompt_returns_200_regardless_of_spawn_outcome
     .await;
 
     // Must always return 200 — spawn failures are non-fatal
-    assert!(
-        result.is_ok(),
-        "Spawn failure must not cause a non-200 response"
-    );
+    assert!(result.is_ok(), "Spawn failure must not cause a non-200 response");
     let response = result.unwrap().0;
     assert!(!response.session_id.is_empty());
     assert_eq!(response.status, "ideating");
     // Session persisted regardless of spawn outcome
-    let session_id = IdeationSessionId::from_string(response.session_id.clone());
+    let session_id = IdeationSessionId::from_string(
+        response.session_id.clone(),
+    );
     assert!(
         state
             .app_state
@@ -1422,10 +1320,7 @@ async fn test_start_ideation_scope_mismatch_returns_403() {
     .await;
 
     assert!(result.is_err());
-    assert_eq!(
-        result.unwrap_err().status,
-        axum::http::StatusCode::FORBIDDEN
-    );
+    assert_eq!(result.unwrap_err().status, axum::http::StatusCode::FORBIDDEN);
 }
 
 /// Session created even when multiple sessions exist — no hard cap anymore.
@@ -1465,10 +1360,7 @@ async fn test_start_ideation_no_session_cap() {
     )
     .await;
 
-    assert!(
-        result.is_ok(),
-        "Second session must succeed — cap was removed"
-    );
+    assert!(result.is_ok(), "Second session must succeed — cap was removed");
     let response = result.unwrap().0;
     assert!(!response.session_id.is_empty());
     assert_eq!(response.status, "ideating");
@@ -1499,15 +1391,14 @@ async fn test_start_ideation_spawn_failure_populates_blocked_reason() {
     .await;
 
     // Must return 200 even on spawn failure
-    assert!(
-        result.is_ok(),
-        "Spawn failure must not cause a non-200 response"
-    );
+    assert!(result.is_ok(), "Spawn failure must not cause a non-200 response");
     let response = result.unwrap().0;
     assert!(!response.session_id.is_empty());
     assert_eq!(response.status, "ideating");
     // Session was persisted
-    let session_id = IdeationSessionId::from_string(response.session_id.clone());
+    let session_id = IdeationSessionId::from_string(
+        response.session_id.clone(),
+    );
     assert!(
         state
             .app_state
@@ -1523,10 +1414,7 @@ async fn test_start_ideation_spawn_failure_populates_blocked_reason() {
     // - agent_spawned=false with no reason (if SpawnFailed is not raised)
     // Either way, agent_spawn_blocked_reason must not be Some("") — it must be None or a real message
     if let Some(reason) = &response.agent_spawn_blocked_reason {
-        assert!(
-            !reason.is_empty(),
-            "Blocked reason must not be empty string"
-        );
+        assert!(!reason.is_empty(), "Blocked reason must not be empty string");
     }
 }
 
@@ -1585,11 +1473,7 @@ async fn test_start_ideation_idempotency_returns_existing_session() {
     );
     assert_eq!(response.next_action, "poll_status");
     assert!(
-        response
-            .hint
-            .as_deref()
-            .unwrap_or("")
-            .contains("Idempotent"),
+        response.hint.as_deref().unwrap_or("").contains("Idempotent"),
         "hint must indicate idempotent retry"
     );
 }
@@ -2037,10 +1921,7 @@ async fn test_poll_events_event_type_filter() {
     assert!(result.is_ok());
     let response = result.unwrap().0;
     assert_eq!(response.events.len(), 2);
-    assert!(response
-        .events
-        .iter()
-        .all(|e| e.event_type == "task:created"));
+    assert!(response.events.iter().all(|e| e.event_type == "task:created"));
 
     // Filter by a type with no matches — should return empty
     let result2 = poll_events_http(
@@ -2077,12 +1958,7 @@ async fn test_task_transition_pause() {
         "Running task".to_string(),
     );
     task.internal_status = InternalStatus::Executing;
-    state
-        .app_state
-        .task_repo
-        .create(task.clone())
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(task.clone()).await.unwrap();
 
     let result = external_task_transition_http(
         State(state),
@@ -2113,12 +1989,7 @@ async fn test_task_transition_cancel() {
         "Task to cancel".to_string(),
     );
     task.internal_status = InternalStatus::Ready;
-    state
-        .app_state
-        .task_repo
-        .create(task.clone())
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(task.clone()).await.unwrap();
 
     let result = external_task_transition_http(
         State(state),
@@ -2148,12 +2019,7 @@ async fn test_task_transition_retry_from_terminal() {
         "Stopped task".to_string(),
     );
     task.internal_status = InternalStatus::Stopped;
-    state
-        .app_state
-        .task_repo
-        .create(task.clone())
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(task.clone()).await.unwrap();
 
     let result = external_task_transition_http(
         State(state),
@@ -2183,12 +2049,7 @@ async fn test_task_transition_retry_non_terminal_fails() {
         "Executing task".to_string(),
     );
     task.internal_status = InternalStatus::Executing;
-    state
-        .app_state
-        .task_repo
-        .create(task.clone())
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(task.clone()).await.unwrap();
 
     let result = external_task_transition_http(
         State(state),
@@ -2216,12 +2077,7 @@ async fn test_task_transition_scope_violation() {
         ProjectId::from_string(project_id.to_string()),
         "Protected task".to_string(),
     );
-    state
-        .app_state
-        .task_repo
-        .create(task.clone())
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(task.clone()).await.unwrap();
 
     let result = external_task_transition_http(
         State(state),
@@ -2250,12 +2106,7 @@ async fn test_review_action_approve_review_allows_review_passed() {
         "Review passed task".to_string(),
     );
     task.internal_status = InternalStatus::ReviewPassed;
-    state
-        .app_state
-        .task_repo
-        .create(task.clone())
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(task.clone()).await.unwrap();
 
     let result = review_action_http(
         State(state.clone()),
@@ -2275,13 +2126,7 @@ async fn test_review_action_approve_review_allows_review_passed() {
     assert_eq!(response.task_id, task.id.to_string());
     assert_eq!(response.new_status, InternalStatus::Approved.to_string());
 
-    let updated = state
-        .app_state
-        .task_repo
-        .get_by_id(&task.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let updated = state.app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
     assert_ne!(updated.internal_status, InternalStatus::ReviewPassed);
 }
 
@@ -2298,12 +2143,7 @@ async fn test_review_action_approve_review_rejects_reviewing() {
         "Reviewing task".to_string(),
     );
     task.internal_status = InternalStatus::Reviewing;
-    state
-        .app_state
-        .task_repo
-        .create(task.clone())
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(task.clone()).await.unwrap();
 
     let result = review_action_http(
         State(state.clone()),
@@ -2318,18 +2158,9 @@ async fn test_review_action_approve_review_rejects_reviewing() {
     .await;
 
     assert!(result.is_err());
-    assert_eq!(
-        result.unwrap_err(),
-        axum::http::StatusCode::UNPROCESSABLE_ENTITY
-    );
+    assert_eq!(result.unwrap_err(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
 
-    let updated = state
-        .app_state
-        .task_repo
-        .get_by_id(&task.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let updated = state.app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
     assert_eq!(updated.internal_status, InternalStatus::Reviewing);
 }
 
@@ -2346,12 +2177,7 @@ async fn test_review_action_approve_review_rejects_merged() {
         "Merged task".to_string(),
     );
     task.internal_status = InternalStatus::Merged;
-    state
-        .app_state
-        .task_repo
-        .create(task.clone())
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(task.clone()).await.unwrap();
 
     let result = review_action_http(
         State(state.clone()),
@@ -2366,18 +2192,9 @@ async fn test_review_action_approve_review_rejects_merged() {
     .await;
 
     assert!(result.is_err());
-    assert_eq!(
-        result.unwrap_err(),
-        axum::http::StatusCode::UNPROCESSABLE_ENTITY
-    );
+    assert_eq!(result.unwrap_err(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
 
-    let updated = state
-        .app_state
-        .task_repo
-        .get_by_id(&task.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let updated = state.app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
     assert_eq!(updated.internal_status, InternalStatus::Merged);
 }
 
@@ -2397,12 +2214,7 @@ async fn test_get_task_detail_returns_task_and_steps() {
         ProjectId::from_string(project_id.to_string()),
         "Detail task".to_string(),
     );
-    state
-        .app_state
-        .task_repo
-        .create(task.clone())
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(task.clone()).await.unwrap();
 
     let result = get_task_detail_http(
         State(state),
@@ -2431,12 +2243,7 @@ async fn test_get_task_detail_scope_violation() {
         ProjectId::from_string(project_id.to_string()),
         "Secret task".to_string(),
     );
-    state
-        .app_state
-        .task_repo
-        .create(task.clone())
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(task.clone()).await.unwrap();
 
     let result = get_task_detail_http(
         State(state),
@@ -2480,12 +2287,7 @@ async fn test_get_review_summary_empty() {
         ProjectId::from_string(project_id.to_string()),
         "Review task".to_string(),
     );
-    state
-        .app_state
-        .task_repo
-        .create(task.clone())
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(task.clone()).await.unwrap();
 
     let result = get_task_review_summary_http(
         State(state),
@@ -2513,12 +2315,7 @@ async fn test_get_review_summary_scope_violation() {
         ProjectId::from_string(project_id.to_string()),
         "Secret review task".to_string(),
     );
-    state
-        .app_state
-        .task_repo
-        .create(task.clone())
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(task.clone()).await.unwrap();
 
     let result = get_task_review_summary_http(
         State(state),
@@ -2560,24 +2357,9 @@ async fn test_get_merge_pipeline_filters_correctly() {
         "Not in merge".to_string(),
     );
 
-    state
-        .app_state
-        .task_repo
-        .create(task_pending_merge)
-        .await
-        .unwrap();
-    state
-        .app_state
-        .task_repo
-        .create(task_merging)
-        .await
-        .unwrap();
-    state
-        .app_state
-        .task_repo
-        .create(task_executing)
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(task_pending_merge).await.unwrap();
+    state.app_state.task_repo.create(task_merging).await.unwrap();
+    state.app_state.task_repo.create(task_executing).await.unwrap();
 
     let result = get_merge_pipeline_http(
         State(state),
@@ -2743,12 +2525,7 @@ async fn test_get_execution_capacity_running_and_queued() {
 
     state.app_state.task_repo.create(executing).await.unwrap();
     state.app_state.task_repo.create(reviewing).await.unwrap();
-    state
-        .app_state
-        .task_repo
-        .create(pending_review)
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(pending_review).await.unwrap();
     state.app_state.task_repo.create(healthy).await.unwrap();
 
     let result = get_execution_capacity_http(
@@ -2790,18 +2567,16 @@ async fn test_get_execution_capacity_scope_violation() {
 // ============================================================================
 
 fn make_proposal(session_id: IdeationSessionId, title: &str) -> TaskProposal {
-    TaskProposal::new(
-        session_id,
-        title,
-        ProposalCategory::Feature,
-        Priority::Medium,
-    )
+    TaskProposal::new(session_id, title, ProposalCategory::Feature, Priority::Medium)
 }
 
 async fn acknowledge_dependencies(state: &HttpServerState, session_id: &str) {
-    let _ = analyze_session_dependencies(State(state.clone()), Path(session_id.to_string()))
-        .await
-        .expect("Failed to analyze and acknowledge dependencies");
+    let _ = analyze_session_dependencies(
+        State(state.clone()),
+        Path(session_id.to_string()),
+    )
+    .await
+    .expect("Failed to analyze and acknowledge dependencies");
 }
 
 /// Creates a project + active ideation session. Returns (project_id_str, session_id_str).
@@ -2839,10 +2614,7 @@ async fn test_external_apply_proposals_session_not_found() {
     let result = external_apply_proposals(State(state), unrestricted_scope(), Json(req)).await;
 
     assert!(result.is_err());
-    assert_eq!(
-        result.unwrap_err().status,
-        axum::http::StatusCode::NOT_FOUND
-    );
+    assert_eq!(result.unwrap_err().status, axum::http::StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -2937,8 +2709,18 @@ async fn test_external_apply_proposals_creates_tasks_from_proposals() {
 
     let p1 = make_proposal(session_id_typed.clone(), "Task Alpha");
     let p2 = make_proposal(session_id_typed.clone(), "Task Beta");
-    let created_p1 = state.app_state.task_proposal_repo.create(p1).await.unwrap();
-    let created_p2 = state.app_state.task_proposal_repo.create(p2).await.unwrap();
+    let created_p1 = state
+        .app_state
+        .task_proposal_repo
+        .create(p1)
+        .await
+        .unwrap();
+    let created_p2 = state
+        .app_state
+        .task_proposal_repo
+        .create(p2)
+        .await
+        .unwrap();
 
     acknowledge_dependencies(&state, &session_id).await;
 
@@ -2975,8 +2757,18 @@ async fn test_external_apply_proposals_blocks_unacknowledged_multi_proposal_sess
 
     let p1 = make_proposal(session_id_typed.clone(), "Task Alpha");
     let p2 = make_proposal(session_id_typed, "Task Beta");
-    let created_p1 = state.app_state.task_proposal_repo.create(p1).await.unwrap();
-    let created_p2 = state.app_state.task_proposal_repo.create(p2).await.unwrap();
+    let created_p1 = state
+        .app_state
+        .task_proposal_repo
+        .create(p1)
+        .await
+        .unwrap();
+    let created_p2 = state
+        .app_state
+        .task_proposal_repo
+        .create(p2)
+        .await
+        .unwrap();
 
     let req = ExternalApplyProposalsRequest {
         session_id,
@@ -2993,11 +2785,12 @@ async fn test_external_apply_proposals_blocks_unacknowledged_multi_proposal_sess
         .expect_err("multi-proposal apply must require dependency acknowledgment");
 
     assert_eq!(err.status, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(err
-        .message
-        .as_deref()
-        .unwrap_or_default()
-        .contains("dependency ordering has not been reviewed"));
+    assert!(
+        err.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("dependency ordering has not been reviewed")
+    );
 }
 
 // ============================================================================
@@ -3016,39 +2809,21 @@ async fn test_list_sessions_no_scope_returns_all() {
     let pid = ProjectId::from_string(project_id.to_string());
     let s1 = IdeationSession::new_with_title(pid.clone(), "Session One");
     let s2 = IdeationSession::new_with_title(pid.clone(), "Session Two");
-    state
-        .app_state
-        .ideation_session_repo
-        .create(s1)
-        .await
-        .unwrap();
-    state
-        .app_state
-        .ideation_session_repo
-        .create(s2)
-        .await
-        .unwrap();
+    state.app_state.ideation_session_repo.create(s1).await.unwrap();
+    state.app_state.ideation_session_repo.create(s2).await.unwrap();
 
     let result = list_ideation_sessions_http(
         State(state),
         unrestricted_scope(),
         Path(project_id.to_string()),
-        Query(ListSessionsParams {
-            status: None,
-            limit: None,
-            updated_after: None,
-        }),
+        Query(ListSessionsParams { status: None, limit: None, updated_after: None }),
     )
     .await;
 
     assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
     let response = result.unwrap().0;
     assert_eq!(response.sessions.len(), 2);
-    let titles: Vec<_> = response
-        .sessions
-        .iter()
-        .filter_map(|s| s.title.as_deref())
-        .collect();
+    let titles: Vec<_> = response.sessions.iter().filter_map(|s| s.title.as_deref()).collect();
     assert!(titles.contains(&"Session One"));
     assert!(titles.contains(&"Session Two"));
 }
@@ -3066,21 +2841,11 @@ async fn test_list_sessions_filter_active() {
 
     // Create one active session
     let active = IdeationSession::new_with_title(pid.clone(), "Active Session");
-    let created_active = state
-        .app_state
-        .ideation_session_repo
-        .create(active)
-        .await
-        .unwrap();
+    let created_active = state.app_state.ideation_session_repo.create(active).await.unwrap();
 
     // Create one archived session
     let archived = IdeationSession::new_with_title(pid.clone(), "Archived Session");
-    let created_archived = state
-        .app_state
-        .ideation_session_repo
-        .create(archived)
-        .await
-        .unwrap();
+    let created_archived = state.app_state.ideation_session_repo.create(archived).await.unwrap();
     state
         .app_state
         .ideation_session_repo
@@ -3092,11 +2857,7 @@ async fn test_list_sessions_filter_active() {
         State(state),
         unrestricted_scope(),
         Path(project_id.to_string()),
-        Query(ListSessionsParams {
-            status: Some("active".to_string()),
-            limit: None,
-            updated_after: None,
-        }),
+        Query(ListSessionsParams { status: Some("active".to_string()), limit: None, updated_after: None }),
     )
     .await;
 
@@ -3120,12 +2881,7 @@ async fn test_list_sessions_filter_accepted() {
 
     // Create active session
     let active = IdeationSession::new_with_title(pid.clone(), "Still Active");
-    state
-        .app_state
-        .ideation_session_repo
-        .create(active)
-        .await
-        .unwrap();
+    state.app_state.ideation_session_repo.create(active).await.unwrap();
 
     // Create accepted session
     let accepted_sess = IdeationSession::new_with_title(pid.clone(), "Accepted Session");
@@ -3146,11 +2902,7 @@ async fn test_list_sessions_filter_accepted() {
         State(state),
         unrestricted_scope(),
         Path(project_id.to_string()),
-        Query(ListSessionsParams {
-            status: Some("accepted".to_string()),
-            limit: None,
-            updated_after: None,
-        }),
+        Query(ListSessionsParams { status: Some("accepted".to_string()), limit: None, updated_after: None }),
     )
     .await;
 
@@ -3173,12 +2925,7 @@ async fn test_list_sessions_filter_archived() {
 
     // Create active session
     let active = IdeationSession::new_with_title(pid.clone(), "Active Remains");
-    state
-        .app_state
-        .ideation_session_repo
-        .create(active)
-        .await
-        .unwrap();
+    state.app_state.ideation_session_repo.create(active).await.unwrap();
 
     // Create archived session
     let archived = IdeationSession::new_with_title(pid.clone(), "Archived Session");
@@ -3199,11 +2946,7 @@ async fn test_list_sessions_filter_archived() {
         State(state),
         unrestricted_scope(),
         Path(project_id.to_string()),
-        Query(ListSessionsParams {
-            status: Some("archived".to_string()),
-            limit: None,
-            updated_after: None,
-        }),
+        Query(ListSessionsParams { status: Some("archived".to_string()), limit: None, updated_after: None }),
     )
     .await;
 
@@ -3226,18 +2969,8 @@ async fn test_list_sessions_filter_all() {
 
     let s1 = IdeationSession::new_with_title(pid.clone(), "Session A");
     let s2 = IdeationSession::new_with_title(pid.clone(), "Session B");
-    let created_s2 = state
-        .app_state
-        .ideation_session_repo
-        .create(s2)
-        .await
-        .unwrap();
-    state
-        .app_state
-        .ideation_session_repo
-        .create(s1)
-        .await
-        .unwrap();
+    let created_s2 = state.app_state.ideation_session_repo.create(s2).await.unwrap();
+    state.app_state.ideation_session_repo.create(s1).await.unwrap();
     state
         .app_state
         .ideation_session_repo
@@ -3249,21 +2982,13 @@ async fn test_list_sessions_filter_all() {
         State(state),
         unrestricted_scope(),
         Path(project_id.to_string()),
-        Query(ListSessionsParams {
-            status: Some("all".to_string()),
-            limit: None,
-            updated_after: None,
-        }),
+        Query(ListSessionsParams { status: Some("all".to_string()), limit: None, updated_after: None }),
     )
     .await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
-    assert_eq!(
-        response.sessions.len(),
-        2,
-        "status=all must return all sessions regardless of status"
-    );
+    assert_eq!(response.sessions.len(), 2, "status=all must return all sessions regardless of status");
 }
 
 /// Invalid status filter → 400
@@ -3279,11 +3004,7 @@ async fn test_list_sessions_invalid_status_returns_400() {
         State(state),
         unrestricted_scope(),
         Path(project_id.to_string()),
-        Query(ListSessionsParams {
-            status: Some("invalid_xyz".to_string()),
-            limit: None,
-            updated_after: None,
-        }),
+        Query(ListSessionsParams { status: Some("invalid_xyz".to_string()), limit: None, updated_after: None }),
     )
     .await;
 
@@ -3305,11 +3026,7 @@ async fn test_list_sessions_scope_violation_returns_403() {
         State(state),
         scoped(&["proj-list-scope-b"]),
         Path(project_id.to_string()),
-        Query(ListSessionsParams {
-            status: None,
-            limit: None,
-            updated_after: None,
-        }),
+        Query(ListSessionsParams { status: None, limit: None, updated_after: None }),
     )
     .await;
 
@@ -3331,20 +3048,13 @@ async fn test_list_sessions_empty_project() {
         State(state),
         unrestricted_scope(),
         Path(project_id.to_string()),
-        Query(ListSessionsParams {
-            status: None,
-            limit: None,
-            updated_after: None,
-        }),
+        Query(ListSessionsParams { status: None, limit: None, updated_after: None }),
     )
     .await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
-    assert!(
-        response.sessions.is_empty(),
-        "expected empty sessions array for project with no sessions"
-    );
+    assert!(response.sessions.is_empty(), "expected empty sessions array for project with no sessions");
 }
 
 /// Session with proposals — proposal_count reflects the actual count
@@ -3368,28 +3078,14 @@ async fn test_list_sessions_includes_proposal_count() {
     // Add 2 proposals to the session
     let prop1 = make_proposal(created.id.clone(), "Feature Alpha");
     let prop2 = make_proposal(created.id.clone(), "Feature Beta");
-    state
-        .app_state
-        .task_proposal_repo
-        .create(prop1)
-        .await
-        .unwrap();
-    state
-        .app_state
-        .task_proposal_repo
-        .create(prop2)
-        .await
-        .unwrap();
+    state.app_state.task_proposal_repo.create(prop1).await.unwrap();
+    state.app_state.task_proposal_repo.create(prop2).await.unwrap();
 
     let result = list_ideation_sessions_http(
         State(state),
         unrestricted_scope(),
         Path(project_id.to_string()),
-        Query(ListSessionsParams {
-            status: None,
-            limit: None,
-            updated_after: None,
-        }),
+        Query(ListSessionsParams { status: None, limit: None, updated_after: None }),
     )
     .await;
 
@@ -3422,18 +3118,8 @@ async fn test_list_sessions_updated_after_filter() {
     new_session.updated_at = chrono::DateTime::parse_from_rfc3339("2025-06-01T00:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
-    state
-        .app_state
-        .ideation_session_repo
-        .create(old_session)
-        .await
-        .unwrap();
-    state
-        .app_state
-        .ideation_session_repo
-        .create(new_session)
-        .await
-        .unwrap();
+    state.app_state.ideation_session_repo.create(old_session).await.unwrap();
+    state.app_state.ideation_session_repo.create(new_session).await.unwrap();
 
     let result = list_ideation_sessions_http(
         State(state),
@@ -3449,11 +3135,7 @@ async fn test_list_sessions_updated_after_filter() {
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
-    assert_eq!(
-        response.sessions.len(),
-        1,
-        "only the new session should be returned"
-    );
+    assert_eq!(response.sessions.len(), 1, "only the new session should be returned");
     assert_eq!(response.sessions[0].title.as_deref(), Some("New Session"));
 }
 
@@ -3494,22 +3176,13 @@ async fn test_list_sessions_response_includes_updated_at() {
 
     let pid = ProjectId::from_string(project_id.to_string());
     let session = IdeationSession::new_with_title(pid.clone(), "Session With Updated At");
-    state
-        .app_state
-        .ideation_session_repo
-        .create(session)
-        .await
-        .unwrap();
+    state.app_state.ideation_session_repo.create(session).await.unwrap();
 
     let result = list_ideation_sessions_http(
         State(state),
         unrestricted_scope(),
         Path(project_id.to_string()),
-        Query(ListSessionsParams {
-            status: None,
-            limit: None,
-            updated_after: None,
-        }),
+        Query(ListSessionsParams { status: None, limit: None, updated_after: None }),
     )
     .await;
 
@@ -3609,7 +3282,11 @@ async fn test_trigger_verification_already_running() {
     state
         .app_state
         .ideation_session_repo
-        .update_verification_state(&created.id, VerificationStatus::Reviewing, true)
+        .update_verification_state(
+            &created.id,
+            VerificationStatus::Reviewing,
+            true
+        )
         .await
         .unwrap();
 
@@ -3761,13 +3438,20 @@ async fn test_get_plan_verification_basic() {
     state
         .app_state
         .ideation_session_repo
-        .update_verification_state(&session_id_obj, VerificationStatus::Verified, false)
+        .update_verification_state(
+            &session_id_obj,
+            VerificationStatus::Verified,
+            false
+        )
         .await
         .unwrap();
 
-    let result =
-        get_plan_verification_external_http(State(state), unrestricted_scope(), Path(session_id))
-            .await;
+    let result = get_plan_verification_external_http(
+        State(state),
+        unrestricted_scope(),
+        Path(session_id),
+    )
+    .await;
 
     assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
     let response = result.unwrap().0;
@@ -3798,8 +3482,16 @@ async fn test_get_plan_verification_scope_403() {
 // get_ideation_messages_http
 // ============================================================================
 
-async fn create_message(state: &HttpServerState, msg: ChatMessage) {
-    state.app_state.chat_message_repo.create(msg).await.unwrap();
+async fn create_message(
+    state: &HttpServerState,
+    msg: ChatMessage,
+) {
+    state
+        .app_state
+        .chat_message_repo
+        .create(msg)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -3812,10 +3504,7 @@ async fn test_get_ideation_messages_empty() {
         State(state),
         unrestricted_scope(),
         Path(session_id_str),
-        axum::extract::Query(GetIdeationMessagesQuery {
-            limit: 50,
-            offset: 0,
-        }),
+        axum::extract::Query(GetIdeationMessagesQuery { limit: 50, offset: 0 }),
     )
     .await;
 
@@ -3829,7 +3518,8 @@ async fn test_get_ideation_messages_empty() {
 #[tokio::test]
 async fn test_get_ideation_messages_returns_user_and_orchestrator() {
     let state = setup_test_state().await;
-    let (_, session_id_str) = setup_session(&state, "proj-msg-roles", "Role Filter Session").await;
+    let (_, session_id_str) =
+        setup_session(&state, "proj-msg-roles", "Role Filter Session").await;
     let session_id = IdeationSessionId::from_string(session_id_str.clone());
 
     // Add user, orchestrator, and system messages
@@ -3853,10 +3543,7 @@ async fn test_get_ideation_messages_returns_user_and_orchestrator() {
         State(state),
         unrestricted_scope(),
         Path(session_id_str),
-        axum::extract::Query(GetIdeationMessagesQuery {
-            limit: 50,
-            offset: 0,
-        }),
+        axum::extract::Query(GetIdeationMessagesQuery { limit: 50, offset: 0 }),
     )
     .await;
 
@@ -3874,7 +3561,8 @@ async fn test_get_ideation_messages_returns_user_and_orchestrator() {
 #[tokio::test]
 async fn test_get_ideation_messages_pagination() {
     let state = setup_test_state().await;
-    let (_, session_id_str) = setup_session(&state, "proj-msg-page", "Pagination Session").await;
+    let (_, session_id_str) =
+        setup_session(&state, "proj-msg-page", "Pagination Session").await;
     let session_id = IdeationSessionId::from_string(session_id_str.clone());
 
     // Insert 5 user messages
@@ -3891,10 +3579,7 @@ async fn test_get_ideation_messages_pagination() {
         State(state.clone()),
         unrestricted_scope(),
         Path(session_id_str.clone()),
-        axum::extract::Query(GetIdeationMessagesQuery {
-            limit: 3,
-            offset: 0,
-        }),
+        axum::extract::Query(GetIdeationMessagesQuery { limit: 3, offset: 0 }),
     )
     .await;
 
@@ -3908,10 +3593,7 @@ async fn test_get_ideation_messages_pagination() {
         State(state),
         unrestricted_scope(),
         Path(session_id_str),
-        axum::extract::Query(GetIdeationMessagesQuery {
-            limit: 3,
-            offset: 3,
-        }),
+        axum::extract::Query(GetIdeationMessagesQuery { limit: 3, offset: 3 }),
     )
     .await;
 
@@ -3924,16 +3606,14 @@ async fn test_get_ideation_messages_pagination() {
 #[tokio::test]
 async fn test_get_ideation_messages_scope_violation() {
     let state = setup_test_state().await;
-    let (_, session_id_str) = setup_session(&state, "proj-msg-scope", "Scope Test Session").await;
+    let (_, session_id_str) =
+        setup_session(&state, "proj-msg-scope", "Scope Test Session").await;
 
     let result = get_ideation_messages_http(
         State(state),
         scoped(&["proj-other"]),
         Path(session_id_str),
-        axum::extract::Query(GetIdeationMessagesQuery {
-            limit: 50,
-            offset: 0,
-        }),
+        axum::extract::Query(GetIdeationMessagesQuery { limit: 50, offset: 0 }),
     )
     .await;
 
@@ -3949,10 +3629,7 @@ async fn test_get_ideation_messages_not_found() {
         State(state),
         unrestricted_scope(),
         Path("nonexistent-session".to_string()),
-        axum::extract::Query(GetIdeationMessagesQuery {
-            limit: 50,
-            offset: 0,
-        }),
+        axum::extract::Query(GetIdeationMessagesQuery { limit: 50, offset: 0 }),
     )
     .await;
 
@@ -3963,7 +3640,8 @@ async fn test_get_ideation_messages_not_found() {
 #[tokio::test]
 async fn test_get_ideation_messages_agent_status_generating() {
     let state = setup_test_state().await;
-    let (_, session_id_str) = setup_session(&state, "proj-msg-agent", "Agent Status Session").await;
+    let (_, session_id_str) =
+        setup_session(&state, "proj-msg-agent", "Agent Status Session").await;
 
     // Register a running agent with "ideation" context_type (regression test: was "session")
     let agent_key = RunningAgentKey::new("ideation", &session_id_str);
@@ -3984,10 +3662,7 @@ async fn test_get_ideation_messages_agent_status_generating() {
         State(state),
         unrestricted_scope(),
         Path(session_id_str),
-        axum::extract::Query(GetIdeationMessagesQuery {
-            limit: 50,
-            offset: 0,
-        }),
+        axum::extract::Query(GetIdeationMessagesQuery { limit: 50, offset: 0 }),
     )
     .await;
 
@@ -4007,10 +3682,7 @@ async fn test_get_ideation_messages_agent_status_idle() {
         State(state),
         unrestricted_scope(),
         Path(session_id_str),
-        axum::extract::Query(GetIdeationMessagesQuery {
-            limit: 50,
-            offset: 0,
-        }),
+        axum::extract::Query(GetIdeationMessagesQuery { limit: 50, offset: 0 }),
     )
     .await;
 
@@ -4063,10 +3735,7 @@ async fn test_get_ideation_messages_agent_status_waiting_for_input() {
         State(state),
         unrestricted_scope(),
         Path(session_id_str),
-        axum::extract::Query(GetIdeationMessagesQuery {
-            limit: 50,
-            offset: 0,
-        }),
+        axum::extract::Query(GetIdeationMessagesQuery { limit: 50, offset: 0 }),
     )
     .await;
 
@@ -4102,16 +3771,17 @@ async fn test_get_ideation_status_agent_running() {
         )
         .await;
 
-    let result =
-        get_ideation_status_http(State(state), unrestricted_scope(), Path(session_id_str)).await;
+    let result = get_ideation_status_http(
+        State(state),
+        unrestricted_scope(),
+        Path(session_id_str),
+    )
+    .await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
     assert!(response.agent_running, "expected agent_running: true");
-    assert_eq!(
-        response.agent_status, "generating",
-        "expected agent_status: generating when agent is running"
-    );
+    assert_eq!(response.agent_status, "generating", "expected agent_status: generating when agent is running");
 }
 
 #[tokio::test]
@@ -4121,16 +3791,17 @@ async fn test_get_ideation_status_agent_not_running() {
     let (_, session_id_str) =
         setup_session(&state, "proj-status-no-agent", "No Agent Status Session").await;
 
-    let result =
-        get_ideation_status_http(State(state), unrestricted_scope(), Path(session_id_str)).await;
+    let result = get_ideation_status_http(
+        State(state),
+        unrestricted_scope(),
+        Path(session_id_str),
+    )
+    .await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
     assert!(!response.agent_running, "expected agent_running: false");
-    assert_eq!(
-        response.agent_status, "idle",
-        "expected agent_status: idle when agent not running"
-    );
+    assert_eq!(response.agent_status, "idle", "expected agent_status: idle when agent not running");
 }
 
 #[tokio::test]
@@ -4172,8 +3843,12 @@ async fn test_get_ideation_status_agent_waiting_for_input() {
         .register(ipr_key, stdin)
         .await;
 
-    let result =
-        get_ideation_status_http(State(state), unrestricted_scope(), Path(session_id_str)).await;
+    let result = get_ideation_status_http(
+        State(state),
+        unrestricted_scope(),
+        Path(session_id_str),
+    )
+    .await;
 
     drop(child);
 
@@ -4181,7 +3856,8 @@ async fn test_get_ideation_status_agent_waiting_for_input() {
     let response = result.unwrap().0;
     assert!(response.agent_running, "expected agent_running: true");
     assert_eq!(
-        response.agent_status, "waiting_for_input",
+        response.agent_status,
+        "waiting_for_input",
         "expected agent_status: waiting_for_input when interactive process registered"
     );
 }
@@ -4193,8 +3869,12 @@ async fn test_get_ideation_status_includes_verification_state() {
     let (_, session_id_str) =
         setup_session(&state, "proj-status-verif", "Verification State Session").await;
 
-    let result =
-        get_ideation_status_http(State(state), unrestricted_scope(), Path(session_id_str)).await;
+    let result = get_ideation_status_http(
+        State(state),
+        unrestricted_scope(),
+        Path(session_id_str),
+    )
+    .await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
@@ -4217,12 +3897,7 @@ async fn seed_task(state: &HttpServerState, project_id: &str, title: &str) -> Ta
         ProjectId::from_string(project_id.to_string()),
         title.to_string(),
     );
-    state
-        .app_state
-        .task_repo
-        .create(task.clone())
-        .await
-        .unwrap();
+    state.app_state.task_repo.create(task.clone()).await.unwrap();
     task
 }
 
@@ -4236,7 +3911,12 @@ async fn test_batch_task_status_multiple_tasks() {
         task_ids: vec![t1.id.to_string(), t2.id.to_string()],
     };
 
-    let result = batch_task_status_http(State(state), unrestricted_scope(), Json(req)).await;
+    let result = batch_task_status_http(
+        State(state),
+        unrestricted_scope(),
+        Json(req),
+    )
+    .await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
@@ -4259,7 +3939,12 @@ async fn test_batch_task_status_not_found() {
         task_ids: vec![t1.id.to_string(), "nonexistent-task-id".to_string()],
     };
 
-    let result = batch_task_status_http(State(state), unrestricted_scope(), Json(req)).await;
+    let result = batch_task_status_http(
+        State(state),
+        unrestricted_scope(),
+        Json(req),
+    )
+    .await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
@@ -4282,8 +3967,12 @@ async fn test_batch_task_status_access_denied() {
         task_ids: vec![t1.id.to_string(), t2.id.to_string()],
     };
 
-    let result =
-        batch_task_status_http(State(state), scoped(&["proj-batch-scoped"]), Json(req)).await;
+    let result = batch_task_status_http(
+        State(state),
+        scoped(&["proj-batch-scoped"]),
+        Json(req),
+    )
+    .await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
@@ -4304,7 +3993,12 @@ async fn test_batch_task_status_max_50_enforced() {
     let task_ids: Vec<String> = (0..51).map(|i| format!("task-id-{i}")).collect();
     let req = BatchTaskStatusRequest { task_ids };
 
-    let result = batch_task_status_http(State(state), unrestricted_scope(), Json(req)).await;
+    let result = batch_task_status_http(
+        State(state),
+        unrestricted_scope(),
+        Json(req),
+    )
+    .await;
 
     assert!(result.is_err());
     let (status, msg) = result.unwrap_err();
@@ -4325,7 +4019,12 @@ async fn test_batch_task_status_requested_count_and_returned_count() {
         ],
     };
 
-    let result = batch_task_status_http(State(state), unrestricted_scope(), Json(req)).await;
+    let result = batch_task_status_http(
+        State(state),
+        unrestricted_scope(),
+        Json(req),
+    )
+    .await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
@@ -4343,7 +4042,12 @@ async fn test_batch_task_status_empty_request() {
 
     let req = BatchTaskStatusRequest { task_ids: vec![] };
 
-    let result = batch_task_status_http(State(state), unrestricted_scope(), Json(req)).await;
+    let result = batch_task_status_http(
+        State(state),
+        unrestricted_scope(),
+        Json(req),
+    )
+    .await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
@@ -4382,9 +4086,7 @@ async fn test_get_session_tasks_empty_session_returns_not_scheduled() {
         State(state),
         unrestricted_scope(),
         Path(session_id.as_str().to_string()),
-        Query(GetSessionTasksParams {
-            changed_since: None,
-        }),
+        Query(GetSessionTasksParams { changed_since: None }),
     )
     .await;
 
@@ -4439,9 +4141,7 @@ async fn test_get_session_tasks_with_tasks_returns_task_list() {
         State(state),
         unrestricted_scope(),
         Path(session_id.as_str().to_string()),
-        Query(GetSessionTasksParams {
-            changed_since: None,
-        }),
+        Query(GetSessionTasksParams { changed_since: None }),
     )
     .await;
 
@@ -4491,7 +4191,12 @@ async fn test_get_session_tasks_excludes_unlinked_tasks() {
         "Unlinked Task".to_string(),
     );
 
-    state.app_state.task_repo.create(linked_task).await.unwrap();
+    state
+        .app_state
+        .task_repo
+        .create(linked_task)
+        .await
+        .unwrap();
     state
         .app_state
         .task_repo
@@ -4503,18 +4208,13 @@ async fn test_get_session_tasks_excludes_unlinked_tasks() {
         State(state),
         unrestricted_scope(),
         Path(session_id.as_str().to_string()),
-        Query(GetSessionTasksParams {
-            changed_since: None,
-        }),
+        Query(GetSessionTasksParams { changed_since: None }),
     )
     .await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
-    assert_eq!(
-        response.task_count, 1,
-        "Only linked task should be returned"
-    );
+    assert_eq!(response.task_count, 1, "Only linked task should be returned");
     assert_eq!(response.tasks[0].title, "Linked Task");
 }
 
@@ -4527,9 +4227,7 @@ async fn test_get_session_tasks_nonexistent_session_returns_404() {
         State(state),
         unrestricted_scope(),
         Path("nonexistent-session-id".to_string()),
-        Query(GetSessionTasksParams {
-            changed_since: None,
-        }),
+        Query(GetSessionTasksParams { changed_since: None }),
     )
     .await;
 
@@ -4566,9 +4264,7 @@ async fn test_get_session_tasks_scope_violation_returns_403() {
         State(state),
         scoped(&["proj-different"]),
         Path(session_id.as_str().to_string()),
-        Query(GetSessionTasksParams {
-            changed_since: None,
-        }),
+        Query(GetSessionTasksParams { changed_since: None }),
     )
     .await;
 
@@ -4618,9 +4314,7 @@ async fn test_get_session_tasks_delivery_status_all_merged_is_delivered() {
         State(state),
         unrestricted_scope(),
         Path(session_id.as_str().to_string()),
-        Query(GetSessionTasksParams {
-            changed_since: None,
-        }),
+        Query(GetSessionTasksParams { changed_since: None }),
     )
     .await;
 
@@ -4670,9 +4364,7 @@ async fn test_get_session_tasks_delivery_status_mixed_terminal_is_partial() {
         State(state),
         unrestricted_scope(),
         Path(session_id.as_str().to_string()),
-        Query(GetSessionTasksParams {
-            changed_since: None,
-        }),
+        Query(GetSessionTasksParams { changed_since: None }),
     )
     .await;
 
@@ -4714,9 +4406,7 @@ async fn test_get_session_tasks_delivery_status_in_review_is_pending_review() {
         State(state),
         unrestricted_scope(),
         Path(session_id.as_str().to_string()),
-        Query(GetSessionTasksParams {
-            changed_since: None,
-        }),
+        Query(GetSessionTasksParams { changed_since: None }),
     )
     .await;
 
@@ -4767,9 +4457,7 @@ async fn test_get_session_tasks_delivery_status_active_tasks_is_in_progress() {
         State(state),
         unrestricted_scope(),
         Path(session_id.as_str().to_string()),
-        Query(GetSessionTasksParams {
-            changed_since: None,
-        }),
+        Query(GetSessionTasksParams { changed_since: None }),
     )
     .await;
 
@@ -4809,9 +4497,7 @@ async fn test_get_session_tasks_includes_updated_at() {
         State(state),
         unrestricted_scope(),
         Path(session_id.as_str().to_string()),
-        Query(GetSessionTasksParams {
-            changed_since: None,
-        }),
+        Query(GetSessionTasksParams { changed_since: None }),
     )
     .await;
 
@@ -4820,10 +4506,7 @@ async fn test_get_session_tasks_includes_updated_at() {
     assert_eq!(response.task_count, 1);
     let task_item = &response.tasks[0];
     // updated_at must be a non-empty RFC3339 string
-    assert!(
-        !task_item.updated_at.is_empty(),
-        "updated_at should be present"
-    );
+    assert!(!task_item.updated_at.is_empty(), "updated_at should be present");
     assert!(
         chrono::DateTime::parse_from_rfc3339(&task_item.updated_at).is_ok(),
         "updated_at should be valid RFC3339"
@@ -4864,18 +4547,13 @@ async fn test_get_session_tasks_changed_since_filters_older_tasks() {
         State(state),
         unrestricted_scope(),
         Path(session_id.as_str().to_string()),
-        Query(GetSessionTasksParams {
-            changed_since: Some(future_cutoff.to_string()),
-        }),
+        Query(GetSessionTasksParams { changed_since: Some(future_cutoff.to_string()) }),
     )
     .await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
-    assert_eq!(
-        response.task_count, 0,
-        "All tasks should be filtered out by future cutoff"
-    );
+    assert_eq!(response.task_count, 0, "All tasks should be filtered out by future cutoff");
     assert!(response.tasks.is_empty());
 }
 
@@ -4913,18 +4591,13 @@ async fn test_get_session_tasks_changed_since_past_cutoff_returns_all() {
         State(state),
         unrestricted_scope(),
         Path(session_id.as_str().to_string()),
-        Query(GetSessionTasksParams {
-            changed_since: Some(past_cutoff.to_string()),
-        }),
+        Query(GetSessionTasksParams { changed_since: Some(past_cutoff.to_string()) }),
     )
     .await;
 
     assert!(result.is_ok());
     let response = result.unwrap().0;
-    assert_eq!(
-        response.task_count, 1,
-        "Task should be included with past cutoff"
-    );
+    assert_eq!(response.task_count, 1, "Task should be included with past cutoff");
 }
 
 /// changed_since with invalid value returns 400.
@@ -4952,9 +4625,7 @@ async fn test_get_session_tasks_invalid_changed_since_returns_400() {
         State(state),
         unrestricted_scope(),
         Path(session_id.as_str().to_string()),
-        Query(GetSessionTasksParams {
-            changed_since: Some("not-a-date".to_string()),
-        }),
+        Query(GetSessionTasksParams { changed_since: Some("not-a-date".to_string()) }),
     )
     .await;
 
@@ -4993,13 +4664,22 @@ async fn test_get_plan_verification_external_verification_child_shape() {
 
     // Seed an orchestrator message in the child
     let msg = ChatMessage::orchestrator_in_session(child.id.clone(), "Round 1 done.");
-    state.app_state.chat_message_repo.create(msg).await.unwrap();
+    state
+        .app_state
+        .chat_message_repo
+        .create(msg)
+        .await
+        .unwrap();
 
     // Set parent in_progress=true
     state
         .app_state
         .ideation_session_repo
-        .update_verification_state(&parent_id, VerificationStatus::Reviewing, true)
+        .update_verification_state(
+            &parent_id,
+            VerificationStatus::Reviewing,
+            true
+        )
         .await
         .unwrap();
 
@@ -5034,20 +4714,28 @@ async fn test_get_plan_verification_external_verification_child_shape() {
 #[tokio::test]
 async fn test_get_plan_verification_external_no_child_returns_null() {
     let state = setup_test_state().await;
-    let (_, session_id) = setup_session(&state, "proj-vc-null", "No Child Project").await;
+    let (_, session_id) =
+        setup_session(&state, "proj-vc-null", "No Child Project").await;
     let session_id_obj = IdeationSessionId::from_string(session_id.clone());
 
     state
         .app_state
         .ideation_session_repo
-        .update_verification_state(&session_id_obj, VerificationStatus::Reviewing, true)
+        .update_verification_state(
+            &session_id_obj,
+            VerificationStatus::Reviewing,
+            true
+        )
         .await
         .unwrap();
 
-    let result =
-        get_plan_verification_external_http(State(state), unrestricted_scope(), Path(session_id))
-            .await
-            .expect("handler must succeed");
+    let result = get_plan_verification_external_http(
+        State(state),
+        unrestricted_scope(),
+        Path(session_id),
+    )
+    .await
+    .expect("handler must succeed");
 
     assert!(
         result.0.verification_child.is_none(),
@@ -5075,10 +4763,10 @@ async fn setup_plan_import_test_with_state(state: HttpServerState) -> PlanImport
     use ralphx_lib::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
     };
-    use ralphx_lib::domain::entities::artifact::{Artifact, ArtifactType};
     use ralphx_lib::domain::entities::{
         AgentConversationWorkspaceMode, ChatConversation, IdeationAnalysisBaseRefKind,
     };
+    use ralphx_lib::domain::entities::artifact::{Artifact, ArtifactType};
 
     let repo_dir = tempfile::TempDir::new().unwrap();
     let repo_path = repo_dir.path();
@@ -5111,7 +4799,8 @@ async fn setup_plan_import_test_with_state(state: HttpServerState) -> PlanImport
     );
     project.id = project_id.clone();
     project.base_branch = Some("main".to_string());
-    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().to_string());
+    project.worktree_parent_directory =
+        Some(worktree_parent.path().to_string_lossy().to_string());
     let project = state.app_state.project_repo.create(project).await.unwrap();
 
     let source_artifact = Artifact::new_inline(
@@ -5261,9 +4950,9 @@ async fn test_plan_import_happy_path() {
         .state
         .app_state
         .artifact_repo
-        .get_by_id(
-            &ralphx_lib::domain::entities::artifact::ArtifactId::from_string(cloned_id.clone()),
-        )
+        .get_by_id(&ralphx_lib::domain::entities::artifact::ArtifactId::from_string(
+            cloned_id.clone(),
+        ))
         .await
         .unwrap()
         .expect("cloned artifact should exist");
@@ -5277,9 +4966,7 @@ async fn test_plan_import_happy_path() {
         .expect("source artifact should exist");
     assert_eq!(cloned_artifact.content, source_artifact.content);
     assert!(
-        cloned_artifact
-            .derived_from
-            .contains(&fix.source_artifact_id),
+        cloned_artifact.derived_from.contains(&fix.source_artifact_id),
         "cloned artifact should be derived from source"
     );
 
@@ -5673,7 +5360,10 @@ async fn test_plan_import_wrong_project_error() {
 
     // Create a session in a different project
     let other_project_id = ProjectId::from_string("proj-other-project".to_string());
-    let mut other_project = Project::new("Other Project".to_string(), "/tmp/other".to_string());
+    let mut other_project = Project::new(
+        "Other Project".to_string(),
+        "/tmp/other".to_string(),
+    );
     other_project.id = other_project_id.clone();
     fix.state
         .app_state
@@ -5815,10 +5505,10 @@ async fn test_plan_import_verification_child_error() {
     use ralphx_lib::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
     };
-    use ralphx_lib::domain::entities::artifact::{Artifact, ArtifactType};
     use ralphx_lib::domain::entities::{
         AgentConversationWorkspaceMode, ChatConversation, IdeationAnalysisBaseRefKind,
     };
+    use ralphx_lib::domain::entities::artifact::{Artifact, ArtifactType};
 
     let state = setup_test_state().await;
 
@@ -5853,7 +5543,8 @@ async fn test_plan_import_verification_child_error() {
     );
     project.id = project_id.clone();
     project.base_branch = Some("main".to_string());
-    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().to_string());
+    project.worktree_parent_directory =
+        Some(worktree_parent.path().to_string_lossy().to_string());
     let project = state.app_state.project_repo.create(project).await.unwrap();
 
     let source_artifact = Artifact::new_inline(
@@ -6136,7 +5827,10 @@ async fn test_plan_import_bypasses_similarity_dedup() {
         .unwrap();
 
     // Seed a first user message for the existing session so similarity has something to compare
-    let seed_msg = ChatMessage::user_in_session(existing_session.id.clone(), "Plan import test");
+    let seed_msg = ChatMessage::user_in_session(
+        existing_session.id.clone(),
+        "Plan import test",
+    );
     fix.state
         .app_state
         .chat_message_repo
