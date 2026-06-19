@@ -68,7 +68,7 @@ beforeEach(() => {
 describe("EffortEstimationPanel header & hero", () => {
   it("renders header label and hero midpoint with units", () => {
     renderPanel({ lowHours: 100, highHours: 200 });
-    expect(screen.getByText("Equivalent Developer Effort")).toBeInTheDocument();
+    expect(screen.getByText(/Equivalent Developer Effort/)).toBeInTheDocument();
     // Midpoint = 150
     expect(screen.getByText("~150")).toBeInTheDocument();
     expect(screen.getByText("developer hours")).toBeInTheDocument();
@@ -97,7 +97,7 @@ describe("EffortEstimationPanel header & hero", () => {
     renderPanel();
     // Should still render hero without crashing and treat as default (no badge)
     expect(screen.queryByText("customized")).not.toBeInTheDocument();
-    expect(screen.getByText("Equivalent Developer Effort")).toBeInTheDocument();
+    expect(screen.getByText(/Equivalent Developer Effort/)).toBeInTheDocument();
   });
 });
 

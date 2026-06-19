@@ -1,8 +1,10 @@
 // Helper functions for task_commands module
 
-use crate::application::AppState;
 use crate::application::chat_service::uses_execution_slot;
-use crate::domain::entities::{ChatContextType, IdeationSessionId, InternalStatus, ProjectId, TaskId};
+use crate::application::AppState;
+use crate::domain::entities::{
+    ChatContextType, IdeationSessionId, InternalStatus, ProjectId, TaskId,
+};
 use tauri::{Emitter, State};
 
 /// Default target for inject_task command
@@ -35,21 +37,17 @@ pub async fn emit_queue_changed(
         }
     };
 
-    let queued_message_count = match count_slot_consuming_queued_messages_for_project(
-        state.inner(),
-        project_id,
-    )
-    .await
-    {
-        Ok(count) => count,
-        Err(e) => {
-            tracing::warn!(
-                "Failed to count queued agent messages for queue_changed event: {}",
-                e
-            );
-            0
-        }
-    };
+    let queued_message_count =
+        match count_slot_consuming_queued_messages_for_project(state.inner(), project_id).await {
+            Ok(count) => count,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to count queued agent messages for queue_changed event: {}",
+                    e
+                );
+                0
+            }
+        };
 
     // Phase 82: Include projectId in queue_changed event for per-project scoping
     let _ = app.emit(
@@ -170,13 +168,22 @@ pub fn status_to_label(status: InternalStatus) -> String {
 mod tests {
     use super::count_slot_consuming_queued_messages_for_project;
     use crate::application::AppState;
-    use crate::domain::entities::{ChatContextType, IdeationSession, InternalStatus, Project, Task};
+    use crate::domain::entities::{
+        ChatContextType, IdeationSession, InternalStatus, Project, Task,
+    };
 
     #[tokio::test]
     async fn test_count_slot_consuming_queued_messages_for_project_counts_all_slot_contexts() {
         let app_state = AppState::new_test();
-        let project = Project::new("Queue Count Project".to_string(), "/test/queue-count".to_string());
-        app_state.project_repo.create(project.clone()).await.unwrap();
+        let project = Project::new(
+            "Queue Count Project".to_string(),
+            "/test/queue-count".to_string(),
+        );
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .unwrap();
 
         let review_task = app_state
             .task_repo

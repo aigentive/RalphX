@@ -194,15 +194,15 @@ pub async fn enable_feature_branch(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Project not found: {}", project_id.as_str()))?;
 
-    let base_branch = input.base_branch_override.clone().unwrap_or_else(|| {
-        project.base_branch.as_deref().unwrap_or("main").to_string()
-    });
+    let base_branch = input
+        .base_branch_override
+        .clone()
+        .unwrap_or_else(|| project.base_branch.as_deref().unwrap_or("main").to_string());
     let repo_path = PathBuf::from(&project.working_directory);
 
     // Ensure base branch exists, auto-creating from project default if needed
     let was_created =
-        ensure_base_branch_exists(&repo_path, &base_branch, project.base_branch.as_deref())
-            .await?;
+        ensure_base_branch_exists(&repo_path, &base_branch, project.base_branch.as_deref()).await?;
     if was_created {
         tracing::info!(
             "Auto-created base branch '{}' from project default for enable_feature_branch",

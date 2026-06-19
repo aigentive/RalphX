@@ -25,9 +25,10 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{AgentRunId, ChatConversationId};
 use crate::infrastructure::agents::claude::parse_claude_version;
+use crate::infrastructure::agents::{find_codex_cli, resolve_codex_cli, ResolvedCodexCli};
 use crate::infrastructure::tool_paths::{
     agent_subprocess_env_path, claude_native_cli_path, find_claude_cli_path,
-    find_claude_native_cli_path, find_codex_cli_path, resolve_shell_cli_path,
+    find_claude_native_cli_path, resolve_shell_cli_path,
 };
 use crate::utils::runtime_log_paths::{
     managed_codex_bin_dir, managed_codex_binary_path, managed_codex_home_dir,
@@ -293,29 +294,51 @@ async fn managed_codex_observation(include_latest_version: bool) -> ManagedProvi
 async fn user_managed_codex_observation(
     include_latest_version: bool,
 ) -> ManagedProviderCliObservation {
-    let Some(binary_path) = find_codex_cli_path() else {
-        return ManagedProviderCliObservation {
-            supported: true,
-            installed: false,
-            binary_path: None,
-            current_version: None,
-            latest_version: None,
-            error: None,
-        };
-    };
-
-    let current_version = match probe_cli_version(&binary_path).await {
-        Ok(output) => parse_codex_version(&output).or_else(|| Some(output.trim().to_string())),
+    let resolved = match resolve_user_managed_codex_cli().await {
+        Ok(resolved) => resolved,
         Err(error) => {
+            let binary_path = find_codex_cli();
+            let installed = binary_path.is_some();
             return ManagedProviderCliObservation {
                 supported: true,
-                installed: true,
-                binary_path: Some(binary_path),
+                installed,
+                binary_path,
                 current_version: None,
                 latest_version: None,
-                error: Some(error),
-            }
+                error: installed.then_some(error),
+            };
         }
+    };
+
+    user_managed_codex_observation_from_resolved_cli(resolved, include_latest_version).await
+}
+
+async fn resolve_user_managed_codex_cli() -> Result<ResolvedCodexCli, String> {
+    tokio::task::spawn_blocking(resolve_codex_cli)
+        .await
+        .map_err(|error| format!("Codex CLI resolver task failed: {error}"))?
+}
+
+async fn user_managed_codex_observation_from_resolved_cli(
+    resolved: ResolvedCodexCli,
+    include_latest_version: bool,
+) -> ManagedProviderCliObservation {
+    let binary_path = resolved.path;
+    let current_version = match resolved.capabilities.version {
+        Some(version) => Some(version),
+        None => match probe_cli_version(&binary_path).await {
+            Ok(output) => parse_codex_version(&output).or_else(|| Some(output.trim().to_string())),
+            Err(error) => {
+                return ManagedProviderCliObservation {
+                    supported: true,
+                    installed: true,
+                    binary_path: Some(binary_path),
+                    current_version: None,
+                    latest_version: None,
+                    error: Some(error),
+                }
+            }
+        },
     };
 
     let latest_version = if include_latest_version {

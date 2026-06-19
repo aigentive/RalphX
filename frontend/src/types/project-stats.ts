@@ -30,6 +30,8 @@ export const CycleTimePhaseSchema = z.object({
 export const EmeEstimateSchema = z.object({
   lowHours: z.number(),
   highHours: z.number(),
+  scope: z.string(),
+  scopeLabel: z.string(),
   taskCount: z.number(),
   earliestTaskDate: z.string().nullable(),
   latestTaskDate: z.string().nullable(),
@@ -65,11 +67,102 @@ export const WeeklyDataPointSchema = z.object({
   sampleSize: z.number(),
 });
 
+export const DeliveryWeeklyThroughputPointSchema = z.object({
+  weekStart: z.string(),
+  unifiedDeliveries: z.number(),
+  taskDeliveries: z.number(),
+  workspaceDeliveries: z.number(),
+  mergedPrs: z.number(),
+  sampleSize: z.number(),
+});
+
 export const ProjectTrendsSchema = z.object({
   weeklyThroughput: z.array(WeeklyDataPointSchema),
+  weeklyDeliveryThroughput: z.array(DeliveryWeeklyThroughputPointSchema),
   weeklyCycleTime: z.array(WeeklyDataPointSchema),
   weeklyPipelineCycleTime: z.array(WeeklyDataPointSchema),
   weeklySuccessRate: z.array(WeeklyDataPointSchema),
+});
+
+export const PrInsightsSummarySchema = z.object({
+  totalPrs: z.number(),
+  directWorkspacePrs: z.number(),
+  taskPipelinePrs: z.number(),
+  executionOwnedWorkspaceRefs: z.number(),
+  mergedPrs: z.number(),
+  openPrs: z.number(),
+  draftPrs: z.number(),
+  changesRequestedPrs: z.number(),
+  closedPrs: z.number(),
+  needsAgentPrs: z.number(),
+  unpushedWorkspacePrs: z.number(),
+  totalWorkspaces: z.number(),
+  directWorkspaces: z.number(),
+  directWorkspacesWithPrs: z.number(),
+  directWorkspacePrConversionRate: z.number(),
+  terminalMergeRate: z.number(),
+  avgWorkspacePrCycleHours: z.number().nullable(),
+  avgPlanPrWaitHours: z.number().nullable(),
+  requestedChangesEvents: z.number(),
+  autofixNeededEvents: z.number(),
+  agentFixCompletedEvents: z.number(),
+  supervisionEnabledWorkspaces: z.number(),
+  autoMergeDesiredWorkspaces: z.number(),
+  autoMergeActiveWorkspaces: z.number(),
+});
+
+export const PrInsightOriginBreakdownSchema = z.object({
+  origin: z.string(),
+  label: z.string(),
+  countedInTotals: z.boolean(),
+  totalPrs: z.number(),
+  mergedPrs: z.number(),
+  openPrs: z.number(),
+  draftPrs: z.number(),
+  changesRequestedPrs: z.number(),
+  closedPrs: z.number(),
+  needsAgentPrs: z.number(),
+  unpushedWorkspacePrs: z.number(),
+});
+
+export const PrWeeklyThroughputPointSchema = z.object({
+  weekStart: z.string(),
+  opened: z.number(),
+  merged: z.number(),
+  sampleSize: z.number(),
+});
+
+export const WorkspaceStateDwellTimeSchema = z.object({
+  stateFamily: z.string(),
+  state: z.string(),
+  label: z.string(),
+  avgMinutes: z.number(),
+  sampleSize: z.number(),
+});
+
+export const PrInsightItemSchema = z.object({
+  origin: z.string(),
+  label: z.string(),
+  countedInTotals: z.boolean(),
+  status: z.string(),
+  prNumber: z.number().nullable(),
+  prUrl: z.string().nullable(),
+  branchName: z.string(),
+  baseRef: z.string(),
+  conversationId: z.string().nullable(),
+  taskId: z.string().nullable(),
+  planBranchId: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string().nullable(),
+  mergedAt: z.string().nullable(),
+});
+
+export const ProjectPrInsightsSchema = z.object({
+  summary: PrInsightsSummarySchema,
+  origins: z.array(PrInsightOriginBreakdownSchema),
+  weeklyThroughput: z.array(PrWeeklyThroughputPointSchema),
+  workspaceDwellTimes: z.array(WorkspaceStateDwellTimeSchema),
+  latestPrs: z.array(PrInsightItemSchema),
 });
 
 // ============================================================================
@@ -81,7 +174,14 @@ export type ColumnDwellTime = z.infer<typeof ColumnDwellTimeSchema>;
 export type EmeEstimate = z.infer<typeof EmeEstimateSchema>;
 export type ProjectStats = z.infer<typeof ProjectStatsSchema>;
 export type WeeklyDataPoint = z.infer<typeof WeeklyDataPointSchema>;
+export type DeliveryWeeklyThroughputPoint = z.infer<typeof DeliveryWeeklyThroughputPointSchema>;
 export type ProjectTrends = z.infer<typeof ProjectTrendsSchema>;
+export type PrInsightsSummary = z.infer<typeof PrInsightsSummarySchema>;
+export type PrInsightOriginBreakdown = z.infer<typeof PrInsightOriginBreakdownSchema>;
+export type PrWeeklyThroughputPoint = z.infer<typeof PrWeeklyThroughputPointSchema>;
+export type WorkspaceStateDwellTime = z.infer<typeof WorkspaceStateDwellTimeSchema>;
+export type PrInsightItem = z.infer<typeof PrInsightItemSchema>;
+export type ProjectPrInsights = z.infer<typeof ProjectPrInsightsSchema>;
 
 // ============================================================================
 // Metrics config

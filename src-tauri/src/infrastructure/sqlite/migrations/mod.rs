@@ -281,6 +281,9 @@ mod v20260521150003_agent_workspace_source_pull_request_tests;
 mod v20260521222911_agent_plan_mode;
 #[cfg(test)]
 mod v20260521222911_agent_plan_mode_tests;
+mod v20260522090000_agent_workspace_state_history;
+#[cfg(test)]
+mod v20260522090000_agent_workspace_state_history_tests;
 mod v20260522093000_ideation_session_flow;
 #[cfg(test)]
 mod v20260522093000_ideation_session_flow_tests;
@@ -1091,6 +1094,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260521222911,
         name: "agent_plan_mode",
         migrate: v20260521222911_agent_plan_mode::migrate,
+    },
+    Migration {
+        version: 20260522090000,
+        name: "agent_workspace_state_history",
+        migrate: v20260522090000_agent_workspace_state_history::migrate,
     },
     Migration {
         version: 20260522093000,

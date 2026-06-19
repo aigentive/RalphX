@@ -16,14 +16,30 @@ export const MIN_TASKS_FOR_EME = 5;
  * Format project trends data as a CSV string.
  * Merges all three weekly series by week_start into a single table.
  *
- * Headers: week_start,throughput,cycle_time_hours,success_rate_pct
+ * Headers include task throughput plus deduped delivery throughput when present.
  */
 export function formatCSV(trends: ProjectTrends): string {
   const weekMap = new Map<
     string,
-    { throughput?: number; cycle_time_hours?: number; success_rate_pct?: number }
+    {
+      throughput?: number;
+      unified_deliveries?: number;
+      task_deliveries?: number;
+      workspace_deliveries?: number;
+      merged_prs?: number;
+      cycle_time_hours?: number;
+      success_rate_pct?: number;
+    }
   >();
 
+  for (const pt of trends.weeklyDeliveryThroughput) {
+    const entry = weekMap.get(pt.weekStart) ?? {};
+    entry.unified_deliveries = pt.unifiedDeliveries;
+    entry.task_deliveries = pt.taskDeliveries;
+    entry.workspace_deliveries = pt.workspaceDeliveries;
+    entry.merged_prs = pt.mergedPrs;
+    weekMap.set(pt.weekStart, entry);
+  }
   for (const pt of trends.weeklyThroughput) {
     const entry = weekMap.get(pt.weekStart) ?? {};
     entry.throughput = pt.value;
@@ -46,12 +62,19 @@ export function formatCSV(trends: ProjectTrends): string {
       [
         week,
         data.throughput ?? "",
+        data.unified_deliveries ?? "",
+        data.task_deliveries ?? "",
+        data.workspace_deliveries ?? "",
+        data.merged_prs ?? "",
         data.cycle_time_hours ?? "",
         data.success_rate_pct ?? "",
       ].join(",")
     );
 
-  return ["week_start,throughput,cycle_time_hours,success_rate_pct", ...rows].join("\n");
+  return [
+    "week_start,throughput,unified_deliveries,task_deliveries,workspace_deliveries,merged_prs,cycle_time_hours,success_rate_pct",
+    ...rows,
+  ].join("\n");
 }
 
 // ─── JSON formatting ──────────────────────────────────────────────────────────

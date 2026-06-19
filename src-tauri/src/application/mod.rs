@@ -50,6 +50,8 @@ pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
+#[cfg(all(dev, target_os = "macos"))]
+pub(crate) mod dev_dock_icon;
 pub(crate) mod native_menu;
 pub(crate) mod orphan_worktree_cleanup;
 pub mod pending_session_drain;
