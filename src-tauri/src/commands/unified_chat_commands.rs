@@ -91,12 +91,11 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ArtifactContent,
-    ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-    ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
-    PlanBranch, PlanBranchStatus, Project, ProjectId, TaskCategory, TaskId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ArtifactContent, ChatAttachmentId,
+    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
+    ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
+    IdeationSession, IdeationSessionFlow, IdeationSessionId, PlanBranch, PlanBranchStatus, Project,
+    ProjectId, TaskCategory, TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
@@ -3546,16 +3545,26 @@ pub async fn sync_agent_conversation_workspace_ideation_link_for_state(
         return Err("Ideation session does not belong to the workspace project".to_string());
     }
 
+    let linked_plan_branch_id = state
+        .plan_branch_repo
+        .get_by_session_id(&ideation_session_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .map(|plan_branch| plan_branch.id);
     let updated = workspace.linked_ideation_session_id.as_ref() != Some(&ideation_session_id)
-        || workspace.linked_plan_branch_id.is_some();
+        || workspace.linked_plan_branch_id != linked_plan_branch_id;
     if updated {
         state
             .agent_conversation_workspace_repo
-            .update_links(&conversation_id, Some(&ideation_session_id), None)
+            .update_links(
+                &conversation_id,
+                Some(&ideation_session_id),
+                linked_plan_branch_id.as_ref(),
+            )
             .await
             .map_err(|error| error.to_string())?;
         workspace.linked_ideation_session_id = Some(ideation_session_id);
-        workspace.linked_plan_branch_id = None;
+        workspace.linked_plan_branch_id = linked_plan_branch_id;
         workspace.updated_at = chrono::Utc::now();
     }
 
@@ -6939,8 +6948,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .await
         .map_err(|e| e.to_string())?;
 
-    let plan_markdown =
-        resolve_linked_plan_markdown(state, &workspace).await;
+    let plan_markdown = resolve_linked_plan_markdown(state, &workspace).await;
     let mut publisher = AgentWorkspacePrPublisher::new(github);
     if let Some(markdown) = plan_markdown {
         publisher = publisher.with_plan_markdown(markdown);
@@ -10167,6 +10175,19 @@ mod tests {
             ))
             .await
             .expect("productive session should be persisted");
+        let mut productive_plan_branch = PlanBranch::new(
+            ArtifactId::from_string("productive-artifact"),
+            productive_session.id.clone(),
+            project.id.clone(),
+            "ralphx/test/productive-plan".to_string(),
+            "main".to_string(),
+        );
+        productive_plan_branch.id = PlanBranchId::from_string("productive-plan-branch");
+        state
+            .plan_branch_repo
+            .create(productive_plan_branch.clone())
+            .await
+            .expect("productive plan branch should be persisted");
 
         let mut workspace = AgentConversationWorkspace::new(
             conversation.id.clone(),
@@ -10200,7 +10221,10 @@ mod tests {
             response.workspace.linked_ideation_session_id.as_deref(),
             Some(productive_session.id.as_str())
         );
-        assert_eq!(response.workspace.linked_plan_branch_id, None);
+        assert_eq!(
+            response.workspace.linked_plan_branch_id.as_deref(),
+            Some(productive_plan_branch.id.as_str())
+        );
 
         let stored = state
             .agent_conversation_workspace_repo
@@ -10212,7 +10236,88 @@ mod tests {
             stored.linked_ideation_session_id.as_ref(),
             Some(&productive_session.id)
         );
-        assert_eq!(stored.linked_plan_branch_id, None);
+        assert_eq!(
+            stored.linked_plan_branch_id.as_ref(),
+            Some(&productive_plan_branch.id)
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_workspace_ideation_link_repairs_missing_plan_branch_for_same_session() {
+        let state = AppState::new_test();
+        let mut project = Project::new(
+            "Project".to_string(),
+            "/tmp/project-sync-same-session-branch".to_string(),
+        );
+        project.id = ProjectId::from_string("project-sync-same-session-branch".to_string());
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should be persisted");
+
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = ChatConversationId::from_string("conversation-sync-same-branch");
+        state
+            .chat_conversation_repo
+            .create(conversation.clone())
+            .await
+            .expect("conversation should be persisted");
+
+        let session = state
+            .ideation_session_repo
+            .create(IdeationSession::new_with_title(
+                project.id.clone(),
+                "Productive plan".to_string(),
+            ))
+            .await
+            .expect("session should be persisted");
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("productive-artifact"),
+            session.id.clone(),
+            project.id.clone(),
+            "ralphx/test/productive-plan".to_string(),
+            "main".to_string(),
+        );
+        plan_branch.id = PlanBranchId::from_string("same-session-plan-branch");
+        state
+            .plan_branch_repo
+            .create(plan_branch.clone())
+            .await
+            .expect("plan branch should be persisted");
+
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation.id.clone(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/test/sync-link".to_string(),
+            "/tmp/sync-link".to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(session.id.clone());
+        workspace.linked_plan_branch_id = None;
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be persisted");
+
+        let response = sync_agent_conversation_workspace_ideation_link_for_state(
+            &state,
+            conversation.id.clone(),
+            session.id.clone(),
+        )
+        .await
+        .expect("sync should succeed");
+
+        assert!(response.updated);
+        assert_eq!(
+            response.workspace.linked_plan_branch_id.as_deref(),
+            Some(plan_branch.id.as_str())
+        );
     }
 
     async fn wait_for_latest_pr_lookup_calls(github: &MockGithubService, expected: u32) {
@@ -11654,7 +11759,10 @@ mod tests {
             .await
             .expect("workspace lookup should succeed")
             .expect("workspace should exist");
-        assert_eq!(stored.publication_push_status.as_deref(), Some("needs_agent"));
+        assert_eq!(
+            stored.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
         assert!(events.iter().any(|event| {
             event.step == "repair_requested"
                 && event.status == "started"

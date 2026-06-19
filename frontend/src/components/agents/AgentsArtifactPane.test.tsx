@@ -518,7 +518,10 @@ describe("AgentsArtifactPane", () => {
       baseCommit: "base-sha",
     });
     syncWorkspaceIdeationLinkMock.mockResolvedValue({
-      workspace: workspace({ linkedIdeationSessionId: "session-1" }),
+      workspace: workspace({
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
       updated: true,
     });
     setWorkspacePrSupervisionMock.mockImplementation(
@@ -899,11 +902,84 @@ describe("AgentsArtifactPane", () => {
     );
     expect(activeTab.parentElement?.className).toContain("self-stretch");
     expect(activeTab.className).toContain("self-stretch");
+    expect(activeTab.className).not.toContain("hidden");
+    expect(activeTab.className).not.toContain("xl:flex");
     expect(activeTab.getAttribute("data-theme-button-skip")).toBe("true");
     expect(inactiveTab.getAttribute("data-theme-button-skip")).toBe("true");
     expect(activeTab.className).not.toContain("border-b-2");
     expect(activeTab.querySelector("span[style='background: var(--accent-primary);']")).not.toBeNull();
     expect(inactiveTab.querySelector("span[style='background: var(--accent-primary);']")).toBeNull();
+  });
+
+  it("shows tasks when proposals already have created task links", async () => {
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Agent Plan",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        acceptanceStatus: null,
+      },
+      proposals: [
+        {
+          id: "proposal-1",
+          sessionId: "session-1",
+          title: "Wire sidebar",
+          description: null,
+          category: "feature",
+          steps: null,
+          acceptanceCriteria: null,
+          suggestedPriority: "high",
+          priorityScore: 80,
+          priorityReason: null,
+          estimatedComplexity: "moderate",
+          userPriority: null,
+          userModified: false,
+          status: "pending",
+          createdTaskId: "task-1",
+          planArtifactId: "artifact-1",
+          planVersionAtCreation: 1,
+          sortOrder: 0,
+          createdAt: "2026-04-23T09:00:00Z",
+          updatedAt: "2026-04-23T09:00:00Z",
+        },
+      ],
+      messages: [],
+    });
+
+    renderPane(
+      "tasks",
+      workspace({ mode: "ideation", linkedIdeationSessionId: "session-1" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    const tasksTab = await screen.findByTestId("agents-artifact-tab-tasks");
+
+    expect(tasksTab).toBeInTheDocument();
+    expect(tasksTab.className).not.toContain("hidden");
+    await waitFor(() =>
+      expect(syncWorkspaceIdeationLinkMock).toHaveBeenCalledWith(
+        "conversation-1",
+        "session-1",
+      ),
+    );
   });
 
   it("opens task details inside the Agents tasks artifact surface", async () => {

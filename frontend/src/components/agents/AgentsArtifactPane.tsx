@@ -321,20 +321,40 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ? rawSessionData
       : null;
   const session = sessionData?.session ? (sessionData.session as IdeationSession) : null;
+  const proposals = useMemo<TaskProposal[]>(
+    () => (sessionData?.proposals ?? []).map(toTaskProposal),
+    [sessionData?.proposals],
+  );
+  const hasCreatedTasks = useMemo(
+    () => proposals.some((proposal) => proposal.createdTaskId != null),
+    [proposals],
+  );
+  const planArtifactId = shouldLoadIdeationData
+    ? sessionData?.session.planArtifactId ?? sessionData?.session.inheritedPlanArtifactId ?? null
+    : null;
+  const hasExecutionTasks = Boolean(
+    workspace?.linkedPlanBranchId ||
+      hasCreatedTasks ||
+      sessionData?.session.status === "accepted" ||
+      sessionData?.session.acceptanceStatus === "accepted" ||
+      sessionData?.session.convertedAt,
+  );
+  const shouldSyncWorkspaceIdeationLink = Boolean(
+    conversationId &&
+      conversation?.contextType === "project" &&
+      workspace &&
+      (workspace.mode === "ideation" || workspace.mode === "plan") &&
+      attachedSessionId &&
+      sessionData?.session.id === attachedSessionId &&
+      (workspace.linkedIdeationSessionId !== attachedSessionId ||
+        (!workspace.linkedPlanBranchId && hasExecutionTasks)),
+  );
   useEffect(() => {
-    if (
-      !conversationId ||
-      conversation?.contextType !== "project" ||
-      !workspace ||
-      (workspace.mode !== "ideation" && workspace.mode !== "plan") ||
-      !attachedSessionId ||
-      workspace.linkedIdeationSessionId === attachedSessionId ||
-      sessionData?.session.id !== attachedSessionId
-    ) {
+    if (!shouldSyncWorkspaceIdeationLink || !conversationId || !attachedSessionId) {
       return;
     }
 
-    const syncKey = `${conversationId}:${attachedSessionId}`;
+    const syncKey = `${conversationId}:${attachedSessionId}:${workspace?.linkedPlanBranchId ?? "missing-branch"}`;
     if (syncedIdeationLinksRef.current.has(syncKey)) {
       return;
     }
@@ -353,34 +373,22 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       });
   }, [
     attachedSessionId,
-    conversation?.contextType,
     conversationId,
     queryClient,
-    sessionData?.session.id,
-    workspace,
+    shouldSyncWorkspaceIdeationLink,
+    workspace?.linkedPlanBranchId,
   ]);
-  const proposals = useMemo<TaskProposal[]>(
-    () => (sessionData?.proposals ?? []).map(toTaskProposal),
-    [sessionData?.proposals],
-  );
-  const planArtifactId = shouldLoadIdeationData
-    ? sessionData?.session.planArtifactId ?? sessionData?.session.inheritedPlanArtifactId ?? null
-    : null;
   const availableIdeationTabIds = useMemo(
     () =>
       getVisibleIdeationArtifactTabs({
         hasAttachedIdeationSession: Boolean(sessionData),
         hasPlanArtifact: Boolean(planArtifactId),
-        hasExecutionTasks: Boolean(
-          workspace?.linkedPlanBranchId ||
-            sessionData?.session.acceptanceStatus === "accepted" ||
-            sessionData?.session.convertedAt,
-        ),
+        hasExecutionTasks,
       }),
     [
+      hasExecutionTasks,
       planArtifactId,
       sessionData,
-      workspace?.linkedPlanBranchId,
     ],
   );
   const visibleTabs = useMemo(
@@ -522,7 +530,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 }}
                 className={cn(
                   "relative flex h-full self-stretch items-center gap-1.5 bg-transparent px-3 text-[0.75rem] font-medium transition-colors duration-150 rounded-none shadow-none outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0 appearance-none",
-                  id === "tasks" ? "hidden xl:flex" : ""
                 )}
                 style={{
                   color: isActive ? "var(--text-primary)" : "var(--text-muted)",

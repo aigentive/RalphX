@@ -109,6 +109,7 @@ export function useAgentsAttachedIdeation({
     );
     const hasExecutionTasks = Boolean(
       activeWorkspace?.linkedPlanBranchId ||
+        attachedIdeationSession?.status === "accepted" ||
         attachedIdeationSession?.acceptanceStatus === "accepted" ||
         attachedIdeationSession?.convertedAt,
     );
