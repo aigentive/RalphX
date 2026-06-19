@@ -335,21 +335,30 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           (displayedVerificationStatus.inProgress ||
             displayedVerificationStatus.status !== "unverified"))),
   );
+  const proposalCount = proposals.length;
+  const artifactMode =
+    workspace?.mode ??
+    conversation?.agentMode ??
+    (conversation?.contextType === "ideation" ? "ideation" : null);
   const availableIdeationTabIds = useMemo(
     () =>
       getVisibleIdeationArtifactTabs({
         hasAttachedIdeationSession: Boolean(sessionData),
         hasPlanArtifact: Boolean(planArtifactId),
+        hasProposals: proposalCount > 0,
         hasVerificationEvidence,
         hasExecutionTasks: Boolean(
           workspace?.linkedPlanBranchId ||
             sessionData?.session.acceptanceStatus === "accepted" ||
             sessionData?.session.convertedAt,
         ),
+        artifactMode,
       }),
     [
+      artifactMode,
       hasVerificationEvidence,
       planArtifactId,
+      proposalCount,
       sessionData,
       workspace?.linkedPlanBranchId,
     ],
@@ -414,7 +423,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ? verificationQuery.data
       : null;
   const dependencyGraph = attachedSessionId && sessionData ? dependencyQuery.data ?? null : null;
-  const proposalCount = proposals.length;
   const verificationState =
     displayedVerificationStatus?.status ??
     verificationData?.status ??

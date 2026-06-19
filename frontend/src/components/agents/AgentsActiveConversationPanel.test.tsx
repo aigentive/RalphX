@@ -26,6 +26,7 @@ const {
   confirmVerificationMock,
   composerQuestionModeRef,
   eventSubscribers,
+  openUrlMock,
 } = vi.hoisted(() => ({
   getSessionPlanMock: vi.fn(),
   getPlanComplexityAssessmentMock: vi.fn(),
@@ -37,16 +38,23 @@ const {
   confirmVerificationMock: vi.fn(),
   composerQuestionModeRef: { current: undefined as unknown },
   eventSubscribers: new Map<string, Set<(payload: unknown) => void>>(),
+  openUrlMock: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/plugin-opener", () => ({
+  openUrl: (...args: unknown[]) => openUrlMock(...args),
 }));
 
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   IntegratedChatPanel: ({
     additionalQuestionSessionIds,
+    headerContent,
     planApprovalAction,
     onQuestionAnswered,
     renderComposer,
   }: {
     additionalQuestionSessionIds?: string[];
+    headerContent?: ReactNode;
     planApprovalAction?: {
       label: string;
       onClick: () => void;
@@ -168,6 +176,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
           </button>
         </>
       )}
+      {headerContent}
       {renderComposer({
         onSend: vi.fn(),
         onStop: vi.fn(),
@@ -325,7 +334,13 @@ vi.mock("@/hooks/useHarnessProviders", () => ({
 
 vi.mock("@/stores/chatStore", () => ({
   selectQueuedMessages: () => () => [],
-  useChatStore: () => [],
+  useChatStore: (
+    selector?: (state: {
+      agentStatus: Record<string, string>;
+      isSending: Record<string, boolean>;
+    }) => unknown,
+  ) =>
+    selector ? selector({ agentStatus: {}, isSending: {} }) : [],
 }));
 
 vi.mock("@/stores/uiStore", () => ({
@@ -441,11 +456,31 @@ vi.mock("./AgentComposerSurface", () => ({
 }));
 
 vi.mock("./AgentConversationBaseLine", () => ({
-  AgentConversationBaseLine: () => null,
+  AgentConversationBaseLine: ({
+    disabled,
+    editable,
+    prefixLabel,
+  }: {
+    disabled?: boolean;
+    editable?: boolean;
+    prefixLabel?: string;
+  }) => (
+    <div
+      data-testid="mock-agent-conversation-base-line"
+      data-disabled={String(disabled ?? false)}
+      data-editable={String(editable ?? false)}
+    >
+      {prefixLabel}
+    </div>
+  ),
 }));
 
 vi.mock("./AgentsChatHeaderController", () => ({
-  AgentsChatHeaderController: () => null,
+  AgentsChatHeaderController: ({
+    workspaceControl,
+  }: {
+    workspaceControl?: ReactNode;
+  }) => <div data-testid="mock-agents-chat-header">{workspaceControl}</div>,
 }));
 
 vi.mock("./AgentProviderSettingsButton", () => ({
@@ -701,6 +736,39 @@ describe("AgentsActiveConversationPanel", () => {
       "high",
       "xhigh",
     ]);
+  });
+
+  it("moves the base selector to the header and shows branch PR metadata below the composer", async () => {
+    const user = userEvent.setup();
+    openUrlMock.mockResolvedValue(undefined);
+
+    renderPanel({
+      activeWorkspace: {
+        ...workspace(),
+        branchName: "ralphx/demo/agent-conversation-1",
+        publicationPrNumber: 42,
+        publicationPrUrl: "https://github.com/mock/project/pull/42",
+      },
+    });
+
+    const header = screen.getByTestId("mock-agents-chat-header");
+    const baseLine = within(header).getByTestId(
+      "mock-agent-conversation-base-line",
+    );
+    expect(baseLine).toHaveTextContent("BASE:");
+    expect(baseLine).toHaveAttribute("data-editable", "true");
+
+    expect(
+      screen.getByTestId("agents-conversation-branch-line"),
+    ).toHaveTextContent("agent-conversation-1");
+    const prLink = screen.getByTestId("agents-conversation-pr-link");
+    expect(prLink).toHaveTextContent("PR #42");
+
+    await user.click(prLink);
+
+    expect(openUrlMock).toHaveBeenCalledWith(
+      "https://github.com/mock/project/pull/42",
+    );
   });
 
   it("bridges attached Plan-mode planning session questions into the workspace chat", () => {

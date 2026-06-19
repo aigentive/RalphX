@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { CheckCircle2, ExternalLink, Loader2, Plug, XCircle } from "lucide-react";
+import { ExternalLink, Loader2, Plug } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,7 +8,12 @@ import { Label } from "@/components/ui/label";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useAtlassianIntegration } from "@/hooks/useAtlassianIntegration";
 
-import { ErrorBanner, SectionCard } from "./SettingsView.shared";
+import {
+  ErrorBanner,
+  IntegrationDisconnectButton,
+  IntegrationStatusBanner,
+  SectionCard,
+} from "./SettingsView.shared";
 
 const EMPTY_FORM = {
   authMethod: "api_token" as "api_token" | "oauth",
@@ -37,18 +42,21 @@ export function AtlassianIntegrationSettingsPanel() {
     error,
     saveAsync,
     validateAsync,
+    disconnectAsync,
     buildOAuthAuthorizationAsync,
     startOAuthLocalCallbackAsync,
     completeOAuthLocalCallbackAsync,
     exchangeOAuthCodeAsync,
     isSaving,
     isValidating,
+    isDisconnecting,
     isBuildingOAuthAuthorization,
     isStartingOAuthLocalCallback,
     isCompletingOAuthLocalCallback,
     isExchangingOAuthCode,
     saveError,
     validateError,
+    disconnectError,
     buildOAuthAuthorizationError,
     startOAuthLocalCallbackError,
     completeOAuthLocalCallbackError,
@@ -90,15 +98,31 @@ export function AtlassianIntegrationSettingsPanel() {
     (completeOAuthLocalCallbackError instanceof Error
       ? completeOAuthLocalCallbackError.message
       : null) ??
-    (exchangeOAuthCodeError instanceof Error ? exchangeOAuthCodeError.message : null);
+    (exchangeOAuthCodeError instanceof Error ? exchangeOAuthCodeError.message : null) ??
+    (disconnectError instanceof Error ? disconnectError.message : null);
   const busy =
     isSaving ||
     isValidating ||
+    isDisconnecting ||
     isBuildingOAuthAuthorization ||
     isStartingOAuthLocalCallback ||
     isCompletingOAuthLocalCallback ||
     isExchangingOAuthCode;
   const usingOAuth = form.authMethod === "oauth";
+  const connected = Boolean(settings?.enabled);
+  const hasConnection = Boolean(
+    settings?.enabled ||
+      settings?.hasApiToken ||
+      settings?.hasOauthToken ||
+      settings?.hasOauthClientSecret,
+  );
+  const statusChips = [
+    oauthEnabled && settings?.authMethod === "oauth" ? "OAuth 2.0" : "API token",
+    `Jira ${settings?.jiraAvailable ? "ready" : "not validated"}`,
+    `Confluence ${settings?.confluenceAvailable ? "ready" : "not validated"}`,
+    ...(settings?.hasApiToken ? ["API token stored"] : []),
+    ...(oauthEnabled && settings?.hasOauthToken ? ["OAuth token stored"] : []),
+  ];
   const canValidate = usingOAuth
     ? Boolean(settings?.hasOauthToken)
     : Boolean(form.siteUrl.trim()) &&
@@ -136,6 +160,20 @@ export function AtlassianIntegrationSettingsPanel() {
       setSaved(true);
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : "Failed to save Atlassian settings");
+    }
+  };
+
+  const disconnect = async () => {
+    setLocalError(null);
+    setSaved(false);
+    setOauthState(null);
+    try {
+      await disconnectAsync();
+      setForm({ ...EMPTY_FORM });
+    } catch (err) {
+      setLocalError(
+        err instanceof Error ? err.message : "Failed to disconnect Atlassian",
+      );
     }
   };
 
@@ -237,36 +275,15 @@ export function AtlassianIntegrationSettingsPanel() {
       ) : null}
 
       <div className="space-y-4">
-        <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium text-[var(--text-primary)]">
-                {statusLabel(settings?.validationStatus ?? "not_configured", Boolean(settings?.enabled))}
-              </div>
-              <div className="mt-1 flex flex-wrap gap-2 text-xs text-[var(--text-muted)]">
-                <span>
-                  {oauthEnabled && settings?.authMethod === "oauth"
-                    ? "OAuth 2.0"
-                    : "API token"}
-                </span>
-                <span>Jira {settings?.jiraAvailable ? "ready" : "not validated"}</span>
-                <span>Confluence {settings?.confluenceAvailable ? "ready" : "not validated"}</span>
-                {settings?.hasApiToken ? <span>API token stored</span> : null}
-                {oauthEnabled && settings?.hasOauthToken ? (
-                  <span>OAuth token stored</span>
-                ) : null}
-              </div>
-            </div>
-            {settings?.enabled ? (
-              <CheckCircle2 className="h-5 w-5 text-[var(--status-success)]" />
-            ) : (
-              <XCircle className="h-5 w-5 text-[var(--text-muted)]" />
-            )}
-          </div>
-          {settings?.lastError ? (
-            <p className="mt-2 text-xs text-[var(--status-error)]">{settings.lastError}</p>
-          ) : null}
-        </div>
+        <IntegrationStatusBanner
+          connected={connected}
+          title={statusLabel(
+            settings?.validationStatus ?? "not_configured",
+            Boolean(settings?.enabled),
+          )}
+          chips={statusChips}
+          lastError={settings?.lastError ?? null}
+        />
 
         {oauthEnabled ? (
           <div className="flex flex-wrap gap-2">
@@ -472,6 +489,13 @@ export function AtlassianIntegrationSettingsPanel() {
             {isValidating ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             Save and validate
           </Button>
+          {hasConnection ? (
+            <IntegrationDisconnectButton
+              onDisconnect={disconnect}
+              disabled={busy}
+              isDisconnecting={isDisconnecting}
+            />
+          ) : null}
           {saved ? (
             <span className="text-xs text-[var(--status-success)]">Saved</span>
           ) : null}

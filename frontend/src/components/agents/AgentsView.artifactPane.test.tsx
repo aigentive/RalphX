@@ -340,7 +340,7 @@ describe("AgentsView artifact pane", () => {
     mockSessionWithData({ id: "session-1", planArtifactId: "plan-1" });
     await act(async () => {
       await queryClient.invalidateQueries({
-        queryKey: ideationKeys.sessionDetail("session-1"),
+        queryKey: ideationKeys.sessionWithData("session-1"),
       });
     });
 
@@ -358,6 +358,64 @@ describe("AgentsView artifact pane", () => {
       expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument()
     );
     expect(screen.getByLabelText("Plan")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
+  });
+
+  it("shows the Proposals shortcut after a plan-mode session has proposals", async () => {
+    mockAgentViewData(conversation({ agentMode: "plan" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      })
+    );
+    mockSessionWithData(
+      { id: "session-1", planArtifactId: "plan-1" },
+      [
+        {
+          id: "proposal-1",
+          sessionId: "session-1",
+          title: "Gate proposal tab visibility",
+          description: "Show Proposals only when proposal content exists.",
+          category: "frontend",
+          steps: ["Update artifact tabs"],
+          acceptanceCriteria: ["Proposals shortcut appears with content"],
+          suggestedPriority: "high",
+          priorityScore: 90,
+          priorityReason: "Avoids empty navigation",
+          estimatedComplexity: "simple",
+          userPriority: null,
+          userModified: false,
+          status: "pending",
+          createdTaskId: null,
+          planArtifactId: "plan-1",
+          planVersionAtCreation: 1,
+          sortOrder: 0,
+          createdAt: "2026-04-23T09:15:00Z",
+          updatedAt: "2026-04-23T09:15:00Z",
+        },
+      ],
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
+        "data-active-tab",
+        "plan"
+      )
+    );
+    fireEvent.click(screen.getByLabelText("Close panel"));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument()
+    );
+    expect(screen.getByLabelText("Plan")).toBeInTheDocument();
+    expect(screen.getByLabelText("Proposals")).toBeInTheDocument();
   });
 
 });

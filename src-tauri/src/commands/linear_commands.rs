@@ -269,6 +269,17 @@ pub async fn validate_linear_integration(
 }
 
 #[tauri::command]
+pub async fn disconnect_linear_integration(
+    state: State<'_, AppState>,
+) -> Result<LinearIntegrationSettingsResponse, String> {
+    state
+        .linear_integration_service
+        .disconnect()
+        .await
+        .map(LinearIntegrationSettingsResponse::from)
+}
+
+#[tauri::command]
 pub async fn search_linear_issues(
     input: SearchLinearIssuesInput,
     state: State<'_, AppState>,
@@ -427,12 +438,14 @@ mod tests {
 
     #[test]
     fn integration_settings_response_reports_secret_presence_without_secret_value() {
-        let mut settings = LinearIntegrationSettings::default();
-        settings.enabled = true;
-        settings.token_secret_ref = Some("linear-secret-ref".to_string());
-        settings.validation_status = IntegrationValidationStatus::Valid;
-        settings.issue_search_available = true;
-        settings.last_error = Some("previous error".to_string());
+        let settings = LinearIntegrationSettings {
+            enabled: true,
+            token_secret_ref: Some("linear-secret-ref".to_string()),
+            validation_status: IntegrationValidationStatus::Valid,
+            issue_search_available: true,
+            last_error: Some("previous error".to_string()),
+            ..Default::default()
+        };
 
         let response = LinearIntegrationSettingsResponse::from(settings);
 
@@ -692,5 +705,39 @@ mod tests {
         .await
         .expect("clear still works without Linear API");
         assert!(cleared.issue.is_none());
+    }
+
+    #[tokio::test]
+    async fn disconnect_linear_integration_resets_saved_connection() {
+        let app_state = AppState::new_test();
+        app_state
+            .linear_integration_service
+            .save_settings(Some("lin-api-token".to_string()))
+            .await
+            .expect("save Linear settings");
+        app_state
+            .linear_integration_service
+            .validate_and_enable()
+            .await
+            .expect("enable Linear");
+        let app = tauri::test::mock_builder()
+            .manage(app_state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+
+        let before = get_linear_integration_settings(app.state::<AppState>())
+            .await
+            .expect("settings load");
+        assert!(before.enabled);
+        assert!(before.has_api_token);
+
+        let cleared = disconnect_linear_integration(app.state::<AppState>())
+            .await
+            .expect("disconnect Linear");
+
+        assert!(!cleared.enabled);
+        assert!(!cleared.has_api_token);
+        assert_eq!(cleared.validation_status, "not_configured");
+        assert!(!cleared.issue_search_available);
     }
 }

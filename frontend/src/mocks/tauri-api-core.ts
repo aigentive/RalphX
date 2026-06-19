@@ -839,6 +839,28 @@ const commandHandlers: Record<
     });
     return mockAtlassianIntegrationSettings;
   },
+  disconnect_atlassian_integration: async () => {
+    Object.assign(mockAtlassianIntegrationSettings, {
+      enabled: false,
+      authMethod: "api_token",
+      siteUrl: null,
+      email: null,
+      hasApiToken: false,
+      oauthClientId: null,
+      oauthRedirectUri: null,
+      hasOauthClientSecret: false,
+      hasOauthToken: false,
+      oauthCloudId: null,
+      oauthScopes: null,
+      validationStatus: "not_configured",
+      jiraAvailable: false,
+      confluenceAvailable: false,
+      lastValidatedAt: null,
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+    return mockAtlassianIntegrationSettings;
+  },
   search_atlassian_resources: async (args) => {
     const input = args.input as { kind?: string; query?: string };
     const query = input.query?.trim() ?? "";
@@ -879,6 +901,18 @@ const commandHandlers: Record<
       validationStatus: "valid",
       issueSearchAvailable: true,
       lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+    return mockLinearIntegrationSettings;
+  },
+  disconnect_linear_integration: async () => {
+    Object.assign(mockLinearIntegrationSettings, {
+      enabled: false,
+      hasApiToken: false,
+      validationStatus: "not_configured",
+      issueSearchAvailable: false,
+      lastValidatedAt: null,
       lastError: null,
       updatedAt: new Date(0).toISOString(),
     });

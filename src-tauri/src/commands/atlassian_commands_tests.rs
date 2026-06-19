@@ -309,3 +309,49 @@ async fn jira_assignment_commands_round_trip_and_refresh_cached_issue() {
     .expect("clear Jira issue");
     assert!(cleared.issue.is_none());
 }
+
+#[tokio::test]
+async fn disconnect_atlassian_integration_resets_saved_connection() {
+    let app_state = AppState::new_test();
+    app_state
+        .atlassian_integration_service
+        .save_settings(
+            Some(AtlassianAuthMethod::ApiToken),
+            Some("https://example.atlassian.net".to_string()),
+            Some("dev@example.com".to_string()),
+            Some("token".to_string()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("save Atlassian settings");
+    app_state
+        .atlassian_integration_service
+        .validate_and_enable()
+        .await
+        .expect("enable Atlassian");
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+
+    let before = get_atlassian_integration_settings(app.state::<AppState>())
+        .await
+        .expect("settings load");
+    assert!(before.enabled);
+    assert!(before.has_api_token);
+
+    let cleared = disconnect_atlassian_integration(app.state::<AppState>())
+        .await
+        .expect("disconnect Atlassian");
+
+    assert!(!cleared.enabled);
+    assert!(!cleared.has_api_token);
+    assert!(!cleared.has_oauth_client_secret);
+    assert!(!cleared.has_oauth_token);
+    assert_eq!(cleared.validation_status, "not_configured");
+    assert!(!cleared.jira_available);
+    assert!(!cleared.confluence_available);
+    assert_eq!(cleared.auth_method, "api_token");
+}
