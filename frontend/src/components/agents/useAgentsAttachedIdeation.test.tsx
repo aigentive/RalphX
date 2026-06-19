@@ -144,7 +144,6 @@ describe("useAgentsAttachedIdeation", () => {
     await waitFor(() =>
       expect(result.current.availableArtifactTabs).toEqual([
         "plan",
-        "verification",
         "proposal",
         "tasks",
       ]),
@@ -214,7 +213,6 @@ describe("useAgentsAttachedIdeation", () => {
     await waitFor(() =>
       expect(result.current.availableArtifactTabs).toEqual([
         "plan",
-        "verification",
         "proposal",
         "tasks",
       ]),

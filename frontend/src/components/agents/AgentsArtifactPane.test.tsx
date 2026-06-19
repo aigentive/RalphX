@@ -936,7 +936,7 @@ describe("AgentsArtifactPane", () => {
       await screen.findByTestId("agents-artifact-tab-plan"),
     ).toBeInTheDocument();
     expect(
-      screen.getByTestId("agents-artifact-tab-verification"),
+      await screen.findByTestId("agents-artifact-tab-verification"),
     ).toBeInTheDocument();
     expect(
       screen.getByTestId("agents-artifact-tab-proposal"),
@@ -1279,7 +1279,6 @@ describe("AgentsArtifactPane", () => {
   });
 
   it("opens Execution settings from PR automation tooltip actions", async () => {
-    const user = userEvent.setup();
     renderPane(
       "publish",
       workspace({
@@ -1291,15 +1290,16 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
-    await user.hover(
-      await screen.findByRole("button", {
-        name: "About Autofix CI and Reviews",
-      }),
-    );
+    const tooltipTrigger = await screen.findByRole("button", {
+      name: "About Autofix CI and Reviews",
+    });
+    tooltipTrigger.focus();
     const settingsActions = await screen.findAllByTestId(
       "agents-tooltip-settings-execution",
     );
-    await user.click(settingsActions[0]);
+    act(() => {
+      fireEvent.click(settingsActions[0]!);
+    });
 
     expect(useUiStore.getState().activeModal).toBe("settings");
     expect(useUiStore.getState().modalContext).toEqual({

@@ -390,6 +390,15 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     sessionData?.session.acceptanceStatus === "accepted" ||
     sessionData?.session.convertedAt,
   );
+  const hasVerificationArtifacts = Boolean(
+    sessionData &&
+    (sessionData.session.verificationInProgress ||
+      sessionData.session.verificationStatus !== "unverified" ||
+      sessionData.session.gapScore != null ||
+      (displayedVerificationStatus !== null &&
+        (displayedVerificationStatus.inProgress ||
+          displayedVerificationStatus.status !== "unverified"))),
+  );
   const shouldSyncWorkspaceIdeationLink = Boolean(
     conversationId &&
     conversation?.contextType === "project" &&
@@ -441,9 +450,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       getVisibleIdeationArtifactTabs({
         hasAttachedIdeationSession: Boolean(sessionData),
         hasPlanArtifact: Boolean(planArtifactId),
+        hasVerificationArtifacts,
         hasExecutionTasks,
       }),
-    [hasExecutionTasks, planArtifactId, sessionData],
+    [hasExecutionTasks, hasVerificationArtifacts, planArtifactId, sessionData],
   );
   const visibleTabs = useMemo(
     () => [
