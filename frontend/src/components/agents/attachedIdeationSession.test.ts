@@ -72,6 +72,17 @@ describe("resolveAttachedIdeationSessionId", () => {
     expect(result).toBe("session-from-text");
   });
 
+  it("extracts session ids from plain text tool results", () => {
+    const result = resolveAttachedIdeationSessionId(conversation, [
+      messageWithToolCall(
+        "Productive session ae4249ec-43c6-4123-8c55-9b5ddd446889 is accepted.",
+        "ralphx::v1_get_ideation_status",
+      ),
+    ]);
+
+    expect(result).toBe("ae4249ec-43c6-4123-8c55-9b5ddd446889");
+  });
+
   it("extracts planning sessions from plan artifact tool results", () => {
     const result = resolveAttachedIdeationSessionId(conversation, [
       messageWithToolCall(
@@ -103,5 +114,93 @@ describe("resolveAttachedIdeationSessionId", () => {
     const result = resolveAttachedIdeationSessionId(conversation, [], "session-linked");
 
     expect(result).toBe("session-linked");
+  });
+
+  it("ignores recognized tool calls without session-bearing payloads", () => {
+    const result = resolveAttachedIdeationSessionId(conversation, [
+      messageWithToolCall(false, "ralphx::v1_get_ideation_status"),
+    ]);
+
+    expect(result).toBeNull();
+  });
+
+  it("prefers productive spawned ideation sessions over stale workspace links", () => {
+    const result = resolveAttachedIdeationSessionId(
+      conversation,
+      [
+        messageWithToolCall(
+          {
+            sessions: [
+              {
+                id: "stale-shell-session",
+                title: "Continue ClickUp integration implementation",
+                status: "active",
+                proposal_count: 0,
+              },
+              {
+                id: "productive-session",
+                title: "Implement ClickUp integration",
+                status: "accepted",
+                proposal_count: 4,
+              },
+            ],
+          },
+          "ralphx::v1_list_ideation_sessions",
+        ),
+      ],
+      "stale-shell-session",
+    );
+
+    expect(result).toBe("productive-session");
+  });
+
+  it("extracts productive sessions from appended task results", () => {
+    const result = resolveAttachedIdeationSessionId(
+      conversation,
+      [
+        messageWithToolCall(
+          {
+            session_id: "productive-session",
+            created_task_ids: ["task-1"],
+            session_status: "accepted",
+          },
+          "ralphx::v1_append_task_to_plan",
+        ),
+      ],
+      "stale-shell-session",
+    );
+
+    expect(result).toBe("productive-session");
+  });
+
+  it("prefers productive status results over a stale workspace link", () => {
+    const result = resolveAttachedIdeationSessionId(
+      conversation,
+      [
+        messageWithToolCall(
+          {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  session_id: "productive-session",
+                  project_id: "project-1",
+                  title: "Implement ClickUp integration",
+                  status: "accepted",
+                  proposal_count: 4,
+                  verification_status: "unverified",
+                  delivery_status: "in_progress",
+                }),
+              },
+            ],
+            structured_content: null,
+          },
+          "ralphx::v1_get_ideation_status",
+        ),
+      ],
+      "stale-shell-session",
+    );
+
+    expect(result).toBe("productive-session");
   });
 });

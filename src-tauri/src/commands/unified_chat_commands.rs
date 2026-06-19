@@ -91,12 +91,11 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ArtifactContent,
-    ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-    ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
-    PlanBranch, PlanBranchStatus, Project, ProjectId, TaskCategory, TaskId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ArtifactContent, ChatAttachmentId,
+    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
+    ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
+    IdeationSession, IdeationSessionFlow, IdeationSessionId, PlanBranch, PlanBranchStatus, Project,
+    ProjectId, TaskCategory, TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
@@ -6843,8 +6842,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .await
         .map_err(|e| e.to_string())?;
 
-    let plan_markdown =
-        resolve_linked_plan_markdown(state, &workspace).await;
+    let plan_markdown = resolve_linked_plan_markdown(state, &workspace).await;
     let mut publisher = AgentWorkspacePrPublisher::new(github);
     if let Some(markdown) = plan_markdown {
         publisher = publisher.with_plan_markdown(markdown);
@@ -11481,7 +11479,10 @@ mod tests {
             .await
             .expect("workspace lookup should succeed")
             .expect("workspace should exist");
-        assert_eq!(stored.publication_push_status.as_deref(), Some("needs_agent"));
+        assert_eq!(
+            stored.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
         assert!(events.iter().any(|event| {
             event.step == "repair_requested"
                 && event.status == "started"

@@ -24,6 +24,7 @@ export const PlanBranchSchema = z.object({
   pr_eligible: z.boolean().default(false),
   merge_commit_sha: z.string().nullable().optional(),
   base_branch_override: z.string().nullable(),
+  execution_plan_id: z.string().nullable().optional(),
 });
 
 export const PlanBranchListSchema = z.array(PlanBranchSchema);

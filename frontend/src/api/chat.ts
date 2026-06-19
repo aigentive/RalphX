@@ -280,17 +280,80 @@ function applyToolPreviewMetadata(
   if (detailRef) target.detailRef = detailRef;
 }
 
+function isPlanArtifactToolName(toolName: string | undefined): boolean {
+  if (!toolName) return false;
+  const normalized = toolName.toLowerCase();
+  return (
+    normalized.includes("create_plan_artifact") ||
+    normalized.includes("update_plan_artifact") ||
+    normalized.includes("edit_plan_artifact")
+  );
+}
+
+function omitLargePlanArtifactContent(value: unknown): unknown {
+  const record = getRecord(value);
+  if (!record) return value;
+  const sanitized: Record<string, unknown> = { ...record };
+  delete sanitized.content;
+  delete sanitized.content_text;
+  delete sanitized.contentText;
+  return sanitized;
+}
+
+function normalizeToolCallArguments(
+  toolName: string | undefined,
+  value: unknown,
+): unknown {
+  if (!isPlanArtifactToolName(toolName)) return value;
+  return omitLargePlanArtifactContent(value);
+}
+
+function parseMcpWrappedJsonObject(result: unknown): Record<string, unknown> | null {
+  const record = getRecord(result);
+  if (!record) return null;
+  const content = record.content;
+  if (!Array.isArray(content) || content.length === 0) return null;
+  const first = content[0];
+  if (!first || typeof first !== "object") return null;
+  const text = (first as Record<string, unknown>).text;
+  if (typeof text !== "string") return null;
+  try {
+    const parsed = JSON.parse(text);
+    return getRecord(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeToolCallResult(
+  toolName: string | undefined,
+  value: unknown,
+): unknown {
+  if (!isPlanArtifactToolName(toolName)) return value;
+
+  const parsed = parseMcpWrappedJsonObject(value);
+  if (parsed) {
+    return omitLargePlanArtifactContent(parsed);
+  }
+
+  return omitLargePlanArtifactContent(value);
+}
+
 function normalizeToolCall(raw: unknown, idx = 0): ToolCall {
   const record = getRecord(raw) ?? {};
   const id = record.id;
   const name = record.name;
+  const normalizedName = typeof name === "string" ? name : "unknown";
   const toolCall: ToolCall = {
     id: typeof id === "string" ? id : `tool-${idx}`,
-    name: typeof name === "string" ? name : "unknown",
-    arguments: record.arguments ?? record.input ?? {},
+    name: normalizedName,
+    arguments: normalizeToolCallArguments(
+      normalizedName,
+      record.arguments ?? record.input ?? {},
+    ),
   };
   if ("result" in record) {
-    toolCall.result = record.result;
+    toolCall.result = normalizeToolCallResult(normalizedName, record.result);
   }
   const parentToolUseId = record.parent_tool_use_id ?? record.parentToolUseId;
   if (typeof parentToolUseId === "string") {
@@ -336,13 +399,18 @@ export function parseContentBlocks(raw: unknown): ContentBlockItem[] {
   if (!Array.isArray(data)) return [];
 
   return data.map((block) => {
+    const name = block.name;
+    const normalizedName = typeof name === "string" ? name : undefined;
     const item: ContentBlockItem = {
       type: block.type,
       text: block.text,
       id: block.id,
-      name: block.name,
-      arguments: block.arguments ?? block.input,
-      result: block.result,
+      name,
+      arguments: normalizeToolCallArguments(
+        normalizedName,
+        block.arguments ?? block.input,
+      ),
+      result: normalizeToolCallResult(normalizedName, block.result),
       parentToolUseId: block.parent_tool_use_id ?? block.parentToolUseId,
     };
     applyToolPreviewMetadata(item, block);
@@ -2192,7 +2260,6 @@ const UpdateAgentConversationWorkspaceFromBaseResponseSchema = z.object({
     .default("valid"),
   effective_base_display_name: z.string().nullable().optional().default(null),
 });
-
 type RawAgentConversationWorkspace = z.infer<
   typeof AgentConversationWorkspaceResponseSchema
 >;

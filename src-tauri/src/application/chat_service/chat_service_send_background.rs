@@ -1235,6 +1235,16 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         "Skipping post-loop finalization — {} turn(s) already finalized in stream loop",
                         turns_finalized,
                     );
+                    finalize_no_output_assistant_message(
+                        &chat_message_repo,
+                        &chat_timeline_repo,
+                        app_handle.as_ref(),
+                        &event_ctx,
+                        &conversation_id,
+                        &pre_assistant_msg_id,
+                        &assistant_role,
+                    )
+                    .await;
                 } else if has_output {
                     finalize_structured_assistant_message(
                         &chat_message_repo,

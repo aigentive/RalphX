@@ -79,6 +79,8 @@ export interface TaskBoardProps {
   projectId: string;
   /** Optional ideation session ID to filter tasks by plan */
   ideationSessionId?: string | null;
+  /** Optional execution plan ID to filter tasks by accepted plan */
+  executionPlanId?: string | null;
   /** Optional host-owned task selection handler for embedded task surfaces. */
   onTaskSelect?: (taskId: string) => void;
   /** Opens the global plan quick switcher with source attribution */
@@ -93,6 +95,7 @@ export interface TaskBoardProps {
 export function TaskBoard({
   projectId,
   ideationSessionId: ideationSessionIdProp,
+  executionPlanId: executionPlanIdProp,
   onTaskSelect,
   onOpenPlanQuickSwitcher,
   fillWidth: fillWidthProp,
@@ -105,11 +108,12 @@ export function TaskBoard({
   );
   // Get active execution plan ID for filtering (mutually exclusive with ideationSessionId)
   const activeExecutionPlanId = usePlanStore(selectActiveExecutionPlanId(projectId));
+  const scopedExecutionPlanId = executionPlanIdProp ?? activeExecutionPlanId;
   // Use prop if provided, otherwise fall back to active plan from store.
   // When an executionPlanId is active, use null for ideationSessionId (exclusive filters).
-  const ideationSessionId = ideationSessionIdProp ?? (activeExecutionPlanId ? null : activePlanId);
-  // In Agents context (ideationSessionIdProp provided), don't use global execution plan — filter by session only.
-  const effectiveExecutionPlanId = ideationSessionIdProp ? null : activeExecutionPlanId;
+  const ideationSessionId =
+    executionPlanIdProp ? null : ideationSessionIdProp ?? (scopedExecutionPlanId ? null : activePlanId);
+  const effectiveExecutionPlanId = executionPlanIdProp ?? (ideationSessionIdProp ? null : activeExecutionPlanId);
 
   // Load active plan from backend on mount or project change
   useEffect(() => {

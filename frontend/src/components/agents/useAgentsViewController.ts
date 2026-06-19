@@ -14,6 +14,7 @@ import { useAgentModels } from "@/hooks/useAgentModels";
 import { useProjects } from "@/hooks/useProjects";
 import { useEventBus } from "@/providers/EventProvider";
 import { useAgentArtifactController } from "./useAgentArtifactController";
+import { getAgentArtifactStateSnapshot } from "./agentArtifactState";
 import { useAgentConversationTitleEvents } from "./useAgentConversationTitleEvents";
 import { useAgentArtifactResize } from "./useAgentArtifactResize";
 import { useAgentsSelectionModel } from "./useAgentsSelectionModel";
@@ -442,6 +443,37 @@ export function useAgentsViewController({
     hasAutoOpenArtifacts,
     selectedConversationId,
   });
+  useEffect(() => {
+    if (
+      !selectedConversationId ||
+      !hasAutoOpenArtifacts ||
+      availableArtifactTabs.length === 0
+    ) {
+      return;
+    }
+
+    const current = getAgentArtifactStateSnapshot(
+      selectedConversationId,
+      hasAutoOpenArtifacts,
+    );
+    if (
+      current.activeTab !== "jira" &&
+      current.activeTab !== "linear" &&
+      current.activeTab !== "publish"
+    ) {
+      return;
+    }
+
+    openArtifactTab(
+      selectedConversationId,
+      availableArtifactTabs.includes("tasks") ? "tasks" : "plan",
+    );
+  }, [
+    availableArtifactTabs,
+    hasAutoOpenArtifacts,
+    openArtifactTab,
+    selectedConversationId,
+  ]);
 
   const { clearAutoManagedTitle, handleAutoManagedTitle } = useAgentsAutoTitle({
     findConversationById,
@@ -757,6 +789,7 @@ export function useAgentsViewController({
       activeWorkspace,
       activeWorkspaceFreshness,
       artifactWidthCss,
+      availableArtifactTabs,
       chatDockElement: terminalChatDockElement,
       focusedIdeationSessionId: focusedArtifactIdeationSessionId,
       hasAutoOpenArtifacts,
