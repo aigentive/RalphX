@@ -2,6 +2,7 @@ import {
   selectArtifactState,
   selectHasStoredArtifactState,
   useAgentSessionStore,
+  type AgentArtifactTab,
   type AgentArtifactState,
 } from "@/stores/agentSessionStore";
 
@@ -10,23 +11,56 @@ import {
   selectOptimisticArtifactState,
   useAgentArtifactUiStore,
 } from "./agentArtifactUiStore";
+import type { IdeationArtifactTab } from "./agentArtifactTabs";
+
+function preferredIdeationArtifactTab(
+  availableTabs: readonly IdeationArtifactTab[],
+): IdeationArtifactTab | null {
+  if (availableTabs.includes("tasks")) {
+    return "tasks";
+  }
+  if (availableTabs.includes("plan")) {
+    return "plan";
+  }
+  return availableTabs[0] ?? null;
+}
+
+function sanitizeStoredArtifactState(
+  state: AgentArtifactState,
+  availableTabs: readonly IdeationArtifactTab[] | undefined,
+): AgentArtifactState {
+  const preferredTab = availableTabs ? preferredIdeationArtifactTab(availableTabs) : null;
+  if (!preferredTab) {
+    return state;
+  }
+  const staleExternalTabs: readonly AgentArtifactTab[] = ["jira", "linear", "publish"];
+  if (!staleExternalTabs.includes(state.activeTab)) {
+    return state;
+  }
+  return {
+    ...state,
+    activeTab: preferredTab,
+  };
+}
 
 export function resolveAgentArtifactState({
   optimistic,
   persisted,
   hasStored,
   hasAutoOpenArtifacts,
+  availableTabs,
 }: {
   optimistic: AgentArtifactState | null;
   persisted: AgentArtifactState;
   hasStored: boolean;
   hasAutoOpenArtifacts: boolean;
+  availableTabs?: readonly IdeationArtifactTab[] | undefined;
 }): AgentArtifactState {
   if (optimistic) {
     return optimistic;
   }
   if (hasStored) {
-    return persisted;
+    return sanitizeStoredArtifactState(persisted, availableTabs);
   }
   return {
     ...DEFAULT_AGENT_ARTIFACT_UI_STATE,
@@ -53,6 +87,7 @@ export function getAgentArtifactStateSnapshot(
 export function useResolvedAgentArtifactState(
   conversationId: string | null,
   hasAutoOpenArtifacts: boolean,
+  availableTabs?: readonly IdeationArtifactTab[] | undefined,
 ) {
   const optimisticArtifactState = useAgentArtifactUiStore(
     selectOptimisticArtifactState(conversationId),
@@ -66,6 +101,7 @@ export function useResolvedAgentArtifactState(
     persisted: persistedArtifactState,
     hasStored: hasStoredArtifactState,
     hasAutoOpenArtifacts,
+    availableTabs,
   });
   return {
     artifactState,

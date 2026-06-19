@@ -789,6 +789,7 @@ export function useAgentsViewController({
       activeWorkspace,
       activeWorkspaceFreshness,
       artifactWidthCss,
+      availableArtifactTabs,
       chatDockElement: terminalChatDockElement,
       focusedIdeationSessionId: focusedArtifactIdeationSessionId,
       hasAutoOpenArtifacts,

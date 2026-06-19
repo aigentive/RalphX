@@ -21,6 +21,7 @@ import type { AgentConversation } from "./agentConversations";
 import { useAfterPaintMounted } from "./agentDeferredFrame";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { IdeationArtifactTab } from "./agentArtifactTabs";
 
 export const AGENTS_ARTIFACT_MIN_WIDTH = 600;
 export const AGENTS_CHAT_MIN_WIDTH = 600;
@@ -48,6 +49,7 @@ interface AgentsArtifactPaneRegionProps {
   projectBaseBranch: string | null;
   focusedIdeationSessionId: string | null;
   hasAutoOpenArtifacts: boolean;
+  availableArtifactTabs: readonly IdeationArtifactTab[];
   artifactWidthCss: string;
   isArtifactResizing: boolean;
   onResizeStart: (event: ReactMouseEvent) => void;
@@ -71,6 +73,7 @@ export function AgentsArtifactPaneRegion({
   projectBaseBranch,
   focusedIdeationSessionId,
   hasAutoOpenArtifacts,
+  availableArtifactTabs,
   artifactWidthCss,
   isArtifactResizing,
   onResizeStart,
@@ -88,6 +91,7 @@ export function AgentsArtifactPaneRegion({
   const { artifactState, artifactPaneOpen } = useResolvedAgentArtifactState(
     conversationId,
     hasAutoOpenArtifacts,
+    availableArtifactTabs,
   );
   const contentMounted = useAfterPaintMounted(artifactPaneOpen);
   const shouldRenderArtifactContent = artifactPaneOpen || contentMounted;

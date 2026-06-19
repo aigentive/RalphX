@@ -13,6 +13,7 @@ import type { AgentConversation } from "./agentConversations";
 import { AgentsArtifactPaneRegion } from "./AgentsArtifactPaneRegion";
 import { AgentsTerminalRegion } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { IdeationArtifactTab } from "./agentArtifactTabs";
 
 interface AgentsConversationSideRegionsProps {
   activeConversation: AgentConversation | null;
@@ -20,6 +21,7 @@ interface AgentsConversationSideRegionsProps {
   activeWorkspace: AgentConversationWorkspace | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   artifactWidthCss: string;
+  availableArtifactTabs: readonly IdeationArtifactTab[];
   chatDockElement: HTMLDivElement | null;
   focusedIdeationSessionId: string | null;
   hasAutoOpenArtifacts: boolean;
@@ -46,6 +48,7 @@ export function AgentsConversationSideRegions({
   activeWorkspace,
   activeWorkspaceFreshness,
   artifactWidthCss,
+  availableArtifactTabs,
   chatDockElement,
   focusedIdeationSessionId,
   hasAutoOpenArtifacts,
@@ -76,6 +79,7 @@ export function AgentsConversationSideRegions({
           projectBaseBranch={activeProjectBaseBranch}
           focusedIdeationSessionId={focusedIdeationSessionId}
           hasAutoOpenArtifacts={hasAutoOpenArtifacts}
+          availableArtifactTabs={availableArtifactTabs}
           artifactWidthCss={artifactWidthCss}
           isArtifactResizing={isArtifactResizing}
           onResizeStart={onResizeStart}
