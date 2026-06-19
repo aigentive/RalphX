@@ -4274,6 +4274,79 @@ describe("ChatMessageList - Scroll Behavior", () => {
       }
     });
 
+    it("pins to exact true bottom when resize first makes the scroller scrollable inside visual epsilon", async () => {
+      const callbacks: ResizeObserverCallback[] = [];
+      const observedTargets: Element[] = [];
+      const originalResizeObserver = globalThis.ResizeObserver;
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      class MockResizeObserver implements ResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          callbacks.push(callback);
+        }
+        disconnect = vi.fn();
+        observe = vi.fn((target: Element) => {
+          observedTargets.push(target);
+        });
+        unobserve = vi.fn();
+      }
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        value: MockResizeObserver,
+        configurable: true,
+        writable: true,
+      });
+
+      try {
+        mockIsAtBottom = true;
+        mockIsAtBottomRef.current = true;
+        render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={createMessages(2)}
+          />
+        );
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 500,
+          scrollTop: 0,
+        });
+        scrollToMock.mockClear();
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 502,
+          scrollTop: 0,
+        });
+        const scrollerObserverIndex = observedTargets.findIndex(
+          (target) => target === scroller,
+        );
+        expect(scrollerObserverIndex).toBeGreaterThanOrEqual(0);
+        act(() => {
+          callbacks[scrollerObserverIndex]?.([], {} as ResizeObserver);
+        });
+
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 2, behavior: "auto" });
+        expect(scroller.scrollTop).toBe(2);
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        if (originalResizeObserver === undefined) {
+          Reflect.deleteProperty(globalThis, "ResizeObserver");
+        } else {
+          Object.defineProperty(globalThis, "ResizeObserver", {
+            value: originalResizeObserver,
+            configurable: true,
+            writable: true,
+          });
+        }
+      }
+    });
+
     it("does not snap downward when row growth fires after the user scrolls upward", async () => {
       const callbacks: ResizeObserverCallback[] = [];
       const observedTargets: Element[] = [];
@@ -4577,6 +4650,86 @@ describe("ChatMessageList - Scroll Behavior", () => {
       }
     });
 
+    it("does not pin scroller resize after manual downward wheel input", async () => {
+      const callbacks: ResizeObserverCallback[] = [];
+      const observedTargets: Element[] = [];
+      const originalResizeObserver = globalThis.ResizeObserver;
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      class MockResizeObserver implements ResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          callbacks.push(callback);
+        }
+
+        disconnect = vi.fn();
+        observe = vi.fn((target: Element) => {
+          observedTargets.push(target);
+        });
+        unobserve = vi.fn();
+      }
+
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        value: MockResizeObserver,
+        configurable: true,
+        writable: true,
+      });
+
+      try {
+        mockIsAtBottom = true;
+        mockIsAtBottomRef.current = true;
+        render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={createMessages(4)}
+          />
+        );
+
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 420,
+        });
+
+        act(() => {
+          scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 120 }));
+          scroller.scrollTop = 460;
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        scrollToMock.mockClear();
+
+        const scrollerObserverIndex = observedTargets.findIndex(
+          (target) => target === scroller,
+        );
+        expect(scrollerObserverIndex).toBeGreaterThanOrEqual(0);
+
+        act(() => {
+          callbacks[scrollerObserverIndex]?.(
+            [{ contentRect: { height: 500, width: 640 } as DOMRectReadOnly } as ResizeObserverEntry],
+            {} as ResizeObserver,
+          );
+        });
+
+        expect(scrollToMock).not.toHaveBeenCalled();
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        if (originalResizeObserver === undefined) {
+          Reflect.deleteProperty(globalThis, "ResizeObserver");
+        } else {
+          Object.defineProperty(globalThis, "ResizeObserver", {
+            value: originalResizeObserver,
+            configurable: true,
+            writable: true,
+          });
+        }
+      }
+    });
+
     it("does not run a pending scheduled bottom pin after the user scrolls upward", async () => {
       vi.stubEnv("VITEST", "");
       const queuedRafs: FrameRequestCallback[] = [];
@@ -4729,6 +4882,177 @@ describe("ChatMessageList - Scroll Behavior", () => {
       }
     });
 
+    it("keeps following streaming footer growth when manual wheel reaches true bottom before reconciliation", async () => {
+      vi.stubEnv("VITEST", "");
+      const queuedRafs: FrameRequestCallback[] = [];
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        queuedRafs.push(cb);
+        return queuedRafs.length;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      try {
+        mockIsAtBottom = false;
+        mockIsAtBottomRef.current = false;
+        mockHandleAtBottomStateChange.mockImplementation((atBottom: boolean) => {
+          mockIsAtBottom = atBottom;
+          mockIsAtBottomRef.current = atBottom;
+        });
+        const messages = createMessages(10);
+        const { rerender } = render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={messages}
+            isAgentRunning={false}
+            streamingContentBlocks={[{ type: "text", text: "first token" }]}
+          />
+        );
+
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        Object.defineProperty(scroller, "scrollBy", {
+          configurable: true,
+          value: ({ top = 0 }: ScrollToOptions) => {
+            const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+            scroller.scrollTop = Math.min(maxScrollTop, Math.max(0, scroller.scrollTop + top));
+          },
+        });
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 300,
+        });
+
+        act(() => {
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        act(() => {
+          while (queuedRafs.length > 0) {
+            queuedRafs.shift()?.(0);
+          }
+        });
+        mockIsAtBottom = false;
+        mockIsAtBottomRef.current = false;
+        expect(mockIsAtBottomRef.current).toBe(false);
+
+        queuedRafs.length = 0;
+        scrollToMock.mockClear();
+
+        act(() => {
+          scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 240 }));
+          scroller.scrollTop = 500;
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        expect(scroller.scrollTop).toBe(500);
+        expect(mockIsAtBottomRef.current).toBe(true);
+        expect(queuedRafs).toHaveLength(1);
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1040,
+          scrollTop: 500,
+        });
+        rerender(
+          <ChatMessageList
+            {...defaultProps}
+            messages={messages}
+            isAgentRunning={false}
+            streamingContentBlocks={[{ type: "text", text: "first token\nsecond token" }]}
+          />
+        );
+
+        await waitFor(() =>
+          expect(scrollToMock).toHaveBeenCalledWith({ top: 540, behavior: "auto" })
+        );
+      } finally {
+        mockHandleAtBottomStateChange.mockImplementation(() => {});
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("pins external layout changes when manual wheel reaches true bottom before reconciliation", async () => {
+      vi.stubEnv("VITEST", "");
+      const queuedRafs: FrameRequestCallback[] = [];
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        queuedRafs.push(cb);
+        return queuedRafs.length;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      try {
+        mockIsAtBottom = false;
+        mockIsAtBottomRef.current = false;
+        mockHandleAtBottomStateChange.mockImplementation((atBottom: boolean) => {
+          mockIsAtBottom = atBottom;
+          mockIsAtBottomRef.current = atBottom;
+        });
+        const messages = createMessages(10);
+        const { rerender } = render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={messages}
+            externalLayoutVersion={0}
+          />
+        );
+
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 300,
+        });
+
+        act(() => {
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        act(() => {
+          while (queuedRafs.length > 0) {
+            queuedRafs.shift()?.(0);
+          }
+        });
+        mockIsAtBottom = false;
+        mockIsAtBottomRef.current = false;
+        queuedRafs.length = 0;
+        scrollToMock.mockClear();
+
+        act(() => {
+          scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 240 }));
+          scroller.scrollTop = 500;
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        expect(scroller.scrollTop).toBe(500);
+        expect(mockIsAtBottomRef.current).toBe(true);
+        expect(queuedRafs).toHaveLength(1);
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 460,
+          scrollHeight: 1000,
+          scrollTop: 500,
+        });
+        rerender(
+          <ChatMessageList
+            {...defaultProps}
+            messages={messages}
+            externalLayoutVersion={1}
+          />
+        );
+
+        act(() => {
+          while (queuedRafs.length > 0) {
+            queuedRafs.shift()?.(0);
+          }
+        });
+
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 540, behavior: "auto" });
+      } finally {
+        mockHandleAtBottomStateChange.mockImplementation(() => {});
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    });
+
     it("does not run a pending scheduled bottom pin after the last item leaves range", async () => {
       vi.stubEnv("VITEST", "");
       const queuedRafs: FrameRequestCallback[] = [];
@@ -4800,6 +5124,96 @@ describe("ChatMessageList - Scroll Behavior", () => {
         rafSpy.mockRestore();
         cancelSpy.mockRestore();
         vi.unstubAllEnvs();
+      }
+    });
+
+    it("does not pin transcript viewport resize after manual downward wheel input", async () => {
+      const callbacks: ResizeObserverCallback[] = [];
+      const observedTargets: Element[] = [];
+      const originalResizeObserver = globalThis.ResizeObserver;
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      class MockResizeObserver implements ResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          callbacks.push(callback);
+        }
+
+        disconnect = vi.fn();
+        observe = vi.fn((target: Element) => {
+          observedTargets.push(target);
+        });
+        unobserve = vi.fn();
+      }
+
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        value: MockResizeObserver,
+        configurable: true,
+        writable: true,
+      });
+      vi.stubEnv("VITEST", "");
+
+      try {
+        mockIsAtBottom = true;
+        mockIsAtBottomRef.current = true;
+        render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={createMessages(2)}
+          />
+        );
+
+        const transcript = await screen.findByTestId("integrated-chat-messages");
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 480,
+          scrollHeight: 1000,
+          scrollTop: 420,
+        });
+
+        const transcriptRootIndex = observedTargets.findIndex(
+          (target) => target === transcript,
+        );
+        expect(transcriptRootIndex).toBeGreaterThanOrEqual(0);
+
+        act(() => {
+          callbacks[transcriptRootIndex]?.(
+            [{ contentRect: { height: 480 } as DOMRectReadOnly } as ResizeObserverEntry],
+            {} as ResizeObserver,
+          );
+        });
+
+        act(() => {
+          scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 120 }));
+          scroller.scrollTop = 460;
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        scrollToMock.mockClear();
+
+        act(() => {
+          callbacks[transcriptRootIndex]?.(
+            [{ contentRect: { height: 456 } as DOMRectReadOnly } as ResizeObserverEntry],
+            {} as ResizeObserver,
+          );
+        });
+
+        expect(scrollToMock).not.toHaveBeenCalled();
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        vi.unstubAllEnvs();
+        if (originalResizeObserver === undefined) {
+          Reflect.deleteProperty(globalThis, "ResizeObserver");
+        } else {
+          Object.defineProperty(globalThis, "ResizeObserver", {
+            value: originalResizeObserver,
+            configurable: true,
+            writable: true,
+          });
+        }
       }
     });
 

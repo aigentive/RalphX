@@ -1508,10 +1508,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         rafRef.current = requestAnimationFrame(() => {
           rafRef.current = null;
           if ((shouldRun?.() ?? true) && shouldKeepBottomPinned()) {
-            const el = scrollerElRef.current;
-            if (!el || getScrollBottomDelta(el) > VISUAL_BOTTOM_EPSILON_PX) {
-              scrollToTrueBottom("auto");
-            }
+            scrollToTrueBottom("auto");
           }
         });
       },
@@ -1732,6 +1729,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       const visuallyAtBottom = isScrollElementVisuallyAtBottom(el);
       if (visuallyAtBottom) {
         isUserScrollingAwayFromBottomRef.current = false;
+        setIsVisuallyAtBottom(true);
+        if (!isAtBottomRef.current) {
+          handleAtBottomStateChange(true);
+        }
         return;
       }
       if (
@@ -1745,7 +1746,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         markUserScrollingAwayFromBottom();
         return;
       }
-    }, [markUserScrollingAwayFromBottom]);
+    }, [
+      handleAtBottomStateChange,
+      isAtBottomRef,
+      markUserScrollingAwayFromBottom,
+      setIsVisuallyAtBottom,
+    ]);
 
     const markManualWheelScroll = useCallback(
       (deltaY: number, el: HTMLElement | null) => {
@@ -1870,11 +1876,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       scrollerResizeRafRef.current = requestAnimationFrame(() => {
         scrollerResizeRafRef.current = null;
         if (shouldKeepBottomPinned()) {
-          const el = scrollerElRef.current;
-          if (el && getScrollBottomDelta(el) <= VISUAL_BOTTOM_EPSILON_PX) {
-            reconcileScrollerBottomState();
-            return;
-          }
           scrollToTrueBottom("auto");
           return;
         }
