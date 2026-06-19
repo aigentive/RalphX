@@ -360,9 +360,8 @@ pub async fn move_task(
 
     // Create the transition service with all required dependencies
     let is_team_mode = agent_variant.as_deref() == Some("team");
-    let mut transition_service =
-        build_transition_service(&state, &execution_state, Some(&app))
-            .with_task_scheduler(Arc::clone(&task_scheduler));
+    let mut transition_service = build_transition_service(&state, &execution_state, Some(&app))
+        .with_task_scheduler(Arc::clone(&task_scheduler));
 
     // ALWAYS set team_mode based on explicit UI selection so it overrides
     // env var defaults and stale metadata. Some(true) = team, Some(false) = solo.
@@ -550,9 +549,8 @@ pub async fn answer_user_question(
 
     let task_scheduler = build_task_scheduler(&state, &execution_state, &app);
 
-    let transition_service =
-        build_transition_service(&state, &execution_state, Some(&app))
-            .with_task_scheduler(task_scheduler);
+    let transition_service = build_transition_service(&state, &execution_state, Some(&app))
+        .with_task_scheduler(task_scheduler);
 
     let updated_task = transition_service
         .transition_task(&task_id, InternalStatus::Ready)
@@ -692,9 +690,8 @@ pub async fn block_task(
     let task_scheduler = build_task_scheduler(&state, &execution_state, &app);
 
     // Create the transition service
-    let transition_service =
-        build_transition_service(&state, &execution_state, Some(&app))
-            .with_task_scheduler(task_scheduler);
+    let transition_service = build_transition_service(&state, &execution_state, Some(&app))
+        .with_task_scheduler(task_scheduler);
 
     // Transition to Blocked status
     let mut blocked_task = transition_service
@@ -802,9 +799,8 @@ pub async fn unblock_task(
     let task_scheduler = build_task_scheduler(&state, &execution_state, &app);
 
     // Create the transition service
-    let transition_service =
-        build_transition_service(&state, &execution_state, Some(&app))
-            .with_task_scheduler(task_scheduler);
+    let transition_service = build_transition_service(&state, &execution_state, Some(&app))
+        .with_task_scheduler(task_scheduler);
 
     // Transition to Ready status
     let mut unblocked_task = transition_service

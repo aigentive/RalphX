@@ -11,10 +11,10 @@ use crate::application::{
 };
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    ArtifactId, ExecutionPlan, ExecutionPlanId, IdeationSessionId, IdeationSessionStatus,
-    InternalStatus, PlanBranch, PlanBranchId, ProjectId, SessionOrigin, Task, TaskCategory, TaskId,
-    TaskProposal, TaskProposalId, TaskStep,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, ExecutionPlan,
+    ExecutionPlanId, IdeationSessionId, IdeationSessionStatus, InternalStatus, PlanBranch,
+    PlanBranchId, ProjectId, SessionOrigin, Task, TaskCategory, TaskId, TaskProposal,
+    TaskProposalId, TaskStep,
 };
 use crate::error::{AppError, AppResult};
 
@@ -635,12 +635,9 @@ pub async fn apply_proposals_core(
                 session.project_id.as_str()
             ))
         })?;
-    let linked_agent_workspace = load_linked_agent_conversation_workspace(
-        app_state,
-        &session_id,
-        &session.project_id,
-    )
-    .await?;
+    let linked_agent_workspace =
+        load_linked_agent_conversation_workspace(app_state, &session_id, &session.project_id)
+            .await?;
 
     if let Some(workspace) = linked_agent_workspace.as_ref() {
         if workspace.mode != AgentConversationWorkspaceMode::Ideation {
