@@ -513,8 +513,12 @@ export function AgentPublishPanel({
     ? prSupervisionMutation.variables
     : null;
   const isAutoPublishSaving = autoPublishMutation.isPending;
-  const isPrSupervisionSaving =
-    prSupervisionMutation.isPending || autoPublishMutation.isPending;
+  const isPrSupervisionSaving = prSupervisionMutation.isPending;
+  const isAutomationPreferenceSaving =
+    isPrSupervisionSaving || isAutoPublishSaving;
+  const canRunPrSupervisionAutomation = hasPublishedPr
+    ? autoPublishEnabled
+    : storedAutoPublishEnabled;
   const prAutofixEnabled =
     pendingPrSupervision?.autoFixEnabled ?? workspace.prAutofixEnabled ?? false;
   const prAutoMergeDesired =
@@ -542,7 +546,7 @@ export function AgentPublishPanel({
     !onPublishWorkspace ||
     isManagedByTaskPipeline ||
     effectivePublishing ||
-    isPrSupervisionSaving ||
+    isAutomationPreferenceSaving ||
     baseBlocked ||
     (isRepairPending && !isPipelineOwnedWorkspace) ||
     isPublishCurrent ||
@@ -584,9 +588,8 @@ export function AgentPublishPanel({
     autoMergeDesired: boolean;
   }) => {
     if (
-      !hasPublishedPr ||
       !canConfigurePrSupervision ||
-      !autoPublishEnabled ||
+      !canRunPrSupervisionAutomation ||
       isPrSupervisionSaving
     ) {
       return;
@@ -887,7 +890,7 @@ export function AgentPublishPanel({
                 <label className="flex min-h-8 items-center gap-2">
                   <Switch
                     checked={autoPublishEnabled}
-                    disabled={!canConfigureAutoPublish || isPrSupervisionSaving}
+                    disabled={!canConfigureAutoPublish || isAutoPublishSaving}
                     onCheckedChange={confirmAutoPublishChange}
                     aria-label="Auto Publish"
                     data-testid="agents-auto-publish-switch"
@@ -902,66 +905,62 @@ export function AgentPublishPanel({
                       : "Runs Commit & Publish automatically when the agent finishes before a pull request exists."}
                 </PublishSwitchInfoTooltip>
               </div>
-              {hasPublishedPr && (
-                <>
-                  <div className="flex min-h-8 items-center gap-1.5 text-[var(--text-secondary)]">
-                    <label className="flex min-h-8 items-center gap-2">
-                      <Switch
-                        checked={prAutofixEnabled}
-                        disabled={
-                          !canConfigurePrSupervision ||
-                          !autoPublishEnabled ||
-                          isPrSupervisionSaving
-                        }
-                        onCheckedChange={(checked) =>
-                          updatePrSupervisionPreferences({
-                            autoFixEnabled: checked,
-                            autoMergeDesired: prAutoMergeDesired,
-                          })
-                        }
-                        aria-label="Autofix CI & Reviews"
-                        data-testid="agents-pr-autofix-switch"
-                      />
-                      <span>Autofix CI &amp; Reviews</span>
-                    </label>
-                    <PublishSwitchInfoTooltip
-                      label="About Autofix CI and Reviews"
-                      settingsSection="execution"
-                    >
-                      RalphX monitors this PR for failing checks and review feedback, then
-                      publishes follow-up fixes from the workspace automatically.
-                    </PublishSwitchInfoTooltip>
-                  </div>
-                  <div className="flex min-h-8 items-center gap-1.5 text-[var(--text-secondary)]">
-                    <label className="flex min-h-8 items-center gap-2">
-                      <Switch
-                        checked={prAutoMergeDesired}
-                        disabled={
-                          !canConfigurePrSupervision ||
-                          !autoPublishEnabled ||
-                          isPrSupervisionSaving
-                        }
-                        onCheckedChange={(checked) =>
-                          updatePrSupervisionPreferences({
-                            autoFixEnabled: prAutofixEnabled,
-                            autoMergeDesired: checked,
-                          })
-                        }
-                        aria-label="GitHub auto-merge"
-                        data-testid="agents-pr-auto-merge-switch"
-                      />
-                      <span>GitHub auto-merge</span>
-                    </label>
-                    <PublishSwitchInfoTooltip
-                      label="About GitHub auto-merge"
-                      settingsSection="execution"
-                    >
-                      RalphX asks GitHub to merge the PR after required checks and review
-                      requirements pass.
-                    </PublishSwitchInfoTooltip>
-                  </div>
-                </>
-              )}
+              <div className="flex min-h-8 items-center gap-1.5 text-[var(--text-secondary)]">
+                <label className="flex min-h-8 items-center gap-2">
+                  <Switch
+                    checked={prAutofixEnabled}
+                    disabled={
+                      !canConfigurePrSupervision ||
+                      !canRunPrSupervisionAutomation ||
+                      isPrSupervisionSaving
+                    }
+                    onCheckedChange={(checked) =>
+                      updatePrSupervisionPreferences({
+                        autoFixEnabled: checked,
+                        autoMergeDesired: prAutoMergeDesired,
+                      })
+                    }
+                    aria-label="Autofix CI & Reviews"
+                    data-testid="agents-pr-autofix-switch"
+                  />
+                  <span>Autofix CI &amp; Reviews</span>
+                </label>
+                <PublishSwitchInfoTooltip
+                  label="About Autofix CI and Reviews"
+                  settingsSection="execution"
+                >
+                  RalphX monitors this PR for failing checks and review feedback, then
+                  publishes follow-up fixes from the workspace automatically.
+                </PublishSwitchInfoTooltip>
+              </div>
+              <div className="flex min-h-8 items-center gap-1.5 text-[var(--text-secondary)]">
+                <label className="flex min-h-8 items-center gap-2">
+                  <Switch
+                    checked={prAutoMergeDesired}
+                    disabled={
+                      !canConfigurePrSupervision ||
+                      !canRunPrSupervisionAutomation ||
+                      isPrSupervisionSaving
+                    }
+                    onCheckedChange={(checked) =>
+                      updatePrSupervisionPreferences({
+                        autoFixEnabled: prAutofixEnabled,
+                        autoMergeDesired: checked,
+                      })
+                    }
+                    aria-label="GitHub auto-merge"
+                    data-testid="agents-pr-auto-merge-switch"
+                  />
+                  <span>GitHub auto-merge</span>
+                </label>
+                <PublishSwitchInfoTooltip
+                  label="About GitHub auto-merge"
+                  settingsSection="execution"
+                >
+                  RalphX asks GitHub to merge the PR after required checks and review
+                  requirements pass.
+                </PublishSwitchInfoTooltip>
+              </div>
               {prSupervisionStatusLabel && (
                 <span
                   className="rounded-full border px-2 py-1 text-[11px] font-medium"

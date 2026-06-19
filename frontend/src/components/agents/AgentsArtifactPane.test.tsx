@@ -807,12 +807,56 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
   });
 
-  it("shows pre-PR Auto Publish without PR automation controls", async () => {
+  it("shows pre-PR Auto Publish with independent PR automation controls", async () => {
     renderPane("publish", workspace({ mode: "edit" }));
 
     expect(await screen.findByTestId("agents-auto-publish-switch")).not.toBeChecked();
-    expect(screen.queryByTestId("agents-pr-autofix-switch")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-pr-auto-merge-switch")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-pr-autofix-switch")).toBeEnabled();
+    expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeEnabled();
+  });
+
+  it("persists pre-PR autofix preference while initial Auto Publish is off", async () => {
+    renderPane("publish", workspace({ mode: "edit" }));
+
+    expect(await screen.findByTestId("agents-auto-publish-switch")).not.toBeChecked();
+
+    fireEvent.click(screen.getByTestId("agents-pr-autofix-switch"));
+
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        {
+          autoFixEnabled: true,
+          autoMergeDesired: false,
+          autoMergeMethod: "squash",
+        },
+      )
+    );
+  });
+
+  it("persists pre-PR auto-merge preference while initial Auto Publish is off", async () => {
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        prAutofixEnabled: true,
+      }),
+    );
+
+    expect(await screen.findByTestId("agents-auto-publish-switch")).not.toBeChecked();
+
+    fireEvent.click(screen.getByTestId("agents-pr-auto-merge-switch"));
+
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        {
+          autoFixEnabled: true,
+          autoMergeDesired: true,
+          autoMergeMethod: "squash",
+        },
+      )
+    );
   });
 
   it("confirms enabling pre-PR Auto Publish from the publish pane", async () => {
