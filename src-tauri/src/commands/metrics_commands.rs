@@ -18,12 +18,15 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::application::AppState;
+use crate::commands::metrics_scope::MetricsScope;
 
-pub use crate::commands::metrics_pr_insights::compute_project_pr_insights;
-pub use crate::commands::metrics_queries::{
-    compute_column_metrics, compute_project_stats, compute_task_metrics,
+pub use crate::commands::metrics_pr_insights::{
+    compute_insights_pr_insights, compute_project_pr_insights,
 };
-pub use crate::commands::metrics_trends::compute_project_trends;
+pub use crate::commands::metrics_queries::{
+    compute_column_metrics, compute_insights_stats, compute_project_stats, compute_task_metrics,
+};
+pub use crate::commands::metrics_trends::{compute_insights_trends, compute_project_trends};
 pub use crate::commands::metrics_types::{
     ColumnDwellTime, ColumnMetric, CycleTimePhase, DeliveryWeeklyThroughputPoint, EmeEstimate,
     PrInsightItem, PrInsightOriginBreakdown, PrInsightsSummary, PrWeeklyThroughputPoint,
@@ -84,10 +87,13 @@ impl Default for MetricsConfig {
 /// popover open always reflects the latest data.
 /// Clears all week_start_day variants of the cache key.
 pub fn invalidate_project_stats_cache(project_id: &str) {
-    let prefix = format!("{}:", project_id);
+    let prefix = format!("project:{}:", project_id);
     STATS_CACHE.retain(|k, _| !k.starts_with(&prefix));
+    STATS_CACHE.retain(|k, _| !k.starts_with("all:"));
     TRENDS_CACHE.retain(|k, _| !k.starts_with(&prefix));
+    TRENDS_CACHE.retain(|k, _| !k.starts_with("all:"));
     PR_INSIGHTS_CACHE.retain(|k, _| !k.starts_with(&prefix));
+    PR_INSIGHTS_CACHE.retain(|k, _| !k.starts_with("all:"));
     // Column metrics are not keyed by week_start_day
     COLUMN_METRICS_CACHE.remove(project_id);
 }
@@ -104,6 +110,12 @@ fn validate_tz_offset(tz_offset_minutes: Option<i32>) -> Result<i32, String> {
         ));
     }
     Ok(tz)
+}
+
+fn normalize_optional_project_id(project_id: Option<String>) -> Option<String> {
+    project_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 // ─── Tauri commands ───────────────────────────────────────────────────────────
@@ -125,7 +137,7 @@ pub async fn get_project_stats(
 ) -> Result<ProjectStats, String> {
     let wsd = week_start_day.unwrap_or(0);
     let tz = validate_tz_offset(tz_offset_minutes)?;
-    let cache_key = format!("{}:{}:{}", project_id, wsd, tz);
+    let cache_key = MetricsScope::Project(&project_id).cache_key(wsd, tz);
 
     if let Some(entry) = STATS_CACHE.get(&cache_key) {
         let (ts, stats) = &*entry;
@@ -139,6 +151,44 @@ pub async fn get_project_stats(
         .db
         .clone()
         .run(move |conn| compute_project_stats(conn, &pid, wsd, tz))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    STATS_CACHE.insert(cache_key, (Instant::now(), stats.clone()));
+    Ok(stats)
+}
+
+/// Return core Insights metrics for all projects by default, or for one project
+/// when a filter is supplied.
+///
+/// # Errors
+/// Returns a string error if the database query fails.
+#[tauri::command]
+pub async fn get_insights_stats(
+    project_id: Option<String>,
+    week_start_day: Option<u8>,
+    tz_offset_minutes: Option<i32>,
+    state: State<'_, AppState>,
+) -> Result<ProjectStats, String> {
+    let wsd = week_start_day.unwrap_or(0);
+    let tz = validate_tz_offset(tz_offset_minutes)?;
+    let project_id = normalize_optional_project_id(project_id);
+    let cache_key = MetricsScope::from_optional_project_id(project_id.as_deref()).cache_key(wsd, tz);
+
+    if let Some(entry) = STATS_CACHE.get(&cache_key) {
+        let (ts, stats) = &*entry;
+        if ts.elapsed().as_secs() < CACHE_TTL_SECS {
+            return Ok(stats.clone());
+        }
+    }
+
+    let stats = state
+        .db
+        .clone()
+        .run(move |conn| match project_id.as_deref() {
+            Some(pid) => compute_project_stats(conn, pid, wsd, tz),
+            None => compute_insights_stats(conn, wsd, tz),
+        })
         .await
         .map_err(|e| e.to_string())?;
 
@@ -162,7 +212,7 @@ pub async fn get_project_trends(
 ) -> Result<ProjectTrends, String> {
     let wsd = week_start_day.unwrap_or(0);
     let tz = validate_tz_offset(tz_offset_minutes)?;
-    let cache_key = format!("{}:{}:{}", project_id, wsd, tz);
+    let cache_key = MetricsScope::Project(&project_id).cache_key(wsd, tz);
 
     if let Some(entry) = TRENDS_CACHE.get(&cache_key) {
         let (ts, trends) = &*entry;
@@ -176,6 +226,44 @@ pub async fn get_project_trends(
         .db
         .clone()
         .run(move |conn| compute_project_trends(conn, &pid, wsd, tz))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    TRENDS_CACHE.insert(cache_key, (Instant::now(), trends.clone()));
+    Ok(trends)
+}
+
+/// Return Insights trend data for all projects by default, or for one project
+/// when a filter is supplied.
+///
+/// # Errors
+/// Returns a string error if the database query fails.
+#[tauri::command]
+pub async fn get_insights_trends(
+    project_id: Option<String>,
+    week_start_day: Option<u8>,
+    tz_offset_minutes: Option<i32>,
+    state: State<'_, AppState>,
+) -> Result<ProjectTrends, String> {
+    let wsd = week_start_day.unwrap_or(0);
+    let tz = validate_tz_offset(tz_offset_minutes)?;
+    let project_id = normalize_optional_project_id(project_id);
+    let cache_key = MetricsScope::from_optional_project_id(project_id.as_deref()).cache_key(wsd, tz);
+
+    if let Some(entry) = TRENDS_CACHE.get(&cache_key) {
+        let (ts, trends) = &*entry;
+        if ts.elapsed().as_secs() < CACHE_TTL_SECS {
+            return Ok(trends.clone());
+        }
+    }
+
+    let trends = state
+        .db
+        .clone()
+        .run(move |conn| match project_id.as_deref() {
+            Some(pid) => compute_project_trends(conn, pid, wsd, tz),
+            None => compute_insights_trends(conn, wsd, tz),
+        })
         .await
         .map_err(|e| e.to_string())?;
 
@@ -200,7 +288,7 @@ pub async fn get_project_pr_insights(
 ) -> Result<ProjectPrInsights, String> {
     let wsd = week_start_day.unwrap_or(0);
     let tz = validate_tz_offset(tz_offset_minutes)?;
-    let cache_key = format!("{}:{}:{}", project_id, wsd, tz);
+    let cache_key = MetricsScope::Project(&project_id).cache_key(wsd, tz);
 
     if let Some(entry) = PR_INSIGHTS_CACHE.get(&cache_key) {
         let (ts, insights) = &*entry;
@@ -214,6 +302,44 @@ pub async fn get_project_pr_insights(
         .db
         .clone()
         .run(move |conn| compute_project_pr_insights(conn, &pid, wsd, tz))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    PR_INSIGHTS_CACHE.insert(cache_key, (Instant::now(), insights.clone()));
+    Ok(insights)
+}
+
+/// Return PR and agent-workspace Insights for all projects by default, or for
+/// one project when a filter is supplied.
+///
+/// # Errors
+/// Returns a string error if the database query fails.
+#[tauri::command]
+pub async fn get_insights_pr_insights(
+    project_id: Option<String>,
+    week_start_day: Option<u8>,
+    tz_offset_minutes: Option<i32>,
+    state: State<'_, AppState>,
+) -> Result<ProjectPrInsights, String> {
+    let wsd = week_start_day.unwrap_or(0);
+    let tz = validate_tz_offset(tz_offset_minutes)?;
+    let project_id = normalize_optional_project_id(project_id);
+    let cache_key = MetricsScope::from_optional_project_id(project_id.as_deref()).cache_key(wsd, tz);
+
+    if let Some(entry) = PR_INSIGHTS_CACHE.get(&cache_key) {
+        let (ts, insights) = &*entry;
+        if ts.elapsed().as_secs() < CACHE_TTL_SECS {
+            return Ok(insights.clone());
+        }
+    }
+
+    let insights = state
+        .db
+        .clone()
+        .run(move |conn| match project_id.as_deref() {
+            Some(pid) => compute_project_pr_insights(conn, pid, wsd, tz),
+            None => compute_insights_pr_insights(conn, wsd, tz),
+        })
         .await
         .map_err(|e| e.to_string())?;
 

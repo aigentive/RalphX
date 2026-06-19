@@ -1,9 +1,10 @@
 // Private SQL query helpers for project stats metrics.
 // Called by compute_project_stats and compute_column_metrics in metrics_commands.rs.
 
-use rusqlite::params;
+use rusqlite::{params, params_from_iter};
 
 use crate::commands::metrics_commands::{load_metrics_config, MetricsConfig};
+use crate::commands::metrics_scope::MetricsScope;
 use crate::commands::metrics_types::{
     ColumnDwellTime, ColumnMetric, CycleTimePhase, EmeEstimate, ProjectStats, TaskMetrics,
 };
@@ -11,14 +12,17 @@ use crate::error::{AppError, AppResult};
 
 // ─── Project stats queries ─────────────────────────────────────────────────────
 
-/// Total non-archived tasks in the project (all statuses).
-pub(crate) fn query_task_count(conn: &rusqlite::Connection, project_id: &str) -> AppResult<i64> {
+/// Total non-archived tasks in the requested Insights scope (all statuses).
+pub(crate) fn query_task_count(
+    conn: &rusqlite::Connection,
+    scope: MetricsScope<'_>,
+) -> AppResult<i64> {
+    let filter = scope.project_filter("tasks");
+    let sql = format!("SELECT COUNT(*) FROM tasks WHERE {filter} AND archived_at IS NULL");
     let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM tasks WHERE project_id = ?1 AND archived_at IS NULL",
-            params![project_id],
-            |row| row.get(0),
-        )
+        .query_row(&sql, params_from_iter(scope.project_params()), |row| {
+            row.get(0)
+        })
         .map_err(|e| AppError::Database(e.to_string()))?;
     Ok(count)
 }
@@ -29,13 +33,14 @@ pub(crate) fn query_task_count(conn: &rusqlite::Connection, project_id: &str) ->
 /// `tz_offset_minutes`: minutes east of UTC (e.g., AEST=+660, EST=-300).
 pub(crate) fn query_tasks_completed(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
     week_start_day: u8,
     tz_offset_minutes: i32,
 ) -> AppResult<(i64, i64, i64)> {
     let wt = (week_start_day + 6) % 7;
     let tz_off = format!("{:+} minutes", tz_offset_minutes);
     let tz_neg = format!("{:+} minutes", -tz_offset_minutes);
+    let filter = scope.project_filter("t");
     let sql = format!(
         "SELECT
             COUNT(CASE WHEN datetime(h.created_at) >= datetime(date('now', '{tz_off}'), '{tz_neg}') THEN 1 END) as today,
@@ -43,11 +48,11 @@ pub(crate) fn query_tasks_completed(
             COUNT(CASE WHEN datetime(h.created_at) >= datetime('now', '-30 days') THEN 1 END) as this_month
         FROM task_state_history h
         JOIN tasks t ON t.id = h.task_id
-        WHERE t.project_id = ?1
+        WHERE {filter}
           AND h.to_status = 'merged'"
     );
     let (today, week, month) = conn
-        .query_row(&sql, params![project_id], |row| {
+        .query_row(&sql, params_from_iter(scope.project_params()), |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, i64>(1)?,
@@ -61,18 +66,21 @@ pub(crate) fn query_tasks_completed(
 /// Agent success rate: merged / (merged + failed + cancelled + stopped).
 pub(crate) fn query_agent_success_rate(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
 ) -> AppResult<(f64, i64, i64)> {
-    let sql = "
+    let filter = scope.project_filter("tasks");
+    let sql = format!(
+        "
         SELECT
             COUNT(CASE WHEN internal_status = 'merged' THEN 1 END)                                   AS success,
             COUNT(CASE WHEN internal_status IN ('merged','failed','cancelled','stopped') THEN 1 END) AS total
         FROM tasks
-        WHERE project_id = ?1
+        WHERE {filter}
           AND archived_at IS NULL
-    ";
+    "
+    );
     let (success, total) = conn
-        .query_row(sql, params![project_id], |row| {
+        .query_row(&sql, params_from_iter(scope.project_params()), |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
         })
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -88,17 +96,20 @@ pub(crate) fn query_agent_success_rate(
 /// Review pass rate: approved / (approved + changes_requested).
 pub(crate) fn query_review_pass_rate(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
 ) -> AppResult<(f64, i64, i64)> {
-    let sql = "
+    let filter = scope.project_filter("r");
+    let sql = format!(
+        "
         SELECT
             COUNT(CASE WHEN r.status = 'approved' THEN 1 END)                                            AS passed,
             COUNT(CASE WHEN r.status IN ('approved','changes_requested') THEN 1 END)                     AS total
         FROM reviews r
-        WHERE r.project_id = ?1
-    ";
+        WHERE {filter}
+    "
+    );
     let (passed, total) = conn
-        .query_row(sql, params![project_id], |row| {
+        .query_row(&sql, params_from_iter(scope.project_params()), |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
         })
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -115,12 +126,14 @@ pub(crate) fn query_review_pass_rate(
 /// Only considers tasks merged in the last 90 days.
 pub(crate) fn query_cycle_time_breakdown(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
 ) -> AppResult<Vec<CycleTimePhase>> {
-    let sql = "
+    let filter = scope.project_filter("tasks");
+    let sql = format!(
+        "
         WITH merged_tasks AS (
             SELECT id FROM tasks
-            WHERE project_id = ?1
+            WHERE {filter}
               AND internal_status = 'merged'
               AND datetime(updated_at) >= datetime('now', '-90 days')
         ),
@@ -143,14 +156,15 @@ pub(crate) fn query_cycle_time_breakdown(
           AND prev_status IS NOT NULL
         GROUP BY prev_status
         ORDER BY avg_minutes DESC
-    ";
+    "
+    );
 
     let mut stmt = conn
-        .prepare(sql)
+        .prepare(&sql)
         .map_err(|e| AppError::Database(e.to_string()))?;
 
     let rows = stmt
-        .query_map(params![project_id], |row| {
+        .query_map(params_from_iter(scope.project_params()), |row| {
             Ok(CycleTimePhase {
                 phase: row.get::<_, String>(0)?,
                 avg_minutes: row.get::<_, f64>(1)?,
@@ -256,17 +270,110 @@ fn complexity_tier(step_count: i64, review_cycles: i64, config: &MetricsConfig) 
     }
 }
 
+pub(crate) fn query_all_projects_eme(
+    conn: &rusqlite::Connection,
+) -> AppResult<Option<EmeEstimate>> {
+    let defaults = MetricsConfig::default();
+    let sql = "
+        SELECT
+            COALESCE(s.step_count,   0) AS step_count,
+            COALESCE(r.review_count, 0) AS review_cycles,
+            date(t.updated_at)          AS merged_date,
+            COALESCE(c.simple_base_hours, ?1) AS simple_base_hours,
+            COALESCE(c.medium_base_hours, ?2) AS medium_base_hours,
+            COALESCE(c.complex_base_hours, ?3) AS complex_base_hours,
+            COALESCE(c.calendar_factor, ?4) AS calendar_factor,
+            COALESCE(c.working_days_per_week, ?5) AS working_days_per_week
+        FROM tasks t
+        LEFT JOIN (
+            SELECT task_id, COUNT(*) AS step_count
+            FROM task_steps
+            GROUP BY task_id
+        ) s ON s.task_id = t.id
+        LEFT JOIN (
+            SELECT task_id, COUNT(*) AS review_count
+            FROM reviews
+            GROUP BY task_id
+        ) r ON r.task_id = t.id
+        LEFT JOIN project_metrics_config c ON c.project_id = t.project_id
+        WHERE t.internal_status = 'merged'
+          AND t.archived_at IS NULL
+        ORDER BY t.updated_at
+    ";
+
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    let rows = stmt
+        .query_map(
+            params![
+                defaults.simple_base_hours,
+                defaults.medium_base_hours,
+                defaults.complex_base_hours,
+                defaults.calendar_factor,
+                defaults.working_days_per_week
+            ],
+            |row| {
+                let config = MetricsConfig {
+                    simple_base_hours: row.get(3)?,
+                    medium_base_hours: row.get(4)?,
+                    complex_base_hours: row.get(5)?,
+                    calendar_factor: row.get(6)?,
+                    working_days_per_week: row.get(7)?,
+                };
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    config,
+                ))
+            },
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let mut task_rows: Vec<(i64, i64, Option<String>, MetricsConfig)> = Vec::new();
+    for row in rows {
+        task_rows.push(row.map_err(|e| AppError::Database(e.to_string()))?);
+    }
+
+    if task_rows.len() < 5 {
+        return Ok(None);
+    }
+
+    let earliest = task_rows.first().and_then(|row| row.2.clone());
+    let latest = task_rows.last().and_then(|row| row.2.clone());
+    let (low_total, high_total) = task_rows.iter().fold(
+        (0.0f64, 0.0f64),
+        |acc, (steps, reviews, _, config)| {
+            let (_weight, base_hours) = complexity_tier(*steps, *reviews, config);
+            (acc.0 + base_hours, acc.1 + (base_hours * config.calendar_factor))
+        },
+    );
+
+    Ok(Some(EmeEstimate {
+        low_hours: (low_total * 10.0).round() / 10.0,
+        high_hours: (high_total * 10.0).round() / 10.0,
+        scope: "task_pipeline".to_string(),
+        scope_label: "All projects task pipeline".to_string(),
+        task_count: task_rows.len() as i64,
+        earliest_task_date: earliest,
+        latest_task_date: latest,
+    }))
+}
+
 /// Average dwell time per Kanban column using LAG() window function.
 /// Maps internal statuses to Kanban columns and aggregates dwell time.
 /// Only considers tasks merged in the last 90 days.
 pub(crate) fn query_column_dwell_times(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
 ) -> AppResult<Vec<ColumnDwellTime>> {
-    let sql = "
+    let filter = scope.project_filter("tasks");
+    let sql = format!(
+        "
         WITH merged_tasks AS (
             SELECT id FROM tasks
-            WHERE project_id = ?1
+            WHERE {filter}
               AND internal_status = 'merged'
               AND datetime(updated_at) >= datetime('now', '-90 days')
         ),
@@ -303,10 +410,11 @@ pub(crate) fn query_column_dwell_times(
         WHERE column_id IS NOT NULL
         GROUP BY column_id
         ORDER BY avg_minutes DESC
-    ";
+    "
+    );
 
     let mut stmt = conn
-        .prepare(sql)
+        .prepare(&sql)
         .map_err(|e| AppError::Database(e.to_string()))?;
 
     let column_names: &[(&str, &str)] = &[
@@ -318,7 +426,7 @@ pub(crate) fn query_column_dwell_times(
     ];
 
     let rows = stmt
-        .query_map(params![project_id], |row| {
+        .query_map(params_from_iter(scope.project_params()), |row| {
             let col_id: String = row.get(0)?;
             Ok((col_id, row.get::<_, f64>(1)?, row.get::<_, i64>(2)?))
         })
@@ -347,12 +455,14 @@ pub(crate) fn query_column_dwell_times(
 /// then AVG across all tasks.  Returns `None` when no merged tasks exist.
 pub(crate) fn query_avg_pipeline_time(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
 ) -> AppResult<Option<f64>> {
-    let sql = "
+    let filter = scope.project_filter("tasks");
+    let sql = format!(
+        "
         WITH merged_tasks AS (
             SELECT id FROM tasks
-            WHERE project_id = ?1
+            WHERE {filter}
               AND internal_status = 'merged'
               AND datetime(updated_at) >= datetime('now', '-90 days')
         ),
@@ -376,10 +486,13 @@ pub(crate) fn query_avg_pipeline_time(
             GROUP BY tr.task_id
         )
         SELECT AVG(pipeline_minutes) FROM task_pipeline_minutes
-    ";
+    "
+    );
 
     let result: Option<f64> = conn
-        .query_row(sql, params![project_id], |row| row.get(0))
+        .query_row(&sql, params_from_iter(scope.project_params()), |row| {
+            row.get(0)
+        })
         .map_err(|e| AppError::Database(e.to_string()))?;
 
     Ok(result)
@@ -396,16 +509,51 @@ pub fn compute_project_stats(
     week_start_day: u8,
     tz_offset_minutes: i32,
 ) -> AppResult<ProjectStats> {
-    let task_count = query_task_count(conn, project_id)?;
+    let scope = MetricsScope::Project(project_id);
+    let task_count = query_task_count(conn, scope)?;
     let (today, this_week, this_month) =
-        query_tasks_completed(conn, project_id, week_start_day, tz_offset_minutes)?;
-    let (success_rate, success_count, total_count) = query_agent_success_rate(conn, project_id)?;
-    let (pass_rate, pass_count, review_total) = query_review_pass_rate(conn, project_id)?;
-    let cycle_time = query_cycle_time_breakdown(conn, project_id)?;
-    let column_dwell = query_column_dwell_times(conn, project_id)?;
-    let avg_pipeline = query_avg_pipeline_time(conn, project_id)?;
+        query_tasks_completed(conn, scope, week_start_day, tz_offset_minutes)?;
+    let (success_rate, success_count, total_count) = query_agent_success_rate(conn, scope)?;
+    let (pass_rate, pass_count, review_total) = query_review_pass_rate(conn, scope)?;
+    let cycle_time = query_cycle_time_breakdown(conn, scope)?;
+    let column_dwell = query_column_dwell_times(conn, scope)?;
+    let avg_pipeline = query_avg_pipeline_time(conn, scope)?;
     let config = load_metrics_config(conn, project_id)?;
     let eme = query_eme(conn, project_id, &config)?;
+
+    Ok(ProjectStats {
+        task_count,
+        tasks_completed_today: today,
+        tasks_completed_this_week: this_week,
+        tasks_completed_this_month: this_month,
+        agent_success_rate: success_rate,
+        agent_success_count: success_count,
+        agent_total_count: total_count,
+        review_pass_rate: pass_rate,
+        review_pass_count: pass_count,
+        review_total_count: review_total,
+        cycle_time_breakdown: cycle_time,
+        column_dwell_times: column_dwell,
+        avg_pipeline_minutes: avg_pipeline,
+        eme,
+    })
+}
+
+pub fn compute_insights_stats(
+    conn: &rusqlite::Connection,
+    week_start_day: u8,
+    tz_offset_minutes: i32,
+) -> AppResult<ProjectStats> {
+    let scope = MetricsScope::AllProjects;
+    let task_count = query_task_count(conn, scope)?;
+    let (today, this_week, this_month) =
+        query_tasks_completed(conn, scope, week_start_day, tz_offset_minutes)?;
+    let (success_rate, success_count, total_count) = query_agent_success_rate(conn, scope)?;
+    let (pass_rate, pass_count, review_total) = query_review_pass_rate(conn, scope)?;
+    let cycle_time = query_cycle_time_breakdown(conn, scope)?;
+    let column_dwell = query_column_dwell_times(conn, scope)?;
+    let avg_pipeline = query_avg_pipeline_time(conn, scope)?;
+    let eme = query_all_projects_eme(conn)?;
 
     Ok(ProjectStats {
         task_count,

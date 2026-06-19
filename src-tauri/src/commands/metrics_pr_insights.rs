@@ -1,12 +1,17 @@
-use rusqlite::params;
+use rusqlite::params_from_iter;
 
+use crate::commands::metrics_scope::MetricsScope;
 use crate::commands::metrics_types::{
     PrInsightItem, PrInsightOriginBreakdown, PrInsightsSummary, PrWeeklyThroughputPoint,
     ProjectPrInsights, WorkspaceStateDwellTime,
 };
 use crate::error::{AppError, AppResult};
 
-const PR_FACTS_CTE: &str = "
+fn pr_facts_cte(scope: MetricsScope<'_>) -> String {
+    let workspace_filter = scope.project_filter("w");
+    let plan_filter = scope.project_filter("pb");
+    format!(
+        "
     WITH workspace_event_bounds AS (
         SELECT
             conversation_id,
@@ -71,7 +76,7 @@ const PR_FACTS_CTE: &str = "
             ) AS closed_at
         FROM agent_conversation_workspaces w
         LEFT JOIN workspace_event_bounds b ON b.conversation_id = w.conversation_id
-        WHERE w.project_id = ?1
+        WHERE {workspace_filter}
           AND w.publication_pr_number IS NOT NULL
     ),
     plan_prs AS (
@@ -101,7 +106,7 @@ const PR_FACTS_CTE: &str = "
             pb.merged_at AS merged_at,
             CASE WHEN lower(COALESCE(pb.pr_status, '')) = 'closed' THEN COALESCE(pb.last_polled_at, pb.merged_at) END AS closed_at
         FROM plan_branches pb
-        WHERE pb.project_id = ?1
+        WHERE {plan_filter}
           AND pb.pr_number IS NOT NULL
     ),
     all_prs AS (
@@ -109,7 +114,9 @@ const PR_FACTS_CTE: &str = "
         UNION ALL
         SELECT * FROM plan_prs
     )
-";
+"
+    )
+}
 
 /// Compute PR and agent-workspace performance metrics for a project.
 pub fn compute_project_pr_insights(
@@ -118,15 +125,42 @@ pub fn compute_project_pr_insights(
     week_start_day: u8,
     tz_offset_minutes: i32,
 ) -> AppResult<ProjectPrInsights> {
-    let origins = query_origin_breakdowns(conn, project_id)?;
-    let workspace_summary = query_workspace_summary(conn, project_id)?;
-    let event_summary = query_publication_event_summary(conn, project_id)?;
-    let avg_workspace_pr_cycle_hours = query_avg_workspace_pr_cycle_hours(conn, project_id)?;
-    let avg_plan_pr_wait_hours = query_avg_plan_pr_wait_hours(conn, project_id)?;
+    compute_pr_insights_for_scope(
+        conn,
+        MetricsScope::Project(project_id),
+        week_start_day,
+        tz_offset_minutes,
+    )
+}
+
+pub fn compute_insights_pr_insights(
+    conn: &rusqlite::Connection,
+    week_start_day: u8,
+    tz_offset_minutes: i32,
+) -> AppResult<ProjectPrInsights> {
+    compute_pr_insights_for_scope(
+        conn,
+        MetricsScope::AllProjects,
+        week_start_day,
+        tz_offset_minutes,
+    )
+}
+
+fn compute_pr_insights_for_scope(
+    conn: &rusqlite::Connection,
+    scope: MetricsScope<'_>,
+    week_start_day: u8,
+    tz_offset_minutes: i32,
+) -> AppResult<ProjectPrInsights> {
+    let origins = query_origin_breakdowns(conn, scope)?;
+    let workspace_summary = query_workspace_summary(conn, scope)?;
+    let event_summary = query_publication_event_summary(conn, scope)?;
+    let avg_workspace_pr_cycle_hours = query_avg_workspace_pr_cycle_hours(conn, scope)?;
+    let avg_plan_pr_wait_hours = query_avg_plan_pr_wait_hours(conn, scope)?;
     let weekly_throughput =
-        query_weekly_pr_throughput(conn, project_id, week_start_day, tz_offset_minutes)?;
-    let workspace_dwell_times = query_workspace_state_dwell_times(conn, project_id)?;
-    let latest_prs = query_latest_pr_items(conn, project_id)?;
+        query_weekly_pr_throughput(conn, scope, week_start_day, tz_offset_minutes)?;
+    let workspace_dwell_times = query_workspace_state_dwell_times(conn, scope)?;
+    let latest_prs = query_latest_pr_items(conn, scope)?;
 
     let counted_origins = origins.iter().filter(|origin| origin.counted_in_totals);
     let mut summary = counted_origins.fold(
@@ -196,10 +230,11 @@ pub fn compute_project_pr_insights(
 
 fn query_origin_breakdowns(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
 ) -> AppResult<Vec<PrInsightOriginBreakdown>> {
+    let pr_facts_cte = pr_facts_cte(scope);
     let sql = format!(
-        "{PR_FACTS_CTE}
+        "{pr_facts_cte}
         SELECT
             origin,
             label,
@@ -226,7 +261,7 @@ fn query_origin_breakdowns(
         .prepare(&sql)
         .map_err(|error| AppError::Database(error.to_string()))?;
     let rows = stmt
-        .query_map(params![project_id], |row| {
+        .query_map(params_from_iter(scope.project_params()), |row| {
             Ok(PrInsightOriginBreakdown {
                 origin: row.get(0)?,
                 label: row.get(1)?,
@@ -248,14 +283,15 @@ fn query_origin_breakdowns(
 
 fn query_weekly_pr_throughput(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
     week_start_day: u8,
     tz_offset_minutes: i32,
 ) -> AppResult<Vec<PrWeeklyThroughputPoint>> {
     let wt = (week_start_day + 6) % 7;
     let tz_off = format!("{:+} minutes", tz_offset_minutes);
+    let pr_facts_cte = pr_facts_cte(scope);
     let sql = format!(
-        "{PR_FACTS_CTE}
+        "{pr_facts_cte}
         , throughput_events AS (
             SELECT
                 date(opened_at, '{tz_off}', 'weekday {wt}', '-6 days') AS week_start,
@@ -294,7 +330,7 @@ fn query_weekly_pr_throughput(
         .prepare(&sql)
         .map_err(|error| AppError::Database(error.to_string()))?;
     let rows = stmt
-        .query_map(params![project_id], |row| {
+        .query_map(params_from_iter(scope.project_params()), |row| {
             Ok(PrWeeklyThroughputPoint {
                 week_start: row.get(0)?,
                 opened: row.get(1)?,
@@ -309,10 +345,11 @@ fn query_weekly_pr_throughput(
 
 fn query_latest_pr_items(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
 ) -> AppResult<Vec<PrInsightItem>> {
+    let pr_facts_cte = pr_facts_cte(scope);
     let sql = format!(
-        "{PR_FACTS_CTE}
+        "{pr_facts_cte}
         SELECT
             origin,
             label,
@@ -337,7 +374,7 @@ fn query_latest_pr_items(
         .prepare(&sql)
         .map_err(|error| AppError::Database(error.to_string()))?;
     let rows = stmt
-        .query_map(params![project_id], |row| {
+        .query_map(params_from_iter(scope.project_params()), |row| {
             Ok(PrInsightItem {
                 origin: row.get(0)?,
                 label: row.get(1)?,
@@ -362,10 +399,11 @@ fn query_latest_pr_items(
 
 fn query_avg_workspace_pr_cycle_hours(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
 ) -> AppResult<Option<f64>> {
+    let pr_facts_cte = pr_facts_cte(scope);
     let sql = format!(
-        "{PR_FACTS_CTE}
+        "{pr_facts_cte}
         SELECT AVG((julianday(COALESCE(merged_at, closed_at)) - julianday(opened_at)) * 24.0)
         FROM all_prs
         WHERE origin = 'agent_workspace_direct'
@@ -373,18 +411,20 @@ fn query_avg_workspace_pr_cycle_hours(
           AND opened_at IS NOT NULL
           AND COALESCE(merged_at, closed_at) IS NOT NULL"
     );
-    optional_f64(conn, &sql, project_id)
+    optional_f64(conn, &sql, scope)
 }
 
 fn query_avg_plan_pr_wait_hours(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
 ) -> AppResult<Option<f64>> {
-    let sql = "
+    let plan_filter = scope.project_filter("pb");
+    let sql = format!(
+        "
         WITH pr_merge_tasks AS (
-            SELECT merge_task_id AS task_id
-            FROM plan_branches
-            WHERE project_id = ?1
+            SELECT pb.merge_task_id AS task_id
+            FROM plan_branches pb
+            WHERE {plan_filter}
               AND pr_number IS NOT NULL
               AND merge_task_id IS NOT NULL
         ),
@@ -401,15 +441,18 @@ fn query_avg_plan_pr_wait_hours(
         FROM transitions
         WHERE to_status = 'waiting_on_pr'
           AND next_at IS NOT NULL
-    ";
-    optional_f64(conn, sql, project_id)
+    "
+    );
+    optional_f64(conn, &sql, scope)
 }
 
 fn query_workspace_state_dwell_times(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
 ) -> AppResult<Vec<WorkspaceStateDwellTime>> {
-    let sql = "
+    let workspace_filter = scope.project_filter("w");
+    let sql = format!(
+        "
         WITH ordered AS (
             SELECT
                 h.conversation_id,
@@ -422,7 +465,7 @@ fn query_workspace_state_dwell_times(
                 ) AS prev_state
             FROM agent_conversation_workspace_state_history h
             JOIN agent_conversation_workspaces w ON w.conversation_id = h.conversation_id
-            WHERE w.project_id = ?1
+            WHERE {workspace_filter}
               AND datetime(h.created_at) >= datetime('now', '-365 days')
         ),
         change_points AS (
@@ -455,13 +498,14 @@ fn query_workspace_state_dwell_times(
         GROUP BY state_family, to_state
         ORDER BY avg_minutes DESC
         LIMIT 12
-    ";
+    "
+    );
 
     let mut stmt = conn
-        .prepare(sql)
+        .prepare(&sql)
         .map_err(|error| AppError::Database(error.to_string()))?;
     let rows = stmt
-        .query_map(params![project_id], |row| {
+        .query_map(params_from_iter(scope.project_params()), |row| {
             let state_family: String = row.get(0)?;
             let state: String = row.get(1)?;
             let avg_minutes: f64 = row.get(2)?;
@@ -490,9 +534,11 @@ struct WorkspaceSummary {
 
 fn query_workspace_summary(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
 ) -> AppResult<WorkspaceSummary> {
-    let sql = "
+    let workspace_filter = scope.project_filter("w");
+    let sql = format!(
+        "
         SELECT
             COUNT(*) AS total_workspaces,
             COALESCE(SUM(CASE WHEN linked_plan_branch_id IS NULL THEN 1 ELSE 0 END), 0) AS direct_workspaces,
@@ -500,11 +546,12 @@ fn query_workspace_summary(
             COALESCE(SUM(CASE WHEN publication_pr_number IS NOT NULL AND pr_autofix_enabled = 1 THEN 1 ELSE 0 END), 0) AS supervision_enabled_workspaces,
             COALESCE(SUM(CASE WHEN publication_pr_number IS NOT NULL AND pr_auto_merge_desired = 1 THEN 1 ELSE 0 END), 0) AS auto_merge_desired_workspaces,
             COALESCE(SUM(CASE WHEN publication_pr_number IS NOT NULL AND pr_auto_merge_current = 1 THEN 1 ELSE 0 END), 0) AS auto_merge_active_workspaces
-        FROM agent_conversation_workspaces
-        WHERE project_id = ?1
+        FROM agent_conversation_workspaces w
+        WHERE {workspace_filter}
           AND status != 'archived'
-    ";
-    conn.query_row(sql, params![project_id], |row| {
+    "
+    );
+    conn.query_row(&sql, params_from_iter(scope.project_params()), |row| {
         Ok(WorkspaceSummary {
             total_workspaces: row.get(0)?,
             direct_workspaces: row.get(1)?,
@@ -526,9 +573,11 @@ struct PublicationEventSummary {
 
 fn query_publication_event_summary(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
 ) -> AppResult<PublicationEventSummary> {
-    let sql = "
+    let workspace_filter = scope.project_filter("w");
+    let sql = format!(
+        "
         SELECT
             COALESCE(SUM(CASE
                 WHEN e.step = 'github_review'
@@ -546,9 +595,10 @@ fn query_publication_event_summary(
             END), 0) AS agent_fix_completed_events
         FROM agent_conversation_workspace_publication_events e
         JOIN agent_conversation_workspaces w ON w.conversation_id = e.conversation_id
-        WHERE w.project_id = ?1
-    ";
-    conn.query_row(sql, params![project_id], |row| {
+        WHERE {workspace_filter}
+    "
+    );
+    conn.query_row(&sql, params_from_iter(scope.project_params()), |row| {
         Ok(PublicationEventSummary {
             requested_changes_events: row.get(0)?,
             autofix_needed_events: row.get(1)?,
@@ -561,9 +611,11 @@ fn query_publication_event_summary(
 fn optional_f64(
     conn: &rusqlite::Connection,
     sql: &str,
-    project_id: &str,
+    scope: MetricsScope<'_>,
 ) -> AppResult<Option<f64>> {
-    conn.query_row(sql, params![project_id], |row| row.get(0))
+    conn.query_row(sql, params_from_iter(scope.project_params()), |row| {
+        row.get(0)
+    })
         .map_err(|error| AppError::Database(error.to_string()))
 }
 

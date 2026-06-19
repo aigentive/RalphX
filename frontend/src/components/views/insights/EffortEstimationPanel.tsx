@@ -59,7 +59,8 @@ interface EffortEstimationPanelProps {
   taskCount: number;
   earliestTaskDate: string | null;
   latestTaskDate: string | null;
-  projectId: string;
+  projectId?: string;
+  readOnly?: boolean;
 }
 
 const CALIBRATION_FIELDS = [
@@ -93,9 +94,19 @@ function computeCalendarWeeks(earliest: string | null, latest: string | null): n
   return Math.max(1, Math.round(diffDays / 7));
 }
 
-export function EffortEstimationPanel({ lowHours, highHours, scopeLabel, taskCount, earliestTaskDate, latestTaskDate, projectId }: EffortEstimationPanelProps) {
-  const { data: config } = useMetricsConfig(projectId);
-  const { mutate: saveConfig } = useSaveMetricsConfig(projectId);
+export function EffortEstimationPanel({
+  lowHours,
+  highHours,
+  scopeLabel,
+  taskCount,
+  earliestTaskDate,
+  latestTaskDate,
+  projectId,
+  readOnly = false,
+}: EffortEstimationPanelProps) {
+  const canCalibrate = projectId !== undefined && !readOnly;
+  const { data: config } = useMetricsConfig(canCalibrate ? projectId : undefined);
+  const { mutate: saveConfig } = useSaveMetricsConfig(canCalibrate ? projectId : undefined);
   const [methodologyOpen, setMethodologyOpen] = useState(false);
 
   const currentConfig = config ?? DEFAULT_METRICS_CONFIG;
@@ -124,6 +135,7 @@ export function EffortEstimationPanel({ lowHours, highHours, scopeLabel, taskCou
   const rangeBarFillPct = highHours > 0 ? Math.round((lowHours / highHours) * 100) : 0;
 
   function handleFieldBlur(field: keyof MetricsConfig, value: string) {
+    if (!canCalibrate) return;
     const num = parseFloat(value);
     if (isNaN(num)) return;
     if (field === "workingDaysPerWeek") {
@@ -135,6 +147,7 @@ export function EffortEstimationPanel({ lowHours, highHours, scopeLabel, taskCou
   }
 
   function handlePresetChange(level: ExperienceLevel) {
+    if (!canCalibrate) return;
     if (level === "custom") return;
     const preset = EXPERIENCE_PRESETS[level];
     saveConfig({
@@ -147,21 +160,28 @@ export function EffortEstimationPanel({ lowHours, highHours, scopeLabel, taskCou
   }
 
   function handleReset() {
+    if (!canCalibrate) return;
     saveConfig(DEFAULT_METRICS_CONFIG);
   }
 
   const dateRange = formatDateRange(earliestTaskDate, latestTaskDate);
 
   // Tooltip content for hero number hover
-  const heroTooltipContent = [
-    `Range: ${formatEstimate(lowHours)} \u2013 ${formatEstimate(highHours)} hours`,
-    `Low = pure coding time per task`,
-    `High = coding + overhead (${currentConfig.calendarFactor}\u00d7)`,
-    ``,
-    `Simple: ${currentConfig.simpleBaseHours}h \u00d7 ${currentConfig.calendarFactor}`,
-    `Medium: ${currentConfig.mediumBaseHours}h \u00d7 ${currentConfig.calendarFactor}`,
-    `Complex: ${currentConfig.complexBaseHours}h \u00d7 ${currentConfig.calendarFactor}`,
-  ].join("\n");
+  const heroTooltipContent = readOnly
+    ? [
+        `Range: ${formatEstimate(lowHours)} \u2013 ${formatEstimate(highHours)} hours`,
+        "Aggregated from task-pipeline completions across the selected scope.",
+        "Uses each project's saved calibration where available, then defaults otherwise.",
+      ].join("\n")
+    : [
+        `Range: ${formatEstimate(lowHours)} \u2013 ${formatEstimate(highHours)} hours`,
+        `Low = pure coding time per task`,
+        `High = coding + overhead (${currentConfig.calendarFactor}\u00d7)`,
+        ``,
+        `Simple: ${currentConfig.simpleBaseHours}h \u00d7 ${currentConfig.calendarFactor}`,
+        `Medium: ${currentConfig.mediumBaseHours}h \u00d7 ${currentConfig.calendarFactor}`,
+        `Complex: ${currentConfig.complexBaseHours}h \u00d7 ${currentConfig.calendarFactor}`,
+      ].join("\n");
 
   // Tooltip for FTE-months context line
   const fteTooltipContent = showFteMonths
@@ -185,7 +205,15 @@ export function EffortEstimationPanel({ lowHours, highHours, scopeLabel, taskCou
           >
             {scopeLabel ?? "Task Pipeline"} Equivalent Developer Effort
           </span>
-          {!isDefault && (
+          {readOnly && (
+            <span
+              className="text-[0.625rem] px-1.5 py-0.5 rounded"
+              style={{ backgroundColor: "var(--accent-muted)", color: ACCENT }}
+            >
+              aggregate
+            </span>
+          )}
+          {!readOnly && !isDefault && (
             <span
               className="text-[0.625rem] px-1.5 py-0.5 rounded"
               style={{ backgroundColor: "var(--accent-muted)", color: ACCENT }}
@@ -281,49 +309,62 @@ export function EffortEstimationPanel({ lowHours, highHours, scopeLabel, taskCou
             </Tooltip>
           </div>
 
-          {/* Team Level selector — always visible */}
-          <div className="flex flex-col gap-1.5 pt-1">
-            <span
-              className="text-[0.625rem] uppercase tracking-wide text-text-muted"
-              style={{ letterSpacing: "0.06em" }}
-            >
-              Team Level
-            </span>
-            <div className="flex gap-1" data-testid="experience-level-select">
-              {Object.entries(EXPERIENCE_PRESETS).map(([key, preset]) => {
-                const isActive = currentLevel === key;
-                return (
-                  <button
-                    key={key}
-                    onClick={() => handlePresetChange(key as ExperienceLevel)}
-                    className="flex-1 flex flex-col items-center rounded-md px-2 py-1.5 transition-colors"
-                    style={{
-                      backgroundColor: isActive
-                        ? "var(--accent-muted)"
-                        : "var(--overlay-faint)",
-                      color: isActive ? ACCENT : "var(--text-secondary)",
-                    }}
-                  >
-                    <span className="text-[0.6875rem] font-medium">{preset.label}</span>
-                    <span
-                      className="text-[0.625rem]"
+          {canCalibrate ? (
+            <div className="flex flex-col gap-1.5 pt-1">
+              <span
+                className="text-[0.625rem] uppercase tracking-wide text-text-muted"
+                style={{ letterSpacing: "0.06em" }}
+              >
+                Team Level
+              </span>
+              <div className="flex gap-1" data-testid="experience-level-select">
+                {Object.entries(EXPERIENCE_PRESETS).map(([key, preset]) => {
+                  const isActive = currentLevel === key;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => handlePresetChange(key as ExperienceLevel)}
+                      className="flex-1 flex flex-col items-center rounded-md px-2 py-1.5 transition-colors"
                       style={{
-                        color: isActive ? ACCENT : "var(--text-muted)",
-                        opacity: isActive ? 0.7 : 1,
+                        backgroundColor: isActive
+                          ? "var(--accent-muted)"
+                          : "var(--overlay-faint)",
+                        color: isActive ? ACCENT : "var(--text-secondary)",
                       }}
                     >
-                      {preset.description}
-                    </span>
-                  </button>
-                );
-              })}
+                      <span className="text-[0.6875rem] font-medium">{preset.label}</span>
+                      <span
+                        className="text-[0.625rem]"
+                        style={{
+                          color: isActive ? ACCENT : "var(--text-muted)",
+                          opacity: isActive ? 0.7 : 1,
+                        }}
+                      >
+                        {preset.description}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {currentLevel === "custom" && (
+                <span className="text-[0.625rem]" style={{ color: ACCENT, opacity: 0.7 }}>
+                  Custom values
+                </span>
+              )}
             </div>
-            {currentLevel === "custom" && (
-              <span className="text-[0.625rem]" style={{ color: ACCENT, opacity: 0.7 }}>
-                Custom values
+          ) : (
+            <div className="flex flex-col gap-1.5 pt-1">
+              <span
+                className="text-[0.625rem] uppercase tracking-wide text-text-muted"
+                style={{ letterSpacing: "0.06em" }}
+              >
+                Calibration
               </span>
-            )}
-          </div>
+              <span className="text-[0.6875rem] text-text-muted">
+                Uses each project&apos;s saved calibration where available.
+              </span>
+            </div>
+          )}
 
           {/* Methodology & calibration — collapsible */}
           <div>
@@ -351,97 +392,102 @@ export function EffortEstimationPanel({ lowHours, highHours, scopeLabel, taskCou
                   </span>
                 </div>
 
-                {/* Calibration inputs */}
-                <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-                  {CALIBRATION_FIELDS.map(({ field, label, sub }) => (
-                    <div key={field} className="flex items-center justify-between gap-2">
+                {canCalibrate ? (
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                    {CALIBRATION_FIELDS.map(({ field, label, sub }) => (
+                      <div key={field} className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1">
+                          <div className="flex flex-col">
+                            <span className="text-[0.6875rem] text-text-secondary">
+                              {label}
+                            </span>
+                            <span className="text-[0.625rem] text-text-muted">
+                              {sub}
+                            </span>
+                          </div>
+                          {FIELD_TOOLTIPS[field] !== undefined && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <HelpCircle className="w-3 h-3 shrink-0 text-muted-foreground" />
+                              </TooltipTrigger>
+                              <TooltipContent
+                                side="top"
+                                className="max-w-[220px] text-[0.6875rem]"
+                              >
+                                {FIELD_TOOLTIPS[field]}
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                        </div>
+                        <input
+                          id={`insights-calibrate-${field}`}
+                          type="number"
+                          min={field === "calendarFactor" ? 1 : 0.5}
+                          max={field === "calendarFactor" ? 3 : 40}
+                          step={0.5}
+                          defaultValue={currentConfig[field]}
+                          key={currentConfig[field]}
+                          onBlur={(e) => handleFieldBlur(field, e.target.value)}
+                          className="w-14 rounded px-1.5 py-0.5 text-[0.75rem] text-right tabular-nums outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0 text-text-secondary"
+                          style={{
+                            backgroundColor: "var(--overlay-weak)",
+                            boxShadow: "none",
+                            outline: "none",
+                          }}
+                          data-testid={`calibrate-${field}`}
+                          aria-label={label}
+                        />
+                      </div>
+                    ))}
+
+                    {/* Working days per week */}
+                    <div className="flex items-center justify-between gap-2 col-span-2 pt-1">
                       <div className="flex items-center gap-1">
                         <div className="flex flex-col">
                           <span className="text-[0.6875rem] text-text-secondary">
-                            {label}
+                            Work days/week
                           </span>
                           <span className="text-[0.625rem] text-text-muted">
-                            {sub}
+                            for time conversion
                           </span>
                         </div>
-                        {FIELD_TOOLTIPS[field] !== undefined && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <HelpCircle className="w-3 h-3 shrink-0 text-muted-foreground" />
-                            </TooltipTrigger>
-                            <TooltipContent
-                              side="top"
-                              className="max-w-[220px] text-[0.6875rem]"
-                            >
-                              {FIELD_TOOLTIPS[field]}
-                            </TooltipContent>
-                          </Tooltip>
-                        )}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <HelpCircle className="w-3 h-3 shrink-0 text-muted-foreground" />
+                          </TooltipTrigger>
+                          <TooltipContent
+                            side="top"
+                            className="max-w-[220px] text-[0.6875rem]"
+                          >
+                            Number of working days per week. Used to convert hours into work weeks and days (8h/day).
+                          </TooltipContent>
+                        </Tooltip>
                       </div>
                       <input
-                        id={`insights-calibrate-${field}`}
+                        id="insights-calibrate-workingDaysPerWeek"
                         type="number"
-                        min={field === "calendarFactor" ? 1 : 0.5}
-                        max={field === "calendarFactor" ? 3 : 40}
-                        step={0.5}
-                        defaultValue={currentConfig[field]}
-                        key={currentConfig[field]}
-                        onBlur={(e) => handleFieldBlur(field, e.target.value)}
+                        min={1}
+                        max={7}
+                        step={1}
+                        defaultValue={currentConfig.workingDaysPerWeek}
+                        key={currentConfig.workingDaysPerWeek}
+                        onBlur={(e) => handleFieldBlur("workingDaysPerWeek", e.target.value)}
                         className="w-14 rounded px-1.5 py-0.5 text-[0.75rem] text-right tabular-nums outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0 text-text-secondary"
                         style={{
                           backgroundColor: "var(--overlay-weak)",
                           boxShadow: "none",
                           outline: "none",
                         }}
-                        data-testid={`calibrate-${field}`}
-                        aria-label={label}
+                        data-testid="calibrate-workingDaysPerWeek"
+                        aria-label="Working days per week"
                       />
                     </div>
-                  ))}
-
-                  {/* Working days per week */}
-                  <div className="flex items-center justify-between gap-2 col-span-2 pt-1">
-                    <div className="flex items-center gap-1">
-                      <div className="flex flex-col">
-                        <span className="text-[0.6875rem] text-text-secondary">
-                          Work days/week
-                        </span>
-                        <span className="text-[0.625rem] text-text-muted">
-                          for time conversion
-                        </span>
-                      </div>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <HelpCircle className="w-3 h-3 shrink-0 text-muted-foreground" />
-                        </TooltipTrigger>
-                        <TooltipContent
-                          side="top"
-                          className="max-w-[220px] text-[0.6875rem]"
-                        >
-                          Number of working days per week. Used to convert hours into work weeks and days (8h/day).
-                        </TooltipContent>
-                      </Tooltip>
-                    </div>
-                    <input
-                      id="insights-calibrate-workingDaysPerWeek"
-                      type="number"
-                      min={1}
-                      max={7}
-                      step={1}
-                      defaultValue={currentConfig.workingDaysPerWeek}
-                      key={currentConfig.workingDaysPerWeek}
-                      onBlur={(e) => handleFieldBlur("workingDaysPerWeek", e.target.value)}
-                      className="w-14 rounded px-1.5 py-0.5 text-[0.75rem] text-right tabular-nums outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0 text-text-secondary"
-                      style={{
-                        backgroundColor: "var(--overlay-weak)",
-                        boxShadow: "none",
-                        outline: "none",
-                      }}
-                      data-testid="calibrate-workingDaysPerWeek"
-                      aria-label="Working days per week"
-                    />
                   </div>
-                </div>
+                ) : (
+                  <span className="text-[0.625rem] text-text-muted">
+                    Aggregate estimates are recomputed from raw task facts across the selected scope.
+                  </span>
+                )}
 
                 {/* What this captures / doesn't capture */}
                 <div className="flex flex-col gap-1.5 pt-1">
@@ -467,7 +513,7 @@ export function EffortEstimationPanel({ lowHours, highHours, scopeLabel, taskCou
                 </div>
 
                 {/* Reset */}
-                {!isDefault && (
+                {canCalibrate && !isDefault && (
                   <button
                     onClick={handleReset}
                     className="text-[0.6875rem] transition-colors self-start text-text-muted"

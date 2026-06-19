@@ -7,15 +7,17 @@
  * - Two-column dashboard: metrics left, EME sticky right (>=1200px)
  */
 
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Calendar, Download } from "lucide-react";
 import { formatMinutesHuman } from "@/lib/formatters";
-import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
+import { useProjectStore } from "@/stores/projectStore";
 import type { ScopeUsageStats } from "@/api/metrics";
-import { useProjectStats } from "@/hooks/useProjectStats";
-import { useProjectChatUsageStats } from "@/hooks/useProjectChatUsageStats";
-import { useProjectPrInsights } from "@/hooks/useProjectPrInsights";
-import { useProjectTrends } from "@/hooks/useProjectTrends";
+import {
+  useInsightsChatUsageStats,
+  useInsightsPrInsights,
+  useInsightsStats,
+  useInsightsTrends,
+} from "@/hooks/useInsightsMetrics";
 import { DetailCard } from "@/components/tasks/detail-views/shared/DetailCard";
 import type {
   ProjectPrInsights,
@@ -42,6 +44,7 @@ import { AgentWorkspaceInsightsCard } from "./insights/AgentWorkspaceInsightsCar
 import { DeliveryThroughputChart } from "./insights/DeliveryThroughputChart";
 import { PrPerformanceInsightsCard } from "./insights/PrPerformanceInsightsCard";
 import { UsageInsightsCard } from "./insights/UsageInsightsCard";
+import { ProjectDropdown } from "@/components/projects/ProjectSelector";
 
 // ============================================================================
 // Week Start Day Preference (localStorage-backed)
@@ -108,6 +111,37 @@ function WeekStartToggle({
   );
 }
 
+function ProjectScopeSelect({
+  projects,
+  value,
+  onChange,
+}: {
+  projects: Array<{ id: string; name: string }>;
+  value: string | null;
+  onChange: (projectId: string | null) => void;
+}) {
+  return (
+    <ProjectDropdown
+      projects={projects}
+      value={value}
+      onValueChange={onChange}
+      includeAllProjects
+      allProjectsLabel="All projects"
+      allProjectsDescription="Aggregate every project in Insights"
+      align="end"
+      variant="insights"
+      placeholder="All projects"
+      testId="insights-project-filter"
+      dropdownTestId="insights-project-filter-dropdown"
+      listTestId="insights-project-filter-list"
+      searchTestId="insights-project-filter-search"
+      allProjectsTestId="insights-project-option-all"
+      showMoreTestId="insights-project-filter-show-more"
+      projectOptionTestId={(project) => `insights-project-option-${project.id}`}
+    />
+  );
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -126,16 +160,23 @@ function downloadFile(content: string, filename: string, mimeType: string): void
   URL.revokeObjectURL(url);
 }
 
-function exportJSON(stats: ProjectStats, trends: ProjectTrends): void {
-  const date = new Date().toISOString().slice(0, 10);
-  const content = JSON.stringify(formatJSONExport(stats, trends), null, 2);
-  downloadFile(content, `ralphx-insights-${date}.json`, "application/json");
+function scopeSlug(scopeLabel: string): string {
+  return scopeLabel
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "") || "all-projects";
 }
 
-function exportCSV(trends: ProjectTrends): void {
+function exportJSON(stats: ProjectStats, trends: ProjectTrends, scopeLabel: string): void {
+  const date = new Date().toISOString().slice(0, 10);
+  const content = JSON.stringify(formatJSONExport(stats, trends), null, 2);
+  downloadFile(content, `ralphx-insights-${scopeSlug(scopeLabel)}-${date}.json`, "application/json");
+}
+
+function exportCSV(trends: ProjectTrends, scopeLabel: string): void {
   const date = new Date().toISOString().slice(0, 10);
   const csv = formatCSV(trends);
-  downloadFile(csv, `ralphx-insights-${date}.csv`, "text/csv");
+  downloadFile(csv, `ralphx-insights-${scopeSlug(scopeLabel)}-${date}.csv`, "text/csv");
 }
 
 function isCurrentWeek(weekStart: string, weekStartDay: number): boolean {
@@ -207,10 +248,12 @@ function EmeSection({
   stats,
   showEme,
   projectId,
+  scopeLabel,
 }: {
   stats: ProjectStats;
   showEme: boolean;
-  projectId: string;
+  projectId: string | null;
+  scopeLabel: string;
 }) {
   if (showEme && stats.eme) {
     return (
@@ -221,7 +264,8 @@ function EmeSection({
         taskCount={stats.eme.taskCount}
         earliestTaskDate={stats.eme.earliestTaskDate}
         latestTaskDate={stats.eme.latestTaskDate}
-        projectId={projectId}
+        {...(projectId !== null ? { projectId } : {})}
+        readOnly={projectId === null}
       />
     );
   }
@@ -233,7 +277,7 @@ function EmeSection({
           Task-pipeline effort estimation unlocks after 5 completed tasks
         </p>
         <p className="text-[0.75rem]" style={{ color: "var(--text-muted)" }}>
-          {stats.taskCount} of 5 task-pipeline completions available
+          {stats.taskCount} of 5 task-pipeline completions available in {scopeLabel}
         </p>
       </div>
     </DetailCard>
@@ -245,24 +289,28 @@ function EmeSection({
 // ============================================================================
 
 export function InsightsView() {
-  const project = useProjectStore(selectActiveProject);
-  const projectId = project?.id;
+  const projectsById = useProjectStore((state) => state.projects);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [weekStartDay, setWeekStartDay] = useWeekStartDay();
   const tzOffsetMinutes = useMemo(() => -new Date().getTimezoneOffset(), []);
+  const projects = useMemo(
+    () => Object.values(projectsById).sort((a, b) => a.name.localeCompare(b.name)),
+    [projectsById],
+  );
+  const selectedProject =
+    selectedProjectId !== null ? projectsById[selectedProjectId] : undefined;
+  const scopeLabel = selectedProject?.name ?? "All projects";
 
-  const statsQuery = useProjectStats(projectId, weekStartDay, tzOffsetMinutes);
-  const prInsightsQuery = useProjectPrInsights(projectId, weekStartDay, tzOffsetMinutes);
-  const usageStatsQuery = useProjectChatUsageStats(projectId);
-  const trendsQuery = useProjectTrends(projectId, weekStartDay, tzOffsetMinutes);
+  useEffect(() => {
+    if (selectedProjectId !== null && projectsById[selectedProjectId] === undefined) {
+      setSelectedProjectId(null);
+    }
+  }, [projectsById, selectedProjectId]);
 
-  // No active project
-  if (!projectId) {
-    return (
-      <div className="flex flex-1 items-center justify-center" style={{ color: "var(--text-muted)" }}>
-        <p className="text-[0.875rem]">Select a project to view insights</p>
-      </div>
-    );
-  }
+  const statsQuery = useInsightsStats(selectedProjectId, weekStartDay, tzOffsetMinutes);
+  const prInsightsQuery = useInsightsPrInsights(selectedProjectId, weekStartDay, tzOffsetMinutes);
+  const usageStatsQuery = useInsightsChatUsageStats(selectedProjectId);
+  const trendsQuery = useInsightsTrends(selectedProjectId, weekStartDay, tzOffsetMinutes);
 
   // Loading
   if (statsQuery.isLoading || trendsQuery.isLoading) {
@@ -296,7 +344,10 @@ export function InsightsView() {
     <InsightsContent
       stats={stats}
       trends={trends}
-      projectId={projectId}
+      projectId={selectedProjectId}
+      scopeLabel={scopeLabel}
+      projects={projects}
+      onProjectScopeChange={setSelectedProjectId}
       hasEnoughForTrends={hasEnoughForTrends}
       showEme={showEme}
       weekStartDay={weekStartDay}
@@ -313,6 +364,9 @@ function InsightsContent({
   usageStats,
   trends,
   projectId,
+  scopeLabel,
+  projects,
+  onProjectScopeChange,
   hasEnoughForTrends,
   showEme,
   weekStartDay,
@@ -322,7 +376,10 @@ function InsightsContent({
   prInsights?: ProjectPrInsights;
   usageStats?: ScopeUsageStats;
   trends: ProjectTrends;
-  projectId: string;
+  projectId: string | null;
+  scopeLabel: string;
+  projects: Array<{ id: string; name: string }>;
+  onProjectScopeChange: (projectId: string | null) => void;
   hasEnoughForTrends: boolean;
   showEme: boolean;
   weekStartDay: number;
@@ -408,10 +465,17 @@ function InsightsContent({
               Insights
             </h1>
             <p className="text-[0.8125rem]" style={{ color: "var(--text-secondary)" }}>
-              Project analytics and effort estimation
+              {projectId === null
+                ? "All-project engineering performance and effort estimation"
+                : `${scopeLabel} engineering performance and effort estimation`}
             </p>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+            <ProjectScopeSelect
+              projects={projects}
+              value={projectId}
+              onChange={onProjectScopeChange}
+            />
             <WeekStartToggle value={weekStartDay} onChange={onWeekStartDayChange} />
             <div
               className="w-px h-6 mx-1"
@@ -420,7 +484,7 @@ function InsightsContent({
             />
             <CopyMarkdownButton stats={stats} />
             <button
-              onClick={() => exportJSON(stats, trends)}
+              onClick={() => exportJSON(stats, trends, scopeLabel)}
               className="flex items-center gap-2 rounded-lg px-3 py-2 text-[0.75rem] font-medium transition-colors"
               style={{
                 backgroundColor: "var(--bg-surface)",
@@ -433,7 +497,7 @@ function InsightsContent({
               <span className="hidden min-[800px]:inline">JSON</span>
             </button>
             <button
-              onClick={() => exportCSV(trends)}
+              onClick={() => exportCSV(trends, scopeLabel)}
               className="flex items-center gap-2 rounded-lg px-3 py-2 text-[0.75rem] font-medium transition-colors"
               style={{
                 backgroundColor: "var(--bg-surface)",
@@ -500,7 +564,12 @@ function InsightsContent({
 
             {/* EME panel — medium breakpoint (800-1199px): inline between stats and charts */}
             <div className="block min-[1200px]:hidden">
-              <EmeSection stats={stats} showEme={showEme} projectId={projectId} />
+              <EmeSection
+                stats={stats}
+                showEme={showEme}
+                projectId={projectId}
+                scopeLabel={scopeLabel}
+              />
             </div>
 
             {prInsights && (
@@ -528,7 +597,7 @@ function InsightsContent({
                     Trend charts unlock after 10 completed tasks or agent workspace deliveries
                   </p>
                   <p className="text-[0.75rem]" style={{ color: "var(--text-muted)" }}>
-                    {stats.taskCount} of 10 task-pipeline completions available
+                    {stats.taskCount} of 10 task-pipeline completions available in {scopeLabel}
                   </p>
                 </div>
               </DetailCard>
@@ -578,7 +647,12 @@ function InsightsContent({
 
           {/* Right column: EME sticky (only visible at >=1200px) */}
           <div className="hidden min-[1200px]:block min-[1200px]:sticky min-[1200px]:top-6 min-[1200px]:self-start min-[1200px]:max-h-[calc(100vh-48px)] min-[1200px]:overflow-y-auto">
-            <EmeSection stats={stats} showEme={showEme} projectId={projectId} />
+            <EmeSection
+              stats={stats}
+              showEme={showEme}
+              projectId={projectId}
+              scopeLabel={scopeLabel}
+            />
           </div>
         </div>
       </div>

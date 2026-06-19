@@ -102,13 +102,14 @@ fn weekly_delivery_throughput_dedupes_task_pipeline_and_direct_workspace_output(
     .unwrap();
 
     let trends = compute_project_trends(&conn, "proj-1", 0, 0).unwrap();
-    let latest = trends
+    let active = trends
         .weekly_delivery_throughput
-        .last()
+        .iter()
+        .find(|point| point.unified_deliveries > 0 || point.merged_prs > 0)
         .expect("delivery throughput point");
 
-    assert_eq!(latest.task_deliveries, 2);
-    assert_eq!(latest.workspace_deliveries, 1);
-    assert_eq!(latest.unified_deliveries, 3);
-    assert_eq!(latest.merged_prs, 2);
+    assert_eq!(active.task_deliveries, 2);
+    assert_eq!(active.workspace_deliveries, 1);
+    assert_eq!(active.unified_deliveries, 3);
+    assert_eq!(active.merged_prs, 2);
 }

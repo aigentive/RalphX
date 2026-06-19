@@ -8,10 +8,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 
 import { InsightsView } from "./InsightsView";
-import { useProjectStats } from "@/hooks/useProjectStats";
-import { useProjectChatUsageStats } from "@/hooks/useProjectChatUsageStats";
-import { useProjectPrInsights } from "@/hooks/useProjectPrInsights";
-import { useProjectTrends } from "@/hooks/useProjectTrends";
+import {
+  useInsightsChatUsageStats,
+  useInsightsPrInsights,
+  useInsightsStats,
+  useInsightsTrends,
+} from "@/hooks/useInsightsMetrics";
 import { useProjectStore } from "@/stores/projectStore";
 import type {
   ProjectPrInsights,
@@ -24,17 +26,11 @@ import type {
 // Hook & module mocks
 // ---------------------------------------------------------------------------
 
-vi.mock("@/hooks/useProjectStats", () => ({
-  useProjectStats: vi.fn(),
-}));
-vi.mock("@/hooks/useProjectChatUsageStats", () => ({
-  useProjectChatUsageStats: vi.fn(),
-}));
-vi.mock("@/hooks/useProjectPrInsights", () => ({
-  useProjectPrInsights: vi.fn(),
-}));
-vi.mock("@/hooks/useProjectTrends", () => ({
-  useProjectTrends: vi.fn(),
+vi.mock("@/hooks/useInsightsMetrics", () => ({
+  useInsightsStats: vi.fn(),
+  useInsightsChatUsageStats: vi.fn(),
+  useInsightsPrInsights: vi.fn(),
+  useInsightsTrends: vi.fn(),
 }));
 vi.mock("@/stores/projectStore", async () => {
   const actual = await vi.importActual<typeof import("@/stores/projectStore")>(
@@ -48,8 +44,8 @@ vi.mock("@/stores/projectStore", async () => {
 
 // Stub heavy child components — keep them lightweight identifiable shells.
 vi.mock("./insights/EffortEstimationPanel", () => ({
-  EffortEstimationPanel: (props: { projectId: string; lowHours: number }) => (
-    <div data-testid="eme-panel" data-project={props.projectId}>
+  EffortEstimationPanel: (props: { projectId?: string; lowHours: number; readOnly?: boolean }) => (
+    <div data-testid="eme-panel" data-project={props.projectId ?? "all"} data-readonly={String(props.readOnly)}>
       EME {props.lowHours}
     </div>
   ),
@@ -95,10 +91,10 @@ vi.mock("@/components/tasks/detail-views/shared/DetailCard", () => ({
   ),
 }));
 
-const mockedStats = vi.mocked(useProjectStats);
-const mockedTrends = vi.mocked(useProjectTrends);
-const mockedUsage = vi.mocked(useProjectChatUsageStats);
-const mockedPrInsights = vi.mocked(useProjectPrInsights);
+const mockedStats = vi.mocked(useInsightsStats);
+const mockedTrends = vi.mocked(useInsightsTrends);
+const mockedUsage = vi.mocked(useInsightsChatUsageStats);
+const mockedPrInsights = vi.mocked(useInsightsPrInsights);
 const mockedStore = vi.mocked(useProjectStore);
 
 // ---------------------------------------------------------------------------
@@ -226,22 +222,22 @@ function mockSuccess(
     data: stats,
     isLoading: false,
     error: null,
-  } as ReturnType<typeof useProjectStats>);
+  } as ReturnType<typeof useInsightsStats>);
   mockedTrends.mockReturnValue({
     data: trends,
     isLoading: false,
     error: null,
-  } as ReturnType<typeof useProjectTrends>);
+  } as ReturnType<typeof useInsightsTrends>);
   mockedUsage.mockReturnValue({
     data: undefined,
     isLoading: false,
     error: null,
-  } as ReturnType<typeof useProjectChatUsageStats>);
+  } as ReturnType<typeof useInsightsChatUsageStats>);
   mockedPrInsights.mockReturnValue({
     data: undefined,
     isLoading: false,
     error: null,
-  } as ReturnType<typeof useProjectPrInsights>);
+  } as ReturnType<typeof useInsightsPrInsights>);
 }
 
 // ---------------------------------------------------------------------------
@@ -261,10 +257,12 @@ afterEach(() => {
 });
 
 describe("InsightsView — empty/loading/error states", () => {
-  it("renders empty state when no active project", () => {
+  it("defaults to all projects when no active project is selected", () => {
     setProject(null);
     render(<InsightsView />);
-    expect(screen.getByText(/select a project/i)).toBeInTheDocument();
+    expect(screen.getByTestId("insights-view")).toBeInTheDocument();
+    expect(screen.getByTestId("insights-project-filter")).toHaveTextContent("All projects");
+    expect(mockedStats).toHaveBeenCalledWith(null, 0, expect.any(Number));
   });
 
   it("renders loading state when stats query is loading", () => {
@@ -272,22 +270,22 @@ describe("InsightsView — empty/loading/error states", () => {
       data: undefined,
       isLoading: true,
       error: null,
-    } as ReturnType<typeof useProjectStats>);
+    } as ReturnType<typeof useInsightsStats>);
     mockedTrends.mockReturnValue({
       data: undefined,
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useProjectTrends>);
+    } as ReturnType<typeof useInsightsTrends>);
     mockedUsage.mockReturnValue({
       data: undefined,
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useProjectChatUsageStats>);
+    } as ReturnType<typeof useInsightsChatUsageStats>);
     mockedPrInsights.mockReturnValue({
       data: undefined,
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useProjectPrInsights>);
+    } as ReturnType<typeof useInsightsPrInsights>);
     render(<InsightsView />);
     expect(screen.getByText(/loading insights/i)).toBeInTheDocument();
   });
@@ -297,22 +295,22 @@ describe("InsightsView — empty/loading/error states", () => {
       data: undefined,
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useProjectStats>);
+    } as ReturnType<typeof useInsightsStats>);
     mockedTrends.mockReturnValue({
       data: undefined,
       isLoading: true,
       error: null,
-    } as ReturnType<typeof useProjectTrends>);
+    } as ReturnType<typeof useInsightsTrends>);
     mockedUsage.mockReturnValue({
       data: undefined,
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useProjectChatUsageStats>);
+    } as ReturnType<typeof useInsightsChatUsageStats>);
     mockedPrInsights.mockReturnValue({
       data: undefined,
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useProjectPrInsights>);
+    } as ReturnType<typeof useInsightsPrInsights>);
     render(<InsightsView />);
     expect(screen.getByText(/loading insights/i)).toBeInTheDocument();
   });
@@ -322,17 +320,17 @@ describe("InsightsView — empty/loading/error states", () => {
       data: undefined,
       isLoading: false,
       error: new Error("boom"),
-    } as ReturnType<typeof useProjectStats>);
+    } as ReturnType<typeof useInsightsStats>);
     mockedTrends.mockReturnValue({
       data: undefined,
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useProjectTrends>);
+    } as ReturnType<typeof useInsightsTrends>);
     mockedUsage.mockReturnValue({
       data: undefined,
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useProjectChatUsageStats>);
+    } as ReturnType<typeof useInsightsChatUsageStats>);
     render(<InsightsView />);
     expect(screen.getByText(/failed to load insights/i)).toBeInTheDocument();
   });
@@ -342,17 +340,17 @@ describe("InsightsView — empty/loading/error states", () => {
       data: undefined,
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useProjectStats>);
+    } as ReturnType<typeof useInsightsStats>);
     mockedTrends.mockReturnValue({
       data: undefined,
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useProjectTrends>);
+    } as ReturnType<typeof useInsightsTrends>);
     mockedUsage.mockReturnValue({
       data: undefined,
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useProjectChatUsageStats>);
+    } as ReturnType<typeof useInsightsChatUsageStats>);
     const { container } = render(<InsightsView />);
     expect(container.querySelector('[data-testid="insights-view"]')).toBeNull();
   });
@@ -364,7 +362,7 @@ describe("InsightsView — full render with stats + trends", () => {
     render(<InsightsView />);
     expect(screen.getByTestId("insights-view")).toBeInTheDocument();
     expect(screen.getByText("Insights")).toBeInTheDocument();
-    expect(screen.getByText(/project analytics/i)).toBeInTheDocument();
+    expect(screen.getByText(/all-project engineering performance/i)).toBeInTheDocument();
     // Stat cards
     expect(screen.getAllByTestId("stat-card").length).toBeGreaterThanOrEqual(4);
     // EME panel renders (showEme=true: taskCount>=5 + eme not null) — appears in
@@ -378,6 +376,25 @@ describe("InsightsView — full render with stats + trends", () => {
     expect(screen.getByTestId("column-dwell")).toBeInTheDocument();
     // Copy markdown button
     expect(screen.getByTestId("copy-md")).toBeInTheDocument();
+  });
+
+  it("filters Insights locally without changing the active project store", () => {
+    setProject("proj-1");
+    mockSuccess();
+    render(<InsightsView />);
+
+    const filter = screen.getByTestId("insights-project-filter");
+    expect(filter).toHaveTextContent("All projects");
+
+    fireEvent.click(filter);
+    fireEvent.change(screen.getByTestId("insights-project-filter-search"), {
+      target: { value: "P" },
+    });
+    fireEvent.click(screen.getByTestId("insights-project-option-proj-1"));
+
+    expect(filter).toHaveTextContent("P");
+    expect(mockedStats).toHaveBeenLastCalledWith("proj-1", 0, expect.any(Number));
+    expect(screen.getByText(/P engineering performance/i)).toBeInTheDocument();
   });
 
   it("renders trends-locked message when taskCount < 10", () => {
@@ -485,7 +502,7 @@ describe("InsightsView — full render with stats + trends", () => {
       },
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useProjectChatUsageStats>);
+    } as ReturnType<typeof useInsightsChatUsageStats>);
     render(<InsightsView />);
     expect(screen.getByTestId("usage-insights")).toBeInTheDocument();
   });
@@ -496,7 +513,7 @@ describe("InsightsView — full render with stats + trends", () => {
       data: makePrInsights(),
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useProjectPrInsights>);
+    } as ReturnType<typeof useInsightsPrInsights>);
     render(<InsightsView />);
     expect(screen.getByTestId("agent-workspaces-insights")).toBeInTheDocument();
     expect(screen.getByTestId("pr-insights")).toBeInTheDocument();

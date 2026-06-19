@@ -27,6 +27,7 @@ pub mod merge_pipeline_commands;
 pub mod metrics_commands;
 pub(crate) mod metrics_pr_insights;
 pub(crate) mod metrics_queries;
+pub(crate) mod metrics_scope;
 pub(crate) mod metrics_trends;
 pub mod metrics_types;
 pub mod methodology_commands;
@@ -114,9 +115,10 @@ pub use chat_attachment_commands::{
 };
 pub use conversation_stats_commands::{
     build_conversation_stats_response, build_scope_stats_response, get_agent_conversation_stats,
-    get_project_chat_usage_stats, get_task_chat_usage_stats, ConversationAttributionCoverageResponse,
-    ConversationStatsResponse, ConversationUsageCoverageResponse, ScopeStatsResponse,
-    UsageBucketResponse, UsageTotalsResponse,
+    get_insights_chat_usage_stats, get_project_chat_usage_stats, get_task_chat_usage_stats,
+    ConversationAttributionCoverageResponse, ConversationStatsResponse,
+    ConversationUsageCoverageResponse, ScopeStatsResponse, UsageBucketResponse,
+    UsageTotalsResponse,
 };
 pub use chat_responses::ChatMessageResponse;
 pub use diagnostic_commands::{
@@ -164,7 +166,8 @@ pub use merge_pipeline_commands::{
     get_merge_phase_list, get_merge_pipeline, get_merge_progress, MergePipelineResponse,
 };
 pub use metrics_commands::{
-    compute_project_stats, get_column_metrics, get_metrics_config, get_project_pr_insights,
+    compute_insights_stats, compute_project_stats, get_column_metrics, get_insights_pr_insights,
+    get_insights_stats, get_insights_trends, get_metrics_config, get_project_pr_insights,
     get_project_stats, get_project_trends, get_task_metrics, save_metrics_config, MetricsConfig,
 };
 pub use methodology_commands::{

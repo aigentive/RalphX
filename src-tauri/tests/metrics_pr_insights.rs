@@ -1,6 +1,8 @@
 use rusqlite::Connection;
 
-use ralphx_lib::commands::metrics_commands::compute_project_pr_insights;
+use ralphx_lib::commands::metrics_commands::{
+    compute_insights_pr_insights, compute_project_pr_insights,
+};
 
 fn create_schema(conn: &Connection) {
     conn.execute_batch(
@@ -330,4 +332,43 @@ fn pr_insights_dedupes_execution_owned_workspace_from_plan_pr_totals() {
         .expect("execution-owned origin");
     assert!(!execution_origin.counted_in_totals);
     assert_eq!(execution_origin.total_prs, 1);
+}
+
+#[test]
+fn pr_insights_aggregate_direct_workspaces_across_projects() {
+    let conn = Connection::open_in_memory().unwrap();
+    create_schema(&conn);
+    insert_project(&conn, "proj-1");
+    insert_project(&conn, "proj-2");
+
+    insert_workspace(
+        &conn,
+        "proj-1-direct",
+        "proj-1",
+        None,
+        Some(11),
+        Some("merged"),
+        Some("pushed"),
+        Some("monitoring"),
+    );
+    insert_workspace(
+        &conn,
+        "proj-2-direct",
+        "proj-2",
+        None,
+        Some(21),
+        Some("open"),
+        Some("pushed"),
+        None,
+    );
+
+    let project_insights = compute_project_pr_insights(&conn, "proj-1", 0, 0).unwrap();
+    let aggregate_insights = compute_insights_pr_insights(&conn, 0, 0).unwrap();
+
+    assert_eq!(project_insights.summary.total_prs, 1);
+    assert_eq!(aggregate_insights.summary.total_prs, 2);
+    assert_eq!(aggregate_insights.summary.direct_workspace_prs, 2);
+    assert_eq!(aggregate_insights.summary.total_workspaces, 2);
+    assert_eq!(aggregate_insights.summary.merged_prs, 1);
+    assert_eq!(aggregate_insights.summary.open_prs, 1);
 }

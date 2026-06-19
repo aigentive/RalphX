@@ -610,14 +610,21 @@ fn test_invalidate_project_stats_cache_removes_entry() {
         avg_pipeline_minutes: None,
         eme: None,
     };
-    let cache_key = format!("{project_id}:0:0");
-    STATS_CACHE.insert(cache_key.clone(), (Instant::now(), fake_stats));
+    let cache_key = format!("project:{project_id}:0:0");
+    let all_cache_key = "all:0:0".to_string();
+    STATS_CACHE.insert(cache_key.clone(), (Instant::now(), fake_stats.clone()));
+    STATS_CACHE.insert(all_cache_key.clone(), (Instant::now(), fake_stats));
 
     assert!(STATS_CACHE.contains_key(&cache_key));
+    assert!(STATS_CACHE.contains_key(&all_cache_key));
 
     invalidate_project_stats_cache(project_id);
 
     assert!(!STATS_CACHE.contains_key(&cache_key), "cache entry should be evicted");
+    assert!(
+        !STATS_CACHE.contains_key(&all_cache_key),
+        "all-project cache entry should be evicted"
+    );
 }
 
 #[test]
