@@ -153,6 +153,28 @@ const LINEAR_TAB = {
   icon: Ticket,
 };
 
+const EXTERNAL_ARTIFACT_TABS: readonly AgentArtifactTab[] = [
+  "jira",
+  "linear",
+  "publish",
+];
+
+function isExternalArtifactTab(tab: AgentArtifactTab): boolean {
+  return EXTERNAL_ARTIFACT_TABS.includes(tab);
+}
+
+function preferredIdeationTab(
+  tabs: readonly IdeationArtifactTab[],
+): IdeationArtifactTab | null {
+  if (tabs.includes("tasks")) {
+    return "tasks";
+  }
+  if (tabs.includes("plan")) {
+    return "plan";
+  }
+  return tabs[0] ?? null;
+}
+
 const SELECTED_TASK_STORAGE_PREFIX = "agents:artifact:selected-task:";
 
 function readSelectedTaskForConversation(
@@ -222,6 +244,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
   const syncedIdeationLinksRef = useRef<Set<string>>(new Set());
+  const manuallySelectedExternalTabRef = useRef<AgentArtifactTab | null>(null);
   const isDirectIdeationConversation = conversation?.contextType === "ideation";
   const canHydrateIdeationArtifacts = Boolean(
     isDirectIdeationConversation ||
@@ -304,6 +327,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   useEffect(() => {
     setDisplayedVerificationStatus(null);
   }, [attachedSessionId]);
+  useEffect(() => {
+    manuallySelectedExternalTabRef.current = null;
+  }, [conversationId]);
   useEffect(() => {
     setTaskArtifactSelectedIdState(readSelectedTaskForConversation(conversationId));
   }, [conversationId]);
@@ -410,7 +436,15 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     ],
     [availableIdeationTabIds, showJiraTab, showLinearTab, showPublishTab],
   );
+  const preferredAvailableIdeationTab = preferredIdeationTab(availableIdeationTabIds);
+  const shouldOverrideExternalActiveTab =
+    preferredAvailableIdeationTab !== null &&
+    isExternalArtifactTab(activeTab) &&
+    manuallySelectedExternalTabRef.current !== activeTab;
   const effectiveActiveTab =
+    shouldOverrideExternalActiveTab
+      ? preferredAvailableIdeationTab
+      :
     visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
       : visibleTabs[0]?.id ?? "plan";
@@ -528,6 +562,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 key={id}
                 type="button"
                 onClick={() => {
+                  manuallySelectedExternalTabRef.current = isExternalArtifactTab(id)
+                    ? id
+                    : null;
                   if (
                     id === "tasks" &&
                     effectiveActiveTab === "tasks" &&
