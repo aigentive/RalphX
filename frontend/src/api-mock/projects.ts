@@ -7,7 +7,11 @@
 import type { Project, CreateProject, UpdateProject } from "@/types/project";
 import type { WorkflowSchema, WorkflowColumn } from "@/types/workflow";
 import type { InternalStatus } from "@/types/status";
-import type { CreateWorkflowInput, UpdateWorkflowInput } from "@/lib/api/workflows";
+import type {
+  CreateWorkflowInput,
+  UpdateWorkflowInput,
+  WorkflowColumnInput,
+} from "@/lib/api/workflows";
 import { createMockProject, generateTestUuid } from "@/test/mock-data";
 import { getStore } from "./store";
 
@@ -154,7 +158,7 @@ export const mockWorkflowsApi = {
       id: `mock-workflow-${Date.now()}`,
       name: input.name,
       description: input.description,
-      columns: input.columns.map((col) => ({
+      columns: input.columns.map((col: WorkflowColumnInput) => ({
         id: col.id,
         name: col.name,
         mapsTo: col.maps_to as InternalStatus,
