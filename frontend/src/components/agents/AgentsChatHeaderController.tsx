@@ -37,22 +37,17 @@ interface AgentsChatHeaderControllerProps
     | "terminalOpen"
     | "onToggleTerminal"
     | "onPreloadTerminal"
-    | "onToggleIssuePane"
   > {
   hasAutoOpenArtifacts: boolean;
-  issuePaneOpen: boolean;
   onToggleArtifacts: (conversationId: string) => void;
-  onToggleIssuePane: (conversationId: string) => void;
 }
 
 export function AgentsChatHeaderController({
   conversation,
   workspace,
   hasAutoOpenArtifacts,
-  issuePaneOpen,
   terminalUnavailableReason = null,
   onToggleArtifacts,
-  onToggleIssuePane,
   ...props
 }: AgentsChatHeaderControllerProps) {
   const { artifactState, artifactPaneOpen } = useResolvedAgentArtifactState(
@@ -161,12 +156,6 @@ export function AgentsChatHeaderController({
     }
     onToggleArtifacts(conversation.id);
   }, [conversation, onToggleArtifacts]);
-  const handleToggleIssuePane = useCallback(() => {
-    if (!conversation) {
-      return;
-    }
-    onToggleIssuePane(conversation.id);
-  }, [conversation, onToggleIssuePane]);
   const handleOpenWorkspaceTarget = useCallback(
     (targetId: string) => {
       if (!conversation || visibleWorkspaceOpeningTargetId) {
@@ -184,7 +173,6 @@ export function AgentsChatHeaderController({
       workspace={workspace}
       artifactOpen={artifactPaneOpen}
       activeArtifactTab={artifactState.activeTab}
-      issuePaneOpen={issuePaneOpen}
       terminalOpen={terminalOpen}
       terminalUnavailableReason={terminalUnavailableReason}
       onToggleTerminal={handleToggleTerminal}
@@ -193,7 +181,6 @@ export function AgentsChatHeaderController({
       openingWorkspaceTargetId={visibleWorkspaceOpeningTargetId}
       onOpenWorkspaceTarget={handleOpenWorkspaceTarget}
       onToggleArtifacts={handleToggleArtifacts}
-      onToggleIssuePane={handleToggleIssuePane}
     />
   );
 }

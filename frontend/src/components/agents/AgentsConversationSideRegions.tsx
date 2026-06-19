@@ -11,11 +11,9 @@ import type {
 
 import type { AgentConversation } from "./agentConversations";
 import { AgentsArtifactPaneRegion } from "./AgentsArtifactPaneRegion";
-import { AgentsIssuePaneRegion } from "./AgentsIssuePaneRegion";
 import { AgentsTerminalRegion } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { IdeationArtifactTab } from "./agentArtifactTabs";
-import type { AgentIssueTab } from "./agentIssueTabs";
 
 interface AgentsConversationSideRegionsProps {
   activeConversation: AgentConversation | null;
@@ -28,8 +26,6 @@ interface AgentsConversationSideRegionsProps {
   focusedIdeationSessionId: string | null;
   hasAutoOpenArtifacts: boolean;
   isArtifactResizing: boolean;
-  issuePaneOpen: boolean;
-  issuePaneTab: AgentIssueTab;
   openArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
   panelDockElement: HTMLDivElement | null;
   publishFocusRequest: AgentPublishFocusRequest | null;
@@ -44,8 +40,6 @@ interface AgentsConversationSideRegionsProps {
   onResizeReset: (event: ReactMouseEvent) => void;
   onResizeStart: (event: ReactMouseEvent) => void;
   onSelectArtifact: (tab: AgentArtifactTab) => void;
-  onCloseIssuePane: () => void;
-  onSelectIssueTab: (tab: AgentIssueTab) => void;
 }
 
 export function AgentsConversationSideRegions({
@@ -59,8 +53,6 @@ export function AgentsConversationSideRegions({
   focusedIdeationSessionId,
   hasAutoOpenArtifacts,
   isArtifactResizing,
-  issuePaneOpen,
-  issuePaneTab,
   openArtifactTab,
   panelDockElement,
   publishFocusRequest,
@@ -75,8 +67,6 @@ export function AgentsConversationSideRegions({
   onResizeReset,
   onResizeStart,
   onSelectArtifact,
-  onCloseIssuePane,
-  onSelectIssueTab,
 }: AgentsConversationSideRegionsProps) {
   return (
     <>
@@ -107,14 +97,6 @@ export function AgentsConversationSideRegions({
           setTerminalPanelDockElement={setTerminalPanelDockElement}
         />
       ) : null}
-      <AgentsIssuePaneRegion
-        conversation={activeConversation}
-        workspace={activeWorkspace}
-        activeTab={issuePaneTab}
-        isOpen={issuePaneOpen}
-        onTabChange={onSelectIssueTab}
-        onClose={onCloseIssuePane}
-      />
       <AgentsTerminalRegion
         conversationId={selectedConversationId}
         workspace={activeWorkspace}

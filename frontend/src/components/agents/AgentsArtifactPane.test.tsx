@@ -901,64 +901,6 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-content-linear")).not.toBeInTheDocument();
   });
 
-  it("does not let Linear mask top-level workspace ideation artifacts", async () => {
-    getLinearSettingsMock.mockResolvedValue({
-      enabled: true,
-      hasApiToken: true,
-      validationStatus: "valid",
-      issueSearchAvailable: true,
-      lastValidatedAt: "2026-04-23T09:00:00Z",
-      lastError: null,
-      updatedAt: "2026-04-23T09:00:00Z",
-    });
-    getIdeationSessionMock.mockResolvedValue({
-      session: {
-        id: "session-1",
-        projectId: "project-1",
-        title: "Agent Plan",
-        titleSource: "auto",
-        status: "accepted",
-        planArtifactId: "artifact-1",
-        seedTaskId: null,
-        parentSessionId: null,
-        teamMode: null,
-        teamConfig: null,
-        createdAt: "2026-04-23T09:00:00Z",
-        updatedAt: "2026-04-23T09:00:00Z",
-        archivedAt: null,
-        convertedAt: "2026-04-23T10:00:00Z",
-        verificationStatus: "unverified",
-        verificationInProgress: false,
-        gapScore: null,
-        inheritedPlanArtifactId: null,
-        sessionPurpose: "general",
-        acceptanceStatus: "accepted",
-      },
-      proposals: [],
-      messages: [],
-    });
-
-    renderPane(
-      "linear",
-      workspace({
-        mode: "ideation",
-        linkedIdeationSessionId: "session-1",
-        linkedPlanBranchId: "plan-branch-1",
-      }),
-      vi.fn(),
-      false,
-      conversation(),
-      { taskMode: "kanban" },
-    );
-
-    expect(screen.queryByTestId("agents-artifact-tab-linear")).not.toBeInTheDocument();
-    expect(await screen.findByTestId("agents-artifact-tab-tasks")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByTestId("agents-artifact-content-tasks")).toBeInTheDocument(),
-    );
-    expect(screen.queryByTestId("agents-artifact-content-linear")).not.toBeInTheDocument();
-  });
-
   it("anchors the active tab border to the bottom edge of the tab bar", async () => {
     getIdeationSessionMock.mockResolvedValue({
       session: {
