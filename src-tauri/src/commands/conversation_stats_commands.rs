@@ -321,6 +321,39 @@ pub async fn get_project_chat_usage_stats(
 }
 
 #[tauri::command]
+pub async fn get_insights_chat_usage_stats(
+    project_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ScopeStatsResponse, String> {
+    let project_id = project_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let (scope_type, scope_id, conversations) = match project_id {
+        Some(project_id) => {
+            let project_id_obj = crate::domain::entities::ProjectId::from_string(project_id);
+            (
+                "project",
+                project_id_obj.as_str().to_string(),
+                collect_project_conversations(&state, &project_id_obj).await?,
+            )
+        }
+        None => (
+            "all_projects",
+            "all".to_string(),
+            collect_all_project_conversations(&state).await?,
+        ),
+    };
+    let (messages, runs) = collect_conversation_payloads(&state, &conversations).await?;
+    Ok(build_scope_stats_response(
+        scope_type,
+        scope_id.as_str(),
+        &conversations,
+        &messages,
+        &runs,
+    ))
+}
+
+#[tauri::command]
 pub async fn get_task_chat_usage_stats(
     task_id: String,
     state: State<'_, AppState>,
@@ -335,6 +368,25 @@ pub async fn get_task_chat_usage_stats(
         &messages,
         &runs,
     ))
+}
+
+async fn collect_all_project_conversations(
+    state: &AppState,
+) -> Result<Vec<ChatConversation>, String> {
+    let mut conversation_map: BTreeMap<String, ChatConversation> = BTreeMap::new();
+    let projects = state
+        .project_repo
+        .get_all()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    for project in projects {
+        for conversation in collect_project_conversations(state, &project.id).await? {
+            conversation_map.insert(conversation.id.as_str(), conversation);
+        }
+    }
+
+    Ok(conversation_map.into_values().collect())
 }
 
 async fn collect_project_conversations(

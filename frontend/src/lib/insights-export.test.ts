@@ -13,19 +13,40 @@ import type { ProjectStats, ProjectTrends } from "@/types/project-stats";
 
 const emptyTrends: ProjectTrends = {
   weeklyThroughput: [],
+  weeklyDeliveryThroughput: [],
   weeklyCycleTime: [],
+  weeklyPipelineCycleTime: [],
   weeklySuccessRate: [],
 };
 
 const sampleTrends: ProjectTrends = {
   weeklyThroughput: [
     { weekStart: "2026-01-05", value: 3, sampleSize: 3 },
-    { weekStart: "2026-01-12", value: 5, sampleSize: 5 },
+      { weekStart: "2026-01-12", value: 5, sampleSize: 5 },
+  ],
+  weeklyDeliveryThroughput: [
+    {
+      weekStart: "2026-01-05",
+      unifiedDeliveries: 4,
+      taskDeliveries: 3,
+      workspaceDeliveries: 1,
+      mergedPrs: 2,
+      sampleSize: 6,
+    },
+    {
+      weekStart: "2026-01-12",
+      unifiedDeliveries: 6,
+      taskDeliveries: 5,
+      workspaceDeliveries: 1,
+      mergedPrs: 3,
+      sampleSize: 9,
+    },
   ],
   weeklyCycleTime: [
     { weekStart: "2026-01-05", value: 120, sampleSize: 3 }, // 120 min → 2.00 h
     { weekStart: "2026-01-12", value: 90, sampleSize: 5 },  // 90 min → 1.50 h
   ],
+  weeklyPipelineCycleTime: [],
   weeklySuccessRate: [
     { weekStart: "2026-01-05", value: 75.5, sampleSize: 3 },
     { weekStart: "2026-01-12", value: 80, sampleSize: 5 },
@@ -44,21 +65,26 @@ const baseStats: ProjectStats = {
   reviewPassCount: 8,
   reviewTotalCount: 10,
   cycleTimeBreakdown: [],
+  columnDwellTimes: [],
+  avgPipelineMinutes: null,
   eme: null,
 };
+
+const CSV_HEADER =
+  "week_start,throughput,unified_deliveries,task_deliveries,workspace_deliveries,merged_prs,cycle_time_hours,success_rate_pct";
 
 // ─── formatCSV ────────────────────────────────────────────────────────────────
 
 describe("formatCSV", () => {
   it("returns only the header row when all trend arrays are empty", () => {
     const csv = formatCSV(emptyTrends);
-    expect(csv).toBe("week_start,throughput,cycle_time_hours,success_rate_pct");
+    expect(csv).toBe(CSV_HEADER);
   });
 
   it("includes the correct header columns", () => {
     const csv = formatCSV(sampleTrends);
     const [header] = csv.split("\n");
-    expect(header).toBe("week_start,throughput,cycle_time_hours,success_rate_pct");
+    expect(header).toBe(CSV_HEADER);
   });
 
   it("produces one data row per unique week_start", () => {
@@ -74,7 +100,9 @@ describe("formatCSV", () => {
         { weekStart: "2026-01-12", value: 5, sampleSize: 5 },
         { weekStart: "2026-01-05", value: 3, sampleSize: 3 },
       ],
+      weeklyDeliveryThroughput: [],
       weeklyCycleTime: [],
+      weeklyPipelineCycleTime: [],
       weeklySuccessRate: [],
     };
     const csv = formatCSV(trends);
@@ -90,7 +118,7 @@ describe("formatCSV", () => {
     expect(firstRow).toContain(",2,");
     // cycle_time_hours field
     const fields = firstRow.split(",");
-    expect(fields[2]).toBe("2");
+    expect(fields[6]).toBe("2");
   });
 
   it("rounds success_rate_pct to 1 decimal place", () => {
@@ -98,19 +126,21 @@ describe("formatCSV", () => {
     const [, firstRow] = csv.split("\n");
     const fields = firstRow.split(",");
     // 75.5 → "75.5"
-    expect(fields[3]).toBe("75.5");
+    expect(fields[7]).toBe("75.5");
   });
 
   it("uses empty string for missing metric in a week", () => {
     // Only throughput for this week, no cycle time or success rate
     const trends: ProjectTrends = {
       weeklyThroughput: [{ weekStart: "2026-02-02", value: 4, sampleSize: 4 }],
+      weeklyDeliveryThroughput: [],
       weeklyCycleTime: [],
+      weeklyPipelineCycleTime: [],
       weeklySuccessRate: [],
     };
     const csv = formatCSV(trends);
     const [, dataRow] = csv.split("\n");
-    expect(dataRow).toBe("2026-02-02,4,,");
+    expect(dataRow).toBe("2026-02-02,4,,,,,,");
   });
 
   it("merges data from all three series into a single row per week", () => {
@@ -119,19 +149,25 @@ describe("formatCSV", () => {
     const fields = firstRow.split(",");
     expect(fields[0]).toBe("2026-01-05"); // week_start
     expect(fields[1]).toBe("3");          // throughput
-    expect(fields[2]).toBe("2");          // cycle_time_hours (120/60=2)
-    expect(fields[3]).toBe("75.5");       // success_rate_pct
+    expect(fields[2]).toBe("4");          // unified_deliveries
+    expect(fields[3]).toBe("3");          // task_deliveries
+    expect(fields[4]).toBe("1");          // workspace_deliveries
+    expect(fields[5]).toBe("2");          // merged_prs
+    expect(fields[6]).toBe("2");          // cycle_time_hours (120/60=2)
+    expect(fields[7]).toBe("75.5");       // success_rate_pct
   });
 
   it("handles weeks that only appear in cycle_time series", () => {
     const trends: ProjectTrends = {
       weeklyThroughput: [],
+      weeklyDeliveryThroughput: [],
       weeklyCycleTime: [{ weekStart: "2026-03-01", value: 180, sampleSize: 2 }],
+      weeklyPipelineCycleTime: [],
       weeklySuccessRate: [],
     };
     const csv = formatCSV(trends);
     const [, dataRow] = csv.split("\n");
-    expect(dataRow).toBe("2026-03-01,,3,");
+    expect(dataRow).toBe("2026-03-01,,,,,,3,");
   });
 });
 

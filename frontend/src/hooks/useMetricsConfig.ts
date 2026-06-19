@@ -4,6 +4,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { projectStatsApi } from "@/api/project-stats";
+import { insightsStatsKeys } from "@/hooks/useInsightsMetrics";
 import { projectStatsKeys } from "@/hooks/useProjectStats";
 import type { MetricsConfig } from "@/types/project-stats";
 
@@ -27,10 +28,11 @@ export const metricsConfigKeys = {
  * @param projectId - The project to fetch config for
  * @returns TanStack Query result with MetricsConfig data
  */
-export function useMetricsConfig(projectId: string) {
+export function useMetricsConfig(projectId: string | undefined) {
   return useQuery<MetricsConfig, Error>({
-    queryKey: metricsConfigKeys.detail(projectId),
-    queryFn: () => projectStatsApi.getMetricsConfig(projectId),
+    queryKey: metricsConfigKeys.detail(projectId ?? ""),
+    queryFn: () => projectStatsApi.getMetricsConfig(projectId!),
+    enabled: !!projectId,
     staleTime: 10 * 60 * 1000,
   });
 }
@@ -43,17 +45,25 @@ export function useMetricsConfig(projectId: string) {
  * @param projectId - The project to save config for
  * @returns TanStack Mutation result
  */
-export function useSaveMetricsConfig(projectId: string) {
+export function useSaveMetricsConfig(projectId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (config: MetricsConfig) =>
-      projectStatsApi.saveMetricsConfig(projectId, config),
+    mutationFn: (config: MetricsConfig) => {
+      if (!projectId) {
+        throw new Error("Project metrics calibration requires a project scope");
+      }
+      return projectStatsApi.saveMetricsConfig(projectId, config);
+    },
     onSuccess: () => {
+      if (!projectId) return;
       queryClient.invalidateQueries({
         queryKey: metricsConfigKeys.detail(projectId),
       });
       queryClient.invalidateQueries({
         queryKey: projectStatsKeys.byProject(projectId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: insightsStatsKeys.all,
       });
     },
   });
