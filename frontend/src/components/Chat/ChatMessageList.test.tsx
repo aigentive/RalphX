@@ -4820,6 +4820,54 @@ describe("ChatMessageList - Scroll Behavior", () => {
       }
     });
 
+    it("does not pin external composer chrome changes after manual downward wheel input", async () => {
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      try {
+        mockIsAtBottom = false;
+        mockIsAtBottomRef.current = true;
+        const messages = createMessages(2);
+        const { rerender } = render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={messages}
+            externalLayoutVersion={0}
+          />
+        );
+
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 456,
+          scrollHeight: 1000,
+          scrollTop: 420,
+        });
+        act(() => {
+          scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 120 }));
+          scroller.scrollTop = 460;
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        scrollToMock.mockClear();
+
+        rerender(
+          <ChatMessageList
+            {...defaultProps}
+            messages={messages}
+            externalLayoutVersion={1}
+          />
+        );
+        await act(async () => {});
+
+        expect(scrollToMock).not.toHaveBeenCalled();
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+      }
+    });
+
     it("pins to true bottom when the finalized last message row grows while sticky", async () => {
       const callbacks: ResizeObserverCallback[] = [];
       const observedTargets: Element[] = [];
