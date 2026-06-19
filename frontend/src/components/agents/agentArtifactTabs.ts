@@ -5,14 +5,12 @@ export type IdeationArtifactTab = Exclude<AgentArtifactTab, "publish" | "jira" |
 export interface IdeationArtifactAvailability {
   hasAttachedIdeationSession: boolean;
   hasPlanArtifact: boolean;
-  hasVerificationEvidence: boolean;
   hasExecutionTasks: boolean;
 }
 
 export function getVisibleIdeationArtifactTabs({
   hasAttachedIdeationSession,
   hasPlanArtifact,
-  hasVerificationEvidence,
   hasExecutionTasks,
 }: IdeationArtifactAvailability): IdeationArtifactTab[] {
   if (!hasAttachedIdeationSession || !hasPlanArtifact) {
@@ -21,7 +19,7 @@ export function getVisibleIdeationArtifactTabs({
 
   return [
     "plan",
-    ...(hasVerificationEvidence ? ["verification" as const] : []),
+    "verification",
     "proposal",
     ...(hasExecutionTasks ? ["tasks" as const] : []),
   ];

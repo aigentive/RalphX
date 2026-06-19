@@ -8,7 +8,6 @@ describe("getVisibleIdeationArtifactTabs", () => {
       getVisibleIdeationArtifactTabs({
         hasAttachedIdeationSession: true,
         hasPlanArtifact: false,
-        hasVerificationEvidence: false,
         hasExecutionTasks: false,
       }),
     ).toEqual([]);
@@ -19,18 +18,6 @@ describe("getVisibleIdeationArtifactTabs", () => {
       getVisibleIdeationArtifactTabs({
         hasAttachedIdeationSession: true,
         hasPlanArtifact: true,
-        hasVerificationEvidence: false,
-        hasExecutionTasks: false,
-      }),
-    ).toEqual(["plan", "proposal"]);
-  });
-
-  it("adds verification only when the session has verification evidence", () => {
-    expect(
-      getVisibleIdeationArtifactTabs({
-        hasAttachedIdeationSession: true,
-        hasPlanArtifact: true,
-        hasVerificationEvidence: true,
         hasExecutionTasks: false,
       }),
     ).toEqual(["plan", "verification", "proposal"]);
@@ -41,7 +28,6 @@ describe("getVisibleIdeationArtifactTabs", () => {
       getVisibleIdeationArtifactTabs({
         hasAttachedIdeationSession: true,
         hasPlanArtifact: true,
-        hasVerificationEvidence: true,
         hasExecutionTasks: true,
       }),
     ).toEqual(["plan", "verification", "proposal", "tasks"]);

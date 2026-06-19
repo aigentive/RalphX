@@ -366,23 +366,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const planArtifactId = shouldLoadIdeationData
     ? sessionData?.session.planArtifactId ?? sessionData?.session.inheritedPlanArtifactId ?? null
     : null;
-  const sessionVerificationStatus =
-    sessionData?.session.verificationStatus ?? "unverified";
-  const hasVerificationEvidence = Boolean(
-    sessionData &&
-      (sessionData.session.verificationInProgress ||
-        sessionVerificationStatus !== "unverified" ||
-        sessionData.session.gapScore != null ||
-        (displayedVerificationStatus !== null &&
-          (displayedVerificationStatus.inProgress ||
-            displayedVerificationStatus.status !== "unverified"))),
-  );
   const availableIdeationTabIds = useMemo(
     () =>
       getVisibleIdeationArtifactTabs({
         hasAttachedIdeationSession: Boolean(sessionData),
         hasPlanArtifact: Boolean(planArtifactId),
-        hasVerificationEvidence,
         hasExecutionTasks: Boolean(
           workspace?.linkedPlanBranchId ||
             sessionData?.session.acceptanceStatus === "accepted" ||
@@ -390,7 +378,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         ),
       }),
     [
-      hasVerificationEvidence,
       planArtifactId,
       sessionData,
       workspace?.linkedPlanBranchId,
