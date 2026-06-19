@@ -33,10 +33,18 @@ export function useQueuedMessagesHydration({
     if (!enabled || !contextId || !storeContextKey) {
       return;
     }
+    const getQueuedAgentMessages = chatApi.getQueuedAgentMessages;
+    if (typeof getQueuedAgentMessages !== "function") {
+      logger.debug?.("[chat] Skipping queued message hydration; API is unavailable", {
+        contextType,
+        contextId,
+        storeContextKey,
+      });
+      return;
+    }
 
     let cancelled = false;
-    void chatApi
-      .getQueuedAgentMessages(contextType, contextId)
+    void getQueuedAgentMessages(contextType, contextId)
       .then((messages) => {
         if (cancelled) return;
         setQueuedMessages(storeContextKey, messages.map(toQueuedMessage));
