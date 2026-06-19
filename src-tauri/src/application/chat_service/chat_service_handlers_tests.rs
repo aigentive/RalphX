@@ -493,6 +493,30 @@ fn test_incomplete_review_action_escalates_only_for_live_reviewing_tasks() {
     );
 }
 
+#[test]
+fn test_post_success_review_error_note_suppression_only_after_reviewing() {
+    assert!(should_suppress_post_success_review_error_note(
+        ChatContextType::Review,
+        "Review approved. No blocking issues.",
+        Some(InternalStatus::PendingMerge),
+    ));
+    assert!(!should_suppress_post_success_review_error_note(
+        ChatContextType::Review,
+        "Review approved. No blocking issues.",
+        Some(InternalStatus::Reviewing),
+    ));
+    assert!(!should_suppress_post_success_review_error_note(
+        ChatContextType::Review,
+        "",
+        Some(InternalStatus::PendingMerge),
+    ));
+    assert!(!should_suppress_post_success_review_error_note(
+        ChatContextType::TaskExecution,
+        "Useful output",
+        Some(InternalStatus::PendingMerge),
+    ));
+}
+
 #[tokio::test]
 async fn test_apply_system_wide_provider_pause_pauses_mixed_active_task_states() {
     let app_state = AppState::new_test();

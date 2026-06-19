@@ -299,12 +299,23 @@ export const PLAN_TOOLS: Tool[] = [
   {
     name: "get_plan_verification",
     description:
-      "Get the current verification status for the PARENT ideation session. Use this before and during verification to confirm the generation, in_progress flag, and current round before calling report_verification_round or complete_plan_verification. The canonical parent session is derived automatically from the active verification child context, so do not pass session_id. " +
+      "Get the current verification status for an ideation plan. Parent ideation agents must pass session_id. Verifier child agents omit session_id because the canonical parent session is derived automatically from the active verification child context. Use this before and during verification to confirm the generation, in_progress flag, and current round before calling report_verification_round or complete_plan_verification. " +
       "If a verification update call is rejected, call this again on the parent session and copy the returned generation/in_progress values instead of guessing.",
     inputSchema: {
       type: "object",
-      examples: [{}],
-      properties: {},
+      examples: [
+        {
+          session_id: "ideation-session-id",
+        },
+        {},
+      ],
+      properties: {
+        session_id: {
+          type: "string",
+          description:
+            "Parent ideation session ID. Required for parent ideation agents; verifier child agents omit it.",
+        },
+      },
       required: [],
     },
   },
