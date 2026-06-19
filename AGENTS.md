@@ -44,7 +44,7 @@ Primary project docs:
 - PR descriptions: follow `.claude/rules/pr-descriptions.md`; lead with context, user impact, decisions, and risks instead of local validation transcripts.
 - Legacy harness compatibility (NON-NEGOTIABLE): provider-neutral changes stay additive/derivable from legacy Claude-only persisted data until an explicit migration removes that requirement.
 - Minimal diffs: avoid formatter churn and opportunistic refactors.
-- Context-preservation trackers (NON-NEGOTIABLE): for multi-step investigations or fixes, create and keep updating a local tracker under `.artifacts/specs/<topic>/tracker.md` so findings and decisions survive context compaction.
+- Context-preservation trackers (NON-NEGOTIABLE): for multi-step investigations or fixes, create and keep updating a local tracker under `.artifacts/specs/<topic>/tracker.md`; fresh worktrees may not have `.artifacts`, so run `mkdir -p .artifacts/specs/<topic>` before reading or writing the tracker.
 - Agent tool alignment: keep prompt frontmatter, canonical agent metadata, `config/ralphx.yaml`, and MCP allowlists aligned. Source: `.claude/rules/agent-mcp-tools.md`.
 - Prompts are not migration diaries (NON-NEGOTIABLE): prompts are clean contracts for the live tool surface and role; migration notes, forbidden legacy paths, and compatibility ballast belong in backend validation, tests, or docs, not prompt prose.
 - Surface-local descriptions only (NON-NEGOTIABLE): tool schemas, recovery hints, and prompt prose must not mention tools that are not on the caller agent’s live tool surface.
@@ -59,6 +59,7 @@ Primary project docs:
 - Rustfmt scope safety: never run `rustfmt` on `mod.rs` roots unless recursive formatting is intentional.
 - Rustfmt edition safety: prefer `rustfmt --edition 2021 <leaf-file.rs>` for surgical work; avoid plain `cargo fmt` unless broad formatting is intended.
 - Cargo during refactors: run one targeted Cargo job at a time.
+- Rust manifest location: this repo has no root `Cargo.toml`; use `src-tauri/Cargo.toml` or discover manifests with `rg --files -g Cargo.toml`, never `rg Cargo.toml` as a required file read.
 - Rust test runner split: use `cargo test` for selective filters/doctests and `cargo nextest run` for broad lib runs. Source: `.claude/rules/rust-test-execution.md`.
 - Worktree-safe Rust helper: use `scripts/test-rust-fast.sh {ipc|lib-1|lib-2|pr|main}` from the current checkout/worktree; `*-parallel` modes isolate `CARGO_TARGET_DIR` per lane and the script refuses cross-checkout drift.
 - Rust toolchain source of truth: `rust-toolchain.toml` is authoritative.
