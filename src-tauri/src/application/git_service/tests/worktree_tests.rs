@@ -949,6 +949,58 @@ async fn test_checkout_existing_branch_worktree_retries_after_locked_stale_entry
     let _ = GitService::delete_worktree(repo, &wt_path).await;
 }
 
+/// checkout_existing_branch_worktree: target path is missing but still registered → prune + retry.
+#[tokio::test]
+async fn test_checkout_existing_branch_worktree_retries_after_missing_registered_entry() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo = temp_dir.path();
+    init_git_repo(repo);
+
+    let wt_path = temp_dir.path().join("worktrees").join("missing-registered-wt");
+
+    Command::new("git")
+        .args(["branch", "temp-branch"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["branch", "target-branch"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            wt_path.to_str().unwrap(),
+            "temp-branch",
+        ])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert!(wt_path.exists(), "Worktree should exist before deletion");
+
+    std::fs::remove_dir_all(&wt_path).unwrap();
+    assert!(
+        !wt_path.exists(),
+        "Directory should be gone while metadata remains"
+    );
+
+    let result =
+        GitService::checkout_existing_branch_worktree(repo, &wt_path, "target-branch").await;
+    assert!(
+        result.is_ok(),
+        "checkout_existing_branch_worktree should prune missing registered metadata and retry: {:?}",
+        result.err()
+    );
+
+    assert!(wt_path.exists(), "Worktree should exist after retry");
+    let branch = GitService::get_current_branch(&wt_path).await.unwrap();
+    assert_eq!(branch, "target-branch", "Worktree should be on target branch");
+
+    let _ = GitService::delete_worktree(repo, &wt_path).await;
+}
+
 /// checkout_existing_branch_worktree: branch already checked out at another path → recovery.
 ///
 /// Scenario: a stale worktree from a prior execution still has the task branch checked out.

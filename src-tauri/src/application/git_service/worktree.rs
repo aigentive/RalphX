@@ -1,6 +1,10 @@
 use super::git_cmd;
 use super::*;
 
+fn is_missing_registered_worktree_error(stderr: &str) -> bool {
+    stderr.contains("missing but already registered worktree")
+}
+
 impl GitService {
     // =========================================================================
     // Worktree Operations (Worktree mode only)
@@ -234,6 +238,27 @@ impl GitService {
                     let retry_stderr = String::from_utf8_lossy(&retry.stderr);
                     return Err(AppError::GitOperation(format!(
                         "Failed to create worktree at {:?} for branch '{}' after unlock+prune retry: {}",
+                        worktree, branch, retry_stderr
+                    )));
+                }
+                return Ok(());
+            }
+
+            // Guard: git metadata still has a registered worktree entry whose
+            // directory has been deleted. Git suggests prune/remove; prune is
+            // sufficient for the stale-missing case and keeps the target branch.
+            if is_missing_registered_worktree_error(&stderr) {
+                debug!(
+                    "checkout_existing_branch_worktree: missing registered worktree at {:?}, pruning stale metadata and retrying",
+                    worktree
+                );
+                let _ = git_cmd::run(&["worktree", "prune"], repo).await;
+
+                let retry = git_cmd::run(&args, repo).await?;
+                if !retry.status.success() {
+                    let retry_stderr = String::from_utf8_lossy(&retry.stderr);
+                    return Err(AppError::GitOperation(format!(
+                        "Failed to create worktree at {:?} for branch '{}' after missing-registered prune retry: {}",
                         worktree, branch, retry_stderr
                     )));
                 }

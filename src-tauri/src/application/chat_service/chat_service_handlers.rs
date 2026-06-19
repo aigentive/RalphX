@@ -501,6 +501,16 @@ fn incomplete_review_action(
     }
 }
 
+fn should_suppress_post_success_review_error_note(
+    context_type: ChatContextType,
+    existing_content: &str,
+    task_status: Option<InternalStatus>,
+) -> bool {
+    context_type == ChatContextType::Review
+        && !existing_content.trim().is_empty()
+        && task_status.is_some_and(|status| status != InternalStatus::Reviewing)
+}
+
 pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
     app_handle: &Option<AppHandle<R>>,
     category: &super::ProviderErrorCategory,
@@ -1974,12 +1984,36 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
         stream_error,
         Some(StreamError::AgentExit { stderr, .. }) if is_nonfatal_mcp_tool_cancellation(stderr)
     );
+    let review_task_status = if context_type == ChatContextType::Review {
+        match task_repo
+            .get_by_id(&TaskId::from_string(context_id.to_string()))
+            .await
+        {
+            Ok(Some(task)) => Some(task.internal_status),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let suppress_post_success_review_error_note = should_suppress_post_success_review_error_note(
+        context_type,
+        &existing_content,
+        review_task_status,
+    );
     let error_note = if suppress_transcript_error_note {
         tracing::info!(
             conversation_id = conversation_id.as_str(),
             context_type = %context_type,
             context_id,
             "Suppressing non-fatal MCP cancellation note from persisted assistant transcript"
+        );
+        existing_content
+    } else if suppress_post_success_review_error_note {
+        tracing::info!(
+            conversation_id = conversation_id.as_str(),
+            context_type = %context_type,
+            context_id,
+            "Suppressing terminal review stderr note because review content exists and task already left Reviewing"
         );
         existing_content
     } else if existing_content.is_empty() {
