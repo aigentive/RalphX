@@ -25,6 +25,7 @@ const {
   getWorkspaceCommitDiffMock,
   getWorkspacePrAnnotationsMock,
   getConversationWorkspaceMock,
+  getPrReviewContextMock,
   listPublicationEventsMock,
   getWorkspaceFreshnessMock,
   updateWorkspaceFromBaseMock,
@@ -67,6 +68,7 @@ const {
   getWorkspaceCommitDiffMock: vi.fn(),
   getWorkspacePrAnnotationsMock: vi.fn(),
   getConversationWorkspaceMock: vi.fn(),
+  getPrReviewContextMock: vi.fn(),
   listPublicationEventsMock: vi.fn(),
   getWorkspaceFreshnessMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
@@ -110,6 +112,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
       ...actual.chatApi,
       getAgentConversationWorkspace: (...args: unknown[]) =>
         getConversationWorkspaceMock(...args),
+      getAgentWorkspacePrReviewContext: (...args: unknown[]) =>
+        getPrReviewContextMock(...args),
       listAgentConversationWorkspacePublicationEvents: (...args: unknown[]) =>
         listPublicationEventsMock(...args),
       getAgentConversationWorkspaceFreshness: (...args: unknown[]) =>
@@ -466,6 +470,20 @@ describe("AgentsArtifactPane", () => {
       sourcesUnavailable: [],
     });
     getConversationWorkspaceMock.mockResolvedValue(null);
+    getPrReviewContextMock.mockResolvedValue({
+      success: true,
+      workspace: workspace({ mode: "review_pr" }),
+      events: [],
+      prNumber: 78,
+      prUrl: "https://github.com/mock/project/pull/78",
+      currentHeadSha: "head-sha",
+      health: null,
+      reviewFeedback: null,
+      monitor: null,
+      pendingAction: null,
+      recentActions: [],
+      issueCommentEvidence: [],
+    });
     listPublicationEventsMock.mockResolvedValue([]);
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -813,6 +831,77 @@ describe("AgentsArtifactPane", () => {
     expect(await screen.findByTestId("agents-auto-publish-switch")).not.toBeChecked();
     expect(screen.getByTestId("agents-pr-autofix-switch")).toBeEnabled();
     expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeEnabled();
+  });
+
+  it("renders the Review artifact tab first for Review PR workspaces", async () => {
+    getPrReviewContextMock.mockResolvedValue({
+      success: true,
+      workspace: workspace({ mode: "review_pr" }),
+      events: [],
+      prNumber: 78,
+      prUrl: "https://github.com/mock/project/pull/78",
+      currentHeadSha: "head-sha",
+      health: null,
+      reviewFeedback: null,
+      monitor: {
+        conversationId: "conversation-1",
+        projectId: "project-1",
+        prNumber: 78,
+        status: "watching",
+        monitorEnabled: true,
+        firstReviewCompleted: true,
+        lastSeenHeadSha: "head-sha",
+        lastReviewedHeadSha: "head-sha",
+        lastReviewRunId: "run-1",
+        lastReviewOutcome: "approved",
+        lastSubmittedReviewId: null,
+        reviewArtifactId: "review-artifact-1",
+        reviewArtifactHeadSha: "head-sha",
+        reviewArtifactVersion: 1,
+        reviewArtifactUpdatedAt: "2026-04-23T09:30:00Z",
+        lastError: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:30:00Z",
+      },
+      pendingAction: null,
+      recentActions: [],
+      issueCommentEvidence: [],
+    });
+    getArtifactMock.mockResolvedValue({
+      id: "review-artifact-1",
+      type: "pr_review",
+      name: "PR #78 Review",
+      content: {
+        type: "inline",
+        text: "# PR Review\n\nNo blocking findings.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:30:00Z",
+        createdBy: "ralphx-pr-reviewer",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    });
+
+    renderPane(
+      "review",
+      workspace({ mode: "review_pr" }),
+      vi.fn(),
+      false,
+      { ...conversation(), agentMode: "review_pr" },
+    );
+
+    const tabRow = screen.getByTestId("agents-artifact-tab-row");
+    const reviewTab = await screen.findByTestId("agents-artifact-tab-review");
+
+    expect(
+      tabRow.querySelector("[data-testid^='agents-artifact-tab-']"),
+    ).toBe(reviewTab);
+    expect(screen.queryByTestId("agents-artifact-tab-plan")).not.toBeInTheDocument();
+    expect(await screen.findByText("PR Review")).toBeInTheDocument();
+    expect(getPrReviewContextMock).toHaveBeenCalledWith("conversation-1");
+    expect(getArtifactMock).toHaveBeenCalledWith("review-artifact-1");
   });
 
   it("persists pre-PR autofix preference while initial Auto Publish is off", async () => {

@@ -45,6 +45,7 @@ export interface TeamMetadata {
 
 export interface PlanDisplayProps {
   plan: Artifact;
+  artifactLabel?: string;
   showApprove?: boolean;
   linkedProposalsCount?: number;
   onEdit?: () => void;
@@ -335,6 +336,7 @@ const markdownComponents = {
 
 export function PlanDisplay({
   plan,
+  artifactLabel = "Plan",
   showApprove = false,
   linkedProposalsCount = 0,
   onEdit,
@@ -610,7 +612,7 @@ export function PlanDisplay({
                       size="sm"
                       className="h-7 w-7 p-0 rounded-lg transition-colors duration-150"
                       style={{ color: "var(--text-muted)" }}
-                      aria-label="Plan actions"
+                      aria-label={`${artifactLabel} actions`}
                     >
                       <MoreHorizontal className="w-3.5 h-3.5" />
                     </Button>
@@ -1104,6 +1106,7 @@ export function PlanDisplay({
                         e.currentTarget.style.background = "transparent";
                         e.currentTarget.style.color = "var(--text-muted)";
                       }}
+                      aria-label={`${artifactLabel} actions`}
                     >
                       <History className="w-3 h-3" />
                       v{selectedVersion}

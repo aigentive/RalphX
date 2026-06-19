@@ -45,6 +45,7 @@ const TYPE_LABELS: Record<ArtifactType, string> = {
   test_result: "Test Result",
   task_spec: "Task Spec",
   review_feedback: "Review Feedback",
+  pr_review: "PR Review",
   approval: "Approval",
   findings: "Findings",
   recommendations: "Recommendations",

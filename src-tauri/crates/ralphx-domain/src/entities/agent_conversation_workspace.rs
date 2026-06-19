@@ -6,7 +6,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::entities::{
-    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId,
+    ProjectId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +219,10 @@ pub struct AgentWorkspacePrReviewMonitor {
     pub last_review_run_id: Option<String>,
     pub last_review_outcome: Option<String>,
     pub last_submitted_review_id: Option<String>,
+    pub review_artifact_id: Option<ArtifactId>,
+    pub review_artifact_head_sha: Option<String>,
+    pub review_artifact_version: Option<u32>,
+    pub review_artifact_updated_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -243,6 +248,10 @@ impl AgentWorkspacePrReviewMonitor {
             last_review_run_id: None,
             last_review_outcome: None,
             last_submitted_review_id: None,
+            review_artifact_id: None,
+            review_artifact_head_sha: None,
+            review_artifact_version: None,
+            review_artifact_updated_at: None,
             last_error: None,
             created_at: now,
             updated_at: now,

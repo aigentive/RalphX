@@ -329,6 +329,9 @@ mod v20260617122430_agent_workspace_initial_auto_publish_tests;
 mod v20260618123000_agent_workspace_pr_review_monitoring;
 #[cfg(test)]
 mod v20260618123000_agent_workspace_pr_review_monitoring_tests;
+mod v20260619093000_agent_workspace_pr_review_artifacts;
+#[cfg(test)]
+mod v20260619093000_agent_workspace_pr_review_artifacts_tests;
 mod v20260618134600_review_pr_mode_checks;
 #[cfg(test)]
 mod v20260618134600_review_pr_mode_checks_tests;
@@ -425,7 +428,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260618181405;
+pub const SCHEMA_VERSION: i64 = 20260619093000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1184,6 +1187,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260618181405,
         name: "agent_conversation_linear_issue_links",
         migrate: v20260618181405_agent_conversation_linear_issue_links::migrate,
+    },
+    Migration {
+        version: 20260619093000,
+        name: "agent_workspace_pr_review_artifacts",
+        migrate: v20260619093000_agent_workspace_pr_review_artifacts::migrate,
     },
 ];
 

@@ -42,6 +42,7 @@ import {
   agentWorkspaceKeys,
   preflightAgentWorkspaceFreshness,
 } from "./agentWorkspaceQueries";
+import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import {
   getAgentConversationStoreKey,
   toProjectAgentConversation,
@@ -70,6 +71,14 @@ type AgentConversationListPage = Omit<
   "conversations"
 > & {
   conversations: AgentConversation[];
+};
+
+type PrReviewArtifactEventPayload = {
+  conversationId?: string;
+  conversation_id?: string;
+  artifact?: {
+    id?: string;
+  } | null;
 };
 
 export function useAgentsViewController({
@@ -330,6 +339,27 @@ export function useAgentsViewController({
     invalidateProjectConversations,
     selectedConversationMessages,
   });
+  const shouldLoadPrReviewContext = Boolean(
+    selectedConversationId &&
+      activeConversation?.contextType === "project" &&
+      activeConversationMode === "review_pr",
+  );
+  const prReviewContextQuery = useQuery({
+    queryKey: agentWorkspaceKeys.prReview(selectedConversationId ?? ""),
+    queryFn: () => chatApi.getAgentWorkspacePrReviewContext(selectedConversationId!),
+    enabled: shouldLoadPrReviewContext,
+    staleTime: 5_000,
+  });
+  const reviewArtifactId =
+    prReviewContextQuery.data?.monitor?.reviewArtifactId ?? null;
+  const availableArtifactTabsWithReview = useMemo<IdeationArtifactTab[]>(() => {
+    if (!reviewArtifactId || availableArtifactTabs.includes("review")) {
+      return availableArtifactTabs;
+    }
+    return ["review", ...availableArtifactTabs];
+  }, [availableArtifactTabs, reviewArtifactId]);
+  const hasAutoOpenArtifactsWithReview =
+    hasAutoOpenArtifacts || Boolean(reviewArtifactId);
   const knownFocusIdeationSessionId =
     focusedArtifactIdeationSessionId ?? attachedIdeationSessionId ?? null;
   const latestVerificationChildQuery = useQuery({
@@ -439,7 +469,7 @@ export function useAgentsViewController({
     setArtifactTaskMode,
     toggleArtifactPaneVisibility,
   } = useAgentArtifactController({
-    hasAutoOpenArtifacts,
+    hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
     selectedConversationId,
   });
 
@@ -453,6 +483,43 @@ export function useAgentsViewController({
     },
     [openArtifactTab],
   );
+  useEffect(() => {
+    const invalidateReviewArtifact = (payload: PrReviewArtifactEventPayload) => {
+      const conversationId = payload.conversationId ?? payload.conversation_id;
+      if (!conversationId) {
+        return;
+      }
+      void queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.prReview(conversationId),
+      });
+      const artifactId = payload.artifact?.id;
+      if (artifactId) {
+        void queryClient.invalidateQueries({
+          queryKey: ["agents", "artifact", artifactId],
+        });
+      }
+    };
+
+    const unsubscribeCreated = eventBus.subscribe<PrReviewArtifactEventPayload>(
+      "pr_review_artifact:created",
+      (payload) => {
+        invalidateReviewArtifact(payload);
+        const conversationId = payload.conversationId ?? payload.conversation_id;
+        if (conversationId && conversationId === selectedConversationId) {
+          openArtifactTab(conversationId, "review");
+        }
+      },
+    );
+    const unsubscribeUpdated = eventBus.subscribe<PrReviewArtifactEventPayload>(
+      "pr_review_artifact:updated",
+      invalidateReviewArtifact,
+    );
+
+    return () => {
+      unsubscribeCreated();
+      unsubscribeUpdated();
+    };
+  }, [eventBus, openArtifactTab, queryClient, selectedConversationId]);
 
   const handleStartAgentConversation = useStartAgentConversation({
     handleAutoManagedTitle,
@@ -512,7 +579,7 @@ export function useAgentsViewController({
     handlePreloadArtifacts,
     handleSelectArtifact,
   } = useAgentArtifactActions({
-    hasAutoOpenArtifacts,
+    hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
     openArtifactTab,
     scheduleArtifactPanePreload,
     selectedConversationId,
@@ -704,12 +771,12 @@ export function useAgentsViewController({
       activeWorkspace,
       activeWorkspaceFreshness,
       attachedIdeationSessionId,
-      availableArtifactTabs,
+      availableArtifactTabs: availableArtifactTabsWithReview,
       chatFocus,
       chatFocusOptions,
       defaultProjectId,
       defaultRuntime,
-      hasAutoOpenArtifacts,
+      hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
       isLoadingProjects,
       modelRegistry,
       normalizedActiveRuntime,
@@ -759,7 +826,7 @@ export function useAgentsViewController({
       artifactWidthCss,
       chatDockElement: terminalChatDockElement,
       focusedIdeationSessionId: focusedArtifactIdeationSessionId,
-      hasAutoOpenArtifacts,
+      hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
       isArtifactResizing,
       openArtifactTab,
       panelDockElement: terminalPanelDockElement,

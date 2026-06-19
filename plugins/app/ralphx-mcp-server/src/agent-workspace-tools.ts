@@ -168,6 +168,40 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
     },
   },
   {
+    name: "write_pr_review_artifact",
+    description:
+      "Create or update the versioned Markdown Review artifact for the current Review PR workspace. " +
+      "Call this after completing the local code review and before proposing a GitHub review action.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        conversation_id: {
+          type: "string",
+          description:
+            "Optional agent workspace conversation ID. Omit when calling from the current Review PR workspace conversation.",
+        },
+        title: {
+          type: "string",
+          description:
+            "Optional review artifact title. Defaults to PR #<number> Review and preserves the previous title on updates.",
+        },
+        content: {
+          type: "string",
+          description: "Full Markdown content for the durable Review tab artifact.",
+        },
+        head_sha: {
+          type: "string",
+          description: "Optional PR head SHA covered by this review artifact.",
+        },
+        created_by_run_id: {
+          type: "string",
+          description: "Optional RalphX run id that produced this review artifact.",
+        },
+      },
+      required: ["content"],
+    },
+  },
+  {
     name: "complete_pr_review_run",
     description:
       "Record that a Review PR run completed without proposing a GitHub review action, or that it is blocked. " +
@@ -346,6 +380,8 @@ export async function callAgentWorkspaceTool(
       return callGetPrReviewContextTool(callTauriGet, args, runtimeContext);
     case "propose_pr_review_action":
       return callProposePrReviewActionTool(callTauri, args, runtimeContext);
+    case "write_pr_review_artifact":
+      return callWritePrReviewArtifactTool(callTauri, args, runtimeContext);
     case "complete_pr_review_run":
       return callCompletePrReviewRunTool(callTauri, args, runtimeContext);
     case "read_agent_workspace_pr_comment":
@@ -495,6 +531,30 @@ export async function callProposePrReviewActionTool(
     review_body: actionArgs.review_body,
     findings_json: actionArgs.findings_json,
     created_by_run_id: actionArgs.created_by_run_id,
+  });
+}
+
+export async function callWritePrReviewArtifactTool(
+  callTauri: TauriPost,
+  args: unknown,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
+): Promise<unknown> {
+  const conversation_id = resolveAgentWorkspaceConversationId(
+    "write_pr_review_artifact",
+    args,
+    runtimeContext
+  );
+  const artifactArgs = (args && typeof args === "object" ? args : {}) as {
+    title?: string;
+    content?: string;
+    head_sha?: string;
+    created_by_run_id?: string;
+  };
+  return callTauri(`agent-workspaces/${conversation_id}/pr-review-artifact`, {
+    title: artifactArgs.title,
+    content: artifactArgs.content,
+    head_sha: artifactArgs.head_sha,
+    created_by_run_id: artifactArgs.created_by_run_id,
   });
 }
 

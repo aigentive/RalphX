@@ -13,6 +13,7 @@ import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/agent-models";
 
 export type AgentArtifactTab =
+  | "review"
   | "plan"
   | "verification"
   | "proposal"
