@@ -622,11 +622,15 @@ describe('New team tool definitions', () => {
     });
     describe('get_plan_verification', () => {
         const tool = PLAN_TOOLS.find((t) => t.name === 'get_plan_verification');
-        it('should derive the parent session automatically for verifier-owned reads', () => {
+        it('should expose session_id for parent ideation reads while allowing verifier-owned derivation', () => {
             expect(tool).toBeDefined();
-            expect(tool?.description).toContain('do not pass session_id');
-            expect(tool?.inputSchema.properties).toEqual({});
-            expect((tool?.inputSchema).examples?.[0]).toEqual({});
+            expect(tool?.description).toContain('Parent ideation agents must pass session_id');
+            expect(tool?.description).toContain('Verifier child agents omit session_id');
+            expect(tool?.inputSchema.properties).toHaveProperty('session_id');
+            expect((tool?.inputSchema).examples?.[0]).toMatchObject({
+                session_id: 'ideation-session-id',
+            });
+            expect((tool?.inputSchema).examples?.[1]).toEqual({});
             expect(tool?.inputSchema.required).toEqual([]);
         });
     });
