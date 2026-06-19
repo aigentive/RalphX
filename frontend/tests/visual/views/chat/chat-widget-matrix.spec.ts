@@ -9,6 +9,22 @@ async function expandWidget(widget: Locator) {
   await widget.locator('[role="button"]').first().click();
 }
 
+function collapsedToolCallGroupToggles(root: Locator) {
+  return root.getByRole("button", { name: /^Agent called \d+ tools$/ });
+}
+
+async function expandToolCallGroups(root: Locator) {
+  await expect(collapsedToolCallGroupToggles(root).first()).toBeVisible({ timeout: 10000 });
+
+  for (let index = 0; index < 20; index += 1) {
+    const toggles = collapsedToolCallGroupToggles(root);
+    if ((await toggles.count()) === 0) {
+      return;
+    }
+    await toggles.first().click();
+  }
+}
+
 async function expectAndAttachScreenshot(
   widget: Locator,
   snapshotName: string,
@@ -133,6 +149,7 @@ test.describe("Chat Widget Matrix", () => {
       "proposal-update-1",
       "proposal-delete-1",
     ]);
+    await expandToolCallGroups(page.locator("body"));
 
     const createWidget = page.locator('[data-testid="proposal-widget-created"]');
     const updateWidget = page.locator('[data-testid="proposal-widget-updated"]');
@@ -169,6 +186,7 @@ test.describe("Chat Widget Matrix", () => {
       "verification-get-1",
       "verification-pending-1",
     ]);
+    await expandToolCallGroups(page.locator("body"));
 
     const roundReportWidget = page.locator('[data-testid="verification-widget-round-report"]');
     const getWidget = page.locator('[data-testid="verification-widget-get"]');
@@ -206,6 +224,7 @@ test.describe("Chat Widget Matrix", () => {
       "plan-create-1",
       "plan-update-1",
     ]);
+    await expandToolCallGroups(page.locator("body"));
 
     const sendMessageWidget = page.locator('[data-testid="send-message-widget-broadcast"]');
     const askQuestionWidget = page.locator('[data-testid="ideation-widget-ask-question"]');
@@ -405,6 +424,7 @@ test.describe("Chat Widget Matrix", () => {
 
   test("review widget states", async ({ page }, testInfo) => {
     await setupTaskChatScenario(page, "review_widget_matrix");
+    await expandToolCallGroups(page.locator("body"));
 
     const completeWidget = page.locator('[data-testid="review-widget-complete"]');
     const notesWidget = page.locator('[data-testid="review-widget-notes"]');
@@ -431,6 +451,7 @@ test.describe("Chat Widget Matrix", () => {
 
   test("merge widget states", async ({ page }, testInfo) => {
     await setupTaskChatScenario(page, "merge_widget_matrix");
+    await expandToolCallGroups(page.locator("body"));
 
     const targetWidget = page.locator('[data-testid="merge-widget-target"]');
     const conflictWidget = page.locator('[data-testid="merge-widget-conflict"]');
