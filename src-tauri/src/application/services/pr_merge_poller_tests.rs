@@ -677,6 +677,65 @@ async fn review_pr_monitor_skips_when_monitor_missing_or_disabled() {
 }
 
 #[tokio::test]
+async fn review_pr_monitor_skips_terminal_and_submitting_without_fetching_health() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let workspace = review_pr_workspace(
+        "review-monitor-terminal-skip-conversation",
+        "project-review-monitor-terminal-skip",
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+
+    let github = Arc::new(MockGithubService::new());
+    let chat = Arc::new(MockChatService::new());
+    let mut terminal = watching_review_monitor(&workspace, "old-head");
+    terminal.status = AgentWorkspacePrReviewMonitorStatus::Terminal;
+    workspace_repo
+        .upsert_pr_review_monitor(terminal)
+        .await
+        .expect("terminal monitor should persist");
+    let routed = super::route_agent_workspace_pr_review_monitor_if_needed(
+        github.clone() as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("terminal monitor should skip cleanly");
+    assert!(!routed);
+
+    let mut submitting = watching_review_monitor(&workspace, "old-head");
+    submitting.status = AgentWorkspacePrReviewMonitorStatus::Submitting;
+    workspace_repo
+        .upsert_pr_review_monitor(submitting)
+        .await
+        .expect("submitting monitor should persist");
+    let routed = super::route_agent_workspace_pr_review_monitor_if_needed(
+        github.clone() as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("submitting monitor should skip cleanly");
+    assert!(!routed);
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
+    assert!(chat.get_sent_messages().await.is_empty());
+}
+
+#[tokio::test]
 async fn review_pr_monitor_open_and_terminal_state_stays_monitor_scoped() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let workspace = review_pr_workspace(
@@ -744,6 +803,53 @@ async fn review_pr_monitor_open_and_terminal_state_stays_monitor_scoped() {
         .await
         .unwrap();
     assert!(events.iter().any(|event| event.step == "pr_closed"));
+}
+
+#[tokio::test]
+async fn review_pr_monitor_merged_terminal_outcome_has_no_error() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let workspace = review_pr_workspace(
+        "review-monitor-merged-terminal-conversation",
+        "project-review-monitor-merged-terminal",
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    workspace_repo
+        .upsert_pr_review_monitor(watching_review_monitor(&workspace, "old-head"))
+        .await
+        .expect("monitor should persist");
+
+    super::mark_agent_workspace_pr_terminal(
+        Arc::clone(&workspace_repo),
+        &conversation_id,
+        "merged",
+        "Pull request merged",
+    )
+    .await
+    .expect("review PR terminal marker should update monitor");
+
+    let monitor = workspace_repo
+        .get_pr_review_monitor(&conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    assert_eq!(
+        monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::Terminal
+    );
+    assert_eq!(monitor.last_review_outcome.as_deref(), Some("merged"));
+    assert!(monitor.last_error.is_none());
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list");
+    assert!(events.iter().any(|event| event.step == "pr_merged"));
 }
 
 #[tokio::test]
@@ -827,6 +933,24 @@ async fn review_pr_polling_should_continue_requires_enabled_nonterminal_monitor(
             101,
         )
         .await
+    );
+}
+
+#[tokio::test]
+async fn review_pr_polling_continues_when_monitor_lookup_errors() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let workspace = review_pr_workspace(
+        "review-monitor-error-conversation",
+        "project-review-monitor-error",
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(ReviewMonitorLookupErrorRepository { workspace });
+
+    assert!(
+        super::agent_workspace_pr_polling_should_continue(workspace_repo, &conversation_id, 101,)
+            .await
     );
 }
 
@@ -2179,6 +2303,128 @@ fn compute_age_floor(elapsed: Duration) -> Duration {
         Duration::from_secs(120)
     } else {
         Duration::from_secs(300)
+    }
+}
+
+struct ReviewMonitorLookupErrorRepository {
+    workspace: AgentConversationWorkspace,
+}
+
+#[async_trait]
+impl AgentConversationWorkspaceRepository for ReviewMonitorLookupErrorRepository {
+    async fn create_or_update(
+        &self,
+        workspace: AgentConversationWorkspace,
+    ) -> AppResult<AgentConversationWorkspace> {
+        Ok(workspace)
+    }
+
+    async fn get_by_conversation_id(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(Some(self.workspace.clone()))
+    }
+
+    async fn get_by_project_id(
+        &self,
+        _project_id: &crate::domain::entities::ProjectId,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(repo_error())
+    }
+
+    async fn list_active_direct_published_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(repo_error())
+    }
+
+    async fn list_active_needs_agent_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(repo_error())
+    }
+
+    async fn update_links(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _ideation_session_id: Option<&IdeationSessionId>,
+        _plan_branch_id: Option<&PlanBranchId>,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn update_publication(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: Option<i64>,
+        _pr_url: Option<&str>,
+        _pr_status: Option<&str>,
+        _push_status: Option<&str>,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn update_pr_supervision_preferences(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _autofix_enabled: bool,
+        _auto_merge_desired: bool,
+        _auto_merge_method: &str,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn update_status(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _status: AgentConversationWorkspaceStatus,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn save_pr_description(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _description: AgentWorkspacePrDescription,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn get_pr_description(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePrDescription>> {
+        Err(repo_error())
+    }
+
+    async fn clear_pr_description(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn append_publication_event(
+        &self,
+        _event: AgentConversationWorkspacePublicationEvent,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn list_publication_events(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<AgentConversationWorkspacePublicationEvent>> {
+        Err(repo_error())
+    }
+
+    async fn get_pr_review_monitor(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePrReviewMonitor>> {
+        Err(repo_error())
+    }
+
+    async fn delete(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
+        Err(repo_error())
     }
 }
 
