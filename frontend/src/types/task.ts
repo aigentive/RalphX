@@ -25,8 +25,9 @@ export const TaskSchema = z.object({
   internal_status: InternalStatusSchema,
   /** Whether this task needs a review point (human-in-loop checkpoint) */
   needs_review_point: z.boolean().default(false),
-  /** Ideation session ID (plan association) */
-  ideation_session_id: z.string().optional(),
+  /** Ideation session ID (plan association). Backend Option<String> → null when the
+   * task has no plan (e.g. Kanban-created), so accept null as well as absent. */
+  ideation_session_id: z.string().nullable().optional(),
   // Accept RFC3339 timestamps with offset (e.g., +00:00)
   created_at: z.string().datetime({ offset: true }),
   updated_at: z.string().datetime({ offset: true }),
@@ -94,7 +95,7 @@ export function transformTask(raw: z.infer<typeof TaskSchema>): Task {
     priority: raw.priority,
     internalStatus: raw.internal_status,
     needsReviewPoint: raw.needs_review_point,
-    ideationSessionId: raw.ideation_session_id,
+    ideationSessionId: raw.ideation_session_id ?? undefined,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
     startedAt: raw.started_at,
