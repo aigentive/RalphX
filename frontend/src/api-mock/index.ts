@@ -25,6 +25,7 @@ import { mockQaApi } from "./qa";
 import { mockTestDataApi } from "./test-data";
 import { mockPlanBranchApi } from "./plan-branch";
 import { mockPlanApi } from "./plan";
+import { mockAgentIssueReportApi } from "./agent-issue-report";
 
 // Re-export for direct imports
 export { mockTasksApi, mockStepsApi } from "./tasks";
@@ -46,6 +47,7 @@ export { mockArtifactApi } from "./artifact";
 export { mockTestDataApi } from "./test-data";
 export { mockPlanBranchApi } from "./plan-branch";
 export { mockPlanApi } from "./plan";
+export { mockAgentIssueReportApi } from "./agent-issue-report";
 export { getStore, resetStore } from "./store";
 
 /**
@@ -76,6 +78,7 @@ export const mockApi = {
   testData: mockTestDataApi,
   planBranches: mockPlanBranchApi,
   plan: mockPlanApi,
+  agentIssueReport: mockAgentIssueReportApi,
 } as const;
 
 /**
