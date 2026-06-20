@@ -21,6 +21,10 @@ export function AgentsPublishProgressToast({
   status: string | null;
 }) {
   const progressToastRef = useRef<AgentWorkspaceOperationToast | null>(null);
+  const capturedRef = useRef<{
+    title: string | null | undefined;
+    toastId: string;
+  } | null>(null);
   const toastId = conversationId
     ? agentWorkspaceOperationToastId(conversationId, "publish")
     : null;
@@ -30,10 +34,12 @@ export function AgentsPublishProgressToast({
     if (!active || !toastId) {
       progressToastRef.current?.dismiss();
       progressToastRef.current = null;
+      capturedRef.current = null;
       return;
     }
 
     if (!progressToastRef.current) {
+      capturedRef.current = { title: conversationTitle, toastId };
       progressToastRef.current = startAgentWorkspaceOperationToast({
         conversationTitle,
         detail,
@@ -44,8 +50,12 @@ export function AgentsPublishProgressToast({
       return;
     }
 
+    if (capturedRef.current && toastId !== capturedRef.current.toastId) {
+      return;
+    }
+
     progressToastRef.current.update({
-      conversationTitle,
+      conversationTitle: capturedRef.current?.title,
       detail,
       id: toastId,
       title: "Publishing workspace",
