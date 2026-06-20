@@ -187,7 +187,7 @@ vi.mock("@/hooks/useChatEvents", () => ({
 
 // Mock useChatRecovery
 vi.mock("@/hooks/useChatRecovery", () => ({
-  useChatRecovery: vi.fn(),
+  useChatRecovery: vi.fn().mockReturnValue({ isStreamingHydrated: true }),
 }));
 
 // Mock useAgentEvents
