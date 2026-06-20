@@ -79,7 +79,6 @@ describe("ticketingApi", () => {
     expect(page.nextCursor).toBe("cursor-2");
   });
 
-<<<<<<< HEAD
   it("sends status transitions with stable client operation ids", async () => {
     vi.mocked(invoke).mockResolvedValueOnce({
       ticketRef: { provider: "jira", id: "10001", key: "RX-1" },
@@ -196,7 +195,8 @@ describe("ticketingApi", () => {
         clientOperationId: "comment-op",
       },
     });
-=======
+  });
+
   it("starts RalphX work from a ticket with the shared start payload shape", async () => {
     vi.mocked(invoke).mockResolvedValueOnce({
       conversation: {
@@ -262,6 +262,5 @@ describe("ticketingApi", () => {
     });
     expect(result.conversation.id).toBe("conversation-ticket");
     expect(result.sendResult.wasQueued).toBe(true);
->>>>>>> ralphx/ralphx/agent-8e4ac713
   });
 });

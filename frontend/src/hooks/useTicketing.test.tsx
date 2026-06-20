@@ -7,13 +7,12 @@ import { ticketingApi } from "@/api/ticketing";
 import type { TicketDetail, TicketRef, TicketTransitionOption } from "@/api/ticketing";
 
 import {
+  fetchTicketTransitionsForMove,
+  findTicketTransitionForColumn,
   flattenTicketPages,
   ticketingKeys,
-<<<<<<< HEAD
   useTicketingMutations,
-=======
   useStartWorkFromTicket,
->>>>>>> ralphx/ralphx/agent-8e4ac713
   useTicketingProviders,
   useTickets,
 } from "./useTicketing";
@@ -39,13 +38,8 @@ vi.mock("@/api/ticketing", async (importActual) => {
   };
 });
 
-<<<<<<< HEAD
-function createHarness() {
-  const queryClient = new QueryClient({
-=======
 function createQueryClient() {
   return new QueryClient({
->>>>>>> ralphx/ralphx/agent-8e4ac713
     defaultOptions: {
       queries: { retry: false, gcTime: Infinity },
       mutations: { retry: false },
@@ -54,7 +48,6 @@ function createQueryClient() {
 }
 
 function createWrapper(queryClient = createQueryClient()) {
-
   function Wrapper({ children }: { children: ReactNode }) {
     return createElement(QueryClientProvider, { client: queryClient }, children);
   }
@@ -89,7 +82,7 @@ describe("useTicketing hooks", () => {
 
     const { result } = renderHook(
       () => useTicketingProviders("project-1", { enabled: true }),
-      { wrapper: createHarness().wrapper },
+      { wrapper: createWrapper().wrapper },
     );
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
@@ -142,7 +135,7 @@ describe("useTicketing hooks", () => {
       limit: 1,
     };
     const { result } = renderHook(() => useTickets(query, { enabled: true }), {
-      wrapper: createHarness().wrapper,
+      wrapper: createWrapper().wrapper,
     });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
@@ -156,7 +149,6 @@ describe("useTicketing hooks", () => {
     expect(flattenTicketPages(nextPageResult.data)).toHaveLength(2);
   });
 
-<<<<<<< HEAD
   it("generates clientOperationId and applies optimistic status transitions", async () => {
     const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
     const transition: TicketTransitionOption = {
@@ -196,7 +188,7 @@ describe("useTicketing hooks", () => {
       refreshedAt: "2026-06-19T22:00:01.000Z",
     });
 
-    const harness = createHarness();
+    const harness = createWrapper();
     harness.queryClient.setQueryData(ticketingKeys.detail({ provider: "jira", ticketRef }), detail);
     const { result } = renderHook(() => useTicketingMutations("project-1"), {
       wrapper: harness.wrapper,
@@ -227,6 +219,53 @@ describe("useTicketing hooks", () => {
     ).toBe("Done");
   });
 
+  it("prefetches enabled ticket-specific transitions before kanban moves", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const transition: TicketTransitionOption = {
+      toStateId: "done",
+      providerTransitionId: "transition-31",
+      name: "Done",
+      category: "done",
+    };
+    vi.mocked(ticketingApi.listTicketTransitions).mockResolvedValueOnce([
+      {
+        toStateId: "blocked",
+        providerTransitionId: "transition-99",
+        name: "Blocked",
+        category: "other",
+        disabledReason: "Workflow blocks this transition.",
+      },
+      transition,
+    ]);
+
+    const harness = createWrapper();
+    const transitions = await fetchTicketTransitionsForMove(harness.queryClient, {
+      provider: "jira",
+      ticketRef,
+    });
+
+    expect(ticketingApi.listTicketTransitions).toHaveBeenCalledWith({
+      provider: "jira",
+      ticketRef,
+    });
+    expect(
+      findTicketTransitionForColumn(transitions, {
+        id: "blocked",
+        name: "Blocked",
+        category: "other",
+        order: 1,
+      }),
+    ).toBeNull();
+    expect(
+      findTicketTransitionForColumn(transitions, {
+        id: "done",
+        name: "Done",
+        category: "done",
+        order: 2,
+      }),
+    ).toEqual(transition);
+  });
+
   it("rolls back optimistic ticket detail updates when status transition fails", async () => {
     const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
     const transition: TicketTransitionOption = {
@@ -250,7 +289,7 @@ describe("useTicketing hooks", () => {
     };
     vi.mocked(ticketingApi.transitionTicketStatus).mockRejectedValueOnce(new Error("Workflow blocked"));
 
-    const harness = createHarness();
+    const harness = createWrapper();
     harness.queryClient.setQueryData(ticketingKeys.detail({ provider: "jira", ticketRef }), detail);
     const { result } = renderHook(() => useTicketingMutations("project-1"), {
       wrapper: harness.wrapper,
@@ -271,7 +310,8 @@ describe("useTicketing hooks", () => {
         ticketingKeys.detail({ provider: "jira", ticketRef }),
       )?.state.name,
     ).toBe("To Do");
-=======
+  });
+
   it("starts RalphX work from a ticket and refreshes association caches", async () => {
     const queryClient = createQueryClient();
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
@@ -303,7 +343,7 @@ describe("useTicketing hooks", () => {
       },
     });
     const { result } = renderHook(() => useStartWorkFromTicket(), {
-      wrapper: createWrapper(queryClient),
+      wrapper: createWrapper(queryClient).wrapper,
     });
 
     await act(() =>
@@ -332,6 +372,5 @@ describe("useTicketing hooks", () => {
         ticketRef,
       }),
     });
->>>>>>> ralphx/ralphx/agent-8e4ac713
   });
 });

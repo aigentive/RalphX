@@ -30,17 +30,14 @@ interface TicketDetailSheetProps {
   associations: TicketAssociations | undefined;
   isDetailLoading: boolean;
   isAssociationsLoading: boolean;
-<<<<<<< HEAD
   isTransitionPending: boolean;
   isAssignPending: boolean;
   isCommentPending: boolean;
   onTransitionTicket?: ((transition: TicketTransitionOption) => Promise<void> | void) | undefined;
   onAssignToMe?: (() => Promise<void> | void) | undefined;
   onAddComment?: ((bodyMarkdown: string) => Promise<void> | void) | undefined;
-=======
   isStartWorkPending?: boolean | undefined;
   startWorkError?: string | null | undefined;
->>>>>>> ralphx/ralphx/agent-8e4ac713
   onNavigate?: ((deepLink: TicketDeepLink) => void) | undefined;
   onStartWork?: (() => void) | undefined;
   onClose: () => void;
@@ -83,7 +80,15 @@ function AssociationCard({
       <div className="flex items-center justify-between gap-2">
         <span className="truncate text-sm font-medium">{item.title}</span>
         {item.active && (
-          <span className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium text-[var(--accent-primary)]">
+          <span
+            className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium text-[var(--text-primary)]"
+            style={{
+              backgroundColor: "var(--accent-muted)",
+              borderColor: "var(--accent-border)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+          >
             Active
           </span>
         )}
@@ -132,7 +137,15 @@ function RalphxAssociationPanel({
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold text-[var(--text-primary)]">RalphX Work</h3>
         {activeCount > 0 && (
-          <span className="rounded-full px-2 py-0.5 text-xs font-medium text-[var(--accent-primary)]">
+          <span
+            className="rounded-full px-2 py-0.5 text-xs font-medium text-[var(--text-primary)]"
+            style={{
+              backgroundColor: "var(--accent-muted)",
+              borderColor: "var(--accent-border)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+          >
             ● Active
           </span>
         )}
@@ -214,17 +227,14 @@ export function TicketDetailSheet({
   associations,
   isDetailLoading,
   isAssociationsLoading,
-<<<<<<< HEAD
   isTransitionPending,
   isAssignPending,
   isCommentPending,
   onTransitionTicket,
   onAssignToMe,
   onAddComment,
-=======
   isStartWorkPending,
   startWorkError,
->>>>>>> ralphx/ralphx/agent-8e4ac713
   onNavigate,
   onStartWork,
   onClose,
@@ -317,7 +327,7 @@ export function TicketDetailSheet({
                       href={ticket.url}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-xs font-medium text-[var(--accent-primary)]"
+                      className="inline-flex items-center gap-1 text-xs font-medium text-[var(--status-info)]"
                     >
                       Open in provider
                       <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />

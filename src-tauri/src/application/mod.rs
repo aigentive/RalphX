@@ -103,6 +103,7 @@ pub mod team_events;
 pub mod team_service;
 pub mod team_state_tracker;
 pub mod team_stream_processor;
+pub mod ticketing_cache_invalidator;
 pub mod ticketing_service;
 pub mod webhook_service;
 
@@ -187,6 +188,10 @@ pub use prune_engine::PruneEngine;
 pub use qa_service::{QAPrepStatus, QAService, TaskQAState};
 pub use question_state::{PendingQuestionInfo, QuestionAnswer, QuestionOption, QuestionState};
 pub use reconciliation::ReconciliationRunner;
+pub use ticketing_cache_invalidator::{
+    TicketingCacheInvalidatedEvent, TicketingCacheInvalidator,
+    TICKETING_CACHE_INVALIDATED_EVENT,
+};
 pub use ticketing_service::{
     TauriTicketingEventSink, TicketAssignRequest, TicketCommentRequest, TicketTransitionRequest,
     TicketingCommentResult, TicketingEventSink, TicketingMutationResult,
@@ -267,6 +272,8 @@ mod agent_planning_session_titles_tests;
 mod session_namer_prompt_tests;
 #[cfg(test)]
 mod throttled_emitter_tests;
+#[cfg(test)]
+mod ticketing_cache_invalidator_tests;
 #[cfg(test)]
 mod task_transition_service_tests;
 

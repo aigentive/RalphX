@@ -2,11 +2,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-<<<<<<< HEAD
-use tauri::{AppHandle, State};
-=======
-use tauri::{Runtime, State};
->>>>>>> ralphx/ralphx/agent-8e4ac713
+use tauri::{AppHandle, Runtime, State};
 
 use crate::application::{
     agent_conversation_jira_issue, agent_conversation_linear_issue,
@@ -14,17 +10,10 @@ use crate::application::{
         AgentConversationStartDeps, AgentConversationStartService, StartAgentConversationInput,
     },
     AppState, AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
-<<<<<<< HEAD
     LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary, TauriTicketingEventSink,
-    TicketAssignRequest, TicketCommentRequest, TicketTransitionRequest, TicketingCommentResult,
-    TicketingMutationResult, TicketingService, TicketingTicketIdentity, TicketingTransitionOption,
-};
-use crate::domain::integrations::{
-    AtlassianIntegrationSettings, IntegrationValidationStatus, ProviderTicketOperation,
-};
-use crate::domain::services::ComposerIntegrationReference;
-=======
-    LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary, TeamService,
+    TeamService, TicketAssignRequest, TicketCommentRequest, TicketTransitionRequest,
+    TicketingCommentResult, TicketingMutationResult, TicketingService, TicketingTicketIdentity,
+    TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, agent_workspace_response_for_state,
@@ -35,12 +24,13 @@ use crate::domain::entities::{
     AgentConversationJiraIssueLink, AgentConversationLinearIssueLink, ChatContextType,
     ChatConversation, ChatConversationId, ProjectId,
 };
-use crate::domain::integrations::{AtlassianIntegrationSettings, IntegrationValidationStatus};
+use crate::domain::integrations::{
+    AtlassianIntegrationSettings, IntegrationValidationStatus, ProviderTicketOperation,
+};
 use crate::domain::services::{
     jira_reference_from_composer_reference, ComposerIntegrationReference,
     ComposerJiraReferenceMetadata,
 };
->>>>>>> ralphx/ralphx/agent-8e4ac713
 
 const PROVIDER_JIRA: &str = "jira";
 const PROVIDER_LINEAR: &str = "linear";
@@ -891,7 +881,6 @@ fn ticket_ref_to_composer_reference(
     }
 }
 
-<<<<<<< HEAD
 fn ticketing_service_from_state(state: &AppState) -> TicketingService {
     TicketingService::new(
         Arc::clone(&state.atlassian_integration_service),
@@ -970,7 +959,9 @@ fn ticket_comment_response(comment: TicketingCommentResult) -> TicketCommentResp
         body_text: comment.body_text,
         created_at: comment.created_at,
         updated_at: comment.updated_at,
-=======
+    }
+}
+
 fn ensure_ticket_composer_reference(
     references: &mut Vec<ComposerIntegrationReference>,
     ticket_reference: ComposerIntegrationReference,
@@ -1149,7 +1140,6 @@ fn agent_conversation_association_item(
             view: "agents".to_string(),
             id,
         },
->>>>>>> ralphx/ralphx/agent-8e4ac713
     }
 }
 

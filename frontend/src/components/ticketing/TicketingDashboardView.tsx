@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import type {
   ListTicketsInput,
@@ -9,6 +10,8 @@ import type {
   TicketTransitionOption,
 } from "@/api/ticketing";
 import {
+  fetchTicketTransitionsForMove,
+  findTicketTransitionForColumn,
   flattenTicketPages,
   useRefreshTickets,
   useStartWorkFromTicket,
@@ -22,6 +25,7 @@ import {
   useTickets,
 } from "@/hooks/useTicketing";
 import { useTicketingStore } from "@/stores/ticketingStore";
+import { formatRelativeTime } from "@/lib/formatters";
 
 import { ProviderSwitcher } from "./ProviderSwitcher";
 import { TicketDetailSheet } from "./TicketDetailSheet";
@@ -50,6 +54,54 @@ function isProviderReadable(status: string | undefined): boolean {
   return status === "connected" || status === "permission_limited";
 }
 
+interface TicketingStatusNotice {
+  id: string;
+  tone: "warning" | "error";
+  message: string;
+  detail?: string | undefined;
+}
+
+function queryErrorDetail(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : fallback;
+}
+
+function TicketingStatusStrip({ notices }: { notices: TicketingStatusNotice[] }) {
+  if (notices.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex flex-col gap-1 px-4 py-2 text-xs"
+      style={{
+        backgroundColor: "var(--bg-surface)",
+        borderBottomColor: "var(--border-subtle)",
+        borderBottomStyle: "solid",
+        borderBottomWidth: "1px",
+        color: "var(--text-secondary)",
+      }}
+    >
+      {notices.map((notice) => (
+        <p key={notice.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span
+            className="font-medium"
+            style={{
+              color: notice.tone === "error" ? "var(--status-error)" : "var(--status-warning)",
+            }}
+          >
+            {notice.message}
+          </span>
+          {notice.detail && <span>{notice.detail}</span>}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 export function TicketingDashboardView({
   projectId,
   onNavigateToAssociation,
@@ -68,6 +120,7 @@ export function TicketingDashboardView({
     setSelectedTicketRef,
   } = useTicketingStore();
 
+  const queryClient = useQueryClient();
   const providersQuery = useTicketingProviders(projectId, { enabled: Boolean(projectId) });
   const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
   const selectedProvider = providers.find((provider) => provider.provider === activeProvider) ?? null;
@@ -109,20 +162,17 @@ export function TicketingDashboardView({
   );
   const columns = columnsQuery.data ?? [];
 
-  const ticketQuery = useMemo<ListTicketsInput | null>(() => {
-    if (!activeProvider || !readableProvider) {
-      return null;
-    }
-    const ticketFilters = toTicketFilters(filters);
-    return {
-      provider: activeProvider,
-      projectId,
-      limit: 40,
-      sort: "updated_desc",
-      ...(activeContainerId !== null && { containerId: activeContainerId }),
-      ...(ticketFilters !== undefined && { filters: ticketFilters }),
-    };
-  }, [activeContainerId, activeProvider, filters, projectId, readableProvider]);
+  const ticketFilters = toTicketFilters(filters);
+  const ticketQuery: ListTicketsInput | null = activeProvider && readableProvider
+    ? {
+        provider: activeProvider,
+        projectId,
+        limit: 40,
+        sort: "updated_desc",
+        ...(activeContainerId !== null && { containerId: activeContainerId }),
+        ...(ticketFilters !== undefined && { filters: ticketFilters }),
+      }
+    : null;
 
   const ticketsQuery = useTickets(ticketQuery, { enabled: Boolean(ticketQuery) });
   const tickets = flattenTicketPages(ticketsQuery.data);
@@ -141,11 +191,8 @@ export function TicketingDashboardView({
     { enabled: Boolean(detailInput && projectId) },
   );
   const refreshTickets = useRefreshTickets();
-<<<<<<< HEAD
   const ticketingMutations = useTicketingMutations(projectId);
-=======
   const startWorkFromTicket = useStartWorkFromTicket();
->>>>>>> ralphx/ralphx/agent-8e4ac713
 
   const selectedTicket = detailQuery.data ?? selectedSummary;
   const transitions = transitionsQuery.data ?? (detailQuery.data && "transitions" in detailQuery.data ? detailQuery.data.transitions : []);
@@ -156,6 +203,48 @@ export function TicketingDashboardView({
     : startWorkFromTicket.error
       ? "RalphX work could not be started."
       : null;
+  const statusNotices: TicketingStatusNotice[] = [
+    ...(selectedProvider?.staleAt
+      ? [{
+          id: "stale",
+          tone: "warning" as const,
+          message: `${providerName} data is stale.`,
+          detail: `Last refreshed ${formatRelativeTime(selectedProvider.fetchedAt ?? selectedProvider.staleAt)}.`,
+        }]
+      : []),
+    ...(containersQuery.isError
+      ? [{
+          id: "containers-error",
+          tone: "warning" as const,
+          message: "Ticket containers failed to refresh.",
+          detail: queryErrorDetail(containersQuery.error, "The current ticket list remains available."),
+        }]
+      : []),
+    ...(columnsQuery.isError
+      ? [{
+          id: "columns-error",
+          tone: "warning" as const,
+          message: "Ticket statuses failed to refresh.",
+          detail: queryErrorDetail(columnsQuery.error, "Existing ticket rows remain available."),
+        }]
+      : []),
+    ...(ticketsQuery.isError && tickets.length > 0
+      ? [{
+          id: "tickets-error",
+          tone: "warning" as const,
+          message: "Tickets failed to refresh.",
+          detail: queryErrorDetail(ticketsQuery.error, "Existing ticket rows remain available."),
+        }]
+      : []),
+    ...(refreshTickets.isError
+      ? [{
+          id: "refresh-error",
+          tone: "error" as const,
+          message: "Manual refresh failed.",
+          detail: queryErrorDetail(refreshTickets.error, "Try again when the provider is available."),
+        }]
+      : []),
+  ];
 
   function handleSelectTicket(ticket: TicketSummary) {
     setSelectedTicketRef(ticket.ref);
@@ -171,7 +260,6 @@ export function TicketingDashboardView({
     });
   }
 
-<<<<<<< HEAD
   async function handleTransitionTicket(transition: TicketTransitionOption) {
     if (!selectedTicket) {
       return;
@@ -208,19 +296,25 @@ export function TicketingDashboardView({
   }
 
   function handleMoveTicket(ticket: TicketSummary, column: TicketingColumn) {
-    void ticketingMutations.transitionStatus({
+    const ticketInput = {
       provider: ticket.ref.provider,
       ticketRef: ticket.ref,
-      projectId,
-      transition: {
-        toStateId: column.id,
-        name: column.name,
-        category: column.category,
-      },
-    }).catch(() => undefined);
+    };
+    void fetchTicketTransitionsForMove(queryClient, ticketInput)
+      .then((ticketTransitions) => {
+        const transition = findTicketTransitionForColumn(ticketTransitions, column);
+        if (!transition) {
+          return undefined;
+        }
+        return ticketingMutations.transitionStatus({
+          ...ticketInput,
+          projectId,
+          transition,
+        });
+      })
+      .catch(() => undefined);
   }
 
-=======
   function handleStartWorkFromTicket() {
     if (!selectedTicket) {
       return;
@@ -232,7 +326,6 @@ export function TicketingDashboardView({
     });
   }
 
->>>>>>> ralphx/ralphx/agent-8e4ac713
   let content: React.ReactNode;
 
   if (providersQuery.isLoading) {
@@ -283,7 +376,7 @@ export function TicketingDashboardView({
         description="The dashboard shell is ready while ticket data hydrates."
       />
     );
-  } else if (ticketsQuery.isError) {
+  } else if (ticketsQuery.isError && tickets.length === 0) {
     content = (
       <TicketingStatePanel
         state="error"
@@ -373,6 +466,8 @@ export function TicketingDashboardView({
         onRefresh={handleRefresh}
       />
 
+      <TicketingStatusStrip notices={statusNotices} />
+
       {selectedProvider?.connectionStatus === "permission_limited" && (
         <div
           className="px-4 py-2 text-xs text-[var(--status-warning)]"
@@ -397,17 +492,14 @@ export function TicketingDashboardView({
         associations={associationsQuery.data}
         isDetailLoading={detailQuery.isLoading}
         isAssociationsLoading={associationsQuery.isLoading}
-<<<<<<< HEAD
         isTransitionPending={ticketingMutations.transitionStatusMutation.isPending}
         isAssignPending={ticketingMutations.assignToMeMutation.isPending}
         isCommentPending={ticketingMutations.addCommentMutation.isPending}
         onTransitionTicket={handleTransitionTicket}
         onAssignToMe={handleAssignToMe}
         onAddComment={handleAddComment}
-=======
         isStartWorkPending={startWorkFromTicket.isPending}
         startWorkError={startWorkError}
->>>>>>> ralphx/ralphx/agent-8e4ac713
         onNavigate={onNavigateToAssociation}
         onStartWork={selectedTicket ? handleStartWorkFromTicket : undefined}
         onClose={() => setSelectedTicketRef(null)}

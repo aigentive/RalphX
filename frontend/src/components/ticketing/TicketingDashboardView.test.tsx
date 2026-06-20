@@ -10,6 +10,8 @@ import { useTicketingStore } from "@/stores/ticketingStore";
 import { TicketingDashboardView } from "./TicketingDashboardView";
 
 vi.mock("@/hooks/useTicketing", () => ({
+  fetchTicketTransitionsForMove: vi.fn(),
+  findTicketTransitionForColumn: vi.fn(),
   flattenTicketPages: vi.fn((data) => data?.pages.flatMap((page) => page.items) ?? []),
   useRefreshTickets: vi.fn(),
   useStartWorkFromTicket: vi.fn(),
@@ -174,7 +176,6 @@ function mockConnectedDashboard() {
     mutate: vi.fn(),
     isPending: false,
   } as unknown as ReturnType<typeof ticketingHooks.useRefreshTickets>);
-<<<<<<< HEAD
   vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
     transitionStatus: vi.fn().mockResolvedValue(undefined),
     assignToMe: vi.fn().mockResolvedValue(undefined),
@@ -183,13 +184,11 @@ function mockConnectedDashboard() {
     assignToMeMutation: { isPending: false },
     addCommentMutation: { isPending: false },
   } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
-=======
   vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
     mutate: vi.fn(),
     isPending: false,
     error: null,
   } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
->>>>>>> ralphx/ralphx/agent-8e4ac713
 }
 
 describe("TicketingDashboardView", () => {
@@ -240,7 +239,6 @@ describe("TicketingDashboardView", () => {
       mutate: vi.fn(),
       isPending: false,
     } as unknown as ReturnType<typeof ticketingHooks.useRefreshTickets>);
-<<<<<<< HEAD
     vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
       transitionStatus: vi.fn().mockResolvedValue(undefined),
       assignToMe: vi.fn().mockResolvedValue(undefined),
@@ -249,13 +247,11 @@ describe("TicketingDashboardView", () => {
       assignToMeMutation: { isPending: false },
       addCommentMutation: { isPending: false },
     } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
-=======
     vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
       error: null,
     } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
->>>>>>> ralphx/ralphx/agent-8e4ac713
   });
 
   it("renders provider-specific disconnected state without blanking the shell", () => {
@@ -284,6 +280,70 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByRole("heading", { name: "Ticketing" })).toBeInTheDocument();
     expect(screen.getByText("Jira is disconnected")).toBeInTheDocument();
     expect(screen.getByText("Connect Jira from Settings.")).toBeInTheDocument();
+  });
+
+  it("surfaces stale provider freshness without hiding ticket content", () => {
+    mockConnectedDashboard();
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "jira",
+          label: "Jira",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T21:00:00.000Z",
+          staleAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+
+    renderDashboard();
+
+    expect(screen.getByRole("status")).toHaveTextContent("Jira data is stale");
+    expect(screen.getByRole("button", { name: /RX-1/ })).toBeInTheDocument();
+  });
+
+  it("shows metadata refresh failures without blanking tickets", () => {
+    mockConnectedDashboard();
+    vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
+      data: [{ provider: "jira", id: "board-1", name: "Sprint Board", kind: "board" }],
+      isLoading: false,
+      isError: true,
+      error: new Error("Rate limit exceeded"),
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+
+    renderDashboard();
+
+    expect(screen.getByRole("status")).toHaveTextContent("Ticket containers failed to refresh");
+    expect(screen.getByText("Rate limit exceeded")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /RX-1/ })).toBeInTheDocument();
+  });
+
+  it("shows ticket refresh failures without blanking cached tickets", () => {
+    mockConnectedDashboard();
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: {
+        pages: [{ items: [ticket], nextCursor: null, total: 1 }],
+        pageParams: [null],
+      },
+      isLoading: false,
+      isFetching: false,
+      isError: true,
+      error: new Error("Provider rate limit exceeded"),
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+
+    renderDashboard();
+
+    expect(screen.getByRole("status")).toHaveTextContent("Tickets failed to refresh");
+    expect(screen.getByText("Provider rate limit exceeded")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /RX-1/ })).toBeInTheDocument();
   });
 
   it("renders list and kanban views, then opens ticket detail with RalphX associations", async () => {
@@ -320,7 +380,6 @@ describe("TicketingDashboardView", () => {
     expect(associationCalls[associationCalls.length - 1]?.[0]).toBeNull();
   });
 
-<<<<<<< HEAD
   it("routes status, assign-to-me, and comment controls through ticket mutations", async () => {
     mockConnectedDashboard();
     const transitionStatus = vi.fn().mockResolvedValue(undefined);
@@ -368,7 +427,9 @@ describe("TicketingDashboardView", () => {
       ticketRef: ticket.ref,
       bodyMarkdown: "Pushed a fix.",
       projectId: "project-1",
-=======
+    });
+  });
+
   it("starts RalphX work from the ticket detail sheet", async () => {
     const startWork = vi.fn();
     mockConnectedDashboard();
@@ -389,7 +450,6 @@ describe("TicketingDashboardView", () => {
       projectId: "project-1",
       ticketRef: ticket.ref,
       content: "Start RalphX work for RX-1: Fix merge race in transition handler",
->>>>>>> ralphx/ralphx/agent-8e4ac713
     });
   });
 });

@@ -1,27 +1,22 @@
 use super::*;
-<<<<<<< HEAD
-use crate::application::{
-    LinearIntegrationSettings, TicketingMutationResult, TicketingTicketIdentity,
-    TicketingTransitionOption,
-};
-use crate::domain::integrations::{
-    AtlassianIntegrationSettings, IntegrationValidationStatus, ProviderTicketOperation,
-    ProviderTicketOperationKind, ProviderTicketOperationStatus,
-};
-=======
 use std::sync::Arc;
 
-use crate::application::{AppState, LinearIntegrationSettings, TeamService, TeamStateTracker};
+use crate::application::{
+    AppState, LinearIntegrationSettings, TeamService, TeamStateTracker, TicketingMutationResult,
+    TicketingTicketIdentity, TicketingTransitionOption,
+};
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, ChatContextType, ChatConversation, ChatConversationId, Project,
     ProjectId,
 };
-use crate::domain::integrations::{AtlassianIntegrationSettings, IntegrationValidationStatus};
+use crate::domain::integrations::{
+    AtlassianIntegrationSettings, IntegrationValidationStatus, ProviderTicketOperation,
+    ProviderTicketOperationKind, ProviderTicketOperationStatus,
+};
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
->>>>>>> ralphx/ralphx/agent-8e4ac713
 
 #[test]
 fn provider_summaries_reflect_existing_integration_settings() {
@@ -74,7 +69,6 @@ fn provider_validation_rejects_unknown_ticketing_provider() {
     assert!(error.contains("Unknown ticketing provider"));
 }
 
-<<<<<<< HEAD
 #[test]
 fn ticket_identity_preserves_project_scope_for_mutation_service() {
     let identity = ticket_identity(
@@ -139,10 +133,15 @@ fn mutation_response_maps_operation_status_and_linked_flag() {
     assert_eq!(response.operation.status, "succeeded");
     assert!(response.operation.linked);
     assert_eq!(
-        response.transition.unwrap().provider_transition_id.as_deref(),
+        response
+            .transition
+            .unwrap()
+            .provider_transition_id
+            .as_deref(),
         Some("31")
     );
-=======
+}
+
 fn build_ticketing_start_app(
     state: AppState,
     execution_state: Arc<ExecutionState>,
@@ -347,5 +346,4 @@ async fn get_ticket_associations_returns_linked_agent_conversations() {
     assert!(linked.active);
     assert_eq!(linked.deep_link.view, "agents");
     assert_eq!(linked.deep_link.id, conversation.id.as_str());
->>>>>>> ralphx/ralphx/agent-8e4ac713
 }

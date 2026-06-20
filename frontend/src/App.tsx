@@ -62,6 +62,7 @@ import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useNavCompactBreakpoint } from "@/hooks";
 import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
+import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
 import { extractErrorMessage } from "@/lib/errors";
 import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
@@ -327,6 +328,7 @@ function AppContent() {
 
   // Real-time execution status updates via Tauri events
   useExecutionEvents();
+  useTicketingCacheEvents();
   // Fetch initial execution status and poll every 30s as fallback
   // Pass currentProjectId for per-project execution status scoping
   useExecutionStatus(currentProjectId || undefined, {

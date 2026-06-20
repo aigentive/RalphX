@@ -4,6 +4,7 @@ use axum::body::Bytes;
 use crate::application::{
     LinearWebhookAction, LinearWebhookError, LinearWebhookHeaders,
     LinearWebhookReconciliationService, LinearWebhookRequest, LinearWebhookStore,
+    TicketingCacheInvalidator,
 };
 use crate::domain::services::SecretStore;
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
@@ -323,6 +324,13 @@ pub async fn receive_linear_webhook_http(
         .handle(request, chrono::Utc::now())
         .await
         .map_err(linear_webhook_http_error)?;
+    if !outcome.duplicate {
+        let _ = TicketingCacheInvalidator::invalidate_linear_webhook(
+            state.app_state.app_handle.as_ref(),
+            &body,
+            linear_action_label(&outcome.action),
+        );
+    }
     if let LinearWebhookAction::TransitionedTask {
         task_id,
         target_status,
@@ -470,13 +478,10 @@ mod tests {
                 .0;
         assert!(unregistered.success);
 
-        let missing = unregister_webhook_http(
-            State(state),
-            headers,
-            Path("missing-webhook".to_string()),
-        )
-        .await
-        .unwrap_err();
+        let missing =
+            unregister_webhook_http(State(state), headers, Path("missing-webhook".to_string()))
+                .await
+                .unwrap_err();
         assert_eq!(missing.status, StatusCode::NOT_FOUND);
     }
 

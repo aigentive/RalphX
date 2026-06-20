@@ -46,11 +46,17 @@ async function openTicketing(page: Page) {
   await expect(page.getByRole("heading", { name: "Ticketing" })).toBeVisible();
 }
 
-async function expectNoAxeViolations(page: Page) {
+async function expectNoAxeViolations(page: Page, selector = '[data-testid="ticketing-dashboard"]') {
   const results = await new AxeBuilder({ page })
-    .include('[data-testid="ticketing-dashboard"]')
+    .include(selector)
     .analyze();
   expect(results.violations).toEqual([]);
+}
+
+async function expectFocusInsideTicketDialog(page: Page) {
+  await expect.poll(() =>
+    page.evaluate(() => Boolean(document.activeElement?.closest('[role="dialog"]'))),
+  ).toBe(true);
 }
 
 for (const theme of THEMES) {
@@ -86,6 +92,52 @@ for (const theme of THEMES) {
       await expect(page.getByRole("button", { name: "Refresh tickets" })).toBeFocused();
     });
 
+    test("ticketing surfaces do not leak primitive theme tokens", async ({ page }) => {
+      const leaks = await page
+        .locator('[data-testid="ticketing-dashboard"] *')
+        .evaluateAll((elements) => {
+          const primitiveStyle = /(?:#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\()/;
+          const paletteClass = /\b(?:bg|text|border)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}\b/;
+          return elements.flatMap((element) => {
+            const style = element.getAttribute("style") ?? "";
+            const className = typeof element.className === "string" ? element.className : "";
+            const issues: string[] = [];
+            if (primitiveStyle.test(style)) {
+              issues.push(`${element.tagName.toLowerCase()} style=${style}`);
+            }
+            if (paletteClass.test(className)) {
+              issues.push(`${element.tagName.toLowerCase()} class=${className}`);
+            }
+            return issues;
+          });
+        });
+
+      expect(leaks).toEqual([]);
+    });
+
+    test("reduced motion and font scale remain readable", async ({ page }) => {
+      await page.evaluate(async () => {
+        const { useThemeStore } = await import("/src/stores/themeStore");
+        useThemeStore.getState().setMotion("reduce");
+        useThemeStore.getState().setFontScale("lg");
+      });
+
+      await expect(page.locator("html")).toHaveAttribute("data-motion", "reduce");
+      await expect(page.locator("html")).toHaveAttribute("data-font-scale", "lg");
+      await expect(page.getByRole("button", { name: /RX-1/ })).toBeVisible();
+
+      const metrics = await page.getByRole("button", { name: "Refresh tickets" }).evaluate((button) => {
+        const buttonStyle = getComputedStyle(button);
+        const rootStyle = getComputedStyle(document.documentElement);
+        return {
+          fontSize: Number.parseFloat(rootStyle.fontSize),
+          transitionDuration: buttonStyle.transitionDuration,
+        };
+      });
+      expect(metrics.fontSize).toBeGreaterThan(16);
+      expect(["0.01ms", "1e-05s"]).toContain(metrics.transitionDuration);
+    });
+
     test("kanban shell matches visual contract", async ({ page }) => {
       await page.getByRole("button", { name: "Kanban view" }).click();
       await expect(page.locator('[data-testid="ticket-column-todo"]')).toBeVisible();
@@ -98,11 +150,24 @@ for (const theme of THEMES) {
     test("detail sheet matches visual contract", async ({ page }) => {
       await page.getByRole("button", { name: /RX-1/ }).click();
       await expect(page.getByRole("dialog")).toBeVisible();
-      await expect(page.getByText("RalphX Work")).toBeVisible();
+      await expect(page.getByRole("heading", { name: "RalphX Work" })).toBeVisible();
+      await expectNoAxeViolations(page, '[role="dialog"]');
       await expect(page).toHaveScreenshot(`ticketing-detail-${theme}.png`, {
         fullPage: false,
         maxDiffPixelRatio: 0.02,
       });
+    });
+
+    test("detail sheet traps keyboard focus", async ({ page }) => {
+      await page.getByRole("button", { name: /RX-1/ }).click();
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await page.getByRole("button", { name: "Close" }).focus();
+      await expectFocusInsideTicketDialog(page);
+
+      for (let index = 0; index < 12; index += 1) {
+        await page.keyboard.press("Tab");
+        await expectFocusInsideTicketDialog(page);
+      }
     });
   });
 }

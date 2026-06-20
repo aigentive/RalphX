@@ -21,6 +21,7 @@ import {
   type TicketAssociations,
   type TicketComment,
   type TicketDetail,
+  type TicketingColumn,
   type TicketPage,
   type TicketRefInput,
   type TicketSummary,
@@ -343,6 +344,28 @@ export function useTicketTransitions(input: TicketRefInput | null, options: Quer
   });
 }
 
+export function fetchTicketTransitionsForMove(
+  queryClient: QueryClient,
+  input: TicketRefInput,
+) {
+  return queryClient.fetchQuery({
+    queryKey: ticketingKeys.transitions(input),
+    queryFn: () => ticketingApi.listTicketTransitions(input),
+    staleTime: 30_000,
+  });
+}
+
+export function findTicketTransitionForColumn(
+  transitions: TicketTransitionOption[],
+  column: TicketingColumn,
+): TicketTransitionOption | null {
+  const transition = transitions.find((item) => item.toStateId === column.id);
+  if (!transition || transition.disabledReason) {
+    return null;
+  }
+  return transition;
+}
+
 export function useTicketAssociations(
   input: GetTicketAssociationsInput | null,
   options: QueryOptions = {},
@@ -371,7 +394,6 @@ export function useRefreshTickets() {
   });
 }
 
-<<<<<<< HEAD
 export function useTicketingMutations(projectId?: string) {
   const queryClient = useQueryClient();
 
@@ -486,7 +508,8 @@ export function useTicketingMutations(projectId?: string) {
     assignToMeMutation,
     addCommentMutation,
   };
-=======
+}
+
 export function useStartWorkFromTicket() {
   const queryClient = useQueryClient();
 
@@ -517,5 +540,4 @@ export function useStartWorkFromTicket() {
       });
     },
   });
->>>>>>> ralphx/ralphx/agent-8e4ac713
 }
