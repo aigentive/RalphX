@@ -48,6 +48,35 @@ function messageWithToolCall(
 }
 
 describe("resolveAttachedIdeationSessionId", () => {
+  it("extracts attached plan sessions from user composer artifact references", () => {
+    const result = resolveAttachedIdeationSessionId(conversation, [
+      {
+        id: "message-with-reference",
+        conversationId: "conversation-1",
+        role: "user",
+        content: "Verify the referenced plan",
+        contentBlocks: [],
+        toolCalls: [],
+        attachments: [],
+        metadata: JSON.stringify({
+          composer_artifact_references: [
+            {
+              artifactId: "plan-artifact-1",
+              kind: "plan",
+              sessionId: "referenced-session-1",
+              status: "approved",
+              title: "Referenced plan",
+              version: 2,
+            },
+          ],
+        }),
+        createdAt: "2026-04-22T10:00:30Z",
+      } as ChatMessageResponse,
+    ]);
+
+    expect(result).toBe("referenced-session-1");
+  });
+
   it("extracts reused ideation sessions from v1_send_ideation_message results", () => {
     const result = resolveAttachedIdeationSessionId(conversation, [
       messageWithToolCall({ session_id: "session-reused" }),

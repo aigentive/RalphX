@@ -448,6 +448,46 @@ pub async fn delete_project(id: String, state: State<'_, AppState>) -> Result<()
         .map_err(|e| e.to_string())
 }
 
+/// Read the exact project PR template content, if the fixed template file exists.
+#[tauri::command]
+pub async fn read_pr_template(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    read_pr_template_for_state(&project_id, &state).await
+}
+
+/// Write exact project PR template content to `.github/PULL_REQUEST_TEMPLATE.md`.
+#[tauri::command]
+pub async fn write_pr_template(
+    project_id: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    write_pr_template_for_state(&project_id, &content, &state).await
+}
+
+#[doc(hidden)]
+pub async fn read_pr_template_for_state(
+    project_id: &str,
+    state: &AppState,
+) -> Result<Option<String>, String> {
+    let working_dir = get_project_working_directory(project_id, state).await?;
+    crate::application::project_pr_template::read_pr_template(&working_dir)
+        .map_err(|e| e.to_string())
+}
+
+#[doc(hidden)]
+pub async fn write_pr_template_for_state(
+    project_id: &str,
+    content: &str,
+    state: &AppState,
+) -> Result<(), String> {
+    let working_dir = get_project_working_directory(project_id, state).await?;
+    crate::application::project_pr_template::write_pr_template(&working_dir, content)
+        .map_err(|e| e.to_string())
+}
+
 /// Update custom analysis override for a project (Settings UI)
 /// Sets or clears the custom_analysis JSON field.
 #[tauri::command]

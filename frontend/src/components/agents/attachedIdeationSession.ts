@@ -17,6 +17,13 @@ export function resolveAttachedIdeationSessionId(
   }
 
   for (const message of [...messages].reverse()) {
+    const referencedSessionId = extractComposerReferencedSessionId(
+      message.metadata,
+    );
+    if (referencedSessionId) {
+      return referencedSessionId;
+    }
+
     const toolCalls = [
       ...(message.toolCalls ?? []),
       ...(message.contentBlocks ?? [])
@@ -37,6 +44,44 @@ export function resolveAttachedIdeationSessionId(
   }
 
   return fallbackSessionId ?? null;
+}
+
+function extractComposerReferencedSessionId(
+  metadata: string | null | undefined,
+): string | null {
+  if (!metadata) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(metadata) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    const references = (parsed as Record<string, unknown>)
+      .composer_artifact_references;
+    if (!Array.isArray(references)) {
+      return null;
+    }
+    for (const reference of [...references].reverse()) {
+      if (!reference || typeof reference !== "object") {
+        continue;
+      }
+      const record = reference as Record<string, unknown>;
+      const kind =
+        typeof record.kind === "string" ? record.kind.toLowerCase() : null;
+      const sessionId = record.sessionId ?? record.session_id;
+      if (
+        (kind === null || kind === "plan") &&
+        typeof sessionId === "string" &&
+        sessionId.length > 0
+      ) {
+        return sessionId;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function extractAttachedSessionId(toolCall: ToolCall): string | null {
