@@ -310,9 +310,11 @@ function PlanComposerCtaRow({
     );
   };
 
+  const isSingleAction = actions.length === 1;
+
   return (
     <div
-      className="mx-2 mb-2 rounded-md border px-3 py-2.5"
+      className="mx-2 mb-2 rounded-md border px-3 py-2"
       style={{
         backgroundColor: "var(--bg-surface)",
         borderColor: "var(--border-subtle)",
@@ -321,48 +323,85 @@ function PlanComposerCtaRow({
       }}
       data-testid="agents-plan-composer-cta-row"
     >
-      <div
-        className="flex flex-wrap items-center gap-2 border-b pb-2"
-        style={{
-          borderColor: "var(--border-subtle)",
-          borderStyle: "solid",
-          borderWidth: "0 0 1px",
-        }}
-      >
-        <div
-          className="flex min-w-0 items-center gap-2 pr-1"
-          data-testid="agents-plan-composer-cta-copy"
-        >
-          {isRecommendation && (
-            <Lightbulb
-              className="h-4 w-4 shrink-0"
-              style={{ color: "var(--accent-primary)" }}
-              aria-hidden="true"
-            />
-          )}
-          <p
-            className={
-              isRecommendation
-                ? "min-w-0 text-[0.6875rem] font-semibold uppercase leading-5 tracking-[0.12em]"
-                : "min-w-0 truncate text-[0.8125rem] font-medium leading-5"
-            }
-            style={{ color: "var(--text-primary)" }}
-            data-testid="agents-plan-composer-cta-hint"
+      {isSingleAction ? (
+        <div className="flex items-center gap-2">
+          <div
+            className="flex min-w-0 flex-1 items-center gap-2"
+            data-testid="agents-plan-composer-cta-copy"
           >
-            {compactHint}
-          </p>
-          {detailsButton}
+            {isRecommendation && (
+              <Lightbulb
+                className="h-4 w-4 shrink-0"
+                style={{ color: "var(--accent-primary)" }}
+                aria-hidden="true"
+              />
+            )}
+            <p
+              className={
+                isRecommendation
+                  ? "min-w-0 text-[0.6875rem] font-semibold uppercase leading-5 tracking-[0.12em]"
+                  : "min-w-0 truncate text-[0.8125rem] font-medium leading-5"
+              }
+              style={{ color: "var(--text-primary)" }}
+              data-testid="agents-plan-composer-cta-hint"
+            >
+              {compactHint}
+            </p>
+            {detailsButton}
+          </div>
+          <div
+            className="flex shrink-0 items-center"
+            role="group"
+            aria-label="Plan actions"
+            data-testid="agents-plan-composer-cta-actions"
+          >
+            {renderActionButton(actions[0]!)}
+          </div>
         </div>
-      </div>
-      {actions.length > 0 && (
-        <div
-          className="mt-2 flex flex-wrap items-center gap-2"
-          role="group"
-          aria-label="Plan actions"
-          data-testid="agents-plan-composer-cta-actions"
-        >
-          {actions.map(renderActionButton)}
-        </div>
+      ) : (
+        <>
+          <div
+            className="flex flex-wrap items-center gap-2 border-b pb-2"
+            style={{
+              borderColor: "var(--border-subtle)",
+              borderStyle: "solid",
+              borderWidth: "0 0 1px",
+            }}
+          >
+            <div
+              className="flex min-w-0 items-center gap-2 pr-1"
+              data-testid="agents-plan-composer-cta-copy"
+            >
+              {isRecommendation && (
+                <Lightbulb
+                  className="h-4 w-4 shrink-0"
+                  style={{ color: "var(--accent-primary)" }}
+                  aria-hidden="true"
+                />
+              )}
+              <p
+                className={
+                  isRecommendation
+                    ? "min-w-0 text-[0.6875rem] font-semibold uppercase leading-5 tracking-[0.12em]"
+                    : "min-w-0 truncate text-[0.8125rem] font-medium leading-5"
+                }
+                style={{ color: "var(--text-primary)" }}
+                data-testid="agents-plan-composer-cta-hint"
+              >
+                {compactHint}
+              </p>
+              {detailsButton}
+            </div>
+          </div>
+          <div
+            className="mt-2 flex flex-wrap items-center gap-2"
+            role="group"
+            aria-label="Plan actions"
+            data-testid="agents-plan-composer-cta-actions"
+          >
+            {actions.map(renderActionButton)}
+          </div>
+        </>
       )}
     </div>
   );
