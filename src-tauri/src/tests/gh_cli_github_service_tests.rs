@@ -7,12 +7,12 @@ use crate::domain::services::github_service::{PrMergeStateStatus, PrMergeableSta
 use crate::error::AppError;
 use crate::infrastructure::services::gh_cli_github_service::{
     parse_check_run_annotations_output, parse_check_runs_output,
-    parse_code_scanning_alert_annotations_output, parse_pr_annotation_head_sha_output,
-    parse_pr_create_output, parse_pr_create_plain_output, parse_pr_health_output,
-    parse_pr_review_comment_annotations_output, parse_pr_review_decision_output,
-    parse_pr_review_feedback_output, parse_pr_search_output, parse_pr_status_output,
-    parse_pr_sync_state_output, parse_submit_pr_review_output, sanitize_stderr_line,
-    scrub_token_urls, CheckRunAnnotationSource,
+    parse_code_scanning_alert_annotations_output, parse_issue_create_plain_output,
+    parse_pr_annotation_head_sha_output, parse_pr_create_output, parse_pr_create_plain_output,
+    parse_pr_health_output, parse_pr_review_comment_annotations_output,
+    parse_pr_review_decision_output, parse_pr_review_feedback_output, parse_pr_search_output,
+    parse_pr_status_output, parse_pr_sync_state_output, parse_submit_pr_review_output,
+    sanitize_stderr_line, scrub_token_urls, CheckRunAnnotationSource,
 };
 
 // ── parse_pr_create_output ─────────────────────────────────────────────────
@@ -67,6 +67,19 @@ fn parse_pr_create_plain_output_extracts_url_from_wrapped_text() {
 #[test]
 fn parse_pr_create_plain_output_fails_without_url() {
     let err = parse_pr_create_plain_output("created pull request successfully").unwrap_err();
+    assert!(matches!(err, AppError::Infrastructure(_)));
+}
+
+#[test]
+fn parse_issue_create_plain_output_returns_issue_url() {
+    let stdout = "Created issue:\nhttps://github.com/owner/repo/issues/12\n";
+    let url = parse_issue_create_plain_output(stdout).unwrap();
+    assert_eq!(url, "https://github.com/owner/repo/issues/12");
+}
+
+#[test]
+fn parse_issue_create_plain_output_fails_without_issue_url() {
+    let err = parse_issue_create_plain_output("created issue successfully").unwrap_err();
     assert!(matches!(err, AppError::Infrastructure(_)));
 }
 
@@ -805,6 +818,22 @@ mod mock_roundtrip {
     }
 
     #[tokio::test]
+    async fn mock_create_issue_defaults_to_issue_1() {
+        let mock = MockGithubService::new();
+        let url = mock
+            .create_issue(
+                Path::new("/tmp"),
+                "owner/repo",
+                "Support report",
+                Path::new("/tmp/body.md"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(url, "https://github.com/owner/repo/issues/1");
+        assert_eq!(mock.state().create_issue_calls, 1);
+    }
+
+    #[tokio::test]
     async fn mock_create_draft_pr_configurable() {
         let mock = MockGithubService::new();
         mock.will_create_pr(99, "https://github.com/a/b/pull/99");
@@ -941,6 +970,42 @@ mod mock_roundtrip {
             .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn create_issue_uses_repo_title_and_body_file() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            "https://github.com/owner/repo/issues/42".to_string(),
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let url = service
+            .create_issue(
+                Path::new("/tmp"),
+                "owner/repo",
+                "RalphX support report",
+                Path::new("/tmp/body.md"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(url, "https://github.com/owner/repo/issues/42");
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec![
+                "issue",
+                "create",
+                "--repo",
+                "owner/repo",
+                "--title",
+                "RalphX support report",
+                "--body-file",
+                "/tmp/body.md",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()]
         );
     }
 
