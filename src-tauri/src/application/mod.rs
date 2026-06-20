@@ -8,6 +8,7 @@ pub mod agent_conversation_jira_issue;
 pub mod agent_conversation_linear_issue;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
+pub mod agent_issue_report;
 pub(crate) mod agent_planning_session_titles;
 pub mod agent_workspace_pr_description;
 pub mod agent_workspace_external_pr_reconciliation;
@@ -131,6 +132,12 @@ pub use atlassian_integration_service::{
 pub use chat_attachment_service::ChatAttachmentService;
 pub use agent_terminal::AgentTerminalService;
 pub use agent_task_service::AgentTaskService;
+pub use agent_issue_report::{
+    build_agent_issue_report_draft, submit_agent_issue_report, AgentIssueReportDestination,
+    AgentIssueReportDestinationSource, AgentIssueReportDraft, AgentIssueReportEnvironment,
+    AgentIssueReportSource, AgentIssueReportSubmitResponse, BuildAgentIssueReportInput,
+    SubmitAgentIssueReportInput,
+};
 pub use chat_resumption::ChatResumptionRunner;
 pub use dependency_service::{DependencyAnalysis, DependencyService, ValidationResult};
 pub use event_cleanup_service::EventCleanupService;
@@ -201,6 +208,8 @@ pub use webhook_service::WebhookService;
 
 #[cfg(test)]
 mod agent_conversation_workspace_base_tests;
+#[cfg(test)]
+mod agent_issue_report_tests;
 #[cfg(test)]
 mod agent_workspace_external_pr_reconciliation_tests;
 #[cfg(test)]

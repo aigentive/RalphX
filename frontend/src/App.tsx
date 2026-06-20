@@ -21,7 +21,7 @@ import { ExtensibilityView } from "@/components/ExtensibilityView";
 import { ActivityView } from "@/components/activity";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { InsightsView } from "@/components/views/InsightsView";
-import { AgentsView } from "@/components/agents";
+import { AgentsView, AgentIssueReportDialog } from "@/components/agents";
 import { TeamSplitView } from "@/components/Team";
 import { TaskGraphView } from "@/components/TaskGraph";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
@@ -193,6 +193,15 @@ function AppContent() {
   const selectProject = useProjectStore((s) => s.selectProject);
   const clearAgentSelection = useAgentSessionStore((s) => s.clearSelection);
   const setFocusedAgentProject = useAgentSessionStore((s) => s.setFocusedProject);
+  const {
+    selectedAgentProjectId,
+    selectedAgentConversationId,
+  } = useAgentSessionStore(
+    useShallow((s) => ({
+      selectedAgentProjectId: s.selectedProjectId,
+      selectedAgentConversationId: s.selectedConversationId,
+    }))
+  );
 
   const prevProjectIdRef = useRef<string | null>(null);
   const agentsReturnViewRef = useRef<ViewType>(DEFAULT_PROJECT_VIEW);
@@ -220,6 +229,7 @@ function AppContent() {
   const [isProjectWizardOpen, setIsProjectWizardOpen] = useState(false);
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectCreationError, setProjectCreationError] = useState<string | null>(null);
+  const [isAgentIssueReportOpen, setIsAgentIssueReportOpen] = useState(false);
 
   // Plan quick switcher state
   const [isPlanQuickSwitcherOpen, setIsPlanQuickSwitcherOpen] = useState(false);
@@ -280,6 +290,29 @@ function AppContent() {
     !isLoadingProviderSettings &&
     !isPlaceholderProviderSettings;
   const isPostUpdatePreparing = usePostUpdatePreparing(postUpdateAppReady);
+  const agentIssueReportContext = useMemo(() => {
+    if (
+      currentView !== "agents" ||
+      hasNoProjects ||
+      showWelcomeOverlay ||
+      providerSetupRequired ||
+      !selectedAgentProjectId ||
+      !selectedAgentConversationId
+    ) {
+      return null;
+    }
+    return {
+      projectId: selectedAgentProjectId,
+      conversationId: selectedAgentConversationId,
+    };
+  }, [
+    currentView,
+    hasNoProjects,
+    providerSetupRequired,
+    selectedAgentConversationId,
+    selectedAgentProjectId,
+    showWelcomeOverlay,
+  ]);
   const shouldShowAtlassianAwarenessAfterUpdateRef = useRef(
     readFreshPostUpdatePreparingMarker() !== null,
   );
@@ -553,6 +586,16 @@ function AppContent() {
   const handleOpenSettings = useCallback(() => {
     openModal("settings");
   }, [openModal]);
+
+  const handleOpenAgentIssueReport = useCallback(() => {
+    setIsAgentIssueReportOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!agentIssueReportContext && isAgentIssueReportOpen) {
+      setIsAgentIssueReportOpen(false);
+    }
+  }, [agentIssueReportContext, isAgentIssueReportOpen]);
 
   const handleOpenProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
@@ -956,6 +999,9 @@ function AppContent() {
               currentView={currentView}
               onViewChange={handleViewChange}
               onOpenSettings={handleOpenSettings}
+              {...(agentIssueReportContext
+                ? { onOpenIssueReport: handleOpenAgentIssueReport }
+                : {})}
               hideViews={hasNoProjects || showWelcomeOverlay || providerSetupRequired}
             />
 
@@ -1103,6 +1149,12 @@ function AppContent() {
         isSavingSettings={isSavingSettings}
         settingsError={settingsError}
         onSettingsChange={handleSettingsChange}
+      />
+
+      <AgentIssueReportDialog
+        open={isAgentIssueReportOpen}
+        onOpenChange={setIsAgentIssueReportOpen}
+        context={agentIssueReportContext}
       />
 
       {/* Permission Dialog - Global UI-based permission approval */}
