@@ -6,7 +6,7 @@
  * and the Settings entry, in a compact icon-and-label rail.
  */
 
-import { Settings } from "lucide-react";
+import { Bug, Settings } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -26,6 +26,7 @@ interface LeftNavRailProps {
   currentView: ViewType;
   onViewChange: (view: ViewType) => void;
   onOpenSettings?: () => void;
+  onOpenIssueReport?: () => void;
   /** Hide primary view items (e.g. during welcome screen). Settings stays. */
   hideViews?: boolean;
 }
@@ -95,6 +96,7 @@ export function LeftNavRail({
   currentView,
   onViewChange,
   onOpenSettings,
+  onOpenIssueReport,
   hideViews = false,
 }: LeftNavRailProps) {
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
@@ -153,6 +155,15 @@ export function LeftNavRail({
       )}
 
       <div className="mt-auto flex flex-col items-center gap-1">
+        {onOpenIssueReport && (
+          <RailItem
+            label="Report Issue"
+            icon={Bug}
+            isActive={false}
+            onClick={onOpenIssueReport}
+            testId="nav-report-issue"
+          />
+        )}
         <RailItem
           label="Settings"
           icon={Settings}

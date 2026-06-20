@@ -5,6 +5,7 @@ pub mod redacting_writer;
 pub mod path_safety;
 pub mod runtime_log_paths;
 pub mod backend_endpoint;
+pub mod support_report_redactor;
 
 /// Truncate a UTF-8 string to at most `max_bytes` bytes, respecting char boundaries.
 ///
