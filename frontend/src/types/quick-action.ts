@@ -16,12 +16,12 @@ export type QuickActionFlowState = "idle" | "confirming" | "creating" | "success
  * Quick action interface
  *
  * Extensible action type for the command palette. Implementations can be
- * ideation sessions, task creation, search-by-id, etc.
+ * agent conversations, task creation, search-by-id, etc.
  */
 export interface QuickAction {
-  /** Unique identifier (e.g., "ideation", "create-task") */
+  /** Unique identifier (e.g., "agent-conversation", "create-task") */
   id: string;
-  /** Display label (e.g., "Start new ideation session") */
+  /** Display label (e.g., "Start new agent conversation") */
   label: string;
   /** Icon from lucide-react */
   icon: LucideIcon;
@@ -31,11 +31,13 @@ export interface QuickAction {
   isVisible: (query: string) => boolean;
   /** Execute the action. Returns entity ID on success. */
   execute: (query: string) => Promise<string>;
-  /** Label shown during creation (e.g., "Creating your ideation session...") */
+  /** Whether selecting the row should show an inline confirmation first. */
+  requiresConfirmation?: boolean;
+  /** Label shown during creation (e.g., "Opening agent composer...") */
   creatingLabel: string;
-  /** Label shown on success (e.g., "Session created!") */
+  /** Label shown on success (e.g., "Agent composer ready") */
   successLabel: string;
-  /** Button text on success (e.g., "View Session") */
+  /** Button text on success (e.g., "View Composer") */
   viewLabel: string;
   /** Navigate to the created entity */
   navigateTo: (entityId: string) => void;
