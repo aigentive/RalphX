@@ -186,9 +186,8 @@ pub async fn recover_stale_transient_publish_statuses(
                 workspace.conversation_id.clone(),
                 STALE_TRANSIENT_RECOVERED_STEP,
                 "succeeded",
-                &format!(
-                    "Recovered stale transient publish status '{}'; no agent is actively progressing it.",
-                    stuck_status
+                format!(
+                    "Recovered stale transient publish status '{stuck_status}'; no agent is actively progressing it."
                 ),
                 Some(STALE_TRANSIENT_CLASSIFICATION.to_string()),
             ))

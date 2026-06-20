@@ -24,7 +24,7 @@ use crate::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, agent_workspace_response_for_state,
     get_agent_conversation_workspace_freshness_for_app_state,
     publish_agent_conversation_workspace_for_app_state, resolve_agent_workspace_publish_target,
-    update_agent_conversation_workspace_from_base_for_agent_caller,
+    update_agent_conversation_workspace_from_base_for_app_state,
     AgentConversationWorkspaceFreshnessResponse,
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
     AgentWorkspacePostRepairAction, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
@@ -502,7 +502,7 @@ pub async fn update_agent_workspace_from_base(
         display_name: req.base_display_name,
         source_pull_request: None,
     };
-    match update_agent_conversation_workspace_from_base_for_agent_caller(
+    match update_agent_conversation_workspace_from_base_for_app_state(
         state.app_state.as_ref(),
         &state.execution_state,
         Some(state.team_service.clone()),
