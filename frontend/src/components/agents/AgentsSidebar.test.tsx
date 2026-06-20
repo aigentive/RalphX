@@ -96,6 +96,12 @@ const { runningStatesHook, publicationPollingHook } = vi.hoisted(() => ({
   runningStatesHook: vi.fn(),
   publicationPollingHook: vi.fn(),
 }));
+const { prTemplateDialogCalls } = vi.hoisted(() => ({
+  prTemplateDialogCalls: [] as Array<{
+    open: boolean;
+    projectId: string | null;
+  }>,
+}));
 
 vi.mock("react-virtuoso", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
@@ -288,6 +294,28 @@ vi.mock("./useAgentSidebarRunningStates", () => ({
 vi.mock("./useAgentSidebarPublicationPolling", () => ({
   useAgentSidebarPublicationPolling: publicationPollingHook,
 }));
+
+vi.mock("./PrTemplateEditorDialog", () => {
+  return {
+    PrTemplateEditorDialog: ({
+      open,
+      project,
+    }: {
+      open: boolean;
+      project: Project | null;
+    }) => {
+      prTemplateDialogCalls.push({
+        open,
+        projectId: project?.id ?? null,
+      });
+      return open ? (
+        <div data-testid="pr-template-editor-dialog">
+          Edit PR Template for {project?.name}
+        </div>
+      ) : null;
+    },
+  };
+});
 
 vi.mock("./useArchivedConversationCounts", () => ({
   useArchivedConversationCounts: (projectIds: string[]) => {
@@ -701,6 +729,7 @@ describe("AgentsSidebar", () => {
     workspacesByProject.clear();
     workspaceCalls.length = 0;
     publicationGroupCalls.length = 0;
+    prTemplateDialogCalls.length = 0;
     latestProjectOrderData.current = null;
     virtuosoMockState.dimensionsByTestId.clear();
     virtuosoMockState.endReachedByTestId.clear();
@@ -2212,6 +2241,40 @@ describe("AgentsSidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
 
     expect(onArchiveProject).toHaveBeenCalledWith("project-1");
+  });
+
+  it("opens the PR template editor from project actions before archive", () => {
+    conversationsByProject.set("project-1", {
+      data: [conversation()],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()]);
+
+    const actions = screen.getByTestId("agents-project-actions-project-1");
+    const trigger = within(actions).getByRole("button", { name: "Project actions" });
+    fireEvent.pointerDown(trigger);
+
+    const editItem = screen.getByText("Edit PR Template");
+    const archiveItem = screen.getByText("Archive project");
+    expect(
+      editItem.compareDocumentPosition(archiveItem) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+
+    fireEvent.click(editItem);
+
+    expect(screen.getByTestId("pr-template-editor-dialog")).toHaveTextContent(
+      "Edit PR Template for ralphx"
+    );
+    expect(prTemplateDialogCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ open: true, projectId: "project-1" }),
+      ])
+    );
   });
 
   it("does not show a tooltip for project actions", async () => {
