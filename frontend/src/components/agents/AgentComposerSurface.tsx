@@ -97,6 +97,53 @@ interface ComposerOption {
 const PLAN_REFINE_COMMAND_MESSAGE =
   "Please verify and refine the current plan.";
 
+function getSkillSourceLabel(skill: AgentComposerSkill): string {
+  return skill.source === "ralphx-internal"
+    ? "RalphX"
+    : (skill.providerHarness ?? "native");
+}
+
+function getSlashSkillLabel(skill: AgentComposerSkill): string {
+  if (skill.source === "ralphx-internal") {
+    return `/${skill.name}`;
+  }
+  return skill.invocationValue || skill.name;
+}
+
+function getSkillInsertionText(
+  skill: AgentComposerSkill | undefined,
+  fallbackName: string,
+): string {
+  if (!skill) {
+    return fallbackName;
+  }
+  if (skill.source === "ralphx-internal") {
+    return skill.invocationValue || skill.name || fallbackName;
+  }
+  return skill.invocationValue || fallbackName;
+}
+
+function skillMatchesComposerQuery(
+  skill: AgentComposerSkill,
+  query: string,
+  label = skill.name,
+): boolean {
+  if (!query) {
+    return true;
+  }
+  const searchable = [
+    label.replace(/^[/$]/, ""),
+    skill.name,
+    skill.displayName ?? "",
+    skill.description ?? "",
+    skill.providerHarness ?? "",
+    skill.scope ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+  return searchable.includes(query);
+}
+
 interface ProjectFieldConfig {
   value: string;
   onValueChange: (value: string) => void;
@@ -673,19 +720,16 @@ export function AgentComposerSurface({
       detail: "clear",
     });
     for (const skill of skills) {
-      if (
-        !skill.enabled ||
-        skill.source !== "harness-native" ||
-        !skill.invocationValue.startsWith("/")
-      ) {
+      if (!skill.enabled) {
         continue;
       }
+      const label = getSlashSkillLabel(skill);
       const item: AgentComposerMenuItem = {
-        id: `command:skill:${skill.id}`,
-        kind: "slash-command",
-        label: skill.invocationValue,
-        detail: `skill:${skill.id}`,
-        sourceLabel: skill.providerHarness ?? "native",
+        id: `skill:${skill.id}`,
+        kind: "skill",
+        label,
+        detail: skill.name,
+        sourceLabel: getSkillSourceLabel(skill),
       };
       if (skill.description) {
         item.description = skill.description;
@@ -726,12 +770,7 @@ export function AgentComposerSurface({
     if (activeTrigger.kind === "skill") {
       return skills
         .filter((skill) => skill.enabled)
-        .filter((skill) => {
-          if (!query) return true;
-          const label =
-            `${skill.name} ${skill.displayName ?? ""} ${skill.description ?? ""}`.toLowerCase();
-          return label.includes(query);
-        })
+        .filter((skill) => skillMatchesComposerQuery(skill, query))
         .slice(0, 12)
         .map((skill) => {
           const item: AgentComposerMenuItem = {
@@ -739,10 +778,7 @@ export function AgentComposerSurface({
             kind: "skill",
             label: `$${skill.name}`,
             detail: skill.name,
-            sourceLabel:
-              skill.source === "ralphx-internal"
-                ? "RalphX"
-                : (skill.providerHarness ?? "native"),
+            sourceLabel: getSkillSourceLabel(skill),
           };
           if (skill.description) {
             item.description = skill.description;
@@ -786,9 +822,18 @@ export function AgentComposerSurface({
       }));
     }
     return slashCommandItems
-      .filter((item) =>
-        query ? item.label.slice(1).toLowerCase().includes(query) : true,
-      )
+      .filter((item) => {
+        if (!query) {
+          return true;
+        }
+        if (item.kind === "skill") {
+          const skill = skillByMenuId.get(item.id);
+          return skill
+            ? skillMatchesComposerQuery(skill, query, item.label)
+            : item.label.replace(/^[/$]/, "").toLowerCase().includes(query);
+        }
+        return item.label.replace(/^[/$]/, "").toLowerCase().includes(query);
+      })
       .slice(0, 12);
   }, [
     activeTrigger,
@@ -798,6 +843,7 @@ export function AgentComposerSurface({
     pathEntriesQuery.data?.entries,
     planReferencesQuery.data?.plans,
     skills,
+    skillByMenuId,
     slashCommandItems,
   ]);
   const integrationSearchErrorLabel = useMemo(() => {
@@ -902,10 +948,7 @@ export function AgentComposerSurface({
             return nextSet;
           });
         }
-        const replacement =
-          skill?.source === "harness-native"
-            ? skill.invocationValue || `$${skillName}`
-            : `$${skillName}`;
+        const replacement = getSkillInsertionText(skill, skillName);
         const next = replaceAgentComposerTrigger(
           value,
           activeTrigger,
@@ -945,7 +988,14 @@ export function AgentComposerSurface({
       }
       if (item.detail?.startsWith("skill:")) {
         const skill = skillByMenuId.get(item.detail);
-        const replacement = skill?.invocationValue || item.label;
+        if (skill?.source === "ralphx-internal") {
+          setSelectedInternalSkillNames((current) => {
+            const nextSet = new Set(current);
+            nextSet.add(skill.invocationValue || skill.name);
+            return nextSet;
+          });
+        }
+        const replacement = getSkillInsertionText(skill, item.label);
         const next = replaceAgentComposerTrigger(
           value,
           activeTrigger,
@@ -1295,15 +1345,11 @@ export function AgentComposerSurface({
         <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
           •
         </span>
-        <span>Type / for commands</span>
+        <span>Type / for commands and skills</span>
         <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
           •
         </span>
         <span>@ for references</span>
-        <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
-          •
-        </span>
-        <span>$ for skills</span>
       </div>
     );
   }, [showHelperText]);

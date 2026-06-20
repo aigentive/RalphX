@@ -171,6 +171,12 @@ export function AgentsStartComposer({
   const lastModelEffortByProvider = useAgentSessionStore(
     (s) => s.lastModelEffortByProvider
   );
+  const startConversationDraft = useAgentSessionStore(
+    (s) => s.startConversationDraft
+  );
+  const consumeStartConversationDraft = useAgentSessionStore(
+    (s) => s.consumeStartConversationDraft
+  );
 
   const providerSettingsReady =
     !isLoadingProviderSettings && !isPlaceholderProviderSettings;
@@ -232,6 +238,19 @@ export function AgentsStartComposer({
   useEffect(() => {
     setProjectId(defaultProjectId ?? projects[0]?.id ?? "");
   }, [defaultProjectId, projects]);
+
+  useEffect(() => {
+    if (!startConversationDraft) {
+      return;
+    }
+    const draft = consumeStartConversationDraft();
+    if (!draft) {
+      return;
+    }
+    setProjectId(draft.projectId);
+    setContent(draft.content);
+    setMode(draft.mode);
+  }, [consumeStartConversationDraft, startConversationDraft]);
 
   useEffect(() => {
     setProvider(normalizedRuntime.provider);
