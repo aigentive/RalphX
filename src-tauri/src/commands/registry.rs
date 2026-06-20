@@ -420,6 +420,7 @@ macro_rules! register_tauri_commands {
             commands::ticketing_commands::get_ticket_detail,
             commands::ticketing_commands::list_ticket_transitions,
             commands::ticketing_commands::get_ticket_associations,
+            commands::ticketing_commands::start_ralphx_work_from_ticket,
             commands::ticketing_commands::refresh_tickets,
             // Workspace open commands
             commands::workspace_open_commands::list_workspace_open_targets,

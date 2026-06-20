@@ -12,6 +12,7 @@ import { TicketingDashboardView } from "./TicketingDashboardView";
 vi.mock("@/hooks/useTicketing", () => ({
   flattenTicketPages: vi.fn((data) => data?.pages.flatMap((page) => page.items) ?? []),
   useRefreshTickets: vi.fn(),
+  useStartWorkFromTicket: vi.fn(),
   useTicketAssociations: vi.fn(),
   useTicketDetail: vi.fn(),
   useTicketingColumns: vi.fn(),
@@ -150,6 +151,11 @@ function mockConnectedDashboard() {
     mutate: vi.fn(),
     isPending: false,
   } as unknown as ReturnType<typeof ticketingHooks.useRefreshTickets>);
+  vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+    error: null,
+  } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
 }
 
 describe("TicketingDashboardView", () => {
@@ -200,6 +206,11 @@ describe("TicketingDashboardView", () => {
       mutate: vi.fn(),
       isPending: false,
     } as unknown as ReturnType<typeof ticketingHooks.useRefreshTickets>);
+    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      error: null,
+    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
   });
 
   it("renders provider-specific disconnected state without blanking the shell", () => {
@@ -262,5 +273,28 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     const associationCalls = vi.mocked(ticketingHooks.useTicketAssociations).mock.calls;
     expect(associationCalls[associationCalls.length - 1]?.[0]).toBeNull();
+  });
+
+  it("starts RalphX work from the ticket detail sheet", async () => {
+    const startWork = vi.fn();
+    mockConnectedDashboard();
+    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
+      mutate: startWork,
+      isPending: false,
+      error: null,
+    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
+
+    renderDashboard();
+
+    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Start RalphX work" }),
+    );
+
+    expect(startWork).toHaveBeenCalledWith({
+      projectId: "project-1",
+      ticketRef: ticket.ref,
+      content: "Start RalphX work for RX-1: Fix merge race in transition handler",
+    });
   });
 });

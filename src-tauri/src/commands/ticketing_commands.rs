@@ -1,13 +1,31 @@
+use std::sync::Arc;
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Runtime, State};
 
 use crate::application::{
+    agent_conversation_jira_issue, agent_conversation_linear_issue,
+    agent_conversation_start_service::{
+        AgentConversationStartDeps, AgentConversationStartService, StartAgentConversationInput,
+    },
     AppState, AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
-    LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary,
+    LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary, TeamService,
+};
+use crate::commands::unified_chat_commands::{
+    agent_conversation_response_for_state, agent_workspace_response_for_state,
+    SendAgentMessageResponse, StartAgentConversationResponse,
+};
+use crate::commands::ExecutionState;
+use crate::domain::entities::{
+    AgentConversationJiraIssueLink, AgentConversationLinearIssueLink, ChatContextType,
+    ChatConversation, ChatConversationId, ProjectId,
 };
 use crate::domain::integrations::{AtlassianIntegrationSettings, IntegrationValidationStatus};
-use crate::domain::services::ComposerIntegrationReference;
+use crate::domain::services::{
+    jira_reference_from_composer_reference, ComposerIntegrationReference,
+    ComposerJiraReferenceMetadata,
+};
 
 const PROVIDER_JIRA: &str = "jira";
 const PROVIDER_LINEAR: &str = "linear";
@@ -66,6 +84,14 @@ pub struct TicketRefInput {
     pub provider: String,
     pub id: String,
     pub key: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartRalphxWorkFromTicketInput {
+    #[serde(flatten)]
+    pub start: StartAgentConversationInput,
+    pub ticket_ref: TicketRefInput,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -332,14 +358,74 @@ pub fn list_ticket_transitions(
 }
 
 #[tauri::command]
-pub fn get_ticket_associations(
+pub async fn get_ticket_associations(
     provider: String,
     ticket_ref: TicketRefInput,
     project_id: String,
+    state: State<'_, AppState>,
 ) -> Result<TicketAssociationsResponse, String> {
     validate_provider(&provider)?;
-    let _ = (ticket_ref, project_id);
-    Ok(empty_associations())
+    let project_id = ProjectId::from_string(project_id);
+    let ticket_reference = ticket_ref_to_composer_reference(&provider, &ticket_ref);
+    let mut response = empty_associations();
+    response.conversations = linked_agent_conversation_associations_for_ticket(
+        state.inner(),
+        &provider,
+        &project_id,
+        &ticket_reference,
+    )
+    .await?;
+    Ok(response)
+}
+
+#[tauri::command]
+pub async fn start_ralphx_work_from_ticket<R: Runtime + 'static>(
+    mut input: StartRalphxWorkFromTicketInput,
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    team_service: State<'_, Arc<TeamService>>,
+    app: tauri::AppHandle<R>,
+) -> Result<StartAgentConversationResponse, String> {
+    let provider = input.ticket_ref.provider.clone();
+    validate_provider(&provider)?;
+    let project_id = ProjectId::from_string(input.start.project_id.clone());
+    let ticket_reference = ticket_ref_to_composer_reference(&provider, &input.ticket_ref);
+    let issue_reference = ensure_ticket_composer_reference(
+        &mut input.start.composer_integration_references,
+        ticket_reference,
+    );
+
+    let result = AgentConversationStartService::new(AgentConversationStartDeps {
+        state: state.inner(),
+        execution_state: execution_state.inner(),
+        team_service: Some(team_service.inner().clone()),
+        app_handle: app,
+    })
+    .start(input.start)
+    .await?;
+
+    link_started_ticket_to_conversation(
+        state.inner(),
+        &provider,
+        &result.conversation.id,
+        &project_id,
+        &issue_reference,
+    )
+    .await?;
+
+    let workspace_response = match result.workspace {
+        Some(workspace) => {
+            Some(agent_workspace_response_for_state(state.inner(), workspace).await?)
+        }
+        None => None,
+    };
+
+    Ok(StartAgentConversationResponse {
+        conversation: agent_conversation_response_for_state(state.inner(), result.conversation)
+            .await?,
+        workspace: workspace_response,
+        send_result: SendAgentMessageResponse::from(result.send_result),
+    })
 }
 
 #[tauri::command]
@@ -653,6 +739,187 @@ fn ticket_ref_to_composer_reference(
         key: ticket_ref.key.clone(),
         title: None,
         url: None,
+    }
+}
+
+fn ensure_ticket_composer_reference(
+    references: &mut Vec<ComposerIntegrationReference>,
+    ticket_reference: ComposerIntegrationReference,
+) -> ComposerIntegrationReference {
+    if let Some(existing) = references
+        .iter()
+        .find(|reference| same_ticket_reference(reference, &ticket_reference))
+    {
+        return existing.clone();
+    }
+    references.push(ticket_reference.clone());
+    ticket_reference
+}
+
+fn same_ticket_reference(
+    left: &ComposerIntegrationReference,
+    right: &ComposerIntegrationReference,
+) -> bool {
+    if left.provider != right.provider || left.kind != right.kind {
+        return false;
+    }
+    if left.id == right.id {
+        return true;
+    }
+    match (left.key.as_deref(), right.key.as_deref()) {
+        (Some(left_key), Some(right_key)) => left_key.eq_ignore_ascii_case(right_key),
+        _ => false,
+    }
+}
+
+async fn link_started_ticket_to_conversation(
+    state: &AppState,
+    provider: &str,
+    conversation_id: &ChatConversationId,
+    project_id: &ProjectId,
+    reference: &ComposerIntegrationReference,
+) -> Result<(), String> {
+    match provider {
+        PROVIDER_JIRA => {
+            let reference = jira_reference_from_composer_reference(reference)
+                .ok_or_else(|| "Invalid Jira ticket reference".to_string())?;
+            let link = agent_conversation_jira_issue::manual_link_from_reference(
+                conversation_id,
+                project_id,
+                reference,
+                Utc::now(),
+            );
+            state
+                .agent_conversation_jira_issue_repo
+                .upsert(link)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        PROVIDER_LINEAR => {
+            let reference =
+                agent_conversation_linear_issue::linear_reference_from_composer_reference(
+                    reference,
+                )
+                .ok_or_else(|| "Invalid Linear ticket reference".to_string())?;
+            let link = agent_conversation_linear_issue::manual_link_from_reference(
+                conversation_id,
+                project_id,
+                reference,
+                Utc::now(),
+            );
+            state
+                .agent_conversation_linear_issue_repo
+                .upsert(link)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        _ => Err(format!("Unknown ticketing provider: {provider}")),
+    }
+}
+
+async fn linked_agent_conversation_associations_for_ticket(
+    state: &AppState,
+    provider: &str,
+    project_id: &ProjectId,
+    reference: &ComposerIntegrationReference,
+) -> Result<Vec<TicketAssociationItemResponse>, String> {
+    let conversations = state
+        .chat_conversation_repo
+        .get_by_context_filtered(ChatContextType::Project, project_id.as_str(), true)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut associations = Vec::new();
+
+    match provider {
+        PROVIDER_JIRA => {
+            let reference = jira_reference_from_composer_reference(reference)
+                .ok_or_else(|| "Invalid Jira ticket reference".to_string())?;
+            for conversation in conversations {
+                let link = state
+                    .agent_conversation_jira_issue_repo
+                    .get_by_conversation_id(&conversation.id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if link
+                    .as_ref()
+                    .is_some_and(|link| jira_link_matches_ticket(link, project_id, &reference))
+                {
+                    associations.push(agent_conversation_association_item(&conversation));
+                }
+            }
+        }
+        PROVIDER_LINEAR => {
+            let reference =
+                agent_conversation_linear_issue::linear_reference_from_composer_reference(
+                    reference,
+                )
+                .ok_or_else(|| "Invalid Linear ticket reference".to_string())?;
+            for conversation in conversations {
+                let link = state
+                    .agent_conversation_linear_issue_repo
+                    .get_by_conversation_id(&conversation.id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if link
+                    .as_ref()
+                    .is_some_and(|link| linear_link_matches_ticket(link, project_id, &reference))
+                {
+                    associations.push(agent_conversation_association_item(&conversation));
+                }
+            }
+        }
+        _ => return Err(format!("Unknown ticketing provider: {provider}")),
+    }
+
+    Ok(associations)
+}
+
+fn jira_link_matches_ticket(
+    link: &AgentConversationJiraIssueLink,
+    project_id: &ProjectId,
+    reference: &ComposerJiraReferenceMetadata,
+) -> bool {
+    link.project_id == *project_id
+        && (link.issue_key.eq_ignore_ascii_case(&reference.issue_key)
+            || reference
+                .issue_id
+                .as_ref()
+                .is_some_and(|issue_id| link.issue_id.as_ref() == Some(issue_id)))
+}
+
+fn linear_link_matches_ticket(
+    link: &AgentConversationLinearIssueLink,
+    project_id: &ProjectId,
+    reference: &agent_conversation_linear_issue::ComposerLinearReferenceMetadata,
+) -> bool {
+    link.project_id == *project_id
+        && (link.issue_id == reference.issue_id
+            || reference.issue_key.as_ref().is_some_and(|issue_key| {
+                link.issue_key
+                    .as_deref()
+                    .is_some_and(|link_key| link_key.eq_ignore_ascii_case(issue_key))
+            }))
+}
+
+fn agent_conversation_association_item(
+    conversation: &ChatConversation,
+) -> TicketAssociationItemResponse {
+    let id = conversation.id.as_str();
+    TicketAssociationItemResponse {
+        id: id.clone(),
+        title: conversation
+            .title
+            .clone()
+            .unwrap_or_else(|| "Agent conversation".to_string()),
+        subtitle: Some("Agent conversation".to_string()),
+        status: conversation.agent_mode.map(|mode| mode.to_string()),
+        active: conversation.archived_at.is_none(),
+        deep_link: TicketDeepLinkResponse {
+            view: "agents".to_string(),
+            id,
+        },
     }
 }
 

@@ -2154,7 +2154,7 @@ const WorkspaceOpenTargetResponseSchema = z.object({
   kind: z.enum(["editor", "fileManager"]),
 });
 
-const StartAgentConversationResponseSchema = z.object({
+export const StartAgentConversationResponseSchema = z.object({
   conversation: ChatConversationResponseSchema,
   workspace: AgentConversationWorkspaceResponseSchema.nullable(),
   send_result: SendAgentMessageResponseSchema,
@@ -2348,7 +2348,7 @@ function transformAgentSidebarConversationGroups(
   };
 }
 
-function transformStartAgentConversationResponse(
+export function transformStartAgentConversationResponse(
   raw: RawStartAgentConversationResponse,
 ): StartAgentConversationResult {
   return {
@@ -2357,6 +2357,43 @@ function transformStartAgentConversationResponse(
       ? transformAgentConversationWorkspace(raw.workspace)
       : null,
     sendResult: transformSendAgentMessageResponse(raw.send_result),
+  };
+}
+
+export function startAgentConversationInvokeInput(
+  input: StartAgentConversationInput,
+) {
+  return {
+    projectId: input.projectId,
+    content: input.content,
+    ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+    ...(input.providerHarness ? { providerHarness: input.providerHarness } : {}),
+    ...(input.modelId ? { modelOverride: input.modelId } : {}),
+    ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
+    ...(input.mode ? { mode: input.mode } : {}),
+    ...(input.composerProjectReferences?.length
+      ? { composerProjectReferences: input.composerProjectReferences }
+      : {}),
+    ...(input.composerIntegrationReferences?.length
+      ? { composerIntegrationReferences: input.composerIntegrationReferences }
+      : {}),
+    ...(input.composerArtifactReferences?.length
+      ? { composerArtifactReferences: input.composerArtifactReferences }
+      : {}),
+    ...(input.base
+      ? {
+          baseRefKind: input.base.kind,
+          baseRef: input.base.ref,
+          baseDisplayName: input.base.displayName,
+          ...(input.base.sourcePullRequest
+            ? {
+                baseSourcePullRequest: sourcePullRequestInvokeInput(
+                  input.base.sourcePullRequest,
+                ),
+              }
+            : {}),
+        }
+      : {}),
   };
 }
 
@@ -2859,45 +2896,7 @@ export async function startAgentConversation(
   const raw = await typedInvoke(
     "start_agent_conversation",
     {
-      input: {
-        projectId: input.projectId,
-        content: input.content,
-        ...(input.conversationId
-          ? { conversationId: input.conversationId }
-          : {}),
-        ...(input.providerHarness
-          ? { providerHarness: input.providerHarness }
-          : {}),
-        ...(input.modelId ? { modelOverride: input.modelId } : {}),
-        ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
-        ...(input.mode ? { mode: input.mode } : {}),
-        ...(input.composerProjectReferences?.length
-          ? { composerProjectReferences: input.composerProjectReferences }
-          : {}),
-        ...(input.composerIntegrationReferences?.length
-          ? {
-              composerIntegrationReferences:
-                input.composerIntegrationReferences,
-            }
-          : {}),
-        ...(input.composerArtifactReferences?.length
-          ? { composerArtifactReferences: input.composerArtifactReferences }
-          : {}),
-        ...(input.base
-          ? {
-              baseRefKind: input.base.kind,
-              baseRef: input.base.ref,
-              baseDisplayName: input.base.displayName,
-              ...(input.base.sourcePullRequest
-                ? {
-                    baseSourcePullRequest: sourcePullRequestInvokeInput(
-                      input.base.sourcePullRequest
-                    ),
-                  }
-                : {}),
-            }
-          : {}),
-      },
+      input: startAgentConversationInvokeInput(input),
     },
     StartAgentConversationResponseSchema,
   );

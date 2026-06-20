@@ -249,7 +249,8 @@ pub use team_commands::{
 pub use ticketing_commands::{
     get_ticket_associations, get_ticket_detail, list_ticket_transitions, list_ticketing_columns,
     list_ticketing_containers, list_ticketing_providers, list_tickets, refresh_tickets,
-    ListTicketsQuery, RefreshTicketsResponse, TicketAssociationsResponse, TicketDetailResponse,
+    start_ralphx_work_from_ticket, ListTicketsQuery, RefreshTicketsResponse,
+    StartRalphxWorkFromTicketInput, TicketAssociationsResponse, TicketDetailResponse,
     TicketPageResponse, TicketRefInput, TicketSummaryResponse, TicketingCapabilitiesResponse,
     TicketingColumnResponse, TicketingContainerResponse, TicketingProviderSummaryResponse,
 };

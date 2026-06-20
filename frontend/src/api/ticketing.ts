@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+import {
+  StartAgentConversationResponseSchema,
+  startAgentConversationInvokeInput,
+  transformStartAgentConversationResponse,
+  type StartAgentConversationInput,
+  type StartAgentConversationResult,
+} from "@/api/chat";
 import { typedInvoke, TauriVoidSchema } from "@/lib/tauri";
 import { ViewTypeSchema } from "@/types/chat";
 
@@ -233,6 +240,10 @@ export interface GetTicketAssociationsInput extends TicketRefInput {
   projectId: string;
 }
 
+export interface StartWorkFromTicketInput extends StartAgentConversationInput {
+  ticketRef: TicketRef;
+}
+
 export interface RefreshTicketsInput {
   provider: TicketingProvider;
   containerId?: string | undefined;
@@ -323,6 +334,22 @@ export const ticketingApi = {
       },
       TicketAssociationsSchema,
     );
+  },
+
+  async startWorkFromTicket(
+    input: StartWorkFromTicketInput,
+  ): Promise<StartAgentConversationResult> {
+    const raw = await typedInvoke(
+      "start_ralphx_work_from_ticket",
+      {
+        input: {
+          ...startAgentConversationInvokeInput(input),
+          ticketRef: input.ticketRef,
+        },
+      },
+      StartAgentConversationResponseSchema,
+    );
+    return transformStartAgentConversationResponse(raw);
   },
 
   async refreshTickets(input: RefreshTicketsInput): Promise<RefreshTicketsResponse> {

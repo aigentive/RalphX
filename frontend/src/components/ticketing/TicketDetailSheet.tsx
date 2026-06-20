@@ -17,7 +17,10 @@ interface TicketDetailSheetProps {
   associations: TicketAssociations | undefined;
   isDetailLoading: boolean;
   isAssociationsLoading: boolean;
+  isStartWorkPending?: boolean | undefined;
+  startWorkError?: string | null | undefined;
   onNavigate?: ((deepLink: TicketDeepLink) => void) | undefined;
+  onStartWork?: (() => void) | undefined;
   onClose: () => void;
 }
 
@@ -75,11 +78,17 @@ function AssociationCard({
 function RalphxAssociationPanel({
   associations,
   isLoading,
+  isStartWorkPending = false,
+  startWorkError,
   onNavigate,
+  onStartWork,
 }: {
   associations: TicketAssociations | undefined;
   isLoading: boolean;
+  isStartWorkPending?: boolean | undefined;
+  startWorkError?: string | null | undefined;
   onNavigate?: ((deepLink: TicketDeepLink) => void) | undefined;
+  onStartWork?: (() => void) | undefined;
 }) {
   const activeCount = ASSOCIATION_GROUPS.reduce((count, group) => {
     return count + (associations?.[group.key].filter((item) => item.active).length ?? 0);
@@ -106,6 +115,21 @@ function RalphxAssociationPanel({
           </span>
         )}
       </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="mt-3 w-full justify-center"
+        disabled={!onStartWork || isStartWorkPending}
+        onClick={onStartWork}
+      >
+        {isStartWorkPending ? "Starting..." : "Start RalphX work"}
+      </Button>
+      {startWorkError && (
+        <p className="mt-2 text-xs text-[var(--status-error)]" role="alert">
+          {startWorkError}
+        </p>
+      )}
       {isLoading ? (
         <p className="mt-4 text-sm text-[var(--text-muted)]">Loading associations</p>
       ) : totalCount === 0 ? (
@@ -146,7 +170,10 @@ export function TicketDetailSheet({
   associations,
   isDetailLoading,
   isAssociationsLoading,
+  isStartWorkPending,
+  startWorkError,
   onNavigate,
+  onStartWork,
   onClose,
 }: TicketDetailSheetProps) {
   return (
@@ -253,7 +280,10 @@ export function TicketDetailSheet({
             <RalphxAssociationPanel
               associations={associations}
               isLoading={isAssociationsLoading}
+              isStartWorkPending={isStartWorkPending}
+              startWorkError={startWorkError}
               onNavigate={onNavigate}
+              onStartWork={onStartWork}
             />
           </div>
         ) : (

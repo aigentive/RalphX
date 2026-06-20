@@ -7,6 +7,8 @@ import { ticketingApi } from "@/api/ticketing";
 
 import {
   flattenTicketPages,
+  ticketingKeys,
+  useStartWorkFromTicket,
   useTicketingProviders,
   useTickets,
 } from "./useTicketing";
@@ -23,17 +25,21 @@ vi.mock("@/api/ticketing", async (importActual) => {
       getTicketDetail: vi.fn(),
       listTicketTransitions: vi.fn(),
       getTicketAssociations: vi.fn(),
+      startWorkFromTicket: vi.fn(),
       refreshTickets: vi.fn(),
     },
   };
 });
 
-function createWrapper() {
-  const queryClient = new QueryClient({
+function createQueryClient() {
+  return new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0 },
     },
   });
+}
+
+function createWrapper(queryClient = createQueryClient()) {
 
   return function Wrapper({ children }: { children: ReactNode }) {
     return createElement(QueryClientProvider, { client: queryClient }, children);
@@ -132,5 +138,67 @@ describe("useTicketing hooks", () => {
       cursor: "cursor-2",
     });
     expect(flattenTicketPages(nextPageResult.data)).toHaveLength(2);
+  });
+
+  it("starts RalphX work from a ticket and refreshes association caches", async () => {
+    const queryClient = createQueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const ticketRef = { provider: "jira" as const, id: "10001", key: "RX-1" };
+    vi.mocked(ticketingApi.startWorkFromTicket).mockResolvedValueOnce({
+      conversation: {
+        id: "conversation-ticket",
+        contextType: "project",
+        contextId: "project-1",
+        title: "RX-1",
+        messageCount: 1,
+        createdAt: "2026-06-19T22:00:00Z",
+        updatedAt: "2026-06-19T22:00:00Z",
+        archivedAt: null,
+        lastMessageAt: null,
+        claudeSessionId: null,
+        providerSessionId: null,
+        providerHarness: null,
+        agentMode: "edit",
+      },
+      workspace: null,
+      sendResult: {
+        conversationId: "conversation-ticket",
+        agentRunId: "",
+        isNewConversation: true,
+        wasQueued: true,
+        queuedAsPending: false,
+        queuedMessageId: "queued-1",
+      },
+    });
+    const { result } = renderHook(() => useStartWorkFromTicket(), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await act(() =>
+      result.current.mutateAsync({
+        projectId: "project-1",
+        content: "Start work on RX-1",
+        ticketRef,
+      }),
+    );
+
+    expect(ticketingApi.startWorkFromTicket).toHaveBeenCalledWith({
+      projectId: "project-1",
+      content: "Start work on RX-1",
+      ticketRef,
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ticketingKeys.associations({
+        provider: "jira",
+        ticketRef,
+        projectId: "project-1",
+      }),
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ticketingKeys.detail({
+        provider: "jira",
+        ticketRef,
+      }),
+    });
   });
 });

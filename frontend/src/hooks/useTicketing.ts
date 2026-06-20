@@ -7,6 +7,7 @@ import {
   type ListTicketingContainersInput,
   type ListTicketsInput,
   type RefreshTicketsInput,
+  type StartWorkFromTicketInput,
   type TicketAssociations,
   type TicketDetail,
   type TicketPage,
@@ -166,6 +167,38 @@ export function useRefreshTickets() {
     mutationFn: (input: RefreshTicketsInput) => ticketingApi.refreshTickets(input),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ticketingKeys.all });
+    },
+  });
+}
+
+export function useStartWorkFromTicket() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: StartWorkFromTicketInput) =>
+      ticketingApi.startWorkFromTicket(input),
+    onSuccess: (_result, input) => {
+      const ticketInput = {
+        provider: input.ticketRef.provider,
+        ticketRef: input.ticketRef,
+      };
+      void queryClient.invalidateQueries({
+        queryKey: ticketingKeys.associations({
+          ...ticketInput,
+          projectId: input.projectId,
+        }),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ticketingKeys.detail(ticketInput),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: [
+          ...ticketingKeys.all,
+          "tickets",
+          input.ticketRef.provider,
+          input.projectId,
+        ],
+      });
     },
   });
 }

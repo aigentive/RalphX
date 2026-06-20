@@ -4,6 +4,7 @@ import type { ListTicketsInput, TicketDeepLink, TicketFiltersInput, TicketSummar
 import {
   flattenTicketPages,
   useRefreshTickets,
+  useStartWorkFromTicket,
   useTicketAssociations,
   useTicketDetail,
   useTicketingColumns,
@@ -19,7 +20,7 @@ import { TicketDetailSheet } from "./TicketDetailSheet";
 import { TicketFilterBar } from "./TicketFilterBar";
 import { TicketingStatePanel } from "./TicketingStatePanel";
 import { TicketKanbanShell, TicketKanbanView, TicketListView } from "./TicketViews";
-import { providerLabel } from "./ticketing-utils";
+import { providerLabel, ticketKey } from "./ticketing-utils";
 import { useAfterPaint } from "./useAfterPaint";
 
 interface TicketingDashboardViewProps {
@@ -132,10 +133,16 @@ export function TicketingDashboardView({
     { enabled: Boolean(detailInput && projectId) },
   );
   const refreshTickets = useRefreshTickets();
+  const startWorkFromTicket = useStartWorkFromTicket();
 
   const selectedTicket = detailQuery.data ?? selectedSummary;
   const providerName = selectedProvider?.label ?? (activeProvider ? providerLabel(activeProvider) : "Provider");
   const statusMessage = selectedProvider?.errorMessage ?? selectedProvider?.permissionMessage ?? undefined;
+  const startWorkError = startWorkFromTicket.error instanceof Error
+    ? startWorkFromTicket.error.message
+    : startWorkFromTicket.error
+      ? "RalphX work could not be started."
+      : null;
 
   function handleSelectTicket(ticket: TicketSummary) {
     setSelectedTicketRef(ticket.ref);
@@ -148,6 +155,17 @@ export function TicketingDashboardView({
     refreshTickets.mutate({
       provider: activeProvider,
       ...(activeContainerId !== null && { containerId: activeContainerId }),
+    });
+  }
+
+  function handleStartWorkFromTicket() {
+    if (!selectedTicket) {
+      return;
+    }
+    startWorkFromTicket.mutate({
+      projectId,
+      ticketRef: selectedTicket.ref,
+      content: `Start RalphX work for ${ticketKey(selectedTicket.ref)}: ${selectedTicket.title}`,
     });
   }
 
@@ -311,7 +329,10 @@ export function TicketingDashboardView({
         associations={associationsQuery.data}
         isDetailLoading={detailQuery.isLoading}
         isAssociationsLoading={associationsQuery.isLoading}
+        isStartWorkPending={startWorkFromTicket.isPending}
+        startWorkError={startWorkError}
         onNavigate={onNavigateToAssociation}
+        onStartWork={selectedTicket ? handleStartWorkFromTicket : undefined}
         onClose={() => setSelectedTicketRef(null)}
       />
     </section>
