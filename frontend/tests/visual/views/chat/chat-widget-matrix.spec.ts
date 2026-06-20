@@ -10,7 +10,7 @@ async function expandWidget(widget: Locator) {
 }
 
 function collapsedToolCallGroupToggles(root: Locator) {
-  return root.getByRole("button", { name: /^Agent called \d+ tools$/ });
+  return root.getByRole("button", { name: /^Agent called \d+ tools?$/ });
 }
 
 async function expandToolCallGroups(root: Locator) {
@@ -18,10 +18,14 @@ async function expandToolCallGroups(root: Locator) {
 
   for (let index = 0; index < 20; index += 1) {
     const toggles = collapsedToolCallGroupToggles(root);
-    if ((await toggles.count()) === 0) {
+    const collapsedCount = await toggles.count();
+    if (collapsedCount === 0) {
       return;
     }
     await toggles.first().click();
+    await expect
+      .poll(async () => collapsedToolCallGroupToggles(root).count())
+      .toBeLessThan(collapsedCount);
   }
 }
 
@@ -270,6 +274,7 @@ test.describe("Chat Widget Matrix", () => {
     });
 
     await focusIdeationWidgetBlocks(page, ["child-session-active-1"]);
+    await expandToolCallGroups(page.locator("body"));
     const activeWidget = page.locator('[data-testid="child-session-widget-active"]').first();
     await expect(activeWidget).toBeVisible();
     await expandWidget(activeWidget);
@@ -287,6 +292,7 @@ test.describe("Chat Widget Matrix", () => {
     });
 
     await focusIdeationWidgetBlocks(page, ["child-session-pending-1"]);
+    await expandToolCallGroups(page.locator("body"));
     const pendingWidget = page.locator('[data-testid="child-session-widget-pending"]').first();
     await expect(pendingWidget).toBeVisible();
     await expectAndAttachScreenshot(
@@ -303,6 +309,7 @@ test.describe("Chat Widget Matrix", () => {
     });
 
     await focusIdeationWidgetBlocks(page, ["child-session-loading-1"], CHILD_SESSION_VISUAL_OVERRIDES);
+    await expandToolCallGroups(page.locator("body"));
     const loadingWidget = page.locator('[data-testid="child-session-widget-loading"]').first();
     await expect(loadingWidget).toBeVisible();
     await expandWidget(loadingWidget);
@@ -320,6 +327,7 @@ test.describe("Chat Widget Matrix", () => {
     });
 
     await focusIdeationWidgetBlocks(page, ["child-session-error-1"], CHILD_SESSION_VISUAL_OVERRIDES);
+    await expandToolCallGroups(page.locator("body"));
     const errorWidget = page.locator('[data-testid="child-session-widget-error"]').first();
     await expect(errorWidget).toBeVisible();
     await expandWidget(errorWidget);
@@ -335,6 +343,7 @@ test.describe("Chat Widget Matrix", () => {
     await setupIdeationChatScenario(page, "ideation_widget_matrix");
 
     await focusIdeationWidgetBlocks(page, ["delegate-wait-1"]);
+    await expandToolCallGroups(page.locator("body"));
     const completedDelegationCard = page
       .locator('[data-testid="task-tool-call-card"]')
       .filter({ hasText: "ralphx-execution-reviewer" })
