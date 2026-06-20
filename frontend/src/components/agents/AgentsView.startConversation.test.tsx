@@ -144,6 +144,25 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agents-start-mode-edit")).toBeInTheDocument();
   });
 
+  it("prefills and consumes a pending start conversation draft", async () => {
+    mockAgentViewData();
+    useAgentSessionStore.getState().setStartConversationDraft({
+      projectId: "project-1",
+      content: "replace ideation command with agent composer",
+      mode: "edit",
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
+        "replace ideation command with agent composer"
+      )
+    );
+    expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Agent");
+    expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
+  });
+
   it("restores a persisted selected conversation even when it is outside the first sidebar page", async () => {
     const restoredConversation = conversation({
       id: "conversation-restored",

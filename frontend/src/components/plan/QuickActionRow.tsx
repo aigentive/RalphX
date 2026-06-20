@@ -15,7 +15,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Loader2, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { withAlpha } from "@/lib/theme-colors";
-import type { QuickAction } from "@/hooks/useIdeationQuickAction";
+import type { QuickAction } from "@/hooks/useQuickActionFlow";
 
 // ============================================================================
 // Types
