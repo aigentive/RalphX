@@ -4,12 +4,12 @@
 
 ## Priority Zero — Owner Strategy Alignment (NON-NEGOTIABLE)
 
-Before ANY user-facing content, documentation, UI copy, or messaging work, agents MUST load these on demand:
+Before ANY user-facing content, documentation, UI copy, or messaging work, agents must probe these optional files with non-failing file checks and load any that exist:
 - `~/.ralphx/founder/founder-profile.md` — Owner vision and non-negotiables
 - `~/.ralphx/strategy/project-goal-card.md` — Messaging architecture, positioning, ICPs, competitive landscape
 - `~/.ralphx/strategy/project-metrics.md` — Verifiable project data points
 
-These are the **owner's directives**. They override default agent judgment on messaging. Do not keep them as always-on `@` imports in project memory.
+If one is missing, skip it and continue; do not fail work or run bare `sed`/`cat` commands that turn absence into a task error. Present files are the **owner's directives** and override default agent judgment on messaging. Do not keep them as always-on `@` imports in project memory.
 
 ---
 
@@ -22,7 +22,7 @@ Production CLI resolution applies to installed app launches; all runtime subproc
 ## Structure
 ```
 ralphx/
-├─ frontend/              # Frontend project root (Vite/React) → frontend/src/CLAUDE.md
+├─ frontend/              # Frontend project root (Vite/React) → frontend/CLAUDE.md → frontend/src/CLAUDE.md
 │  ├─ src/                # Frontend app code
 │  └─ tests/              # Frontend/Vitest/Playwright tests
 ├─ plugins/
