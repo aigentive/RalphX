@@ -6571,6 +6571,31 @@ describe("ChatMessageList - Streaming text/empty edge cases", () => {
     );
     expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
   });
+
+  it("collapses and expands persisted tool-call groups in the fallback renderer", async () => {
+    const user = userEvent.setup();
+    const parentMessageId = "assistant-turn-fallback-renderer";
+    const messages: ChatMessageData[] = [
+      makeTimelineTextMessage({
+        id: "text-1",
+        parentMessageId,
+        sequence: 1,
+        text: "I will fetch two files.",
+      }),
+      makeTimelineToolMessage({ id: "tool-a", parentMessageId, sequence: 2 }),
+      makeTimelineToolMessage({ id: "tool-b", parentMessageId, sequence: 3 }),
+    ];
+
+    render(<ChatMessageList {...defaultProps} messages={messages} />);
+
+    expect(screen.getByRole("button", { name: "Agent called 2 tools" })).toBeInTheDocument();
+    expect(screen.queryAllByTestId("tool-call-indicator")).toHaveLength(0);
+
+    await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+
+    expect(screen.getByRole("button", { name: "Hide 2 tool calls" })).toBeInTheDocument();
+    expect(screen.getAllByTestId("tool-call-indicator")).toHaveLength(2);
+  });
 });
 
 // ============================================================================
