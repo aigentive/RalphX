@@ -462,6 +462,69 @@ describe("ChatMessageList - Scroll Behavior", () => {
         });
 
         expect(scrollToMock).toHaveBeenCalledWith({ top: 120, behavior: "auto" });
+
+        act(() => {
+          vi.advanceTimersByTime(2200);
+        });
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        if (originalResizeObserver === undefined) {
+          Reflect.deleteProperty(globalThis, "ResizeObserver");
+        } else {
+          Object.defineProperty(globalThis, "ResizeObserver", {
+            value: originalResizeObserver,
+            configurable: true,
+            writable: true,
+          });
+        }
+        vi.unstubAllEnvs();
+        vi.useRealTimers();
+      }
+    });
+
+    it("debounces initial-load bottom pin when the scroller resize observer fires", () => {
+      vi.useFakeTimers();
+      vi.stubEnv("VITEST", "");
+      const callbacks: ResizeObserverCallback[] = [];
+      const originalResizeObserver = globalThis.ResizeObserver;
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      class MockResizeObserver implements ResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          callbacks.push(callback);
+        }
+        disconnect = vi.fn();
+        observe = vi.fn();
+        unobserve = vi.fn();
+      }
+
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        value: MockResizeObserver,
+        configurable: true,
+        writable: true,
+      });
+
+      try {
+        render(<ChatMessageList {...defaultProps} />);
+        const scroller = screen.getByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 620,
+          scrollTop: 60,
+        });
+        scrollToMock.mockClear();
+
+        act(() => {
+          callbacks.forEach((callback) => callback([], {} as ResizeObserver));
+          vi.advanceTimersByTime(200);
+        });
+
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 120, behavior: "auto" });
       } finally {
         rafSpy.mockRestore();
         cancelSpy.mockRestore();
@@ -6572,6 +6635,58 @@ describe("ChatMessageList - Streaming text/empty edge cases", () => {
     expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
   });
 
+  it("renders fallback team events while skipping empty streaming footer content", async () => {
+    const { useTeamStore } = await import("@/stores/teamStore");
+    useTeamStore.setState({
+      activeTeams: {
+        "ctx-fallback-team": {
+          teamName: "Fallback Team",
+          leadName: "lead",
+          teammates: {},
+          messages: [
+            {
+              id: "tm-fallback",
+              from: "alice",
+              to: "lead",
+              content: "Fallback team update",
+              timestamp: new Date(2026, 0, 1, 12, 3).toISOString(),
+            },
+          ],
+          totalTokens: 0,
+          totalEstimatedCostUsd: 0,
+          createdAt: new Date(2026, 0, 1).toISOString(),
+        },
+      },
+      pendingPlans: {},
+      artifactVersion: {},
+    });
+    const blocks: StreamingContentBlock[] = [
+      {
+        type: "tool_use",
+        toolCall: {
+          id: "tc-hidden-orchestration",
+          name: "v1_get_project_status",
+          arguments: {},
+          result: "done",
+        },
+      },
+    ];
+
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={[]}
+        contextKey="ctx-fallback-team"
+        streamingContentBlocks={blocks}
+      />,
+    );
+
+    expect(screen.getByText("Fallback team update")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByTestId("tool-call-indicator")).not.toBeInTheDocument();
+    });
+  });
+
   it("collapses and expands persisted tool-call groups in the fallback renderer", async () => {
     const user = userEvent.setup();
     const parentMessageId = "assistant-turn-fallback-renderer";
@@ -6709,6 +6824,73 @@ describe("ChatMessageList - Virtuoso production render path", () => {
       />,
     );
     expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+
+  it("renders teammate sender metadata and skips empty streaming footer in Virtuoso path", async () => {
+    const { useTeamStore } = await import("@/stores/teamStore");
+    useTeamStore.setState({
+      activeTeams: {
+        "ctx-virtuoso-empty-footer": {
+          teamName: "Virtuoso Team",
+          leadName: "lead",
+          teammates: {
+            alice: {
+              name: "alice",
+              color: "var(--accent-primary)",
+              model: "gpt-5.5",
+              roleDescription: "Researcher",
+              status: "running",
+              currentActivity: null,
+              tokensUsed: 0,
+              estimatedCostUsd: 0,
+              conversationId: null,
+            },
+          },
+          messages: [],
+          totalTokens: 0,
+          totalEstimatedCostUsd: 0,
+          createdAt: new Date(2026, 0, 1).toISOString(),
+        },
+      },
+      pendingPlans: {},
+      artifactVersion: {},
+    });
+    const messages: ChatMessageData[] = [
+      {
+        id: "assistant-teammate",
+        role: "assistant",
+        content: "Teammate assistant output.",
+        createdAt: new Date(2026, 0, 1, 12, 1).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+        sender: "alice",
+      },
+    ];
+    const blocks: StreamingContentBlock[] = [
+      {
+        type: "tool_use",
+        toolCall: {
+          id: "tc-hidden-virtuoso",
+          name: "v1_get_project_status",
+          arguments: {},
+          result: "done",
+        },
+      },
+    ];
+
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={messages}
+        contextKey="ctx-virtuoso-empty-footer"
+        streamingContentBlocks={blocks}
+      />,
+    );
+
+    expect(screen.getByText("Teammate assistant output.")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByTestId("tool-call-indicator")).not.toBeInTheDocument();
+    });
   });
 
   it("renders Virtuoso path with isFetchingOlderMessages indicator", () => {
@@ -6914,15 +7096,22 @@ describe("ChatMessageList - Virtuoso production render path", () => {
     expect(screen.getAllByTestId("tool-call-indicator")).toHaveLength(2);
   });
 
-  it("renders Virtuoso path with failedRun banner", () => {
+  it("renders Virtuoso path with failedRun banner", async () => {
+    const user = userEvent.setup();
+    const onDismissFailedRun = vi.fn();
     render(
       <ChatMessageList
         {...defaultProps}
         messages={createMessages(2)}
         failedRun={{ id: "r1", errorMessage: "boom" }}
+        onDismissFailedRun={onDismissFailedRun}
       />,
     );
     expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /dismiss/i }));
+
+    expect(onDismissFailedRun).toHaveBeenCalledWith("r1");
   });
 
   it("renders Virtuoso path with team filter empty state when timeline empty", () => {
