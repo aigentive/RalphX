@@ -48,6 +48,32 @@ fn write_executable_script(path: &Path, contents: &str) {
     }
 }
 
+fn write_frontend_package(frontend_dir: &Path) {
+    std::fs::create_dir_all(frontend_dir.join("node_modules")).unwrap();
+    std::fs::write(
+        frontend_dir.join("package.json"),
+        r#"{
+          "scripts": { "test:run": "vitest run" },
+          "dependencies": { "react": "1.0.0", "zod": "1.0.0", "@tauri-apps/api": "1.0.0" },
+          "devDependencies": { "vitest": "1.0.0" }
+        }"#,
+    )
+    .unwrap();
+}
+
+fn write_readiness_probe_node(path: &Path) {
+    write_executable_script(
+        path,
+        r#"#!/bin/sh
+if [ -x "node_modules/.bin/vitest" ]; then
+  exit 0
+fi
+echo "missing frontend dependency readiness" >&2
+exit 1
+"#,
+    );
+}
+
 // ==================
 // run_validation_commands tests
 // ==================
@@ -269,29 +295,11 @@ async fn frontend_validation_bootstraps_partial_node_modules_and_uses_local_vite
     let project_dir = tempfile::tempdir().unwrap();
     let worktree_dir = tempfile::tempdir().unwrap();
     let frontend_dir = worktree_dir.path().join("frontend");
-    std::fs::create_dir_all(frontend_dir.join("node_modules")).unwrap();
-    std::fs::write(
-        frontend_dir.join("package.json"),
-        r#"{
-          "scripts": { "test:run": "vitest run" },
-          "dependencies": { "react": "1.0.0", "zod": "1.0.0", "@tauri-apps/api": "1.0.0" },
-          "devDependencies": { "vitest": "1.0.0" }
-        }"#,
-    )
-    .unwrap();
+    write_frontend_package(&frontend_dir);
 
     let fake_bin = tempfile::tempdir().unwrap();
     let fake_node = fake_bin.path().join("node");
-    write_executable_script(
-        &fake_node,
-        r#"#!/bin/sh
-if [ -x "node_modules/.bin/vitest" ]; then
-  exit 0
-fi
-echo "missing frontend dependency readiness" >&2
-exit 1
-"#,
-    );
+    write_readiness_probe_node(&fake_node);
 
     let global_marker = worktree_dir.path().join("global-vitest-used");
     let global_vitest = fake_bin.path().join("vitest");
@@ -362,6 +370,189 @@ exit 1
             && entry.command == "./node_modules/.bin/vitest run"
             && entry.status == "success"
     }));
+}
+
+#[tokio::test]
+async fn frontend_validation_blocks_without_install_and_does_not_run_global_vitest() {
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let project_dir = tempfile::tempdir().unwrap();
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let frontend_dir = worktree_dir.path().join("frontend");
+    write_frontend_package(&frontend_dir);
+
+    let fake_bin = tempfile::tempdir().unwrap();
+    let fake_node = fake_bin.path().join("node");
+    write_readiness_probe_node(&fake_node);
+
+    let global_marker = worktree_dir.path().join("global-vitest-used");
+    let global_vitest = fake_bin.path().join("vitest");
+    write_executable_script(
+        &global_vitest,
+        &format!(
+            "#!/bin/sh\nprintf 'global-vitest %s\\n' \"$*\" > '{}'\nexit 0\n",
+            global_marker.display()
+        ),
+    );
+
+    let _node_path = EnvVarGuard::set("RALPHX_NODE_PATH", fake_node.as_os_str());
+    let path_value = format!("{}:/bin:/usr/bin", fake_bin.path().display());
+    let _path = EnvVarGuard::set("PATH", std::ffi::OsString::from(path_value));
+
+    let mut project = make_project(Some("main"));
+    project.working_directory = project_dir.path().to_string_lossy().to_string();
+    project.detected_analysis = Some(
+        r#"[{
+            "path": ".",
+            "label": "Frontend",
+            "validate": ["vitest run"],
+            "worktree_setup": []
+        }]"#
+        .to_string(),
+    );
+    let task = make_task(None, None);
+
+    let result = run_validation_commands(
+        &project,
+        &task,
+        worktree_dir.path(),
+        "frontend-readiness-blocked-task",
+        None,
+        None,
+        &MergeValidationMode::Block,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("frontend validation should produce a setup failure");
+
+    assert!(!result.all_passed);
+    assert_eq!(result.failures.len(), 1);
+    assert!(
+        result.failures[0]
+            .stderr
+            .contains("Frontend dependency setup failed before validation")
+    );
+    assert!(
+        !global_marker.exists(),
+        "global/non-local vitest must not run when readiness fails"
+    );
+    assert!(result.log.iter().any(|entry| {
+        entry.phase == "validate"
+            && entry.path == "frontend"
+            && entry.command == "./node_modules/.bin/vitest run"
+            && entry.status == "failed"
+    }));
+}
+
+#[tokio::test]
+async fn frontend_pre_execution_install_fails_when_readiness_still_missing() {
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let project_dir = tempfile::tempdir().unwrap();
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let frontend_dir = worktree_dir.path().join("frontend");
+    write_frontend_package(&frontend_dir);
+
+    let fake_bin = tempfile::tempdir().unwrap();
+    let fake_node = fake_bin.path().join("node");
+    write_readiness_probe_node(&fake_node);
+
+    let _node_path = EnvVarGuard::set("RALPHX_NODE_PATH", fake_node.as_os_str());
+
+    let mut project = make_project(Some("main"));
+    project.working_directory = project_dir.path().to_string_lossy().to_string();
+    project.detected_analysis = Some(
+        r#"[{
+            "path": "frontend",
+            "label": "Frontend",
+            "install": "true",
+            "validate": [],
+            "worktree_setup": []
+        }]"#
+        .to_string(),
+    );
+    let task = make_task(None, None);
+
+    let result = run_pre_execution_setup(
+        &project,
+        &task,
+        worktree_dir.path(),
+        "frontend-readiness-install-failure-task",
+        None,
+        "pre_execution",
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("frontend install should produce a setup result");
+
+    assert!(!result.success);
+    assert_eq!(result.log.len(), 1);
+    assert_eq!(result.log[0].phase, "install");
+    assert_eq!(result.log[0].path, "frontend");
+    assert_eq!(result.log[0].status, "failed");
+    assert!(result.log[0]
+        .stderr
+        .contains("Frontend dependency setup failed after install"));
+}
+
+#[tokio::test]
+async fn frontend_pre_execution_install_skips_when_readiness_is_complete() {
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let project_dir = tempfile::tempdir().unwrap();
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let frontend_dir = worktree_dir.path().join("frontend");
+    write_frontend_package(&frontend_dir);
+    std::fs::create_dir_all(frontend_dir.join("node_modules/.bin")).unwrap();
+    write_executable_script(
+        &frontend_dir.join("node_modules/.bin/vitest"),
+        "#!/bin/sh\nexit 0\n",
+    );
+
+    let fake_bin = tempfile::tempdir().unwrap();
+    let fake_node = fake_bin.path().join("node");
+    write_readiness_probe_node(&fake_node);
+
+    let _node_path = EnvVarGuard::set("RALPHX_NODE_PATH", fake_node.as_os_str());
+
+    let mut project = make_project(Some("main"));
+    project.working_directory = project_dir.path().to_string_lossy().to_string();
+    project.detected_analysis = Some(
+        r#"[{
+            "path": ".",
+            "label": "Frontend",
+            "install": "npm install",
+            "validate": [],
+            "worktree_setup": []
+        }]"#
+        .to_string(),
+    );
+    let task = make_task(None, None);
+
+    let result = run_pre_execution_setup(
+        &project,
+        &task,
+        worktree_dir.path(),
+        "frontend-readiness-install-skip-task",
+        None,
+        "pre_execution",
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("frontend install should produce a setup result");
+
+    assert!(result.success);
+    assert_eq!(result.log.len(), 1);
+    assert_eq!(result.log[0].phase, "install");
+    assert_eq!(result.log[0].path, "frontend");
+    assert_eq!(result.log[0].status, "skipped");
+    assert_eq!(
+        result.log[0].stderr,
+        "frontend dependencies are ready — install skipped"
+    );
 }
 
 #[tokio::test]
