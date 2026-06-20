@@ -105,7 +105,11 @@ fn direct_read_prefers_lowercase_template_when_both_exist() {
 
     let content = project_pr_template::read_pr_template(root.path()).unwrap();
 
-    assert_eq!(content.as_deref(), Some("Lowercase\n"));
+    if actual_template_names(root.path()).len() == 2 {
+        assert_eq!(content.as_deref(), Some("Lowercase\n"));
+    } else {
+        assert_eq!(content.as_deref(), Some("Uppercase\n"));
+    }
 }
 
 #[tokio::test]
@@ -157,6 +161,7 @@ fn direct_write_prefers_existing_lowercase_template_when_both_exist() {
     std::fs::create_dir(root.path().join(".github")).unwrap();
     std::fs::write(template_path(root.path()), "Lowercase old\n").unwrap();
     std::fs::write(uppercase_template_path(root.path()), "Uppercase old\n").unwrap();
+    let distinct_template_entries = actual_template_names(root.path()).len() == 2;
 
     project_pr_template::write_pr_template(root.path(), "Lowercase new\n").unwrap();
 
@@ -164,10 +169,17 @@ fn direct_write_prefers_existing_lowercase_template_when_both_exist() {
         std::fs::read_to_string(template_path(root.path())).unwrap(),
         "Lowercase new\n"
     );
-    assert_eq!(
-        std::fs::read_to_string(uppercase_template_path(root.path())).unwrap(),
-        "Uppercase old\n"
-    );
+    if distinct_template_entries {
+        assert_eq!(
+            std::fs::read_to_string(uppercase_template_path(root.path())).unwrap(),
+            "Uppercase old\n"
+        );
+    } else {
+        assert_eq!(
+            std::fs::read_to_string(uppercase_template_path(root.path())).unwrap(),
+            "Lowercase new\n"
+        );
+    }
 }
 
 #[tokio::test]
