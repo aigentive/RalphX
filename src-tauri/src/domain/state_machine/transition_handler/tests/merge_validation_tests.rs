@@ -74,6 +74,14 @@ exit 1
     );
 }
 
+fn write_ready_vitest(frontend_dir: &Path) {
+    std::fs::create_dir_all(frontend_dir.join("node_modules/.bin")).unwrap();
+    write_executable_script(
+        &frontend_dir.join("node_modules/.bin/vitest"),
+        "#!/bin/sh\nexit 0\n",
+    );
+}
+
 // ==================
 // run_validation_commands tests
 // ==================
@@ -446,6 +454,195 @@ async fn frontend_validation_blocks_without_install_and_does_not_run_global_vite
 }
 
 #[tokio::test]
+async fn frontend_validation_warn_mode_continues_after_readiness_failure() {
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let project_dir = tempfile::tempdir().unwrap();
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let frontend_dir = worktree_dir.path().join("frontend");
+    write_frontend_package(&frontend_dir);
+
+    let fake_bin = tempfile::tempdir().unwrap();
+    let fake_node = fake_bin.path().join("node");
+    write_readiness_probe_node(&fake_node);
+
+    let _node_path = EnvVarGuard::set("RALPHX_NODE_PATH", fake_node.as_os_str());
+    let path_value = format!("{}:/bin:/usr/bin", fake_bin.path().display());
+    let _path = EnvVarGuard::set("PATH", std::ffi::OsString::from(path_value));
+
+    let mut project = make_project(Some("main"));
+    project.working_directory = project_dir.path().to_string_lossy().to_string();
+    project.detected_analysis = Some(
+        r#"[{
+            "path": ".",
+            "label": "Frontend",
+            "validate": ["vitest run"],
+            "worktree_setup": []
+        },{
+            "path": ".",
+            "label": "Shell",
+            "validate": ["true"],
+            "worktree_setup": []
+        }]"#
+        .to_string(),
+    );
+    let task = make_task(None, None);
+
+    let result = run_validation_commands(
+        &project,
+        &task,
+        worktree_dir.path(),
+        "frontend-readiness-warn-task",
+        None,
+        None,
+        &MergeValidationMode::Warn,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("warn-mode frontend validation should produce a result");
+
+    assert!(!result.all_passed);
+    assert_eq!(result.failures.len(), 1);
+    assert!(result.log.iter().any(|entry| {
+        entry.phase == "validate"
+            && entry.path == "frontend"
+            && entry.command == "./node_modules/.bin/vitest run"
+            && entry.status == "failed"
+    }));
+    assert!(result.log.iter().any(|entry| {
+        entry.phase == "validate"
+            && entry.path == "."
+            && entry.command == "true"
+            && entry.status == "success"
+    }));
+}
+
+#[tokio::test]
+async fn frontend_validation_uses_cached_sanitized_frontend_command() {
+    let project_dir = tempfile::tempdir().unwrap();
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let frontend_dir = worktree_dir.path().join("frontend");
+    write_frontend_package(&frontend_dir);
+
+    let mut project = make_project(Some("main"));
+    project.working_directory = project_dir.path().to_string_lossy().to_string();
+    project.detected_analysis = Some(
+        r#"[{
+            "path": ".",
+            "label": "Frontend",
+            "validate": ["vitest run vitest.config.ts"],
+            "worktree_setup": []
+        }]"#
+        .to_string(),
+    );
+    let task = make_task(None, None);
+    let cached = vec![ValidationLogEntry {
+        phase: "validate".to_string(),
+        command: "./node_modules/.bin/vitest run".to_string(),
+        path: "frontend".to_string(),
+        label: "Frontend".to_string(),
+        status: "success".to_string(),
+        exit_code: Some(0),
+        stdout: String::new(),
+        stderr: String::new(),
+        duration_ms: 10,
+        ..Default::default()
+    }];
+
+    let result = run_validation_commands(
+        &project,
+        &task,
+        worktree_dir.path(),
+        "frontend-readiness-cached-task",
+        None,
+        Some(&cached),
+        &MergeValidationMode::Block,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("cached frontend validation should produce a result");
+
+    assert!(result.all_passed);
+    assert_eq!(result.log.len(), 1);
+    assert_eq!(result.log[0].command, "./node_modules/.bin/vitest run");
+    assert_eq!(result.log[0].path, "frontend");
+    assert_eq!(result.log[0].status, "cached");
+}
+
+#[tokio::test]
+async fn frontend_validation_detects_frontend_stack_from_package_json() {
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let project_dir = tempfile::tempdir().unwrap();
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let package_dir = worktree_dir.path().join("web");
+    std::fs::create_dir_all(package_dir.join("node_modules")).unwrap();
+    std::fs::write(
+        package_dir.join("package.json"),
+        r#"{
+          "scripts": { "test": "vitest run" },
+          "dependencies": { "react": "1.0.0" },
+          "devDependencies": { "vitest": "1.0.0" }
+        }"#,
+    )
+    .unwrap();
+    write_ready_vitest(&package_dir);
+
+    let fake_bin = tempfile::tempdir().unwrap();
+    let fake_node = fake_bin.path().join("node");
+    write_readiness_probe_node(&fake_node);
+    let npm_marker = worktree_dir.path().join("npm-test-used");
+    write_executable_script(
+        &fake_bin.path().join("npm"),
+        &format!(
+            "#!/bin/sh\nprintf 'npm %s\\n' \"$*\" > '{}'\nexit 0\n",
+            npm_marker.display()
+        ),
+    );
+
+    let _node_path = EnvVarGuard::set("RALPHX_NODE_PATH", fake_node.as_os_str());
+    let path_value = format!("{}:/bin:/usr/bin", fake_bin.path().display());
+    let _path = EnvVarGuard::set("PATH", std::ffi::OsString::from(path_value));
+
+    let mut project = make_project(Some("main"));
+    project.working_directory = project_dir.path().to_string_lossy().to_string();
+    project.detected_analysis = Some(
+        r#"[{
+            "path": "web",
+            "label": "Web",
+            "validate": ["npm test"],
+            "worktree_setup": []
+        }]"#
+        .to_string(),
+    );
+    let task = make_task(None, None);
+
+    let result = run_validation_commands(
+        &project,
+        &task,
+        worktree_dir.path(),
+        "frontend-stack-package-task",
+        None,
+        None,
+        &MergeValidationMode::Block,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("package-json frontend stack validation should produce a result");
+
+    assert!(result.all_passed);
+    assert!(npm_marker.exists());
+    assert!(result.log.iter().any(|entry| {
+        entry.phase == "validate"
+            && entry.path == "web"
+            && entry.command == "npm test"
+            && entry.status == "success"
+    }));
+}
+
+#[tokio::test]
 async fn frontend_pre_execution_install_fails_when_readiness_still_missing() {
     let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
@@ -506,11 +703,7 @@ async fn frontend_pre_execution_install_skips_when_readiness_is_complete() {
     let worktree_dir = tempfile::tempdir().unwrap();
     let frontend_dir = worktree_dir.path().join("frontend");
     write_frontend_package(&frontend_dir);
-    std::fs::create_dir_all(frontend_dir.join("node_modules/.bin")).unwrap();
-    write_executable_script(
-        &frontend_dir.join("node_modules/.bin/vitest"),
-        "#!/bin/sh\nexit 0\n",
-    );
+    write_ready_vitest(&frontend_dir);
 
     let fake_bin = tempfile::tempdir().unwrap();
     let fake_node = fake_bin.path().join("node");
