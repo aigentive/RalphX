@@ -1,4 +1,6 @@
-use std::fs;
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, OpenOptions};
+use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
@@ -11,42 +13,30 @@ const PR_TEMPLATE_FILES: [&str; 2] = [PREFERRED_PR_TEMPLATE_FILE, LEGACY_PR_TEMP
 
 pub fn read_pr_template(project_root: &Path) -> AppResult<Option<String>> {
     let root = canonical_project_root(project_root)?;
-    let github_dir = root.join(GITHUB_DIR);
-    let Some(github_dir) = existing_safe_github_dir(&root, &github_dir)? else {
+    let root_dir = open_project_root(&root)?;
+    let Some(_github_dir) = existing_safe_github_dir(&root_dir)? else {
         return Ok(None);
     };
 
-    let Some(template_path) = existing_safe_template_file(&github_dir)? else {
+    let Some(template_file) = existing_safe_template_file(&root_dir)? else {
         return Ok(None);
     };
 
-    // codeql[rust/path-injection]
-    fs::read_to_string(&template_path)
+    root_dir
+        .read_to_string(template_relative_path(template_file))
         .map(Some)
         .map_err(|error| AppError::Infrastructure(format!("Failed to read PR template: {error}")))
 }
 
 pub fn write_pr_template(project_root: &Path, content: &str) -> AppResult<()> {
     let root = canonical_project_root(project_root)?;
-    let github_dir = root.join(GITHUB_DIR);
-    let github_dir = ensure_safe_github_dir(&root, &github_dir)?;
-    let template_path = existing_safe_template_file(&github_dir)?
-        .unwrap_or_else(|| github_dir.join(PREFERRED_PR_TEMPLATE_FILE));
+    let root_dir = open_project_root(&root)?;
+    let _github_dir = ensure_safe_github_dir(&root_dir)?;
+    let template_file =
+        existing_safe_template_file(&root_dir)?.unwrap_or(PREFERRED_PR_TEMPLATE_FILE);
+    let template_path = template_relative_path(template_file);
 
-    if let Some(metadata) = symlink_metadata_optional(&template_path)? {
-        if metadata.file_type().is_symlink() {
-            return Err(AppError::Validation(
-                "PR template path must not be a symlink".to_string(),
-            ));
-        }
-        if !metadata.is_file() {
-            return Err(AppError::Validation(
-                "PR template path must be a regular file".to_string(),
-            ));
-        }
-    }
-
-    let parent_metadata = fs::symlink_metadata(&github_dir).map_err(|error| {
+    let parent_metadata = root_dir.symlink_metadata(GITHUB_DIR).map_err(|error| {
         AppError::Infrastructure(format!("Failed to inspect .github directory: {error}"))
     })?;
     if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
@@ -54,19 +44,11 @@ pub fn write_pr_template(project_root: &Path, content: &str) -> AppResult<()> {
             ".github must be a regular directory".to_string(),
         ));
     }
-    ensure_under_root(
-        &root,
-        &github_dir.canonicalize().map_err(|error| {
-            AppError::Infrastructure(format!("Failed to canonicalize .github directory: {error}"))
-        })?,
-    )?;
 
-    // codeql[rust/path-injection]
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&template_path)
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    let mut file = root_dir
+        .open_with(&template_path, &options)
         .map_err(|error| {
             AppError::Infrastructure(format!("Failed to open PR template for writing: {error}"))
         })?;
@@ -84,7 +66,7 @@ fn canonical_project_root(project_root: &Path) -> AppResult<PathBuf> {
     }
 
     // codeql[rust/path-injection]
-    let root = project_root.canonicalize().map_err(|error| {
+    let root = dunce::canonicalize(project_root).map_err(|error| {
         AppError::Infrastructure(format!("Failed to canonicalize project root: {error}"))
     })?;
     if !root.is_dir() {
@@ -95,8 +77,14 @@ fn canonical_project_root(project_root: &Path) -> AppResult<PathBuf> {
     Ok(root)
 }
 
-fn existing_safe_github_dir(root: &Path, github_dir: &Path) -> AppResult<Option<PathBuf>> {
-    let Some(metadata) = symlink_metadata_optional(github_dir)? else {
+fn open_project_root(root: &Path) -> AppResult<Dir> {
+    Dir::open_ambient_dir(root, ambient_authority()).map_err(|error| {
+        AppError::Infrastructure(format!("Failed to open project root directory: {error}"))
+    })
+}
+
+fn existing_safe_github_dir(root: &Dir) -> AppResult<Option<Dir>> {
+    let Some(metadata) = symlink_metadata_optional(root, GITHUB_DIR)? else {
         return Ok(None);
     };
     if metadata.file_type().is_symlink() {
@@ -109,34 +97,31 @@ fn existing_safe_github_dir(root: &Path, github_dir: &Path) -> AppResult<Option<
             ".github must be a regular directory".to_string(),
         ));
     }
-    // codeql[rust/path-injection]
-    let canonical = github_dir.canonicalize().map_err(|error| {
-        AppError::Infrastructure(format!("Failed to canonicalize .github directory: {error}"))
-    })?;
-    ensure_under_root(root, &canonical)?;
-    Ok(Some(canonical))
+    root.open_dir(GITHUB_DIR).map(Some).map_err(|error| {
+        AppError::Infrastructure(format!("Failed to open .github directory: {error}"))
+    })
 }
 
-fn ensure_safe_github_dir(root: &Path, github_dir: &Path) -> AppResult<PathBuf> {
+fn ensure_safe_github_dir(root: &Dir) -> AppResult<Dir> {
     validate_fixed_component(GITHUB_DIR)?;
-    if let Some(existing) = existing_safe_github_dir(root, github_dir)? {
+    if let Some(existing) = existing_safe_github_dir(root)? {
         return Ok(existing);
     }
 
-    // codeql[rust/path-injection]
-    fs::create_dir(github_dir).map_err(|error| {
+    root.create_dir(GITHUB_DIR).map_err(|error| {
         AppError::Infrastructure(format!("Failed to create .github directory: {error}"))
     })?;
-    existing_safe_github_dir(root, github_dir)?.ok_or_else(|| {
+    existing_safe_github_dir(root)?.ok_or_else(|| {
         AppError::Infrastructure("Failed to verify created .github directory".to_string())
     })
 }
 
-fn existing_safe_template_file(github_dir: &Path) -> AppResult<Option<PathBuf>> {
-    let Some(template_path) = exact_template_path(github_dir)? else {
+fn existing_safe_template_file(root: &Dir) -> AppResult<Option<&'static str>> {
+    let Some(template_file) = exact_template_file(root)? else {
         return Ok(None);
     };
-    let metadata = fs::symlink_metadata(&template_path).map_err(|error| {
+    let template_path = template_relative_path(template_file);
+    let metadata = root.symlink_metadata(&template_path).map_err(|error| {
         AppError::Infrastructure(format!("Failed to inspect PR template: {error}"))
     })?;
     if metadata.file_type().is_symlink() {
@@ -149,20 +134,15 @@ fn existing_safe_template_file(github_dir: &Path) -> AppResult<Option<PathBuf>> 
             "PR template path must be a regular file".to_string(),
         ));
     }
-    // codeql[rust/path-injection]
-    let canonical = template_path.canonicalize().map_err(|error| {
-        AppError::Infrastructure(format!("Failed to canonicalize PR template: {error}"))
-    })?;
-    ensure_under_root(github_dir, &canonical)?;
-    Ok(Some(canonical))
+    Ok(Some(template_file))
 }
 
-fn exact_template_path(github_dir: &Path) -> AppResult<Option<PathBuf>> {
+fn exact_template_file(root: &Dir) -> AppResult<Option<&'static str>> {
     for filename in PR_TEMPLATE_FILES {
         validate_fixed_component(filename)?;
     }
 
-    let entries = fs::read_dir(github_dir).map_err(|error| {
+    let entries = root.read_dir(GITHUB_DIR).map_err(|error| {
         AppError::Infrastructure(format!("Failed to list .github directory: {error}"))
     })?;
     let mut preferred = None;
@@ -172,18 +152,18 @@ fn exact_template_path(github_dir: &Path) -> AppResult<Option<PathBuf>> {
             AppError::Infrastructure(format!("Failed to inspect .github entry: {error}"))
         })?;
         let file_name = entry.file_name();
-        if file_name == PREFERRED_PR_TEMPLATE_FILE {
-            preferred = Some(entry.path());
-        } else if file_name == LEGACY_PR_TEMPLATE_FILE {
-            legacy = Some(entry.path());
+        if file_name == OsStr::new(PREFERRED_PR_TEMPLATE_FILE) {
+            preferred = Some(PREFERRED_PR_TEMPLATE_FILE);
+        } else if file_name == OsStr::new(LEGACY_PR_TEMPLATE_FILE) {
+            legacy = Some(LEGACY_PR_TEMPLATE_FILE);
         }
     }
 
     Ok(preferred.or(legacy))
 }
 
-fn symlink_metadata_optional(path: &Path) -> AppResult<Option<fs::Metadata>> {
-    match fs::symlink_metadata(path) {
+fn symlink_metadata_optional(root: &Dir, path: &str) -> AppResult<Option<cap_std::fs::Metadata>> {
+    match root.symlink_metadata(path) {
         Ok(metadata) => Ok(Some(metadata)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(AppError::Infrastructure(format!(
@@ -202,12 +182,6 @@ fn validate_fixed_component(component: &str) -> AppResult<()> {
     }
 }
 
-fn ensure_under_root(root: &Path, child: &Path) -> AppResult<()> {
-    if child.starts_with(root) {
-        Ok(())
-    } else {
-        Err(AppError::Validation(
-            "PR template path escapes project working directory".to_string(),
-        ))
-    }
+fn template_relative_path(filename: &str) -> PathBuf {
+    Path::new(GITHUB_DIR).join(filename)
 }
