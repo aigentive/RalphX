@@ -123,7 +123,7 @@ vi.mock("@/hooks/useChatActions", () => ({
 }));
 
 vi.mock("@/hooks/useChatEvents", () => ({ useChatEvents: vi.fn() }));
-vi.mock("@/hooks/useChatRecovery", () => ({ useChatRecovery: vi.fn() }));
+vi.mock("@/hooks/useChatRecovery", () => ({ useChatRecovery: vi.fn().mockReturnValue({ isStreamingHydrated: true }) }));
 vi.mock("@/hooks/useAgentEvents", () => ({ useAgentEvents: vi.fn() }));
 
 vi.mock("@/hooks/useAskUserQuestion", () => ({
