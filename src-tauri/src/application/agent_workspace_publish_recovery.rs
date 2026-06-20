@@ -10,6 +10,9 @@ const STALE_REPAIR_RECOVERED_STEP: &str = "stale_repair_recovered";
 const STALE_NEEDS_AGENT_CLASSIFICATION: &str = "stale_needs_agent";
 const STALE_PR_AUTOFIX_SUMMARY: &str =
     "Recovered stale PR autofix state; no active fixer run is running.";
+const STALE_TRANSIENT_RECOVERED_STEP: &str = "stale_transient_recovered";
+const STALE_TRANSIENT_CLASSIFICATION: &str = "stale_transient_status";
+pub const STALE_TRANSIENT_STATUS_STALE_SECS: u64 = 300;
 
 pub async fn recover_stale_agent_workspace_publish_repairs_on_startup(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
@@ -116,13 +119,6 @@ pub async fn recover_stale_publish_repair_for_workspace(
         return Ok(false);
     }
 
-    let Some(completed_at) = latest_run.completed_at else {
-        return Ok(false);
-    };
-    if completed_at < workspace.updated_at {
-        return Ok(false);
-    }
-
     workspace_repo
         .update_publication(
             &workspace.conversation_id,
@@ -160,6 +156,85 @@ pub async fn recover_stale_publish_repair_for_workspace(
     );
 
     Ok(true)
+}
+
+pub async fn recover_stale_transient_publish_statuses(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    stale_older_than_secs: u64,
+) -> AppResult<u32> {
+    let workspaces = workspace_repo
+        .list_active_transient_publish_status_workspaces(stale_older_than_secs)
+        .await?;
+    let mut recovered = 0u32;
+
+    for workspace in workspaces {
+        let stuck_status = workspace
+            .publication_push_status
+            .clone()
+            .unwrap_or_default();
+        workspace_repo
+            .update_publication(
+                &workspace.conversation_id,
+                workspace.publication_pr_number,
+                workspace.publication_pr_url.as_deref(),
+                workspace.publication_pr_status.as_deref(),
+                Some("failed"),
+            )
+            .await?;
+        workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                workspace.conversation_id.clone(),
+                STALE_TRANSIENT_RECOVERED_STEP,
+                "succeeded",
+                &format!(
+                    "Recovered stale transient publish status '{}'; no agent is actively progressing it.",
+                    stuck_status
+                ),
+                Some(STALE_TRANSIENT_CLASSIFICATION.to_string()),
+            ))
+            .await?;
+        tracing::info!(
+            conversation_id = workspace.conversation_id.as_str(),
+            stuck_status = %stuck_status,
+            "Recovered stale transient publish status workspace"
+        );
+        recovered += 1;
+    }
+
+    Ok(recovered)
+}
+
+pub async fn run_periodic_workspace_publish_recovery(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+
+        if let Err(err) = recover_stale_agent_workspace_publish_repairs(
+            Arc::clone(&workspace_repo),
+            Arc::clone(&agent_run_repo),
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %err,
+                "Periodic recovery: failed to recover stale needs_agent workspace repairs"
+            );
+        }
+
+        if let Err(err) = recover_stale_transient_publish_statuses(
+            Arc::clone(&workspace_repo),
+            STALE_TRANSIENT_STATUS_STALE_SECS,
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %err,
+                "Periodic recovery: failed to recover stale transient publish statuses"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -422,12 +497,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ignores_terminal_run_without_completion_timestamp() {
+    async fn recovers_terminal_run_without_completion_timestamp() {
         let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
         let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
         let conversation_id =
             ChatConversationId::from_string("88888888-8888-8888-8888-888888888888");
         let workspace = needs_agent_workspace(conversation_id);
+        workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("seed workspace");
         let mut run = AgentRun::new(conversation_id);
         run.status = AgentRunStatus::Failed;
         run.completed_at = None;
@@ -438,16 +517,20 @@ mod tests {
                 .await
                 .expect("check repair state");
 
-        assert!(!recovered);
+        assert!(recovered);
     }
 
     #[tokio::test]
-    async fn ignores_terminal_run_that_finished_before_workspace_update() {
+    async fn recovers_terminal_run_that_finished_before_workspace_update() {
         let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
         let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
         let conversation_id =
             ChatConversationId::from_string("66666666-6666-6666-6666-666666666666");
         let mut workspace = needs_agent_workspace(conversation_id);
+        workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("seed workspace");
         create_failed_run(&agent_run_repo, conversation_id).await;
         workspace.updated_at = chrono::Utc::now() + chrono::Duration::minutes(5);
 
@@ -456,6 +539,124 @@ mod tests {
                 .await
                 .expect("check repair state");
 
-        assert!(!recovered);
+        assert!(recovered);
+    }
+
+    fn transient_workspace(
+        conversation_id: ChatConversationId,
+        status: &str,
+    ) -> AgentConversationWorkspace {
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation_id,
+            ProjectId::from_string("project-1".to_string()),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-1".to_string()),
+            "ralphx/test/agent-workspace".to_string(),
+            "/tmp/ralphx-agent-workspace".to_string(),
+        );
+        workspace.publication_push_status = Some(status.to_string());
+        workspace
+    }
+
+    #[tokio::test]
+    async fn recovers_stale_transient_refreshing_workspace() {
+        let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        let conversation_id =
+            ChatConversationId::from_string("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        let workspace = transient_workspace(conversation_id.clone(), "refreshing");
+        workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("seed workspace");
+
+        // stale_older_than_secs=0 means any workspace updated at or before now is stale
+        let recovered = recover_stale_transient_publish_statuses(
+            Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            0,
+        )
+        .await
+        .expect("recover transient statuses");
+
+        assert_eq!(recovered, 1);
+        let refreshed = workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load workspace")
+            .expect("workspace exists");
+        assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+
+        let events = workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list events");
+        assert!(events.iter().any(|e| {
+            e.step == STALE_TRANSIENT_RECOVERED_STEP
+                && e.status == "succeeded"
+                && e.classification.as_deref() == Some(STALE_TRANSIENT_CLASSIFICATION)
+        }));
+    }
+
+    #[tokio::test]
+    async fn skips_recent_transient_workspace_within_staleness_window() {
+        let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        let conversation_id =
+            ChatConversationId::from_string("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        let workspace = transient_workspace(conversation_id.clone(), "checking");
+        workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("seed workspace");
+
+        // stale_older_than_secs=3600 means only workspaces older than 1 hour are stale;
+        // a just-created workspace must not be recovered
+        let recovered = recover_stale_transient_publish_statuses(
+            Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            3600,
+        )
+        .await
+        .expect("recover transient statuses");
+
+        assert_eq!(recovered, 0);
+        let refreshed = workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load workspace")
+            .expect("workspace exists");
+        assert_eq!(
+            refreshed.publication_push_status.as_deref(),
+            Some("checking")
+        );
+    }
+
+    #[tokio::test]
+    async fn recovers_all_four_stale_transient_statuses() {
+        let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+
+        for (id, status) in [
+            ("cccccccc-cccc-cccc-cccc-cccccccccc01", "refreshing"),
+            ("cccccccc-cccc-cccc-cccc-cccccccccc02", "checking"),
+            ("cccccccc-cccc-cccc-cccc-cccccccccc03", "committing"),
+            ("cccccccc-cccc-cccc-cccc-cccccccccc04", "describing"),
+        ] {
+            let conv_id = ChatConversationId::from_string(id.to_string());
+            let workspace = transient_workspace(conv_id, status);
+            workspace_repo
+                .create_or_update(workspace)
+                .await
+                .expect("seed workspace");
+        }
+
+        // stale_older_than_secs=0 catches all freshly-seeded transient workspaces
+        let recovered = recover_stale_transient_publish_statuses(
+            Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            0,
+        )
+        .await
+        .expect("recover transient statuses");
+
+        assert_eq!(recovered, 4);
     }
 }

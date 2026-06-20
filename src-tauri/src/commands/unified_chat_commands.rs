@@ -5242,13 +5242,69 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
     conversation_id: ChatConversationId,
     selection: AgentConversationWorkspaceBaseSelection,
 ) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
+    update_agent_conversation_workspace_from_base_for_app_state_inner(
+        state,
+        execution_state,
+        team_service,
+        conversation_id,
+        selection,
+        false,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn update_agent_conversation_workspace_from_base_for_agent_caller(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    team_service: Option<Arc<crate::application::TeamService>>,
+    conversation_id: ChatConversationId,
+    selection: AgentConversationWorkspaceBaseSelection,
+) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
+    update_agent_conversation_workspace_from_base_for_app_state_inner(
+        state,
+        execution_state,
+        team_service,
+        conversation_id,
+        selection,
+        true,
+    )
+    .await
+}
+
+async fn update_agent_conversation_workspace_from_base_for_app_state_inner(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    team_service: Option<Arc<crate::application::TeamService>>,
+    conversation_id: ChatConversationId,
+    selection: AgentConversationWorkspaceBaseSelection,
+    called_by_agent: bool,
+) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
     let running_key = RunningAgentKey::new(
         ChatContextType::Project.to_string(),
         conversation_id.as_str(),
     );
     let interactive_slot_key = agent_workspace_interactive_slot_key(&conversation_id);
-    let running_agent_blocks_update = state.running_agent_registry.is_running(&running_key).await
+    let registry_says_running = !called_by_agent
+        && state.running_agent_registry.is_running(&running_key).await
         && !execution_state.is_interactive_idle(&interactive_slot_key);
+    let running_agent_blocks_update = if registry_says_running {
+        let has_active_db_run = state
+            .agent_run_repo
+            .get_active_for_conversation(&conversation_id)
+            .await
+            .unwrap_or(None)
+            .is_some();
+        if !has_active_db_run {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                "Running-agent registry entry is stale; no active agent run found in DB. Allowing workspace base update."
+            );
+        }
+        has_active_db_run
+    } else {
+        false
+    };
 
     let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let _pr_description_invalidation =
