@@ -20,7 +20,7 @@ pub fn read_pr_template(project_root: &Path) -> AppResult<Option<String>> {
         return Ok(None);
     };
 
-    // codeql[rust/path-injection]: template_path is fixed under canonical project root and rejects symlinks/non-files above.
+    // codeql[rust/path-injection]
     fs::read_to_string(&template_path)
         .map(Some)
         .map_err(|error| AppError::Infrastructure(format!("Failed to read PR template: {error}")))
@@ -61,7 +61,7 @@ pub fn write_pr_template(project_root: &Path, content: &str) -> AppResult<()> {
         })?,
     )?;
 
-    // codeql[rust/path-injection]: template_path is a fixed filename in a canonicalized, symlink-free .github directory under the project root.
+    // codeql[rust/path-injection]
     let mut file = fs::OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -83,7 +83,7 @@ fn canonical_project_root(project_root: &Path) -> AppResult<PathBuf> {
         ));
     }
 
-    // codeql[rust/path-injection]: project_root was validated by project command resolution and is canonicalized before child sinks.
+    // codeql[rust/path-injection]
     let root = project_root.canonicalize().map_err(|error| {
         AppError::Infrastructure(format!("Failed to canonicalize project root: {error}"))
     })?;
@@ -109,7 +109,7 @@ fn existing_safe_github_dir(root: &Path, github_dir: &Path) -> AppResult<Option<
             ".github must be a regular directory".to_string(),
         ));
     }
-    // codeql[rust/path-injection]: github_dir is the fixed .github child of a canonicalized project root.
+    // codeql[rust/path-injection]
     let canonical = github_dir.canonicalize().map_err(|error| {
         AppError::Infrastructure(format!("Failed to canonicalize .github directory: {error}"))
     })?;
@@ -123,7 +123,7 @@ fn ensure_safe_github_dir(root: &Path, github_dir: &Path) -> AppResult<PathBuf> 
         return Ok(existing);
     }
 
-    // codeql[rust/path-injection]: github_dir is a validated fixed child component under canonical project root.
+    // codeql[rust/path-injection]
     fs::create_dir(github_dir).map_err(|error| {
         AppError::Infrastructure(format!("Failed to create .github directory: {error}"))
     })?;
@@ -149,7 +149,7 @@ fn existing_safe_template_file(github_dir: &Path) -> AppResult<Option<PathBuf>> 
             "PR template path must be a regular file".to_string(),
         ));
     }
-    // codeql[rust/path-injection]: template_path is an exact directory entry matching a validated fixed filename under canonical .github.
+    // codeql[rust/path-injection]
     let canonical = template_path.canonicalize().map_err(|error| {
         AppError::Infrastructure(format!("Failed to canonicalize PR template: {error}"))
     })?;

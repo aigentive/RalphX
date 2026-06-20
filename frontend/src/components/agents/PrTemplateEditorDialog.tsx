@@ -84,7 +84,7 @@ export function PrTemplateEditorDialog({
       }
     }}>
       <DialogContent
-        className="max-w-2xl overflow-hidden"
+        className="max-h-[92vh] max-w-3xl overflow-hidden"
         style={{
           backgroundColor: "var(--bg-elevated)",
           borderColor: "var(--border-subtle)",
@@ -96,18 +96,24 @@ export function PrTemplateEditorDialog({
           <div>
             <DialogTitle>Edit PR Template</DialogTitle>
             <DialogDescription className="mt-1">
-              Edit `.github/pull_request_template.md` for {project?.name ?? "this project"}.
+              Edit the GitHub pull request description template for {project?.name ?? "this project"}.
+              RalphX reads existing `.github/pull_request_template.md` or legacy uppercase
+              templates, and saves new templates to the lowercase path.
             </DialogDescription>
           </div>
         </DialogHeader>
 
-        <div className="space-y-3 px-6 py-4">
+        <div className="space-y-3 overflow-y-auto px-6 py-4">
           <div className="space-y-2">
             <Label htmlFor="pr-template-content">Pull request template</Label>
             <Textarea
               id="pr-template-content"
               aria-describedby="pr-template-status"
-              className="min-h-[320px] resize-y font-mono text-sm"
+              className="min-h-[520px] resize-y font-mono text-sm"
+              style={{
+                backgroundColor: "var(--bg-base)",
+                borderColor: "var(--border-subtle)",
+              }}
               disabled={isReading || isSaving || !projectId}
               value={draftContent}
               onChange={(event) => setDraftContent(event.target.value)}
