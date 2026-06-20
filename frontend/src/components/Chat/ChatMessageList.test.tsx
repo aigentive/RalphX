@@ -7213,8 +7213,7 @@ describe("ChatMessageList - Virtuoso production render path", () => {
 
     render(<ChatMessageList {...defaultProps} messages={messages} />);
 
-    expect(screen.queryByRole("button", { name: /Agent called/i })).not.toBeInTheDocument();
-    expect(screen.getByTestId("tool-call-indicator")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Agent called 1 tool" })).toBeInTheDocument();
   });
 
   it("does not group adjacent tool calls from different assistant parent messages", () => {
@@ -7234,7 +7233,7 @@ describe("ChatMessageList - Virtuoso production render path", () => {
     render(<ChatMessageList {...defaultProps} messages={messages} />);
 
     expect(screen.queryByRole("button", { name: "Agent called 2 tools" })).not.toBeInTheDocument();
-    expect(screen.getAllByTestId("tool-call-indicator")).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Agent called 1 tool" })).toHaveLength(2);
   });
 
   it("renders Virtuoso path with failedRun banner", async () => {
