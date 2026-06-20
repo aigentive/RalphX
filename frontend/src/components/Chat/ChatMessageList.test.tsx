@@ -316,6 +316,23 @@ function getLastRenderedRow(): HTMLElement {
   return row as HTMLElement;
 }
 
+function mockToolGroupToggleRectShift({
+  collapsedTop,
+  expandedTop,
+}: {
+  collapsedTop: number;
+  expandedTop: number;
+}) {
+  return vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
+    const element = this as HTMLElement;
+    if (element.dataset.chatToolCallGroupKey != null) {
+      const top = element.getAttribute("aria-expanded") === "true" ? expandedTop : collapsedTop;
+      return makeRect({ top, bottom: top + 20 });
+    }
+    return makeRect({ top: 0, bottom: 500, height: 500 });
+  });
+}
+
 function TooltipTestProvider({ children }: { children: ReactNode }) {
   return <TooltipProvider delayDuration={0}>{children}</TooltipProvider>;
 }
@@ -4160,6 +4177,55 @@ describe("ChatMessageList - Scroll Behavior", () => {
       await waitFor(() => expect(scrollToMock).toHaveBeenCalled());
     });
 
+    it("does not recover to bottom during pointer-driven manual scrolling in the middle", async () => {
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      try {
+        mockIsAtBottom = true;
+        mockIsAtBottomRef.current = true;
+        render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={createMessages(8)}
+          />
+        );
+
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue(
+          makeRect({ top: 0, bottom: 500, right: 200 }),
+        );
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 500,
+        });
+        act(() => {
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        scrollToMock.mockClear();
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 260,
+        });
+        act(() => {
+          scroller.dispatchEvent(new MouseEvent("pointerdown", { clientX: 100 }));
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+
+        expect(scrollToMock).not.toHaveBeenCalled();
+        expect(scroller.scrollTop).toBe(260);
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+      }
+    });
+
     it("pins to true bottom when the scroller resizes while sticky", async () => {
       const callbacks: ResizeObserverCallback[] = [];
       const originalResizeObserver = globalThis.ResizeObserver;
@@ -6699,6 +6765,84 @@ describe("ChatMessageList - Virtuoso production render path", () => {
 
     expect(screen.getByRole("button", { name: "Agent called 2 tools" })).toBeInTheDocument();
     expect(screen.queryAllByTestId("tool-call-indicator")).toHaveLength(0);
+  });
+
+  it("keeps the persisted tool-call group toggle anchored while expanding", async () => {
+    const user = userEvent.setup();
+    const parentMessageId = "assistant-turn-scroll";
+    const messages: ChatMessageData[] = [
+      makeTimelineTextMessage({
+        id: "text-1",
+        parentMessageId,
+        sequence: 1,
+        text: "I will fetch two files.",
+      }),
+      makeTimelineToolMessage({ id: "tool-a", parentMessageId, sequence: 2 }),
+      makeTimelineToolMessage({ id: "tool-b", parentMessageId, sequence: 3 }),
+    ];
+    const rectSpy = mockToolGroupToggleRectShift({
+      collapsedTop: 180,
+      expandedTop: 240,
+    });
+
+    try {
+      render(<ChatMessageList {...defaultProps} messages={messages} />);
+      const scroller = await screen.findByTestId("mock-virtuoso");
+      setMockScrollerGeometry(scroller, {
+        clientHeight: 500,
+        scrollHeight: 1000,
+        scrollTop: 250,
+      });
+
+      await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+
+      expect(screen.getByRole("button", { name: "Hide 2 tool calls" })).toBeInTheDocument();
+      expect(scroller.scrollTop).toBe(310);
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
+  it("keeps the live streaming tool-call group toggle anchored while expanding", async () => {
+    const user = userEvent.setup();
+    const blocks: StreamingContentBlock[] = [
+      {
+        type: "tool_use",
+        toolCall: { id: "tc-1", name: GENERIC_TOOL_NAME, arguments: { url: "https://a.com" }, result: "page a" },
+      },
+      {
+        type: "tool_use",
+        toolCall: { id: "tc-2", name: GENERIC_TOOL_NAME, arguments: { url: "https://b.com" }, result: "page b" },
+      },
+    ];
+    const rectSpy = mockToolGroupToggleRectShift({
+      collapsedTop: 210,
+      expandedTop: 255,
+    });
+
+    try {
+      render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={[]}
+          isAgentRunning={true}
+          streamingContentBlocks={blocks}
+        />
+      );
+      const scroller = await screen.findByTestId("mock-virtuoso");
+      setMockScrollerGeometry(scroller, {
+        clientHeight: 500,
+        scrollHeight: 1000,
+        scrollTop: 250,
+      });
+
+      await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+
+      expect(screen.getByRole("button", { name: "Hide 2 tool calls" })).toBeInTheDocument();
+      expect(scroller.scrollTop).toBe(295);
+    } finally {
+      rectSpy.mockRestore();
+    }
   });
 
   it("keeps single tool-call rows ungrouped", () => {
