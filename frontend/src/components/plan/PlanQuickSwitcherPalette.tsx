@@ -79,6 +79,7 @@ export function PlanQuickSwitcherPalette({
     handleKeyDown,
     handleSelect,
     handleClear,
+    handleQuickActionSelect,
     handleRetry,
     setSearchQuery,
   } = switcher;
@@ -209,7 +210,7 @@ export function PlanQuickSwitcherPalette({
                     searchQuery={searchQuery}
                     isHighlighted={effectiveHighlightedIndex === 0}
                     onMouseEnter={() => setMouseHighlightedIndex(0)}
-                    onSelect={quickActionFlow.startConfirmation}
+                    onSelect={handleQuickActionSelect}
                     onConfirm={() => quickActionFlow.confirm(searchQuery)}
                     onCancel={quickActionFlow.cancel}
                     onViewEntity={quickActionFlow.viewEntity}

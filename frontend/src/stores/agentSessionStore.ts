@@ -8,6 +8,7 @@ import {
   type AgentProvider,
   type AgentRuntimeSelection,
 } from "@/lib/agent-models";
+import type { AgentConversationWorkspaceMode } from "@/api/chat";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 
 export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/agent-models";
@@ -44,10 +45,17 @@ export interface AgentBranchBaseCacheEntry {
   loadedAt: string;
 }
 
+export interface AgentStartConversationDraft {
+  projectId: string;
+  content: string;
+  mode: AgentConversationWorkspaceMode;
+}
+
 interface AgentSessionState {
   focusedProjectId: string | null;
   selectedProjectId: string | null;
   selectedConversationId: string | null;
+  startConversationDraft: AgentStartConversationDraft | null;
   lastSelectedConversationByProjectId: Record<string, string>;
   expandedProjectIds: Record<string, boolean>;
   showAllProjects: boolean;
@@ -68,6 +76,8 @@ interface AgentSessionActions {
   setFocusedProject: (projectId: string | null) => void;
   selectConversation: (projectId: string, conversationId: string) => void;
   clearSelection: () => void;
+  setStartConversationDraft: (draft: AgentStartConversationDraft) => void;
+  consumeStartConversationDraft: () => AgentStartConversationDraft | null;
   setProjectExpanded: (projectId: string, expanded: boolean) => void;
   toggleProjectExpanded: (projectId: string) => void;
   setShowAllProjects: (showAllProjects: boolean) => void;
@@ -197,6 +207,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       focusedProjectId: null,
       selectedProjectId: null,
       selectedConversationId: null,
+      startConversationDraft: null,
       lastSelectedConversationByProjectId: {},
       expandedProjectIds: {},
       showAllProjects: DEFAULT_SHOW_ALL_PROJECTS,
@@ -235,6 +246,22 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           state.selectedProjectId = null;
           state.selectedConversationId = null;
         }),
+
+      setStartConversationDraft: (draft) =>
+        set((state) => {
+          state.startConversationDraft = draft;
+        }),
+
+      consumeStartConversationDraft: () => {
+        let consumedDraft: AgentStartConversationDraft | null = null;
+        set((state) => {
+          consumedDraft = state.startConversationDraft
+            ? { ...state.startConversationDraft }
+            : null;
+          state.startConversationDraft = null;
+        });
+        return consumedDraft;
+      },
 
       setProjectExpanded: (projectId, expanded) =>
         set((state) => {
