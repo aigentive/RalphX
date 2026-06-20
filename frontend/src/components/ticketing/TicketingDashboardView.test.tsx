@@ -15,6 +15,7 @@ vi.mock("@/hooks/useTicketing", () => ({
   useStartWorkFromTicket: vi.fn(),
   useTicketAssociations: vi.fn(),
   useTicketDetail: vi.fn(),
+  useTicketingMutations: vi.fn(),
   useTicketingColumns: vi.fn(),
   useTicketingContainers: vi.fn(),
   useTicketingProviders: vi.fn(),
@@ -30,6 +31,14 @@ const capabilities = {
   assignmentWrite: false,
   commentWrite: false,
   freshness: "manual" as const,
+};
+
+const writableCapabilities = {
+  ...capabilities,
+  kanbanWrite: true,
+  statusWrite: true,
+  assignmentWrite: true,
+  commentWrite: true,
 };
 
 const ticket = {
@@ -73,7 +82,7 @@ function mockConnectedDashboard() {
         label: "Jira",
         enabled: true,
         connectionStatus: "connected",
-        capabilities,
+        capabilities: writableCapabilities,
         fetchedAt: "2026-06-19T22:00:00.000Z",
       },
     ],
@@ -112,14 +121,28 @@ function mockConnectedDashboard() {
       descriptionMarkdown: "When two agents transition the same task.",
       comments: [],
       attachments: [],
-      transitions: [],
+      transitions: [
+        {
+          toStateId: "done",
+          providerTransitionId: "transition-31",
+          name: "Done",
+          category: "done",
+        },
+      ],
     },
     isLoading: false,
     isError: false,
     error: null,
   } as ReturnType<typeof ticketingHooks.useTicketDetail>);
   vi.mocked(ticketingHooks.useTicketTransitions).mockReturnValue({
-    data: [],
+    data: [
+      {
+        toStateId: "done",
+        providerTransitionId: "transition-31",
+        name: "Done",
+        category: "done",
+      },
+    ],
     isLoading: false,
     isError: false,
     error: null,
@@ -151,11 +174,22 @@ function mockConnectedDashboard() {
     mutate: vi.fn(),
     isPending: false,
   } as unknown as ReturnType<typeof ticketingHooks.useRefreshTickets>);
+<<<<<<< HEAD
+  vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
+    transitionStatus: vi.fn().mockResolvedValue(undefined),
+    assignToMe: vi.fn().mockResolvedValue(undefined),
+    addComment: vi.fn().mockResolvedValue(undefined),
+    transitionStatusMutation: { isPending: false },
+    assignToMeMutation: { isPending: false },
+    addCommentMutation: { isPending: false },
+  } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
+=======
   vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
     mutate: vi.fn(),
     isPending: false,
     error: null,
   } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
+>>>>>>> ralphx/ralphx/agent-8e4ac713
 }
 
 describe("TicketingDashboardView", () => {
@@ -206,11 +240,22 @@ describe("TicketingDashboardView", () => {
       mutate: vi.fn(),
       isPending: false,
     } as unknown as ReturnType<typeof ticketingHooks.useRefreshTickets>);
+<<<<<<< HEAD
+    vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
+      transitionStatus: vi.fn().mockResolvedValue(undefined),
+      assignToMe: vi.fn().mockResolvedValue(undefined),
+      addComment: vi.fn().mockResolvedValue(undefined),
+      transitionStatusMutation: { isPending: false },
+      assignToMeMutation: { isPending: false },
+      addCommentMutation: { isPending: false },
+    } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
+=======
     vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
       error: null,
     } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
+>>>>>>> ralphx/ralphx/agent-8e4ac713
   });
 
   it("renders provider-specific disconnected state without blanking the shell", () => {
@@ -275,6 +320,55 @@ describe("TicketingDashboardView", () => {
     expect(associationCalls[associationCalls.length - 1]?.[0]).toBeNull();
   });
 
+<<<<<<< HEAD
+  it("routes status, assign-to-me, and comment controls through ticket mutations", async () => {
+    mockConnectedDashboard();
+    const transitionStatus = vi.fn().mockResolvedValue(undefined);
+    const assignToMe = vi.fn().mockResolvedValue(undefined);
+    const addComment = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
+      transitionStatus,
+      assignToMe,
+      addComment,
+      transitionStatusMutation: { isPending: false },
+      assignToMeMutation: { isPending: false },
+      addCommentMutation: { isPending: false },
+    } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
+
+    renderDashboard();
+    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
+
+    fireEvent.change(await screen.findByRole("combobox", { name: "Ticket status" }), {
+      target: { value: "done" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Assign to me" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Ticket comment" }), {
+      target: { value: "Pushed a fix." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
+
+    expect(transitionStatus).toHaveBeenCalledWith({
+      provider: "jira",
+      ticketRef: ticket.ref,
+      projectId: "project-1",
+      transition: {
+        toStateId: "done",
+        providerTransitionId: "transition-31",
+        name: "Done",
+        category: "done",
+      },
+    });
+    expect(assignToMe).toHaveBeenCalledWith({
+      provider: "jira",
+      ticketRef: ticket.ref,
+      projectId: "project-1",
+    });
+    expect(addComment).toHaveBeenCalledWith({
+      provider: "jira",
+      ticketRef: ticket.ref,
+      bodyMarkdown: "Pushed a fix.",
+      projectId: "project-1",
+=======
   it("starts RalphX work from the ticket detail sheet", async () => {
     const startWork = vi.fn();
     mockConnectedDashboard();
@@ -295,6 +389,7 @@ describe("TicketingDashboardView", () => {
       projectId: "project-1",
       ticketRef: ticket.ref,
       content: "Start RalphX work for RX-1: Fix merge race in transition handler",
+>>>>>>> ralphx/ralphx/agent-8e4ac713
     });
   });
 });

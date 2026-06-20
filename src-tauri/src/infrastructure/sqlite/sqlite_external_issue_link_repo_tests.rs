@@ -1,6 +1,7 @@
 use crate::domain::integrations::{
     ExternalIssueLinkRepository, ExternalIssueLinkUpsert, ExternalIssueLocalObject,
-    ExternalIssueSyncRecordUpsert, ExternalIssueSyncStatus,
+    ExternalIssueSyncRecordUpsert, ExternalIssueSyncStatus, ProviderTicketOperationKind,
+    ProviderTicketOperationStatus, ProviderTicketOperationUpsert,
 };
 use crate::infrastructure::sqlite::SqliteExternalIssueLinkRepository;
 use crate::testing::SqliteTestDb;
@@ -18,6 +19,23 @@ fn sample_linear_link() -> ExternalIssueLinkUpsert {
         local_state: Some("merged".to_string()),
         idempotency_key: "linear:issue:lin_123:task:task-1".to_string(),
         metadata_json: Some(r#"{"source":"test"}"#.to_string()),
+    }
+}
+
+fn sample_ticket_operation(link_id: Option<String>) -> ProviderTicketOperationUpsert {
+    ProviderTicketOperationUpsert {
+        provider: "linear".to_string(),
+        external_kind: "issue".to_string(),
+        external_id: "lin_123".to_string(),
+        external_key: Some("LIN-42".to_string()),
+        link_id,
+        local_project_id: Some("project-1".to_string()),
+        operation: ProviderTicketOperationKind::Comment,
+        client_operation_id: "client-operation-1".to_string(),
+        status: ProviderTicketOperationStatus::Pending,
+        provider_operation_id: None,
+        error_message: None,
+        metadata_json: Some(r#"{"body":"Looks good"}"#.to_string()),
     }
 }
 
@@ -160,4 +178,75 @@ async fn sqlite_repo_covers_sync_record_lifecycle() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn sqlite_repo_records_unlinked_ticket_operation_idempotently() {
+    let db = SqliteTestDb::new("lib-provider-ticket-operations-unlinked");
+    let repo = SqliteExternalIssueLinkRepository::from_shared(db.shared_conn());
+
+    let pending = repo
+        .upsert_provider_ticket_operation(sample_ticket_operation(None))
+        .await
+        .unwrap();
+    assert_eq!(pending.operation, ProviderTicketOperationKind::Comment);
+    assert_eq!(pending.status, ProviderTicketOperationStatus::Pending);
+    assert_eq!(pending.client_operation_id, "client-operation-1");
+    assert!(pending.link_id.is_none());
+    assert!(pending.completed_at.is_none());
+
+    let mut retry = sample_ticket_operation(None);
+    retry.status = ProviderTicketOperationStatus::Succeeded;
+    retry.provider_operation_id = Some("linear-comment-1".to_string());
+    retry.metadata_json = Some(r#"{"attempt":2}"#.to_string());
+    let completed = repo.upsert_provider_ticket_operation(retry).await.unwrap();
+
+    assert_eq!(completed.id, pending.id);
+    assert_eq!(completed.status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(
+        completed.provider_operation_id.as_deref(),
+        Some("linear-comment-1")
+    );
+    assert!(completed.completed_at.is_some());
+
+    let by_client_id = repo
+        .find_provider_ticket_operation_by_client_operation_id("client-operation-1")
+        .await
+        .unwrap()
+        .expect("client operation id should resolve");
+    assert_eq!(by_client_id.id, pending.id);
+
+    let operations = repo
+        .list_provider_ticket_operations_for_ticket(
+            "linear",
+            "issue",
+            "lin_123",
+            Some("LIN-42"),
+            Some("project-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(operations.len(), 1);
+    assert_eq!(operations[0].id, pending.id);
+}
+
+#[tokio::test]
+async fn sqlite_repo_records_linked_ticket_operation_without_fabricating_links() {
+    let db = SqliteTestDb::new("lib-provider-ticket-operations-linked");
+    let repo = SqliteExternalIssueLinkRepository::from_shared(db.shared_conn());
+    let link = repo.upsert_link(sample_linear_link()).await.unwrap();
+
+    let created = repo
+        .upsert_provider_ticket_operation(sample_ticket_operation(Some(link.id.clone())))
+        .await
+        .unwrap();
+
+    assert_eq!(created.link_id.as_deref(), Some(link.id.as_str()));
+    assert_eq!(created.external_id, "lin_123");
+
+    let missing = repo
+        .find_link_by_external_identity("linear", "issue", "missing")
+        .await
+        .unwrap();
+    assert!(missing.is_none());
 }

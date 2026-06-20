@@ -422,6 +422,9 @@ macro_rules! register_tauri_commands {
             commands::ticketing_commands::get_ticket_associations,
             commands::ticketing_commands::start_ralphx_work_from_ticket,
             commands::ticketing_commands::refresh_tickets,
+            commands::ticketing_commands::transition_ticket_status,
+            commands::ticketing_commands::assign_ticket,
+            commands::ticketing_commands::add_ticket_comment,
             // Workspace open commands
             commands::workspace_open_commands::list_workspace_open_targets,
             commands::workspace_open_commands::open_agent_conversation_workspace,

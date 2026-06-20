@@ -1,6 +1,15 @@
-import { ExternalLink, X } from "lucide-react";
+import { useState } from "react";
+import { ExternalLink, Send, UserCheck, X } from "lucide-react";
 
-import type { TicketAssociationItem, TicketAssociations, TicketDeepLink, TicketDetail, TicketSummary } from "@/api/ticketing";
+import type {
+  TicketAssociationItem,
+  TicketAssociations,
+  TicketDeepLink,
+  TicketDetail,
+  TicketingCapabilities,
+  TicketSummary,
+  TicketTransitionOption,
+} from "@/api/ticketing";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -9,16 +18,29 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { categoryToken, formatTicketDate, providerLabel, ticketKey } from "./ticketing-utils";
 
 interface TicketDetailSheetProps {
   open: boolean;
   ticket: TicketDetail | TicketSummary | null;
+  capabilities: TicketingCapabilities | null;
+  transitions: TicketTransitionOption[];
   associations: TicketAssociations | undefined;
   isDetailLoading: boolean;
   isAssociationsLoading: boolean;
+<<<<<<< HEAD
+  isTransitionPending: boolean;
+  isAssignPending: boolean;
+  isCommentPending: boolean;
+  onTransitionTicket?: ((transition: TicketTransitionOption) => Promise<void> | void) | undefined;
+  onAssignToMe?: (() => Promise<void> | void) | undefined;
+  onAddComment?: ((bodyMarkdown: string) => Promise<void> | void) | undefined;
+=======
   isStartWorkPending?: boolean | undefined;
   startWorkError?: string | null | undefined;
+>>>>>>> ralphx/ralphx/agent-8e4ac713
   onNavigate?: ((deepLink: TicketDeepLink) => void) | undefined;
   onStartWork?: (() => void) | undefined;
   onClose: () => void;
@@ -164,18 +186,85 @@ function RalphxAssociationPanel({
   );
 }
 
+function ControlTooltip({
+  reason,
+  children,
+}: {
+  reason: string | null;
+  children: React.ReactNode;
+}) {
+  if (!reason) {
+    return <>{children}</>;
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex">{children}</span>
+      </TooltipTrigger>
+      <TooltipContent>{reason}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function TicketDetailSheet({
   open,
   ticket,
+  capabilities,
+  transitions,
   associations,
   isDetailLoading,
   isAssociationsLoading,
+<<<<<<< HEAD
+  isTransitionPending,
+  isAssignPending,
+  isCommentPending,
+  onTransitionTicket,
+  onAssignToMe,
+  onAddComment,
+=======
   isStartWorkPending,
   startWorkError,
+>>>>>>> ralphx/ralphx/agent-8e4ac713
   onNavigate,
   onStartWork,
   onClose,
 }: TicketDetailSheetProps) {
+  const [commentDraft, setCommentDraft] = useState("");
+  const writableTransitions = transitions.filter((transition) => !transition.disabledReason);
+  const statusDisabledReason = !capabilities?.statusWrite
+    ? "Status write-back is not available for this provider."
+    : writableTransitions.length === 0
+      ? "No provider workflow transitions are available for this ticket."
+      : null;
+  const assignDisabledReason = !capabilities?.assignmentWrite
+    ? "Assign-to-me is not available for this provider."
+    : null;
+  const commentDisabledReason = !capabilities?.commentWrite
+    ? "Comment write-back is not available for this provider."
+    : null;
+  const canAddComment = !commentDisabledReason && commentDraft.trim().length > 0 && !isCommentPending;
+
+  function handleStatusChange(nextStateId: string) {
+    const transition = transitions.find((item) => item.toStateId === nextStateId);
+    if (!transition || transition.disabledReason || statusDisabledReason) {
+      return;
+    }
+    void onTransitionTicket?.(transition);
+  }
+
+  async function handleAddComment() {
+    if (!canAddComment) {
+      return;
+    }
+    const bodyMarkdown = commentDraft.trim();
+    try {
+      await onAddComment?.(bodyMarkdown);
+      setCommentDraft("");
+    } catch {
+      // Rollback and visible errors are owned by the mutation hook; preserve the draft.
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => {
       if (!nextOpen) {
@@ -236,6 +325,50 @@ export function TicketDetailSheet({
                   )}
                 </div>
 
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <ControlTooltip reason={statusDisabledReason}>
+                    <select
+                      aria-label="Ticket status"
+                      value={ticket.state.id}
+                      disabled={Boolean(statusDisabledReason) || isTransitionPending}
+                      onChange={(event) => handleStatusChange(event.target.value)}
+                      className="h-8 min-w-[160px] rounded-md px-2 text-xs outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px] disabled:cursor-not-allowed disabled:opacity-50"
+                      style={{
+                        backgroundColor: "var(--bg-surface)",
+                        borderColor: "var(--border-subtle)",
+                        borderStyle: "solid",
+                        borderWidth: "1px",
+                        color: "var(--text-primary)",
+                      }}
+                    >
+                      <option value={ticket.state.id}>{ticket.state.name}</option>
+                      {transitions
+                        .filter((transition) => transition.toStateId !== ticket.state.id)
+                        .map((transition) => (
+                          <option
+                            key={`${transition.toStateId}:${transition.providerTransitionId ?? ""}`}
+                            value={transition.toStateId}
+                            disabled={Boolean(transition.disabledReason)}
+                          >
+                            {transition.name}
+                          </option>
+                        ))}
+                    </select>
+                  </ControlTooltip>
+                  <ControlTooltip reason={assignDisabledReason}>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={Boolean(assignDisabledReason) || isAssignPending}
+                      onClick={() => void onAssignToMe?.()}
+                    >
+                      <UserCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                      {isAssignPending ? "Assigning" : "Assign to me"}
+                    </Button>
+                  </ControlTooltip>
+                </div>
+
                 <section className="mt-5">
                   <h3 className="text-xs font-semibold uppercase text-[var(--text-muted)]">Description</h3>
                   <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[var(--text-secondary)]">
@@ -275,6 +408,40 @@ export function TicketDetailSheet({
                     </div>
                   </section>
                 )}
+
+                <section className="mt-6">
+                  <h3 className="text-xs font-semibold uppercase text-[var(--text-muted)]">Add comment</h3>
+                  <div className="mt-2 space-y-2">
+                    <Textarea
+                      aria-label="Ticket comment"
+                      value={commentDraft}
+                      disabled={Boolean(commentDisabledReason) || isCommentPending}
+                      onChange={(event) => setCommentDraft(event.target.value)}
+                      placeholder="Write a provider comment"
+                      className="min-h-20 text-sm"
+                      style={{
+                        backgroundColor: "var(--bg-surface)",
+                        borderColor: "var(--border-subtle)",
+                        borderStyle: "solid",
+                        borderWidth: "1px",
+                        color: "var(--text-primary)",
+                      }}
+                    />
+                    <div className="flex justify-end">
+                      <ControlTooltip reason={commentDisabledReason}>
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={!canAddComment}
+                          onClick={() => void handleAddComment()}
+                        >
+                          <Send className="h-3.5 w-3.5" aria-hidden="true" />
+                          {isCommentPending ? "Posting" : "Add comment"}
+                        </Button>
+                      </ControlTooltip>
+                    </div>
+                  </div>
+                </section>
               </div>
             </div>
             <RalphxAssociationPanel

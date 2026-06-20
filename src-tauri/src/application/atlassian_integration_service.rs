@@ -94,6 +94,15 @@ pub struct AtlassianJiraAttachment {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AtlassianJiraTransition {
+    pub provider_transition_id: String,
+    pub to_state_id: String,
+    pub name: String,
+    pub category: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AtlassianResourceContent {
     pub kind: AtlassianResourceKind,
     pub id: String,
@@ -198,6 +207,32 @@ pub trait AtlassianApiClient: Send + Sync {
         issue_key: &str,
     ) -> Result<(), String>;
 
+    async fn list_jira_issue_transitions(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<Vec<AtlassianJiraTransition>, String> {
+        Err("Jira workflow transitions are not available for this client".to_string())
+    }
+
+    async fn transition_jira_issue(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _transition_id: &str,
+    ) -> Result<(), String> {
+        Err("Jira issue transitions are not available for this client".to_string())
+    }
+
+    async fn add_jira_comment(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _body_markdown: &str,
+    ) -> Result<AtlassianJiraComment, String> {
+        Err("Jira comments are not available for this client".to_string())
+    }
+
     async fn exchange_oauth_code(
         &self,
         client_id: &str,
@@ -294,6 +329,39 @@ impl AtlassianApiClient for EmptyAtlassianApiClient {
         Ok(())
     }
 
+    async fn list_jira_issue_transitions(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<Vec<AtlassianJiraTransition>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn transition_jira_issue(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _transition_id: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn add_jira_comment(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        body_markdown: &str,
+    ) -> Result<AtlassianJiraComment, String> {
+        Ok(AtlassianJiraComment {
+            id: Some("test-comment".to_string()),
+            author: None,
+            body_markdown: body_markdown.to_string(),
+            body_text: body_markdown.to_string(),
+            created_at: None,
+            updated_at: None,
+        })
+    }
+
     async fn exchange_oauth_code(
         &self,
         _client_id: &str,
@@ -365,6 +433,32 @@ impl AtlassianApiClient for UnavailableAtlassianApiClient {
         _auth: &AtlassianAuthContext,
         _issue_key: &str,
     ) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+
+    async fn list_jira_issue_transitions(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<Vec<AtlassianJiraTransition>, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn transition_jira_issue(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _transition_id: &str,
+    ) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+
+    async fn add_jira_comment(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _body_markdown: &str,
+    ) -> Result<AtlassianJiraComment, String> {
         Err(self.reason.clone())
     }
 
@@ -751,6 +845,36 @@ impl AtlassianIntegrationService {
         let auth = self.enabled_auth_context().await?;
         self.client
             .assign_jira_issue_to_current_user(&auth, issue_key)
+            .await
+    }
+
+    pub async fn list_jira_issue_transitions(
+        &self,
+        issue_key: &str,
+    ) -> Result<Vec<AtlassianJiraTransition>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_jira_issue_transitions(&auth, issue_key).await
+    }
+
+    pub async fn transition_jira_issue(
+        &self,
+        issue_key: &str,
+        transition_id: &str,
+    ) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .transition_jira_issue(&auth, issue_key, transition_id)
+            .await
+    }
+
+    pub async fn add_jira_comment(
+        &self,
+        issue_key: &str,
+        body_markdown: &str,
+    ) -> Result<AtlassianJiraComment, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .add_jira_comment(&auth, issue_key, body_markdown)
             .await
     }
 

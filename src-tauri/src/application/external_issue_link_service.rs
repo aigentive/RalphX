@@ -5,6 +5,7 @@ use serde_json::Value;
 use crate::domain::integrations::{
     ExternalIssueLink, ExternalIssueLinkRepository, ExternalIssueLinkUpsert,
     ExternalIssueLocalObject, ExternalIssueSyncRecord, ExternalIssueSyncRecordUpsert,
+    ProviderTicketOperation, ProviderTicketOperationStatus, ProviderTicketOperationUpsert,
 };
 use crate::domain::services::{
     primary_jira_key_from_composer_metadata, primary_jira_key_from_title,
@@ -91,6 +92,58 @@ impl ExternalIssueLinkService {
     ) -> AppResult<Option<ExternalIssueSyncRecord>> {
         self.repo
             .update_sync_status(sync_record_id, status, external_version, error_message)
+            .await
+    }
+
+    pub async fn upsert_provider_ticket_operation(
+        &self,
+        input: ProviderTicketOperationUpsert,
+    ) -> AppResult<ProviderTicketOperation> {
+        self.repo.upsert_provider_ticket_operation(input).await
+    }
+
+    pub async fn find_provider_ticket_operation_by_client_operation_id(
+        &self,
+        client_operation_id: &str,
+    ) -> AppResult<Option<ProviderTicketOperation>> {
+        self.repo
+            .find_provider_ticket_operation_by_client_operation_id(client_operation_id)
+            .await
+    }
+
+    pub async fn list_provider_ticket_operations_for_ticket(
+        &self,
+        provider: &str,
+        external_kind: &str,
+        external_id: &str,
+        external_key: Option<&str>,
+        local_project_id: Option<&str>,
+    ) -> AppResult<Vec<ProviderTicketOperation>> {
+        self.repo
+            .list_provider_ticket_operations_for_ticket(
+                provider,
+                external_kind,
+                external_id,
+                external_key,
+                local_project_id,
+            )
+            .await
+    }
+
+    pub async fn update_provider_ticket_operation_status(
+        &self,
+        operation_id: &str,
+        status: ProviderTicketOperationStatus,
+        provider_operation_id: Option<&str>,
+        error_message: Option<&str>,
+    ) -> AppResult<Option<ProviderTicketOperation>> {
+        self.repo
+            .update_provider_ticket_operation_status(
+                operation_id,
+                status,
+                provider_operation_id,
+                error_message,
+            )
             .await
     }
 

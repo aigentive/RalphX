@@ -102,6 +102,7 @@ pub mod team_events;
 pub mod team_service;
 pub mod team_state_tracker;
 pub mod team_stream_processor;
+pub mod ticketing_service;
 pub mod webhook_service;
 
 // Re-export commonly used items
@@ -124,7 +125,8 @@ pub use apply_service::{
 pub use atlassian_integration_service::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
     AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraComment,
-    AtlassianOAuthAuthorization, AtlassianOAuthResource, AtlassianOAuthTokenResponse,
+    AtlassianJiraTransition, AtlassianOAuthAuthorization, AtlassianOAuthResource,
+    AtlassianOAuthTokenResponse,
     AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
     EmptyAtlassianApiClient, UnavailableAtlassianApiClient,
 };
@@ -149,8 +151,9 @@ pub use git_service::{
 pub use interactive_process_registry::{InteractiveProcessKey, InteractiveProcessRegistry};
 pub use linear_integration_service::{
     EmptyLinearApiClient, LinearApiClient, LinearAuthContext, LinearIntegrationService,
-    LinearIntegrationSettings, LinearIntegrationSettingsRepository, LinearIssueContent,
-    LinearIssueSummary, UnavailableLinearApiClient,
+    LinearComment, LinearIntegrationSettings, LinearIntegrationSettingsRepository,
+    LinearIssueContent, LinearIssueSummary, LinearUser, LinearWorkflowState,
+    UnavailableLinearApiClient,
 };
 pub use ideation_service::{
     CreateProposalOptions, IdeationService, SessionStats, SessionWithData, UpdateProposalOptions,
@@ -177,6 +180,12 @@ pub use prune_engine::PruneEngine;
 pub use qa_service::{QAPrepStatus, QAService, TaskQAState};
 pub use question_state::{PendingQuestionInfo, QuestionAnswer, QuestionOption, QuestionState};
 pub use reconciliation::ReconciliationRunner;
+pub use ticketing_service::{
+    TauriTicketingEventSink, TicketAssignRequest, TicketCommentRequest, TicketTransitionRequest,
+    TicketingCommentResult, TicketingEventSink, TicketingMutationResult,
+    TicketingOperationEvent, TicketingService, TicketingTicketIdentity, TicketingTransitionOption,
+    TICKETING_OPERATION_EVENT,
+};
 pub use services::PrPollerRegistry;
 pub use resume_validator::{ResumeValidationResult, ResumeValidator};
 pub use review_issue_service::{CreateIssueInput, ReviewIssueService};

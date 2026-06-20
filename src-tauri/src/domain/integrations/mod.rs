@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppResult;
 
-#[path = "integrations/ticketing.rs"]
 mod ticketing;
 pub use ticketing::{
     ProviderTicketOperation, ProviderTicketOperationKind, ProviderTicketOperationStatus,

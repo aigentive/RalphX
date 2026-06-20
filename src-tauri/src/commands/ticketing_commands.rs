@@ -2,7 +2,11 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+<<<<<<< HEAD
+use tauri::{AppHandle, State};
+=======
 use tauri::{Runtime, State};
+>>>>>>> ralphx/ralphx/agent-8e4ac713
 
 use crate::application::{
     agent_conversation_jira_issue, agent_conversation_linear_issue,
@@ -10,6 +14,16 @@ use crate::application::{
         AgentConversationStartDeps, AgentConversationStartService, StartAgentConversationInput,
     },
     AppState, AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
+<<<<<<< HEAD
+    LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary, TauriTicketingEventSink,
+    TicketAssignRequest, TicketCommentRequest, TicketTransitionRequest, TicketingCommentResult,
+    TicketingMutationResult, TicketingService, TicketingTicketIdentity, TicketingTransitionOption,
+};
+use crate::domain::integrations::{
+    AtlassianIntegrationSettings, IntegrationValidationStatus, ProviderTicketOperation,
+};
+use crate::domain::services::ComposerIntegrationReference;
+=======
     LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary, TeamService,
 };
 use crate::commands::unified_chat_commands::{
@@ -26,6 +40,7 @@ use crate::domain::services::{
     jira_reference_from_composer_reference, ComposerIntegrationReference,
     ComposerJiraReferenceMetadata,
 };
+>>>>>>> ralphx/ralphx/agent-8e4ac713
 
 const PROVIDER_JIRA: &str = "jira";
 const PROVIDER_LINEAR: &str = "linear";
@@ -222,6 +237,61 @@ pub struct RefreshTicketsResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TransitionTicketStatusInput {
+    pub provider: String,
+    pub ticket_ref: TicketRefInput,
+    pub to_state_id: String,
+    pub provider_transition_id: Option<String>,
+    pub client_operation_id: Option<String>,
+    pub project_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignTicketInput {
+    pub provider: String,
+    pub ticket_ref: TicketRefInput,
+    pub client_operation_id: Option<String>,
+    pub project_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddTicketCommentInput {
+    pub provider: String,
+    pub ticket_ref: TicketRefInput,
+    pub body_markdown: String,
+    pub client_operation_id: Option<String>,
+    pub project_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketOperationResponse {
+    pub id: String,
+    pub operation: String,
+    pub client_operation_id: String,
+    pub status: String,
+    pub provider_operation_id: Option<String>,
+    pub error_message: Option<String>,
+    pub linked: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketMutationResponse {
+    pub ticket_ref: TicketRefInput,
+    pub operation: TicketOperationResponse,
+    pub idempotent: bool,
+    pub transition: Option<TicketTransitionOptionResponse>,
+    pub comment: Option<TicketCommentResponse>,
+    pub refreshed_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TicketFiltersInput {
     pub text: Option<String>,
     pub assignee: Option<String>,
@@ -348,13 +418,21 @@ pub async fn get_ticket_detail(
 }
 
 #[tauri::command]
-pub fn list_ticket_transitions(
+pub async fn list_ticket_transitions(
     provider: String,
     ticket_ref: TicketRefInput,
+    state: State<'_, AppState>,
 ) -> Result<Vec<TicketTransitionOptionResponse>, String> {
     validate_provider(&provider)?;
-    let _ = ticket_ref;
-    Ok(Vec::new())
+    ticketing_service_from_state(&state)
+        .list_transitions(&ticket_identity(&provider, &ticket_ref, None))
+        .await
+        .map(|transitions| {
+            transitions
+                .into_iter()
+                .map(ticket_transition_option_response)
+                .collect()
+        })
 }
 
 #[tauri::command]
@@ -440,6 +518,57 @@ pub fn refresh_tickets(
     })
 }
 
+#[tauri::command]
+pub async fn transition_ticket_status(
+    input: TransitionTicketStatusInput,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TicketMutationResponse, String> {
+    validate_provider(&input.provider)?;
+    let result = ticketing_service_from_state_with_events(&state, app_handle)
+        .transition_ticket_status(TicketTransitionRequest {
+            ticket: ticket_identity(&input.provider, &input.ticket_ref, input.project_id.clone()),
+            to_state_id: input.to_state_id,
+            provider_transition_id: input.provider_transition_id,
+            client_operation_id: input.client_operation_id,
+        })
+        .await?;
+    Ok(ticket_mutation_response(result))
+}
+
+#[tauri::command]
+pub async fn assign_ticket(
+    input: AssignTicketInput,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TicketMutationResponse, String> {
+    validate_provider(&input.provider)?;
+    let result = ticketing_service_from_state_with_events(&state, app_handle)
+        .assign_ticket(TicketAssignRequest {
+            ticket: ticket_identity(&input.provider, &input.ticket_ref, input.project_id.clone()),
+            client_operation_id: input.client_operation_id,
+        })
+        .await?;
+    Ok(ticket_mutation_response(result))
+}
+
+#[tauri::command]
+pub async fn add_ticket_comment(
+    input: AddTicketCommentInput,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TicketMutationResponse, String> {
+    validate_provider(&input.provider)?;
+    let result = ticketing_service_from_state_with_events(&state, app_handle)
+        .add_ticket_comment(TicketCommentRequest {
+            ticket: ticket_identity(&input.provider, &input.ticket_ref, input.project_id.clone()),
+            body_markdown: input.body_markdown,
+            client_operation_id: input.client_operation_id,
+        })
+        .await?;
+    Ok(ticket_mutation_response(result))
+}
+
 fn jira_provider_summary(
     settings: &AtlassianIntegrationSettings,
 ) -> TicketingProviderSummaryResponse {
@@ -458,7 +587,11 @@ fn jira_provider_summary(
         label: "Jira".to_string(),
         enabled: settings.enabled && is_valid && settings.jira_available,
         connection_status: connection_status.to_string(),
-        capabilities: read_only_capabilities("manual"),
+        capabilities: if settings.enabled && is_valid && settings.jira_available {
+            writable_capabilities("manual")
+        } else {
+            read_only_capabilities("manual")
+        },
         fetched_at: Some(now_string()),
         stale_at: None,
         permission_message: (!settings.jira_available && is_valid)
@@ -490,7 +623,11 @@ fn linear_provider_summary(
         label: "Linear".to_string(),
         enabled: settings.enabled && is_valid && settings.issue_search_available,
         connection_status: connection_status.to_string(),
-        capabilities: read_only_capabilities("webhook"),
+        capabilities: if settings.enabled && is_valid && settings.issue_search_available {
+            writable_capabilities("webhook")
+        } else {
+            read_only_capabilities("webhook")
+        },
         fetched_at: Some(now_string()),
         stale_at: None,
         permission_message: (!settings.issue_search_available && is_valid)
@@ -512,6 +649,18 @@ fn read_only_capabilities(freshness: &str) -> TicketingCapabilitiesResponse {
         status_write: false,
         assignment_write: false,
         comment_write: false,
+        freshness: freshness.to_string(),
+    }
+}
+
+fn writable_capabilities(freshness: &str) -> TicketingCapabilitiesResponse {
+    TicketingCapabilitiesResponse {
+        supports_boards: false,
+        supports_kanban: true,
+        kanban_write: true,
+        status_write: true,
+        assignment_write: true,
+        comment_write: true,
         freshness: freshness.to_string(),
     }
 }
@@ -742,6 +891,86 @@ fn ticket_ref_to_composer_reference(
     }
 }
 
+<<<<<<< HEAD
+fn ticketing_service_from_state(state: &AppState) -> TicketingService {
+    TicketingService::new(
+        Arc::clone(&state.atlassian_integration_service),
+        Arc::clone(&state.linear_integration_service),
+        Arc::clone(&state.external_issue_link_service),
+    )
+}
+
+fn ticketing_service_from_state_with_events(
+    state: &AppState,
+    app_handle: AppHandle,
+) -> TicketingService {
+    let event_sink = Arc::new(TauriTicketingEventSink::new(app_handle));
+    ticketing_service_from_state(state).with_event_sink(event_sink)
+}
+
+fn ticket_identity(
+    provider: &str,
+    ticket_ref: &TicketRefInput,
+    project_id: Option<String>,
+) -> TicketingTicketIdentity {
+    TicketingTicketIdentity {
+        provider: provider.to_string(),
+        id: ticket_ref.id.clone(),
+        key: ticket_ref.key.clone(),
+        local_project_id: project_id,
+    }
+}
+
+fn ticket_transition_option_response(
+    transition: TicketingTransitionOption,
+) -> TicketTransitionOptionResponse {
+    TicketTransitionOptionResponse {
+        to_state_id: transition.to_state_id,
+        provider_transition_id: transition.provider_transition_id,
+        name: transition.name,
+        category: transition.category,
+        disabled_reason: transition.disabled_reason,
+    }
+}
+
+fn ticket_mutation_response(result: TicketingMutationResult) -> TicketMutationResponse {
+    TicketMutationResponse {
+        ticket_ref: TicketRefInput {
+            provider: result.ticket.provider,
+            id: result.ticket.id,
+            key: result.ticket.key,
+        },
+        operation: ticket_operation_response(result.operation),
+        idempotent: result.idempotent,
+        transition: result.transition.map(ticket_transition_option_response),
+        comment: result.comment.map(ticket_comment_response),
+        refreshed_at: now_string(),
+    }
+}
+
+fn ticket_operation_response(operation: ProviderTicketOperation) -> TicketOperationResponse {
+    TicketOperationResponse {
+        id: operation.id,
+        operation: operation.operation.as_str().to_string(),
+        client_operation_id: operation.client_operation_id,
+        status: operation.status.as_str().to_string(),
+        provider_operation_id: operation.provider_operation_id,
+        error_message: operation.error_message,
+        linked: operation.link_id.is_some(),
+        created_at: operation.created_at.to_rfc3339(),
+        updated_at: operation.updated_at.to_rfc3339(),
+    }
+}
+
+fn ticket_comment_response(comment: TicketingCommentResult) -> TicketCommentResponse {
+    TicketCommentResponse {
+        id: comment.id,
+        author: comment.author_name.as_deref().map(named_person),
+        body_markdown: comment.body_markdown,
+        body_text: comment.body_text,
+        created_at: comment.created_at,
+        updated_at: comment.updated_at,
+=======
 fn ensure_ticket_composer_reference(
     references: &mut Vec<ComposerIntegrationReference>,
     ticket_reference: ComposerIntegrationReference,
@@ -920,6 +1149,7 @@ fn agent_conversation_association_item(
             view: "agents".to_string(),
             id,
         },
+>>>>>>> ralphx/ralphx/agent-8e4ac713
     }
 }
 

@@ -10,7 +10,8 @@ use tokio::time::Duration;
 use tokio_util::bytes::Bytes;
 
 use crate::application::{
-    LinearApiClient, LinearAuthContext, LinearIssueContent, LinearIssueSummary,
+    LinearApiClient, LinearAuthContext, LinearComment, LinearIssueContent, LinearIssueSummary,
+    LinearUser, LinearWorkflowState,
 };
 use crate::domain::services::ComposerIntegrationReference;
 
@@ -166,6 +167,91 @@ impl LinearApiClient for HyperLinearApiClient {
             .await?;
         issue_content_from_data(&data, &reference.id)
     }
+
+    async fn list_workflow_states(
+        &self,
+        auth: &LinearAuthContext,
+        team_id: Option<&str>,
+    ) -> Result<Vec<LinearWorkflowState>, String> {
+        let (query, variables) = linear_workflow_states_query(team_id);
+        let data = self.graphql(&auth.api_token, query, variables).await?;
+        workflow_states_from_data(&data)
+    }
+
+    async fn current_user(&self, auth: &LinearAuthContext) -> Result<LinearUser, String> {
+        let data = self
+            .graphql(
+                &auth.api_token,
+                "query RalphXLinearCurrentUser { viewer { id name } }",
+                Value::Object(Default::default()),
+            )
+            .await?;
+        current_user_from_data(&data)
+    }
+
+    async fn update_issue_state(
+        &self,
+        auth: &LinearAuthContext,
+        issue_id: &str,
+        state_id: &str,
+    ) -> Result<(), String> {
+        let issue_id = required_trimmed(issue_id, "Linear issue id is required")?;
+        let state_id = required_trimmed(state_id, "Linear workflow state id is required")?;
+        let data = self
+            .graphql(
+                &auth.api_token,
+                linear_issue_update_mutation(),
+                serde_json::json!({
+                    "id": issue_id,
+                    "input": { "stateId": state_id },
+                }),
+            )
+            .await?;
+        mutation_success(&data, "issueUpdate")
+    }
+
+    async fn assign_issue_to_current_user(
+        &self,
+        auth: &LinearAuthContext,
+        issue_id: &str,
+    ) -> Result<(), String> {
+        let issue_id = required_trimmed(issue_id, "Linear issue id is required")?;
+        let user = self.current_user(auth).await?;
+        let data = self
+            .graphql(
+                &auth.api_token,
+                linear_issue_update_mutation(),
+                serde_json::json!({
+                    "id": issue_id,
+                    "input": { "assigneeId": user.id },
+                }),
+            )
+            .await?;
+        mutation_success(&data, "issueUpdate")
+    }
+
+    async fn create_comment(
+        &self,
+        auth: &LinearAuthContext,
+        issue_id: &str,
+        body_markdown: &str,
+    ) -> Result<LinearComment, String> {
+        let issue_id = required_trimmed(issue_id, "Linear issue id is required")?;
+        let body_markdown = required_trimmed(body_markdown, "Linear comment body is required")?;
+        let data = self
+            .graphql(
+                &auth.api_token,
+                linear_comment_create_mutation(),
+                serde_json::json!({
+                    "input": {
+                        "issueId": issue_id,
+                        "body": body_markdown,
+                    },
+                }),
+            )
+            .await?;
+        comment_from_create_data(&data)
+    }
 }
 
 fn linear_issue_search_query() -> &'static str {
@@ -179,6 +265,71 @@ fn linear_issue_search_query() -> &'static str {
           url
           description
           state {
+            name
+          }
+        }
+      }
+    }
+    "#
+}
+
+fn linear_workflow_states_query(team_id: Option<&str>) -> (&'static str, Value) {
+    match team_id.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(team_id) => (
+            r#"
+            query RalphXLinearWorkflowStates($teamId: String!) {
+              workflowStates(filter: { team: { id: { eq: $teamId } } }, first: 100) {
+                nodes {
+                  id
+                  name
+                  type
+                  color
+                }
+              }
+            }
+            "#,
+            serde_json::json!({ "teamId": team_id }),
+        ),
+        None => (
+            r#"
+            query RalphXLinearWorkflowStates {
+              workflowStates(first: 100) {
+                nodes {
+                  id
+                  name
+                  type
+                  color
+                }
+              }
+            }
+            "#,
+            Value::Object(Default::default()),
+        ),
+    }
+}
+
+fn linear_issue_update_mutation() -> &'static str {
+    r#"
+    mutation RalphXLinearIssueUpdate($id: String!, $input: IssueUpdateInput!) {
+      issueUpdate(id: $id, input: $input) {
+        success
+      }
+    }
+    "#
+}
+
+fn linear_comment_create_mutation() -> &'static str {
+    r#"
+    mutation RalphXLinearCommentCreate($input: CommentCreateInput!) {
+      commentCreate(input: $input) {
+        success
+        comment {
+          id
+          body
+          createdAt
+          updatedAt
+          user {
+            id
             name
           }
         }
@@ -215,6 +366,143 @@ fn validate_viewer_data(data: &Value) -> Result<(), String> {
         Ok(())
     } else {
         Err("Linear credentials did not return a viewer".to_string())
+    }
+}
+
+fn current_user_from_data(data: &Value) -> Result<LinearUser, String> {
+    let viewer = data
+        .get("viewer")
+        .ok_or_else(|| "Linear current user response did not include viewer".to_string())?;
+    let id = viewer
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Linear current user response did not include viewer id".to_string())?;
+    Ok(LinearUser {
+        id: id.to_string(),
+        name: viewer
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+    })
+}
+
+fn workflow_states_from_data(data: &Value) -> Result<Vec<LinearWorkflowState>, String> {
+    let nodes = data
+        .get("workflowStates")
+        .and_then(|states| states.get("nodes"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Linear workflow states response did not include states".to_string())?;
+    Ok(nodes.iter().filter_map(workflow_state_from_node).collect())
+}
+
+fn workflow_state_from_node(node: &Value) -> Option<LinearWorkflowState> {
+    let id = node.get("id")?.as_str()?.trim();
+    let name = node.get("name")?.as_str()?.trim();
+    if id.is_empty() || name.is_empty() {
+        return None;
+    }
+    let state_type = node.get("type").and_then(Value::as_str).unwrap_or(name);
+    Some(LinearWorkflowState {
+        id: id.to_string(),
+        name: name.to_string(),
+        category: linear_state_category(state_type),
+        color: node
+            .get("color")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+    })
+}
+
+fn linear_state_category(value: &str) -> String {
+    let value = value.to_ascii_lowercase();
+    if value.contains("completed")
+        || value.contains("done")
+        || value.contains("closed")
+        || value.contains("resolved")
+    {
+        "done".to_string()
+    } else if value.contains("unstarted")
+        || value.contains("backlog")
+        || value.contains("todo")
+        || value.contains("to do")
+    {
+        "todo".to_string()
+    } else if value.contains("started")
+        || value.contains("progress")
+        || value.contains("review")
+        || value.contains("active")
+    {
+        "in_progress".to_string()
+    } else {
+        "other".to_string()
+    }
+}
+
+fn comment_from_create_data(data: &Value) -> Result<LinearComment, String> {
+    mutation_success(data, "commentCreate")?;
+    let comment = data
+        .get("commentCreate")
+        .and_then(|create| create.get("comment"))
+        .ok_or_else(|| "Linear comment response did not include comment".to_string())?;
+    let id = comment
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Linear comment response did not include comment id".to_string())?;
+    Ok(LinearComment {
+        id: id.to_string(),
+        body: comment
+            .get("body")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        author_id: comment
+            .get("user")
+            .and_then(|user| user.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        author_name: comment
+            .get("user")
+            .and_then(|user| user.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        created_at: comment
+            .get("createdAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        updated_at: comment
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+fn mutation_success(data: &Value, field: &str) -> Result<(), String> {
+    let success = data
+        .get(field)
+        .and_then(|value| value.get("success"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if success {
+        Ok(())
+    } else {
+        Err(format!("Linear {field} mutation did not succeed"))
+    }
+}
+
+fn required_trimmed<'a>(value: &'a str, message: &str) -> Result<&'a str, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(message.to_string())
+    } else {
+        Ok(value)
     }
 }
 
@@ -364,6 +652,64 @@ mod tests {
             validate_viewer_data(&serde_json::json!({ "viewer": { "name": "User" } })).unwrap_err(),
             "Linear credentials did not return a viewer"
         );
+    }
+
+    #[test]
+    fn current_user_from_data_requires_viewer_id() {
+        let user = current_user_from_data(&serde_json::json!({
+            "viewer": { "id": "viewer-id", "name": "A. User" }
+        }))
+        .expect("viewer should parse");
+
+        assert_eq!(user.id, "viewer-id");
+        assert_eq!(user.name.as_deref(), Some("A. User"));
+
+        assert_eq!(
+            current_user_from_data(&serde_json::json!({ "viewer": { "name": "A. User" } }))
+                .unwrap_err(),
+            "Linear current user response did not include viewer id"
+        );
+    }
+
+    #[test]
+    fn workflow_states_from_data_maps_states_to_ticket_categories() {
+        let states = workflow_states_from_data(&serde_json::json!({
+            "workflowStates": {
+                "nodes": [
+                    { "id": "state-1", "name": "Todo", "type": "unstarted", "color": "#bec2c8" },
+                    { "id": "state-2", "name": "Doing", "type": "started" },
+                    { "id": "state-3", "name": "Done", "type": "completed" }
+                ]
+            }
+        }))
+        .expect("states should parse");
+
+        assert_eq!(states.len(), 3);
+        assert_eq!(states[0].category, "todo");
+        assert_eq!(states[1].category, "in_progress");
+        assert_eq!(states[2].category, "done");
+        assert_eq!(states[0].color.as_deref(), Some("#bec2c8"));
+    }
+
+    #[test]
+    fn comment_from_create_data_maps_created_comment() {
+        let comment = comment_from_create_data(&serde_json::json!({
+            "commentCreate": {
+                "success": true,
+                "comment": {
+                    "id": "comment-1",
+                    "body": "Ready",
+                    "createdAt": "2026-06-20T08:00:00Z",
+                    "updatedAt": "2026-06-20T08:00:00Z",
+                    "user": { "id": "user-1", "name": "A. User" }
+                }
+            }
+        }))
+        .expect("comment should parse");
+
+        assert_eq!(comment.id, "comment-1");
+        assert_eq!(comment.body, "Ready");
+        assert_eq!(comment.author_name.as_deref(), Some("A. User"));
     }
 
     #[test]

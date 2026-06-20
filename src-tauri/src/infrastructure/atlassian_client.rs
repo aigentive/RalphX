@@ -12,7 +12,8 @@ use tokio_util::bytes::Bytes;
 
 use crate::application::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
-    AtlassianJiraAttachment, AtlassianJiraComment, AtlassianOAuthResource,
+    AtlassianJiraAttachment, AtlassianJiraComment, AtlassianJiraTransition,
+    AtlassianOAuthResource,
     AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
     AtlassianResourceSummary,
 };
@@ -224,6 +225,32 @@ impl AtlassianApiClient for HyperAtlassianApiClient {
         issue_key: &str,
     ) -> Result<(), String> {
         assign_jira_issue_to_current_user(self, auth, issue_key).await
+    }
+
+    async fn list_jira_issue_transitions(
+        &self,
+        auth: &AtlassianAuthContext,
+        issue_key: &str,
+    ) -> Result<Vec<AtlassianJiraTransition>, String> {
+        list_jira_issue_transitions(self, auth, issue_key).await
+    }
+
+    async fn transition_jira_issue(
+        &self,
+        auth: &AtlassianAuthContext,
+        issue_key: &str,
+        transition_id: &str,
+    ) -> Result<(), String> {
+        transition_jira_issue(self, auth, issue_key, transition_id).await
+    }
+
+    async fn add_jira_comment(
+        &self,
+        auth: &AtlassianAuthContext,
+        issue_key: &str,
+        body_markdown: &str,
+    ) -> Result<AtlassianJiraComment, String> {
+        add_jira_comment(self, auth, issue_key, body_markdown).await
     }
 
     async fn exchange_oauth_code(
@@ -823,6 +850,93 @@ pub(crate) async fn assign_jira_issue_to_current_user<C: AtlassianJsonRequester 
     Ok(())
 }
 
+pub(crate) async fn list_jira_issue_transitions<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    issue_key: &str,
+) -> Result<Vec<AtlassianJiraTransition>, String> {
+    let issue_key = required_trimmed(issue_key, "Jira issue key is required")?;
+    let value = client
+        .request_json(
+            Method::GET,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                &format!(
+                    "/rest/api/3/issue/{}/transitions",
+                    percent_encode_path_segment(issue_key)
+                ),
+            ),
+            request_auth(auth),
+            None,
+        )
+        .await?;
+    Ok(value
+        .get("transitions")
+        .and_then(Value::as_array)
+        .map(|transitions| {
+            transitions
+                .iter()
+                .filter_map(jira_transition_from_value)
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+pub(crate) async fn transition_jira_issue<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    issue_key: &str,
+    transition_id: &str,
+) -> Result<(), String> {
+    let issue_key = required_trimmed(issue_key, "Jira issue key is required")?;
+    let transition_id = required_trimmed(transition_id, "Jira transition id is required")?;
+    client
+        .request_json(
+            Method::POST,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                &format!(
+                    "/rest/api/3/issue/{}/transitions",
+                    percent_encode_path_segment(issue_key)
+                ),
+            ),
+            request_auth(auth),
+            Some(serde_json::json!({ "transition": { "id": transition_id } })),
+        )
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn add_jira_comment<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    issue_key: &str,
+    body_markdown: &str,
+) -> Result<AtlassianJiraComment, String> {
+    let issue_key = required_trimmed(issue_key, "Jira issue key is required")?;
+    let body_markdown = required_trimmed(body_markdown, "Jira comment body is required")?;
+    let value = client
+        .request_json(
+            Method::POST,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                &format!(
+                    "/rest/api/3/issue/{}/comment",
+                    percent_encode_path_segment(issue_key)
+                ),
+            ),
+            request_auth(auth),
+            Some(serde_json::json!({ "body": jira_comment_adf(body_markdown) })),
+        )
+        .await?;
+    jira_comment_from_value(&value).ok_or_else(|| {
+        "Jira comment response did not include a readable created comment".to_string()
+    })
+}
+
 pub(crate) async fn fetch_confluence<C: AtlassianJsonRequester + ?Sized>(
     client: &C,
     auth: &AtlassianAuthContext,
@@ -887,6 +1001,81 @@ fn push_field(lines: &mut Vec<String>, label: &str, value: &str) {
     if !value.trim().is_empty() {
         lines.push(format!("{label}: {}", value.trim()));
     }
+}
+
+fn required_trimmed<'a>(value: &'a str, message: &str) -> Result<&'a str, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(message.to_string())
+    } else {
+        Ok(value)
+    }
+}
+
+fn jira_transition_from_value(value: &Value) -> Option<AtlassianJiraTransition> {
+    let provider_transition_id = value.get("id")?.as_str()?.trim();
+    let name = value.get("name")?.as_str()?.trim();
+    let to = value.get("to")?;
+    let to_state_id = to.get("id")?.as_str()?.trim();
+    let to_state_name = to.get("name").and_then(Value::as_str).unwrap_or(name);
+    if provider_transition_id.is_empty() || name.is_empty() || to_state_id.is_empty() {
+        return None;
+    }
+    Some(AtlassianJiraTransition {
+        provider_transition_id: provider_transition_id.to_string(),
+        to_state_id: to_state_id.to_string(),
+        name: name.to_string(),
+        category: jira_status_category(to, to_state_name),
+    })
+}
+
+fn jira_status_category(status: &Value, fallback_name: &str) -> String {
+    let category = status
+        .get("statusCategory")
+        .and_then(|category| category.get("key").or_else(|| category.get("name")))
+        .and_then(Value::as_str)
+        .unwrap_or(fallback_name)
+        .to_ascii_lowercase();
+    if category.contains("done")
+        || category.contains("complete")
+        || category.contains("closed")
+        || category.contains("resolved")
+    {
+        "done".to_string()
+    } else if category.contains("indeterminate")
+        || category.contains("progress")
+        || category.contains("review")
+        || category.contains("started")
+        || category.contains("active")
+    {
+        "in_progress".to_string()
+    } else if category.contains("new")
+        || category.contains("todo")
+        || category.contains("to do")
+        || category.contains("backlog")
+    {
+        "todo".to_string()
+    } else {
+        "other".to_string()
+    }
+}
+
+fn jira_comment_adf(body_markdown: &str) -> Value {
+    serde_json::json!({
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": body_markdown,
+                    }
+                ]
+            }
+        ]
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

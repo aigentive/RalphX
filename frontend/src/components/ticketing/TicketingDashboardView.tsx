@@ -1,12 +1,20 @@
 import { useEffect, useMemo } from "react";
 
-import type { ListTicketsInput, TicketDeepLink, TicketFiltersInput, TicketSummary } from "@/api/ticketing";
+import type {
+  ListTicketsInput,
+  TicketDeepLink,
+  TicketFiltersInput,
+  TicketingColumn,
+  TicketSummary,
+  TicketTransitionOption,
+} from "@/api/ticketing";
 import {
   flattenTicketPages,
   useRefreshTickets,
   useStartWorkFromTicket,
   useTicketAssociations,
   useTicketDetail,
+  useTicketingMutations,
   useTicketingColumns,
   useTicketingContainers,
   useTicketingProviders,
@@ -127,15 +135,20 @@ export function TicketingDashboardView({
     ? { provider: activeProvider, ticketRef: selectedTicketRef }
     : null;
   const detailQuery = useTicketDetail(detailInput, { enabled: Boolean(detailInput) });
-  useTicketTransitions(detailInput, { enabled: Boolean(detailInput) });
+  const transitionsQuery = useTicketTransitions(detailInput, { enabled: Boolean(detailInput) });
   const associationsQuery = useTicketAssociations(
     detailInput ? { ...detailInput, projectId } : null,
     { enabled: Boolean(detailInput && projectId) },
   );
   const refreshTickets = useRefreshTickets();
+<<<<<<< HEAD
+  const ticketingMutations = useTicketingMutations(projectId);
+=======
   const startWorkFromTicket = useStartWorkFromTicket();
+>>>>>>> ralphx/ralphx/agent-8e4ac713
 
   const selectedTicket = detailQuery.data ?? selectedSummary;
+  const transitions = transitionsQuery.data ?? (detailQuery.data && "transitions" in detailQuery.data ? detailQuery.data.transitions : []);
   const providerName = selectedProvider?.label ?? (activeProvider ? providerLabel(activeProvider) : "Provider");
   const statusMessage = selectedProvider?.errorMessage ?? selectedProvider?.permissionMessage ?? undefined;
   const startWorkError = startWorkFromTicket.error instanceof Error
@@ -158,6 +171,56 @@ export function TicketingDashboardView({
     });
   }
 
+<<<<<<< HEAD
+  async function handleTransitionTicket(transition: TicketTransitionOption) {
+    if (!selectedTicket) {
+      return;
+    }
+    await ticketingMutations.transitionStatus({
+      provider: selectedTicket.ref.provider,
+      ticketRef: selectedTicket.ref,
+      transition,
+      projectId,
+    });
+  }
+
+  async function handleAssignToMe() {
+    if (!selectedTicket) {
+      return;
+    }
+    await ticketingMutations.assignToMe({
+      provider: selectedTicket.ref.provider,
+      ticketRef: selectedTicket.ref,
+      projectId,
+    });
+  }
+
+  async function handleAddComment(bodyMarkdown: string) {
+    if (!selectedTicket) {
+      return;
+    }
+    await ticketingMutations.addComment({
+      provider: selectedTicket.ref.provider,
+      ticketRef: selectedTicket.ref,
+      bodyMarkdown,
+      projectId,
+    });
+  }
+
+  function handleMoveTicket(ticket: TicketSummary, column: TicketingColumn) {
+    void ticketingMutations.transitionStatus({
+      provider: ticket.ref.provider,
+      ticketRef: ticket.ref,
+      projectId,
+      transition: {
+        toStateId: column.id,
+        name: column.name,
+        category: column.category,
+      },
+    }).catch(() => undefined);
+  }
+
+=======
   function handleStartWorkFromTicket() {
     if (!selectedTicket) {
       return;
@@ -169,6 +232,7 @@ export function TicketingDashboardView({
     });
   }
 
+>>>>>>> ralphx/ralphx/agent-8e4ac713
   let content: React.ReactNode;
 
   if (providersQuery.isLoading) {
@@ -244,6 +308,8 @@ export function TicketingDashboardView({
       <TicketKanbanView
         columns={columns}
         tickets={tickets}
+        canMoveTickets={Boolean(selectedProvider?.capabilities.kanbanWrite)}
+        onMoveTicket={handleMoveTicket}
         onSelectTicket={handleSelectTicket}
       />
     ) : (
@@ -326,11 +392,22 @@ export function TicketingDashboardView({
       <TicketDetailSheet
         open={selectedTicketRef !== null}
         ticket={selectedTicket}
+        capabilities={selectedProvider?.capabilities ?? null}
+        transitions={transitions}
         associations={associationsQuery.data}
         isDetailLoading={detailQuery.isLoading}
         isAssociationsLoading={associationsQuery.isLoading}
+<<<<<<< HEAD
+        isTransitionPending={ticketingMutations.transitionStatusMutation.isPending}
+        isAssignPending={ticketingMutations.assignToMeMutation.isPending}
+        isCommentPending={ticketingMutations.addCommentMutation.isPending}
+        onTransitionTicket={handleTransitionTicket}
+        onAssignToMe={handleAssignToMe}
+        onAddComment={handleAddComment}
+=======
         isStartWorkPending={startWorkFromTicket.isPending}
         startWorkError={startWorkError}
+>>>>>>> ralphx/ralphx/agent-8e4ac713
         onNavigate={onNavigateToAssociation}
         onStartWork={selectedTicket ? handleStartWorkFromTicket : undefined}
         onClose={() => setSelectedTicketRef(null)}

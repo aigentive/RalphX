@@ -247,12 +247,23 @@ pub use team_commands::{
     TeamHistoryResponse, TeamMessageRecordResponse, TeamSessionResponse, TeammateSnapshotResponse,
 };
 pub use ticketing_commands::{
+<<<<<<< HEAD
+    add_ticket_comment, assign_ticket, get_ticket_associations, get_ticket_detail,
+    list_ticket_transitions, list_ticketing_columns, list_ticketing_containers,
+    list_ticketing_providers, list_tickets, refresh_tickets, transition_ticket_status,
+    AddTicketCommentInput, AssignTicketInput, ListTicketsQuery, RefreshTicketsResponse,
+    TicketAssociationsResponse, TicketDetailResponse, TicketMutationResponse,
+    TicketOperationResponse, TicketPageResponse, TicketRefInput, TicketSummaryResponse,
+    TicketingCapabilitiesResponse, TicketingColumnResponse, TicketingContainerResponse,
+    TicketingProviderSummaryResponse, TransitionTicketStatusInput,
+=======
     get_ticket_associations, get_ticket_detail, list_ticket_transitions, list_ticketing_columns,
     list_ticketing_containers, list_ticketing_providers, list_tickets, refresh_tickets,
     start_ralphx_work_from_ticket, ListTicketsQuery, RefreshTicketsResponse,
     StartRalphxWorkFromTicketInput, TicketAssociationsResponse, TicketDetailResponse,
     TicketPageResponse, TicketRefInput, TicketSummaryResponse, TicketingCapabilitiesResponse,
     TicketingColumnResponse, TicketingContainerResponse, TicketingProviderSummaryResponse,
+>>>>>>> ralphx/ralphx/agent-8e4ac713
 };
 // Unified chat commands (consolidates context_chat + execution_chat)
 pub use agent_sidebar_commands::{

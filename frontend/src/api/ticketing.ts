@@ -197,6 +197,29 @@ export const RefreshTicketsResponseSchema = z.object({
 });
 export type RefreshTicketsResponse = z.infer<typeof RefreshTicketsResponseSchema>;
 
+export const TicketOperationResponseSchema = z.object({
+  id: z.string(),
+  operation: z.enum(["transition", "assign", "comment"]),
+  clientOperationId: z.string(),
+  status: z.enum(["pending", "succeeded", "failed", "canceled", "timed_out"]),
+  providerOperationId: z.string().nullable().optional(),
+  errorMessage: z.string().nullable().optional(),
+  linked: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type TicketOperationResponse = z.infer<typeof TicketOperationResponseSchema>;
+
+export const TicketMutationResponseSchema = z.object({
+  ticketRef: TicketRefSchema,
+  operation: TicketOperationResponseSchema,
+  idempotent: z.boolean(),
+  transition: TicketTransitionOptionSchema.nullable().optional(),
+  comment: TicketCommentSchema.nullable().optional(),
+  refreshedAt: z.string(),
+});
+export type TicketMutationResponse = z.infer<typeof TicketMutationResponseSchema>;
+
 export const TicketSortSchema = z.enum(["updated_desc", "updated_asc", "priority"]);
 export type TicketSort = z.infer<typeof TicketSortSchema>;
 
@@ -247,6 +270,24 @@ export interface StartWorkFromTicketInput extends StartAgentConversationInput {
 export interface RefreshTicketsInput {
   provider: TicketingProvider;
   containerId?: string | undefined;
+}
+
+export interface TransitionTicketStatusInput extends TicketRefInput {
+  toStateId: string;
+  providerTransitionId?: string | null | undefined;
+  clientOperationId?: string | undefined;
+  projectId?: string | undefined;
+}
+
+export interface AssignTicketInput extends TicketRefInput {
+  clientOperationId?: string | undefined;
+  projectId?: string | undefined;
+}
+
+export interface AddTicketCommentInput extends TicketRefInput {
+  bodyMarkdown: string;
+  clientOperationId?: string | undefined;
+  projectId?: string | undefined;
 }
 
 function listTicketsQuery(input: ListTicketsInput): Record<string, unknown> {
@@ -364,6 +405,54 @@ export const ticketingApi = {
           refreshedAt: new Date().toISOString(),
         })),
       ),
+    );
+  },
+
+  transitionTicketStatus(input: TransitionTicketStatusInput): Promise<TicketMutationResponse> {
+    return typedInvoke(
+      "transition_ticket_status",
+      {
+        input: {
+          provider: input.provider,
+          ticketRef: input.ticketRef,
+          toStateId: input.toStateId,
+          ...(input.providerTransitionId !== undefined && { providerTransitionId: input.providerTransitionId }),
+          ...(input.clientOperationId !== undefined && { clientOperationId: input.clientOperationId }),
+          ...(input.projectId !== undefined && { projectId: input.projectId }),
+        },
+      },
+      TicketMutationResponseSchema,
+    );
+  },
+
+  assignTicket(input: AssignTicketInput): Promise<TicketMutationResponse> {
+    return typedInvoke(
+      "assign_ticket",
+      {
+        input: {
+          provider: input.provider,
+          ticketRef: input.ticketRef,
+          ...(input.clientOperationId !== undefined && { clientOperationId: input.clientOperationId }),
+          ...(input.projectId !== undefined && { projectId: input.projectId }),
+        },
+      },
+      TicketMutationResponseSchema,
+    );
+  },
+
+  addTicketComment(input: AddTicketCommentInput): Promise<TicketMutationResponse> {
+    return typedInvoke(
+      "add_ticket_comment",
+      {
+        input: {
+          provider: input.provider,
+          ticketRef: input.ticketRef,
+          bodyMarkdown: input.bodyMarkdown,
+          ...(input.clientOperationId !== undefined && { clientOperationId: input.clientOperationId }),
+          ...(input.projectId !== undefined && { projectId: input.projectId }),
+        },
+      },
+      TicketMutationResponseSchema,
     );
   },
 };

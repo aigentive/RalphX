@@ -4,11 +4,16 @@ import { createElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ticketingApi } from "@/api/ticketing";
+import type { TicketDetail, TicketRef, TicketTransitionOption } from "@/api/ticketing";
 
 import {
   flattenTicketPages,
   ticketingKeys,
+<<<<<<< HEAD
+  useTicketingMutations,
+=======
   useStartWorkFromTicket,
+>>>>>>> ralphx/ralphx/agent-8e4ac713
   useTicketingProviders,
   useTickets,
 } from "./useTicketing";
@@ -27,23 +32,34 @@ vi.mock("@/api/ticketing", async (importActual) => {
       getTicketAssociations: vi.fn(),
       startWorkFromTicket: vi.fn(),
       refreshTickets: vi.fn(),
+      transitionTicketStatus: vi.fn(),
+      assignTicket: vi.fn(),
+      addTicketComment: vi.fn(),
     },
   };
 });
 
+<<<<<<< HEAD
+function createHarness() {
+  const queryClient = new QueryClient({
+=======
 function createQueryClient() {
   return new QueryClient({
+>>>>>>> ralphx/ralphx/agent-8e4ac713
     defaultOptions: {
-      queries: { retry: false, gcTime: 0 },
+      queries: { retry: false, gcTime: Infinity },
+      mutations: { retry: false },
     },
   });
 }
 
 function createWrapper(queryClient = createQueryClient()) {
 
-  return function Wrapper({ children }: { children: ReactNode }) {
+  function Wrapper({ children }: { children: ReactNode }) {
     return createElement(QueryClientProvider, { client: queryClient }, children);
-  };
+  }
+
+  return { queryClient, wrapper: Wrapper };
 }
 
 describe("useTicketing hooks", () => {
@@ -73,7 +89,7 @@ describe("useTicketing hooks", () => {
 
     const { result } = renderHook(
       () => useTicketingProviders("project-1", { enabled: true }),
-      { wrapper: createWrapper() },
+      { wrapper: createHarness().wrapper },
     );
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
@@ -126,7 +142,7 @@ describe("useTicketing hooks", () => {
       limit: 1,
     };
     const { result } = renderHook(() => useTickets(query, { enabled: true }), {
-      wrapper: createWrapper(),
+      wrapper: createHarness().wrapper,
     });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
@@ -140,6 +156,122 @@ describe("useTicketing hooks", () => {
     expect(flattenTicketPages(nextPageResult.data)).toHaveLength(2);
   });
 
+<<<<<<< HEAD
+  it("generates clientOperationId and applies optimistic status transitions", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const transition: TicketTransitionOption = {
+      toStateId: "done",
+      providerTransitionId: "transition-31",
+      name: "Done",
+      category: "done",
+    };
+    const detail: TicketDetail = {
+      ref: ticketRef,
+      title: "Fix merge race",
+      state: { id: "todo", name: "To Do", category: "todo" },
+      labels: [],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+      descriptionMarkdown: "Investigate transition race.",
+      comments: [],
+      attachments: [],
+      transitions: [transition],
+    };
+    vi.mocked(ticketingApi.transitionTicketStatus).mockResolvedValueOnce({
+      ticketRef,
+      operation: {
+        id: "operation-1",
+        operation: "transition",
+        clientOperationId: "generated",
+        status: "succeeded",
+        providerOperationId: "transition-31",
+        linked: true,
+        createdAt: "2026-06-19T22:00:00.000Z",
+        updatedAt: "2026-06-19T22:00:01.000Z",
+      },
+      idempotent: false,
+      transition,
+      comment: null,
+      refreshedAt: "2026-06-19T22:00:01.000Z",
+    });
+
+    const harness = createHarness();
+    harness.queryClient.setQueryData(ticketingKeys.detail({ provider: "jira", ticketRef }), detail);
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await act(async () => {
+      await result.current.transitionStatus({
+        provider: "jira",
+        ticketRef,
+        transition,
+      });
+    });
+
+    expect(ticketingApi.transitionTicketStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "jira",
+        ticketRef,
+        toStateId: "done",
+        providerTransitionId: "transition-31",
+        projectId: "project-1",
+        clientOperationId: expect.stringMatching(/^ticketing:transition:/),
+      }),
+    );
+    expect(
+      harness.queryClient.getQueryData<TicketDetail>(
+        ticketingKeys.detail({ provider: "jira", ticketRef }),
+      )?.state.name,
+    ).toBe("Done");
+  });
+
+  it("rolls back optimistic ticket detail updates when status transition fails", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const transition: TicketTransitionOption = {
+      toStateId: "done",
+      providerTransitionId: "transition-31",
+      name: "Done",
+      category: "done",
+    };
+    const detail: TicketDetail = {
+      ref: ticketRef,
+      title: "Fix merge race",
+      state: { id: "todo", name: "To Do", category: "todo" },
+      labels: [],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+      descriptionMarkdown: "Investigate transition race.",
+      comments: [],
+      attachments: [],
+      transitions: [transition],
+    };
+    vi.mocked(ticketingApi.transitionTicketStatus).mockRejectedValueOnce(new Error("Workflow blocked"));
+
+    const harness = createHarness();
+    harness.queryClient.setQueryData(ticketingKeys.detail({ provider: "jira", ticketRef }), detail);
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await expect(
+      act(() =>
+        result.current.transitionStatus({
+          provider: "jira",
+          ticketRef,
+          transition,
+        }),
+      ),
+    ).rejects.toThrow("Workflow blocked");
+
+    expect(
+      harness.queryClient.getQueryData<TicketDetail>(
+        ticketingKeys.detail({ provider: "jira", ticketRef }),
+      )?.state.name,
+    ).toBe("To Do");
+=======
   it("starts RalphX work from a ticket and refreshes association caches", async () => {
     const queryClient = createQueryClient();
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
@@ -200,5 +332,6 @@ describe("useTicketing hooks", () => {
         ticketRef,
       }),
     });
+>>>>>>> ralphx/ralphx/agent-8e4ac713
   });
 });

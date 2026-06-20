@@ -1,4 +1,14 @@
 use super::*;
+<<<<<<< HEAD
+use crate::application::{
+    LinearIntegrationSettings, TicketingMutationResult, TicketingTicketIdentity,
+    TicketingTransitionOption,
+};
+use crate::domain::integrations::{
+    AtlassianIntegrationSettings, IntegrationValidationStatus, ProviderTicketOperation,
+    ProviderTicketOperationKind, ProviderTicketOperationStatus,
+};
+=======
 use std::sync::Arc;
 
 use crate::application::{AppState, LinearIntegrationSettings, TeamService, TeamStateTracker};
@@ -11,6 +21,7 @@ use crate::domain::entities::{
 use crate::domain::integrations::{AtlassianIntegrationSettings, IntegrationValidationStatus};
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
+>>>>>>> ralphx/ralphx/agent-8e4ac713
 
 #[test]
 fn provider_summaries_reflect_existing_integration_settings() {
@@ -34,8 +45,12 @@ fn provider_summaries_reflect_existing_integration_settings() {
     assert_eq!(jira_summary.provider, "jira");
     assert_eq!(jira_summary.connection_status, "connected");
     assert!(jira_summary.capabilities.supports_kanban);
+    assert!(jira_summary.capabilities.status_write);
+    assert!(jira_summary.capabilities.assignment_write);
+    assert!(jira_summary.capabilities.comment_write);
     assert_eq!(linear_summary.provider, "linear");
     assert_eq!(linear_summary.connection_status, "error");
+    assert!(!linear_summary.capabilities.status_write);
     assert_eq!(
         linear_summary.error_message.as_deref(),
         Some("Token rejected")
@@ -59,6 +74,75 @@ fn provider_validation_rejects_unknown_ticketing_provider() {
     assert!(error.contains("Unknown ticketing provider"));
 }
 
+<<<<<<< HEAD
+#[test]
+fn ticket_identity_preserves_project_scope_for_mutation_service() {
+    let identity = ticket_identity(
+        "linear",
+        &TicketRefInput {
+            provider: "linear".to_string(),
+            id: "issue-1".to_string(),
+            key: Some("LIN-1".to_string()),
+        },
+        Some("project-1".to_string()),
+    );
+
+    assert_eq!(identity.provider, "linear");
+    assert_eq!(identity.id, "issue-1");
+    assert_eq!(identity.key.as_deref(), Some("LIN-1"));
+    assert_eq!(identity.local_project_id.as_deref(), Some("project-1"));
+}
+
+#[test]
+fn mutation_response_maps_operation_status_and_linked_flag() {
+    let now = chrono::Utc::now();
+    let response = ticket_mutation_response(TicketingMutationResult {
+        ticket: TicketingTicketIdentity {
+            provider: "jira".to_string(),
+            id: "10001".to_string(),
+            key: Some("JRA-1".to_string()),
+            local_project_id: Some("project-1".to_string()),
+        },
+        operation: ProviderTicketOperation {
+            id: "operation-1".to_string(),
+            provider: "jira".to_string(),
+            external_kind: "jira".to_string(),
+            external_id: "JRA-1".to_string(),
+            external_key: Some("JRA-1".to_string()),
+            link_id: Some("link-1".to_string()),
+            local_project_id: Some("project-1".to_string()),
+            operation: ProviderTicketOperationKind::Transition,
+            client_operation_id: "client-op-1".to_string(),
+            status: ProviderTicketOperationStatus::Succeeded,
+            provider_operation_id: Some("31".to_string()),
+            error_message: None,
+            metadata_json: None,
+            last_attempt_at: Some(now),
+            completed_at: Some(now),
+            created_at: now,
+            updated_at: now,
+        },
+        idempotent: false,
+        transition: Some(TicketingTransitionOption {
+            to_state_id: "done".to_string(),
+            provider_transition_id: Some("31".to_string()),
+            name: "Done".to_string(),
+            category: "done".to_string(),
+            disabled_reason: None,
+        }),
+        comment: None,
+    });
+
+    assert_eq!(response.ticket_ref.provider, "jira");
+    assert_eq!(response.ticket_ref.key.as_deref(), Some("JRA-1"));
+    assert_eq!(response.operation.operation, "transition");
+    assert_eq!(response.operation.status, "succeeded");
+    assert!(response.operation.linked);
+    assert_eq!(
+        response.transition.unwrap().provider_transition_id.as_deref(),
+        Some("31")
+    );
+=======
 fn build_ticketing_start_app(
     state: AppState,
     execution_state: Arc<ExecutionState>,
@@ -263,4 +347,5 @@ async fn get_ticket_associations_returns_linked_agent_conversations() {
     assert!(linked.active);
     assert_eq!(linked.deep_link.view, "agents");
     assert_eq!(linked.deep_link.id, conversation.id.as_str());
+>>>>>>> ralphx/ralphx/agent-8e4ac713
 }

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { TicketSummary } from "@/api/ticketing";
 
+import { resolveTicketKanbanMove } from "./ticketing-kanban-utils";
 import { TicketListView } from "./TicketViews";
 
 const tickets: TicketSummary[] = [
@@ -47,5 +48,33 @@ describe("TicketListView", () => {
 
     fireEvent.keyDown(second, { key: "ArrowUp" });
     expect(first).toHaveFocus();
+  });
+});
+
+describe("resolveTicketKanbanMove", () => {
+  it("returns the moved ticket and destination column when the drop changes state", () => {
+    const move = resolveTicketKanbanMove(
+      "jira:10001",
+      "done",
+      tickets,
+      [
+        { id: "todo", name: "To Do", category: "todo", order: 0 },
+        { id: "done", name: "Done", category: "done", order: 1 },
+      ],
+    );
+
+    expect(move?.ticket.ref.id).toBe("10001");
+    expect(move?.column.id).toBe("done");
+  });
+
+  it("ignores drops on the current column", () => {
+    const move = resolveTicketKanbanMove(
+      "jira:10001",
+      "todo",
+      tickets,
+      [{ id: "todo", name: "To Do", category: "todo", order: 0 }],
+    );
+
+    expect(move).toBeNull();
   });
 });

@@ -69,6 +69,33 @@ pub struct LinearIssueContent {
     pub updated_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearWorkflowState {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearUser {
+    pub id: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearComment {
+    pub id: String,
+    pub body: String,
+    pub author_id: Option<String>,
+    pub author_name: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
 #[async_trait]
 pub trait LinearIntegrationSettingsRepository: Send + Sync {
     async fn get(&self) -> Result<LinearIntegrationSettings, Box<dyn std::error::Error>>;
@@ -95,6 +122,44 @@ pub trait LinearApiClient: Send + Sync {
         auth: &LinearAuthContext,
         reference: &crate::domain::services::ComposerIntegrationReference,
     ) -> Result<LinearIssueContent, String>;
+
+    async fn list_workflow_states(
+        &self,
+        _auth: &LinearAuthContext,
+        _team_id: Option<&str>,
+    ) -> Result<Vec<LinearWorkflowState>, String> {
+        Err("Linear workflow states are not available for this client".to_string())
+    }
+
+    async fn current_user(&self, _auth: &LinearAuthContext) -> Result<LinearUser, String> {
+        Err("Linear current-user lookup is not available for this client".to_string())
+    }
+
+    async fn update_issue_state(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+        _state_id: &str,
+    ) -> Result<(), String> {
+        Err("Linear issue state updates are not available for this client".to_string())
+    }
+
+    async fn assign_issue_to_current_user(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<(), String> {
+        Err("Linear issue assignment is not available for this client".to_string())
+    }
+
+    async fn create_comment(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+        _body_markdown: &str,
+    ) -> Result<LinearComment, String> {
+        Err("Linear comments are not available for this client".to_string())
+    }
 }
 
 pub struct EmptyLinearApiClient;
@@ -146,6 +211,54 @@ impl LinearApiClient for EmptyLinearApiClient {
             updated_at: None,
         })
     }
+
+    async fn list_workflow_states(
+        &self,
+        _auth: &LinearAuthContext,
+        _team_id: Option<&str>,
+    ) -> Result<Vec<LinearWorkflowState>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn current_user(&self, _auth: &LinearAuthContext) -> Result<LinearUser, String> {
+        Ok(LinearUser {
+            id: "test-user".to_string(),
+            name: Some("Test User".to_string()),
+        })
+    }
+
+    async fn update_issue_state(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+        _state_id: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn assign_issue_to_current_user(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn create_comment(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+        body_markdown: &str,
+    ) -> Result<LinearComment, String> {
+        Ok(LinearComment {
+            id: "test-comment".to_string(),
+            body: body_markdown.to_string(),
+            author_id: None,
+            author_name: None,
+            created_at: None,
+            updated_at: None,
+        })
+    }
 }
 
 #[async_trait]
@@ -168,6 +281,44 @@ impl LinearApiClient for UnavailableLinearApiClient {
         _auth: &LinearAuthContext,
         _reference: &crate::domain::services::ComposerIntegrationReference,
     ) -> Result<LinearIssueContent, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn list_workflow_states(
+        &self,
+        _auth: &LinearAuthContext,
+        _team_id: Option<&str>,
+    ) -> Result<Vec<LinearWorkflowState>, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn current_user(&self, _auth: &LinearAuthContext) -> Result<LinearUser, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn update_issue_state(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+        _state_id: &str,
+    ) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+
+    async fn assign_issue_to_current_user(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+
+    async fn create_comment(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+        _body_markdown: &str,
+    ) -> Result<LinearComment, String> {
         Err(self.reason.clone())
     }
 }
@@ -327,6 +478,44 @@ impl LinearIntegrationService {
     ) -> Result<LinearIssueContent, String> {
         let auth = self.enabled_auth_context().await?;
         self.client.fetch_issue(&auth, reference).await
+    }
+
+    pub async fn list_workflow_states(
+        &self,
+        team_id: Option<&str>,
+    ) -> Result<Vec<LinearWorkflowState>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_workflow_states(&auth, team_id).await
+    }
+
+    pub async fn current_user(&self) -> Result<LinearUser, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.current_user(&auth).await
+    }
+
+    pub async fn update_issue_state(&self, issue_id: &str, state_id: &str) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .update_issue_state(&auth, issue_id, state_id)
+            .await
+    }
+
+    pub async fn assign_issue_to_current_user(&self, issue_id: &str) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .assign_issue_to_current_user(&auth, issue_id)
+            .await
+    }
+
+    pub async fn create_comment(
+        &self,
+        issue_id: &str,
+        body_markdown: &str,
+    ) -> Result<LinearComment, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .create_comment(&auth, issue_id, body_markdown)
+            .await
     }
 
     pub async fn expand_references_for_prompt(

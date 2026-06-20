@@ -79,6 +79,124 @@ describe("ticketingApi", () => {
     expect(page.nextCursor).toBe("cursor-2");
   });
 
+<<<<<<< HEAD
+  it("sends status transitions with stable client operation ids", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      ticketRef: { provider: "jira", id: "10001", key: "RX-1" },
+      operation: {
+        id: "operation-1",
+        operation: "transition",
+        clientOperationId: "client-op-1",
+        status: "succeeded",
+        providerOperationId: "transition-31",
+        linked: true,
+        createdAt: "2026-06-19T22:00:00.000Z",
+        updatedAt: "2026-06-19T22:00:01.000Z",
+      },
+      idempotent: false,
+      transition: {
+        toStateId: "done",
+        providerTransitionId: "transition-31",
+        name: "Done",
+        category: "done",
+      },
+      comment: null,
+      refreshedAt: "2026-06-19T22:00:01.000Z",
+    });
+
+    const result = await ticketingApi.transitionTicketStatus({
+      provider: "jira",
+      ticketRef: { provider: "jira", id: "10001", key: "RX-1" },
+      toStateId: "done",
+      providerTransitionId: "transition-31",
+      clientOperationId: "client-op-1",
+      projectId: "project-1",
+    });
+
+    expect(invoke).toHaveBeenCalledWith("transition_ticket_status", {
+      input: {
+        provider: "jira",
+        ticketRef: { provider: "jira", id: "10001", key: "RX-1" },
+        toStateId: "done",
+        providerTransitionId: "transition-31",
+        clientOperationId: "client-op-1",
+        projectId: "project-1",
+      },
+    });
+    expect(result.operation.clientOperationId).toBe("client-op-1");
+  });
+
+  it("sends assign-to-me and comment writes through mutation commands", async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({
+        ticketRef: { provider: "linear", id: "LIN-1", key: "ENG-1" },
+        operation: {
+          id: "operation-assign",
+          operation: "assign",
+          clientOperationId: "assign-op",
+          status: "succeeded",
+          linked: false,
+          createdAt: "2026-06-19T22:00:00.000Z",
+          updatedAt: "2026-06-19T22:00:01.000Z",
+        },
+        idempotent: false,
+        transition: null,
+        comment: null,
+        refreshedAt: "2026-06-19T22:00:01.000Z",
+      })
+      .mockResolvedValueOnce({
+        ticketRef: { provider: "linear", id: "LIN-1", key: "ENG-1" },
+        operation: {
+          id: "operation-comment",
+          operation: "comment",
+          clientOperationId: "comment-op",
+          status: "succeeded",
+          providerOperationId: "comment-1",
+          linked: false,
+          createdAt: "2026-06-19T22:00:02.000Z",
+          updatedAt: "2026-06-19T22:00:03.000Z",
+        },
+        idempotent: false,
+        transition: null,
+        comment: {
+          id: "comment-1",
+          author: { name: "RalphX" },
+          bodyMarkdown: "Pushed a fix.",
+          bodyText: "Pushed a fix.",
+          createdAt: "2026-06-19T22:00:03.000Z",
+          updatedAt: "2026-06-19T22:00:03.000Z",
+        },
+        refreshedAt: "2026-06-19T22:00:03.000Z",
+      });
+
+    await ticketingApi.assignTicket({
+      provider: "linear",
+      ticketRef: { provider: "linear", id: "LIN-1", key: "ENG-1" },
+      clientOperationId: "assign-op",
+    });
+    await ticketingApi.addTicketComment({
+      provider: "linear",
+      ticketRef: { provider: "linear", id: "LIN-1", key: "ENG-1" },
+      bodyMarkdown: "Pushed a fix.",
+      clientOperationId: "comment-op",
+    });
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "assign_ticket", {
+      input: {
+        provider: "linear",
+        ticketRef: { provider: "linear", id: "LIN-1", key: "ENG-1" },
+        clientOperationId: "assign-op",
+      },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "add_ticket_comment", {
+      input: {
+        provider: "linear",
+        ticketRef: { provider: "linear", id: "LIN-1", key: "ENG-1" },
+        bodyMarkdown: "Pushed a fix.",
+        clientOperationId: "comment-op",
+      },
+    });
+=======
   it("starts RalphX work from a ticket with the shared start payload shape", async () => {
     vi.mocked(invoke).mockResolvedValueOnce({
       conversation: {
@@ -144,5 +262,6 @@ describe("ticketingApi", () => {
     });
     expect(result.conversation.id).toBe("conversation-ticket");
     expect(result.sendResult.wasQueued).toBe(true);
+>>>>>>> ralphx/ralphx/agent-8e4ac713
   });
 });
