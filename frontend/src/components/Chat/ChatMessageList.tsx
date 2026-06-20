@@ -8,7 +8,7 @@
  * - Streaming tool calls / typing indicator footer
  */
 
-import React, { forwardRef, useCallback, useEffect, useMemo, useRef, useState, useImperativeHandle } from "react";
+import React, { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useImperativeHandle } from "react";
 import { Virtuoso, type ListRange, type ScrollerProps, type VirtuosoHandle } from "react-virtuoso";
 import { MessageItem, MessageMeta } from "./MessageItem";
 import { parseComposerReferencesFromMetadata } from "./MessageReferences.parse";
@@ -75,6 +75,7 @@ export const AT_BOTTOM_THRESHOLD = 150;
 /** Final-pixel settle guard for native wheel/scrollbar bottom attempts. */
 const TRUE_BOTTOM_SETTLE_THRESHOLD_PX = 32;
 const BOTTOM_SCROLL_INTENT_WINDOW_MS = 800;
+const TOOL_GROUP_SCROLL_ADJUSTMENT_WINDOW_MS = 800;
 const MAX_TRUE_BOTTOM_SETTLE_ATTEMPTS = 2;
 
 /** Bucket size for text length change detection during streaming.
@@ -226,6 +227,14 @@ type ToolCallGroupMarker = {
   key: string;
   count: number;
   position: "toggle" | "covered";
+};
+
+type ToolCallGroupScrollAnchor = {
+  groupKey: string;
+  anchorTop: number | null;
+  scrollTop: number;
+  bottomDelta: number;
+  wasVisuallyAtBottom: boolean;
 };
 
 type TimelineMessageItem = {
@@ -412,20 +421,38 @@ function isVisibleTimelineItem(
   return !isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys);
 }
 
+function findToolCallGroupToggleElement(root: ParentNode, groupKey: string): HTMLElement | null {
+  const candidates = root.querySelectorAll<HTMLElement>("[data-chat-tool-call-group-key]");
+  for (const candidate of candidates) {
+    if (candidate.dataset.chatToolCallGroupKey === groupKey) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function clampScrollTop(element: HTMLElement, scrollTop: number): number {
+  const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+  return Math.max(0, Math.min(maxScrollTop, scrollTop));
+}
+
 function ToolCallGroupToggle({
+  groupKey,
   count,
   isExpanded,
   onToggle,
 }: {
+  groupKey: string;
   count: number;
   isExpanded: boolean;
-  onToggle: () => void;
+  onToggle: React.MouseEventHandler<HTMLButtonElement>;
 }) {
   const label = isExpanded ? `Hide ${count} tool calls` : `Agent called ${count} tools`;
   return (
     <button
       type="button"
       data-testid="tool-call-group-toggle"
+      data-chat-tool-call-group-key={groupKey}
       aria-expanded={isExpanded}
       aria-label={label}
       onClick={onToggle}
@@ -508,7 +535,7 @@ function ToolCallGroupToggleRow({
   isExpanded: boolean;
   teammateName: string | null;
   teammateColor: string | null;
-  onToggle: () => void;
+  onToggle: React.MouseEventHandler<HTMLButtonElement>;
   contentWidthClassName?: string | undefined;
   rowRef?: React.Ref<HTMLDivElement> | undefined;
 }) {
@@ -548,6 +575,7 @@ function ToolCallGroupToggleRow({
           hideMeta
         >
           <ToolCallGroupToggle
+            groupKey={marker.key}
             count={marker.count}
             isExpanded={isExpanded}
             onToggle={onToggle}
@@ -804,6 +832,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const transcriptRootResizeRafRef = useRef<number | null>(null);
     const totalListHeightRafRef = useRef<number | null>(null);
     const previousTotalListHeightRef = useRef<number>(-1);
+    const pendingToolGroupScrollAnchorRef = useRef<ToolCallGroupScrollAnchor | null>(null);
+    const toolGroupScrollAdjustmentUntilRef = useRef<number | null>(null);
     const transcriptRootPrevHeightRef = useRef<number>(-1);
     const transcriptRootMountedRef = useRef(false);
     const isTestEnv = import.meta.env.VITEST;
@@ -842,7 +872,41 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       setExpandedToolGroupKeys(new Set());
     }, [conversationId]);
 
-    const toggleToolCallGroup = useCallback((groupKey: string) => {
+    const getToolGroupScrollContainer = useCallback((): HTMLElement | null => {
+      return scrollerElRef.current ?? (isTestEnv ? transcriptRootRef.current : null);
+    }, [isTestEnv]);
+
+    const captureToolGroupScrollAnchor = useCallback(
+      (groupKey: string, toggleElement: HTMLElement | null): ToolCallGroupScrollAnchor | null => {
+        const scroller = getToolGroupScrollContainer();
+        /* c8 ignore next 3 -- the scroller can detach between click capture and state commit. */
+        if (!scroller) {
+          return null;
+        }
+        const anchorElement =
+          toggleElement ?? findToolCallGroupToggleElement(scroller, groupKey);
+        return {
+          groupKey,
+          anchorTop: anchorElement ? anchorElement.getBoundingClientRect().top : null,
+          scrollTop: scroller.scrollTop,
+          bottomDelta: getScrollBottomDelta(scroller),
+          wasVisuallyAtBottom: isScrollElementVisuallyAtBottom(scroller),
+        };
+      },
+      [getToolGroupScrollContainer],
+    );
+
+    const toggleToolCallGroup = useCallback((groupKey: string, toggleElement?: HTMLElement | null) => {
+      const anchor = captureToolGroupScrollAnchor(groupKey, toggleElement ?? null);
+      if (anchor) {
+        pendingToolGroupScrollAnchorRef.current = anchor;
+        toolGroupScrollAdjustmentUntilRef.current =
+          performance.now() + TOOL_GROUP_SCROLL_ADJUSTMENT_WINDOW_MS;
+        if (!anchor.wasVisuallyAtBottom) {
+          isUserScrollingAwayFromBottomRef.current = true;
+          userScrollAwayVersionRef.current += 1;
+        }
+      }
       setExpandedToolGroupKeys((current) => {
         const next = new Set(current);
         if (next.has(groupKey)) {
@@ -852,7 +916,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }
         return next;
       });
-    }, []);
+    }, [captureToolGroupScrollAnchor]);
     const initialPaintReadyFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const initialPaintReadyAttemptRef = useRef(0);
     const initialPendingPaintCoverKey =
@@ -1319,6 +1383,55 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       conversationId, // Reset isAtBottom when conversation changes
     });
 
+    useLayoutEffect(() => {
+      const anchor = pendingToolGroupScrollAnchorRef.current;
+      if (!anchor) {
+        return;
+      }
+      pendingToolGroupScrollAnchorRef.current = null;
+
+      const scroller = getToolGroupScrollContainer();
+      /* c8 ignore next 3 -- the scroller can detach before the layout adjustment runs. */
+      if (!scroller) {
+        return;
+      }
+
+      const nextAnchorElement = findToolCallGroupToggleElement(scroller, anchor.groupKey);
+      const nextAnchorTop = nextAnchorElement?.getBoundingClientRect().top ?? null;
+      let nextScrollTop = scroller.scrollTop;
+
+      if (anchor.wasVisuallyAtBottom) {
+        nextScrollTop = scroller.scrollHeight - scroller.clientHeight;
+      } else if (anchor.anchorTop !== null && nextAnchorTop !== null) {
+        nextScrollTop = anchor.scrollTop + (nextAnchorTop - anchor.anchorTop);
+      } else {
+        nextScrollTop = scroller.scrollHeight - scroller.clientHeight - anchor.bottomDelta;
+      }
+
+      const clampedScrollTop = clampScrollTop(scroller, nextScrollTop);
+      if (Math.abs(scroller.scrollTop - clampedScrollTop) > VISUAL_BOTTOM_EPSILON_PX) {
+        scroller.scrollTop = clampedScrollTop;
+      }
+
+      const visuallyAtBottom = isScrollElementVisuallyAtBottom(scroller);
+      if (visuallyAtBottom) {
+        isUserScrollingAwayFromBottomRef.current = false;
+      }
+      lastObservedScrollTopRef.current = scroller.scrollTop;
+      setIsVisuallyAtBottom(visuallyAtBottom);
+
+      const atBottom = getScrollBottomDelta(scroller) < AT_BOTTOM_THRESHOLD;
+      if (atBottom !== isAtBottomRef.current) {
+        handleAtBottomStateChange(atBottom);
+      }
+    }, [
+      expandedToolGroupKeys,
+      getToolGroupScrollContainer,
+      handleAtBottomStateChange,
+      isAtBottomRef,
+      setIsVisuallyAtBottom,
+    ]);
+
     useEffect(() => {
       scrollToTimestampRef.current = scrollToTimestamp;
     }, [scrollToTimestamp]);
@@ -1500,11 +1613,26 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       [canRunScheduledBottomPin, preferredScrollBehavior, scrollToTrueBottom]
     );
 
+    const isToolGroupScrollAdjustmentActive = useCallback(() => {
+      const until = toolGroupScrollAdjustmentUntilRef.current;
+      if (until === null) {
+        return false;
+      }
+      if (performance.now() <= until) {
+        return true;
+      }
+      toolGroupScrollAdjustmentUntilRef.current = null;
+      return false;
+    }, []);
+
     const scheduleStickyResizeBottomPin = useCallback(
       (
         rafRef: React.MutableRefObject<number | null>,
         shouldRun?: () => boolean,
       ) => {
+        if (isToolGroupScrollAdjustmentActive()) {
+          return;
+        }
         if (rafRef.current !== null) {
           cancelAnimationFrame(rafRef.current);
         }
@@ -1515,7 +1643,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           }
         });
       },
-      [scrollToTrueBottom, shouldKeepBottomPinned],
+      [isToolGroupScrollAdjustmentActive, scrollToTrueBottom, shouldKeepBottomPinned],
     );
 
     // Streaming auto-scroll — followOutput only fires on totalCount changes,
@@ -1642,16 +1770,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }
 
         if (!hasUserScrollInputRef.current) {
-          return true;
+          return isAtBottomRef.current || isVisuallyAtBottomRef.current;
         }
 
-        if (!isLastItemActuallyVisible()) {
-          return false;
-        }
-
-        return isAtBottomRef.current || isVisuallyAtBottomRef.current;
+        return false;
       },
-      [isAtBottomRef, isLastItemActuallyVisible],
+      [isAtBottomRef],
     );
 
     // rAF-throttled DOM reconciliation — keeps isAtBottom accurate when Virtuoso doesn't detect footer growth.
@@ -2434,9 +2558,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             <React.Fragment key={groupKey}>
               <div className="mb-2">
                 <ToolCallGroupToggle
+                  groupKey={groupKey}
                   count={entries.length}
                   isExpanded={isExpanded}
-                  onToggle={() => toggleToolCallGroup(groupKey)}
+                  onToggle={(event) => toggleToolCallGroup(groupKey, event.currentTarget)}
                 />
               </div>
               {isExpanded
@@ -2512,9 +2637,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                 <>
                   <div className="mb-2">
                     <ToolCallGroupToggle
+                      groupKey={fallbackToolGroupKey}
                       count={visibleFallbackToolCalls.length}
                       isExpanded={isFallbackToolGroupExpanded}
-                      onToggle={() => toggleToolCallGroup(fallbackToolGroupKey)}
+                      onToggle={(event) => toggleToolCallGroup(fallbackToolGroupKey, event.currentTarget)}
                     />
                   </div>
                   {isFallbackToolGroupExpanded
@@ -2662,7 +2788,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             isExpanded={isExpandedToolCallGroup}
             teammateName={teammateName}
             teammateColor={teammateColor}
-            onToggle={() => toggleToolCallGroup(toolCallGroup.key)}
+            onToggle={(event) => toggleToolCallGroup(toolCallGroup.key, event.currentTarget)}
             contentWidthClassName={contentWidthClassName}
             rowRef={
               isLastVisibleTimelineItem && !isExpandedToolCallGroup
@@ -2853,7 +2979,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                   isExpanded={isExpandedToolCallGroup}
                   teammateName={teammateName}
                   teammateColor={teammateColor}
-                  onToggle={() => toggleToolCallGroup(toolCallGroup.key)}
+                  onToggle={(event) => toggleToolCallGroup(toolCallGroup.key, event.currentTarget)}
                   contentWidthClassName={contentWidthClassName}
                   rowRef={
                     isLastVisibleTimelineItem && !isExpandedToolCallGroup
