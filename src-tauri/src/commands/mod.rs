@@ -53,6 +53,7 @@ pub mod task_step_commands;
 pub mod task_step_commands_types;
 pub mod team_commands;
 pub mod test_data_commands;
+pub mod ticketing_commands;
 pub mod unified_chat_commands;
 pub mod ui_commands;
 pub mod workspace_open_commands;
@@ -244,6 +245,13 @@ pub use team_commands::{
     get_teammate_cost, send_team_message, send_teammate_message, stop_team, stop_teammate,
     CreateTeamInput, GetTeamHistoryInput, SendTeamMessageInput, SendTeammateMessageInput,
     TeamHistoryResponse, TeamMessageRecordResponse, TeamSessionResponse, TeammateSnapshotResponse,
+};
+pub use ticketing_commands::{
+    get_ticket_associations, get_ticket_detail, list_ticket_transitions, list_ticketing_columns,
+    list_ticketing_containers, list_ticketing_providers, list_tickets, refresh_tickets,
+    ListTicketsQuery, RefreshTicketsResponse, TicketAssociationsResponse, TicketDetailResponse,
+    TicketPageResponse, TicketRefInput, TicketSummaryResponse, TicketingCapabilitiesResponse,
+    TicketingColumnResponse, TicketingContainerResponse, TicketingProviderSummaryResponse,
 };
 // Unified chat commands (consolidates context_chat + execution_chat)
 pub use agent_sidebar_commands::{

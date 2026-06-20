@@ -162,6 +162,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
+  ticketingDashboard: false,
 };
 
 // ============================================================================

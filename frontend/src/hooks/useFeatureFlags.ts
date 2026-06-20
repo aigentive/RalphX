@@ -19,6 +19,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
+  ticketingDashboard: false,
 };
 
 export function useFeatureFlags() {
@@ -53,6 +54,8 @@ export function isViewEnabled(view: string, flags: FeatureFlags): boolean {
       return flags.activityPage;
     case "extensibility":
       return flags.extensibilityPage;
+    case "ticketing":
+      return flags.ticketingDashboard;
     default:
       return true;
   }

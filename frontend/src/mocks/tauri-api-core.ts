@@ -595,6 +595,92 @@ function mockWorkspaceFileDiff(filePath: string) {
   };
 }
 
+const mockTicketingCapabilities = {
+  supportsBoards: true,
+  supportsKanban: true,
+  kanbanWrite: false,
+  statusWrite: false,
+  assignmentWrite: false,
+  commentWrite: false,
+  freshness: "manual",
+};
+
+const mockTicketingColumns = [
+  { id: "todo", name: "To Do", category: "todo", order: 0, color: null },
+  { id: "in_progress", name: "In Progress", category: "in_progress", order: 1, color: null },
+  { id: "review", name: "In Review", category: "in_progress", order: 2, color: null },
+  { id: "done", name: "Done", category: "done", order: 3, color: null },
+];
+
+const mockTicketingTickets = [
+  {
+    ref: { provider: "jira", id: "10001", key: "RX-1" },
+    title: "Fix merge race in transition handler",
+    state: { id: "todo", name: "To Do", category: "todo", color: null },
+    assignee: { id: "user-1", name: "A. Demian", email: null, avatarUrl: null },
+    reporter: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
+    labels: ["backend", "race-condition"],
+    priority: "High",
+    updatedAt: "2026-06-19T22:00:00.000Z",
+    url: "https://example.atlassian.net/browse/RX-1",
+    associationCount: 2,
+  },
+  {
+    ref: { provider: "jira", id: "10002", key: "RX-2" },
+    title: "Add Linear webhook backfill",
+    state: { id: "in_progress", name: "In Progress", category: "in_progress", color: null },
+    assignee: null,
+    reporter: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
+    labels: ["integrations"],
+    priority: "Medium",
+    updatedAt: "2026-06-18T18:30:00.000Z",
+    url: "https://example.atlassian.net/browse/RX-2",
+    associationCount: 0,
+  },
+  {
+    ref: { provider: "jira", id: "10003", key: "RX-3" },
+    title: "Ticketing dashboard shell",
+    state: { id: "review", name: "In Review", category: "in_progress", color: null },
+    assignee: { id: "user-1", name: "A. Demian", email: null, avatarUrl: null },
+    reporter: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
+    labels: ["frontend"],
+    priority: "Medium",
+    updatedAt: "2026-06-19T19:20:00.000Z",
+    url: "https://example.atlassian.net/browse/RX-3",
+    associationCount: 1,
+  },
+];
+
+const mockTicketingAssociations = {
+  tasks: [
+    {
+      id: "task-1",
+      title: "Fix merge race",
+      subtitle: "branch ready · PR open",
+      status: "executing",
+      active: true,
+      deepLink: { view: "kanban", id: "task-1" },
+    },
+  ],
+  proposals: [],
+  sessions: [
+    {
+      id: "session-1",
+      title: "Transition hardening",
+      subtitle: "1 linked conversation",
+      status: "active",
+      active: false,
+      deepLink: { view: "ideation", id: "session-1" },
+    },
+  ],
+  conversations: [],
+  pullRequests: [],
+  checks: [],
+  qa: [],
+  specs: [],
+  fetchedAt: "2026-06-19T22:00:00.000Z",
+};
+
 /**
  * Command handlers map - routes Tauri commands to mock implementations
  */
@@ -746,6 +832,14 @@ const commandHandlers: Record<
   auto_update_managed_provider_clis: async () => ({
     updated: [],
     skipped: mockManagedProviderCliStatuses.providers,
+  }),
+  get_ui_feature_flags: async () => ({
+    activityPage: true,
+    extensibilityPage: true,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: false,
   }),
   get_atlassian_integration_settings: async () =>
     mockAtlassianIntegrationSettings,
@@ -959,6 +1053,94 @@ const commandHandlers: Record<
     return { issue: null };
   },
   get_linear_webhook_config: async () => mockLinearWebhookConfig,
+  list_ticketing_providers: async () => [
+    {
+      provider: "jira",
+      label: "Jira",
+      enabled: true,
+      connectionStatus: "connected",
+      capabilities: mockTicketingCapabilities,
+      fetchedAt: "2026-06-19T22:00:00.000Z",
+      staleAt: null,
+      permissionMessage: null,
+      errorMessage: null,
+    },
+    {
+      provider: "linear",
+      label: "Linear",
+      enabled: true,
+      connectionStatus: "connected",
+      capabilities: { ...mockTicketingCapabilities, freshness: "webhook" },
+      fetchedAt: "2026-06-19T22:00:00.000Z",
+      staleAt: null,
+      permissionMessage: null,
+      errorMessage: null,
+    },
+  ],
+  list_ticketing_containers: async (args) => {
+    const provider = args.provider as string | undefined;
+    return [
+      {
+        provider: provider ?? "jira",
+        id: "board-1",
+        key: "RX",
+        name: "Sprint Board",
+        kind: "board",
+        parentId: null,
+        ticketCount: mockTicketingTickets.length,
+      },
+    ];
+  },
+  list_ticketing_columns: async () => mockTicketingColumns,
+  list_tickets: async (args) => {
+    const query = args.query as { provider?: string; filters?: { text?: string } } | undefined;
+    const provider = query?.provider ?? "jira";
+    const text = query?.filters?.text?.toLowerCase().trim() ?? "";
+    const items = mockTicketingTickets
+      .filter((ticket) => ticket.ref.provider === provider)
+      .filter((ticket) => {
+        if (!text) return true;
+        return `${ticket.ref.key ?? ""} ${ticket.title} ${ticket.labels.join(" ")}`
+          .toLowerCase()
+          .includes(text);
+      });
+    return {
+      items,
+      nextCursor: null,
+      total: items.length,
+      fetchedAt: "2026-06-19T22:00:00.000Z",
+    };
+  },
+  get_ticket_detail: async (args) => {
+    const ticketRef = args.ticketRef as { id?: string } | undefined;
+    const ticket =
+      mockTicketingTickets.find((item) => item.ref.id === ticketRef?.id) ??
+      mockTicketingTickets[0];
+    return {
+      ...ticket,
+      descriptionMarkdown:
+        "When two agents transition the same task, the workflow should stay consistent and preserve review history.",
+      descriptionText:
+        "When two agents transition the same task, the workflow should stay consistent and preserve review history.",
+      acceptanceCriteriaMarkdown: "- No double-transition under contention\n- Activity timeline remains ordered",
+      comments: [
+        {
+          id: "comment-1",
+          author: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
+          bodyMarkdown: "Reproduced on the transition hardening branch.",
+          bodyText: "Reproduced on the transition hardening branch.",
+          createdAt: "2026-06-19T20:00:00.000Z",
+          updatedAt: "2026-06-19T20:00:00.000Z",
+        },
+      ],
+      attachments: [],
+      transitions: [],
+      fetchedAt: "2026-06-19T22:00:00.000Z",
+    };
+  },
+  list_ticket_transitions: async () => [],
+  get_ticket_associations: async () => mockTicketingAssociations,
+  refresh_tickets: async () => ({ refreshedAt: "2026-06-19T22:00:00.000Z" }),
   save_linear_webhook_signing_secret: async (args) => {
     const input = args.input as { signingSecret?: string; enabled?: boolean };
     if (!input.signingSecret?.trim()) {

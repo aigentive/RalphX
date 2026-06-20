@@ -26,10 +26,10 @@ function createWrapper() {
 // ============================================================================
 
 describe("isViewEnabled", () => {
-  const allEnabled: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false };
-  const activityDisabled: FeatureFlags = { activityPage: false, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false };
-  const extensibilityDisabled: FeatureFlags = { activityPage: true, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false };
-  const allDisabled: FeatureFlags = { activityPage: false, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false };
+  const allEnabled: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: true };
+  const activityDisabled: FeatureFlags = { activityPage: false, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: true };
+  const extensibilityDisabled: FeatureFlags = { activityPage: true, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: true };
+  const allDisabled: FeatureFlags = { activityPage: false, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: false };
 
   it("returns true for kanban regardless of flags", () => {
     expect(isViewEnabled("kanban", allDisabled)).toBe(true);
@@ -55,6 +55,11 @@ describe("isViewEnabled", () => {
   it("returns flags.extensibilityPage for extensibility view", () => {
     expect(isViewEnabled("extensibility", allEnabled)).toBe(true);
     expect(isViewEnabled("extensibility", extensibilityDisabled)).toBe(false);
+  });
+
+  it("returns flags.ticketingDashboard for ticketing view", () => {
+    expect(isViewEnabled("ticketing", allEnabled)).toBe(true);
+    expect(isViewEnabled("ticketing", allDisabled)).toBe(false);
   });
 
   it("returns true for unknown views (safe default)", () => {
@@ -86,6 +91,7 @@ describe("useFeatureFlags", () => {
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
+      ticketingDashboard: false,
     });
   });
 
@@ -105,6 +111,7 @@ describe("useFeatureFlags", () => {
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
+      ticketingDashboard: false,
     });
     expect(invoke).toHaveBeenCalledWith("get_ui_feature_flags");
   });
@@ -130,6 +137,7 @@ describe("useFeatureFlags", () => {
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
+      ticketingDashboard: false,
     });
   });
 });

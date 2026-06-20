@@ -13,8 +13,8 @@ import {
 } from "./chat";
 
 describe("ViewTypeSchema", () => {
-  it("should have 9 view type values", () => {
-    expect(VIEW_TYPE_VALUES.length).toBe(9);
+  it("should have 10 view type values", () => {
+    expect(VIEW_TYPE_VALUES.length).toBe(10);
   });
 
   it("should parse all valid view types", () => {
@@ -30,6 +30,7 @@ describe("ViewTypeSchema", () => {
     expect(VIEW_TYPE_VALUES).toContain("agents");
     expect(VIEW_TYPE_VALUES).toContain("extensibility");
     expect(VIEW_TYPE_VALUES).toContain("activity");
+    expect(VIEW_TYPE_VALUES).toContain("ticketing");
     expect(VIEW_TYPE_VALUES).toContain("task_detail");
   });
 

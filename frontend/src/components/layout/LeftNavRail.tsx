@@ -25,6 +25,7 @@ export const LEFT_NAV_RAIL_WIDTH = 72;
 interface LeftNavRailProps {
   currentView: ViewType;
   onViewChange: (view: ViewType) => void;
+  onViewWarmUp?: (view: ViewType) => void;
   onOpenSettings?: () => void;
   /** Hide primary view items (e.g. during welcome screen). Settings stays. */
   hideViews?: boolean;
@@ -37,6 +38,7 @@ interface RailItemProps {
   shortcut?: string | undefined;
   isActive: boolean;
   onClick: () => void;
+  onWarmUp?: () => void;
   testId?: string;
 }
 
@@ -46,6 +48,7 @@ function RailItem({
   shortcut,
   isActive,
   onClick,
+  onWarmUp,
   testId,
 }: RailItemProps) {
   return (
@@ -54,6 +57,8 @@ function RailItem({
         <button
           type="button"
           onClick={onClick}
+          onPointerEnter={onWarmUp}
+          onFocus={onWarmUp}
           aria-label={label}
           aria-current={isActive ? "page" : undefined}
           data-theme-button-skip
@@ -94,6 +99,7 @@ function RailItem({
 export function LeftNavRail({
   currentView,
   onViewChange,
+  onViewWarmUp,
   onOpenSettings,
   hideViews = false,
 }: LeftNavRailProps) {
@@ -146,6 +152,7 @@ export function LeftNavRail({
               shortcut={shortcut}
               isActive={currentView === view}
               onClick={() => onViewChange(view)}
+              onWarmUp={() => onViewWarmUp?.(view)}
               testId={`nav-${view}`}
             />
           ))}

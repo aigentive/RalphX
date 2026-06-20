@@ -25,6 +25,8 @@ pub struct UiFeatureFlagsConfig {
     pub team_mode: bool,
     /// Enable or disable Atlassian OAuth setup UI. Default: false.
     pub atlassian_oauth: bool,
+    /// Enable or disable the read-only ticketing dashboard UI. Default: false.
+    pub ticketing_dashboard: bool,
 }
 
 impl Default for UiFeatureFlagsConfig {
@@ -35,6 +37,7 @@ impl Default for UiFeatureFlagsConfig {
             battle_mode: true,
             team_mode: false,
             atlassian_oauth: false,
+            ticketing_dashboard: false,
         }
     }
 }

@@ -413,6 +413,14 @@ macro_rules! register_tauri_commands {
             commands::diagnostic_commands::get_codex_cli_diagnostics,
             // UI feature flag commands
             commands::ui_commands::get_ui_feature_flags,
+            commands::ticketing_commands::list_ticketing_providers,
+            commands::ticketing_commands::list_ticketing_containers,
+            commands::ticketing_commands::list_ticketing_columns,
+            commands::ticketing_commands::list_tickets,
+            commands::ticketing_commands::get_ticket_detail,
+            commands::ticketing_commands::list_ticket_transitions,
+            commands::ticketing_commands::get_ticket_associations,
+            commands::ticketing_commands::refresh_tickets,
             // Workspace open commands
             commands::workspace_open_commands::list_workspace_open_targets,
             commands::workspace_open_commands::open_agent_conversation_workspace,

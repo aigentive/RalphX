@@ -19,6 +19,7 @@ import { ProposalDetailSheet } from "@/components/Ideation/ProposalDetailSheet";
 import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDetailSheet";
 import { ExtensibilityView } from "@/components/ExtensibilityView";
 import { ActivityView } from "@/components/activity";
+import { TicketingDashboardView } from "@/components/ticketing";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { InsightsView } from "@/components/views/InsightsView";
 import { AgentsView } from "@/components/agents";
@@ -67,6 +68,8 @@ import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
 import { executionApi } from "@/api/execution";
 import { tasksApi } from "@/api/tasks";
+import { ticketingApi, type TicketDeepLink } from "@/api/ticketing";
+import { ticketingKeys } from "@/hooks/useTicketing";
 import type { SelectionSource } from "@/api/plan";
 import type { ProjectSettings } from "@/types/settings";
 import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
@@ -132,7 +135,7 @@ function FeatureDisabledPlaceholder({
       <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
         {view} page is disabled (dev mode)
       </p>
-      <div className="text-xs font-mono rounded p-3 text-left" style={{ background: "var(--bg-surface)", color: "var(--text-secondary)" }}>
+      <div className="text-xs font-mono rounded p-3 text-left" style={{ backgroundColor: "var(--bg-surface)", color: "var(--text-secondary)" }}>
         <p className="mb-2 font-sans" style={{ color: "var(--text-muted)" }}>Enable via ralphx.yaml:</p>
         <pre>{`ui:\n  feature_flags:\n    ${yamlKey}: true`}</pre>
         <p className="mt-3 mb-1 font-sans" style={{ color: "var(--text-muted)" }}>Or via env var:</p>
@@ -562,6 +565,28 @@ function AppContent() {
     openModal("settings", { section: "integrations" });
   }, [openModal]);
 
+  const handleWarmView = useCallback((view: ViewType) => {
+    if (view !== "ticketing" || !currentProjectId) {
+      return;
+    }
+    void queryClient.prefetchQuery({
+      queryKey: ticketingKeys.providers(currentProjectId),
+      queryFn: () => ticketingApi.listProviders({ projectId: currentProjectId }),
+      staleTime: 60_000,
+    }).catch(() => {
+      // Warm-up failures are non-blocking; opening the view surfaces real state.
+    });
+  }, [currentProjectId]);
+
+  const handleNavigateFromTicketAssociation = useCallback((deepLink: TicketDeepLink) => {
+    if (deepLink.view === "kanban") {
+      setCurrentView("kanban");
+      setSelectedTaskId(deepLink.id);
+      return;
+    }
+    setCurrentView(deepLink.view);
+  }, [setCurrentView, setSelectedTaskId]);
+
   useEffect(() => {
     if (
       !postUpdateAppReady ||
@@ -955,6 +980,7 @@ function AppContent() {
             <LeftNavRail
               currentView={currentView}
               onViewChange={handleViewChange}
+              onViewWarmUp={handleWarmView}
               onOpenSettings={handleOpenSettings}
               hideViews={hasNoProjects || showWelcomeOverlay || providerSetupRequired}
             />
@@ -1036,6 +1062,18 @@ function AppContent() {
                   )
                   : import.meta.env.DEV
                     ? <FeatureDisabledPlaceholder view="activity" yamlKey="activity_page" envVar="RALPHX_UI_ACTIVITY_PAGE" />
+                    : null
+              )}
+              {currentView === "ticketing" && (
+                isViewEnabled("ticketing", featureFlags)
+                  ? (
+                    <TicketingDashboardView
+                      projectId={currentProjectId}
+                      onNavigateToAssociation={handleNavigateFromTicketAssociation}
+                    />
+                  )
+                  : import.meta.env.DEV
+                    ? <FeatureDisabledPlaceholder view="ticketing" yamlKey="ticketing_dashboard" envVar="RALPHX_UI_TICKETING_DASHBOARD" />
                     : null
               )}
               {currentView === "insights" && <InsightsView />}
