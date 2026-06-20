@@ -7052,6 +7052,147 @@ describe("ChatMessageList - Virtuoso production render path", () => {
     }
   });
 
+  it("preserves bottom distance if the expanded tool-call toggle cannot be found", async () => {
+    const user = userEvent.setup();
+    const parentMessageId = "assistant-turn-scroll-fallback";
+    const messages: ChatMessageData[] = [
+      makeTimelineTextMessage({
+        id: "text-1",
+        parentMessageId,
+        sequence: 1,
+        text: "I will fetch two files.",
+      }),
+      makeTimelineToolMessage({ id: "tool-a", parentMessageId, sequence: 2 }),
+      makeTimelineToolMessage({ id: "tool-b", parentMessageId, sequence: 3 }),
+    ];
+
+    render(<ChatMessageList {...defaultProps} messages={messages} />);
+    const scroller = await screen.findByTestId("mock-virtuoso");
+    setMockScrollerGeometry(scroller, {
+      clientHeight: 500,
+      scrollHeight: 1000,
+      scrollTop: 250,
+    });
+    const querySelectorSpy = vi
+      .spyOn(scroller, "querySelectorAll")
+      .mockReturnValue([] as unknown as NodeListOf<HTMLElement>);
+
+    try {
+      await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+
+      expect(screen.getByRole("button", { name: "Hide 2 tool calls" })).toBeInTheDocument();
+      expect(scroller.scrollTop).toBe(250);
+    } finally {
+      querySelectorSpy.mockRestore();
+    }
+  });
+
+  it("suppresses resize bottom pins during a tool-call group scroll adjustment", async () => {
+    const user = userEvent.setup();
+    const queuedRafs: FrameRequestCallback[] = [];
+    let now = 1_000;
+    const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      queuedRafs.push(callback);
+      return queuedRafs.length;
+    });
+    const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+    const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const parentMessageId = "assistant-turn-scroll-resize";
+    const messages: ChatMessageData[] = [
+      makeTimelineTextMessage({
+        id: "text-1",
+        parentMessageId,
+        sequence: 1,
+        text: "I will fetch two files.",
+      }),
+      makeTimelineToolMessage({ id: "tool-a", parentMessageId, sequence: 2 }),
+      makeTimelineToolMessage({ id: "tool-b", parentMessageId, sequence: 3 }),
+    ];
+
+    try {
+      render(<ChatMessageList {...defaultProps} messages={messages} />);
+      const scroller = await screen.findByTestId("mock-virtuoso");
+      const totalListHeightChanged = expectMockVirtuosoCallback<(height: number) => void>(
+        "totalListHeightChanged",
+      );
+      act(() => {
+        totalListHeightChanged(1_000);
+        while (queuedRafs.length > 0) {
+          queuedRafs.shift()?.(0);
+        }
+      });
+      setMockScrollerGeometry(scroller, {
+        clientHeight: 500,
+        scrollHeight: 1000,
+        scrollTop: 250,
+      });
+
+      await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+      queuedRafs.length = 0;
+
+      act(() => {
+        totalListHeightChanged(1_100);
+      });
+      expect(queuedRafs).toHaveLength(0);
+
+      now = 2_000;
+      act(() => {
+        totalListHeightChanged(1_200);
+      });
+      expect(queuedRafs).toHaveLength(1);
+    } finally {
+      rafSpy.mockRestore();
+      cancelSpy.mockRestore();
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("does not recover scroll drift after non-scrollbar user input", async () => {
+    const queuedRafs: FrameRequestCallback[] = [];
+    const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      queuedRafs.push(callback);
+      return queuedRafs.length;
+    });
+    const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+    try {
+      mockIsAtBottom = true;
+      mockIsAtBottomRef.current = true;
+      render(<ChatMessageList {...defaultProps} messages={createMessages(10)} />);
+      const scroller = await screen.findByTestId("mock-virtuoso");
+      vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue(
+        makeRect({ top: 0, bottom: 500, right: 300, width: 300 }),
+      );
+      setMockScrollerGeometry(scroller, {
+        clientHeight: 500,
+        scrollHeight: 1000,
+        scrollTop: 300,
+      });
+      act(() => {
+        while (queuedRafs.length > 0) {
+          queuedRafs.shift()?.(0);
+        }
+      });
+      queuedRafs.length = 0;
+      scrollToMock.mockClear();
+
+      act(() => {
+        scroller.dispatchEvent(new MouseEvent("pointerdown", { clientX: 20 }));
+        scroller.dispatchEvent(new Event("scroll"));
+      });
+      act(() => {
+        queuedRafs.shift()?.(0);
+      });
+
+      expect(scrollToMock).not.toHaveBeenCalled();
+    } finally {
+      mockIsAtBottom = true;
+      mockIsAtBottomRef.current = true;
+      rafSpy.mockRestore();
+      cancelSpy.mockRestore();
+    }
+  });
+
   it("keeps single tool-call rows ungrouped", () => {
     const parentMessageId = "assistant-turn-3";
     const messages: ChatMessageData[] = [

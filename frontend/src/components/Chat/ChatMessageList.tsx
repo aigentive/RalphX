@@ -879,6 +879,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const captureToolGroupScrollAnchor = useCallback(
       (groupKey: string, toggleElement: HTMLElement | null): ToolCallGroupScrollAnchor | null => {
         const scroller = getToolGroupScrollContainer();
+        /* c8 ignore next 3 -- the scroller can detach between click capture and state commit. */
         if (!scroller) {
           return null;
         }
@@ -1390,6 +1391,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       pendingToolGroupScrollAnchorRef.current = null;
 
       const scroller = getToolGroupScrollContainer();
+      /* c8 ignore next 3 -- the scroller can detach before the layout adjustment runs. */
       if (!scroller) {
         return;
       }
