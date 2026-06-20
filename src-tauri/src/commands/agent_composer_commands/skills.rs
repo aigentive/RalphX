@@ -23,6 +23,9 @@ const SKILL_FILE_NAME: &str = "SKILL.md";
 const CLAUDE_DIR_NAME: &str = ".claude";
 const CLAUDE_SKILLS_DIR_NAME: &str = "skills";
 const CLAUDE_COMMANDS_DIR_NAME: &str = "commands";
+const CLAUDE_SETTINGS_FILE_NAME: &str = "settings.json";
+const CLAUDE_PLUGINS_DIR_NAME: &str = "plugins";
+const CLAUDE_INSTALLED_PLUGINS_FILE_NAME: &str = "installed_plugins.json";
 const CODEX_AGENTS_DIR_NAME: &str = ".agents";
 const CODEX_SKILLS_DIR_NAME: &str = "skills";
 const CODEX_HOME_ENV: &str = "CODEX_HOME";
@@ -134,7 +137,11 @@ fn list_claude_native_skills(
     }
 
     for candidate in claude_skill_roots(root) {
-        for skill in read_claude_skill_dir(&candidate.path, &candidate.scope)? {
+        for skill in read_claude_skill_dir(
+            &candidate.path,
+            &candidate.scope,
+            candidate.name_prefix.as_deref(),
+        )? {
             skills.entry(skill.id.clone()).or_insert(skill);
         }
     }
@@ -145,6 +152,7 @@ fn list_claude_native_skills(
 struct ClaudeSkillRoot {
     path: PathBuf,
     scope: String,
+    name_prefix: Option<String>,
 }
 
 fn claude_skill_roots(project_root: &Path) -> Vec<ClaudeSkillRoot> {
@@ -156,6 +164,7 @@ fn claude_skill_roots(project_root: &Path) -> Vec<ClaudeSkillRoot> {
             &mut seen,
             ancestor.join(CLAUDE_DIR_NAME).join(CLAUDE_SKILLS_DIR_NAME),
             "project",
+            None,
         );
         push_claude_root(
             &mut roots,
@@ -164,21 +173,26 @@ fn claude_skill_roots(project_root: &Path) -> Vec<ClaudeSkillRoot> {
                 .join(CLAUDE_DIR_NAME)
                 .join(CLAUDE_COMMANDS_DIR_NAME),
             "project-command",
+            None,
         );
     }
     if let Some(home) = dirs::home_dir() {
+        let claude_home = home.join(CLAUDE_DIR_NAME);
         push_claude_root(
             &mut roots,
             &mut seen,
-            home.join(CLAUDE_DIR_NAME).join(CLAUDE_SKILLS_DIR_NAME),
+            claude_home.join(CLAUDE_SKILLS_DIR_NAME),
             "global",
+            None,
         );
         push_claude_root(
             &mut roots,
             &mut seen,
-            home.join(CLAUDE_DIR_NAME).join(CLAUDE_COMMANDS_DIR_NAME),
+            claude_home.join(CLAUDE_COMMANDS_DIR_NAME),
             "global-command",
+            None,
         );
+        push_claude_plugin_roots(&mut roots, &mut seen, &claude_home);
     }
     roots
 }
@@ -188,6 +202,7 @@ fn push_claude_root(
     seen: &mut BTreeSet<PathBuf>,
     path: PathBuf,
     scope: &str,
+    name_prefix: Option<String>,
 ) {
     let Ok(safe) = validate_absolute_non_root_path(&path, "Claude skill root") else {
         return;
@@ -201,12 +216,115 @@ fn push_claude_root(
     roots.push(ClaudeSkillRoot {
         path: canonical,
         scope: scope.to_string(),
+        name_prefix,
     });
+}
+
+fn push_claude_plugin_roots(
+    roots: &mut Vec<ClaudeSkillRoot>,
+    seen: &mut BTreeSet<PathBuf>,
+    claude_home: &Path,
+) {
+    let Ok(safe_home) = validate_absolute_non_root_path(claude_home, "Claude home") else {
+        return;
+    };
+    let Ok(canonical_home) = safe_home.canonicalize() else {
+        return;
+    };
+    let plugins_dir = canonical_home.join(CLAUDE_PLUGINS_DIR_NAME);
+    let Ok(canonical_plugins_dir) = plugins_dir.canonicalize() else {
+        return;
+    };
+    if !canonical_plugins_dir.is_dir() {
+        return;
+    }
+
+    let enabled_plugins = read_enabled_claude_plugins(&canonical_home);
+    if enabled_plugins.is_empty() {
+        return;
+    }
+    let installed_plugins = read_installed_claude_plugins(&canonical_home);
+
+    for (plugin_key, installs) in installed_plugins.plugins {
+        if !enabled_plugins.contains(&plugin_key) {
+            continue;
+        }
+        let Some(plugin_name) = plugin_key
+            .split('@')
+            .next()
+            .filter(|name| is_safe_skill_token(name))
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        for install in installs {
+            let Some(install_path) = install.install_path else {
+                continue;
+            };
+            let install_path = PathBuf::from(install_path);
+            let Ok(safe_install_path) =
+                validate_absolute_non_root_path(&install_path, "Claude plugin install path")
+            else {
+                continue;
+            };
+            let Ok(canonical_install_path) = safe_install_path.canonicalize() else {
+                continue;
+            };
+            if !canonical_install_path.starts_with(&canonical_plugins_dir)
+                || !canonical_install_path.is_dir()
+            {
+                continue;
+            }
+            push_claude_root(
+                roots,
+                seen,
+                canonical_install_path.join(CLAUDE_SKILLS_DIR_NAME),
+                "plugin",
+                Some(plugin_name.clone()),
+            );
+            push_claude_root(
+                roots,
+                seen,
+                canonical_install_path.join(CLAUDE_COMMANDS_DIR_NAME),
+                "plugin-command",
+                Some(plugin_name.clone()),
+            );
+        }
+    }
+}
+
+fn read_enabled_claude_plugins(claude_home: &Path) -> BTreeSet<String> {
+    let settings_path = claude_home.join(CLAUDE_SETTINGS_FILE_NAME);
+    // codeql[rust/path-injection]
+    let Ok(raw) = std::fs::read_to_string(settings_path) else {
+        return BTreeSet::new();
+    };
+    serde_json::from_str::<ClaudeSettings>(&raw)
+        .map(|settings| {
+            settings
+                .enabled_plugins
+                .into_iter()
+                .filter_map(|(name, enabled)| enabled.then_some(name))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn read_installed_claude_plugins(claude_home: &Path) -> ClaudeInstalledPlugins {
+    let installed_path = claude_home
+        .join(CLAUDE_PLUGINS_DIR_NAME)
+        .join(CLAUDE_INSTALLED_PLUGINS_FILE_NAME);
+    // codeql[rust/path-injection]
+    let Ok(raw) = std::fs::read_to_string(installed_path) else {
+        return ClaudeInstalledPlugins::default();
+    };
+    serde_json::from_str::<ClaudeInstalledPlugins>(&raw).unwrap_or_default()
 }
 
 fn read_claude_skill_dir(
     skills_root: &Path,
     scope: &str,
+    name_prefix: Option<&str>,
 ) -> Result<Vec<AgentComposerSkillResponse>, String> {
     let safe_root = validate_absolute_non_root_path(skills_root, "Claude skill directory")
         .map_err(|error| error.to_string())?;
@@ -226,14 +344,16 @@ fn read_claude_skill_dir(
         };
         if file_type.is_dir() {
             let skill_file = path.join(SKILL_FILE_NAME);
-            if let Some(skill) = read_claude_skill_file(&safe_root, &skill_file, scope)? {
+            if let Some(skill) =
+                read_claude_skill_file(&safe_root, &skill_file, scope, name_prefix)?
+            {
                 skills.push(skill);
             }
         } else if file_type.is_file()
             && safe_root.file_name() == Some(OsStr::new(CLAUDE_COMMANDS_DIR_NAME))
             && path.extension() == Some(OsStr::new("md"))
         {
-            if let Some(skill) = read_claude_command_file(&safe_root, &path, scope)? {
+            if let Some(skill) = read_claude_command_file(&safe_root, &path, scope, name_prefix)? {
                 skills.push(skill);
             }
         }
@@ -245,6 +365,7 @@ fn read_claude_skill_file(
     skills_root: &Path,
     skill_file: &Path,
     scope: &str,
+    name_prefix: Option<&str>,
 ) -> Result<Option<AgentComposerSkillResponse>, String> {
     let Ok(canonical) = skill_file.canonicalize() else {
         return Ok(None);
@@ -273,8 +394,8 @@ fn read_claude_skill_file(
         .name
         .as_deref()
         .filter(|name| is_safe_skill_token(name))
-        .unwrap_or(fallback_name)
-        .to_string();
+        .unwrap_or(fallback_name);
+    let name = format_skill_name(name_prefix, name);
     Ok(Some(AgentComposerSkillResponse {
         id: format!("claude:{scope}:{name}"),
         name: name.clone(),
@@ -294,6 +415,7 @@ fn read_claude_command_file(
     commands_root: &Path,
     command_file: &Path,
     scope: &str,
+    name_prefix: Option<&str>,
 ) -> Result<Option<AgentComposerSkillResponse>, String> {
     let Ok(canonical) = command_file.canonicalize() else {
         return Ok(None);
@@ -312,9 +434,10 @@ fn read_claude_command_file(
     let (frontmatter, body) = split_frontmatter(&raw).unwrap_or(("", raw.as_str()));
     let metadata = serde_yaml::from_str::<SkillFrontmatter>(frontmatter).unwrap_or_default();
     let first_line = body.lines().map(str::trim).find(|line| !line.is_empty());
+    let name = format_skill_name(name_prefix, stem);
     Ok(Some(AgentComposerSkillResponse {
-        id: format!("claude:{scope}:{stem}"),
-        name: stem.to_string(),
+        id: format!("claude:{scope}:{name}"),
+        name: name.clone(),
         display_name: metadata.display_name,
         description: metadata
             .description
@@ -323,10 +446,17 @@ fn read_claude_command_file(
         provider_harness: Some("claude".to_string()),
         scope: Some(scope.to_string()),
         invocation_kind: "harness-native-token".to_string(),
-        invocation_value: format!("/{stem}"),
+        invocation_value: format!("/{name}"),
         enabled: metadata.user_invocable.unwrap_or(true),
         source_path: Some(canonical.display().to_string()),
     }))
+}
+
+fn format_skill_name(name_prefix: Option<&str>, name: &str) -> String {
+    match name_prefix {
+        Some(prefix) => format!("{prefix}:{name}"),
+        None => name.to_string(),
+    }
 }
 
 fn list_codex_native_skills(root: &Path) -> Result<Vec<AgentComposerSkillResponse>, String> {
@@ -726,6 +856,24 @@ struct SkillFrontmatter {
 }
 
 #[derive(Debug, Deserialize, Default)]
+struct ClaudeSettings {
+    #[serde(default, rename = "enabledPlugins")]
+    enabled_plugins: BTreeMap<String, bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ClaudeInstalledPlugins {
+    #[serde(default)]
+    plugins: BTreeMap<String, Vec<ClaudeInstalledPlugin>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ClaudeInstalledPlugin {
+    #[serde(default, rename = "installPath")]
+    install_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 struct CodexPluginManifest {
     #[serde(default)]
     name: Option<String>,
@@ -965,7 +1113,7 @@ Skill body.
         )
         .expect("skill file");
 
-        let skills = read_claude_skill_dir(&skill_root, "project").expect("skills");
+        let skills = read_claude_skill_dir(&skill_root, "project", None).expect("skills");
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].id, "claude:project:fallback-skill");
         assert_eq!(skills[0].name, "fallback-skill");
@@ -988,7 +1136,8 @@ Skill body.
         fs::write(commands_root.join("notes.txt"), "Should also be ignored.")
             .expect("non-command file");
 
-        let commands = read_claude_skill_dir(&commands_root, "project-command").expect("commands");
+        let commands =
+            read_claude_skill_dir(&commands_root, "project-command", None).expect("commands");
 
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].id, "claude:project-command:review");
@@ -997,6 +1146,104 @@ Skill body.
             Some("Review the current branch.")
         );
         assert_eq!(commands[0].invocation_value, "/review");
+    }
+
+    #[test]
+    fn claude_plugin_roots_use_enabled_installed_plugins_and_namespace_invocations() {
+        let temp = tempdir().expect("tempdir");
+        let claude_home = temp.path().join(".claude");
+        let plugins_dir = claude_home.join("plugins");
+        let active_root = plugins_dir.join("cache/claude-plugins-official/figma/2.2.50");
+        let stale_root = plugins_dir.join("cache/claude-plugins-official/figma/2.1.30");
+        let disabled_root = plugins_dir.join("cache/claude-plugins-official/microsoft-docs/0.3.1");
+
+        fs::create_dir_all(active_root.join("skills/figma-use")).expect("active skill dir");
+        fs::write(
+            active_root.join("skills/figma-use/SKILL.md"),
+            r#"---
+name: figma-use
+description: Use Figma
+---
+Body
+"#,
+        )
+        .expect("active skill");
+        fs::create_dir_all(active_root.join("commands")).expect("active commands dir");
+        fs::write(
+            active_root.join("commands/sync.md"),
+            "Synchronize Figma assets.",
+        )
+        .expect("active command");
+        fs::create_dir_all(stale_root.join("skills/old-only")).expect("stale skill dir");
+        fs::write(
+            stale_root.join("skills/old-only/SKILL.md"),
+            "---\nname: old-only\n---\nBody\n",
+        )
+        .expect("stale skill");
+        fs::create_dir_all(disabled_root.join("skills/microsoft-docs"))
+            .expect("disabled skill dir");
+        fs::write(
+            disabled_root.join("skills/microsoft-docs/SKILL.md"),
+            "---\nname: microsoft-docs\n---\nBody\n",
+        )
+        .expect("disabled skill");
+        fs::write(
+            claude_home.join(CLAUDE_SETTINGS_FILE_NAME),
+            serde_json::json!({
+                "enabledPlugins": {
+                    "figma@claude-plugins-official": true,
+                    "microsoft-docs@claude-plugins-official": false
+                }
+            })
+            .to_string(),
+        )
+        .expect("settings");
+        fs::write(
+            plugins_dir.join(CLAUDE_INSTALLED_PLUGINS_FILE_NAME),
+            serde_json::json!({
+                "version": 2,
+                "plugins": {
+                    "figma@claude-plugins-official": [
+                        { "scope": "user", "installPath": active_root }
+                    ],
+                    "microsoft-docs@claude-plugins-official": [
+                        { "scope": "user", "installPath": disabled_root }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .expect("installed plugins");
+
+        let mut roots = Vec::new();
+        let mut seen = BTreeSet::new();
+        push_claude_plugin_roots(&mut roots, &mut seen, &claude_home);
+        let mut skills = Vec::new();
+        for root in roots {
+            skills.extend(
+                read_claude_skill_dir(&root.path, &root.scope, root.name_prefix.as_deref())
+                    .expect("plugin skills"),
+            );
+        }
+
+        assert!(skills.iter().any(|skill| {
+            skill.id == "claude:plugin:figma:figma-use"
+                && skill.name == "figma:figma-use"
+                && skill.invocation_value == "/figma:figma-use"
+                && skill
+                    .source_path
+                    .as_deref()
+                    .is_some_and(|path| path.ends_with("figma/2.2.50/skills/figma-use/SKILL.md"))
+        }));
+        assert!(skills.iter().any(|skill| {
+            skill.id == "claude:plugin-command:figma:sync"
+                && skill.name == "figma:sync"
+                && skill.invocation_value == "/figma:sync"
+        }));
+        assert!(!skills.iter().any(|skill| skill.name == "figma:old-only"));
+        assert!(!skills
+            .iter()
+            .any(|skill| skill.name == "microsoft-docs:microsoft-docs"));
     }
 
     #[test]

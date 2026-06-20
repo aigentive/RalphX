@@ -230,9 +230,11 @@ describe("AgentComposerSurface", () => {
   it("shows trigger hints in the helper text", () => {
     renderComposer();
 
-    expect(screen.getByText("Type / for commands")).toBeInTheDocument();
+    expect(
+      screen.getByText("Type / for commands and skills"),
+    ).toBeInTheDocument();
     expect(screen.getByText("@ for references")).toBeInTheDocument();
-    expect(screen.getByText("$ for skills")).toBeInTheDocument();
+    expect(screen.queryByText("$ for skills")).not.toBeInTheDocument();
   });
 
   it("shows disabled mode option reasons without firing the change handler", () => {
@@ -767,7 +769,7 @@ describe("AgentComposerSurface", () => {
     await waitFor(() => expect(onForkSession).toHaveBeenCalledTimes(1));
   });
 
-  it("appends internal skill directives for selected $ skills", async () => {
+  it("appends internal skill directives for selected slash skills", async () => {
     const onSend = vi.fn();
     vi.mocked(invoke).mockImplementation((cmd) => {
       if (cmd === "list_agent_composer_skills") {
@@ -795,8 +797,8 @@ describe("AgentComposerSurface", () => {
 
     const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
     fireEvent.focus(textarea);
-    fireEvent.change(textarea, { target: { value: "Use $work" } });
-    textarea.setSelectionRange("Use $work".length, "Use $work".length);
+    fireEvent.change(textarea, { target: { value: "/work" } });
+    textarea.setSelectionRange("/work".length, "/work".length);
     fireEvent.keyUp(textarea);
 
     const item = await screen.findByTestId(
@@ -807,7 +809,7 @@ describe("AgentComposerSurface", () => {
     fireEvent.click(screen.getByTestId("agent-composer-submit"));
 
     expect(onSend).toHaveBeenCalledWith(
-      "Use $workspace-swe\n\n<!-- ralphx_internal_skill=workspace-swe -->",
+      "workspace-swe\n\n<!-- ralphx_internal_skill=workspace-swe -->",
     );
   });
 
@@ -894,10 +896,51 @@ describe("AgentComposerSurface", () => {
     textarea.setSelectionRange("/rev".length, "/rev".length);
     fireEvent.keyUp(textarea);
 
-    await screen.findByTestId("agent-composer-menu-item-command:skill:claude:project:review");
+    await screen.findByTestId(
+      "agent-composer-menu-item-skill:claude:project:review",
+    );
     fireEvent.keyDown(textarea, { key: "Enter" });
 
     expect(textarea.value).toBe("/review ");
+  });
+
+  it("includes Codex-native dollar skills in the slash command menu", async () => {
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "list_agent_composer_skills") {
+        return Promise.resolve({
+          skills: [
+            {
+              id: "codex:global:plugin-creator",
+              name: "plugin-creator",
+              displayName: null,
+              description: "Create Codex plugins.",
+              source: "harness-native",
+              providerHarness: "codex",
+              scope: "global",
+              invocationKind: "harness-native-token",
+              invocationValue: "$plugin-creator",
+              enabled: true,
+              sourcePath: ".codex/skills/plugin-creator/SKILL.md",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({ entries: [], truncated: false });
+    });
+    renderComposer();
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "/plug" } });
+    textarea.setSelectionRange("/plug".length, "/plug".length);
+    fireEvent.keyUp(textarea);
+
+    await screen.findByTestId(
+      "agent-composer-menu-item-skill:codex:global:plugin-creator",
+    );
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    expect(textarea.value).toBe("$plugin-creator ");
   });
 
   it("accepts dropped files across the whole composer surface", async () => {
