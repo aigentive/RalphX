@@ -374,7 +374,7 @@ function collectToolCallGroupRun(
     previous = next;
   }
 
-  return group.length > 1 ? group : null;
+  return group.length >= 1 ? group : null;
 }
 
 function toolCallGroupKey(messages: ChatMessageData[]): string {
@@ -447,7 +447,7 @@ function ToolCallGroupToggle({
   isExpanded: boolean;
   onToggle: React.MouseEventHandler<HTMLButtonElement>;
 }) {
-  const label = isExpanded ? `Hide ${count} tool calls` : `Agent called ${count} tools`;
+  const label = isExpanded ? `Hide ${count} tool call${count === 1 ? "" : "s"}` : `Agent called ${count} tool${count === 1 ? "" : "s"}`;
   return (
     <button
       type="button"
