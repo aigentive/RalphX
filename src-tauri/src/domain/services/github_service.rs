@@ -230,6 +230,15 @@ pub struct PrSubmittedReview {
 /// Abstraction over GitHub operations (production: `gh` CLI, tests: mock)
 #[async_trait]
 pub trait GithubServiceTrait: Send + Sync {
+    /// Create a GitHub issue. Returns the created issue URL.
+    async fn create_issue(
+        &self,
+        working_dir: &Path,
+        repository: &str,
+        title: &str,
+        body_file: &Path,
+    ) -> AppResult<String>;
+
     /// Create a draft pull request. Returns (pr_number, pr_url).
     async fn create_draft_pr(
         &self,
@@ -379,6 +388,16 @@ mod tests {
 
     #[async_trait]
     impl GithubServiceTrait for DefaultOnlyGithubService {
+        async fn create_issue(
+            &self,
+            _working_dir: &Path,
+            _repository: &str,
+            _title: &str,
+            _body_file: &Path,
+        ) -> AppResult<String> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+
         async fn create_draft_pr(
             &self,
             _working_dir: &Path,

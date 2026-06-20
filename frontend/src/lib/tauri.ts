@@ -210,6 +210,16 @@ export {
   transformPlanBranch,
 } from "@/api/plan-branch";
 
+// Agent Issue Report API
+export {
+  agentIssueReportApi,
+  type AgentIssueReportDraft,
+  type AgentIssueReportDestination,
+  type AgentIssueReportSubmitResponse,
+  type BuildAgentIssueReportInput,
+  type SubmitAgentIssueReportInput,
+} from "@/api/agent-issue-report";
+
 // ============================================================================
 // Aggregate API Object
 // ============================================================================
@@ -226,6 +236,7 @@ import { qaApi } from "@/api/qa-api";
 import { reviewsApi, fixTasksApi } from "@/api/reviews-api";
 import { tasksApi, stepsApi } from "@/api/tasks";
 import { planBranchApi } from "@/api/plan-branch";
+import { agentIssueReportApi } from "@/api/agent-issue-report";
 
 // Mock API imports for web mode
 import { mockApi } from "@/api-mock";
@@ -257,6 +268,7 @@ const realApi = {
   steps: stepsApi,
   testData: testDataApi,
   planBranches: planBranchApi,
+  agentIssueReport: agentIssueReportApi,
 } as const;
 
 /**

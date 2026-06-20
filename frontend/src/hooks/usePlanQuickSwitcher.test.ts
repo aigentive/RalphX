@@ -42,12 +42,13 @@ vi.mock("@/stores/planStore", () => ({
 
 // Mock hooks
 const mockQuickAction: QuickAction = {
-  id: "ideation",
-  label: "Start new ideation session",
+  id: "agent-conversation",
+  label: "Start new agent conversation",
   icon: vi.fn() as unknown as QuickAction["icon"],
   description: (query: string) => `"${query}"`,
   isVisible: (query: string) => query.trim().length > 0,
   execute: vi.fn(),
+  requiresConfirmation: false,
   creatingLabel: "Creating...",
   successLabel: "Created!",
   viewLabel: "View",
@@ -66,8 +67,8 @@ const mockQuickActionFlow: UseQuickActionFlowReturn = {
   isBlocking: false,
 };
 
-vi.mock("./useIdeationQuickAction", () => ({
-  useIdeationQuickAction: vi.fn(() => mockQuickAction),
+vi.mock("./useAgentConversationQuickAction", () => ({
+  useAgentConversationQuickAction: vi.fn(() => mockQuickAction),
 }));
 
 vi.mock("./useQuickActionFlow", () => ({
@@ -573,7 +574,7 @@ describe("usePlanQuickSwitcher", () => {
   });
 
   describe("Enter key handling", () => {
-    it("should trigger quick action when Enter pressed on quick action item", () => {
+    it("should execute the agent conversation quick action directly when Enter is pressed", () => {
       const { result } = renderHook(() =>
         usePlanQuickSwitcher({
           projectId: "project-1",
@@ -595,7 +596,8 @@ describe("usePlanQuickSwitcher", () => {
         } as unknown as React.KeyboardEvent);
       });
 
-      expect(mockQuickActionFlow.startConfirmation).toHaveBeenCalled();
+      expect(mockQuickActionFlow.confirm).toHaveBeenCalledWith("Feature");
+      expect(mockQuickActionFlow.startConfirmation).not.toHaveBeenCalled();
     });
 
     it("should call handleClear when Enter pressed on clear item", () => {
