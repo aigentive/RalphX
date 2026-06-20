@@ -799,6 +799,149 @@ async fn frontend_validation_reports_install_failure_before_running_vitest() {
 }
 
 #[tokio::test]
+async fn frontend_validation_reports_stdout_only_readiness_probe_failure() {
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let project_dir = tempfile::tempdir().unwrap();
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let frontend_dir = worktree_dir.path().join("frontend");
+    write_frontend_package(&frontend_dir);
+
+    let fake_bin = tempfile::tempdir().unwrap();
+    let fake_node = fake_bin.path().join("node");
+    write_executable_script(
+        &fake_node,
+        "#!/bin/sh\necho stdout-only-readiness-failure\nexit 1\n",
+    );
+
+    let _node_path = EnvVarGuard::set("RALPHX_NODE_PATH", fake_node.as_os_str());
+    let mut project = make_project(Some("main"));
+    project.working_directory = project_dir.path().to_string_lossy().to_string();
+    project.detected_analysis = Some(
+        r#"[{
+            "path": ".",
+            "label": "Frontend",
+            "validate": ["vitest run"],
+            "worktree_setup": []
+        }]"#
+        .to_string(),
+    );
+    let task = make_task(None, None);
+
+    let result = run_validation_commands(
+        &project,
+        &task,
+        worktree_dir.path(),
+        "frontend-stdout-probe-failure-task",
+        None,
+        None,
+        &MergeValidationMode::Block,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("frontend stdout-only readiness failure should produce a result");
+
+    assert!(!result.all_passed);
+    assert!(result.failures[0]
+        .stderr
+        .contains("stdout-only-readiness-failure"));
+}
+
+#[tokio::test]
+async fn frontend_validation_reports_cancelled_readiness_probe() {
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let project_dir = tempfile::tempdir().unwrap();
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let frontend_dir = worktree_dir.path().join("frontend");
+    write_frontend_package(&frontend_dir);
+
+    let fake_bin = tempfile::tempdir().unwrap();
+    let fake_node = fake_bin.path().join("node");
+    write_executable_script(&fake_node, "#!/bin/sh\nsleep 5\nexit 0\n");
+
+    let _node_path = EnvVarGuard::set("RALPHX_NODE_PATH", fake_node.as_os_str());
+    let cancel = tokio_util::sync::CancellationToken::new();
+    cancel.cancel();
+
+    let mut project = make_project(Some("main"));
+    project.working_directory = project_dir.path().to_string_lossy().to_string();
+    project.detected_analysis = Some(
+        r#"[{
+            "path": ".",
+            "label": "Frontend",
+            "validate": ["vitest run"],
+            "worktree_setup": []
+        }]"#
+        .to_string(),
+    );
+    let task = make_task(None, None);
+
+    let result = run_validation_commands(
+        &project,
+        &task,
+        worktree_dir.path(),
+        "frontend-cancelled-probe-task",
+        None,
+        None,
+        &MergeValidationMode::Block,
+        &cancel,
+    )
+    .await
+    .expect("frontend cancelled readiness failure should produce a result");
+
+    assert!(!result.all_passed);
+    assert!(result.failures[0].stderr.contains("cancelled"));
+}
+
+#[tokio::test]
+async fn frontend_validation_reports_node_probe_spawn_failure() {
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let project_dir = tempfile::tempdir().unwrap();
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let frontend_dir = worktree_dir.path().join("frontend");
+    write_frontend_package(&frontend_dir);
+
+    let missing_node = worktree_dir.path().join("missing-node");
+    let _node_path = EnvVarGuard::set("RALPHX_NODE_PATH", missing_node.as_os_str());
+
+    let mut project = make_project(Some("main"));
+    project.working_directory = project_dir.path().to_string_lossy().to_string();
+    project.detected_analysis = Some(
+        r#"[{
+            "path": ".",
+            "label": "Frontend",
+            "validate": ["vitest run"],
+            "worktree_setup": []
+        }]"#
+        .to_string(),
+    );
+    let task = make_task(None, None);
+
+    let result = run_validation_commands(
+        &project,
+        &task,
+        worktree_dir.path(),
+        "frontend-node-spawn-failure-task",
+        None,
+        None,
+        &MergeValidationMode::Block,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("frontend node spawn readiness failure should produce a result");
+
+    assert!(!result.all_passed);
+    assert!(result.failures[0]
+        .stderr
+        .contains("could not start"));
+}
+
+#[tokio::test]
 async fn frontend_pre_execution_install_fails_when_readiness_still_missing() {
     let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
