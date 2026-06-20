@@ -152,6 +152,8 @@ macro_rules! register_tauri_commands {
             commands::conversation_stats_commands::get_insights_chat_usage_stats,
             commands::conversation_stats_commands::get_project_chat_usage_stats,
             commands::conversation_stats_commands::get_task_chat_usage_stats,
+            commands::agent_issue_report_commands::build_agent_issue_report,
+            commands::agent_issue_report_commands::submit_agent_issue_report,
             // Metrics commands
             commands::metrics_commands::get_insights_stats,
             commands::metrics_commands::get_project_stats,

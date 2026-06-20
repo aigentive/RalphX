@@ -121,6 +121,7 @@ vi.mock("@/components/activity", () => ({
 
 // Mock AgentsView
 vi.mock("@/components/agents", () => ({
+  AgentIssueReportDialog: () => null,
   AgentsView: ({
     footer,
     onCreateProject,

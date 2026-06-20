@@ -699,7 +699,7 @@ export function IntegratedChatPanel({
   });
 
   // Recovery and polling effects (extracted to hook)
-  useChatRecovery({
+  const { isStreamingHydrated } = useChatRecovery({
     activeConversationId,
     storeContextKey,
     currentContextType,
@@ -1086,7 +1086,7 @@ export function IntegratedChatPanel({
     (streamingContentBlocks?.length ?? 0) > 0 ||
     streamingTasks.size > 0;
   const shouldUsePersistedStreamingTimelineItems =
-    hasPersistedStreamingTimelineItems && !hasClientLiveStreamingState;
+    hasPersistedStreamingTimelineItems && (!hasClientLiveStreamingState || !isStreamingHydrated);
   const statsFallbackMessages = useMemo(
     () =>
       effectiveConversationId
