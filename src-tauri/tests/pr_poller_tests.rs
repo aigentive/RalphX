@@ -308,15 +308,18 @@ async fn recover_agent_workspace_pr_pollers_restarts_active_direct_workspaces() 
         .unwrap();
 
     let github = Arc::new(MockGithubService::new());
+    let plan_branch_repo =
+        Arc::new(MemoryPlanBranchRepository::new()) as Arc<dyn PlanBranchRepository>;
     let registry = Arc::new(PrPollerRegistry::new(
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
-        Arc::new(MemoryPlanBranchRepository::new()),
+        Arc::clone(&plan_branch_repo),
     ));
     let chat_service = Arc::new(MockChatService::new());
 
     ralphx_lib::application::pr_startup_recovery::recover_agent_workspace_pr_pollers(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::clone(&app_state.project_repo),
+        Arc::clone(&plan_branch_repo),
         Arc::clone(&registry),
         Arc::clone(&app_state.agent_run_repo),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
@@ -348,15 +351,18 @@ async fn recover_agent_workspace_pr_pollers_skips_workspaces_waiting_on_agent() 
         .unwrap();
 
     let github = Arc::new(MockGithubService::new());
+    let plan_branch_repo =
+        Arc::new(MemoryPlanBranchRepository::new()) as Arc<dyn PlanBranchRepository>;
     let registry = Arc::new(PrPollerRegistry::new(
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
-        Arc::new(MemoryPlanBranchRepository::new()),
+        Arc::clone(&plan_branch_repo),
     ));
     let chat_service = Arc::new(MockChatService::new());
 
     ralphx_lib::application::pr_startup_recovery::recover_agent_workspace_pr_pollers(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::clone(&app_state.project_repo),
+        Arc::clone(&plan_branch_repo),
         Arc::clone(&registry),
         Arc::clone(&app_state.agent_run_repo),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,

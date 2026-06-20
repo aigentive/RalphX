@@ -120,7 +120,7 @@ pub const AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE: &str =
 fn agent_workspace_interactive_slot_key(conversation_id: &ChatConversationId) -> String {
     format!(
         "{}/{}",
-        ChatContextType::Project.to_string(),
+        ChatContextType::Project,
         conversation_id.as_str()
     )
 }
@@ -11518,7 +11518,7 @@ mod tests {
             .await;
         execution_state.mark_interactive_idle(&format!(
             "{}/{}",
-            ChatContextType::Project.to_string(),
+            ChatContextType::Project,
             conversation_id.as_str()
         ));
 

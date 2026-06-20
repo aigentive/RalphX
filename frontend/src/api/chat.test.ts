@@ -46,6 +46,7 @@ import {
   getConversationActiveState,
   getChildSessionStatus,
 } from "./chat";
+import { backendApiUrl } from "./backend";
 import type { ConversationActiveStateResponse } from "./chat";
 
 const mockInvoke = invoke as ReturnType<typeof vi.fn>;
@@ -2587,7 +2588,7 @@ describe("getConversationActiveState", () => {
     const result = await getConversationActiveState("conv-123");
 
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:3847/api/conversations/conv-123/active-state"
+      backendApiUrl("conversations/conv-123/active-state")
     );
     expect(result.is_active).toBe(true);
     expect(result.streaming_tasks).toHaveLength(1);
@@ -2679,7 +2680,7 @@ describe("getConversationActiveState", () => {
     const result = await getAgentWorkspacePrReviewContext("conversation-1");
 
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:3847/api/agent-workspaces/conversation-1/pr-review-context",
+      backendApiUrl("agent-workspaces/conversation-1/pr-review-context"),
       undefined
     );
     expect(result.workspace.conversationId).toBe("conversation-1");
@@ -2735,7 +2736,9 @@ describe("getConversationActiveState", () => {
 
     expect(mockFetch).toHaveBeenNthCalledWith(
       1,
-      "http://localhost:3847/api/agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/submit",
+      backendApiUrl(
+        "agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/submit"
+      ),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2744,7 +2747,9 @@ describe("getConversationActiveState", () => {
     );
     expect(mockFetch).toHaveBeenNthCalledWith(
       2,
-      "http://localhost:3847/api/agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/skip",
+      backendApiUrl(
+        "agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/skip"
+      ),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
