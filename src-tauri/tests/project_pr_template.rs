@@ -52,6 +52,15 @@ async fn read_pr_template_returns_none_when_file_is_absent() {
     assert_eq!(content, None);
 }
 
+#[test]
+fn direct_read_returns_none_when_github_directory_is_absent() {
+    let root = tempfile::tempdir().unwrap();
+
+    let content = project_pr_template::read_pr_template(root.path()).unwrap();
+
+    assert_eq!(content, None);
+}
+
 #[tokio::test]
 async fn read_pr_template_preserves_empty_and_exact_content() {
     let root = tempfile::tempdir().unwrap();
@@ -85,6 +94,18 @@ async fn read_pr_template_supports_existing_uppercase_filename() {
         .unwrap();
 
     assert_eq!(content.as_deref(), Some("Uppercase\n"));
+}
+
+#[test]
+fn direct_read_prefers_lowercase_template_when_both_exist() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join(".github")).unwrap();
+    std::fs::write(template_path(root.path()), "Lowercase\n").unwrap();
+    std::fs::write(uppercase_template_path(root.path()), "Uppercase\n").unwrap();
+
+    let content = project_pr_template::read_pr_template(root.path()).unwrap();
+
+    assert_eq!(content.as_deref(), Some("Lowercase\n"));
 }
 
 #[tokio::test]
@@ -130,6 +151,25 @@ async fn write_pr_template_overwrites_existing_uppercase_filename() {
     assert_eq!(actual_template_names(root.path()), ["PULL_REQUEST_TEMPLATE.md"]);
 }
 
+#[test]
+fn direct_write_prefers_existing_lowercase_template_when_both_exist() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join(".github")).unwrap();
+    std::fs::write(template_path(root.path()), "Lowercase old\n").unwrap();
+    std::fs::write(uppercase_template_path(root.path()), "Uppercase old\n").unwrap();
+
+    project_pr_template::write_pr_template(root.path(), "Lowercase new\n").unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(template_path(root.path())).unwrap(),
+        "Lowercase new\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(uppercase_template_path(root.path())).unwrap(),
+        "Uppercase old\n"
+    );
+}
+
 #[tokio::test]
 async fn unknown_project_returns_error_without_writing() {
     let root = tempfile::tempdir().unwrap();
@@ -156,6 +196,24 @@ async fn project_root_must_be_absolute_non_root_and_existing() {
 }
 
 #[test]
+fn direct_project_root_must_be_absolute_and_existing_directory() {
+    let relative = std::path::Path::new("relative-project");
+    let relative_error = project_pr_template::read_pr_template(relative).unwrap_err();
+    assert!(relative_error
+        .to_string()
+        .contains("absolute non-root path"));
+
+    let missing = std::env::current_dir()
+        .unwrap()
+        .join(".artifacts")
+        .join("specs")
+        .join("pr-template-coverage")
+        .join("missing-project-root");
+    let missing_error = project_pr_template::read_pr_template(&missing).unwrap_err();
+    assert!(missing_error.to_string().contains("Failed to canonicalize"));
+}
+
+#[test]
 fn github_entry_must_be_directory() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join(".github"), "not a directory").unwrap();
@@ -174,6 +232,19 @@ fn template_entry_must_be_file() {
     std::fs::create_dir(template_path(root.path())).unwrap();
 
     let error = project_pr_template::read_pr_template(root.path()).unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("PR template path must be a regular file"));
+}
+
+#[test]
+fn write_rejects_existing_template_directory() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join(".github")).unwrap();
+    std::fs::create_dir(template_path(root.path())).unwrap();
+
+    let error = project_pr_template::write_pr_template(root.path(), "content").unwrap_err();
 
     assert!(error
         .to_string()

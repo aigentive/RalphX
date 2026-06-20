@@ -78,6 +78,14 @@ describe("PrTemplateEditorDialog", () => {
     expect(projectsApi.readPrTemplate).not.toHaveBeenCalled();
   });
 
+  it("does not read or allow saving without a project", () => {
+    renderDialog({ project: null });
+
+    expect(projectsApi.readPrTemplate).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Pull request template")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
   it("renders the shell and loading state before the read resolves", async () => {
     const read = deferred<string | null>();
     vi.mocked(projectsApi.readPrTemplate).mockReturnValue(read.promise);
@@ -136,6 +144,28 @@ describe("PrTemplateEditorDialog", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows non-error read failures", async () => {
+    vi.mocked(projectsApi.readPrTemplate).mockRejectedValue("read failed");
+
+    renderDialog();
+
+    expect(await screen.findByText("read failed")).toBeInTheDocument();
+  });
+
+  it("closes when cancel is clicked outside a save", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    vi.mocked(projectsApi.readPrTemplate).mockResolvedValue("Old");
+
+    renderDialog({ onOpenChange });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Pull request template")).toBeEnabled();
+    });
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
   it("saves exact draft content and closes on success", async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
@@ -154,6 +184,24 @@ describe("PrTemplateEditorDialog", () => {
       "New body\nwith detail",
     );
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
+  it("keeps close controls disabled while saving", async () => {
+    const user = userEvent.setup();
+    const save = deferred<null>();
+    vi.mocked(projectsApi.readPrTemplate).mockResolvedValue("Old");
+    vi.mocked(projectsApi.writePrTemplate).mockReturnValue(save.promise);
+
+    renderDialog();
+    await waitFor(() => {
+      expect(screen.getByLabelText("Pull request template")).toBeEnabled();
+    });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(screen.getByRole("button", { name: "Saving..." })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+
+    save.resolve(null);
   });
 
   it("keeps the dialog open and preserves draft content when save fails", async () => {
