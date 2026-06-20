@@ -7,7 +7,7 @@ import { render, screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { Lightbulb } from "lucide-react";
 import { QuickActionRow } from "./QuickActionRow";
-import type { QuickAction } from "@/hooks/useIdeationQuickAction";
+import type { QuickAction } from "@/hooks/useQuickActionFlow";
 
 // Mock framer-motion to avoid animation issues in tests
 vi.mock("framer-motion", () => ({

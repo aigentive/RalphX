@@ -173,6 +173,16 @@ impl Default for MockGithubService {
 
 #[async_trait]
 impl GithubServiceTrait for MockGithubService {
+    async fn create_issue(
+        &self,
+        _wd: &Path,
+        _repository: &str,
+        _title: &str,
+        _body: &Path,
+    ) -> AppResult<String> {
+        Ok("https://github.com/owner/repo/issues/1".to_string())
+    }
+
     async fn create_draft_pr(
         &self,
         _wd: &Path,

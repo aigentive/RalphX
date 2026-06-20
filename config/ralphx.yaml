@@ -23,6 +23,12 @@ defer_merge_enabled: false
 # Env override: RALPHX_FILE_LOGGING=true|false
 file_logging: true
 
+# Optional GitHub repository for user-submitted support issue reports.
+# When omitted, RalphX uses the public product repository and shows the
+# resolved destination before the user confirms submission.
+# support_issue:
+#   github_repository: "aigentive/ralphx.app"
+
 # ── UI feature flags ───────────────────────────────────────────────────────
 # Controls which UI pages are visible in the app.
 # Env overrides: RALPHX_UI_ACTIVITY_PAGE=true|false, RALPHX_UI_EXTENSIBILITY_PAGE=true|false, RALPHX_UI_BATTLE_MODE=true|false, RALPHX_UI_ATLASSIAN_OAUTH=true|false, RALPHX_UI_TICKETING_DASHBOARD=true|false

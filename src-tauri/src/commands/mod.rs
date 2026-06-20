@@ -4,6 +4,9 @@
 pub mod activity_commands;
 pub mod agent_model_commands;
 pub mod agent_composer_commands;
+pub mod agent_issue_report_commands;
+#[cfg(test)]
+mod agent_issue_report_commands_tests;
 pub mod agent_sidebar_commands;
 pub mod agent_terminal_commands;
 pub mod branch_helpers;
@@ -76,6 +79,9 @@ pub use agent_composer_commands::{
     ListAgentComposerSkillsResponse, SearchAgentComposerEntriesInput,
     SearchAgentComposerEntriesResponse, SearchAgentComposerPlanReferencesInput,
     SearchAgentComposerPlanReferencesResponse,
+};
+pub use agent_issue_report_commands::{
+    build_agent_issue_report, submit_agent_issue_report,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,

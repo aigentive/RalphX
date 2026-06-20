@@ -316,6 +316,23 @@ function getLastRenderedRow(): HTMLElement {
   return row as HTMLElement;
 }
 
+function mockToolGroupToggleRectShift({
+  collapsedTop,
+  expandedTop,
+}: {
+  collapsedTop: number;
+  expandedTop: number;
+}) {
+  return vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
+    const element = this as HTMLElement;
+    if (element.dataset.chatToolCallGroupKey != null) {
+      const top = element.getAttribute("aria-expanded") === "true" ? expandedTop : collapsedTop;
+      return makeRect({ top, bottom: top + 20 });
+    }
+    return makeRect({ top: 0, bottom: 500, height: 500 });
+  });
+}
+
 function TooltipTestProvider({ children }: { children: ReactNode }) {
   return <TooltipProvider delayDuration={0}>{children}</TooltipProvider>;
 }
@@ -442,6 +459,69 @@ describe("ChatMessageList - Scroll Behavior", () => {
 
         act(() => {
           vi.advanceTimersByTime(380);
+        });
+
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 120, behavior: "auto" });
+
+        act(() => {
+          vi.advanceTimersByTime(2200);
+        });
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        if (originalResizeObserver === undefined) {
+          Reflect.deleteProperty(globalThis, "ResizeObserver");
+        } else {
+          Object.defineProperty(globalThis, "ResizeObserver", {
+            value: originalResizeObserver,
+            configurable: true,
+            writable: true,
+          });
+        }
+        vi.unstubAllEnvs();
+        vi.useRealTimers();
+      }
+    });
+
+    it("debounces initial-load bottom pin when the scroller resize observer fires", () => {
+      vi.useFakeTimers();
+      vi.stubEnv("VITEST", "");
+      const callbacks: ResizeObserverCallback[] = [];
+      const originalResizeObserver = globalThis.ResizeObserver;
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      class MockResizeObserver implements ResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          callbacks.push(callback);
+        }
+        disconnect = vi.fn();
+        observe = vi.fn();
+        unobserve = vi.fn();
+      }
+
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        value: MockResizeObserver,
+        configurable: true,
+        writable: true,
+      });
+
+      try {
+        render(<ChatMessageList {...defaultProps} />);
+        const scroller = screen.getByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 620,
+          scrollTop: 60,
+        });
+        scrollToMock.mockClear();
+
+        act(() => {
+          callbacks.forEach((callback) => callback([], {} as ResizeObserver));
+          vi.advanceTimersByTime(200);
         });
 
         expect(scrollToMock).toHaveBeenCalledWith({ top: 120, behavior: "auto" });
@@ -4160,6 +4240,55 @@ describe("ChatMessageList - Scroll Behavior", () => {
       await waitFor(() => expect(scrollToMock).toHaveBeenCalled());
     });
 
+    it("does not recover to bottom during pointer-driven manual scrolling in the middle", async () => {
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      try {
+        mockIsAtBottom = true;
+        mockIsAtBottomRef.current = true;
+        render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={createMessages(8)}
+          />
+        );
+
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue(
+          makeRect({ top: 0, bottom: 500, right: 200 }),
+        );
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 500,
+        });
+        act(() => {
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        scrollToMock.mockClear();
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 260,
+        });
+        act(() => {
+          scroller.dispatchEvent(new MouseEvent("pointerdown", { clientX: 100 }));
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+
+        expect(scrollToMock).not.toHaveBeenCalled();
+        expect(scroller.scrollTop).toBe(260);
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+      }
+    });
+
     it("pins to true bottom when the scroller resizes while sticky", async () => {
       const callbacks: ResizeObserverCallback[] = [];
       const originalResizeObserver = globalThis.ResizeObserver;
@@ -6505,6 +6634,83 @@ describe("ChatMessageList - Streaming text/empty edge cases", () => {
     );
     expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
   });
+
+  it("renders fallback team events while skipping empty streaming footer content", async () => {
+    const { useTeamStore } = await import("@/stores/teamStore");
+    useTeamStore.setState({
+      activeTeams: {
+        "ctx-fallback-team": {
+          teamName: "Fallback Team",
+          leadName: "lead",
+          teammates: {},
+          messages: [
+            {
+              id: "tm-fallback",
+              from: "alice",
+              to: "lead",
+              content: "Fallback team update",
+              timestamp: new Date(2026, 0, 1, 12, 3).toISOString(),
+            },
+          ],
+          totalTokens: 0,
+          totalEstimatedCostUsd: 0,
+          createdAt: new Date(2026, 0, 1).toISOString(),
+        },
+      },
+      pendingPlans: {},
+      artifactVersion: {},
+    });
+    const blocks: StreamingContentBlock[] = [
+      {
+        type: "tool_use",
+        toolCall: {
+          id: "tc-hidden-orchestration",
+          name: "v1_get_project_status",
+          arguments: {},
+          result: "done",
+        },
+      },
+    ];
+
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={[]}
+        contextKey="ctx-fallback-team"
+        streamingContentBlocks={blocks}
+      />,
+    );
+
+    expect(screen.getByText("Fallback team update")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByTestId("tool-call-indicator")).not.toBeInTheDocument();
+    });
+  });
+
+  it("collapses and expands persisted tool-call groups in the fallback renderer", async () => {
+    const user = userEvent.setup();
+    const parentMessageId = "assistant-turn-fallback-renderer";
+    const messages: ChatMessageData[] = [
+      makeTimelineTextMessage({
+        id: "text-1",
+        parentMessageId,
+        sequence: 1,
+        text: "I will fetch two files.",
+      }),
+      makeTimelineToolMessage({ id: "tool-a", parentMessageId, sequence: 2 }),
+      makeTimelineToolMessage({ id: "tool-b", parentMessageId, sequence: 3 }),
+    ];
+
+    render(<ChatMessageList {...defaultProps} messages={messages} />);
+
+    expect(screen.getByRole("button", { name: "Agent called 2 tools" })).toBeInTheDocument();
+    expect(screen.queryAllByTestId("tool-call-indicator")).toHaveLength(0);
+
+    await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+
+    expect(screen.getByRole("button", { name: "Hide 2 tool calls" })).toBeInTheDocument();
+    expect(screen.getAllByTestId("tool-call-indicator")).toHaveLength(2);
+  });
 });
 
 // ============================================================================
@@ -6620,6 +6826,73 @@ describe("ChatMessageList - Virtuoso production render path", () => {
     expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
   });
 
+  it("renders teammate sender metadata and skips empty streaming footer in Virtuoso path", async () => {
+    const { useTeamStore } = await import("@/stores/teamStore");
+    useTeamStore.setState({
+      activeTeams: {
+        "ctx-virtuoso-empty-footer": {
+          teamName: "Virtuoso Team",
+          leadName: "lead",
+          teammates: {
+            alice: {
+              name: "alice",
+              color: "var(--accent-primary)",
+              model: "gpt-5.5",
+              roleDescription: "Researcher",
+              status: "running",
+              currentActivity: null,
+              tokensUsed: 0,
+              estimatedCostUsd: 0,
+              conversationId: null,
+            },
+          },
+          messages: [],
+          totalTokens: 0,
+          totalEstimatedCostUsd: 0,
+          createdAt: new Date(2026, 0, 1).toISOString(),
+        },
+      },
+      pendingPlans: {},
+      artifactVersion: {},
+    });
+    const messages: ChatMessageData[] = [
+      {
+        id: "assistant-teammate",
+        role: "assistant",
+        content: "Teammate assistant output.",
+        createdAt: new Date(2026, 0, 1, 12, 1).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+        sender: "alice",
+      },
+    ];
+    const blocks: StreamingContentBlock[] = [
+      {
+        type: "tool_use",
+        toolCall: {
+          id: "tc-hidden-virtuoso",
+          name: "v1_get_project_status",
+          arguments: {},
+          result: "done",
+        },
+      },
+    ];
+
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={messages}
+        contextKey="ctx-virtuoso-empty-footer"
+        streamingContentBlocks={blocks}
+      />,
+    );
+
+    expect(screen.getByText("Teammate assistant output.")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByTestId("tool-call-indicator")).not.toBeInTheDocument();
+    });
+  });
+
   it("renders Virtuoso path with isFetchingOlderMessages indicator", () => {
     render(
       <ChatMessageList
@@ -6701,6 +6974,225 @@ describe("ChatMessageList - Virtuoso production render path", () => {
     expect(screen.queryAllByTestId("tool-call-indicator")).toHaveLength(0);
   });
 
+  it("keeps the persisted tool-call group toggle anchored while expanding", async () => {
+    const user = userEvent.setup();
+    const parentMessageId = "assistant-turn-scroll";
+    const messages: ChatMessageData[] = [
+      makeTimelineTextMessage({
+        id: "text-1",
+        parentMessageId,
+        sequence: 1,
+        text: "I will fetch two files.",
+      }),
+      makeTimelineToolMessage({ id: "tool-a", parentMessageId, sequence: 2 }),
+      makeTimelineToolMessage({ id: "tool-b", parentMessageId, sequence: 3 }),
+    ];
+    const rectSpy = mockToolGroupToggleRectShift({
+      collapsedTop: 180,
+      expandedTop: 240,
+    });
+
+    try {
+      render(<ChatMessageList {...defaultProps} messages={messages} />);
+      const scroller = await screen.findByTestId("mock-virtuoso");
+      setMockScrollerGeometry(scroller, {
+        clientHeight: 500,
+        scrollHeight: 1000,
+        scrollTop: 250,
+      });
+
+      await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+
+      expect(screen.getByRole("button", { name: "Hide 2 tool calls" })).toBeInTheDocument();
+      expect(scroller.scrollTop).toBe(310);
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
+  it("keeps the live streaming tool-call group toggle anchored while expanding", async () => {
+    const user = userEvent.setup();
+    const blocks: StreamingContentBlock[] = [
+      {
+        type: "tool_use",
+        toolCall: { id: "tc-1", name: GENERIC_TOOL_NAME, arguments: { url: "https://a.com" }, result: "page a" },
+      },
+      {
+        type: "tool_use",
+        toolCall: { id: "tc-2", name: GENERIC_TOOL_NAME, arguments: { url: "https://b.com" }, result: "page b" },
+      },
+    ];
+    const rectSpy = mockToolGroupToggleRectShift({
+      collapsedTop: 210,
+      expandedTop: 255,
+    });
+
+    try {
+      render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={[]}
+          isAgentRunning={true}
+          streamingContentBlocks={blocks}
+        />
+      );
+      const scroller = await screen.findByTestId("mock-virtuoso");
+      setMockScrollerGeometry(scroller, {
+        clientHeight: 500,
+        scrollHeight: 1000,
+        scrollTop: 250,
+      });
+
+      await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+
+      expect(screen.getByRole("button", { name: "Hide 2 tool calls" })).toBeInTheDocument();
+      expect(scroller.scrollTop).toBe(295);
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
+  it("preserves bottom distance if the expanded tool-call toggle cannot be found", async () => {
+    const user = userEvent.setup();
+    const parentMessageId = "assistant-turn-scroll-fallback";
+    const messages: ChatMessageData[] = [
+      makeTimelineTextMessage({
+        id: "text-1",
+        parentMessageId,
+        sequence: 1,
+        text: "I will fetch two files.",
+      }),
+      makeTimelineToolMessage({ id: "tool-a", parentMessageId, sequence: 2 }),
+      makeTimelineToolMessage({ id: "tool-b", parentMessageId, sequence: 3 }),
+    ];
+
+    render(<ChatMessageList {...defaultProps} messages={messages} />);
+    const scroller = await screen.findByTestId("mock-virtuoso");
+    setMockScrollerGeometry(scroller, {
+      clientHeight: 500,
+      scrollHeight: 1000,
+      scrollTop: 250,
+    });
+    const querySelectorSpy = vi
+      .spyOn(scroller, "querySelectorAll")
+      .mockReturnValue([] as unknown as NodeListOf<HTMLElement>);
+
+    try {
+      await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+
+      expect(screen.getByRole("button", { name: "Hide 2 tool calls" })).toBeInTheDocument();
+      expect(scroller.scrollTop).toBe(250);
+    } finally {
+      querySelectorSpy.mockRestore();
+    }
+  });
+
+  it("suppresses resize bottom pins during a tool-call group scroll adjustment", async () => {
+    const user = userEvent.setup();
+    const queuedRafs: FrameRequestCallback[] = [];
+    let now = 1_000;
+    const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      queuedRafs.push(callback);
+      return queuedRafs.length;
+    });
+    const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+    const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const parentMessageId = "assistant-turn-scroll-resize";
+    const messages: ChatMessageData[] = [
+      makeTimelineTextMessage({
+        id: "text-1",
+        parentMessageId,
+        sequence: 1,
+        text: "I will fetch two files.",
+      }),
+      makeTimelineToolMessage({ id: "tool-a", parentMessageId, sequence: 2 }),
+      makeTimelineToolMessage({ id: "tool-b", parentMessageId, sequence: 3 }),
+    ];
+
+    try {
+      render(<ChatMessageList {...defaultProps} messages={messages} />);
+      const scroller = await screen.findByTestId("mock-virtuoso");
+      const totalListHeightChanged = expectMockVirtuosoCallback<(height: number) => void>(
+        "totalListHeightChanged",
+      );
+      act(() => {
+        totalListHeightChanged(1_000);
+        while (queuedRafs.length > 0) {
+          queuedRafs.shift()?.(0);
+        }
+      });
+      setMockScrollerGeometry(scroller, {
+        clientHeight: 500,
+        scrollHeight: 1000,
+        scrollTop: 250,
+      });
+
+      await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+      queuedRafs.length = 0;
+
+      act(() => {
+        totalListHeightChanged(1_100);
+      });
+      expect(queuedRafs).toHaveLength(0);
+
+      now = 2_000;
+      act(() => {
+        totalListHeightChanged(1_200);
+      });
+      expect(queuedRafs).toHaveLength(1);
+    } finally {
+      rafSpy.mockRestore();
+      cancelSpy.mockRestore();
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("does not recover scroll drift after non-scrollbar user input", async () => {
+    const queuedRafs: FrameRequestCallback[] = [];
+    const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      queuedRafs.push(callback);
+      return queuedRafs.length;
+    });
+    const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+    try {
+      mockIsAtBottom = true;
+      mockIsAtBottomRef.current = true;
+      render(<ChatMessageList {...defaultProps} messages={createMessages(10)} />);
+      const scroller = await screen.findByTestId("mock-virtuoso");
+      vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue(
+        makeRect({ top: 0, bottom: 500, right: 300, width: 300 }),
+      );
+      setMockScrollerGeometry(scroller, {
+        clientHeight: 500,
+        scrollHeight: 1000,
+        scrollTop: 300,
+      });
+      act(() => {
+        while (queuedRafs.length > 0) {
+          queuedRafs.shift()?.(0);
+        }
+      });
+      queuedRafs.length = 0;
+      scrollToMock.mockClear();
+
+      act(() => {
+        scroller.dispatchEvent(new MouseEvent("pointerdown", { clientX: 20 }));
+        scroller.dispatchEvent(new Event("scroll"));
+      });
+      act(() => {
+        queuedRafs.shift()?.(0);
+      });
+
+      expect(scrollToMock).not.toHaveBeenCalled();
+    } finally {
+      mockIsAtBottom = true;
+      mockIsAtBottomRef.current = true;
+      rafSpy.mockRestore();
+      cancelSpy.mockRestore();
+    }
+  });
+
   it("keeps single tool-call rows ungrouped", () => {
     const parentMessageId = "assistant-turn-3";
     const messages: ChatMessageData[] = [
@@ -6721,8 +7213,7 @@ describe("ChatMessageList - Virtuoso production render path", () => {
 
     render(<ChatMessageList {...defaultProps} messages={messages} />);
 
-    expect(screen.queryByRole("button", { name: /Agent called/i })).not.toBeInTheDocument();
-    expect(screen.getByTestId("tool-call-indicator")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Agent called 1 tool" })).toBeInTheDocument();
   });
 
   it("does not group adjacent tool calls from different assistant parent messages", () => {
@@ -6742,18 +7233,25 @@ describe("ChatMessageList - Virtuoso production render path", () => {
     render(<ChatMessageList {...defaultProps} messages={messages} />);
 
     expect(screen.queryByRole("button", { name: "Agent called 2 tools" })).not.toBeInTheDocument();
-    expect(screen.getAllByTestId("tool-call-indicator")).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Agent called 1 tool" })).toHaveLength(2);
   });
 
-  it("renders Virtuoso path with failedRun banner", () => {
+  it("renders Virtuoso path with failedRun banner", async () => {
+    const user = userEvent.setup();
+    const onDismissFailedRun = vi.fn();
     render(
       <ChatMessageList
         {...defaultProps}
         messages={createMessages(2)}
         failedRun={{ id: "r1", errorMessage: "boom" }}
+        onDismissFailedRun={onDismissFailedRun}
       />,
     );
     expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /dismiss/i }));
+
+    expect(onDismissFailedRun).toHaveBeenCalledWith("r1");
   });
 
   it("renders Virtuoso path with team filter empty state when timeline empty", () => {
