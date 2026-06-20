@@ -20,6 +20,7 @@ import { ideationApi, toTaskProposal } from "@/api/ideation";
 import { verificationApi } from "@/api/verification";
 import {
   chatApi,
+  stopAgent,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceFreshness,
 } from "@/api/chat";
@@ -1158,6 +1159,8 @@ function AgentPlanPanel({
     }
     setIsImplementingPlanDirectly(true);
     try {
+      await stopAgent("project", workspace.conversationId).catch(() => {});
+
       if (workspace.mode !== "edit") {
         const result = await chatApi.switchAgentConversationMode({
           conversationId: workspace.conversationId,

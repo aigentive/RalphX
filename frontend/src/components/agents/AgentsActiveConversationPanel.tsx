@@ -20,7 +20,7 @@ import type {
   ComposerIntegrationReference,
   ForkAgentConversationResult,
 } from "@/api/chat";
-import { chatApi } from "@/api/chat";
+import { chatApi, stopAgent } from "@/api/chat";
 import { artifactApi } from "@/api/artifact";
 import { verificationApi } from "@/api/verification";
 import {
@@ -1161,6 +1161,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
     setIsImplementingPlanDirectly(true);
     try {
+      await stopAgent("project", activeWorkspace.conversationId).catch(() => {});
+
       if (activeWorkspace.mode !== "edit") {
         const result = await chatApi.switchAgentConversationMode({
           conversationId: activeWorkspace.conversationId,
