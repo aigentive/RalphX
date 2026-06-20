@@ -111,9 +111,9 @@ struct ReportLogSource {
     truncated: bool,
 }
 
-struct ResolvedDestination {
-    destination: AgentIssueReportDestination,
-    warnings: Vec<String>,
+pub(crate) struct ResolvedDestination {
+    pub(crate) destination: AgentIssueReportDestination,
+    pub(crate) warnings: Vec<String>,
 }
 
 fn default_include_logs() -> bool {
@@ -557,11 +557,17 @@ fn render_report_markdown(
 }
 
 fn resolve_agent_issue_report_destination() -> ResolvedDestination {
-    let mut warnings = Vec::new();
     let path = config_path();
     // Main config path is a RalphX-owned runtime config path.
     // codeql[rust/path-injection]
-    match std::fs::read_to_string(&path) {
+    resolve_agent_issue_report_destination_from_config_result(std::fs::read_to_string(&path))
+}
+
+pub(crate) fn resolve_agent_issue_report_destination_from_config_result(
+    config_result: std::io::Result<String>,
+) -> ResolvedDestination {
+    let mut warnings = Vec::new();
+    match config_result {
         Ok(contents) => match configured_support_issue_repository_from_yaml(&contents) {
             Some(repository) => match validate_github_repository(&repository) {
                 Ok(repository) => {

@@ -7,8 +7,18 @@ import type { AgentIssueReportDraft } from "@/api/agent-issue-report";
 const mocks = vi.hoisted(() => ({
   build: vi.fn(),
   submit: vi.fn(),
+  save: vi.fn(),
+  writeTextFile: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  save: mocks.save,
+}));
+
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  writeTextFile: mocks.writeTextFile,
 }));
 
 vi.mock("@/api/agent-issue-report", () => ({
@@ -56,6 +66,14 @@ describe("AgentIssueReportDialog", () => {
     mocks.submit.mockResolvedValue({
       repository: "aigentive/ralphx.app",
       issueUrl: "https://github.com/aigentive/ralphx.app/issues/42",
+    });
+    mocks.save.mockResolvedValue("/tmp/report.md");
+    mocks.writeTextFile.mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
     });
     Object.defineProperty(window, "requestAnimationFrame", {
       configurable: true,
@@ -108,5 +126,121 @@ describe("AgentIssueReportDialog", () => {
     expect(
       screen.getByText("https://github.com/aigentive/ralphx.app/issues/42"),
     ).toBeInTheDocument();
+  });
+
+  it("renders the empty state when no agent conversation is selected", () => {
+    render(<AgentIssueReportDialog open onOpenChange={vi.fn()} context={null} />);
+
+    expect(
+      screen.getByText("Select an agent conversation to report an issue."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Export" })).toBeDisabled();
+    expect(screen.getByTestId("agent-issue-report-submit")).toBeDisabled();
+  });
+
+  it("shows build errors without enabling submission", async () => {
+    mocks.build.mockRejectedValueOnce(new Error("logs unavailable"));
+
+    render(
+      <AgentIssueReportDialog
+        open
+        onOpenChange={vi.fn()}
+        context={{
+          projectId: "project-1",
+          conversationId: "conversation-12345678",
+        }}
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("logs unavailable");
+    expect(screen.getByTestId("agent-issue-report-submit")).toBeDisabled();
+  });
+
+  it("copies and exports the reviewed markdown", async () => {
+    render(
+      <AgentIssueReportDialog
+        open
+        onOpenChange={vi.fn()}
+        context={{
+          projectId: "project-1",
+          conversationId: "conversation-12345678",
+        }}
+      />,
+    );
+
+    const editor = await screen.findByTestId("agent-issue-report-editor");
+    fireEvent.change(editor, { target: { value: "# Reviewed\n\nExport me" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith("# Reviewed\n\nExport me");
+    });
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("Issue report copied");
+
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    await waitFor(() => {
+      expect(mocks.save).toHaveBeenCalledWith({
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+        defaultPath: "ralphx-issue-report-conversa.md",
+      });
+      expect(mocks.writeTextFile).toHaveBeenCalledWith("/tmp/report.md", "# Reviewed\n\nExport me");
+    });
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("Issue report exported");
+  });
+
+  it("reports copy and export failures", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockRejectedValue(new Error("denied")),
+      },
+    });
+    mocks.save.mockRejectedValueOnce(new Error("dialog failed"));
+
+    render(
+      <AgentIssueReportDialog
+        open
+        onOpenChange={vi.fn()}
+        context={{
+          projectId: "project-1",
+          conversationId: "conversation-12345678",
+        }}
+      />,
+    );
+
+    await screen.findByTestId("agent-issue-report-editor");
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() => {
+      expect(mocks.toastError).toHaveBeenCalledWith("Failed to copy issue report");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    await waitFor(() => {
+      expect(mocks.toastError).toHaveBeenCalledWith("Failed to export issue report");
+    });
+  });
+
+  it("renders the markdown preview and clears confirmation after editing", async () => {
+    render(
+      <AgentIssueReportDialog
+        open
+        onOpenChange={vi.fn()}
+        context={{
+          projectId: "project-1",
+          conversationId: "conversation-12345678",
+        }}
+      />,
+    );
+
+    const editor = await screen.findByTestId("agent-issue-report-editor");
+    fireEvent.click(screen.getByRole("button", { name: "Create GitHub Issue" }));
+    expect(screen.getByTestId("agent-issue-report-confirm")).toBeInTheDocument();
+
+    fireEvent.change(editor, { target: { value: "# Previewed\n\nUpdated body" } });
+    expect(screen.queryByTestId("agent-issue-report-confirm")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("agent-issue-report-preview-tab"));
+    expect(await screen.findByText("Previewed")).toBeInTheDocument();
   });
 });
