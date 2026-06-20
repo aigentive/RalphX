@@ -7,6 +7,7 @@ RalphX — native Mac GUI for autonomous AI development with Rust/Tauri backend 
 
 Primary project docs:
 - `CLAUDE.md`
+- `frontend/CLAUDE.md`
 - `src-tauri/CLAUDE.md`
 - `.claude/rules/*.md`
 - `.claude/rules/openai-gpt-5.4-prompting.md` for GPT-5.4/Codex prompt-authoring and instruction-layering rules
