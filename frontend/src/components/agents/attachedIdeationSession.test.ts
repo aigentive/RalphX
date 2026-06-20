@@ -48,6 +48,39 @@ function messageWithToolCall(
 }
 
 describe("resolveAttachedIdeationSessionId", () => {
+  it("returns the fallback when there is no active conversation", () => {
+    const result = resolveAttachedIdeationSessionId(null, [], "fallback-session");
+
+    expect(result).toBe("fallback-session");
+  });
+
+  it("returns the ideation context id for ideation conversations", () => {
+    const ideationConversation = toProjectAgentConversation({
+      id: "conversation-ideation",
+      contextType: "ideation",
+      contextId: "ideation-session-1",
+      claudeSessionId: null,
+      providerSessionId: null,
+      providerHarness: null,
+      upstreamProvider: null,
+      providerProfile: null,
+      title: "Ideation",
+      messageCount: 1,
+      lastMessageAt: null,
+      createdAt: "2026-04-22T10:00:00Z",
+      updatedAt: "2026-04-22T10:00:00Z",
+      archivedAt: null,
+    } satisfies ChatConversation);
+
+    const result = resolveAttachedIdeationSessionId(
+      ideationConversation,
+      [],
+      "fallback-session",
+    );
+
+    expect(result).toBe("ideation-session-1");
+  });
+
   it("extracts attached plan sessions from user composer artifact references", () => {
     const result = resolveAttachedIdeationSessionId(conversation, [
       {
@@ -77,6 +110,64 @@ describe("resolveAttachedIdeationSessionId", () => {
     expect(result).toBe("referenced-session-1");
   });
 
+  it("uses the latest valid composer plan reference", () => {
+    const result = resolveAttachedIdeationSessionId(conversation, [
+      {
+        id: "message-with-reference",
+        conversationId: "conversation-1",
+        role: "user",
+        content: "Verify the referenced plan",
+        contentBlocks: [],
+        toolCalls: [],
+        attachments: [],
+        metadata: JSON.stringify({
+          composer_artifact_references: [
+            {
+              kind: "plan",
+              session_id: "older-session",
+            },
+            {
+              kind: "issue",
+              session_id: "ignored-issue-session",
+            },
+            {
+              session_id: "latest-plan-session",
+            },
+          ],
+        }),
+        createdAt: "2026-04-22T10:00:30Z",
+      } as ChatMessageResponse,
+    ]);
+
+    expect(result).toBe("latest-plan-session");
+  });
+
+  it("ignores malformed composer metadata and unsupported tools", () => {
+    const result = resolveAttachedIdeationSessionId(
+      conversation,
+      [
+        {
+          id: "bad-metadata",
+          conversationId: "conversation-1",
+          role: "user",
+          content: "Bad metadata",
+          contentBlocks: [],
+          toolCalls: [],
+          attachments: [],
+          metadata: "{not-json",
+          createdAt: "2026-04-22T10:00:30Z",
+        } as ChatMessageResponse,
+        messageWithToolCall(
+          { session_id: "ignored-session" },
+          "mcp__ralphx__unrelated_tool",
+        ),
+      ],
+      "fallback-session",
+    );
+
+    expect(result).toBe("fallback-session");
+  });
+
   it("extracts reused ideation sessions from v1_send_ideation_message results", () => {
     const result = resolveAttachedIdeationSessionId(conversation, [
       messageWithToolCall({ session_id: "session-reused" }),
@@ -99,6 +190,43 @@ describe("resolveAttachedIdeationSessionId", () => {
     ]);
 
     expect(result).toBe("session-from-text");
+  });
+
+  it("extracts session ids from tool call arguments when results are empty", () => {
+    const result = resolveAttachedIdeationSessionId(conversation, [
+      {
+        ...messageWithToolCall(null, "mcp__ralphx__get_session_plan"),
+        contentBlocks: [],
+        toolCalls: [
+          {
+            id: "tool-call-1",
+            name: "mcp__ralphx__get_session_plan",
+            arguments: {
+              session: {
+                childSessionId: "session-from-arguments",
+              },
+            },
+            result: null,
+          },
+        ],
+      } as ChatMessageResponse,
+    ]);
+
+    expect(result).toBe("session-from-arguments");
+  });
+
+  it("extracts nested child session ids from array payloads", () => {
+    const result = resolveAttachedIdeationSessionId(conversation, [
+      messageWithToolCall(
+        [
+          { data: null },
+          { structuredContent: { child_session_id: "nested-child-session" } },
+        ],
+        "mcp__ralphx__create_child_session",
+      ),
+    ]);
+
+    expect(result).toBe("nested-child-session");
   });
 
   it("extracts planning sessions from plan artifact tool results", () => {
