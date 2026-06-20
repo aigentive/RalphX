@@ -6,9 +6,14 @@ use tokio_util::sync::CancellationToken;
 use crate::domain::entities::{Project, Task};
 
 use super::{
-    setup::run_setup_phase, spawn_cancellable_command, truncate_output, CancellableCommandResult,
-    MergeAnalysisEntry, PreExecAnalysisEntry, PreExecSetupResult, ValidationLogEntry,
-    INSTALL_RETRY_DELAY_MS, STATUS_FAILED,
+    frontend_readiness::{
+        check_frontend_dependency_readiness, command_cwd, is_frontend_package_context,
+        requires_frontend_readiness,
+    },
+    setup::run_setup_phase,
+    spawn_cancellable_command, truncate_output, CancellableCommandResult, MergeAnalysisEntry,
+    PreExecAnalysisEntry, PreExecSetupResult, ValidationLogEntry, INSTALL_RETRY_DELAY_MS,
+    STATUS_FAILED,
 };
 
 /// Run install commands for pre-execution setup.
@@ -31,21 +36,28 @@ pub(crate) async fn run_install_phase(
         };
 
         let resolved_cmd = resolve(cmd_str);
-        let resolved_path = resolve(&entry.path);
-        let cmd_cwd = if resolved_path == "." {
-            exec_cwd.to_path_buf()
-        } else {
-            exec_cwd.join(&resolved_path)
-        };
+        let entry_path = resolve(&entry.path);
+        let (cmd_cwd, resolved_path) = command_cwd(exec_cwd, &entry_path, &resolved_cmd);
+        let frontend_readiness_required = is_frontend_package_context(&cmd_cwd)
+            || requires_frontend_readiness(&resolved_cmd, &cmd_cwd);
 
-        // Skip install if node_modules already exists (symlink from setup phase or prior install)
+        // Skip install only when frontend dependencies are actually ready. A partial
+        // node_modules directory is not enough: local Vitest and import probes must pass.
         let nm_path = cmd_cwd.join("node_modules");
-        if nm_path.exists() || nm_path.is_symlink() {
+        let dependency_tree_ready = if frontend_readiness_required {
+            check_frontend_dependency_readiness(&cmd_cwd, cancel)
+                .await
+                .is_ok()
+        } else {
+            nm_path.exists() || nm_path.is_symlink()
+        };
+        if dependency_tree_ready {
             tracing::info!(
                 command = %resolved_cmd,
                 cwd = %cmd_cwd.display(),
                 is_symlink = nm_path.is_symlink(),
-                "Skipping install: node_modules already exists"
+                frontend_readiness_required,
+                "Skipping install: dependency tree is ready"
             );
             log.push(ValidationLogEntry {
                 phase: "install".to_string(),
@@ -55,7 +67,11 @@ pub(crate) async fn run_install_phase(
                 status: "skipped".to_string(),
                 exit_code: None,
                 stdout: String::new(),
-                stderr: "node_modules already exists — install skipped".to_string(),
+                stderr: if frontend_readiness_required {
+                    "frontend dependencies are ready — install skipped".to_string()
+                } else {
+                    "node_modules already exists — install skipped".to_string()
+                },
                 duration_ms: 0,
                 ..Default::default()
             });
@@ -241,6 +257,21 @@ pub(crate) async fn run_install_phase(
             install_had_failures = true;
         }
 
+        if frontend_readiness_required && log_entry.status != STATUS_FAILED {
+            if let Err(readiness) = check_frontend_dependency_readiness(&cmd_cwd, cancel).await {
+                install_had_failures = true;
+                log_entry.status = STATUS_FAILED.to_string();
+                log_entry.exit_code = None;
+                log_entry.stderr = truncate_output(
+                    &format!(
+                        "Frontend dependency setup failed after install: {}",
+                        readiness.message()
+                    ),
+                    2000,
+                );
+            }
+        }
+
         if let Some(handle) = app_handle {
             let _ = handle.emit(
                 "merge:validation_step",
@@ -337,6 +368,7 @@ pub async fn run_pre_execution_setup(
         .map(|e| MergeAnalysisEntry {
             path: e.path.clone(),
             label: e.label.clone(),
+            install: e.install.clone(),
             validate: Vec::new(),
             worktree_setup: e.worktree_setup.clone(),
         })

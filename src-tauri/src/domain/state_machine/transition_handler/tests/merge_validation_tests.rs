@@ -15,6 +15,39 @@ use super::super::merge_validation::{
 use super::helpers::*;
 use crate::domain::entities::MergeValidationMode;
 
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+fn write_executable_script(path: &Path, contents: &str) {
+    std::fs::write(path, contents).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+}
+
 // ==================
 // run_validation_commands tests
 // ==================
@@ -226,6 +259,109 @@ async fn run_validation_resolves_template_vars() {
     .await;
     assert!(result.is_some());
     assert!(result.unwrap().all_passed);
+}
+
+#[tokio::test]
+async fn frontend_validation_bootstraps_partial_node_modules_and_uses_local_vitest() {
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let project_dir = tempfile::tempdir().unwrap();
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let frontend_dir = worktree_dir.path().join("frontend");
+    std::fs::create_dir_all(frontend_dir.join("node_modules")).unwrap();
+    std::fs::write(
+        frontend_dir.join("package.json"),
+        r#"{
+          "scripts": { "test:run": "vitest run" },
+          "dependencies": { "react": "1.0.0", "zod": "1.0.0", "@tauri-apps/api": "1.0.0" },
+          "devDependencies": { "vitest": "1.0.0" }
+        }"#,
+    )
+    .unwrap();
+
+    let fake_bin = tempfile::tempdir().unwrap();
+    let fake_node = fake_bin.path().join("node");
+    write_executable_script(
+        &fake_node,
+        r#"#!/bin/sh
+if [ -x "node_modules/.bin/vitest" ]; then
+  exit 0
+fi
+echo "missing frontend dependency readiness" >&2
+exit 1
+"#,
+    );
+
+    let global_marker = worktree_dir.path().join("global-vitest-used");
+    let global_vitest = fake_bin.path().join("vitest");
+    write_executable_script(
+        &global_vitest,
+        &format!(
+            "#!/bin/sh\nprintf 'global-vitest %s\\n' \"$*\" > '{}'\nexit 0\n",
+            global_marker.display()
+        ),
+    );
+
+    let local_marker = worktree_dir.path().join("local-vitest-used");
+    let install_cmd = format!(
+        "mkdir -p node_modules/.bin && printf '#!/bin/sh\\nprintf \"local-vitest %s\\\\n\" \"$*\" > \"{}\"\\nexit 0\\n' > node_modules/.bin/vitest && chmod +x node_modules/.bin/vitest",
+        local_marker.display()
+    );
+
+    let _node_path = EnvVarGuard::set("RALPHX_NODE_PATH", fake_node.as_os_str());
+    let path_value = format!("{}:/bin:/usr/bin", fake_bin.path().display());
+    let _path = EnvVarGuard::set("PATH", std::ffi::OsString::from(path_value));
+
+    let mut project = make_project(Some("main"));
+    project.working_directory = project_dir.path().to_string_lossy().to_string();
+    project.detected_analysis = Some(format!(
+        r#"[{{
+            "path": ".",
+            "label": "Frontend",
+            "install": "{}",
+            "validate": ["vitest run vitest.config.ts"],
+            "worktree_setup": []
+        }}]"#,
+        install_cmd.replace('\\', "\\\\").replace('"', "\\\"")
+    ));
+    let task = make_task(None, None);
+
+    let result = run_validation_commands(
+        &project,
+        &task,
+        worktree_dir.path(),
+        "frontend-readiness-task",
+        None,
+        None,
+        &MergeValidationMode::Block,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("frontend validation should produce a result");
+
+    assert!(
+        result.all_passed,
+        "validation should pass after bootstrap; log={:?}; failures={:?}",
+        result.log, result.failures
+    );
+    assert!(
+        local_marker.exists(),
+        "local node_modules/.bin/vitest should run after bootstrap"
+    );
+    assert!(
+        !global_marker.exists(),
+        "global/non-local vitest must not be invoked"
+    );
+    assert!(result.log.iter().any(|entry| {
+        entry.phase == "install" && entry.path == "frontend" && entry.status == "success"
+    }));
+    assert!(result.log.iter().any(|entry| {
+        entry.phase == "validate"
+            && entry.path == "frontend"
+            && entry.command == "./node_modules/.bin/vitest run"
+            && entry.status == "success"
+    }));
 }
 
 #[tokio::test]

@@ -6,8 +6,14 @@ use tokio_util::sync::CancellationToken;
 use crate::domain::entities::merge_progress_event::{map_command_to_phase, MergePhaseStatus};
 
 use super::{
-    emit_merge_progress, spawn_cancellable_command, truncate_output, CancellableCommandResult,
-    MergeAnalysisEntry, ValidationFailure, ValidationLogEntry, STATUS_FAILED,
+    emit_merge_progress,
+    frontend_readiness::{
+        check_frontend_dependency_readiness, command_cwd, requires_frontend_readiness,
+        sanitize_frontend_validate_command,
+    },
+    install::run_install_phase,
+    spawn_cancellable_command, truncate_output, CancellableCommandResult, MergeAnalysisEntry,
+    PreExecAnalysisEntry, ValidationFailure, ValidationLogEntry, STATUS_FAILED,
     VALIDATE_RETRY_DELAY_MS,
 };
 
@@ -28,9 +34,10 @@ fn emit_skipped_for_remaining(
 ) {
     let mut past_failure = false;
     for entry in entries {
-        let resolved_path = resolve(&entry.path);
+        let entry_path = resolve(&entry.path);
         for cmd_str in &entry.validate {
-            let resolved_cmd = resolve(cmd_str);
+            let resolved_cmd = sanitize_frontend_validate_command(&resolve(cmd_str));
+            let (_cmd_cwd, resolved_path) = command_cwd(_merge_cwd, &entry_path, &resolved_cmd);
 
             // Skip commands we already ran (they're already in the log)
             if !past_failure {
@@ -120,15 +127,11 @@ pub(super) async fn run_validate_phase(
             continue;
         }
 
-        let resolved_path = resolve(&entry.path);
-        let cmd_cwd = if resolved_path == "." {
-            merge_cwd.to_path_buf()
-        } else {
-            merge_cwd.join(&resolved_path)
-        };
+        let entry_path = resolve(&entry.path);
 
         for cmd_str in &entry.validate {
-            let resolved_cmd = resolve(cmd_str);
+            let resolved_cmd = sanitize_frontend_validate_command(&resolve(cmd_str));
+            let (cmd_cwd, resolved_path) = command_cwd(merge_cwd, &entry_path, &resolved_cmd);
             ran_any = true;
 
             // Check cache: skip previously-passed validate commands when SHA matches
@@ -183,6 +186,129 @@ pub(super) async fn run_validate_phase(
                     }
                     log.push(log_entry);
                     continue;
+                }
+            }
+
+            if requires_frontend_readiness(&resolved_cmd, &cmd_cwd) {
+                let readiness = check_frontend_dependency_readiness(&cmd_cwd, cancel).await;
+                if let Err(before_install) = readiness {
+                    let mut setup_failed = entry.install.is_none();
+                    if let Some(install_cmd) = entry.install.clone() {
+                        tracing::info!(
+                            command = %resolved_cmd,
+                            cwd = %cmd_cwd.display(),
+                            "Frontend validation dependencies are not ready; running install before validation"
+                        );
+                        let install_entry = PreExecAnalysisEntry {
+                            path: resolved_path.clone(),
+                            label: entry.label.clone(),
+                            install: Some(install_cmd),
+                            worktree_setup: Vec::new(),
+                        };
+                        let (install_log, install_had_failures) = run_install_phase(
+                            &[install_entry],
+                            merge_cwd,
+                            task_id_str,
+                            app_handle,
+                            resolve,
+                            "validation_readiness",
+                            cancel,
+                        )
+                        .await;
+                        setup_failed = install_had_failures;
+                        log.extend(install_log);
+                    }
+
+                    let readiness_after_install =
+                        check_frontend_dependency_readiness(&cmd_cwd, cancel).await;
+                    if setup_failed || readiness_after_install.is_err() {
+                        let message = readiness_after_install
+                            .err()
+                            .map(|failure| failure.message())
+                            .unwrap_or_else(|| before_install.message());
+                        let stderr = format!(
+                            "Frontend dependency setup failed before validation; not running '{}': {}",
+                            resolved_cmd, message
+                        );
+                        tracing::warn!(
+                            command = %resolved_cmd,
+                            cwd = %cmd_cwd.display(),
+                            error = %stderr,
+                            "Frontend validation blocked by dependency readiness failure"
+                        );
+                        emit_merge_progress(
+                            app_handle,
+                            task_id_str,
+                            map_command_to_phase(&resolved_cmd),
+                            MergePhaseStatus::Failed,
+                            stderr.clone(),
+                        );
+                        let log_entry = ValidationLogEntry {
+                            phase: "validate".to_string(),
+                            command: resolved_cmd.clone(),
+                            path: resolved_path.clone(),
+                            label: entry.label.clone(),
+                            status: STATUS_FAILED.to_string(),
+                            exit_code: None,
+                            stdout: String::new(),
+                            stderr: truncate_output(&stderr, 2000),
+                            duration_ms: 0,
+                            ..Default::default()
+                        };
+                        if let Some(handle) = app_handle {
+                            let _ = handle.emit(
+                                "merge:validation_step",
+                                serde_json::json!({
+                                    "task_id": task_id_str,
+                                    "phase": log_entry.phase,
+                                    "command": log_entry.command,
+                                    "path": log_entry.path,
+                                    "label": log_entry.label,
+                                    "status": log_entry.status,
+                                    "exit_code": log_entry.exit_code,
+                                    "stdout": log_entry.stdout,
+                                    "stderr": log_entry.stderr,
+                                    "duration_ms": log_entry.duration_ms,
+                                }),
+                            );
+                        }
+                        log.push(log_entry);
+                        failures.push(ValidationFailure {
+                            command: resolved_cmd.clone(),
+                            path: resolved_path.clone(),
+                            exit_code: None,
+                            stderr,
+                        });
+
+                        use crate::domain::entities::MergeValidationMode;
+                        if matches!(
+                            validation_mode,
+                            MergeValidationMode::Block | MergeValidationMode::AutoFix
+                        ) {
+                            emit_skipped_for_remaining(
+                                entries,
+                                merge_cwd,
+                                task_id_str,
+                                app_handle,
+                                resolve,
+                                &mut log,
+                                &resolved_path,
+                                &resolved_cmd,
+                            );
+                            let validate_duration_ms =
+                                validate_phase_start.elapsed().as_millis() as u64;
+                            tracing::info!(
+                                task_id = task_id_str,
+                                duration_ms = validate_duration_ms,
+                                command_count = validate_count,
+                                failure_count = failures.len(),
+                                "run_validation_commands: completed validate phase (frontend readiness failure)"
+                            );
+                            return (log, failures, ran_any);
+                        }
+
+                        continue;
+                    }
                 }
             }
 

@@ -40,6 +40,7 @@ You are the RalphX Project Analyzer Agent. Your job is to scan a project's worki
 3. For `package.json`: inspect it to check available scripts (typecheck, lint, build, test)
 4. For `Cargo.toml`: check if it's a workspace root (`[workspace]`) vs member
 5. Determine the relative `path` from project root (use `.` for root-level)
+6. If the only Node package is under `frontend/package.json`, emit `path: "frontend"` so validation runs from `frontend/`, not from the repository root
 
 ## Repo-Specific Validation Overrides
 
@@ -104,6 +105,7 @@ Use these placeholders in commands — they are resolved at runtime:
 - Only detect what actually exists — don't guess or assume
 - If a monorepo has multiple workspaces, produce entries for each build context
 - For `package.json`, only include scripts that actually exist (check the `scripts` object)
+- Never pass `vitest.config.ts` as a test target. For Vitest, use the package test script with no config-file argument, or pass real `*.test.*` / `*.spec.*` files only.
 - Focus on commands useful for validation during task execution and review
 - When repo-local docs define validation policy, prefer those commands over generic defaults
 
