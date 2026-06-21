@@ -345,9 +345,21 @@ function RalphxAssociationPanel({
                           : (
                               <span
                                 role="img"
-                                aria-label="Pull request"
-                                title="Pull request"
-                                className="inline-flex shrink-0 text-[var(--status-success)]"
+                                aria-label={
+                                  item.active
+                                    ? "Open pull request"
+                                    : "Pull request (merged or closed)"
+                                }
+                                title={
+                                  item.active
+                                    ? "Open pull request"
+                                    : "Pull request (merged or closed)"
+                                }
+                                className={
+                                  item.active
+                                    ? "inline-flex shrink-0 text-[var(--status-success)]"
+                                    : "inline-flex shrink-0 text-[var(--text-muted)]"
+                                }
                               >
                                 <GitPullRequestArrow className="h-3.5 w-3.5" aria-hidden="true" />
                               </span>

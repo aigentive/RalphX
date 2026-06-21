@@ -330,6 +330,14 @@ describe("TicketDetailSheet branch vs pull-request distinction", () => {
           active: false,
           deepLink: { view: "agents", id: "c2", projectId: "p1" },
         },
+        {
+          id: "https://github.com/x/y/pull/9",
+          title: "PR #9",
+          subtitle: "ralphx/p/agent-3",
+          status: "merged",
+          active: false,
+          deepLink: { view: "agents", id: "c3", projectId: "p1" },
+        },
       ],
       checks: [],
       qa: [],
@@ -358,10 +366,21 @@ describe("TicketDetailSheet branch vs pull-request distinction", () => {
   it("marks PR items with a pull-request icon and branch-only items with a branch icon", () => {
     renderWithPullRequests();
 
-    expect(screen.getByRole("img", { name: "Pull request" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Open pull request" })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /branch only/i })).toBeInTheDocument();
     expect(screen.getByText("PR #7")).toBeInTheDocument();
     expect(screen.getByText("ralphx/p/agent-2")).toBeInTheDocument();
+  });
+
+  it("colors an open PR icon as active and a terminal (merged/closed) PR icon as muted", () => {
+    renderWithPullRequests();
+
+    expect(screen.getByRole("img", { name: "Open pull request" })).toHaveClass(
+      "text-[var(--status-success)]",
+    );
+    expect(screen.getByRole("img", { name: /merged or closed/i })).toHaveClass(
+      "text-[var(--text-muted)]",
+    );
   });
 });
 
