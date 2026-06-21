@@ -614,7 +614,7 @@ describe("TicketingDashboardView", () => {
     expect(list.getByText("A. User")).toBeInTheDocument();
     expect(list.getByText("Platform")).toBeInTheDocument();
     expect(list.getByText("linear")).toBeInTheDocument();
-    expect(list.getByText("●3")).toBeInTheDocument();
+    expect(list.getByRole("img", { name: /3 linked RalphX/i })).toBeInTheDocument();
     expect(list.queryByText("Unassigned")).not.toBeInTheDocument();
   });
 

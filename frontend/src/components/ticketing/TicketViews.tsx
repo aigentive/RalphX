@@ -10,15 +10,17 @@ import {
 } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  ChevronDown,
   ChevronRight,
   Circle,
   CircleCheck,
   CircleDashed,
   CircleDot,
+  GitBranch,
   MessageSquare,
   UserCheck,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import type { TicketingColumn, TicketSummary } from "@/api/ticketing";
 import { Button } from "@/components/ui/button";
@@ -79,6 +81,35 @@ function UnreadCommentIndicator() {
   );
 }
 
+/** RalphX work badge: number of agent conversations/tasks linked to this ticket. */
+function TicketAssociationBadge({ count }: { count: number }) {
+  if (count <= 0) {
+    return (
+      <span
+        role="img"
+        aria-label="No linked RalphX work"
+        title="No linked RalphX work"
+        className="inline-flex text-[var(--text-muted)] opacity-40"
+      >
+        <GitBranch className="h-3.5 w-3.5" aria-hidden="true" />
+      </span>
+    );
+  }
+  const label = `${count} linked RalphX item${count === 1 ? "" : "s"}`;
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      title={`${label} (open the ticket to view them)`}
+      className="inline-flex items-center gap-1 text-xs font-medium"
+      style={{ color: "var(--status-info)" }}
+    >
+      <GitBranch className="h-3.5 w-3.5" aria-hidden="true" />
+      {count}
+    </span>
+  );
+}
+
 /**
  * Hover/focus-revealed "Assign to me" quick action. Rendered as a sibling overlay
  * (not nested inside the row/card button) to keep the markup a11y-valid.
@@ -134,25 +165,44 @@ export function TicketListView({
   onQuickAssign,
 }: TicketListViewProps) {
   const groups = groupTicketsByStatus(tickets, columns);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const toggleGroup = (id: string) =>
+    setCollapsed((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="min-h-0 flex-1 overflow-auto" data-ticket-list>
         {groups.map((group) => (
           <section key={group.id}>
-            <div
-              className="sticky top-0 z-10 flex items-center gap-2 px-4 py-1.5 text-xs font-semibold"
+            <button
+              type="button"
+              className="sticky top-0 z-10 flex w-full items-center gap-2 px-4 py-1.5 text-left text-xs font-semibold hover:bg-[var(--bg-hover)]"
               style={{
                 backgroundColor: "var(--bg-surface)",
                 borderBottomColor: "var(--border-subtle)",
                 borderBottomStyle: "solid",
                 borderBottomWidth: "1px",
               }}
+              aria-expanded={!collapsed.has(group.id)}
+              onClick={() => toggleGroup(group.id)}
             >
+              {collapsed.has(group.id) ? (
+                <ChevronRight className="h-3.5 w-3.5 text-[var(--text-muted)]" aria-hidden="true" />
+              ) : (
+                <ChevronDown className="h-3.5 w-3.5 text-[var(--text-muted)]" aria-hidden="true" />
+              )}
               <TicketStatusIcon state={{ id: group.id, name: group.name, category: group.category }} />
               <span className="text-[var(--text-secondary)]">{group.name}</span>
               <span className="text-[var(--text-muted)]">{group.tickets.length}</span>
-            </div>
-            {group.tickets.map((ticket) => (
+            </button>
+            {!collapsed.has(group.id) && group.tickets.map((ticket) => (
               <div key={`${ticket.ref.provider}:${ticket.ref.id}`} className="group relative">
                 <button
                   type="button"
@@ -190,9 +240,7 @@ export function TicketListView({
                   <span className="min-w-0">
                     <TicketAssigneeChip person={ticket.assignee} />
                   </span>
-                  <span className="text-xs text-[var(--text-secondary)]">
-                    {ticket.associationCount > 0 ? `●${ticket.associationCount}` : "○"}
-                  </span>
+                  <TicketAssociationBadge count={ticket.associationCount} />
                   <span className="text-xs text-[var(--text-muted)]">{formatTicketDate(ticket.updatedAt)}</span>
                 </button>
                 {canQuickAssign && onQuickAssign && !ticket.assignee && (
@@ -296,9 +344,7 @@ function TicketKanbanCard({
           {unread && <UnreadCommentIndicator />}
           {ticketKey(ticket.ref)}
         </span>
-        <span className="text-xs text-[var(--text-muted)]">
-          {ticket.associationCount > 0 ? `●${ticket.associationCount}` : "○"}
-        </span>
+        <TicketAssociationBadge count={ticket.associationCount} />
       </div>
       <p className="mt-2 line-clamp-2 text-sm font-medium">{ticket.title}</p>
       {ticket.labels.length > 0 && (

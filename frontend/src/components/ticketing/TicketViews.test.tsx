@@ -145,6 +145,28 @@ describe("TicketListView", () => {
     expect(screen.getAllByRole("img", { name: /^Status:/ }).length).toBeGreaterThanOrEqual(2);
   });
 
+  it("collapses and expands a status group when its heading is clicked", () => {
+    render(
+      <TicketListView
+        tickets={tickets}
+        columns={[
+          { id: "todo", name: "To Do", category: "todo", order: 0 },
+          { id: "started", name: "In Progress", category: "in_progress", order: 1 },
+        ]}
+        hasNextPage={false}
+        isFetchingNextPage={false}
+        onLoadMore={vi.fn()}
+        onSelectTicket={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /RX-1/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /To Do/ }));
+    // RX-1 (To Do group) is hidden; RX-2 (In Progress group) stays.
+    expect(screen.queryByRole("button", { name: /RX-1/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /RX-2/ })).toBeInTheDocument();
+  });
+
   it("moves focus between ticket rows with arrow keys", () => {
     render(
       <TicketListView
