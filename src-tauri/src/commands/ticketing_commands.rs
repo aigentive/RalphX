@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -23,7 +24,7 @@ use crate::commands::unified_chat_commands::{
 };
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    AgentConversationJiraIssueLink, AgentConversationLinearIssueLink, ChatContextType,
+    is_open_pr, AgentConversationJiraIssueLink, AgentConversationLinearIssueLink, ChatContextType,
     ChatConversation, ChatConversationId, ProjectId,
 };
 use crate::domain::integrations::{
@@ -143,6 +144,8 @@ pub struct TicketSummaryResponse {
     pub updated_at: String,
     pub url: Option<String>,
     pub association_count: usize,
+    /// Linked conversations whose workspace currently has an open (non-terminal) PR.
+    pub open_pr_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -846,6 +849,7 @@ fn jira_summary_to_ticket(summary: AtlassianResourceSummary) -> TicketSummaryRes
         updated_at: now_string(),
         url: summary.url,
         association_count: 0,
+        open_pr_count: 0,
     }
 }
 
@@ -877,6 +881,7 @@ fn linear_summary_to_ticket(summary: LinearIssueSummary) -> TicketSummaryRespons
         updated_at: summary.updated_at.unwrap_or_else(now_string),
         url: summary.url,
         association_count: 0,
+        open_pr_count: 0,
     }
 }
 
@@ -894,17 +899,43 @@ async fn hydrate_ticket_association_counts(
         return Ok(items);
     };
 
+    // Load the project's workspaces once and roll up open-PR state by conversation,
+    // so the per-ticket loop below does not add a second N+1 query.
+    let open_pr_by_conversation: HashMap<String, bool> = state
+        .agent_conversation_workspace_repo
+        .get_by_project_id(&project_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|workspace| {
+            let open = is_open_pr(
+                workspace.publication_pr_number,
+                workspace.publication_pr_status.as_deref(),
+            );
+            (workspace.conversation_id.to_string(), open)
+        })
+        .collect();
+
     let mut hydrated = Vec::with_capacity(items.len());
     for mut item in items {
         let reference = ticket_ref_to_composer_reference(provider, &item.ref_);
-        item.association_count = linked_agent_conversation_associations_for_ticket(
+        let associations = linked_agent_conversation_associations_for_ticket(
             state,
             provider,
             &project_id,
             &reference,
         )
-        .await?
-        .len();
+        .await?;
+        item.association_count = associations.len();
+        item.open_pr_count = associations
+            .iter()
+            .filter(|association| {
+                open_pr_by_conversation
+                    .get(&association.id)
+                    .copied()
+                    .unwrap_or(false)
+            })
+            .count();
         hydrated.push(item);
     }
     Ok(hydrated)
@@ -1007,6 +1038,7 @@ fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResp
         updated_at: content.updated_at_remote.clone().unwrap_or_else(now_string),
         url: content.url.clone(),
         association_count: 0,
+        open_pr_count: 0,
     };
     TicketDetailResponse {
         summary,
@@ -1061,6 +1093,7 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
         updated_at: content.updated_at.clone().unwrap_or_else(now_string),
         url: content.url.clone(),
         association_count: 0,
+        open_pr_count: 0,
     };
     TicketDetailResponse {
         summary,

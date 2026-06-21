@@ -10,13 +10,14 @@ import {
 } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  Briefcase,
   ChevronDown,
   ChevronRight,
   Circle,
   CircleCheck,
   CircleDashed,
   CircleDot,
-  GitBranch,
+  GitPullRequestArrow,
   MessageSquare,
   UserCheck,
 } from "lucide-react";
@@ -82,8 +83,16 @@ function UnreadCommentIndicator() {
 }
 
 /** RalphX work badge: number of agent conversations/tasks linked to this ticket. */
-function TicketAssociationBadge({ count }: { count: number }) {
-  if (count <= 0) {
+function TicketAssociationBadge({
+  count,
+  openPrCount,
+}: {
+  count: number;
+  openPrCount: number;
+}) {
+  const hasConversations = count > 0;
+  const hasOpenPr = openPrCount > 0;
+  if (!hasConversations && !hasOpenPr) {
     return (
       <span
         role="img"
@@ -91,21 +100,36 @@ function TicketAssociationBadge({ count }: { count: number }) {
         title="No linked RalphX work"
         className="inline-flex text-[var(--text-muted)] opacity-40"
       >
-        <GitBranch className="h-3.5 w-3.5" aria-hidden="true" />
+        <Briefcase className="h-3.5 w-3.5" aria-hidden="true" />
       </span>
     );
   }
-  const label = `${count} linked RalphX item${count === 1 ? "" : "s"}`;
+  const conversationLabel = `${count} RalphX conversation${count === 1 ? "" : "s"}`;
+  const prLabel = `${openPrCount} open pull request${openPrCount === 1 ? "" : "s"}`;
   return (
-    <span
-      role="img"
-      aria-label={label}
-      title={`${label} (open the ticket to view them)`}
-      className="inline-flex items-center gap-1 text-xs font-medium"
-      style={{ color: "var(--status-info)" }}
-    >
-      <GitBranch className="h-3.5 w-3.5" aria-hidden="true" />
-      {count}
+    <span className="inline-flex items-center gap-2 text-xs font-medium">
+      {hasOpenPr && (
+        <span
+          role="img"
+          aria-label={prLabel}
+          title={`${prLabel} across linked RalphX conversations`}
+          className="inline-flex items-center gap-1"
+          style={{ color: "var(--status-success)" }}
+        >
+          <GitPullRequestArrow className="h-3.5 w-3.5" aria-hidden="true" />
+          {openPrCount}
+        </span>
+      )}
+      <span
+        role="img"
+        aria-label={conversationLabel}
+        title={`${conversationLabel} (open the ticket to view them)`}
+        className="inline-flex items-center gap-1"
+        style={{ color: hasConversations ? "var(--status-info)" : "var(--text-muted)" }}
+      >
+        <Briefcase className="h-3.5 w-3.5" aria-hidden="true" />
+        {count}
+      </span>
     </span>
   );
 }
@@ -240,7 +264,7 @@ export function TicketListView({
                   <span className="min-w-0">
                     <TicketAssigneeChip person={ticket.assignee} />
                   </span>
-                  <TicketAssociationBadge count={ticket.associationCount} />
+                  <TicketAssociationBadge count={ticket.associationCount} openPrCount={ticket.openPrCount} />
                   <span className="text-xs text-[var(--text-muted)]">{formatTicketDate(ticket.updatedAt)}</span>
                 </button>
                 {canQuickAssign && onQuickAssign && !ticket.assignee && (
@@ -344,7 +368,7 @@ function TicketKanbanCard({
           {unread && <UnreadCommentIndicator />}
           {ticketKey(ticket.ref)}
         </span>
-        <TicketAssociationBadge count={ticket.associationCount} />
+        <TicketAssociationBadge count={ticket.associationCount} openPrCount={ticket.openPrCount} />
       </div>
       <p className="mt-2 line-clamp-2 text-sm font-medium">{ticket.title}</p>
       {ticket.labels.length > 0 && (

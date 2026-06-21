@@ -16,6 +16,7 @@ const tickets: TicketSummary[] = [
     updatedAt: "2026-06-19T22:00:00.000Z",
     url: null,
     associationCount: 0,
+    openPrCount: 0,
   },
   {
     ref: { provider: "jira", id: "10002", key: "RX-2" },
@@ -25,6 +26,7 @@ const tickets: TicketSummary[] = [
     updatedAt: "2026-06-19T22:01:00.000Z",
     url: null,
     associationCount: 1,
+    openPrCount: 0,
   },
 ];
 
@@ -44,6 +46,58 @@ describe("TicketListView", () => {
     expect(screen.getByText("Unassigned")).toBeInTheDocument();
   });
 
+  it("shows a separate open-PR indicator and conversation count for linked RalphX work", () => {
+    render(
+      <TicketListView
+        tickets={[
+          {
+            ref: { provider: "linear", id: "L-7", key: "L-7" },
+            title: "Has open PR",
+            state: { id: "started", name: "In Progress", category: "in_progress" },
+            labels: [],
+            updatedAt: "2026-06-19T22:00:00.000Z",
+            url: null,
+            associationCount: 2,
+            openPrCount: 1,
+          },
+        ]}
+        hasNextPage={false}
+        isFetchingNextPage={false}
+        onLoadMore={vi.fn()}
+        onSelectTicket={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: /1 open pull request/i })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /2 RalphX conversations/i })).toBeInTheDocument();
+  });
+
+  it("hides the open-PR indicator when no linked conversation has an open PR", () => {
+    render(
+      <TicketListView
+        tickets={[
+          {
+            ref: { provider: "linear", id: "L-8", key: "L-8" },
+            title: "No open PR",
+            state: { id: "todo", name: "To Do", category: "todo" },
+            labels: [],
+            updatedAt: "2026-06-19T22:00:00.000Z",
+            url: null,
+            associationCount: 1,
+            openPrCount: 0,
+          },
+        ]}
+        hasNextPage={false}
+        isFetchingNextPage={false}
+        onLoadMore={vi.fn()}
+        onSelectTicket={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("img", { name: /open pull request/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /1 RalphX conversation/i })).toBeInTheDocument();
+  });
+
   it("shows up to two labels with a +N overflow chip on dense rows", () => {
     render(
       <TicketListView
@@ -56,6 +110,7 @@ describe("TicketListView", () => {
             updatedAt: "2026-06-19T22:00:00.000Z",
             url: null,
             associationCount: 0,
+            openPrCount: 0,
           },
         ]}
         hasNextPage={false}
@@ -209,6 +264,7 @@ describe("TicketKanbanView", () => {
             updatedAt: "2026-06-20T10:00:00.000Z",
             url: null,
             associationCount: 0,
+            openPrCount: 0,
           },
         ]}
         onSelectTicket={vi.fn()}

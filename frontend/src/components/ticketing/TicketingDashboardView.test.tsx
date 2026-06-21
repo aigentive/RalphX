@@ -103,6 +103,7 @@ const ticket = {
   updatedAt: "2026-06-19T22:00:00.000Z",
   url: "https://example.atlassian.net/browse/RX-1",
   associationCount: 2,
+  openPrCount: 0,
 };
 
 function createWrapper() {
@@ -643,6 +644,7 @@ describe("TicketingDashboardView", () => {
             labels: ["backend", "linear"],
             project: "Platform",
             associationCount: 3,
+            openPrCount: 0,
             updatedAt: "2026-06-18T08:15:00.000Z",
           }],
           nextCursor: null,
@@ -667,7 +669,7 @@ describe("TicketingDashboardView", () => {
     expect(list.getByText("A. User")).toBeInTheDocument();
     expect(list.getByText("Platform")).toBeInTheDocument();
     expect(list.getByText("linear")).toBeInTheDocument();
-    expect(list.getByRole("img", { name: /3 linked RalphX/i })).toBeInTheDocument();
+    expect(list.getByRole("img", { name: /3 RalphX conversation/i })).toBeInTheDocument();
     expect(list.queryByText("Unassigned")).not.toBeInTheDocument();
   });
 

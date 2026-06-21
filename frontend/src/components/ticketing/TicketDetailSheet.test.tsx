@@ -29,6 +29,7 @@ const baseTicket: TicketSummary = {
   updatedAt: "2026-06-19T22:00:00.000Z",
   url: null,
   associationCount: 0,
+  openPrCount: 0,
 };
 
 const writableTransition: TicketTransitionOption = {
