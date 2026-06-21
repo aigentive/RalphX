@@ -1,8 +1,40 @@
-import type { TicketComment, TicketRef } from "@/api/ticketing";
+import type { TicketComment, TicketRef, TicketSummary } from "@/api/ticketing";
 
 /** Stable per-ticket key used for read-state bookkeeping. */
 export function ticketRefKey(ref: TicketRef): string {
   return `${ref.provider}:${ref.id}`;
+}
+
+/** Sentinel assignee-filter value selecting tickets with no assignee. */
+export const UNASSIGNED_ASSIGNEE = "__unassigned__";
+
+/** Distinct, sorted assignee display names present in the given tickets. */
+export function distinctAssigneeNames(tickets: TicketSummary[]): string[] {
+  const names = new Set<string>();
+  for (const ticket of tickets) {
+    const name = ticket.assignee?.name?.trim();
+    if (name) {
+      names.add(name);
+    }
+  }
+  return Array.from(names).sort((left, right) => left.localeCompare(right));
+}
+
+/**
+ * Client-side assignee filter. null/empty = everyone, the UNASSIGNED_ASSIGNEE
+ * sentinel = tickets with no assignee, any other value = exact name match.
+ */
+export function filterTicketsByAssignee(
+  tickets: TicketSummary[],
+  assignee: string | null,
+): TicketSummary[] {
+  if (!assignee) {
+    return tickets;
+  }
+  if (assignee === UNASSIGNED_ASSIGNEE) {
+    return tickets.filter((ticket) => !ticket.assignee);
+  }
+  return tickets.filter((ticket) => ticket.assignee?.name === assignee);
 }
 
 function toTime(value: string | null | undefined): number | null {

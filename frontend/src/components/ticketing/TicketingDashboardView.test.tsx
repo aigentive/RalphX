@@ -608,11 +608,25 @@ describe("TicketingDashboardView", () => {
 
     renderDashboard();
 
-    expect(screen.getByText("A. User")).toBeInTheDocument();
-    expect(screen.getByText("Platform")).toBeInTheDocument();
-    expect(screen.getByText("linear")).toBeInTheDocument();
-    expect(screen.getByText("●3")).toBeInTheDocument();
-    expect(screen.queryByText("Unassigned")).not.toBeInTheDocument();
+    // Scope to the ticket list so filter-bar options (Unassigned / assignee
+    // names) do not collide with row content.
+    const list = within(document.querySelector("[data-ticket-list]") as HTMLElement);
+    expect(list.getByText("A. User")).toBeInTheDocument();
+    expect(list.getByText("Platform")).toBeInTheDocument();
+    expect(list.getByText("linear")).toBeInTheDocument();
+    expect(list.getByText("●3")).toBeInTheDocument();
+    expect(list.queryByText("Unassigned")).not.toBeInTheDocument();
+  });
+
+  it("filters the list client-side by the selected assignee", () => {
+    mockConnectedDashboard();
+    useTicketingStore.setState({
+      filters: { text: "", assignee: "Someone Else", stateIds: [], labels: [] },
+    });
+    renderDashboard();
+
+    // The only ticket (RX-1) is unassigned, so the named-assignee filter empties the list.
+    expect(screen.getByText("No tickets match these filters")).toBeInTheDocument();
   });
 
   it("records a ticket as opened when its row is clicked", () => {

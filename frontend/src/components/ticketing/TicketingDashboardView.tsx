@@ -47,7 +47,12 @@ import { TicketDetailSheet } from "./TicketDetailSheet";
 import { TicketFilterBar } from "./TicketFilterBar";
 import { TicketingStatePanel } from "./TicketingStatePanel";
 import { TicketKanbanShell, TicketKanbanView, TicketListView } from "./TicketViews";
-import { isTicketUpdatedSince, ticketRefKey } from "./ticketing-read-state";
+import {
+  distinctAssigneeNames,
+  filterTicketsByAssignee,
+  isTicketUpdatedSince,
+  ticketRefKey,
+} from "./ticketing-read-state";
 import { providerLabel, ticketKey } from "./ticketing-utils";
 import { useAfterPaint } from "./useAfterPaint";
 
@@ -57,9 +62,10 @@ interface TicketingDashboardViewProps {
 }
 
 function toTicketFilters(filters: ReturnType<typeof useTicketingStore.getState>["filters"]): TicketFiltersInput | undefined {
+  // Assignee is filtered client-side (see filterTicketsByAssignee), so it is not
+  // forwarded to the provider search here.
   const next: TicketFiltersInput = {
     ...(filters.text.trim() && { text: filters.text.trim() }),
-    ...(filters.assignee !== null && { assignee: filters.assignee }),
     ...(filters.stateIds.length > 0 && { stateIds: filters.stateIds }),
     ...(filters.labels.length > 0 && { labels: filters.labels }),
   };
@@ -384,6 +390,11 @@ export function TicketingDashboardView({
 
   const ticketsQuery = useTickets(ticketQuery, { enabled: Boolean(ticketQuery) });
   const tickets = useMemo(() => flattenTicketPages(ticketsQuery.data), [ticketsQuery.data]);
+  const assigneeOptions = useMemo(() => distinctAssigneeNames(tickets), [tickets]);
+  const displayedTickets = useMemo(
+    () => filterTicketsByAssignee(tickets, filters.assignee),
+    [tickets, filters.assignee],
+  );
   const ticketColumns = useMemo(() => columnsFromTickets(tickets), [tickets]);
   // Remember the last non-empty columns so the kanban board does not collapse
   // while a refetch briefly returns an empty ticket list.
@@ -685,7 +696,7 @@ export function TicketingDashboardView({
         onAction={handleRefresh}
       />
     );
-  } else if (tickets.length === 0) {
+  } else if (displayedTickets.length === 0) {
     content = (
       <TicketingStatePanel
         state="empty"
@@ -699,7 +710,7 @@ export function TicketingDashboardView({
     content = shouldHydrateKanban ? (
       <TicketKanbanView
         columns={statusColumns}
-        tickets={tickets}
+        tickets={displayedTickets}
         canMoveTickets={Boolean(selectedProvider?.capabilities.kanbanWrite)}
         onMoveTicket={handleMoveTicket}
         onSelectTicket={handleSelectTicket}
@@ -713,7 +724,7 @@ export function TicketingDashboardView({
   } else {
     content = (
       <TicketListView
-        tickets={tickets}
+        tickets={displayedTickets}
         hasNextPage={Boolean(ticketsQuery.hasNextPage)}
         isFetchingNextPage={ticketsQuery.isFetchingNextPage}
         onLoadMore={() => void ticketsQuery.fetchNextPage()}
@@ -762,6 +773,7 @@ export function TicketingDashboardView({
       <TicketFilterBar
         containers={containers}
         columns={filterColumns}
+        assigneeOptions={assigneeOptions}
         containerLabel={containerLabels.containerLabel}
         allContainersLabel={containerLabels.allContainersLabel}
         activeContainerId={activeContainerId}

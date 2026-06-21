@@ -1,18 +1,33 @@
 import { describe, expect, it } from "vitest";
 
-import type { TicketComment } from "@/api/ticketing";
+import type { TicketComment, TicketSummary } from "@/api/ticketing";
 
 import {
   countNewComments,
+  distinctAssigneeNames,
+  filterTicketsByAssignee,
   isCommentNewSince,
   isOptimisticCommentId,
   isTicketUpdatedSince,
   sortCommentsByCreatedAt,
   ticketRefKey,
+  UNASSIGNED_ASSIGNEE,
 } from "./ticketing-read-state";
 
 function comment(overrides: Partial<TicketComment>): TicketComment {
   return { bodyMarkdown: "", bodyText: "", ...overrides };
+}
+
+function ticket(id: string, assigneeName: string | null): TicketSummary {
+  return {
+    ref: { provider: "linear", id, key: id },
+    title: `Ticket ${id}`,
+    state: { id: "todo", name: "To Do", category: "todo" },
+    ...(assigneeName ? { assignee: { name: assigneeName } } : {}),
+    labels: [],
+    updatedAt: "2026-06-20T12:00:00.000Z",
+    associationCount: 0,
+  };
 }
 
 const BASELINE = "2026-06-20T12:00:00.000Z";
@@ -93,5 +108,30 @@ describe("isTicketUpdatedSince", () => {
     expect(isTicketUpdatedSince(BEFORE, BASELINE)).toBe(false);
     expect(isTicketUpdatedSince(AFTER, null)).toBe(false);
     expect(isTicketUpdatedSince(undefined, BASELINE)).toBe(false);
+  });
+});
+
+describe("distinctAssigneeNames", () => {
+  it("returns sorted unique assignee names and ignores unassigned tickets", () => {
+    const tickets = [ticket("1", "Ada"), ticket("2", null), ticket("3", "Ada"), ticket("4", "Grace")];
+    expect(distinctAssigneeNames(tickets)).toEqual(["Ada", "Grace"]);
+  });
+});
+
+describe("filterTicketsByAssignee", () => {
+  const tickets = [ticket("1", "Ada"), ticket("2", null), ticket("3", "Grace")];
+
+  it("returns everyone when no assignee is selected", () => {
+    expect(filterTicketsByAssignee(tickets, null)).toHaveLength(3);
+  });
+
+  it("returns only unassigned tickets for the sentinel", () => {
+    const result = filterTicketsByAssignee(tickets, UNASSIGNED_ASSIGNEE);
+    expect(result.map((t) => t.ref.id)).toEqual(["2"]);
+  });
+
+  it("returns only tickets matching the named assignee", () => {
+    const result = filterTicketsByAssignee(tickets, "Grace");
+    expect(result.map((t) => t.ref.id)).toEqual(["3"]);
   });
 });

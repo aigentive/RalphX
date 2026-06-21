@@ -7,9 +7,12 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import type { TicketingFilterState, TicketingViewMode } from "@/stores/ticketingStore";
 import { cn } from "@/lib/utils";
 
+import { UNASSIGNED_ASSIGNEE } from "./ticketing-read-state";
+
 interface TicketFilterBarProps {
   containers: TicketingContainer[];
   columns: TicketingColumn[];
+  assigneeOptions: string[];
   containerLabel: string;
   allContainersLabel: string;
   activeContainerId: string | null;
@@ -21,6 +24,15 @@ interface TicketFilterBarProps {
   onResetFilters: () => void;
   onViewModeChange: (mode: TicketingViewMode) => void;
   onRefresh: () => void;
+}
+
+function hasActiveFilters(filters: TicketingFilterState): boolean {
+  return (
+    filters.text.trim() !== ""
+    || filters.stateIds.length > 0
+    || filters.labels.length > 0
+    || filters.assignee !== null
+  );
 }
 
 function ViewModeButton({
@@ -61,6 +73,7 @@ function ViewModeButton({
 export function TicketFilterBar({
   containers,
   columns,
+  assigneeOptions,
   containerLabel,
   allContainersLabel,
   activeContainerId,
@@ -73,6 +86,7 @@ export function TicketFilterBar({
   onViewModeChange,
   onRefresh,
 }: TicketFilterBarProps) {
+  const filtersActive = hasActiveFilters(filters);
   return (
     <div
       className="flex flex-wrap items-center gap-2 px-4 py-3"
@@ -133,6 +147,30 @@ export function TicketFilterBar({
         </select>
       </label>
 
+      <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+        Assignee
+        <select
+          className="h-8 min-w-[130px] rounded-md px-2 text-sm outline-none"
+          value={filters.assignee ?? ""}
+          onChange={(event) => onFiltersChange({ assignee: event.target.value || null })}
+          style={{
+            backgroundColor: "var(--bg-elevated)",
+            borderColor: "var(--border-default)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+            color: "var(--text-primary)",
+          }}
+        >
+          <option value="">Everyone</option>
+          <option value={UNASSIGNED_ASSIGNEE}>Unassigned</option>
+          {assigneeOptions.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </label>
+
       <div className="relative min-w-[220px] flex-1">
         <Search
           className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]"
@@ -154,10 +192,25 @@ export function TicketFilterBar({
         />
       </div>
 
-      <Button type="button" variant="ghost" size="sm" onClick={onResetFilters}>
-        <X className="h-4 w-4" aria-hidden="true" />
-        Reset
-      </Button>
+      {filtersActive && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1.5"
+          onClick={onResetFilters}
+          style={{
+            backgroundColor: "var(--bg-elevated)",
+            borderColor: "var(--border-default)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+            color: "var(--text-secondary)",
+          }}
+        >
+          <X className="h-3.5 w-3.5" aria-hidden="true" />
+          Reset
+        </Button>
+      )}
 
       <div
         className="inline-flex h-9 items-center rounded-md p-0.5"
