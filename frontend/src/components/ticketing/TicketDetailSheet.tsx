@@ -617,7 +617,21 @@ export function TicketDetailSheet({
                       href={ticket.url}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-xs font-medium text-[var(--status-info)]"
+                      className="inline-flex items-center gap-1 text-xs font-medium text-[var(--status-info)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                      onClick={(event) => {
+                        // WKWebView does not reliably open target="_blank" links in
+                        // the system browser; route through the app opener (keeping
+                        // the anchor for semantics/accessibility).
+                        event.preventDefault();
+                        const providerUrl = ticket.url;
+                        if (!providerUrl) {
+                          return;
+                        }
+                        void (async () => {
+                          const { openUrl } = await import("@tauri-apps/plugin-opener");
+                          await openUrl(providerUrl);
+                        })();
+                      }}
                     >
                       Open in provider
                       <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />

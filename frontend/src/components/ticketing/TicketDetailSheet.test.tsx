@@ -1,5 +1,8 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+
+const { openUrlMock } = vi.hoisted(() => ({ openUrlMock: vi.fn() }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: openUrlMock }));
 
 import type {
   TicketAssociations,
@@ -359,5 +362,20 @@ describe("TicketDetailSheet branch vs pull-request distinction", () => {
     expect(screen.getByRole("img", { name: /branch only/i })).toBeInTheDocument();
     expect(screen.getByText("PR #7")).toBeInTheDocument();
     expect(screen.getByText("ralphx/p/agent-2")).toBeInTheDocument();
+  });
+});
+
+describe("TicketDetailSheet open in provider", () => {
+  it("opens the provider URL through the app opener (reliable in WKWebView)", async () => {
+    openUrlMock.mockClear();
+    renderSheet({
+      ticket: { ...baseTicket, url: "https://linear.app/x/issue/ABC-1" },
+    });
+
+    fireEvent.click(screen.getByRole("link", { name: /open in provider/i }));
+
+    await waitFor(() => {
+      expect(openUrlMock).toHaveBeenCalledWith("https://linear.app/x/issue/ABC-1");
+    });
   });
 });
