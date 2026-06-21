@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { TicketSummary } from "@/api/ticketing";
 
 import { resolveTicketKanbanMove } from "./ticketing-kanban-utils";
-import { TicketListView } from "./TicketViews";
+import { TicketKanbanView, TicketListView } from "./TicketViews";
 
 const tickets: TicketSummary[] = [
   {
@@ -44,6 +44,33 @@ describe("TicketListView", () => {
     expect(screen.getByText("Unassigned")).toBeInTheDocument();
   });
 
+  it("shows up to three labels with a +N overflow chip", () => {
+    render(
+      <TicketListView
+        tickets={[
+          {
+            ref: { provider: "linear", id: "L-9", key: "L-9" },
+            title: "Labelled ticket",
+            state: { id: "todo", name: "To Do", category: "todo" },
+            labels: ["a", "b", "c", "d"],
+            updatedAt: "2026-06-19T22:00:00.000Z",
+            url: null,
+            associationCount: 0,
+          },
+        ]}
+        hasNextPage={false}
+        isFetchingNextPage={false}
+        onLoadMore={vi.fn()}
+        onSelectTicket={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("a")).toBeInTheDocument();
+    expect(screen.getByText("c")).toBeInTheDocument();
+    expect(screen.queryByText("d")).not.toBeInTheDocument();
+    expect(screen.getByText("+1")).toBeInTheDocument();
+  });
+
   it("moves focus between ticket rows with arrow keys", () => {
     render(
       <TicketListView
@@ -64,6 +91,33 @@ describe("TicketListView", () => {
 
     fireEvent.keyDown(second, { key: "ArrowUp" });
     expect(first).toHaveFocus();
+  });
+});
+
+describe("TicketKanbanView", () => {
+  it("renders labels and the assignee on kanban cards", () => {
+    render(
+      <TicketKanbanView
+        columns={[{ id: "todo", name: "To Do", category: "todo", order: 0 }]}
+        tickets={[
+          {
+            ref: { provider: "linear", id: "L-1", key: "L-1" },
+            title: "Kanban card ticket",
+            state: { id: "todo", name: "To Do", category: "todo" },
+            assignee: { name: "Ada Lovelace" },
+            labels: ["frontend", "ux"],
+            updatedAt: "2026-06-20T10:00:00.000Z",
+            url: null,
+            associationCount: 0,
+          },
+        ]}
+        onSelectTicket={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("frontend")).toBeInTheDocument();
+    expect(screen.getByText("ux")).toBeInTheDocument();
+    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
   });
 });
 

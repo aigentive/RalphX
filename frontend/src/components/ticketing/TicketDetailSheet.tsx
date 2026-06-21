@@ -25,6 +25,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TicketAssigneeChip } from "./TicketAssigneeChip";
+import { TicketLabels } from "./TicketLabels";
 import { categoryToken, formatTicketDate, providerLabel, ticketKey } from "./ticketing-utils";
 
 interface TicketDetailSheetProps {
@@ -437,15 +438,7 @@ export function TicketDetailSheet({
                         {ticket.project}
                       </span>
                     )}
-                    {ticket.labels.map((label) => (
-                      <span
-                        key={label}
-                        className="rounded border px-2 py-1"
-                        style={{ borderColor: "var(--border-subtle)" }}
-                      >
-                        {label}
-                      </span>
-                    ))}
+                    <TicketLabels labels={ticket.labels} max={ticket.labels.length} size="md" />
                   </div>
                 )}
 

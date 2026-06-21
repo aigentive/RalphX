@@ -15,6 +15,7 @@ import type { ReactNode } from "react";
 import type { TicketingColumn, TicketSummary } from "@/api/ticketing";
 import { Button } from "@/components/ui/button";
 import { TicketAssigneeChip } from "./TicketAssigneeChip";
+import { TicketLabels } from "./TicketLabels";
 import { resolveTicketKanbanMove, ticketDragId } from "./ticketing-kanban-utils";
 import { categoryToken, formatTicketDate, ticketButtonLabel, ticketKey } from "./ticketing-utils";
 
@@ -107,15 +108,7 @@ export function TicketListView({
               {(ticket.project || ticket.labels.length > 0) && (
                 <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1 text-[11px] text-[var(--text-muted)]">
                   {ticket.project && <span className="truncate">{ticket.project}</span>}
-                  {ticket.labels.slice(0, 3).map((label) => (
-                    <span
-                      key={label}
-                      className="rounded border px-1 py-0.5"
-                      style={{ borderColor: "var(--border-subtle)" }}
-                    >
-                      {label}
-                    </span>
-                  ))}
+                  <TicketLabels labels={ticket.labels} max={3} />
                 </span>
               )}
             </span>
@@ -215,6 +208,9 @@ function TicketKanbanCard({
         </span>
       </div>
       <p className="mt-2 line-clamp-2 text-sm font-medium">{ticket.title}</p>
+      {ticket.labels.length > 0 && (
+        <TicketLabels labels={ticket.labels} max={2} className="mt-2 text-[var(--text-muted)]" />
+      )}
       <div className="mt-3 flex items-center justify-between gap-2 text-xs text-[var(--text-muted)]">
         <TicketAssigneeChip person={ticket.assignee} />
         <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
