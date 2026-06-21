@@ -14,6 +14,7 @@ import type { ReactNode } from "react";
 
 import type { TicketingColumn, TicketSummary } from "@/api/ticketing";
 import { Button } from "@/components/ui/button";
+import { TicketAssigneeChip } from "./TicketAssigneeChip";
 import { resolveTicketKanbanMove, ticketDragId } from "./ticketing-kanban-utils";
 import { categoryToken, formatTicketDate, ticketButtonLabel, ticketKey } from "./ticketing-utils";
 
@@ -119,7 +120,9 @@ export function TicketListView({
               )}
             </span>
             <TicketStatePill ticket={ticket} />
-            <span className="truncate text-[var(--text-secondary)]">{ticket.assignee?.name ?? "Unassigned"}</span>
+            <span className="min-w-0">
+              <TicketAssigneeChip person={ticket.assignee} />
+            </span>
             <span className="text-xs text-[var(--text-secondary)]">
               {ticket.associationCount > 0 ? `●${ticket.associationCount}` : "○"}
             </span>
@@ -212,9 +215,9 @@ function TicketKanbanCard({
         </span>
       </div>
       <p className="mt-2 line-clamp-2 text-sm font-medium">{ticket.title}</p>
-      <div className="mt-3 flex items-center justify-between text-xs text-[var(--text-muted)]">
-        <span className="truncate">{ticket.assignee?.name ?? "Unassigned"}</span>
-        <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+      <div className="mt-3 flex items-center justify-between gap-2 text-xs text-[var(--text-muted)]">
+        <TicketAssigneeChip person={ticket.assignee} />
+        <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       </div>
     </button>
   );

@@ -11,6 +11,7 @@ const tickets: TicketSummary[] = [
     ref: { provider: "jira", id: "10001", key: "RX-1" },
     title: "First ticket",
     state: { id: "todo", name: "To Do", category: "todo" },
+    assignee: { name: "Adrian Demian" },
     labels: [],
     updatedAt: "2026-06-19T22:00:00.000Z",
     url: null,
@@ -28,6 +29,21 @@ const tickets: TicketSummary[] = [
 ];
 
 describe("TicketListView", () => {
+  it("renders the assignee name or an unassigned placeholder per row", () => {
+    render(
+      <TicketListView
+        tickets={tickets}
+        hasNextPage={false}
+        isFetchingNextPage={false}
+        onLoadMore={vi.fn()}
+        onSelectTicket={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Adrian Demian")).toBeInTheDocument();
+    expect(screen.getByText("Unassigned")).toBeInTheDocument();
+  });
+
   it("moves focus between ticket rows with arrow keys", () => {
     render(
       <TicketListView

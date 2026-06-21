@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { TicketAssigneeChip } from "./TicketAssigneeChip";
 import { categoryToken, formatTicketDate, providerLabel, ticketKey } from "./ticketing-utils";
 
 interface TicketDetailSheetProps {
@@ -478,18 +479,35 @@ export function TicketDetailSheet({
                         ))}
                     </select>
                   </ControlTooltip>
-                  <ControlTooltip reason={assignDisabledReason}>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={Boolean(assignDisabledReason) || isAssignPending}
-                      onClick={() => void onAssignToMe?.()}
+                  {ticket.assignee ? (
+                    <span
+                      className="inline-flex items-center gap-2 rounded-md px-2 py-1"
+                      style={{
+                        backgroundColor: "var(--bg-surface)",
+                        borderColor: "var(--border-subtle)",
+                        borderStyle: "solid",
+                        borderWidth: "1px",
+                      }}
                     >
-                      <UserCheck className="h-3.5 w-3.5" aria-hidden="true" />
-                      {isAssignPending ? "Assigning" : "Assign to me"}
-                    </Button>
-                  </ControlTooltip>
+                      <span className="text-[10px] font-semibold uppercase text-[var(--text-muted)]">
+                        Assignee
+                      </span>
+                      <TicketAssigneeChip person={ticket.assignee} size="md" />
+                    </span>
+                  ) : (
+                    <ControlTooltip reason={assignDisabledReason}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={Boolean(assignDisabledReason) || isAssignPending}
+                        onClick={() => void onAssignToMe?.()}
+                      >
+                        <UserCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                        {isAssignPending ? "Assigning" : "Assign to me"}
+                      </Button>
+                    </ControlTooltip>
+                  )}
                   {canClearAssignee && (
                     <ControlTooltip reason={assignDisabledReason}>
                       <Button

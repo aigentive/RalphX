@@ -648,7 +648,6 @@ describe("TicketingDashboardView", () => {
     vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
       data: {
         ...ticket,
-        assignee: "A. User",
         descriptionMarkdown: "When two agents transition the same task.",
         comments: [],
         attachments: [],
@@ -683,7 +682,6 @@ describe("TicketingDashboardView", () => {
       target: { value: "done" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Assign to me" }));
-    fireEvent.click(screen.getByRole("button", { name: "Clear assignee" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Ticket comment" }), {
       target: { value: "Pushed a fix." },
     });
@@ -717,14 +715,53 @@ describe("TicketingDashboardView", () => {
       bodyMarkdown: "Pushed a fix.",
       projectId: "project-1",
     });
+    // "Assign to me" is only offered while unassigned, so "Clear assignee" is absent here.
+    expect(clearAssignee).not.toHaveBeenCalled();
+    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "start",
+    });
+  });
+
+  it("clears the assignee from the detail sheet when one is set", async () => {
+    mockConnectedDashboard();
+    const clearAssignee = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
+      data: {
+        ...ticket,
+        assignee: { id: "user-1", name: "A. User" },
+        descriptionMarkdown: "Already assigned.",
+        comments: [],
+        attachments: [],
+        transitions: [],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketDetail>);
+    vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
+      transitionStatus: vi.fn(),
+      assignToMe: vi.fn(),
+      clearAssignee,
+      addComment: vi.fn(),
+      transitionStatusMutation: { isPending: false },
+      assignToMeMutation: { isPending: false },
+      clearAssigneeMutation: { isPending: false },
+      addCommentMutation: { isPending: false },
+    } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
+
+    renderDashboard();
+    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
+
+    // Assignee is shown and "Assign to me" is hidden when the ticket is assigned.
+    expect(await screen.findByText("A. User")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Assign to me" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear assignee" }));
     expect(clearAssignee).toHaveBeenCalledWith({
       provider: "jira",
       ticketRef: ticket.ref,
       projectId: "project-1",
-    });
-    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith({
-      behavior: "smooth",
-      block: "start",
     });
   });
 
