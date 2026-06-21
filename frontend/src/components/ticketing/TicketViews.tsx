@@ -114,7 +114,7 @@ export function TicketListView({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div
-        className="grid grid-cols-[116px_minmax(240px,1fr)_140px_140px_80px_120px] gap-3 px-4 py-2 text-[11px] font-semibold uppercase text-[var(--text-muted)]"
+        className="grid grid-cols-[96px_minmax(220px,1fr)_120px_140px_56px_104px] gap-3 px-4 py-1.5 text-[11px] font-semibold uppercase text-[var(--text-muted)]"
         style={{
           backgroundColor: "var(--bg-surface)",
           borderBottomColor: "var(--border-subtle)",
@@ -135,7 +135,7 @@ export function TicketListView({
             <button
             type="button"
             data-ticket-row
-            className="grid w-full grid-cols-[116px_minmax(240px,1fr)_140px_140px_80px_120px] items-center gap-3 px-4 py-3 text-left text-sm hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
+            className="grid w-full grid-cols-[96px_minmax(220px,1fr)_120px_140px_56px_104px] items-center gap-3 px-4 py-1.5 text-left text-sm hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
             aria-label={ticketButtonLabel(ticket)}
             onClick={() => onSelectTicket(ticket)}
             onKeyDown={(event) => {
@@ -156,17 +156,13 @@ export function TicketListView({
             }}
           >
             <span className="font-mono text-xs text-[var(--text-secondary)]">{ticketKey(ticket.ref)}</span>
-            <span className="min-w-0">
-              <span className="flex min-w-0 items-center gap-1.5">
-                {isUnread?.(ticket) && <UnreadCommentIndicator />}
-                <span className="block truncate font-medium">{ticket.title}</span>
-              </span>
-              {(ticket.project || ticket.labels.length > 0) && (
-                <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1 text-[11px] text-[var(--text-muted)]">
-                  {ticket.project && <span className="truncate">{ticket.project}</span>}
-                  <TicketLabels labels={ticket.labels} max={3} />
-                </span>
+            <span className="flex min-w-0 items-center gap-2">
+              {isUnread?.(ticket) && <UnreadCommentIndicator />}
+              <span className="truncate font-medium">{ticket.title}</span>
+              {ticket.project && (
+                <span className="shrink-0 truncate text-[11px] text-[var(--text-muted)]">{ticket.project}</span>
               )}
+              <TicketLabels labels={ticket.labels} max={2} className="shrink-0 text-[var(--text-muted)]" />
             </span>
             <TicketStatePill ticket={ticket} />
             <span className="min-w-0">
@@ -218,7 +214,7 @@ function TicketColumn({
     <section
       ref={setNodeRef}
       data-testid={`ticket-column-${column.id}`}
-      className="flex min-h-[320px] w-[280px] shrink-0 flex-col rounded-lg"
+      className="flex h-full min-h-0 w-[280px] shrink-0 flex-col rounded-lg"
       style={{
         backgroundColor: isOver ? "var(--bg-hover)" : "var(--bg-surface)",
         borderColor: "var(--border-subtle)",
@@ -338,7 +334,7 @@ export function TicketKanbanView({
 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-      <div className="flex min-h-0 flex-1 gap-3 overflow-auto p-4">
+      <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-4">
         {effectiveColumns.map((column) => {
           const columnTickets = tickets.filter((ticket) => ticket.state.id === column.id);
           return (
@@ -361,7 +357,7 @@ export function TicketKanbanView({
                 </div>
                 <span className="text-xs text-[var(--text-muted)]">{columnTickets.length}</span>
               </div>
-              <div className="flex flex-1 flex-col gap-2 p-2">
+              <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
                 {columnTickets.map((ticket) => (
                   <TicketKanbanCard
                     key={`${ticket.ref.provider}:${ticket.ref.id}`}

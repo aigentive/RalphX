@@ -44,7 +44,7 @@ describe("TicketListView", () => {
     expect(screen.getByText("Unassigned")).toBeInTheDocument();
   });
 
-  it("shows up to three labels with a +N overflow chip", () => {
+  it("shows up to two labels with a +N overflow chip on dense rows", () => {
     render(
       <TicketListView
         tickets={[
@@ -66,9 +66,9 @@ describe("TicketListView", () => {
     );
 
     expect(screen.getByText("a")).toBeInTheDocument();
-    expect(screen.getByText("c")).toBeInTheDocument();
-    expect(screen.queryByText("d")).not.toBeInTheDocument();
-    expect(screen.getByText("+1")).toBeInTheDocument();
+    expect(screen.getByText("b")).toBeInTheDocument();
+    expect(screen.queryByText("c")).not.toBeInTheDocument();
+    expect(screen.getByText("+2")).toBeInTheDocument();
   });
 
   it("shows the unread indicator only for rows flagged by isUnread", () => {
