@@ -488,6 +488,67 @@ pub async fn write_pr_template_for_state(
         .map_err(|e| e.to_string())
 }
 
+#[cfg(test)]
+mod pr_template_command_tests {
+    use super::*;
+
+    async fn state_with_project(root: &Path) -> (AppState, String) {
+        let state = AppState::new_test();
+        let project = state
+            .project_repo
+            .create(Project::new(
+                "Template Project".to_string(),
+                root.display().to_string(),
+            ))
+            .await
+            .unwrap();
+        (state, project.id.as_str().to_string())
+    }
+
+    #[tokio::test]
+    async fn read_pr_template_for_state_returns_none_when_template_is_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, project_id) = state_with_project(root.path()).await;
+
+        let content = read_pr_template_for_state(&project_id, &state)
+            .await
+            .unwrap();
+
+        assert_eq!(content, None);
+    }
+
+    #[tokio::test]
+    async fn write_pr_template_for_state_writes_exact_content() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, project_id) = state_with_project(root.path()).await;
+
+        write_pr_template_for_state(&project_id, "## Summary\n", &state)
+            .await
+            .unwrap();
+
+        let template_path = root.path().join(".github").join("pull_request_template.md");
+        assert_eq!(
+            std::fs::read_to_string(template_path).unwrap(),
+            "## Summary\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn pr_template_helpers_return_project_lookup_errors() {
+        let state = AppState::new_test();
+
+        let read_error = read_pr_template_for_state("missing-project", &state)
+            .await
+            .unwrap_err();
+        let write_error = write_pr_template_for_state("missing-project", "content", &state)
+            .await
+            .unwrap_err();
+
+        assert!(read_error.contains("Project not found"));
+        assert!(write_error.contains("Project not found"));
+    }
+}
+
 /// Update custom analysis override for a project (Settings UI)
 /// Sets or clears the custom_analysis JSON field.
 #[tauri::command]
