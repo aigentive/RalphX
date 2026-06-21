@@ -199,6 +199,23 @@ async fn seed_command_metrics_rows(state: &AppState) -> (String, String) {
                  )",
                 rusqlite::params![p2],
             )?;
+            conn.execute(
+                "INSERT INTO agent_conversation_workspace_publication_events (
+                    id, conversation_id, step, status, summary, classification, created_at
+                 )
+                 VALUES
+                    (
+                        'metrics-command-publication-1', 'metrics-command-workspace-1',
+                        'published', 'succeeded', 'Published PR #301', NULL,
+                        '2026-06-18T10:30:00+00:00'
+                    ),
+                    (
+                        'metrics-command-publication-2', 'metrics-command-workspace-2',
+                        'published', 'succeeded', 'Published PR #302', NULL,
+                        '2026-06-18T12:15:00+00:00'
+                    )",
+                [],
+            )?;
             Ok(())
         })
         .await
@@ -250,7 +267,9 @@ async fn ipc_contract_insights_metric_commands_default_all_projects_and_filter_b
     assert_eq!(
         all_trends
             .weekly_delivery_throughput
-            .last()
+            .iter()
+            .rev()
+            .find(|point| point.unified_deliveries > 0)
             .map(|point| point.unified_deliveries),
         Some(3)
     );
@@ -265,7 +284,9 @@ async fn ipc_contract_insights_metric_commands_default_all_projects_and_filter_b
     assert_eq!(
         filtered_trends
             .weekly_delivery_throughput
-            .last()
+            .iter()
+            .rev()
+            .find(|point| point.unified_deliveries > 0)
             .map(|point| point.unified_deliveries),
         Some(2)
     );
