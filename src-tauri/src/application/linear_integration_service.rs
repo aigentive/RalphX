@@ -52,7 +52,14 @@ pub struct LinearIssueSummary {
     pub title: String,
     pub url: Option<String>,
     pub excerpt: Option<String>,
+    pub state_id: Option<String>,
     pub state_name: Option<String>,
+    pub state_category: Option<String>,
+    pub state_color: Option<String>,
+    pub assignee: Option<String>,
+    pub updated_at: Option<String>,
+    pub labels: Vec<String>,
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -67,6 +74,9 @@ pub struct LinearIssueContent {
     pub assignee: Option<String>,
     pub creator: Option<String>,
     pub updated_at: Option<String>,
+    pub comments: Vec<LinearComment>,
+    pub labels: Vec<String>,
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -148,7 +158,7 @@ pub trait LinearApiClient: Send + Sync {
         &self,
         _auth: &LinearAuthContext,
         _issue_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<LinearUser, String> {
         Err("Linear issue assignment is not available for this client".to_string())
     }
 
@@ -209,6 +219,9 @@ impl LinearApiClient for EmptyLinearApiClient {
             assignee: None,
             creator: None,
             updated_at: None,
+            comments: Vec::new(),
+            labels: Vec::new(),
+            project: None,
         })
     }
 
@@ -240,8 +253,11 @@ impl LinearApiClient for EmptyLinearApiClient {
         &self,
         _auth: &LinearAuthContext,
         _issue_id: &str,
-    ) -> Result<(), String> {
-        Ok(())
+    ) -> Result<LinearUser, String> {
+        Ok(LinearUser {
+            id: "test-user".to_string(),
+            name: Some("Test User".to_string()),
+        })
     }
 
     async fn create_comment(
@@ -309,7 +325,7 @@ impl LinearApiClient for UnavailableLinearApiClient {
         &self,
         _auth: &LinearAuthContext,
         _issue_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<LinearUser, String> {
         Err(self.reason.clone())
     }
 
@@ -500,7 +516,7 @@ impl LinearIntegrationService {
             .await
     }
 
-    pub async fn assign_issue_to_current_user(&self, issue_id: &str) -> Result<(), String> {
+    pub async fn assign_issue_to_current_user(&self, issue_id: &str) -> Result<LinearUser, String> {
         let auth = self.enabled_auth_context().await?;
         self.client
             .assign_issue_to_current_user(&auth, issue_id)

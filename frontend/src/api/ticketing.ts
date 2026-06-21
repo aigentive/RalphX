@@ -109,6 +109,7 @@ export const TicketSummarySchema = z.object({
   assignee: TicketingPersonSchema.nullable().optional(),
   reporter: TicketingPersonSchema.nullable().optional(),
   labels: z.array(z.string()).default([]),
+  project: z.string().nullable().optional(),
   priority: z.string().nullable().optional(),
   updatedAt: z.string(),
   url: z.string().nullable().optional(),
@@ -215,6 +216,7 @@ export const TicketMutationResponseSchema = z.object({
   operation: TicketOperationResponseSchema,
   idempotent: z.boolean(),
   transition: TicketTransitionOptionSchema.nullable().optional(),
+  assignee: TicketingPersonSchema.nullable().optional(),
   comment: TicketCommentSchema.nullable().optional(),
   refreshedAt: z.string(),
 });

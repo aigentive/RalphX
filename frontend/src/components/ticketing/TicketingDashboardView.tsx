@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import type {
@@ -25,6 +25,9 @@ import {
   useTickets,
 } from "@/hooks/useTicketing";
 import { useTicketingStore } from "@/stores/ticketingStore";
+import { useChatStore } from "@/stores/chatStore";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useUiStore } from "@/stores/uiStore";
 import { formatRelativeTime } from "@/lib/formatters";
 
 import { ProviderSwitcher } from "./ProviderSwitcher";
@@ -51,7 +54,44 @@ function toTicketFilters(filters: ReturnType<typeof useTicketingStore.getState>[
 }
 
 function isProviderReadable(status: string | undefined): boolean {
-  return status === "connected" || status === "permission_limited";
+  return status === "connected";
+}
+
+function columnsFromTickets(tickets: TicketSummary[]): TicketingColumn[] {
+  const byStateId = new Map<string, TicketingColumn>();
+  for (const ticket of tickets) {
+    if (byStateId.has(ticket.state.id)) {
+      continue;
+    }
+    byStateId.set(ticket.state.id, {
+      id: ticket.state.id,
+      name: ticket.state.name,
+      category: ticket.state.category,
+      order: byStateId.size,
+      ...(ticket.state.color ? { color: ticket.state.color } : {}),
+    });
+  }
+  return Array.from(byStateId.values());
+}
+
+function mergeProviderAndTicketColumns(
+  providerColumns: TicketingColumn[],
+  ticketColumns: TicketingColumn[],
+): TicketingColumn[] {
+  if (providerColumns.length === 0) {
+    return ticketColumns;
+  }
+  const ticketColumnIds = new Set(ticketColumns.map((column) => column.id));
+  const merged = providerColumns
+    .filter((column) => ticketColumnIds.size === 0 || ticketColumnIds.has(column.id))
+    .sort((left, right) => left.order - right.order);
+  const providerColumnIds = new Set(merged.map((column) => column.id));
+  for (const column of ticketColumns) {
+    if (!providerColumnIds.has(column.id)) {
+      merged.push({ ...column, order: merged.length });
+    }
+  }
+  return merged;
 }
 
 interface TicketingStatusNotice {
@@ -119,21 +159,33 @@ export function TicketingDashboardView({
     resetFilters,
     setSelectedTicketRef,
   } = useTicketingStore();
+  const setCurrentView = useUiStore((s) => s.setCurrentView);
+  const setActiveConversation = useChatStore((s) => s.setActiveConversation);
+  const selectAgentConversation = useAgentSessionStore((s) => s.selectConversation);
+  const setFocusedAgentProject = useAgentSessionStore((s) => s.setFocusedProject);
 
   const queryClient = useQueryClient();
   const providersQuery = useTicketingProviders(projectId, { enabled: Boolean(projectId) });
   const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
+  const enabledProviders = useMemo(
+    () => providers.filter((provider) => provider.enabled),
+    [providers],
+  );
+  const selectableProviders = enabledProviders.length > 0 ? enabledProviders : providers;
   const selectedProvider = providers.find((provider) => provider.provider === activeProvider) ?? null;
   const readableProvider = isProviderReadable(selectedProvider?.connectionStatus);
 
   useEffect(() => {
-    if (providers.length === 0) {
+    if (selectableProviders.length === 0) {
       return;
     }
-    if (!activeProvider || !providers.some((provider) => provider.provider === activeProvider)) {
-      setProvider(providers[0]?.provider ?? null);
+    if (
+      !activeProvider
+      || !selectableProviders.some((provider) => provider.provider === activeProvider)
+    ) {
+      setProvider(selectableProviders[0]?.provider ?? null);
     }
-  }, [activeProvider, providers, setProvider]);
+  }, [activeProvider, selectableProviders, setProvider]);
 
   const containersQuery = useTicketingContainers(
     activeProvider ? { provider: activeProvider, projectId } : null,
@@ -176,6 +228,16 @@ export function TicketingDashboardView({
 
   const ticketsQuery = useTickets(ticketQuery, { enabled: Boolean(ticketQuery) });
   const tickets = flattenTicketPages(ticketsQuery.data);
+  const latestTicketColumnsRef = useRef<TicketingColumn[]>([]);
+  const ticketColumns = useMemo(() => columnsFromTickets(tickets), [tickets]);
+  if (ticketColumns.length > 0) {
+    latestTicketColumnsRef.current = ticketColumns;
+  }
+  const statusColumns = ticketColumns.length > 0
+    ? mergeProviderAndTicketColumns(columns, ticketColumns)
+    : latestTicketColumnsRef.current.length > 0
+      ? mergeProviderAndTicketColumns(columns, latestTicketColumnsRef.current)
+      : columns;
   const selectedSummary = selectedTicketRef
     ? tickets.find((ticket) => ticket.ref.id === selectedTicketRef.id && ticket.ref.provider === selectedTicketRef.provider) ?? null
     : null;
@@ -323,6 +385,14 @@ export function TicketingDashboardView({
       projectId,
       ticketRef: selectedTicket.ref,
       content: `Start RalphX work for ${ticketKey(selectedTicket.ref)}: ${selectedTicket.title}`,
+    }, {
+      onSuccess: (result) => {
+        const conversationId = result.conversation.id;
+        setFocusedAgentProject(projectId);
+        selectAgentConversation(projectId, conversationId);
+        setActiveConversation(`project:${projectId}`, conversationId);
+        setCurrentView("agents");
+      },
     });
   }
 
@@ -368,6 +438,14 @@ export function TicketingDashboardView({
         description={statusMessage ?? "Refresh or reconnect the provider from Settings."}
       />
     );
+  } else if (selectedProvider?.connectionStatus === "permission_limited") {
+    content = (
+      <TicketingStatePanel
+        state="disconnected"
+        title={`${providerName} ticket access is limited`}
+        description={statusMessage ?? "Reconnect the provider with ticket search permissions."}
+      />
+    );
   } else if (ticketsQuery.isLoading || containersQuery.isLoading) {
     content = (
       <TicketingStatePanel
@@ -399,14 +477,14 @@ export function TicketingDashboardView({
   } else if (viewMode === "kanban") {
     content = shouldHydrateKanban ? (
       <TicketKanbanView
-        columns={columns}
+        columns={statusColumns}
         tickets={tickets}
         canMoveTickets={Boolean(selectedProvider?.capabilities.kanbanWrite)}
         onMoveTicket={handleMoveTicket}
         onSelectTicket={handleSelectTicket}
       />
     ) : (
-      <TicketKanbanShell columns={columns} />
+      <TicketKanbanShell columns={statusColumns} />
     );
   } else {
     content = (
@@ -445,16 +523,18 @@ export function TicketingDashboardView({
             Browse provider tickets and inspect RalphX associations.
           </p>
         </div>
-        <ProviderSwitcher
-          providers={providers}
-          activeProvider={activeProvider}
-          onProviderChange={setProvider}
-        />
+        {enabledProviders.length > 1 && (
+          <ProviderSwitcher
+            providers={enabledProviders}
+            activeProvider={activeProvider}
+            onProviderChange={setProvider}
+          />
+        )}
       </header>
 
       <TicketFilterBar
         containers={containers}
-        columns={columns}
+        columns={statusColumns}
         activeContainerId={activeContainerId}
         filters={filters}
         viewMode={viewMode}

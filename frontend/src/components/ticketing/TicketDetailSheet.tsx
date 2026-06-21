@@ -1,15 +1,19 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, Send, UserCheck, X } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import type {
   TicketAssociationItem,
   TicketAssociations,
+  TicketComment,
   TicketDeepLink,
   TicketDetail,
   TicketingCapabilities,
   TicketSummary,
   TicketTransitionOption,
 } from "@/api/ticketing";
+import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -219,6 +223,16 @@ function ControlTooltip({
   );
 }
 
+function TicketMarkdown({ content }: { content: string }) {
+  return (
+    <div className="prose prose-sm prose-invert max-w-none text-sm leading-6 text-[var(--text-secondary)] prose-code:before:content-none prose-code:after:content-none">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 export function TicketDetailSheet({
   open,
   ticket,
@@ -240,6 +254,52 @@ export function TicketDetailSheet({
   onClose,
 }: TicketDetailSheetProps) {
   const [commentDraft, setCommentDraft] = useState("");
+  const [localComments, setLocalComments] = useState<TicketComment[]>([]);
+  const ticketIdentity = ticket ? `${ticket.ref.provider}:${ticket.ref.id}` : null;
+  const providerComments = useMemo(
+    () => ticket && "comments" in ticket ? ticket.comments : [],
+    [ticket],
+  );
+  const visibleComments = useMemo(() => {
+    if (localComments.length === 0) {
+      return providerComments;
+    }
+    const providerCommentIds = new Set(
+      providerComments.map((comment) => comment.id).filter(Boolean),
+    );
+    const providerCommentBodies = new Set(
+      providerComments
+        .map((comment) => (comment.bodyMarkdown || comment.bodyText).trim())
+        .filter(Boolean),
+    );
+    return [
+      ...providerComments,
+      ...localComments.filter((comment) => {
+        if (comment.id && providerCommentIds.has(comment.id)) {
+          return false;
+        }
+        return !providerCommentBodies.has((comment.bodyMarkdown || comment.bodyText).trim());
+      }),
+    ];
+  }, [localComments, providerComments]);
+
+  useEffect(() => {
+    setLocalComments([]);
+  }, [ticketIdentity]);
+
+  useEffect(() => {
+    if (providerComments.length === 0 || localComments.length === 0) {
+      return;
+    }
+    const providerCommentBodies = new Set(
+      providerComments
+        .map((comment) => (comment.bodyMarkdown || comment.bodyText).trim())
+        .filter(Boolean),
+    );
+    setLocalComments((current) =>
+      current.filter((comment) => !providerCommentBodies.has((comment.bodyMarkdown || comment.bodyText).trim())),
+    );
+  }, [providerComments, localComments.length]);
   const writableTransitions = transitions.filter((transition) => !transition.disabledReason);
   const statusDisabledReason = !capabilities?.statusWrite
     ? "Status write-back is not available for this provider."
@@ -253,6 +313,9 @@ export function TicketDetailSheet({
     ? "Comment write-back is not available for this provider."
     : null;
   const canAddComment = !commentDisabledReason && commentDraft.trim().length > 0 && !isCommentPending;
+  const descriptionMarkdown = ticket && "descriptionMarkdown" in ticket && ticket.descriptionMarkdown
+    ? ticket.descriptionMarkdown
+    : null;
 
   function handleStatusChange(nextStateId: string) {
     const transition = transitions.find((item) => item.toStateId === nextStateId);
@@ -267,10 +330,21 @@ export function TicketDetailSheet({
       return;
     }
     const bodyMarkdown = commentDraft.trim();
+    const createdAt = new Date().toISOString();
+    const optimisticComment: TicketComment = {
+      id: `local:${createdAt}`,
+      author: { name: "You" },
+      bodyMarkdown,
+      bodyText: bodyMarkdown,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    setLocalComments((current) => [...current, optimisticComment]);
     try {
       await onAddComment?.(bodyMarkdown);
       setCommentDraft("");
     } catch {
+      setLocalComments((current) => current.filter((comment) => comment.id !== optimisticComment.id));
       // Rollback and visible errors are owned by the mutation hook; preserve the draft.
     }
   }
@@ -334,6 +408,27 @@ export function TicketDetailSheet({
                     </a>
                   )}
                 </div>
+                {(ticket.project || ticket.labels.length > 0) && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
+                    {ticket.project && (
+                      <span
+                        className="rounded border px-2 py-1"
+                        style={{ borderColor: "var(--border-subtle)" }}
+                      >
+                        {ticket.project}
+                      </span>
+                    )}
+                    {ticket.labels.map((label) => (
+                      <span
+                        key={label}
+                        className="rounded border px-2 py-1"
+                        style={{ borderColor: "var(--border-subtle)" }}
+                      >
+                        {label}
+                      </span>
+                    ))}
+                  </div>
+                )}
 
                 <div className="mt-4 flex flex-wrap items-center gap-2">
                   <ControlTooltip reason={statusDisabledReason}>
@@ -381,22 +476,24 @@ export function TicketDetailSheet({
 
                 <section className="mt-5">
                   <h3 className="text-xs font-semibold uppercase text-[var(--text-muted)]">Description</h3>
-                  <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[var(--text-secondary)]">
-                    {"descriptionMarkdown" in ticket && ticket.descriptionMarkdown
-                      ? ticket.descriptionMarkdown
-                      : isDetailLoading
-                        ? "Loading ticket detail"
-                        : "No description provided."}
-                  </p>
+                  <div className="mt-2">
+                    {descriptionMarkdown ? (
+                      <TicketMarkdown content={descriptionMarkdown} />
+                    ) : (
+                      <p className="text-sm leading-6 text-[var(--text-secondary)]">
+                        {isDetailLoading ? "Loading ticket detail" : "No description provided."}
+                      </p>
+                    )}
+                  </div>
                 </section>
 
-                {"comments" in ticket && ticket.comments.length > 0 && (
-                  <section className="mt-6">
-                    <h3 className="text-xs font-semibold uppercase text-[var(--text-muted)]">
-                      Comments ({ticket.comments.length})
-                    </h3>
+                <section className="mt-6">
+                  <h3 className="text-xs font-semibold uppercase text-[var(--text-muted)]">
+                    Comments ({visibleComments.length})
+                  </h3>
+                  {visibleComments.length > 0 ? (
                     <div className="mt-2 space-y-2">
-                      {ticket.comments.map((comment, index) => (
+                      {visibleComments.map((comment, index) => (
                         <article
                           key={comment.id ?? `comment-${index}`}
                           className="rounded-md p-3"
@@ -410,14 +507,18 @@ export function TicketDetailSheet({
                           <p className="text-xs font-medium text-[var(--text-secondary)]">
                             {comment.author?.name ?? "Provider comment"}
                           </p>
-                          <p className="mt-1 text-sm text-[var(--text-primary)]">
-                            {comment.bodyText || comment.bodyMarkdown}
-                          </p>
+                          <div className="mt-2">
+                            <TicketMarkdown content={comment.bodyMarkdown || comment.bodyText} />
+                          </div>
                         </article>
                       ))}
                     </div>
-                  </section>
-                )}
+                  ) : (
+                    <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                      No comments yet.
+                    </p>
+                  )}
+                </section>
 
                 <section className="mt-6">
                   <h3 className="text-xs font-semibold uppercase text-[var(--text-muted)]">Add comment</h3>

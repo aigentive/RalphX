@@ -124,6 +124,7 @@ fn mutation_response_maps_operation_status_and_linked_flag() {
             category: "done".to_string(),
             disabled_reason: None,
         }),
+        assignee: None,
         comment: None,
     });
 
@@ -140,6 +141,113 @@ fn mutation_response_maps_operation_status_and_linked_flag() {
             .as_deref(),
         Some("31")
     );
+}
+
+#[test]
+fn ticket_summary_filters_match_text_status_assignee_and_labels() {
+    let items = vec![
+        ticket_summary_fixture(
+            "LIN-1",
+            "Fix filter updates",
+            "In Progress",
+            Some("Reef Agent"),
+            &["backend", "linear"],
+        ),
+        ticket_summary_fixture("LIN-2", "Polish ticket cards", "Done", None, &["frontend"]),
+    ];
+
+    let filtered = filter_ticket_summaries(
+        items,
+        Some(&TicketFiltersInput {
+            text: Some("filter".to_string()),
+            assignee: Some("reef".to_string()),
+            state_ids: Some(vec!["in_progress".to_string()]),
+            labels: Some(vec!["linear".to_string()]),
+        }),
+    );
+
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].ref_.key.as_deref(), Some("LIN-1"));
+}
+
+#[test]
+fn ticket_summary_filters_remove_rows_without_requested_metadata() {
+    let items = vec![ticket_summary_fixture(
+        "LIN-2",
+        "Polish ticket cards",
+        "Done",
+        None,
+        &[],
+    )];
+
+    let filtered = filter_ticket_summaries(
+        items,
+        Some(&TicketFiltersInput {
+            text: None,
+            assignee: Some("me".to_string()),
+            state_ids: None,
+            labels: Some(vec!["backend".to_string()]),
+        }),
+    );
+
+    assert!(filtered.is_empty());
+}
+
+#[test]
+fn linear_detail_maps_provider_comments() {
+    let detail = linear_content_to_detail(LinearIssueContent {
+        id: "issue-1".to_string(),
+        key: Some("LIN-1".to_string()),
+        title: "Commented issue".to_string(),
+        url: None,
+        body: "Issue body".to_string(),
+        state_name: Some("In Progress".to_string()),
+        assignee: None,
+        creator: None,
+        updated_at: None,
+        comments: vec![LinearComment {
+            id: "comment-1".to_string(),
+            body: "Provider **comment**".to_string(),
+            author_id: Some("user-1".to_string()),
+            author_name: Some("Reviewer".to_string()),
+            created_at: Some("2026-06-21T08:00:00Z".to_string()),
+            updated_at: None,
+        }],
+        labels: vec!["backend".to_string()],
+        project: Some("Platform".to_string()),
+    });
+
+    assert_eq!(detail.comments.len(), 1);
+    assert_eq!(detail.comments[0].body_markdown, "Provider **comment**");
+    assert_eq!(detail.comments[0].author.as_ref().map(|author| author.name.as_str()), Some("Reviewer"));
+    assert_eq!(detail.summary.labels, vec!["backend".to_string()]);
+    assert_eq!(detail.summary.project.as_deref(), Some("Platform"));
+}
+
+fn ticket_summary_fixture(
+    key: &str,
+    title: &str,
+    state_name: &str,
+    assignee: Option<&str>,
+    labels: &[&str],
+) -> TicketSummaryResponse {
+    TicketSummaryResponse {
+        ref_: TicketRefInput {
+            provider: "linear".to_string(),
+            id: key.to_ascii_lowercase(),
+            key: Some(key.to_string()),
+        },
+        title: title.to_string(),
+        state: ticket_state(state_name),
+        assignee: assignee.map(named_person),
+        reporter: None,
+        labels: labels.iter().map(|label| label.to_string()).collect(),
+        project: None,
+        priority: None,
+        updated_at: now_string(),
+        url: None,
+        association_count: 0,
+    }
 }
 
 fn build_ticketing_start_app(
@@ -346,4 +454,53 @@ async fn get_ticket_associations_returns_linked_agent_conversations() {
     assert!(linked.active);
     assert_eq!(linked.deep_link.view, "agents");
     assert_eq!(linked.deep_link.id, conversation.id.as_str());
+}
+
+#[tokio::test]
+async fn list_ticket_rows_include_linked_agent_conversation_count() {
+    let state = AppState::new_test();
+    let project_id = seed_ticketing_project(&state, "ticket-list-counts-jira").await;
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("conversation should be created");
+    let ticket_ref = TicketRefInput {
+        provider: "jira".to_string(),
+        id: "10077".to_string(),
+        key: Some("RX-77".to_string()),
+    };
+    let ticket_reference = ticket_ref_to_composer_reference("jira", &ticket_ref);
+    link_started_ticket_to_conversation(
+        &state,
+        "jira",
+        &conversation.id,
+        &project_id,
+        &ticket_reference,
+    )
+    .await
+    .expect("ticket link should be persisted");
+
+    let hydrated = hydrate_ticket_association_counts(
+        &state,
+        "jira",
+        Some(project_id.as_str()),
+        vec![TicketSummaryResponse {
+            ref_: ticket_ref,
+            title: "Linked ticket".to_string(),
+            state: ticket_state("To Do"),
+            assignee: None,
+            reporter: None,
+            labels: Vec::new(),
+            project: None,
+            priority: None,
+            updated_at: now_string(),
+            url: None,
+            association_count: 0,
+        }],
+    )
+    .await
+    .expect("association counts should hydrate");
+
+    assert_eq!(hydrated[0].association_count, 1);
 }

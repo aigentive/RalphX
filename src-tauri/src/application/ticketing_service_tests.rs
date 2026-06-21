@@ -73,6 +73,9 @@ impl LinearApiClient for RecordingLinearClient {
             assignee: None,
             creator: None,
             updated_at: None,
+            comments: Vec::new(),
+            labels: Vec::new(),
+            project: None,
         })
     }
 
@@ -121,9 +124,12 @@ impl LinearApiClient for RecordingLinearClient {
         &self,
         _auth: &LinearAuthContext,
         issue_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<LinearUser, String> {
         self.assignments.lock().await.push(issue_id.to_string());
-        Ok(())
+        Ok(LinearUser {
+            id: "user-1".to_string(),
+            name: Some("A. User".to_string()),
+        })
     }
 
     async fn create_comment(

@@ -194,7 +194,7 @@ pub use ticketing_cache_invalidator::{
 };
 pub use ticketing_service::{
     TauriTicketingEventSink, TicketAssignRequest, TicketCommentRequest, TicketTransitionRequest,
-    TicketingCommentResult, TicketingEventSink, TicketingMutationResult,
+    TicketingCommentResult, TicketingEventSink, TicketingMutationResult, TicketingPersonResult,
     TicketingOperationEvent, TicketingService, TicketingTicketIdentity, TicketingTransitionOption,
     TICKETING_OPERATION_EVENT,
 };

@@ -118,16 +118,23 @@ impl LinearApiClient for HyperLinearApiClient {
         query: &str,
         limit: usize,
     ) -> Result<Vec<LinearIssueSummary>, String> {
-        let data = self
-            .graphql(
-                &auth.api_token,
+        let (query_document, variables) = if query.trim().is_empty() {
+            (
+                linear_recent_issues_query(),
+                serde_json::json!({
+                    "first": limit as i64,
+                }),
+            )
+        } else {
+            (
                 linear_issue_search_query(),
                 serde_json::json!({
                     "term": query,
                     "first": limit as i64,
                 }),
             )
-            .await?;
+        };
+        let data = self.graphql(&auth.api_token, query_document, variables).await?;
         search_issue_summaries_from_data(&data)
     }
 
@@ -156,6 +163,26 @@ impl LinearApiClient for HyperLinearApiClient {
                     }
                     creator {
                       name
+                    }
+                    labels {
+                      nodes {
+                        name
+                      }
+                    }
+                    project {
+                      name
+                    }
+                    comments(first: 50) {
+                      nodes {
+                        id
+                        body
+                        createdAt
+                        updatedAt
+                        user {
+                          id
+                          name
+                        }
+                      }
                     }
                   }
                 }
@@ -214,7 +241,7 @@ impl LinearApiClient for HyperLinearApiClient {
         &self,
         auth: &LinearAuthContext,
         issue_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<LinearUser, String> {
         let issue_id = required_trimmed(issue_id, "Linear issue id is required")?;
         let user = self.current_user(auth).await?;
         let data = self
@@ -227,7 +254,8 @@ impl LinearApiClient for HyperLinearApiClient {
                 }),
             )
             .await?;
-        mutation_success(&data, "issueUpdate")
+        mutation_success(&data, "issueUpdate")?;
+        Ok(user)
     }
 
     async fn create_comment(
@@ -265,8 +293,57 @@ fn linear_issue_search_query() -> &'static str {
           url
           description
           state {
+            id
+            name
+            type
+            color
+          }
+          assignee {
             name
           }
+          labels {
+            nodes {
+              name
+            }
+          }
+          project {
+            name
+          }
+          updatedAt
+        }
+      }
+    }
+    "#
+}
+
+fn linear_recent_issues_query() -> &'static str {
+    r#"
+    query RalphXLinearRecentIssues($first: Int!) {
+      issues(first: $first) {
+        nodes {
+          id
+          identifier
+          title
+          url
+          description
+          state {
+            id
+            name
+            type
+            color
+          }
+          assignee {
+            name
+          }
+          labels {
+            nodes {
+              name
+            }
+          }
+          project {
+            name
+          }
+          updatedAt
         }
       }
     }
@@ -509,6 +586,7 @@ fn required_trimmed<'a>(value: &'a str, message: &str) -> Result<&'a str, String
 fn search_issue_summaries_from_data(data: &Value) -> Result<Vec<LinearIssueSummary>, String> {
     let nodes = data
         .get("searchIssues")
+        .or_else(|| data.get("issues"))
         .and_then(|issues| issues.get("nodes"))
         .and_then(|nodes| nodes.as_array())
         .ok_or_else(|| "Linear search response did not include issues".to_string())?;
@@ -528,6 +606,15 @@ fn issue_content_from_data(data: &Value, reference_id: &str) -> Result<LinearIss
 }
 
 fn issue_summary_from_node(node: &Value) -> Option<LinearIssueSummary> {
+    let state = node.get("state");
+    let state_type = state.and_then(|state| state.get("type")).and_then(Value::as_str);
+    let state_name = state
+        .and_then(|state| state.get("name"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let state_category = state_type
+        .or_else(|| state_name.as_deref())
+        .map(linear_state_category);
     Some(LinearIssueSummary {
         id: node.get("id")?.as_str()?.to_string(),
         key: node
@@ -543,11 +630,25 @@ fn issue_summary_from_node(node: &Value) -> Option<LinearIssueSummary> {
             .get("description")
             .and_then(|value| value.as_str())
             .map(trim_excerpt),
-        state_name: node
-            .get("state")
-            .and_then(|state| state.get("name"))
+        state_id: state
+            .and_then(|state| state.get("id"))
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        state_name,
+        state_category,
+        state_color: state
+            .and_then(|state| state.get("color"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        assignee: linear_user_name(node.get("assignee")),
+        updated_at: node
+            .get("updatedAt")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        labels: linear_label_names(node.get("labels")),
+        project: linear_project_name(node.get("project")),
     })
 }
 
@@ -575,6 +676,63 @@ fn issue_content_from_node(node: &Value) -> Option<LinearIssueContent> {
             .map(str::to_string),
         assignee: linear_user_name(node.get("assignee")),
         creator: linear_user_name(node.get("creator")),
+        updated_at: node
+            .get("updatedAt")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        comments: issue_comments_from_node(node),
+        labels: linear_label_names(node.get("labels")),
+        project: linear_project_name(node.get("project")),
+    })
+}
+
+fn linear_label_names(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(|labels| labels.get("nodes"))
+        .and_then(Value::as_array)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|node| node.get("name").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn linear_project_name(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(|project| project.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn issue_comments_from_node(node: &Value) -> Vec<LinearComment> {
+    node.get("comments")
+        .and_then(|comments| comments.get("nodes"))
+        .and_then(|nodes| nodes.as_array())
+        .map(|nodes| nodes.iter().filter_map(linear_comment_from_node).collect())
+        .unwrap_or_default()
+}
+
+fn linear_comment_from_node(node: &Value) -> Option<LinearComment> {
+    Some(LinearComment {
+        id: node.get("id")?.as_str()?.to_string(),
+        body: node.get("body")?.as_str()?.to_string(),
+        author_id: node
+            .get("user")
+            .and_then(|user| user.get("id"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        author_name: linear_user_name(node.get("user")),
+        created_at: node
+            .get("createdAt")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
         updated_at: node
             .get("updatedAt")
             .and_then(|value| value.as_str())
@@ -614,6 +772,15 @@ mod tests {
         assert!(query.contains("searchIssues(term: $term, first: $first)"));
         assert!(!query.contains("issues(search:"));
         assert!(!query.contains("issueSearch"));
+    }
+
+    #[test]
+    fn recent_issues_query_uses_linear_issues_connection() {
+        let query = linear_recent_issues_query();
+
+        assert!(query.contains("issues(first: $first)"));
+        assert!(!query.contains("searchIssues"));
+        assert!(!query.contains("term:"));
     }
 
     #[test]
@@ -722,7 +889,9 @@ mod tests {
                         "identifier": "LIN-1",
                         "title": "Readable",
                         "description": " first issue ",
-                        "state": { "name": "Todo" }
+                        "state": { "id": "state-todo", "name": "Todo", "type": "unstarted", "color": "#bec2c8" },
+                        "labels": { "nodes": [{ "name": "backend" }] },
+                        "project": { "name": "Platform" }
                     },
                     {
                         "id": "issue-2"
@@ -738,7 +907,36 @@ mod tests {
         assert_eq!(issues[0].key.as_deref(), Some("LIN-1"));
         assert_eq!(issues[0].title, "Readable");
         assert_eq!(issues[0].excerpt.as_deref(), Some("first issue"));
+        assert_eq!(issues[0].state_id.as_deref(), Some("state-todo"));
         assert_eq!(issues[0].state_name.as_deref(), Some("Todo"));
+        assert_eq!(issues[0].state_category.as_deref(), Some("todo"));
+        assert_eq!(issues[0].state_color.as_deref(), Some("#bec2c8"));
+        assert_eq!(issues[0].labels, vec!["backend".to_string()]);
+        assert_eq!(issues[0].project.as_deref(), Some("Platform"));
+    }
+
+    #[test]
+    fn search_issue_summaries_from_data_accepts_recent_issues_connection() {
+        let data = serde_json::json!({
+            "issues": {
+                "nodes": [
+                    {
+                        "id": "issue-1",
+                        "identifier": "LIN-1",
+                        "title": "Recent",
+                        "description": " latest issue ",
+                        "state": { "name": "In Progress" }
+                    }
+                ]
+            }
+        });
+
+        let issues = search_issue_summaries_from_data(&data).expect("recent issues should parse");
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].key.as_deref(), Some("LIN-1"));
+        assert_eq!(issues[0].title, "Recent");
+        assert_eq!(issues[0].state_name.as_deref(), Some("In Progress"));
     }
 
     #[test]
@@ -752,7 +950,9 @@ mod tests {
                         "title": "With all optional fields",
                         "url": "https://linear.app/acme/issue/LIN-1/all",
                         "description": "All fields",
-                        "state": { "name": "Todo" }
+                        "state": { "name": "Todo" },
+                        "assignee": { "name": "A. User" },
+                        "updatedAt": "2026-06-21T08:00:00Z"
                     },
                     {
                         "id": "issue-2",
@@ -786,6 +986,8 @@ mod tests {
         );
         assert_eq!(issues[0].excerpt.as_deref(), Some("All fields"));
         assert_eq!(issues[0].state_name.as_deref(), Some("Todo"));
+        assert_eq!(issues[0].assignee.as_deref(), Some("A. User"));
+        assert_eq!(issues[0].updated_at.as_deref(), Some("2026-06-21T08:00:00Z"));
 
         assert_eq!(issues[1].id, "issue-2");
         assert!(issues[1].key.is_none());
@@ -793,6 +995,8 @@ mod tests {
         assert!(issues[1].url.is_none());
         assert!(issues[1].excerpt.is_none());
         assert!(issues[1].state_name.is_none());
+        assert!(issues[1].assignee.is_none());
+        assert!(issues[1].updated_at.is_none());
 
         assert_eq!(issues[2].id, "issue-3");
         assert_eq!(issues[2].key.as_deref(), Some("LIN-3"));
@@ -828,7 +1032,20 @@ mod tests {
                 "state": { "name": "In Progress" },
                 "assignee": { "name": "A. User" },
                 "creator": { "name": "C. User" },
-                "updatedAt": "2026-06-18T08:00:00Z"
+                "labels": { "nodes": [{ "name": "backend" }, { "name": "urgent" }] },
+                "project": { "name": "Platform" },
+                "updatedAt": "2026-06-18T08:00:00Z",
+                "comments": {
+                    "nodes": [
+                        {
+                            "id": "comment-1",
+                            "body": "Looks good",
+                            "createdAt": "2026-06-18T09:00:00Z",
+                            "updatedAt": "2026-06-18T09:01:00Z",
+                            "user": { "id": "user-1", "name": "Reviewer" }
+                        }
+                    ]
+                }
             }
             }),
             "issue-1",
@@ -842,7 +1059,13 @@ mod tests {
         assert_eq!(content.state_name.as_deref(), Some("In Progress"));
         assert_eq!(content.assignee.as_deref(), Some("A. User"));
         assert_eq!(content.creator.as_deref(), Some("C. User"));
+        assert_eq!(content.labels, vec!["backend".to_string(), "urgent".to_string()]);
+        assert_eq!(content.project.as_deref(), Some("Platform"));
         assert_eq!(content.updated_at.as_deref(), Some("2026-06-18T08:00:00Z"));
+        assert_eq!(content.comments.len(), 1);
+        assert_eq!(content.comments[0].id, "comment-1");
+        assert_eq!(content.comments[0].body, "Looks good");
+        assert_eq!(content.comments[0].author_name.as_deref(), Some("Reviewer"));
 
         assert_eq!(
             issue_content_from_data(&serde_json::json!({}), "missing").unwrap_err(),
@@ -904,7 +1127,9 @@ mod tests {
             "title": "Example",
             "url": "https://linear.app/acme/issue/LIN-123/example",
             "description": long_description,
-            "state": { "name": "In Progress" }
+            "state": { "name": "In Progress" },
+            "assignee": { "name": "A. User" },
+            "updatedAt": "2026-06-21T08:00:00Z"
         });
 
         let summary = issue_summary_from_node(&node).expect("node should parse");
@@ -919,6 +1144,8 @@ mod tests {
         assert_eq!(summary.excerpt.as_deref().unwrap().len(), 243);
         assert!(summary.excerpt.as_deref().unwrap().ends_with("..."));
         assert_eq!(summary.state_name.as_deref(), Some("In Progress"));
+        assert_eq!(summary.assignee.as_deref(), Some("A. User"));
+        assert_eq!(summary.updated_at.as_deref(), Some("2026-06-21T08:00:00Z"));
     }
 
     #[test]
@@ -948,6 +1175,9 @@ mod tests {
         assert!(content.assignee.is_none());
         assert!(content.creator.is_none());
         assert!(content.updated_at.is_none());
+        assert!(content.comments.is_empty());
+        assert!(content.labels.is_empty());
+        assert!(content.project.is_none());
     }
 
     #[test]
@@ -961,7 +1191,18 @@ mod tests {
             "state": { "name": "Done" },
             "assignee": { "name": "A. User" },
             "creator": { "name": "C. User" },
-            "updatedAt": "2026-06-18T08:15:00Z"
+            "labels": { "nodes": [{ "name": "frontend" }] },
+            "project": { "name": "Experience" },
+            "updatedAt": "2026-06-18T08:15:00Z",
+            "comments": {
+                "nodes": [
+                    {
+                        "id": "comment-2",
+                        "body": "Provider comment",
+                        "user": { "id": "user-2", "name": "Author" }
+                    }
+                ]
+            }
         });
 
         let content = issue_content_from_node(&node).expect("node should parse");
@@ -977,7 +1218,12 @@ mod tests {
         assert_eq!(content.state_name.as_deref(), Some("Done"));
         assert_eq!(content.assignee.as_deref(), Some("A. User"));
         assert_eq!(content.creator.as_deref(), Some("C. User"));
+        assert_eq!(content.labels, vec!["frontend".to_string()]);
+        assert_eq!(content.project.as_deref(), Some("Experience"));
         assert_eq!(content.updated_at.as_deref(), Some("2026-06-18T08:15:00Z"));
+        assert_eq!(content.comments.len(), 1);
+        assert_eq!(content.comments[0].author_id.as_deref(), Some("user-2"));
+        assert_eq!(content.comments[0].author_name.as_deref(), Some("Author"));
     }
 
     #[test]

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 
 import { MessageReferences } from "./MessageReferences";
+import { useTicketingStore } from "@/stores/ticketingStore";
+import { useUiStore } from "@/stores/uiStore";
 import {
   parseComposerReferencesFromMetadata,
   serializeComposerReferencesMetadata,
@@ -192,10 +194,14 @@ describe("MessageReferences", () => {
 
     expect(screen.getByTestId("message-reference-project:src/main.ts")).toBeTruthy();
     expect(screen.getByTestId("message-reference-project:docs/specs")).toBeTruthy();
-    expect(screen.getByTestId("message-reference-integration:jira:10001")).toHaveAttribute(
-      "href",
-      "https://example.atlassian.net/browse/RX-42",
-    );
+    fireEvent.click(screen.getByTestId("message-reference-integration:jira:10001"));
+    expect(useTicketingStore.getState().activeProvider).toBe("jira");
+    expect(useTicketingStore.getState().selectedTicketRef).toEqual({
+      provider: "jira",
+      id: "10001",
+      key: "RX-42",
+    });
+    expect(useUiStore.getState().currentView).toBe("ticketing");
     expect(screen.getByText("RX-42")).toBeTruthy();
     expect(screen.getByText("Fix composer references")).toBeTruthy();
     expect(screen.getByText("Implementation Notes")).toBeTruthy();

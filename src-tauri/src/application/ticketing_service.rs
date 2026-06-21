@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::application::{
     AtlassianIntegrationService, AtlassianJiraComment, AtlassianJiraTransition,
-    LinearComment, LinearIntegrationService, LinearWorkflowState,
+    LinearComment, LinearIntegrationService, LinearUser, LinearWorkflowState,
 };
 use crate::domain::integrations::{
     ExternalIssueLink, ExternalIssueSyncRecordUpsert, ExternalIssueSyncStatus,
@@ -81,11 +81,19 @@ pub struct TicketingCommentResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TicketingPersonResult {
+    pub id: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TicketingMutationResult {
     pub ticket: TicketingTicketIdentity,
     pub operation: ProviderTicketOperation,
     pub idempotent: bool,
     pub transition: Option<TicketingTransitionOption>,
+    pub assignee: Option<TicketingPersonResult>,
     pub comment: Option<TicketingCommentResult>,
 }
 
@@ -208,7 +216,7 @@ impl TicketingService {
             )
             .await?;
         if begun.idempotent {
-            return Ok(self.result_for(request.ticket, begun, None, None));
+            return Ok(self.result_for(request.ticket, begun, None, None, None));
         }
 
         if let Err(error) = self
@@ -268,7 +276,7 @@ impl TicketingService {
             success_transition_metadata(&transition),
         )
         .await?;
-        Ok(self.result_for(request.ticket, begun, Some(transition), None))
+        Ok(self.result_for(request.ticket, begun, Some(transition), None, None))
     }
 
     pub async fn assign_ticket(
@@ -291,7 +299,7 @@ impl TicketingService {
             )
             .await?;
         if begun.idempotent {
-            return Ok(self.result_for(request.ticket, begun, None, None));
+            return Ok(self.result_for(request.ticket, begun, None, None, None));
         }
 
         if let Err(error) = self
@@ -302,27 +310,33 @@ impl TicketingService {
             return Err(error);
         }
 
-        let provider_result = match identity.provider.as_str() {
+        let assignee = match identity.provider.as_str() {
             PROVIDER_JIRA => {
                 self.atlassian
                     .assign_jira_issue_to_current_user(&identity.external_id)
                     .await
+                    .map(|_| None)
             }
             PROVIDER_LINEAR => {
                 self.linear
                     .assign_issue_to_current_user(&identity.external_id)
                     .await
+                    .map(linear_user_to_ticketing_person)
+                    .map(Some)
             }
             _ => unreachable!("ticket provider validated above"),
         };
-        if let Err(error) = provider_result {
-            self.fail_operation(&mut begun, error.clone()).await?;
-            return Err(error);
-        }
+        let assignee = match assignee {
+            Ok(assignee) => assignee,
+            Err(error) => {
+                self.fail_operation(&mut begun, error.clone()).await?;
+                return Err(error);
+            }
+        };
 
         self.succeed_operation(&mut begun, None, json!({ "assignee": "current_user" }).to_string())
             .await?;
-        Ok(self.result_for(request.ticket, begun, None, None))
+        Ok(self.result_for(request.ticket, begun, None, assignee, None))
     }
 
     pub async fn add_ticket_comment(
@@ -348,7 +362,7 @@ impl TicketingService {
             )
             .await?;
         if begun.idempotent {
-            return Ok(self.result_for(request.ticket, begun, None, None));
+            return Ok(self.result_for(request.ticket, begun, None, None, None));
         }
 
         if let Err(error) = self
@@ -386,7 +400,7 @@ impl TicketingService {
             json!({ "commentId": comment.id }).to_string(),
         )
         .await?;
-        Ok(self.result_for(request.ticket, begun, None, Some(comment)))
+        Ok(self.result_for(request.ticket, begun, None, None, Some(comment)))
     }
 
     async fn ensure_write_capability(
@@ -585,6 +599,7 @@ impl TicketingService {
         ticket: TicketingTicketIdentity,
         begun: BegunOperation,
         transition: Option<TicketingTransitionOption>,
+        assignee: Option<TicketingPersonResult>,
         comment: Option<TicketingCommentResult>,
     ) -> TicketingMutationResult {
         TicketingMutationResult {
@@ -592,6 +607,7 @@ impl TicketingService {
             operation: begun.operation,
             idempotent: begun.idempotent,
             transition,
+            assignee,
             comment,
         }
     }
@@ -749,6 +765,13 @@ fn linear_comment_result(value: LinearComment) -> TicketingCommentResult {
         author_name: value.author_name,
         created_at: value.created_at,
         updated_at: value.updated_at,
+    }
+}
+
+fn linear_user_to_ticketing_person(value: LinearUser) -> TicketingPersonResult {
+    TicketingPersonResult {
+        id: Some(value.id),
+        name: value.name.unwrap_or_else(|| "Me".to_string()),
     }
 }
 

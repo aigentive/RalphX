@@ -10,10 +10,12 @@ use crate::application::{
         AgentConversationStartDeps, AgentConversationStartService, StartAgentConversationInput,
     },
     AppState, AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
-    LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary, TauriTicketingEventSink,
-    TeamService, TicketAssignRequest, TicketCommentRequest, TicketTransitionRequest,
-    TicketingCommentResult, TicketingMutationResult, TicketingService, TicketingTicketIdentity,
-    TicketingTransitionOption,
+    LinearComment, LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary,
+    LinearWorkflowState,
+    TauriTicketingEventSink, TeamService, TicketAssignRequest, TicketCommentRequest,
+    TicketTransitionRequest,
+    TicketingCommentResult, TicketingMutationResult, TicketingPersonResult, TicketingService,
+    TicketingTicketIdentity, TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, agent_workspace_response_for_state,
@@ -127,6 +129,7 @@ pub struct TicketSummaryResponse {
     pub assignee: Option<TicketingPersonResponse>,
     pub reporter: Option<TicketingPersonResponse>,
     pub labels: Vec<String>,
+    pub project: Option<String>,
     pub priority: Option<String>,
     pub updated_at: String,
     pub url: Option<String>,
@@ -276,6 +279,7 @@ pub struct TicketMutationResponse {
     pub operation: TicketOperationResponse,
     pub idempotent: bool,
     pub transition: Option<TicketTransitionOptionResponse>,
+    pub assignee: Option<TicketingPersonResponse>,
     pub comment: Option<TicketCommentResponse>,
     pub refreshed_at: String,
 }
@@ -326,13 +330,29 @@ pub fn list_ticketing_containers(
 }
 
 #[tauri::command]
-pub fn list_ticketing_columns(
+pub async fn list_ticketing_columns(
     provider: String,
     container_id: Option<String>,
+    state: State<'_, AppState>,
 ) -> Result<Vec<TicketingColumnResponse>, String> {
     validate_provider(&provider)?;
-    let _ = container_id;
-    Ok(default_ticketing_columns())
+    match provider.as_str() {
+        PROVIDER_LINEAR => state
+            .linear_integration_service
+            .list_workflow_states(container_id.as_deref())
+            .await
+            .map(|states| {
+                states
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, state)| linear_workflow_state_to_column(state, index))
+                    .collect()
+            }),
+        _ => {
+            let _ = container_id;
+            Ok(default_ticketing_columns())
+        }
+    }
 }
 
 #[tauri::command]
@@ -355,9 +375,6 @@ pub async fn list_tickets(
         .unwrap_or("")
         .trim()
         .to_string();
-    if let Some(filters) = query.filters.as_ref() {
-        let _ = (&filters.assignee, &filters.state_ids, &filters.labels);
-    }
     let fetched_at = now_string();
     let items: Vec<TicketSummaryResponse> = match query.provider.as_str() {
         PROVIDER_JIRA => state
@@ -376,6 +393,14 @@ pub async fn list_tickets(
             .collect(),
         _ => unreachable!("provider validated above"),
     };
+    let items = filter_ticket_summaries(items, query.filters.as_ref());
+    let items = hydrate_ticket_association_counts(
+        state.inner(),
+        &query.provider,
+        query.project_id.as_deref(),
+        items,
+    )
+    .await?;
     Ok(TicketPageResponse {
         total: Some(items.len()),
         items,
@@ -463,7 +488,7 @@ pub async fn start_ralphx_work_from_ticket<R: Runtime + 'static>(
         ticket_reference,
     );
 
-    let result = AgentConversationStartService::new(AgentConversationStartDeps {
+    let mut result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: state.inner(),
         execution_state: execution_state.inner(),
         team_service: Some(team_service.inner().clone()),
@@ -480,6 +505,14 @@ pub async fn start_ralphx_work_from_ticket<R: Runtime + 'static>(
         &issue_reference,
     )
     .await?;
+
+    let conversation_title = ticket_ref_label(&input.ticket_ref);
+    state
+        .chat_conversation_repo
+        .update_title(&result.conversation.id, &conversation_title)
+        .await
+        .map_err(|error| error.to_string())?;
+    result.conversation.title = Some(conversation_title);
 
     let workspace_response = match result.workspace {
         Some(workspace) => {
@@ -506,6 +539,16 @@ pub fn refresh_tickets(
     Ok(RefreshTicketsResponse {
         refreshed_at: now_string(),
     })
+}
+
+fn ticket_ref_label(ticket_ref: &TicketRefInput) -> String {
+    ticket_ref
+        .key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(ticket_ref.id.as_str())
+        .to_string()
 }
 
 #[tauri::command]
@@ -674,6 +717,19 @@ fn ticketing_column(id: &str, name: &str, category: &str, order: usize) -> Ticke
     }
 }
 
+fn linear_workflow_state_to_column(
+    state: LinearWorkflowState,
+    order: usize,
+) -> TicketingColumnResponse {
+    TicketingColumnResponse {
+        id: state.id,
+        name: state.name,
+        category: state.category,
+        order,
+        color: state.color,
+    }
+}
+
 fn jira_summary_to_ticket(summary: AtlassianResourceSummary) -> TicketSummaryResponse {
     let state = ticket_state("Provider result");
     TicketSummaryResponse {
@@ -687,6 +743,7 @@ fn jira_summary_to_ticket(summary: AtlassianResourceSummary) -> TicketSummaryRes
         assignee: None,
         reporter: None,
         labels: Vec::new(),
+        project: None,
         priority: None,
         updated_at: now_string(),
         url: summary.url,
@@ -698,7 +755,14 @@ fn linear_summary_to_ticket(summary: LinearIssueSummary) -> TicketSummaryRespons
     let state_name = summary
         .state_name
         .unwrap_or_else(|| "Provider result".to_string());
-    let state = ticket_state(&state_name);
+    let state = TicketStateResponse {
+        id: summary.state_id.unwrap_or_else(|| state_id(&state_name)),
+        name: state_name.clone(),
+        category: summary
+            .state_category
+            .unwrap_or_else(|| state_category(&state_name)),
+        color: summary.state_color,
+    };
     TicketSummaryResponse {
         ref_: TicketRefInput {
             provider: PROVIDER_LINEAR.to_string(),
@@ -707,14 +771,125 @@ fn linear_summary_to_ticket(summary: LinearIssueSummary) -> TicketSummaryRespons
         },
         title: summary.title,
         state,
-        assignee: None,
+        assignee: summary.assignee.as_deref().map(named_person),
         reporter: None,
-        labels: Vec::new(),
+        labels: summary.labels,
+        project: summary.project,
         priority: None,
-        updated_at: now_string(),
+        updated_at: summary.updated_at.unwrap_or_else(now_string),
         url: summary.url,
         association_count: 0,
     }
+}
+
+async fn hydrate_ticket_association_counts(
+    state: &AppState,
+    provider: &str,
+    project_id: Option<&str>,
+    items: Vec<TicketSummaryResponse>,
+) -> Result<Vec<TicketSummaryResponse>, String> {
+    let Some(project_id) = project_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| ProjectId::from_string(value.to_string()))
+    else {
+        return Ok(items);
+    };
+
+    let mut hydrated = Vec::with_capacity(items.len());
+    for mut item in items {
+        let reference = ticket_ref_to_composer_reference(provider, &item.ref_);
+        item.association_count = linked_agent_conversation_associations_for_ticket(
+            state,
+            provider,
+            &project_id,
+            &reference,
+        )
+        .await?
+        .len();
+        hydrated.push(item);
+    }
+    Ok(hydrated)
+}
+
+fn filter_ticket_summaries(
+    items: Vec<TicketSummaryResponse>,
+    filters: Option<&TicketFiltersInput>,
+) -> Vec<TicketSummaryResponse> {
+    let Some(filters) = filters else {
+        return items;
+    };
+    items
+        .into_iter()
+        .filter(|ticket| ticket_matches_filters(ticket, filters))
+        .collect()
+}
+
+fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFiltersInput) -> bool {
+    if let Some(text) = filters.text.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        let needle = text.to_ascii_lowercase();
+        let matches_text = ticket.title.to_ascii_lowercase().contains(&needle)
+            || ticket
+                .ref_
+                .key
+                .as_deref()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .contains(&needle)
+            || ticket.ref_.id.to_ascii_lowercase().contains(&needle);
+        if !matches_text {
+            return false;
+        }
+    }
+
+    if let Some(state_ids) = filters.state_ids.as_ref().filter(|values| !values.is_empty()) {
+        let ticket_state_id = ticket.state.id.as_str();
+        let ticket_state_category = ticket.state.category.as_str();
+        if !state_ids
+            .iter()
+            .any(|state_id| state_id == ticket_state_id || state_id == ticket_state_category)
+        {
+            return false;
+        }
+    }
+
+    if let Some(assignee) = filters
+        .assignee
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let Some(ticket_assignee) = ticket.assignee.as_ref() else {
+            return false;
+        };
+        let assignee = assignee.to_ascii_lowercase();
+        let matches_assignee = ticket_assignee.name.to_ascii_lowercase().contains(&assignee)
+            || ticket_assignee
+                .id
+                .as_deref()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .contains(&assignee)
+            || ticket_assignee
+                .email
+                .as_deref()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .contains(&assignee);
+        if !matches_assignee {
+            return false;
+        }
+    }
+
+    if let Some(labels) = filters.labels.as_ref().filter(|values| !values.is_empty()) {
+        if !labels.iter().all(|required_label| {
+            ticket.labels.iter().any(|label| label.eq_ignore_ascii_case(required_label))
+        }) {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResponse {
@@ -729,6 +904,7 @@ fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResp
         assignee: content.assignee.as_deref().map(named_person),
         reporter: content.reporter.as_deref().map(named_person),
         labels: Vec::new(),
+        project: None,
         priority: None,
         updated_at: content.updated_at_remote.clone().unwrap_or_else(now_string),
         url: content.url.clone(),
@@ -781,7 +957,8 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
         state: ticket_state(content.state_name.as_deref().unwrap_or("Provider result")),
         assignee: content.assignee.as_deref().map(named_person),
         reporter: content.creator.as_deref().map(named_person),
-        labels: Vec::new(),
+        labels: content.labels.clone(),
+        project: content.project.clone(),
         priority: None,
         updated_at: content.updated_at.clone().unwrap_or_else(now_string),
         url: content.url.clone(),
@@ -792,7 +969,11 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
         description_markdown: Some(content.body.clone()),
         description_text: Some(content.body),
         acceptance_criteria_markdown: None,
-        comments: Vec::new(),
+        comments: content
+            .comments
+            .into_iter()
+            .map(ticket_comment_from_linear_comment)
+            .collect(),
         attachments: Vec::new(),
         transitions: Vec::new(),
         fetched_at: Some(now_string()),
@@ -932,8 +1113,18 @@ fn ticket_mutation_response(result: TicketingMutationResult) -> TicketMutationRe
         operation: ticket_operation_response(result.operation),
         idempotent: result.idempotent,
         transition: result.transition.map(ticket_transition_option_response),
+        assignee: result.assignee.map(ticket_person_result_response),
         comment: result.comment.map(ticket_comment_response),
         refreshed_at: now_string(),
+    }
+}
+
+fn ticket_person_result_response(person: TicketingPersonResult) -> TicketingPersonResponse {
+    TicketingPersonResponse {
+        id: person.id,
+        name: person.name,
+        email: None,
+        avatar_url: None,
     }
 }
 
@@ -957,6 +1148,17 @@ fn ticket_comment_response(comment: TicketingCommentResult) -> TicketCommentResp
         author: comment.author_name.as_deref().map(named_person),
         body_markdown: comment.body_markdown,
         body_text: comment.body_text,
+        created_at: comment.created_at,
+        updated_at: comment.updated_at,
+    }
+}
+
+fn ticket_comment_from_linear_comment(comment: LinearComment) -> TicketCommentResponse {
+    TicketCommentResponse {
+        id: Some(comment.id),
+        author: comment.author_name.as_deref().map(named_person),
+        body_markdown: comment.body.clone(),
+        body_text: comment.body,
         created_at: comment.created_at,
         updated_at: comment.updated_at,
     }

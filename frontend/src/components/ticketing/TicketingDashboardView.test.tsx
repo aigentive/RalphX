@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -282,6 +282,66 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByText("Connect Jira from Settings.")).toBeInTheDocument();
   });
 
+  it("does not load tickets for permission-limited providers", () => {
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "linear",
+          label: "Linear",
+          enabled: false,
+          connectionStatus: "permission_limited",
+          capabilities,
+          permissionMessage: "Linear issue search is not available for this connection.",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+
+    renderDashboard();
+
+    expect(screen.getByText("Linear ticket access is limited")).toBeInTheDocument();
+    expect(screen.getAllByText("Linear issue search is not available for this connection.").length).toBeGreaterThan(0);
+    expect(ticketingHooks.useTickets).toHaveBeenCalledWith(null, { enabled: false });
+  });
+
+  it("auto-selects the only enabled provider and hides provider tabs", async () => {
+    useTicketingStore.getState().setProvider("jira");
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "jira",
+          label: "Jira",
+          enabled: false,
+          connectionStatus: "disconnected",
+          capabilities,
+        },
+        {
+          provider: "linear",
+          label: "Linear",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: { ...writableCapabilities, freshness: "webhook" },
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
+        expect.objectContaining({ provider: "linear" }),
+        { enabled: true },
+      );
+    });
+    expect(screen.queryByRole("tablist", { name: "Ticketing provider" })).not.toBeInTheDocument();
+  });
+
   it("surfaces stale provider freshness without hiding ticket content", () => {
     mockConnectedDashboard();
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
@@ -368,6 +428,156 @@ describe("TicketingDashboardView", () => {
     expect(await screen.findByText("Fix merge race")).toBeInTheDocument();
   });
 
+  it("renders ticket description and comments as markdown in the detail sheet", async () => {
+    mockConnectedDashboard();
+    vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
+      data: {
+        ...ticket,
+        descriptionMarkdown: "Investigate **transition race**\n\n- Preserve ordering\n- Avoid duplicate writes",
+        comments: [
+          {
+            id: "comment-1",
+            bodyMarkdown: "Reviewer said `retry` is ready.",
+            bodyText: "",
+            author: { id: "user-1", name: "A. Reviewer" },
+            createdAt: "2026-06-19T22:00:01.000Z",
+          },
+        ],
+        attachments: [],
+        transitions: [],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketDetail>);
+
+    renderDashboard();
+    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
+
+    const strong = await screen.findByText("transition race");
+    expect(strong.tagName.toLowerCase()).toBe("strong");
+    expect(screen.getByRole("list")).toHaveTextContent("Preserve ordering");
+    const code = screen.getByText("retry");
+    expect(code.tagName.toLowerCase()).toBe("code");
+  });
+
+  it("passes changed filters to the ticket query", async () => {
+    mockConnectedDashboard();
+
+    renderDashboard();
+
+    fireEvent.change(screen.getByLabelText("Search tickets"), {
+      target: { value: "merge" },
+    });
+    await waitFor(() => {
+      expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          filters: expect.objectContaining({ text: "merge" }),
+        }),
+        { enabled: true },
+      );
+    });
+
+    fireEvent.change(screen.getByLabelText("Status"), {
+      target: { value: "todo" },
+    });
+    await waitFor(() => {
+      expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          filters: expect.objectContaining({
+            text: "merge",
+            stateIds: ["todo"],
+          }),
+        }),
+        { enabled: true },
+      );
+    });
+  });
+
+  it("loads status options and kanban lanes from ticket statuses", async () => {
+    mockConnectedDashboard();
+    const blockedTicket = {
+      ...ticket,
+      state: { id: "blocked", name: "Blocked", category: "other" as const },
+    };
+    vi.mocked(ticketingHooks.useTicketingColumns).mockReturnValue({
+      data: [{ id: "todo", name: "To Do", category: "todo", order: 0 }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingColumns>);
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: {
+        pages: [{ items: [blockedTicket], nextCursor: null, total: 1 }],
+        pageParams: [null],
+      },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+
+    renderDashboard();
+
+    expect(screen.getByRole("option", { name: "Blocked" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "To Do" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Kanban view" }));
+
+    expect(await screen.findByTestId("ticket-column-blocked")).toBeInTheDocument();
+  });
+
+  it("renders assignee, RX association count, and provider updated time from ticket rows", () => {
+    mockConnectedDashboard();
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: {
+        pages: [{
+          items: [{
+            ...ticket,
+            assignee: { id: "user-1", name: "A. User" },
+            labels: ["backend", "linear"],
+            project: "Platform",
+            associationCount: 3,
+            updatedAt: "2026-06-18T08:15:00.000Z",
+          }],
+          nextCursor: null,
+          total: 1,
+        }],
+        pageParams: [null],
+      },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+
+    renderDashboard();
+
+    expect(screen.getByText("A. User")).toBeInTheDocument();
+    expect(screen.getByText("Platform")).toBeInTheDocument();
+    expect(screen.getByText("linear")).toBeInTheDocument();
+    expect(screen.getByText("●3")).toBeInTheDocument();
+    expect(screen.queryByText("Unassigned")).not.toBeInTheDocument();
+  });
+
+  it("opens ticket detail when a kanban card is clicked", async () => {
+    mockConnectedDashboard();
+    useTicketingStore.getState().setViewMode("kanban");
+
+    renderDashboard();
+
+    fireEvent.click(await screen.findByRole("button", { name: /RX-1/ }));
+
+    expect(await screen.findByRole("button", { name: "Start RalphX work" })).toBeInTheDocument();
+    expect(screen.getByText("When two agents transition the same task.")).toBeInTheDocument();
+  });
+
   it("opens the detail shell before hydrating association queries", () => {
     mockConnectedDashboard();
 
@@ -406,6 +616,11 @@ describe("TicketingDashboardView", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
 
+    expect(await screen.findByText("Pushed a fix.")).toBeInTheDocument();
+    expect(screen.getByText("Comments (1)")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "Ticket comment" })).toHaveValue("");
+    });
     expect(transitionStatus).toHaveBeenCalledWith({
       provider: "jira",
       ticketRef: ticket.ref,
@@ -446,10 +661,13 @@ describe("TicketingDashboardView", () => {
       await screen.findByRole("button", { name: "Start RalphX work" }),
     );
 
-    expect(startWork).toHaveBeenCalledWith({
-      projectId: "project-1",
-      ticketRef: ticket.ref,
-      content: "Start RalphX work for RX-1: Fix merge race in transition handler",
-    });
+    expect(startWork).toHaveBeenCalledWith(
+      {
+        projectId: "project-1",
+        ticketRef: ticket.ref,
+        content: "Start RalphX work for RX-1: Fix merge race in transition handler",
+      },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
   });
 });

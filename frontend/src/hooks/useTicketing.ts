@@ -22,6 +22,7 @@ import {
   type TicketComment,
   type TicketDetail,
   type TicketingColumn,
+  type TicketingPerson,
   type TicketPage,
   type TicketRefInput,
   type TicketSummary,
@@ -200,6 +201,13 @@ function assignToMePatch(ticket: TicketSummary): TicketSummary {
     ...ticket,
     assignee: { name: "Me" },
   };
+}
+
+function assigneePatch(assignee: TicketingPerson) {
+  return (ticket: TicketSummary): TicketSummary => ({
+    ...ticket,
+    assignee,
+  });
 }
 
 function optimisticComment(input: AddTicketCommentMutationInput & { clientOperationId: string }): TicketComment {
@@ -420,6 +428,16 @@ export function useTicketingMutations(projectId?: string) {
     },
     onError: (_error, _input, snapshot) => {
       restoreTicketSnapshot(queryClient, snapshot);
+    },
+    onSuccess: (data, input) => {
+      if (!data.assignee) {
+        return;
+      }
+      snapshotAndPatchTicket(
+        queryClient,
+        input,
+        assigneePatch(data.assignee),
+      );
     },
     onSettled: (_data, _error, input) => {
       invalidateTicketMutationQueries(queryClient, {

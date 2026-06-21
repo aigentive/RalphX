@@ -1,8 +1,11 @@
 import {
   closestCenter,
   DndContext,
+  PointerSensor,
   useDraggable,
   useDroppable,
+  useSensor,
+  useSensors,
   type DragEndEvent,
 } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
@@ -98,7 +101,23 @@ export function TicketListView({
             }}
           >
             <span className="font-mono text-xs text-[var(--text-secondary)]">{ticketKey(ticket.ref)}</span>
-            <span className="truncate font-medium">{ticket.title}</span>
+            <span className="min-w-0">
+              <span className="block truncate font-medium">{ticket.title}</span>
+              {(ticket.project || ticket.labels.length > 0) && (
+                <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1 text-[11px] text-[var(--text-muted)]">
+                  {ticket.project && <span className="truncate">{ticket.project}</span>}
+                  {ticket.labels.slice(0, 3).map((label) => (
+                    <span
+                      key={label}
+                      className="rounded border px-1 py-0.5"
+                      style={{ borderColor: "var(--border-subtle)" }}
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </span>
+              )}
+            </span>
             <TicketStatePill ticket={ticket} />
             <span className="truncate text-[var(--text-secondary)]">{ticket.assignee?.name ?? "Unassigned"}</span>
             <span className="text-xs text-[var(--text-secondary)]">
@@ -208,6 +227,11 @@ export function TicketKanbanView({
   onMoveTicket,
   onSelectTicket,
 }: TicketKanbanViewProps) {
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    }),
+  );
   const effectiveColumns = columns.length > 0
     ? columns
     : Array.from(
@@ -234,7 +258,7 @@ export function TicketKanbanView({
   }
 
   return (
-    <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
       <div className="flex min-h-0 flex-1 gap-3 overflow-auto p-4">
         {effectiveColumns.map((column) => {
           const columnTickets = tickets.filter((ticket) => ticket.state.id === column.id);

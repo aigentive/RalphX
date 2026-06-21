@@ -92,7 +92,14 @@ impl LinearApiClient for TestLinearClient {
             title: "Example".to_string(),
             url: Some("https://linear.app/acme/issue/LIN-123/example".to_string()),
             excerpt: Some("Example body".to_string()),
+            state_id: Some("state-started".to_string()),
             state_name: Some("In Progress".to_string()),
+            state_category: Some("in_progress".to_string()),
+            state_color: Some("#f2c94c".to_string()),
+            assignee: Some("A. User".to_string()),
+            updated_at: Some("2026-06-21T08:00:00Z".to_string()),
+            labels: vec!["backend".to_string()],
+            project: Some("Platform".to_string()),
         }])
     }
 
@@ -118,6 +125,9 @@ impl LinearApiClient for TestLinearClient {
             assignee: Some("A. User".to_string()),
             creator: Some("C. User".to_string()),
             updated_at: Some("2026-06-18T08:00:00Z".to_string()),
+            comments: Vec::new(),
+            labels: Vec::new(),
+            project: None,
         })
     }
 }
@@ -164,6 +174,28 @@ async fn save_validate_and_search_issues_with_api_token() {
     assert_eq!(
         client.searches.lock().await.as_slice(),
         &[("bug".to_string(), 25)]
+    );
+}
+
+#[tokio::test]
+async fn blank_search_uses_enabled_provider_for_default_ticket_list() {
+    let repo = Arc::new(TestSettingsRepo::default());
+    let secrets = Arc::new(MemorySecretStore::new());
+    let client = Arc::new(TestLinearClient::default());
+    let service = LinearIntegrationService::new(repo, secrets, client.clone());
+
+    service
+        .save_settings(Some(" lin-api-token ".to_string()))
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+
+    let results = service.search_issues("  ", 50).await.unwrap();
+
+    assert_eq!(results[0].key.as_deref(), Some("LIN-123"));
+    assert_eq!(
+        client.searches.lock().await.as_slice(),
+        &[("  ".to_string(), 25)]
     );
 }
 
