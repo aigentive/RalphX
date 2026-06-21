@@ -10,6 +10,8 @@ import { cn } from "@/lib/utils";
 interface TicketFilterBarProps {
   containers: TicketingContainer[];
   columns: TicketingColumn[];
+  containerLabel: string;
+  allContainersLabel: string;
   activeContainerId: string | null;
   filters: TicketingFilterState;
   viewMode: TicketingViewMode;
@@ -59,6 +61,8 @@ function ViewModeButton({
 export function TicketFilterBar({
   containers,
   columns,
+  containerLabel,
+  allContainersLabel,
   activeContainerId,
   filters,
   viewMode,
@@ -80,7 +84,7 @@ export function TicketFilterBar({
       }}
     >
       <label className="flex min-w-[180px] items-center gap-2 text-xs text-[var(--text-muted)]">
-        Board
+        {containerLabel}
         <select
           className="h-8 min-w-[150px] rounded-md px-2 text-sm outline-none"
           value={activeContainerId ?? ""}
@@ -93,7 +97,7 @@ export function TicketFilterBar({
             color: "var(--text-primary)",
           }}
         >
-          <option value="">All containers</option>
+          <option value="">{allContainersLabel}</option>
           {containers.map((container) => (
             <option key={container.id} value={container.id}>
               {container.name}

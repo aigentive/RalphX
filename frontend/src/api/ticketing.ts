@@ -193,6 +193,14 @@ export const TicketAssociationsSchema = z.object({
 });
 export type TicketAssociations = z.infer<typeof TicketAssociationsSchema>;
 
+export const ConversationTicketSchema = z.object({
+  ticketRef: TicketRefSchema,
+  projectId: z.string(),
+  title: z.string().nullable().optional(),
+  url: z.string().nullable().optional(),
+});
+export type ConversationTicket = z.infer<typeof ConversationTicketSchema>;
+
 export const RefreshTicketsResponseSchema = z.object({
   refreshedAt: z.string(),
 });
@@ -376,6 +384,14 @@ export const ticketingApi = {
         projectId: input.projectId,
       },
       TicketAssociationsSchema,
+    );
+  },
+
+  getConversationTicket(conversationId: string): Promise<ConversationTicket | null> {
+    return typedInvoke(
+      "get_conversation_ticket",
+      { conversationId },
+      ConversationTicketSchema.nullable(),
     );
   },
 

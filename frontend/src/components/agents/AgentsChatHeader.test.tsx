@@ -1,8 +1,12 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { chatApi, type ConversationStatsResponse } from "@/api/chat";
+import { useConversationTicket } from "@/hooks/useTicketing";
 import { useChatStore } from "@/stores/chatStore";
+import { useProjectStore } from "@/stores/projectStore";
+import { useTicketingStore } from "@/stores/ticketingStore";
+import { useUiStore } from "@/stores/uiStore";
 import { toast } from "sonner";
 import { AgentsChatFocusBar, AgentsChatHeader } from "./AgentsChatHeader";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
@@ -16,6 +20,10 @@ vi.mock("sonner", () => ({
   toast: {
     error: vi.fn(),
   },
+}));
+
+vi.mock("@/hooks/useTicketing", () => ({
+  useConversationTicket: vi.fn(),
 }));
 
 function conversationStats(
@@ -71,11 +79,60 @@ function conversationStats(
 }
 
 describe("AgentsChatHeader", () => {
+  beforeEach(() => {
+    vi.mocked(useConversationTicket).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationTicket>);
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     window.localStorage.clear();
     useChatStore.setState({ agentStatus: {}, isSending: {} });
+    useTicketingStore.getState().reset();
+    useProjectStore.setState({ activeProjectId: null });
+    useUiStore.setState({ currentView: "agents" });
+  });
+
+  it("opens the linked ticket from the header ticket button", () => {
+    vi.mocked(useConversationTicket).mockReturnValue({
+      data: {
+        ticketRef: { provider: "linear", id: "LIN-1", key: "LIN-1" },
+        projectId: "project-2",
+        title: "Fix Linear tickets",
+        url: null,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationTicket>);
+
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-linked", projectId: "project-2" })}
+        workspace={null}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open ticket LIN-1" }));
+
+    expect(useProjectStore.getState().activeProjectId).toBe("project-2");
+    expect(useUiStore.getState().currentView).toBe("ticketing");
+    expect(useTicketingStore.getState().activeProvider).toBe("linear");
+    expect(useTicketingStore.getState().selectedTicketRef).toEqual({
+      provider: "linear",
+      id: "LIN-1",
+      key: "LIN-1",
+    });
   });
 
   it("opts the title button out of the high-contrast default button border", () => {

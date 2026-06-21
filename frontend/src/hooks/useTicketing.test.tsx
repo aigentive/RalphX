@@ -29,6 +29,7 @@ vi.mock("@/api/ticketing", async (importActual) => {
       getTicketDetail: vi.fn(),
       listTicketTransitions: vi.fn(),
       getTicketAssociations: vi.fn(),
+      getConversationTicket: vi.fn(),
       startWorkFromTicket: vi.fn(),
       refreshTickets: vi.fn(),
       transitionTicketStatus: vi.fn(),

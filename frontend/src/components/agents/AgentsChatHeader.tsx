@@ -23,6 +23,7 @@ import {
   PanelRightOpen,
   ShieldCheck,
   Terminal as TerminalIcon,
+  Ticket,
 } from "lucide-react";
 
 import type { AgentConversationWorkspace, WorkspaceOpenTarget } from "@/api/chat";
@@ -43,7 +44,11 @@ import {
 import { formatBranchDisplay } from "@/lib/branch-utils";
 import { withAlpha } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
+import { useConversationTicket } from "@/hooks/useTicketing";
 import { useChatStore } from "@/stores/chatStore";
+import { useProjectStore } from "@/stores/projectStore";
+import { useTicketingStore } from "@/stores/ticketingStore";
+import { useUiStore } from "@/stores/uiStore";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import type { ModelDisplay } from "@/types/chat-conversation";
 
@@ -360,6 +365,14 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   const isSending = useChatStore((state) =>
     conversationStoreKey ? state.isSending[conversationStoreKey] ?? false : false,
   );
+  const selectProject = useProjectStore((state) => state.selectProject);
+  const setCurrentView = useUiStore((state) => state.setCurrentView);
+  const setTicketProvider = useTicketingStore((state) => state.setProvider);
+  const setSelectedTicketRef = useTicketingStore((state) => state.setSelectedTicketRef);
+  const conversationTicketQuery = useConversationTicket(conversation?.id, {
+    enabled: Boolean(conversation),
+  });
+  const linkedTicket = conversationTicketQuery.data ?? null;
   const isAgentActive = isSending || agentStatus === "generating";
   const sidebarVisibility = useAgentsSidebarVisibility();
   const showOpenSidebarButton =
@@ -385,6 +398,16 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     await onRenameConversation(conversation.id, trimmed);
     setIsEditing(false);
   }, [conversation, draftTitle, onRenameConversation, title]);
+
+  const openLinkedTicket = useCallback(() => {
+    if (!linkedTicket) {
+      return;
+    }
+    selectProject(linkedTicket.projectId);
+    setTicketProvider(linkedTicket.ticketRef.provider);
+    setSelectedTicketRef(linkedTicket.ticketRef);
+    setCurrentView("ticketing");
+  }, [linkedTicket, selectProject, setCurrentView, setSelectedTicketRef, setTicketProvider]);
 
   return (
     <div
@@ -479,6 +502,27 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
               {...(modelDisplay !== undefined ? { modelDisplay } : {})}
             />
           </div>
+        )}
+
+        {linkedTicket && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0"
+                onClick={openLinkedTicket}
+                aria-label={`Open ticket ${linkedTicket.ticketRef.key ?? linkedTicket.ticketRef.id}`}
+                data-testid="agents-linked-ticket-button"
+              >
+                <Ticket className="w-4 h-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-[280px] text-xs">
+              {linkedTicket.title ?? linkedTicket.ticketRef.key ?? linkedTicket.ticketRef.id}
+            </TooltipContent>
+          </Tooltip>
         )}
 
         <Tooltip>

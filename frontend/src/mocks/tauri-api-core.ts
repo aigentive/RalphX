@@ -1140,6 +1140,7 @@ const commandHandlers: Record<
   },
   list_ticket_transitions: async () => [],
   get_ticket_associations: async () => mockTicketingAssociations,
+  get_conversation_ticket: async () => null,
   refresh_tickets: async () => ({ refreshedAt: "2026-06-19T22:00:00.000Z" }),
   save_linear_webhook_signing_secret: async (args) => {
     const input = args.input as { signingSecret?: string; enabled?: boolean };

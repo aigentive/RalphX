@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
+import type { AgentConversationWorkspaceMode } from "@/api/chat";
 import type {
   ListTicketsInput,
   TicketDeepLink,
@@ -9,6 +10,7 @@ import type {
   TicketSummary,
   TicketTransitionOption,
 } from "@/api/ticketing";
+import type { Project } from "@/types/project";
 import {
   fetchTicketTransitionsForMove,
   findTicketTransitionForColumn,
@@ -24,11 +26,21 @@ import {
   useTicketTransitions,
   useTickets,
 } from "@/hooks/useTicketing";
+import { useProjects } from "@/hooks/useProjects";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import { formatRelativeTime } from "@/lib/formatters";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 import { ProviderSwitcher } from "./ProviderSwitcher";
 import { TicketDetailSheet } from "./TicketDetailSheet";
@@ -81,9 +93,7 @@ function mergeProviderAndTicketColumns(
   if (providerColumns.length === 0) {
     return ticketColumns;
   }
-  const ticketColumnIds = new Set(ticketColumns.map((column) => column.id));
   const merged = providerColumns
-    .filter((column) => ticketColumnIds.size === 0 || ticketColumnIds.has(column.id))
     .sort((left, right) => left.order - right.order);
   const providerColumnIds = new Set(merged.map((column) => column.id));
   for (const column of ticketColumns) {
@@ -92,6 +102,142 @@ function mergeProviderAndTicketColumns(
     }
   }
   return merged;
+}
+
+function columnsFromTransitions(transitions: TicketTransitionOption[]): TicketingColumn[] {
+  return transitions.map((transition, index) => ({
+    id: transition.toStateId,
+    name: transition.name,
+    category: transition.category,
+    order: index,
+  }));
+}
+
+function containerLabelsForProvider(provider: string | null): {
+  containerLabel: string;
+  allContainersLabel: string;
+} {
+  if (provider === "linear") {
+    return { containerLabel: "Project", allContainersLabel: "All projects" };
+  }
+  if (provider === "jira") {
+    return { containerLabel: "Board", allContainersLabel: "All boards" };
+  }
+  return { containerLabel: "Container", allContainersLabel: "All containers" };
+}
+
+const START_WORK_MODES: Array<{
+  value: AgentConversationWorkspaceMode;
+  label: string;
+}> = [
+  { value: "edit", label: "Agent" },
+  { value: "plan", label: "Plan" },
+  { value: "ideation", label: "Ideation" },
+  { value: "chat", label: "Chat" },
+];
+
+interface StartWorkSelection {
+  projectId: string;
+  mode: AgentConversationWorkspaceMode;
+}
+
+function StartWorkDialog({
+  open,
+  ticket,
+  projects,
+  selected,
+  isPending,
+  onSelectionChange,
+  onConfirm,
+  onClose,
+}: {
+  open: boolean;
+  ticket: TicketSummary | null;
+  projects: Project[];
+  selected: StartWorkSelection;
+  isPending: boolean;
+  onSelectionChange: (selection: StartWorkSelection) => void;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
+      <DialogContent className="sm:max-w-[460px]">
+        <DialogHeader>
+          <DialogTitle>Start RalphX Work</DialogTitle>
+          <DialogDescription>
+            Choose where to start the linked conversation for {ticket ? ticketKey(ticket.ref) : "this ticket"}.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-4 py-2">
+          <label className="grid gap-1.5 text-sm">
+            Project
+            <select
+              className="h-9 rounded-md px-2 text-sm outline-none"
+              value={selected.projectId}
+              onChange={(event) =>
+                onSelectionChange({ ...selected, projectId: event.target.value })
+              }
+              style={{
+                backgroundColor: "var(--bg-elevated)",
+                borderColor: "var(--border-default)",
+                borderStyle: "solid",
+                borderWidth: "1px",
+                color: "var(--text-primary)",
+              }}
+            >
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="grid gap-1.5 text-sm">
+            Conversation type
+            <select
+              className="h-9 rounded-md px-2 text-sm outline-none"
+              value={selected.mode}
+              onChange={(event) =>
+                onSelectionChange({
+                  ...selected,
+                  mode: event.target.value as AgentConversationWorkspaceMode,
+                })
+              }
+              style={{
+                backgroundColor: "var(--bg-elevated)",
+                borderColor: "var(--border-default)",
+                borderStyle: "solid",
+                borderWidth: "1px",
+                color: "var(--text-primary)",
+              }}
+            >
+              {START_WORK_MODES.map((mode) => (
+                <option key={mode.value} value={mode.value}>
+                  {mode.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={onClose} disabled={isPending}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={onConfirm}
+            disabled={isPending || !selected.projectId}
+          >
+            {isPending ? "Starting" : "Start"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 interface TicketingStatusNotice {
@@ -163,8 +309,14 @@ export function TicketingDashboardView({
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
   const selectAgentConversation = useAgentSessionStore((s) => s.selectConversation);
   const setFocusedAgentProject = useAgentSessionStore((s) => s.setFocusedProject);
+  const [startWorkDialogOpen, setStartWorkDialogOpen] = useState(false);
+  const [startWorkSelection, setStartWorkSelection] = useState<StartWorkSelection>({
+    projectId,
+    mode: "edit",
+  });
 
   const queryClient = useQueryClient();
+  const projectsQuery = useProjects();
   const providersQuery = useTicketingProviders(projectId, { enabled: Boolean(projectId) });
   const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
   const enabledProviders = useMemo(
@@ -258,7 +410,13 @@ export function TicketingDashboardView({
 
   const selectedTicket = detailQuery.data ?? selectedSummary;
   const transitions = transitionsQuery.data ?? (detailQuery.data && "transitions" in detailQuery.data ? detailQuery.data.transitions : []);
+  const transitionColumns = useMemo(() => columnsFromTransitions(transitions), [transitions]);
+  const filterColumns = mergeProviderAndTicketColumns(
+    statusColumns,
+    transitionColumns,
+  );
   const providerName = selectedProvider?.label ?? (activeProvider ? providerLabel(activeProvider) : "Provider");
+  const containerLabels = containerLabelsForProvider(activeProvider);
   const statusMessage = selectedProvider?.errorMessage ?? selectedProvider?.permissionMessage ?? undefined;
   const startWorkError = startWorkFromTicket.error instanceof Error
     ? startWorkFromTicket.error.message
@@ -388,20 +546,42 @@ export function TicketingDashboardView({
       .catch(() => undefined);
   }
 
+  useEffect(() => {
+    setStartWorkSelection((current) =>
+      current.projectId
+        ? current
+        : { ...current, projectId },
+    );
+  }, [projectId]);
+
   function handleStartWorkFromTicket() {
     if (!selectedTicket) {
       return;
     }
+    setStartWorkSelection((current) => ({
+      ...current,
+      projectId: current.projectId || projectId,
+    }));
+    setStartWorkDialogOpen(true);
+  }
+
+  function handleConfirmStartWorkFromTicket() {
+    if (!selectedTicket || !startWorkSelection.projectId) {
+      return;
+    }
+    const targetProjectId = startWorkSelection.projectId;
     startWorkFromTicket.mutate({
-      projectId,
+      projectId: targetProjectId,
       ticketRef: selectedTicket.ref,
+      mode: startWorkSelection.mode,
       content: `Start RalphX work for ${ticketKey(selectedTicket.ref)}: ${selectedTicket.title}`,
     }, {
       onSuccess: (result) => {
         const conversationId = result.conversation.id;
-        setFocusedAgentProject(projectId);
-        selectAgentConversation(projectId, conversationId);
-        setActiveConversation(`project:${projectId}`, conversationId);
+        setStartWorkDialogOpen(false);
+        setFocusedAgentProject(targetProjectId);
+        selectAgentConversation(targetProjectId, conversationId);
+        setActiveConversation(`project:${targetProjectId}`, conversationId);
         setCurrentView("agents");
       },
     });
@@ -545,7 +725,9 @@ export function TicketingDashboardView({
 
       <TicketFilterBar
         containers={containers}
-        columns={statusColumns}
+        columns={filterColumns}
+        containerLabel={containerLabels.containerLabel}
+        allContainersLabel={containerLabels.allContainersLabel}
         activeContainerId={activeContainerId}
         filters={filters}
         viewMode={viewMode}
@@ -595,6 +777,17 @@ export function TicketingDashboardView({
         onNavigate={onNavigateToAssociation}
         onStartWork={selectedTicket ? handleStartWorkFromTicket : undefined}
         onClose={() => setSelectedTicketRef(null)}
+      />
+
+      <StartWorkDialog
+        open={startWorkDialogOpen}
+        ticket={selectedTicket}
+        projects={projectsQuery.data ?? []}
+        selected={startWorkSelection}
+        isPending={startWorkFromTicket.isPending}
+        onSelectionChange={setStartWorkSelection}
+        onConfirm={handleConfirmStartWorkFromTicket}
+        onClose={() => setStartWorkDialogOpen(false)}
       />
     </section>
   );

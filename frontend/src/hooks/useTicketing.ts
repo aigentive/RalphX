@@ -60,6 +60,8 @@ export const ticketingKeys = {
     [...ticketingKeys.detail(input), "transitions"] as const,
   associations: (input: GetTicketAssociationsInput) =>
     [...ticketingKeys.detail(input), "associations", input.projectId] as const,
+  conversationTicket: (conversationId: string) =>
+    [...ticketingKeys.all, "conversation-ticket", conversationId] as const,
 };
 
 export interface TransitionTicketStatusMutationInput extends TicketRefInput {
@@ -394,6 +396,25 @@ export function useTicketAssociations(
       return ticketingApi.getTicketAssociations(input);
     },
     enabled: (options.enabled ?? true) && Boolean(input?.projectId && input.ticketRef.id),
+    staleTime: 30_000,
+  });
+}
+
+export function useConversationTicket(
+  conversationId: string | null | undefined,
+  options: QueryOptions = {},
+) {
+  return useQuery({
+    queryKey: conversationId
+      ? ticketingKeys.conversationTicket(conversationId)
+      : [...ticketingKeys.all, "conversation-ticket", null],
+    queryFn: () => {
+      if (!conversationId) {
+        throw new Error("Conversation ID is required");
+      }
+      return ticketingApi.getConversationTicket(conversationId);
+    },
+    enabled: (options.enabled ?? true) && Boolean(conversationId),
     staleTime: 30_000,
   });
 }

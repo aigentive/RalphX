@@ -4,6 +4,7 @@ import { createElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as ticketingHooks from "@/hooks/useTicketing";
+import * as projectHooks from "@/hooks/useProjects";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useTicketingStore } from "@/stores/ticketingStore";
 
@@ -23,6 +24,10 @@ vi.mock("@/hooks/useTicketing", () => ({
   useTicketingProviders: vi.fn(),
   useTicketTransitions: vi.fn(),
   useTickets: vi.fn(),
+}));
+
+vi.mock("@/hooks/useProjects", () => ({
+  useProjects: vi.fn(),
 }));
 
 const capabilities = {
@@ -198,6 +203,45 @@ describe("TicketingDashboardView", () => {
     vi.clearAllMocks();
     window.HTMLElement.prototype.scrollIntoView = vi.fn();
     useTicketingStore.getState().reset();
+    vi.mocked(projectHooks.useProjects).mockReturnValue({
+      data: [
+        {
+          id: "project-1",
+          name: "Current Project",
+          workingDirectory: "/repo/current",
+          gitMode: "worktree",
+          baseBranch: "main",
+          worktreeParentDirectory: null,
+          useFeatureBranches: true,
+          mergeValidationMode: "block",
+          detectedAnalysis: null,
+          customAnalysis: null,
+          analyzedAt: null,
+          githubPrEnabled: false,
+          createdAt: "2026-06-19T22:00:00.000Z",
+          updatedAt: "2026-06-19T22:00:00.000Z",
+        },
+        {
+          id: "project-2",
+          name: "Target Project",
+          workingDirectory: "/repo/target",
+          gitMode: "worktree",
+          baseBranch: "main",
+          worktreeParentDirectory: null,
+          useFeatureBranches: true,
+          mergeValidationMode: "block",
+          detectedAnalysis: null,
+          customAnalysis: null,
+          analyzedAt: null,
+          githubPrEnabled: false,
+          createdAt: "2026-06-19T22:00:00.000Z",
+          updatedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof projectHooks.useProjects>);
     vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
       data: [],
       isLoading: false,
@@ -499,7 +543,7 @@ describe("TicketingDashboardView", () => {
     });
   });
 
-  it("loads status options and kanban lanes from ticket statuses", async () => {
+  it("loads status options from provider and ticket statuses", async () => {
     mockConnectedDashboard();
     const blockedTicket = {
       ...ticket,
@@ -528,7 +572,7 @@ describe("TicketingDashboardView", () => {
     renderDashboard();
 
     expect(screen.getByRole("option", { name: "Blocked" })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: "To Do" })).not.toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "To Do" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Kanban view" }));
 
@@ -699,11 +743,21 @@ describe("TicketingDashboardView", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "Start RalphX work" }),
     );
+    expect(await screen.findByRole("dialog")).toHaveTextContent("Start RalphX Work");
+
+    fireEvent.change(screen.getByLabelText("Project"), {
+      target: { value: "project-2" },
+    });
+    fireEvent.change(screen.getByLabelText("Conversation type"), {
+      target: { value: "plan" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(startWork).toHaveBeenCalledWith(
       {
-        projectId: "project-1",
+        projectId: "project-2",
         ticketRef: ticket.ref,
+        mode: "plan",
         content: "Start RalphX work for RX-1: Fix merge race in transition handler",
       },
       expect.objectContaining({ onSuccess: expect.any(Function) }),
