@@ -624,6 +624,32 @@ describe("TicketingDashboardView", () => {
     expect(useTicketingStore.getState().lastOpenedAt["jira:10001"]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
+  it("assigns a ticket to me from the list row without opening the detail overlay", () => {
+    mockConnectedDashboard();
+    const assignToMe = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
+      transitionStatus: vi.fn(),
+      assignToMe,
+      clearAssignee: vi.fn(),
+      addComment: vi.fn(),
+      transitionStatusMutation: { isPending: false },
+      assignToMeMutation: { isPending: false },
+      clearAssigneeMutation: { isPending: false },
+      addCommentMutation: { isPending: false },
+    } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
+
+    renderDashboard();
+    fireEvent.click(screen.getByRole("button", { name: "Assign to me" }));
+
+    expect(assignToMe).toHaveBeenCalledWith({
+      provider: "jira",
+      ticketRef: ticket.ref,
+      projectId: "project-1",
+    });
+    // The quick action does not open the detail overlay.
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("flags a row as updated when it changed since the last open", () => {
     mockConnectedDashboard();
     useTicketingStore.setState({
@@ -702,7 +728,7 @@ describe("TicketingDashboardView", () => {
     fireEvent.change(await screen.findByRole("combobox", { name: "Ticket status" }), {
       target: { value: "done" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Assign to me" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Assign to me" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Ticket comment" }), {
       target: { value: "Pushed a fix." },
     });
@@ -774,11 +800,12 @@ describe("TicketingDashboardView", () => {
     renderDashboard();
     fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
 
-    // Assignee is shown and "Assign to me" is hidden when the ticket is assigned.
+    // Assignee is shown and "Assign to me" is hidden in the sheet when assigned.
+    const sheet = within(screen.getByRole("dialog"));
     expect(await screen.findByText("A. User")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Assign to me" })).not.toBeInTheDocument();
+    expect(sheet.queryByRole("button", { name: "Assign to me" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Clear assignee" }));
+    fireEvent.click(sheet.getByRole("button", { name: "Clear assignee" }));
     expect(clearAssignee).toHaveBeenCalledWith({
       provider: "jira",
       ticketRef: ticket.ref,

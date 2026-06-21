@@ -93,6 +93,15 @@ pub struct TicketRefInput {
     pub key: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTicketResponse {
+    pub ticket_ref: TicketRefInput,
+    pub project_id: String,
+    pub title: Option<String>,
+    pub url: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartRalphxWorkFromTicketInput {
@@ -469,6 +478,54 @@ pub async fn get_ticket_associations(
     )
     .await?;
     Ok(response)
+}
+
+#[tauri::command]
+pub async fn get_conversation_ticket(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<ConversationTicketResponse>, String> {
+    let conversation_id = conversation_id
+        .parse::<ChatConversationId>()
+        .map_err(|_| "Invalid conversationId".to_string())?;
+
+    if let Some(link) = state
+        .agent_conversation_jira_issue_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(Some(ConversationTicketResponse {
+            ticket_ref: TicketRefInput {
+                provider: PROVIDER_JIRA.to_string(),
+                id: link.issue_id.clone().unwrap_or_else(|| link.issue_key.clone()),
+                key: Some(link.issue_key),
+            },
+            project_id: link.project_id.as_str().to_string(),
+            title: link.title,
+            url: link.issue_url,
+        }));
+    }
+
+    if let Some(link) = state
+        .agent_conversation_linear_issue_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(Some(ConversationTicketResponse {
+            ticket_ref: TicketRefInput {
+                provider: PROVIDER_LINEAR.to_string(),
+                id: link.issue_id,
+                key: link.issue_key,
+            },
+            project_id: link.project_id.as_str().to_string(),
+            title: link.title,
+            url: link.issue_url,
+        }));
+    }
+
+    Ok(None)
 }
 
 #[tauri::command]

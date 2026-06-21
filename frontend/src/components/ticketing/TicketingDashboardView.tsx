@@ -538,6 +538,12 @@ export function TicketingDashboardView({
     });
   }
 
+  function handleQuickAssign(ticket: TicketSummary) {
+    void ticketingMutations
+      .assignToMe({ provider: ticket.ref.provider, ticketRef: ticket.ref, projectId })
+      .catch(() => undefined);
+  }
+
   async function handleAddComment(bodyMarkdown: string) {
     if (!selectedTicket) {
       return;
@@ -698,6 +704,8 @@ export function TicketingDashboardView({
         onMoveTicket={handleMoveTicket}
         onSelectTicket={handleSelectTicket}
         isUnread={isTicketUnread}
+        canQuickAssign={Boolean(selectedProvider?.capabilities.assignmentWrite)}
+        onQuickAssign={handleQuickAssign}
       />
     ) : (
       <TicketKanbanShell columns={statusColumns} />
@@ -711,6 +719,8 @@ export function TicketingDashboardView({
         onLoadMore={() => void ticketsQuery.fetchNextPage()}
         onSelectTicket={handleSelectTicket}
         isUnread={isTicketUnread}
+        canQuickAssign={Boolean(selectedProvider?.capabilities.assignmentWrite)}
+        onQuickAssign={handleQuickAssign}
       />
     );
   }

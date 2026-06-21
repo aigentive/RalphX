@@ -88,6 +88,42 @@ describe("TicketListView", () => {
     ).toHaveLength(1);
   });
 
+  it("offers an inline Assign-to-me action for unassigned rows when enabled", () => {
+    const onQuickAssign = vi.fn();
+    render(
+      <TicketListView
+        tickets={tickets}
+        hasNextPage={false}
+        isFetchingNextPage={false}
+        onLoadMore={vi.fn()}
+        onSelectTicket={vi.fn()}
+        canQuickAssign
+        onQuickAssign={onQuickAssign}
+      />,
+    );
+
+    // tickets[0] is assigned (no action); tickets[1] is unassigned (one action).
+    const assignButton = screen.getByRole("button", { name: "Assign to me" });
+    fireEvent.click(assignButton);
+    expect(onQuickAssign).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the inline Assign-to-me action when quick assign is disabled", () => {
+    render(
+      <TicketListView
+        tickets={tickets}
+        hasNextPage={false}
+        isFetchingNextPage={false}
+        onLoadMore={vi.fn()}
+        onSelectTicket={vi.fn()}
+        canQuickAssign={false}
+        onQuickAssign={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Assign to me" })).not.toBeInTheDocument();
+  });
+
   it("moves focus between ticket rows with arrow keys", () => {
     render(
       <TicketListView

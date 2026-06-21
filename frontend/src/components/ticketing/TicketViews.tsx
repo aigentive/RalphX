@@ -9,7 +9,7 @@ import {
   type DragEndEvent,
 } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronRight, MessageSquare } from "lucide-react";
+import { ChevronRight, MessageSquare, UserCheck } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { TicketingColumn, TicketSummary } from "@/api/ticketing";
@@ -26,6 +26,8 @@ interface TicketListViewProps {
   onLoadMore: () => void;
   onSelectTicket: (ticket: TicketSummary) => void;
   isUnread?: ((ticket: TicketSummary) => boolean) | undefined;
+  canQuickAssign?: boolean | undefined;
+  onQuickAssign?: ((ticket: TicketSummary) => void) | undefined;
 }
 
 /** Orange comment glyph shown when a ticket changed since the viewer last opened it. */
@@ -40,6 +42,38 @@ function UnreadCommentIndicator() {
     >
       <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
     </span>
+  );
+}
+
+/**
+ * Hover/focus-revealed "Assign to me" quick action. Rendered as a sibling overlay
+ * (not nested inside the row/card button) to keep the markup a11y-valid.
+ */
+function QuickAssignButton({ onClick }: { onClick: () => void }) {
+  return (
+    <div className="pointer-events-none absolute inset-y-0 right-3 flex items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      <button
+        type="button"
+        className="pointer-events-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium"
+        aria-label="Assign to me"
+        title="Assign to me"
+        onClick={(event) => {
+          event.stopPropagation();
+          onClick();
+        }}
+        style={{
+          backgroundColor: "var(--bg-elevated)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+          boxShadow: "var(--shadow-sm)",
+          color: "var(--text-primary)",
+        }}
+      >
+        <UserCheck className="h-3.5 w-3.5" aria-hidden="true" />
+        Assign to me
+      </button>
+    </div>
   );
 }
 
@@ -74,6 +108,8 @@ export function TicketListView({
   onLoadMore,
   onSelectTicket,
   isUnread,
+  canQuickAssign,
+  onQuickAssign,
 }: TicketListViewProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -95,8 +131,8 @@ export function TicketListView({
       </div>
       <div className="min-h-0 flex-1 overflow-auto" data-ticket-list>
         {tickets.map((ticket) => (
-          <button
-            key={`${ticket.ref.provider}:${ticket.ref.id}`}
+          <div key={`${ticket.ref.provider}:${ticket.ref.id}`} className="group relative">
+            <button
             type="button"
             data-ticket-row
             className="grid w-full grid-cols-[116px_minmax(240px,1fr)_140px_140px_80px_120px] items-center gap-3 px-4 py-3 text-left text-sm hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
@@ -140,7 +176,11 @@ export function TicketListView({
               {ticket.associationCount > 0 ? `●${ticket.associationCount}` : "○"}
             </span>
             <span className="text-xs text-[var(--text-muted)]">{formatTicketDate(ticket.updatedAt)}</span>
-          </button>
+            </button>
+            {canQuickAssign && onQuickAssign && !ticket.assignee && (
+              <QuickAssignButton onClick={() => onQuickAssign(ticket)} />
+            )}
+          </div>
         ))}
       </div>
       {hasNextPage && (
@@ -161,6 +201,8 @@ interface TicketKanbanViewProps {
   onMoveTicket?: ((ticket: TicketSummary, column: TicketingColumn) => void) | undefined;
   onSelectTicket: (ticket: TicketSummary) => void;
   isUnread?: ((ticket: TicketSummary) => boolean) | undefined;
+  canQuickAssign?: boolean | undefined;
+  onQuickAssign?: ((ticket: TicketSummary) => void) | undefined;
 }
 
 function TicketColumn({
@@ -193,11 +235,15 @@ function TicketKanbanCard({
   ticket,
   canMove,
   unread,
+  canQuickAssign,
+  onQuickAssign,
   onSelectTicket,
 }: {
   ticket: TicketSummary;
   canMove: boolean;
   unread: boolean;
+  canQuickAssign: boolean;
+  onQuickAssign?: ((ticket: TicketSummary) => void) | undefined;
   onSelectTicket: (ticket: TicketSummary) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
@@ -206,10 +252,11 @@ function TicketKanbanCard({
   });
 
   return (
+    <div className="group relative">
     <button
       ref={setNodeRef}
       type="button"
-      className="rounded-md p-3 text-left hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+      className="w-full rounded-md p-3 text-left hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
       aria-label={ticketButtonLabel(ticket)}
       onClick={() => onSelectTicket(ticket)}
       style={{
@@ -242,6 +289,10 @@ function TicketKanbanCard({
         <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       </div>
     </button>
+      {canQuickAssign && onQuickAssign && !ticket.assignee && (
+        <QuickAssignButton onClick={() => onQuickAssign(ticket)} />
+      )}
+    </div>
   );
 }
 
@@ -252,6 +303,8 @@ export function TicketKanbanView({
   onMoveTicket,
   onSelectTicket,
   isUnread,
+  canQuickAssign,
+  onQuickAssign,
 }: TicketKanbanViewProps) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -315,6 +368,8 @@ export function TicketKanbanView({
                     ticket={ticket}
                     canMove={canMove}
                     unread={isUnread?.(ticket) ?? false}
+                    canQuickAssign={canQuickAssign ?? false}
+                    onQuickAssign={onQuickAssign}
                     onSelectTicket={onSelectTicket}
                   />
                 ))}
