@@ -434,6 +434,7 @@ fn linear_workflow_states_query(team_id: Option<&str>) -> (&'static str, Value) 
                   name
                   type
                   color
+                  position
                 }
               }
             }
@@ -449,6 +450,7 @@ fn linear_workflow_states_query(team_id: Option<&str>) -> (&'static str, Value) 
                   name
                   type
                   color
+                  position
                 }
               }
             }
@@ -546,7 +548,53 @@ fn workflow_states_from_data(data: &Value) -> Result<Vec<LinearWorkflowState>, S
         .and_then(|states| states.get("nodes"))
         .and_then(Value::as_array)
         .ok_or_else(|| "Linear workflow states response did not include states".to_string())?;
-    Ok(nodes.iter().filter_map(workflow_state_from_node).collect())
+    // Order to match Linear's view (Triage, In Progress, Todo, Backlog, Done,
+    // Canceled), then by the state's position within its type.
+    let mut ordered: Vec<(i32, f64, LinearWorkflowState)> = nodes
+        .iter()
+        .filter_map(|node| {
+            let state = workflow_state_from_node(node)?;
+            let state_type = node.get("type").and_then(Value::as_str).unwrap_or(&state.name);
+            let position = node
+                .get("position")
+                .and_then(Value::as_f64)
+                .unwrap_or(f64::MAX);
+            Some((linear_state_sort_priority(state_type), position, state))
+        })
+        .collect();
+    ordered.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.partial_cmp(&right.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    Ok(ordered.into_iter().map(|(_, _, state)| state).collect())
+}
+
+/// Linear view ordering priority by workflow-state type. "unstarted" is checked
+/// before "started" because the former contains the latter as a substring.
+fn linear_state_sort_priority(value: &str) -> i32 {
+    let value = value.to_ascii_lowercase();
+    if value.contains("triage") {
+        0
+    } else if value.contains("unstarted") {
+        2
+    } else if value.contains("started") || value.contains("progress") || value.contains("review") {
+        1
+    } else if value.contains("todo") || value.contains("to do") {
+        2
+    } else if value.contains("backlog") {
+        3
+    } else if value.contains("completed")
+        || value.contains("done")
+        || value.contains("closed")
+        || value.contains("resolved")
+    {
+        4
+    } else if value.contains("canceled") || value.contains("cancelled") {
+        5
+    } else {
+        6
+    }
 }
 
 fn workflow_state_from_node(node: &Value) -> Option<LinearWorkflowState> {
@@ -961,10 +1009,31 @@ mod tests {
         .expect("states should parse");
 
         assert_eq!(states.len(), 3);
-        assert_eq!(states[0].category, "todo");
-        assert_eq!(states[1].category, "in_progress");
+        // Sorted to match Linear's view order: In Progress, Todo, Done.
+        assert_eq!(states[0].category, "in_progress");
+        assert_eq!(states[1].category, "todo");
         assert_eq!(states[2].category, "done");
-        assert_eq!(states[0].color.as_deref(), Some("#bec2c8"));
+        assert_eq!(states[1].color.as_deref(), Some("#bec2c8"));
+    }
+
+    #[test]
+    fn workflow_states_ordered_like_linear_view() {
+        let states = workflow_states_from_data(&serde_json::json!({
+            "workflowStates": {
+                "nodes": [
+                    { "id": "done", "name": "Done", "type": "completed", "position": 4 },
+                    { "id": "backlog", "name": "Backlog", "type": "backlog", "position": 0 },
+                    { "id": "todo", "name": "Todo", "type": "unstarted", "position": 2 },
+                    { "id": "doing", "name": "In Progress", "type": "started", "position": 3 }
+                ]
+            }
+        }))
+        .expect("states should parse");
+
+        assert_eq!(
+            states.iter().map(|state| state.id.as_str()).collect::<Vec<_>>(),
+            vec!["doing", "todo", "backlog", "done"],
+        );
     }
 
     #[test]
