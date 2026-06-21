@@ -436,7 +436,17 @@ export function TicketingDashboardView({
   const ticketingMutations = useTicketingMutations(projectId);
   const startWorkFromTicket = useStartWorkFromTicket();
 
-  const selectedTicket = detailQuery.data ?? selectedSummary;
+  // Only treat the loaded detail as the selected ticket when it actually matches
+  // the current selection, so switching tickets never flashes the previous one.
+  const detailMatchesSelection = Boolean(
+    detailQuery.data
+    && selectedTicketRef
+    && detailQuery.data.ref.id === selectedTicketRef.id
+    && detailQuery.data.ref.provider === selectedTicketRef.provider,
+  );
+  const selectedTicket = (detailMatchesSelection ? detailQuery.data : selectedSummary) ?? null;
+  // Show the overlay preloader until the matching full detail is ready.
+  const isDetailPending = selectedTicketRef !== null && !detailMatchesSelection;
   const transitions = useMemo(
     () =>
       transitionsQuery.data
@@ -821,7 +831,7 @@ export function TicketingDashboardView({
         capabilities={selectedProvider?.capabilities ?? null}
         transitions={transitions}
         associations={associationsQuery.data}
-        isDetailLoading={detailQuery.isLoading}
+        isDetailLoading={isDetailPending}
         isAssociationsLoading={associationsQuery.isLoading}
         isTransitionPending={ticketingMutations.transitionStatusMutation.isPending}
         isAssignPending={ticketingMutations.assignToMeMutation.isPending}

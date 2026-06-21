@@ -629,6 +629,27 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByText("No tickets match these filters")).toBeInTheDocument();
   });
 
+  it("shows the detail preloader instead of stale content until the detail matches", async () => {
+    mockConnectedDashboard();
+    // Detail has not resolved for the opened ticket yet (no matching data).
+    vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof ticketingHooks.useTicketDetail>);
+
+    renderDashboard();
+    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
+
+    const skeletons = await screen.findAllByRole("status", { name: /loading ticket details/i });
+    expect(skeletons.length).toBeGreaterThan(0);
+    // The (mocked) detail body is not shown while pending.
+    expect(
+      screen.queryByText("When two agents transition the same task."),
+    ).not.toBeInTheDocument();
+  });
+
   it("records a ticket as opened when its row is clicked", () => {
     mockConnectedDashboard();
     renderDashboard();

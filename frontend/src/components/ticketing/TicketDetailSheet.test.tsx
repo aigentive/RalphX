@@ -160,3 +160,34 @@ describe("TicketDetailSheet new-comment awareness", () => {
     expect(screen.queryByText(/new$/)).not.toBeInTheDocument();
   });
 });
+
+describe("TicketDetailSheet loading state", () => {
+  it("shows a skeleton preloader instead of empty states while detail loads", () => {
+    render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={baseTicket}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    // The summary header is shown immediately, but the body is a preloader, not
+    // "no description"/"no comments" (which would imply loaded-but-empty).
+    expect(screen.getByText("Polish the ticket detail overlay")).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("status", { name: /loading ticket details/i }).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText("No description provided.")).not.toBeInTheDocument();
+    expect(screen.queryByText("No comments yet.")).not.toBeInTheDocument();
+  });
+});

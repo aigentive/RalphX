@@ -239,6 +239,24 @@ function TicketMarkdown({ content }: { content: string }) {
   );
 }
 
+/** Animated skeleton placeholder shown while the ticket detail loads. */
+function DetailSkeleton({ lines = 3 }: { lines?: number }) {
+  return (
+    <div className="mt-2 space-y-2" role="status" aria-label="Loading ticket details">
+      {Array.from({ length: lines }).map((_, index) => (
+        <div
+          key={index}
+          className="h-3 animate-pulse rounded"
+          style={{
+            backgroundColor: "var(--bg-surface)",
+            width: index === lines - 1 ? "55%" : "100%",
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 export function TicketDetailSheet({
   open,
   ticket,
@@ -541,9 +559,11 @@ export function TicketDetailSheet({
                   <div className="mt-2">
                     {descriptionMarkdown ? (
                       <TicketMarkdown content={descriptionMarkdown} />
+                    ) : isDetailLoading ? (
+                      <DetailSkeleton lines={4} />
                     ) : (
                       <p className="text-sm leading-6 text-[var(--text-secondary)]">
-                        {isDetailLoading ? "Loading ticket detail" : "No description provided."}
+                        No description provided.
                       </p>
                     )}
                   </div>
@@ -609,6 +629,8 @@ export function TicketDetailSheet({
                         );
                       })}
                     </div>
+                  ) : isDetailLoading ? (
+                    <DetailSkeleton lines={2} />
                   ) : (
                     <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
                       No comments yet.
