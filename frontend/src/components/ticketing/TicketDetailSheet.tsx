@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, MessageSquare, Send, UserCheck, UserX, X } from "lucide-react";
+import { ExternalLink, GitBranch, GitPullRequestArrow, MessageSquare, Send, UserCheck, UserX, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -76,9 +76,11 @@ const ASSOCIATION_GROUPS: Array<{
 function AssociationCard({
   item,
   onNavigate,
+  leadingIcon,
 }: {
   item: TicketAssociationItem;
   onNavigate?: ((deepLink: TicketDeepLink) => void) | undefined;
+  leadingIcon?: React.ReactNode;
 }) {
   return (
     <button
@@ -94,7 +96,10 @@ function AssociationCard({
       onClick={() => onNavigate?.(item.deepLink)}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="truncate text-sm font-medium">{item.title}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          {leadingIcon}
+          <span className="truncate text-sm font-medium">{item.title}</span>
+        </span>
         {item.active && (
           <span
             className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium text-[var(--text-primary)]"
@@ -320,13 +325,43 @@ function RalphxAssociationPanel({
                   {group.label} ({items.length})
                 </h4>
                 <div className="space-y-2">
-                  {items.map((item) => (
-                    <AssociationCard
-                      key={`${group.key}:${item.id}`}
-                      item={item}
-                      onNavigate={onNavigate}
-                    />
-                  ))}
+                  {items.map((item) => {
+                    // In the Pull Requests bucket, distinguish a real PR from a
+                    // branch-only workspace at a glance (the backend marks
+                    // branch-only items with status "branch").
+                    const prIcon =
+                      group.key === "pullRequests"
+                        ? item.status === "branch"
+                          ? (
+                              <span
+                                role="img"
+                                aria-label="Branch only (no pull request yet)"
+                                title="Branch only (no pull request yet)"
+                                className="inline-flex shrink-0 text-[var(--text-muted)]"
+                              >
+                                <GitBranch className="h-3.5 w-3.5" aria-hidden="true" />
+                              </span>
+                            )
+                          : (
+                              <span
+                                role="img"
+                                aria-label="Pull request"
+                                title="Pull request"
+                                className="inline-flex shrink-0 text-[var(--status-success)]"
+                              >
+                                <GitPullRequestArrow className="h-3.5 w-3.5" aria-hidden="true" />
+                              </span>
+                            )
+                        : undefined;
+                    return (
+                      <AssociationCard
+                        key={`${group.key}:${item.id}`}
+                        item={item}
+                        onNavigate={onNavigate}
+                        {...(prIcon !== undefined && { leadingIcon: prIcon })}
+                      />
+                    );
+                  })}
                 </div>
               </section>
             );

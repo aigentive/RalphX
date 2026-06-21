@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+  TicketAssociations,
   TicketDetail,
   TicketingCapabilities,
   TicketSummary,
@@ -299,5 +300,64 @@ describe("TicketDetailSheet loading state", () => {
     ).toBeGreaterThan(0);
     expect(screen.queryByText("No description provided.")).not.toBeInTheDocument();
     expect(screen.queryByText("No comments yet.")).not.toBeInTheDocument();
+  });
+});
+
+describe("TicketDetailSheet branch vs pull-request distinction", () => {
+  function renderWithPullRequests() {
+    const associations: TicketAssociations = {
+      tasks: [],
+      proposals: [],
+      sessions: [],
+      conversations: [],
+      pullRequests: [
+        {
+          id: "https://github.com/x/y/pull/7",
+          title: "PR #7",
+          subtitle: "ralphx/p/agent-1",
+          status: "open",
+          active: true,
+          deepLink: { view: "agents", id: "c1", projectId: "p1" },
+        },
+        {
+          id: "c2",
+          title: "ralphx/p/agent-2",
+          subtitle: "ralphx/p/agent-2",
+          status: "branch",
+          active: false,
+          deepLink: { view: "agents", id: "c2", projectId: "p1" },
+        },
+      ],
+      checks: [],
+      qa: [],
+      specs: [],
+      fetchedAt: null,
+    };
+    return render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={baseTicket}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={associations}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+  }
+
+  it("marks PR items with a pull-request icon and branch-only items with a branch icon", () => {
+    renderWithPullRequests();
+
+    expect(screen.getByRole("img", { name: "Pull request" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /branch only/i })).toBeInTheDocument();
+    expect(screen.getByText("PR #7")).toBeInTheDocument();
+    expect(screen.getByText("ralphx/p/agent-2")).toBeInTheDocument();
   });
 });
