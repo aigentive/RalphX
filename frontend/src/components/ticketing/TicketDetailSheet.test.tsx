@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type {
@@ -157,6 +157,101 @@ describe("TicketDetailSheet new-comment awareness", () => {
 
     expect(screen.queryByText("New")).not.toBeInTheDocument();
     expect(screen.queryByText(/new$/)).not.toBeInTheDocument();
+  });
+});
+
+describe("TicketDetailSheet bind existing conversation", () => {
+  const bindableConversations = [
+    { id: "conv-1", title: "Refactor merge engine" },
+    { id: "conv-2", title: "Investigate flaky test" },
+    { id: "conv-3", title: null },
+  ];
+
+  function renderBindSheet(
+    overrides: {
+      onBindConversation?: (conversationId: string) => void;
+      isBindPending?: boolean;
+      bindError?: string | null;
+      conversations?: { id: string; title: string | null }[];
+    } = {},
+  ) {
+    return render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={baseTicket}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          bindableConversations={overrides.conversations ?? bindableConversations}
+          onBindConversation={overrides.onBindConversation ?? vi.fn()}
+          {...(overrides.isBindPending !== undefined && { isBindPending: overrides.isBindPending })}
+          {...(overrides.bindError !== undefined && { bindError: overrides.bindError })}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+  }
+
+  it("renders the bind button in the RalphX Work panel", () => {
+    renderBindSheet();
+
+    expect(
+      screen.getByRole("button", { name: /bind existing conversation/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the picker and lists conversations by title with an untitled fallback", () => {
+    renderBindSheet();
+
+    fireEvent.click(screen.getByRole("button", { name: /bind existing conversation/i }));
+
+    expect(screen.getByText("Refactor merge engine")).toBeInTheDocument();
+    expect(screen.getByText("Investigate flaky test")).toBeInTheDocument();
+    expect(screen.getByText("Untitled agent")).toBeInTheDocument();
+  });
+
+  it("filters the picker list by title, case-insensitively", () => {
+    renderBindSheet();
+
+    fireEvent.click(screen.getByRole("button", { name: /bind existing conversation/i }));
+    fireEvent.change(screen.getByPlaceholderText(/search conversations/i), {
+      target: { value: "FLAKY" },
+    });
+
+    expect(screen.getByText("Investigate flaky test")).toBeInTheDocument();
+    expect(screen.queryByText("Refactor merge engine")).not.toBeInTheDocument();
+  });
+
+  it("calls onBindConversation with the chosen id and closes the picker", () => {
+    const onBindConversation = vi.fn();
+    renderBindSheet({ onBindConversation });
+
+    fireEvent.click(screen.getByRole("button", { name: /bind existing conversation/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate flaky test" }));
+
+    expect(onBindConversation).toHaveBeenCalledWith("conv-2");
+    // Picker closes after a successful pick.
+    expect(screen.queryByPlaceholderText(/search conversations/i)).not.toBeInTheDocument();
+  });
+
+  it("shows an empty-state message when there are no conversations to bind", () => {
+    renderBindSheet({ conversations: [] });
+
+    fireEvent.click(screen.getByRole("button", { name: /bind existing conversation/i }));
+
+    expect(screen.getByText("No conversations to bind.")).toBeInTheDocument();
+  });
+
+  it("surfaces a bind error in an alert", () => {
+    renderBindSheet({ bindError: "Could not bind conversation." });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not bind conversation.");
   });
 });
 

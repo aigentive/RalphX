@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
+import { atlassianApi } from "@/api/atlassian";
+import { linearApi } from "@/api/linear";
 import type { AgentConversationWorkspaceMode } from "@/api/chat";
 import type {
   ListTicketsInput,
@@ -23,9 +25,11 @@ import {
   useTicketingColumns,
   useTicketingContainers,
   useTicketingProviders,
+  ticketingKeys,
   useTicketTransitions,
   useTickets,
 } from "@/hooks/useTicketing";
+import { useConversations } from "@/hooks/useChat";
 import { useProjects } from "@/hooks/useProjects";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import { useChatStore } from "@/stores/chatStore";
@@ -435,6 +439,68 @@ export function TicketingDashboardView({
   const refreshTickets = useRefreshTickets();
   const ticketingMutations = useTicketingMutations(projectId);
   const startWorkFromTicket = useStartWorkFromTicket();
+  const conversationsQuery = useConversations({ view: "ticketing", projectId });
+  const bindableConversations = useMemo(
+    () =>
+      (conversationsQuery.data ?? []).map((conversation) => ({
+        id: conversation.id,
+        title: conversation.title,
+      })),
+    [conversationsQuery.data],
+  );
+  const bindConversation = useMutation({
+    mutationFn: async (conversationId: string) => {
+      if (!selectedTicket) {
+        throw new Error("No ticket selected to bind a conversation to.");
+      }
+      const ticketRef = selectedTicket.ref;
+      if (ticketRef.provider === "jira") {
+        await atlassianApi.assignAgentConversationJiraIssue({
+          conversationId,
+          projectId,
+          issueKey: ticketRef.key ?? ticketRef.id,
+          issueId: ticketRef.id,
+          ...(selectedTicket.title !== undefined && { title: selectedTicket.title }),
+          ...(selectedTicket.url !== undefined && { issueUrl: selectedTicket.url }),
+          refresh: true,
+        });
+      } else {
+        await linearApi.assignAgentConversationLinearIssue({
+          conversationId,
+          projectId,
+          issueId: ticketRef.id,
+          ...(ticketRef.key !== undefined && { issueKey: ticketRef.key }),
+          ...(selectedTicket.title !== undefined && { title: selectedTicket.title }),
+          ...(selectedTicket.url !== undefined && { issueUrl: selectedTicket.url }),
+          refresh: true,
+        });
+      }
+      return conversationId;
+    },
+    onSuccess: (conversationId) => {
+      if (selectedTicket) {
+        void queryClient.invalidateQueries({
+          queryKey: ticketingKeys.associations({
+            provider: selectedTicket.ref.provider,
+            ticketRef: selectedTicket.ref,
+            projectId,
+          }),
+        });
+      }
+      void queryClient.invalidateQueries({
+        queryKey: ticketingKeys.conversationTicket(conversationId),
+      });
+    },
+  });
+  const bindError = bindConversation.error instanceof Error
+    ? bindConversation.error.message
+    : bindConversation.error
+      ? "Conversation could not be bound."
+      : null;
+
+  function handleBindConversation(conversationId: string) {
+    bindConversation.mutate(conversationId);
+  }
 
   // Only treat the loaded detail as the selected ticket when it actually matches
   // the current selection, so switching tickets never flashes the previous one.
@@ -844,6 +910,10 @@ export function TicketingDashboardView({
         seenUntil={seenBaseline}
         isStartWorkPending={startWorkFromTicket.isPending}
         startWorkError={startWorkError}
+        bindableConversations={bindableConversations}
+        onBindConversation={selectedTicket ? handleBindConversation : undefined}
+        isBindPending={bindConversation.isPending}
+        bindError={bindError}
         onNavigate={onNavigateToAssociation}
         onStartWork={selectedTicket ? handleStartWorkFromTicket : undefined}
         onClose={() => setSelectedTicketRef(null)}

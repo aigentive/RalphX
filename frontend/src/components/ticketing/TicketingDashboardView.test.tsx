@@ -3,6 +3,9 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { createElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { atlassianApi } from "@/api/atlassian";
+import { linearApi } from "@/api/linear";
+import * as chatHooks from "@/hooks/useChat";
 import * as ticketingHooks from "@/hooks/useTicketing";
 import * as projectHooks from "@/hooks/useProjects";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -10,7 +13,51 @@ import { useTicketingStore } from "@/stores/ticketingStore";
 
 import { TicketingDashboardView } from "./TicketingDashboardView";
 
+vi.mock("@/api/atlassian", () => ({
+  atlassianApi: {
+    assignAgentConversationJiraIssue: vi.fn().mockResolvedValue(null),
+  },
+}));
+
+vi.mock("@/api/linear", () => ({
+  linearApi: {
+    assignAgentConversationLinearIssue: vi.fn().mockResolvedValue(null),
+  },
+}));
+
+vi.mock("@/hooks/useChat", () => ({
+  useConversations: vi.fn(),
+}));
+
 vi.mock("@/hooks/useTicketing", () => ({
+  ticketingKeys: {
+    all: ["ticketing"],
+    detail: (input: { provider: string; ticketRef: { id: string; key?: string | null } }) => [
+      "ticketing",
+      "detail",
+      input.provider,
+      input.ticketRef.id,
+      input.ticketRef.key ?? null,
+    ],
+    associations: (input: {
+      provider: string;
+      ticketRef: { id: string; key?: string | null };
+      projectId: string;
+    }) => [
+      "ticketing",
+      "detail",
+      input.provider,
+      input.ticketRef.id,
+      input.ticketRef.key ?? null,
+      "associations",
+      input.projectId,
+    ],
+    conversationTicket: (conversationId: string) => [
+      "ticketing",
+      "conversation-ticket",
+      conversationId,
+    ],
+  },
   fetchTicketTransitionsForMove: vi.fn(),
   findTicketTransitionForColumn: vi.fn(),
   flattenTicketPages: vi.fn((data) => data?.pages.flatMap((page) => page.items) ?? []),
@@ -301,6 +348,12 @@ describe("TicketingDashboardView", () => {
       isPending: false,
       error: null,
     } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
+    vi.mocked(chatHooks.useConversations).mockReturnValue({
+      data: [],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof chatHooks.useConversations>);
   });
 
   it("renders provider-specific disconnected state without blanking the shell", () => {
@@ -882,5 +935,42 @@ describe("TicketingDashboardView", () => {
       },
       expect.objectContaining({ onSuccess: expect.any(Function) }),
     );
+  });
+
+  it("binds an existing conversation to the ticket via the provider-correct assign API", async () => {
+    mockConnectedDashboard();
+    vi.mocked(chatHooks.useConversations).mockReturnValue({
+      data: [
+        { id: "conv-9", title: "Pair on the merge race" },
+        { id: "conv-10", title: "Unrelated thread" },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof chatHooks.useConversations>);
+
+    renderDashboard();
+    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Bind existing conversation" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Pair on the merge race" }));
+
+    await waitFor(() => {
+      expect(atlassianApi.assignAgentConversationJiraIssue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: "conv-9",
+          projectId: "project-1",
+          issueId: "10001",
+          issueKey: "RX-1",
+          title: "Fix merge race in transition handler",
+          issueUrl: "https://example.atlassian.net/browse/RX-1",
+          refresh: true,
+        }),
+      );
+    });
+    // The Jira ticket must not route through the Linear assign API.
+    expect(linearApi.assignAgentConversationLinearIssue).not.toHaveBeenCalled();
   });
 });

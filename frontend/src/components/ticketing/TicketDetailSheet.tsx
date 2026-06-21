@@ -48,6 +48,11 @@ interface TicketDetailSheetProps {
   seenUntil?: string | null | undefined;
   isStartWorkPending?: boolean | undefined;
   startWorkError?: string | null | undefined;
+  /** Existing project conversations the viewer may bind to this ticket. */
+  bindableConversations?: { id: string; title: string | null }[] | undefined;
+  onBindConversation?: ((conversationId: string) => void) | undefined;
+  isBindPending?: boolean | undefined;
+  bindError?: string | null | undefined;
   onNavigate?: ((deepLink: TicketDeepLink) => void) | undefined;
   onStartWork?: (() => void) | undefined;
   onClose: () => void;
@@ -112,11 +117,123 @@ function AssociationCard({
   );
 }
 
+/**
+ * Inline picker that binds an existing project conversation to this ticket.
+ * The toggle is local state so the first click paints synchronously without any
+ * async work; selecting a row calls back and closes the picker.
+ */
+function BindConversationControl({
+  conversations,
+  onBindConversation,
+  isBindPending = false,
+  bindError,
+}: {
+  conversations: { id: string; title: string | null }[];
+  onBindConversation?: ((conversationId: string) => void) | undefined;
+  isBindPending?: boolean | undefined;
+  bindError?: string | null | undefined;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) {
+      return conversations;
+    }
+    return conversations.filter((conversation) =>
+      (conversation.title ?? "").toLowerCase().includes(needle),
+    );
+  }, [conversations, query]);
+
+  function handleBind(conversationId: string) {
+    onBindConversation?.(conversationId);
+    setOpen(false);
+    setQuery("");
+  }
+
+  return (
+    <div className="mt-2">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="w-full justify-center"
+        disabled={!onBindConversation || isBindPending}
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+      >
+        {isBindPending ? "Binding..." : "Bind existing conversation"}
+      </Button>
+      {open && (
+        <div
+          className="mt-2 rounded-md p-2"
+          style={{
+            backgroundColor: "var(--bg-surface)",
+            borderColor: "var(--border-subtle)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+          }}
+        >
+          <input
+            type="text"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search conversations"
+            aria-label="Search conversations"
+            className="h-8 w-full rounded-md px-2 text-xs outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+            style={{
+              backgroundColor: "var(--bg-elevated)",
+              borderColor: "var(--border-subtle)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+              color: "var(--text-primary)",
+            }}
+          />
+          <div className="mt-2 max-h-48 space-y-1 overflow-auto">
+            {filtered.length === 0 ? (
+              <p className="px-1 py-2 text-xs text-[var(--text-muted)]">
+                No conversations to bind.
+              </p>
+            ) : (
+              filtered.map((conversation) => (
+                <button
+                  key={conversation.id}
+                  type="button"
+                  className="w-full truncate rounded-md px-2 py-1.5 text-left text-xs hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                  style={{
+                    backgroundColor: "var(--bg-elevated)",
+                    borderColor: "var(--border-subtle)",
+                    borderStyle: "solid",
+                    borderWidth: "1px",
+                    color: "var(--text-primary)",
+                  }}
+                  onClick={() => handleBind(conversation.id)}
+                >
+                  {conversation.title || "Untitled agent"}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+      {bindError && (
+        <p className="mt-2 text-xs text-[var(--status-error)]" role="alert">
+          {bindError}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function RalphxAssociationPanel({
   associations,
   isLoading,
   isStartWorkPending = false,
   startWorkError,
+  bindableConversations,
+  onBindConversation,
+  isBindPending,
+  bindError,
   onNavigate,
   onStartWork,
 }: {
@@ -124,6 +241,10 @@ function RalphxAssociationPanel({
   isLoading: boolean;
   isStartWorkPending?: boolean | undefined;
   startWorkError?: string | null | undefined;
+  bindableConversations?: { id: string; title: string | null }[] | undefined;
+  onBindConversation?: ((conversationId: string) => void) | undefined;
+  isBindPending?: boolean | undefined;
+  bindError?: string | null | undefined;
   onNavigate?: ((deepLink: TicketDeepLink) => void) | undefined;
   onStartWork?: (() => void) | undefined;
 }) {
@@ -175,6 +296,12 @@ function RalphxAssociationPanel({
           {startWorkError}
         </p>
       )}
+      <BindConversationControl
+        conversations={bindableConversations ?? []}
+        onBindConversation={onBindConversation}
+        isBindPending={isBindPending}
+        bindError={bindError}
+      />
       {isLoading ? (
         <p className="mt-4 text-sm text-[var(--text-muted)]">Loading associations</p>
       ) : totalCount === 0 ? (
@@ -275,6 +402,10 @@ export function TicketDetailSheet({
   seenUntil,
   isStartWorkPending,
   startWorkError,
+  bindableConversations,
+  onBindConversation,
+  isBindPending,
+  bindError,
   onNavigate,
   onStartWork,
   onClose,
@@ -678,6 +809,10 @@ export function TicketDetailSheet({
               isLoading={isAssociationsLoading}
               isStartWorkPending={isStartWorkPending}
               startWorkError={startWorkError}
+              bindableConversations={bindableConversations}
+              onBindConversation={onBindConversation}
+              isBindPending={isBindPending}
+              bindError={bindError}
               onNavigate={onNavigate}
               onStartWork={onStartWork}
             />
