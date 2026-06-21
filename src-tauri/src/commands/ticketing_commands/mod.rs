@@ -699,6 +699,8 @@ fn jira_summary_to_ticket(summary: AtlassianResourceSummary) -> TicketSummaryRes
         url: summary.url,
         association_count: 0,
         open_pr_count: 0,
+        open_pr_number: None,
+        open_pr_url: None,
     }
 }
 
@@ -731,6 +733,8 @@ fn linear_summary_to_ticket(summary: LinearIssueSummary) -> TicketSummaryRespons
         url: summary.url,
         association_count: 0,
         open_pr_count: 0,
+        open_pr_number: None,
+        open_pr_url: None,
     }
 }
 
@@ -751,9 +755,10 @@ async fn hydrate_ticket_association_counts(
     let conversation_associations =
         project_ticket_conversation_associations(state, provider, &project_id).await?;
 
-    // Load the project's workspaces once and roll up open-PR state by conversation,
-    // so the per-ticket loop below does not add a second N+1 query.
-    let open_pr_by_conversation: HashMap<String, bool> = state
+    // Load the project's workspaces once and roll up open-PR state by conversation
+    // (open flag + the PR number/url for the representative-PR column), so the
+    // per-ticket loop below does not add a second N+1 query.
+    let pr_by_conversation: HashMap<String, (bool, Option<i64>, Option<String>)> = state
         .agent_conversation_workspace_repo
         .get_by_project_id(&project_id)
         .await
@@ -764,7 +769,14 @@ async fn hydrate_ticket_association_counts(
                 workspace.publication_pr_number,
                 workspace.publication_pr_status.as_deref(),
             );
-            (workspace.conversation_id.to_string(), open)
+            (
+                workspace.conversation_id.to_string(),
+                (
+                    open,
+                    workspace.publication_pr_number,
+                    workspace.publication_pr_url,
+                ),
+            )
         })
         .collect();
 
@@ -778,15 +790,20 @@ async fn hydrate_ticket_association_counts(
             &conversation_associations,
         )?;
         item.association_count = associations.len();
-        item.open_pr_count = associations
+        let open_prs: Vec<&(bool, Option<i64>, Option<String>)> = associations
             .iter()
-            .filter(|association| {
-                open_pr_by_conversation
-                    .get(&association.id)
-                    .copied()
-                    .unwrap_or(false)
-            })
-            .count();
+            .filter_map(|association| pr_by_conversation.get(&association.id))
+            .filter(|(open, _, _)| *open)
+            .collect();
+        item.open_pr_count = open_prs.len();
+        // Representative open PR (first open one carrying a number) for the column.
+        if let Some((_, number, url)) = open_prs
+            .iter()
+            .find(|(_, number, _)| number.is_some())
+        {
+            item.open_pr_number = *number;
+            item.open_pr_url = url.clone();
+        }
         hydrated.push(item);
     }
     Ok(hydrated)
@@ -890,6 +907,8 @@ fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResp
         url: content.url.clone(),
         association_count: 0,
         open_pr_count: 0,
+        open_pr_number: None,
+        open_pr_url: None,
     };
     TicketDetailResponse {
         summary,
@@ -945,6 +964,8 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
         url: content.url.clone(),
         association_count: 0,
         open_pr_count: 0,
+        open_pr_number: None,
+        open_pr_url: None,
     };
     TicketDetailResponse {
         summary,

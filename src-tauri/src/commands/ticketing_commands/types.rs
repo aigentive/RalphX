@@ -110,6 +110,11 @@ pub struct TicketSummaryResponse {
     pub association_count: usize,
     /// Linked conversations whose workspace currently has an open (non-terminal) PR.
     pub open_pr_count: usize,
+    /// Representative open PR number for the list PR column (first linked
+    /// conversation with an open PR that has a number), if any.
+    pub open_pr_number: Option<i64>,
+    /// URL of the representative open PR, for opening it in the browser.
+    pub open_pr_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -664,6 +664,8 @@ fn ticket_summary_fixture(
         url: None,
         association_count: 0,
         open_pr_count: 0,
+        open_pr_number: None,
+        open_pr_url: None,
     }
 }
 
@@ -921,6 +923,8 @@ async fn list_ticket_rows_include_linked_agent_conversation_count() {
             url: None,
             association_count: 0,
             open_pr_count: 0,
+            open_pr_number: None,
+            open_pr_url: None,
         }],
     )
     .await
