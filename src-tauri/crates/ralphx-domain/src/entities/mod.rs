@@ -48,7 +48,8 @@ pub use agent_conversation_linear_issue::{
     AgentConversationLinearIssueLink, AgentConversationLinearRefreshStatus,
 };
 pub use agent_conversation_workspace::{
-    is_pr_status_pollable_push_status, is_terminal_publication_pr_status, pr_comment_body_excerpt,
+    is_open_pr, is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
+    pr_comment_body_excerpt,
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,

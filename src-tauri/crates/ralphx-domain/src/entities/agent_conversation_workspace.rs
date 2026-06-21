@@ -400,10 +400,22 @@ impl AgentConversationWorkspace {
     pub fn has_pr_status_pollable_push_status(&self) -> bool {
         is_pr_status_pollable_push_status(self.publication_push_status.as_deref())
     }
+
+    /// Whether this workspace currently has an open (non-terminal) publication PR.
+    pub fn has_open_pr(&self) -> bool {
+        is_open_pr(self.publication_pr_number, self.publication_pr_status.as_deref())
+    }
 }
 
 pub fn is_terminal_publication_pr_status(status: Option<&str>) -> bool {
     matches!(status, Some("merged" | "closed"))
+}
+
+/// A workspace has an OPEN pull request when a PR number exists and its status is
+/// not terminal (merged/closed). Draft PRs count as open. Single source of truth
+/// for the "has an open PR" rule across ticketing, sidebar, and chat header.
+pub fn is_open_pr(publication_pr_number: Option<i64>, publication_pr_status: Option<&str>) -> bool {
+    publication_pr_number.is_some() && !is_terminal_publication_pr_status(publication_pr_status)
 }
 
 pub fn is_pr_status_pollable_push_status(status: Option<&str>) -> bool {

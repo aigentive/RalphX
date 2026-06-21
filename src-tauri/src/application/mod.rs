@@ -104,6 +104,7 @@ pub mod team_service;
 pub mod team_state_tracker;
 pub mod team_stream_processor;
 pub mod ticketing_cache_invalidator;
+pub mod ticketing_pr_summary;
 pub mod ticketing_service;
 pub mod webhook_service;
 
@@ -274,6 +275,8 @@ mod session_namer_prompt_tests;
 mod throttled_emitter_tests;
 #[cfg(test)]
 mod ticketing_cache_invalidator_tests;
+#[cfg(test)]
+mod ticketing_pr_summary_tests;
 #[cfg(test)]
 mod task_transition_service_tests;
 
