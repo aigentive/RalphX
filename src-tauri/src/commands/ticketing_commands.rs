@@ -321,6 +321,18 @@ pub struct ListTicketsQuery {
     pub sort: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+enum ProjectTicketLink {
+    Jira(AgentConversationJiraIssueLink),
+    Linear(AgentConversationLinearIssueLink),
+}
+
+#[derive(Debug, Clone)]
+struct ProjectTicketConversationAssociation {
+    link: ProjectTicketLink,
+    item: TicketAssociationItemResponse,
+}
+
 #[tauri::command]
 pub async fn list_ticketing_providers(
     project_id: Option<String>,
@@ -954,6 +966,9 @@ async fn hydrate_ticket_association_counts(
         return Ok(items);
     };
 
+    let conversation_associations =
+        project_ticket_conversation_associations(state, provider, &project_id).await?;
+
     // Load the project's workspaces once and roll up open-PR state by conversation,
     // so the per-ticket loop below does not add a second N+1 query.
     let open_pr_by_conversation: HashMap<String, bool> = state
@@ -974,13 +989,12 @@ async fn hydrate_ticket_association_counts(
     let mut hydrated = Vec::with_capacity(items.len());
     for mut item in items {
         let reference = ticket_ref_to_composer_reference(provider, &item.ref_);
-        let associations = linked_agent_conversation_associations_for_ticket(
-            state,
+        let associations = linked_agent_conversation_associations_from_batch(
             provider,
             &project_id,
             &reference,
-        )
-        .await?;
+            &conversation_associations,
+        )?;
         item.association_count = associations.len();
         item.open_pr_count = associations
             .iter()
@@ -1433,6 +1447,15 @@ async fn linked_agent_conversation_associations_for_ticket(
     project_id: &ProjectId,
     reference: &ComposerIntegrationReference,
 ) -> Result<Vec<TicketAssociationItemResponse>, String> {
+    let associations = project_ticket_conversation_associations(state, provider, project_id).await?;
+    linked_agent_conversation_associations_from_batch(provider, project_id, reference, &associations)
+}
+
+async fn project_ticket_conversation_associations(
+    state: &AppState,
+    provider: &str,
+    project_id: &ProjectId,
+) -> Result<Vec<ProjectTicketConversationAssociation>, String> {
     let conversations = state
         .chat_conversation_repo
         .get_by_context_filtered(ChatContextType::Project, project_id.as_str(), true)
@@ -1442,39 +1465,38 @@ async fn linked_agent_conversation_associations_for_ticket(
 
     match provider {
         PROVIDER_JIRA => {
-            let reference = jira_reference_from_composer_reference(reference)
-                .ok_or_else(|| "Invalid Jira ticket reference".to_string())?;
             for conversation in conversations {
                 let link = state
                     .agent_conversation_jira_issue_repo
                     .get_by_conversation_id(&conversation.id)
                     .await
                     .map_err(|error| error.to_string())?;
-                if link
-                    .as_ref()
-                    .is_some_and(|link| jira_link_matches_ticket(link, project_id, &reference))
-                {
-                    associations.push(agent_conversation_association_item(&conversation, project_id.as_str()));
+                if let Some(link) = link.filter(|link| link.project_id == *project_id) {
+                    associations.push(ProjectTicketConversationAssociation {
+                        link: ProjectTicketLink::Jira(link),
+                        item: agent_conversation_association_item(
+                            &conversation,
+                            project_id.as_str(),
+                        ),
+                    });
                 }
             }
         }
         PROVIDER_LINEAR => {
-            let reference =
-                agent_conversation_linear_issue::linear_reference_from_composer_reference(
-                    reference,
-                )
-                .ok_or_else(|| "Invalid Linear ticket reference".to_string())?;
             for conversation in conversations {
                 let link = state
                     .agent_conversation_linear_issue_repo
                     .get_by_conversation_id(&conversation.id)
                     .await
                     .map_err(|error| error.to_string())?;
-                if link
-                    .as_ref()
-                    .is_some_and(|link| linear_link_matches_ticket(link, project_id, &reference))
-                {
-                    associations.push(agent_conversation_association_item(&conversation, project_id.as_str()));
+                if let Some(link) = link.filter(|link| link.project_id == *project_id) {
+                    associations.push(ProjectTicketConversationAssociation {
+                        link: ProjectTicketLink::Linear(link),
+                        item: agent_conversation_association_item(
+                            &conversation,
+                            project_id.as_str(),
+                        ),
+                    });
                 }
             }
         }
@@ -1482,6 +1504,48 @@ async fn linked_agent_conversation_associations_for_ticket(
     }
 
     Ok(associations)
+}
+
+fn linked_agent_conversation_associations_from_batch(
+    provider: &str,
+    project_id: &ProjectId,
+    reference: &ComposerIntegrationReference,
+    associations: &[ProjectTicketConversationAssociation],
+) -> Result<Vec<TicketAssociationItemResponse>, String> {
+    match provider {
+        PROVIDER_JIRA => {
+            let reference = jira_reference_from_composer_reference(reference)
+                .ok_or_else(|| "Invalid Jira ticket reference".to_string())?;
+            Ok(associations
+                .iter()
+                .filter_map(|association| {
+                    let ProjectTicketLink::Jira(link) = &association.link else {
+                        return None;
+                    };
+                    jira_link_matches_ticket(link, project_id, &reference)
+                        .then(|| association.item.clone())
+                })
+                .collect())
+        }
+        PROVIDER_LINEAR => {
+            let reference =
+                agent_conversation_linear_issue::linear_reference_from_composer_reference(
+                    reference,
+                )
+                .ok_or_else(|| "Invalid Linear ticket reference".to_string())?;
+            Ok(associations
+                .iter()
+                .filter_map(|association| {
+                    let ProjectTicketLink::Linear(link) = &association.link else {
+                        return None;
+                    };
+                    linear_link_matches_ticket(link, project_id, &reference)
+                        .then(|| association.item.clone())
+                })
+                .collect())
+        }
+        _ => Err(format!("Unknown ticketing provider: {provider}")),
+    }
 }
 
 fn jira_link_matches_ticket(
