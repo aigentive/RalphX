@@ -7,6 +7,7 @@ import {
   distinctAssigneeNames,
   filterTicketsByAssignee,
   filterTicketsByProject,
+  groupTicketsByStatus,
   isCommentNewSince,
   isOptimisticCommentId,
   isTicketUpdatedSince,
@@ -14,6 +15,17 @@ import {
   ticketRefKey,
   UNASSIGNED_ASSIGNEE,
 } from "./ticketing-read-state";
+
+function ticketInState(id: string, stateId: string, stateName: string): TicketSummary {
+  return {
+    ref: { provider: "linear", id, key: id },
+    title: `Ticket ${id}`,
+    state: { id: stateId, name: stateName, category: "todo" },
+    labels: [],
+    updatedAt: "2026-06-20T12:00:00.000Z",
+    associationCount: 0,
+  };
+}
 
 function comment(overrides: Partial<TicketComment>): TicketComment {
   return { bodyMarkdown: "", bodyText: "", ...overrides };
@@ -150,5 +162,30 @@ describe("filterTicketsByProject", () => {
 
   it("returns only tickets in the named project", () => {
     expect(filterTicketsByProject(tickets, "FLUX PT").map((t) => t.ref.id)).toEqual(["1"]);
+  });
+});
+
+describe("groupTicketsByStatus", () => {
+  it("groups by state and orders groups by the provided columns", () => {
+    const tickets = [
+      ticketInState("1", "todo", "To Do"),
+      ticketInState("2", "started", "In Progress"),
+      ticketInState("3", "todo", "To Do"),
+    ];
+    const groups = groupTicketsByStatus(tickets, [
+      { id: "started", name: "In Progress", category: "in_progress", order: 0 },
+      { id: "todo", name: "To Do", category: "todo", order: 1 },
+    ]);
+
+    expect(groups.map((group) => group.id)).toEqual(["started", "todo"]);
+    expect(groups[1]?.tickets.map((t) => t.ref.id)).toEqual(["1", "3"]);
+  });
+
+  it("sorts states absent from the columns last, alphabetically", () => {
+    const groups = groupTicketsByStatus(
+      [ticketInState("1", "z", "Zeta"), ticketInState("2", "a", "Alpha")],
+      [],
+    );
+    expect(groups.map((group) => group.name)).toEqual(["Alpha", "Zeta"]);
   });
 });

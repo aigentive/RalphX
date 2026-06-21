@@ -1,4 +1,10 @@
-import type { TicketComment, TicketRef, TicketSummary } from "@/api/ticketing";
+import type {
+  TicketComment,
+  TicketingColumn,
+  TicketRef,
+  TicketStateCategory,
+  TicketSummary,
+} from "@/api/ticketing";
 
 /** Stable per-ticket key used for read-state bookkeeping. */
 export function ticketRefKey(ref: TicketRef): string {
@@ -49,6 +55,48 @@ export function filterTicketsByProject(
     return tickets;
   }
   return tickets.filter((ticket) => ticket.project === project);
+}
+
+export interface TicketStatusGroup {
+  id: string;
+  name: string;
+  category: TicketStateCategory;
+  tickets: TicketSummary[];
+}
+
+/**
+ * Groups tickets by their workflow state for a Linear-style sectioned list.
+ * Group order follows the provided columns; states absent from columns sort
+ * last (alphabetically). Ticket order within a group is preserved.
+ */
+export function groupTicketsByStatus(
+  tickets: TicketSummary[],
+  columns: TicketingColumn[],
+): TicketStatusGroup[] {
+  const order = new Map(columns.map((column, index) => [column.id, index]));
+  const groups = new Map<string, TicketStatusGroup>();
+  for (const ticket of tickets) {
+    const existing = groups.get(ticket.state.id);
+    if (existing) {
+      existing.tickets.push(ticket);
+    } else {
+      groups.set(ticket.state.id, {
+        id: ticket.state.id,
+        name: ticket.state.name,
+        category: ticket.state.category,
+        tickets: [ticket],
+      });
+    }
+  }
+  const fallback = Number.MAX_SAFE_INTEGER;
+  return Array.from(groups.values()).sort((left, right) => {
+    const leftOrder = order.get(left.id) ?? fallback;
+    const rightOrder = order.get(right.id) ?? fallback;
+    if (leftOrder !== rightOrder) {
+      return leftOrder - rightOrder;
+    }
+    return left.name.localeCompare(right.name);
+  });
 }
 
 function toTime(value: string | null | undefined): number | null {

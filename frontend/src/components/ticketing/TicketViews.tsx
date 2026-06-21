@@ -9,18 +9,52 @@ import {
   type DragEndEvent,
 } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronRight, MessageSquare, UserCheck } from "lucide-react";
+import {
+  ChevronRight,
+  Circle,
+  CircleCheck,
+  CircleDashed,
+  CircleDot,
+  MessageSquare,
+  UserCheck,
+} from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { TicketingColumn, TicketSummary } from "@/api/ticketing";
 import { Button } from "@/components/ui/button";
 import { TicketAssigneeChip } from "./TicketAssigneeChip";
 import { TicketLabels } from "./TicketLabels";
+import { groupTicketsByStatus } from "./ticketing-read-state";
 import { resolveTicketKanbanMove, ticketDragId } from "./ticketing-kanban-utils";
 import { categoryToken, formatTicketDate, ticketButtonLabel, ticketKey } from "./ticketing-utils";
 
+/** Colored status glyph (Linear-style) with the state name as tooltip/accessible name. */
+function TicketStatusIcon({ state }: { state: TicketSummary["state"] }) {
+  const iconClassName = "h-4 w-4";
+  return (
+    <span
+      role="img"
+      aria-label={`Status: ${state.name}`}
+      title={state.name}
+      className="inline-flex shrink-0"
+      style={{ color: categoryToken(state.category) }}
+    >
+      {state.category === "done" ? (
+        <CircleCheck className={iconClassName} />
+      ) : state.category === "in_progress" ? (
+        <CircleDot className={iconClassName} />
+      ) : state.category === "other" ? (
+        <CircleDashed className={iconClassName} />
+      ) : (
+        <Circle className={iconClassName} />
+      )}
+    </span>
+  );
+}
+
 interface TicketListViewProps {
   tickets: TicketSummary[];
+  columns?: TicketingColumn[] | undefined;
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
   onLoadMore: () => void;
@@ -88,21 +122,9 @@ function focusTicketRow(currentTarget: HTMLButtonElement, direction: 1 | -1) {
   nextRow?.focus();
 }
 
-function TicketStatePill({ ticket }: { ticket: TicketSummary }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium">
-      <span
-        className="h-2 w-2 rounded-full"
-        aria-hidden="true"
-        style={{ backgroundColor: categoryToken(ticket.state.category) }}
-      />
-      {ticket.state.name}
-    </span>
-  );
-}
-
 export function TicketListView({
   tickets,
+  columns = [],
   hasNextPage,
   isFetchingNextPage,
   onLoadMore,
@@ -111,72 +133,74 @@ export function TicketListView({
   canQuickAssign,
   onQuickAssign,
 }: TicketListViewProps) {
+  const groups = groupTicketsByStatus(tickets, columns);
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div
-        className="grid grid-cols-[96px_minmax(220px,1fr)_120px_140px_56px_104px] gap-3 px-4 py-1.5 text-[11px] font-semibold uppercase text-[var(--text-muted)]"
-        style={{
-          backgroundColor: "var(--bg-surface)",
-          borderBottomColor: "var(--border-subtle)",
-          borderBottomStyle: "solid",
-          borderBottomWidth: "1px",
-        }}
-      >
-        <span>Key</span>
-        <span>Title</span>
-        <span>Status</span>
-        <span>Assignee</span>
-        <span>RX</span>
-        <span>Updated</span>
-      </div>
       <div className="min-h-0 flex-1 overflow-auto" data-ticket-list>
-        {tickets.map((ticket) => (
-          <div key={`${ticket.ref.provider}:${ticket.ref.id}`} className="group relative">
-            <button
-            type="button"
-            data-ticket-row
-            className="grid w-full grid-cols-[96px_minmax(220px,1fr)_120px_140px_56px_104px] items-center gap-3 px-4 py-1.5 text-left text-sm hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
-            aria-label={ticketButtonLabel(ticket)}
-            onClick={() => onSelectTicket(ticket)}
-            onKeyDown={(event) => {
-              if (event.key === "ArrowDown") {
-                event.preventDefault();
-                focusTicketRow(event.currentTarget, 1);
-              }
-              if (event.key === "ArrowUp") {
-                event.preventDefault();
-                focusTicketRow(event.currentTarget, -1);
-              }
-            }}
-            style={{
-              borderBottomColor: "var(--border-subtle)",
-              borderBottomStyle: "solid",
-              borderBottomWidth: "1px",
-              color: "var(--text-primary)",
-            }}
-          >
-            <span className="font-mono text-xs text-[var(--text-secondary)]">{ticketKey(ticket.ref)}</span>
-            <span className="flex min-w-0 items-center gap-2">
-              {isUnread?.(ticket) && <UnreadCommentIndicator />}
-              <span className="truncate font-medium">{ticket.title}</span>
-              {ticket.project && (
-                <span className="shrink-0 truncate text-[11px] text-[var(--text-muted)]">{ticket.project}</span>
-              )}
-              <TicketLabels labels={ticket.labels} max={2} className="shrink-0 text-[var(--text-muted)]" />
-            </span>
-            <TicketStatePill ticket={ticket} />
-            <span className="min-w-0">
-              <TicketAssigneeChip person={ticket.assignee} />
-            </span>
-            <span className="text-xs text-[var(--text-secondary)]">
-              {ticket.associationCount > 0 ? `●${ticket.associationCount}` : "○"}
-            </span>
-            <span className="text-xs text-[var(--text-muted)]">{formatTicketDate(ticket.updatedAt)}</span>
-            </button>
-            {canQuickAssign && onQuickAssign && !ticket.assignee && (
-              <QuickAssignButton onClick={() => onQuickAssign(ticket)} />
-            )}
-          </div>
+        {groups.map((group) => (
+          <section key={group.id}>
+            <div
+              className="sticky top-0 z-10 flex items-center gap-2 px-4 py-1.5 text-xs font-semibold"
+              style={{
+                backgroundColor: "var(--bg-surface)",
+                borderBottomColor: "var(--border-subtle)",
+                borderBottomStyle: "solid",
+                borderBottomWidth: "1px",
+              }}
+            >
+              <TicketStatusIcon state={{ id: group.id, name: group.name, category: group.category }} />
+              <span className="text-[var(--text-secondary)]">{group.name}</span>
+              <span className="text-[var(--text-muted)]">{group.tickets.length}</span>
+            </div>
+            {group.tickets.map((ticket) => (
+              <div key={`${ticket.ref.provider}:${ticket.ref.id}`} className="group relative">
+                <button
+                  type="button"
+                  data-ticket-row
+                  className="grid w-full grid-cols-[88px_28px_minmax(200px,1fr)_140px_48px_96px] items-center gap-3 px-4 py-1.5 text-left text-sm hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
+                  aria-label={ticketButtonLabel(ticket)}
+                  onClick={() => onSelectTicket(ticket)}
+                  onKeyDown={(event) => {
+                    if (event.key === "ArrowDown") {
+                      event.preventDefault();
+                      focusTicketRow(event.currentTarget, 1);
+                    }
+                    if (event.key === "ArrowUp") {
+                      event.preventDefault();
+                      focusTicketRow(event.currentTarget, -1);
+                    }
+                  }}
+                  style={{
+                    borderBottomColor: "var(--border-subtle)",
+                    borderBottomStyle: "solid",
+                    borderBottomWidth: "1px",
+                    color: "var(--text-primary)",
+                  }}
+                >
+                  <span className="font-mono text-xs text-[var(--text-secondary)]">{ticketKey(ticket.ref)}</span>
+                  <TicketStatusIcon state={ticket.state} />
+                  <span className="flex min-w-0 items-center gap-2">
+                    {isUnread?.(ticket) && <UnreadCommentIndicator />}
+                    <span className="truncate font-medium">{ticket.title}</span>
+                    {ticket.project && (
+                      <span className="shrink-0 truncate text-[11px] text-[var(--text-muted)]">{ticket.project}</span>
+                    )}
+                    <TicketLabels labels={ticket.labels} max={2} className="shrink-0 text-[var(--text-muted)]" />
+                  </span>
+                  <span className="min-w-0">
+                    <TicketAssigneeChip person={ticket.assignee} />
+                  </span>
+                  <span className="text-xs text-[var(--text-secondary)]">
+                    {ticket.associationCount > 0 ? `●${ticket.associationCount}` : "○"}
+                  </span>
+                  <span className="text-xs text-[var(--text-muted)]">{formatTicketDate(ticket.updatedAt)}</span>
+                </button>
+                {canQuickAssign && onQuickAssign && !ticket.assignee && (
+                  <QuickAssignButton onClick={() => onQuickAssign(ticket)} />
+                )}
+              </div>
+            ))}
+          </section>
         ))}
       </div>
       {hasNextPage && (

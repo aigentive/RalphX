@@ -745,6 +745,7 @@ export function TicketingDashboardView({
     content = (
       <TicketListView
         tickets={displayedTickets}
+        columns={statusColumns}
         hasNextPage={Boolean(ticketsQuery.hasNextPage)}
         isFetchingNextPage={ticketsQuery.isFetchingNextPage}
         onLoadMore={() => void ticketsQuery.fetchNextPage()}

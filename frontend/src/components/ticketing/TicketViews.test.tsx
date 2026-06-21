@@ -124,10 +124,35 @@ describe("TicketListView", () => {
     expect(screen.queryByRole("button", { name: "Assign to me" })).not.toBeInTheDocument();
   });
 
+  it("groups rows under status headings ordered by the provided columns", () => {
+    render(
+      <TicketListView
+        tickets={tickets}
+        columns={[
+          { id: "todo", name: "To Do", category: "todo", order: 0 },
+          { id: "started", name: "In Progress", category: "in_progress", order: 1 },
+        ]}
+        hasNextPage={false}
+        isFetchingNextPage={false}
+        onLoadMore={vi.fn()}
+        onSelectTicket={vi.fn()}
+      />,
+    );
+
+    // Group headings render with counts; per-row status icons carry the state name.
+    expect(screen.getByText("To Do")).toBeInTheDocument();
+    expect(screen.getByText("In Progress")).toBeInTheDocument();
+    expect(screen.getAllByRole("img", { name: /^Status:/ }).length).toBeGreaterThanOrEqual(2);
+  });
+
   it("moves focus between ticket rows with arrow keys", () => {
     render(
       <TicketListView
         tickets={tickets}
+        columns={[
+          { id: "todo", name: "To Do", category: "todo", order: 0 },
+          { id: "started", name: "In Progress", category: "in_progress", order: 1 },
+        ]}
         hasNextPage={false}
         isFetchingNextPage={false}
         onLoadMore={vi.fn()}
