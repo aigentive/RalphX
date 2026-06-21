@@ -26,6 +26,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TicketAssigneeChip } from "./TicketAssigneeChip";
 import { TicketLabels } from "./TicketLabels";
+import { countNewComments, isCommentNewSince, sortCommentsByCreatedAt } from "./ticketing-read-state";
 import { categoryToken, formatTicketDate, providerLabel, ticketKey } from "./ticketing-utils";
 
 interface TicketDetailSheetProps {
@@ -43,6 +44,8 @@ interface TicketDetailSheetProps {
   onAssignToMe?: (() => Promise<void> | void) | undefined;
   onClearAssignee?: (() => Promise<void> | void) | undefined;
   onAddComment?: ((bodyMarkdown: string) => Promise<void> | void) | undefined;
+  /** Timestamp the viewer last opened this ticket; comments newer than it are "new". */
+  seenUntil?: string | null | undefined;
   isStartWorkPending?: boolean | undefined;
   startWorkError?: string | null | undefined;
   onNavigate?: ((deepLink: TicketDeepLink) => void) | undefined;
@@ -251,6 +254,7 @@ export function TicketDetailSheet({
   onAssignToMe,
   onClearAssignee,
   onAddComment,
+  seenUntil,
   isStartWorkPending,
   startWorkError,
   onNavigate,
@@ -287,6 +291,12 @@ export function TicketDetailSheet({
       }),
     ];
   }, [localComments, providerComments]);
+
+  const sortedComments = useMemo(
+    () => sortCommentsByCreatedAt(visibleComments),
+    [visibleComments],
+  );
+  const newCommentCount = countNewComments(sortedComments, seenUntil ?? null);
 
   useEffect(() => {
     setLocalComments([]);
@@ -413,8 +423,17 @@ export function TicketDetailSheet({
                     className="h-7 px-2 text-xs"
                     onClick={handleJumpToComments}
                   >
-                    <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
-                    Comments ({visibleComments.length})
+                    <MessageSquare
+                      className="h-3.5 w-3.5"
+                      aria-hidden="true"
+                      style={newCommentCount > 0 ? { color: "var(--accent-primary)" } : undefined}
+                    />
+                    Comments ({sortedComments.length})
+                    {newCommentCount > 0 && (
+                      <span className="font-semibold" style={{ color: "var(--accent-primary)" }}>
+                        · {newCommentCount} new
+                      </span>
+                    )}
                   </Button>
                   {ticket.url && (
                     <a
@@ -532,29 +551,63 @@ export function TicketDetailSheet({
 
                 <section ref={commentsSectionRef} className="mt-6">
                   <h3 className="text-xs font-semibold uppercase text-[var(--text-muted)]">
-                    Comments ({visibleComments.length})
+                    Comments ({sortedComments.length})
+                    {newCommentCount > 0 && (
+                      <span className="ml-1 normal-case" style={{ color: "var(--accent-primary)" }}>
+                        · {newCommentCount} new
+                      </span>
+                    )}
                   </h3>
-                  {visibleComments.length > 0 ? (
+                  {sortedComments.length > 0 ? (
                     <div className="mt-2 space-y-2">
-                      {visibleComments.map((comment, index) => (
-                        <article
-                          key={comment.id ?? `comment-${index}`}
-                          className="rounded-md p-3"
-                          style={{
-                            backgroundColor: "var(--bg-surface)",
-                            borderColor: "var(--border-subtle)",
-                            borderStyle: "solid",
-                            borderWidth: "1px",
-                          }}
-                        >
-                          <p className="text-xs font-medium text-[var(--text-secondary)]">
-                            {comment.author?.name ?? "Provider comment"}
-                          </p>
-                          <div className="mt-2">
-                            <TicketMarkdown content={comment.bodyMarkdown || comment.bodyText} />
-                          </div>
-                        </article>
-                      ))}
+                      {sortedComments.map((comment, index) => {
+                        const isNew = isCommentNewSince(comment, seenUntil ?? null);
+                        return (
+                          <article
+                            key={comment.id ?? `comment-${index}`}
+                            className="rounded-md p-3"
+                            style={{
+                              backgroundColor: "var(--bg-surface)",
+                              borderColor: isNew ? "var(--accent-border)" : "var(--border-subtle)",
+                              borderStyle: "solid",
+                              borderWidth: "1px",
+                            }}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-xs font-medium text-[var(--text-secondary)]">
+                                {comment.author?.name ?? "Provider comment"}
+                              </p>
+                              <div className="flex shrink-0 items-center gap-2">
+                                {isNew && (
+                                  <span
+                                    className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase"
+                                    style={{
+                                      backgroundColor: "var(--accent-muted)",
+                                      borderColor: "var(--accent-border)",
+                                      borderStyle: "solid",
+                                      borderWidth: "1px",
+                                      color: "var(--accent-primary)",
+                                    }}
+                                  >
+                                    New
+                                  </span>
+                                )}
+                                {comment.createdAt && (
+                                  <time
+                                    className="text-[11px] text-[var(--text-muted)]"
+                                    dateTime={comment.createdAt}
+                                  >
+                                    {formatTicketDate(comment.createdAt)}
+                                  </time>
+                                )}
+                              </div>
+                            </div>
+                            <div className="mt-2">
+                              <TicketMarkdown content={comment.bodyMarkdown || comment.bodyText} />
+                            </div>
+                          </article>
+                        );
+                      })}
                     </div>
                   ) : (
                     <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">

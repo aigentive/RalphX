@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
 import type { TicketRef, TicketingProvider } from "@/api/ticketing";
@@ -18,6 +19,8 @@ interface TicketingState {
   viewMode: TicketingViewMode;
   filters: TicketingFilterState;
   selectedTicketRef: TicketRef | null;
+  /** Per-ticket "last opened" timestamps (ISO) keyed by ticketRefKey, persisted. */
+  lastOpenedAt: Record<string, string>;
 }
 
 interface TicketingActions {
@@ -27,6 +30,7 @@ interface TicketingActions {
   setFilters: (filters: Partial<TicketingFilterState>) => void;
   resetFilters: () => void;
   setSelectedTicketRef: (ticketRef: TicketRef | null) => void;
+  markTicketOpened: (ticketKey: string) => void;
   reset: () => void;
 }
 
@@ -43,6 +47,7 @@ const INITIAL_STATE: TicketingState = {
   viewMode: "list",
   filters: DEFAULT_FILTERS,
   selectedTicketRef: null,
+  lastOpenedAt: {},
 };
 
 function cloneFilters(filters: TicketingFilterState): TicketingFilterState {
@@ -55,59 +60,73 @@ function cloneFilters(filters: TicketingFilterState): TicketingFilterState {
 }
 
 export const useTicketingStore = create<TicketingState & TicketingActions>()(
-  immer((set) => ({
-    ...INITIAL_STATE,
-    filters: cloneFilters(DEFAULT_FILTERS),
+  persist(
+    immer((set) => ({
+      ...INITIAL_STATE,
+      filters: cloneFilters(DEFAULT_FILTERS),
+      lastOpenedAt: {},
 
-    setProvider: (provider) =>
-      set((state) => {
-        if (state.activeProvider !== provider) {
-          state.activeContainerId = null;
-          state.selectedTicketRef = null;
-        }
-        state.activeProvider = provider;
-      }),
+      setProvider: (provider) =>
+        set((state) => {
+          if (state.activeProvider !== provider) {
+            state.activeContainerId = null;
+            state.selectedTicketRef = null;
+          }
+          state.activeProvider = provider;
+        }),
 
-    setContainerId: (containerId) =>
-      set((state) => {
-        if (state.activeContainerId !== containerId) {
-          state.selectedTicketRef = null;
-        }
-        state.activeContainerId = containerId;
-      }),
+      setContainerId: (containerId) =>
+        set((state) => {
+          if (state.activeContainerId !== containerId) {
+            state.selectedTicketRef = null;
+          }
+          state.activeContainerId = containerId;
+        }),
 
-    setViewMode: (mode) =>
-      set((state) => {
-        state.viewMode = mode;
-      }),
+      setViewMode: (mode) =>
+        set((state) => {
+          state.viewMode = mode;
+        }),
 
-    setFilters: (filters) =>
-      set((state) => {
-        state.filters = {
-          ...state.filters,
-          ...filters,
-          ...(filters.stateIds !== undefined && { stateIds: [...filters.stateIds] }),
-          ...(filters.labels !== undefined && { labels: [...filters.labels] }),
-        };
-      }),
+      setFilters: (filters) =>
+        set((state) => {
+          state.filters = {
+            ...state.filters,
+            ...filters,
+            ...(filters.stateIds !== undefined && { stateIds: [...filters.stateIds] }),
+            ...(filters.labels !== undefined && { labels: [...filters.labels] }),
+          };
+        }),
 
-    resetFilters: () =>
-      set((state) => {
-        state.filters = cloneFilters(DEFAULT_FILTERS);
-      }),
+      resetFilters: () =>
+        set((state) => {
+          state.filters = cloneFilters(DEFAULT_FILTERS);
+        }),
 
-    setSelectedTicketRef: (ticketRef) =>
-      set((state) => {
-        state.selectedTicketRef = ticketRef;
-      }),
+      setSelectedTicketRef: (ticketRef) =>
+        set((state) => {
+          state.selectedTicketRef = ticketRef;
+        }),
 
-    reset: () =>
-      set((state) => {
-        state.activeProvider = INITIAL_STATE.activeProvider;
-        state.activeContainerId = INITIAL_STATE.activeContainerId;
-        state.viewMode = INITIAL_STATE.viewMode;
-        state.filters = cloneFilters(DEFAULT_FILTERS);
-        state.selectedTicketRef = INITIAL_STATE.selectedTicketRef;
-      }),
-  })),
+      markTicketOpened: (ticketKey) =>
+        set((state) => {
+          state.lastOpenedAt[ticketKey] = new Date().toISOString();
+        }),
+
+      reset: () =>
+        set((state) => {
+          state.activeProvider = INITIAL_STATE.activeProvider;
+          state.activeContainerId = INITIAL_STATE.activeContainerId;
+          state.viewMode = INITIAL_STATE.viewMode;
+          state.filters = cloneFilters(DEFAULT_FILTERS);
+          state.selectedTicketRef = INITIAL_STATE.selectedTicketRef;
+          state.lastOpenedAt = {};
+        }),
+    })),
+    {
+      name: "ralphx-ticketing-store",
+      version: 1,
+      partialize: (state) => ({ lastOpenedAt: state.lastOpenedAt }),
+    },
+  ),
 );

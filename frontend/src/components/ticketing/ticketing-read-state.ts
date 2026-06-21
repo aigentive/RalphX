@@ -1,0 +1,89 @@
+import type { TicketComment, TicketRef } from "@/api/ticketing";
+
+/** Stable per-ticket key used for read-state bookkeeping. */
+export function ticketRefKey(ref: TicketRef): string {
+  return `${ref.provider}:${ref.id}`;
+}
+
+function toTime(value: string | null | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+/** Optimistic comments inserted locally before the provider round-trip completes. */
+export function isOptimisticCommentId(id: string | null | undefined): boolean {
+  return typeof id === "string" && (id.startsWith("local:") || id.startsWith("optimistic:"));
+}
+
+/** Oldest-first by createdAt; comments without a timestamp sort to the end. */
+export function sortCommentsByCreatedAt(comments: TicketComment[]): TicketComment[] {
+  return [...comments].sort((left, right) => {
+    const leftTime = toTime(left.createdAt);
+    const rightTime = toTime(right.createdAt);
+    if (leftTime === null && rightTime === null) {
+      return 0;
+    }
+    if (leftTime === null) {
+      return 1;
+    }
+    if (rightTime === null) {
+      return -1;
+    }
+    return leftTime - rightTime;
+  });
+}
+
+/**
+ * A comment is "new" when it was created after the moment the viewer last opened
+ * this ticket. Never-opened tickets (no baseline) and the viewer's own optimistic
+ * comments are never flagged.
+ */
+export function isCommentNewSince(
+  comment: TicketComment,
+  seenAt: string | null | undefined,
+): boolean {
+  if (isOptimisticCommentId(comment.id)) {
+    return false;
+  }
+  const seen = toTime(seenAt);
+  if (seen === null) {
+    return false;
+  }
+  const created = toTime(comment.createdAt);
+  if (created === null) {
+    return false;
+  }
+  return created > seen;
+}
+
+export function countNewComments(
+  comments: TicketComment[],
+  seenAt: string | null | undefined,
+): number {
+  return comments.reduce(
+    (count, comment) => (isCommentNewSince(comment, seenAt) ? count + 1 : count),
+    0,
+  );
+}
+
+/**
+ * Row-level "updated since you last opened" signal. Requires a prior open
+ * (a baseline) so freshly-discovered tickets are not all flagged as unread.
+ */
+export function isTicketUpdatedSince(
+  updatedAt: string | null | undefined,
+  seenAt: string | null | undefined,
+): boolean {
+  const seen = toTime(seenAt);
+  if (seen === null) {
+    return false;
+  }
+  const updated = toTime(updatedAt);
+  if (updated === null) {
+    return false;
+  }
+  return updated > seen;
+}

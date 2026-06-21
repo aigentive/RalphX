@@ -46,4 +46,16 @@ describe("useTicketingStore", () => {
       labels: [],
     });
   });
+
+  it("records a last-opened timestamp per ticket and clears it on reset", () => {
+    useTicketingStore.getState().markTicketOpened("linear:ABC-1");
+    useTicketingStore.getState().markTicketOpened("jira:RX-9");
+
+    const opened = useTicketingStore.getState().lastOpenedAt;
+    expect(opened["linear:ABC-1"]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(opened["jira:RX-9"]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    useTicketingStore.getState().reset();
+    expect(useTicketingStore.getState().lastOpenedAt).toEqual({});
+  });
 });

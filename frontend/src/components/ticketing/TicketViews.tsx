@@ -9,7 +9,7 @@ import {
   type DragEndEvent,
 } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, MessageSquare } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { TicketingColumn, TicketSummary } from "@/api/ticketing";
@@ -25,6 +25,22 @@ interface TicketListViewProps {
   isFetchingNextPage: boolean;
   onLoadMore: () => void;
   onSelectTicket: (ticket: TicketSummary) => void;
+  isUnread?: ((ticket: TicketSummary) => boolean) | undefined;
+}
+
+/** Orange comment glyph shown when a ticket changed since the viewer last opened it. */
+function UnreadCommentIndicator() {
+  return (
+    <span
+      role="img"
+      aria-label="Updated since you last opened this ticket"
+      title="Updated since you last opened this ticket"
+      className="inline-flex shrink-0"
+      style={{ color: "var(--accent-primary)" }}
+    >
+      <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+    </span>
+  );
 }
 
 function focusTicketRow(currentTarget: HTMLButtonElement, direction: 1 | -1) {
@@ -57,6 +73,7 @@ export function TicketListView({
   isFetchingNextPage,
   onLoadMore,
   onSelectTicket,
+  isUnread,
 }: TicketListViewProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -104,7 +121,10 @@ export function TicketListView({
           >
             <span className="font-mono text-xs text-[var(--text-secondary)]">{ticketKey(ticket.ref)}</span>
             <span className="min-w-0">
-              <span className="block truncate font-medium">{ticket.title}</span>
+              <span className="flex min-w-0 items-center gap-1.5">
+                {isUnread?.(ticket) && <UnreadCommentIndicator />}
+                <span className="block truncate font-medium">{ticket.title}</span>
+              </span>
               {(ticket.project || ticket.labels.length > 0) && (
                 <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1 text-[11px] text-[var(--text-muted)]">
                   {ticket.project && <span className="truncate">{ticket.project}</span>}
@@ -140,6 +160,7 @@ interface TicketKanbanViewProps {
   canMoveTickets?: boolean | undefined;
   onMoveTicket?: ((ticket: TicketSummary, column: TicketingColumn) => void) | undefined;
   onSelectTicket: (ticket: TicketSummary) => void;
+  isUnread?: ((ticket: TicketSummary) => boolean) | undefined;
 }
 
 function TicketColumn({
@@ -171,10 +192,12 @@ function TicketColumn({
 function TicketKanbanCard({
   ticket,
   canMove,
+  unread,
   onSelectTicket,
 }: {
   ticket: TicketSummary;
   canMove: boolean;
+  unread: boolean;
   onSelectTicket: (ticket: TicketSummary) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
@@ -202,7 +225,10 @@ function TicketKanbanCard({
       {...listeners}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-xs text-[var(--text-muted)]">{ticketKey(ticket.ref)}</span>
+        <span className="flex items-center gap-1.5 font-mono text-xs text-[var(--text-muted)]">
+          {unread && <UnreadCommentIndicator />}
+          {ticketKey(ticket.ref)}
+        </span>
         <span className="text-xs text-[var(--text-muted)]">
           {ticket.associationCount > 0 ? `●${ticket.associationCount}` : "○"}
         </span>
@@ -225,6 +251,7 @@ export function TicketKanbanView({
   canMoveTickets = false,
   onMoveTicket,
   onSelectTicket,
+  isUnread,
 }: TicketKanbanViewProps) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -287,6 +314,7 @@ export function TicketKanbanView({
                     key={`${ticket.ref.provider}:${ticket.ref.id}`}
                     ticket={ticket}
                     canMove={canMove}
+                    unread={isUnread?.(ticket) ?? false}
                     onSelectTicket={onSelectTicket}
                   />
                 ))}

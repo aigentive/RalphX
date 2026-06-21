@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+  TicketDetail,
   TicketingCapabilities,
   TicketSummary,
   TicketTransitionOption,
@@ -91,5 +92,71 @@ describe("TicketDetailSheet assignee control", () => {
     expect(screen.getByText("Adrian Demian")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /assign to me/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /clear assignee/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("TicketDetailSheet new-comment awareness", () => {
+  const SEEN = "2026-06-20T12:00:00.000Z";
+
+  const detailWithComments: TicketDetail = {
+    ...baseTicket,
+    descriptionMarkdown: null,
+    comments: [
+      {
+        id: "c-new",
+        author: { name: "Reviewer" },
+        bodyMarkdown: "Fresh take",
+        bodyText: "Fresh take",
+        createdAt: "2026-06-20T13:00:00.000Z",
+      },
+      {
+        id: "c-old",
+        author: { name: "Reporter" },
+        bodyMarkdown: "Earlier note",
+        bodyText: "Earlier note",
+        createdAt: "2026-06-20T11:00:00.000Z",
+      },
+    ],
+    attachments: [],
+    transitions: [],
+  };
+
+  function renderDetail(seenUntil: string | null) {
+    return render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={detailWithComments}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          seenUntil={seenUntil}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+  }
+
+  it("flags only comments created after the last open and counts them", () => {
+    renderDetail(SEEN);
+
+    expect(screen.getByText("Fresh take")).toBeInTheDocument();
+    expect(screen.getByText("Earlier note")).toBeInTheDocument();
+    // Exactly one "New" badge (the comment created after SEEN).
+    expect(screen.getAllByText("New")).toHaveLength(1);
+    // The new-comment count is surfaced (jump button + section header).
+    expect(screen.getAllByText(/1 new/).length).toBeGreaterThan(0);
+  });
+
+  it("flags nothing when the ticket was never opened before", () => {
+    renderDetail(null);
+
+    expect(screen.queryByText("New")).not.toBeInTheDocument();
+    expect(screen.queryByText(/new$/)).not.toBeInTheDocument();
   });
 });

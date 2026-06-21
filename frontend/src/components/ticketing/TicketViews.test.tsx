@@ -71,6 +71,23 @@ describe("TicketListView", () => {
     expect(screen.getByText("+1")).toBeInTheDocument();
   });
 
+  it("shows the unread indicator only for rows flagged by isUnread", () => {
+    render(
+      <TicketListView
+        tickets={tickets}
+        hasNextPage={false}
+        isFetchingNextPage={false}
+        onLoadMore={vi.fn()}
+        onSelectTicket={vi.fn()}
+        isUnread={(ticket) => ticket.ref.id === "10001"}
+      />,
+    );
+
+    expect(
+      screen.getAllByRole("img", { name: /updated since you last opened/i }),
+    ).toHaveLength(1);
+  });
+
   it("moves focus between ticket rows with arrow keys", () => {
     render(
       <TicketListView

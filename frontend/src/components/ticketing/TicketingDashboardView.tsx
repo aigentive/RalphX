@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import type { AgentConversationWorkspaceMode } from "@/api/chat";
@@ -47,6 +47,7 @@ import { TicketDetailSheet } from "./TicketDetailSheet";
 import { TicketFilterBar } from "./TicketFilterBar";
 import { TicketingStatePanel } from "./TicketingStatePanel";
 import { TicketKanbanShell, TicketKanbanView, TicketListView } from "./TicketViews";
+import { isTicketUpdatedSince, ticketRefKey } from "./ticketing-read-state";
 import { providerLabel, ticketKey } from "./ticketing-utils";
 import { useAfterPaint } from "./useAfterPaint";
 
@@ -304,12 +305,15 @@ export function TicketingDashboardView({
     setFilters,
     resetFilters,
     setSelectedTicketRef,
+    lastOpenedAt,
+    markTicketOpened,
   } = useTicketingStore();
   const setCurrentView = useUiStore((s) => s.setCurrentView);
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
   const selectAgentConversation = useAgentSessionStore((s) => s.selectConversation);
   const setFocusedAgentProject = useAgentSessionStore((s) => s.setFocusedProject);
   const [startWorkDialogOpen, setStartWorkDialogOpen] = useState(false);
+  const [seenBaseline, setSeenBaseline] = useState<string | null>(null);
   const [startWorkSelection, setStartWorkSelection] = useState<StartWorkSelection>({
     projectId,
     mode: "edit",
@@ -379,17 +383,20 @@ export function TicketingDashboardView({
     : null;
 
   const ticketsQuery = useTickets(ticketQuery, { enabled: Boolean(ticketQuery) });
-  const tickets = flattenTicketPages(ticketsQuery.data);
-  const latestTicketColumnsRef = useRef<TicketingColumn[]>([]);
+  const tickets = useMemo(() => flattenTicketPages(ticketsQuery.data), [ticketsQuery.data]);
   const ticketColumns = useMemo(() => columnsFromTickets(tickets), [tickets]);
-  if (ticketColumns.length > 0) {
-    latestTicketColumnsRef.current = ticketColumns;
-  }
-  const statusColumns = ticketColumns.length > 0
-    ? mergeProviderAndTicketColumns(columns, ticketColumns)
-    : latestTicketColumnsRef.current.length > 0
-      ? mergeProviderAndTicketColumns(columns, latestTicketColumnsRef.current)
-      : columns;
+  // Remember the last non-empty columns so the kanban board does not collapse
+  // while a refetch briefly returns an empty ticket list.
+  const [lastNonEmptyColumns, setLastNonEmptyColumns] = useState<TicketingColumn[]>([]);
+  useEffect(() => {
+    if (ticketColumns.length > 0) {
+      setLastNonEmptyColumns(ticketColumns);
+    }
+  }, [ticketColumns]);
+  const effectiveTicketColumns = ticketColumns.length > 0 ? ticketColumns : lastNonEmptyColumns;
+  const statusColumns = effectiveTicketColumns.length > 0
+    ? mergeProviderAndTicketColumns(columns, effectiveTicketColumns)
+    : columns;
   const selectedSummary = selectedTicketRef
     ? tickets.find((ticket) => ticket.ref.id === selectedTicketRef.id && ticket.ref.provider === selectedTicketRef.provider) ?? null
     : null;
@@ -409,7 +416,12 @@ export function TicketingDashboardView({
   const startWorkFromTicket = useStartWorkFromTicket();
 
   const selectedTicket = detailQuery.data ?? selectedSummary;
-  const transitions = transitionsQuery.data ?? (detailQuery.data && "transitions" in detailQuery.data ? detailQuery.data.transitions : []);
+  const transitions = useMemo(
+    () =>
+      transitionsQuery.data
+      ?? (detailQuery.data && "transitions" in detailQuery.data ? detailQuery.data.transitions : []),
+    [transitionsQuery.data, detailQuery.data],
+  );
   const transitionColumns = useMemo(() => columnsFromTransitions(transitions), [transitions]);
   const filterColumns = mergeProviderAndTicketColumns(
     statusColumns,
@@ -466,8 +478,20 @@ export function TicketingDashboardView({
       : []),
   ];
 
+  const isTicketUnread = useMemo(
+    () =>
+      (ticket: TicketSummary): boolean =>
+        isTicketUpdatedSince(ticket.updatedAt, lastOpenedAt[ticketRefKey(ticket.ref)]),
+    [lastOpenedAt],
+  );
+
   function handleSelectTicket(ticket: TicketSummary) {
+    const key = ticketRefKey(ticket.ref);
+    // Snapshot the prior "seen" timestamp before marking this open so the detail
+    // overlay can flag comments that arrived since the last visit.
+    setSeenBaseline(lastOpenedAt[key] ?? null);
     setSelectedTicketRef(ticket.ref);
+    markTicketOpened(key);
   }
 
   function handleRefresh() {
@@ -673,6 +697,7 @@ export function TicketingDashboardView({
         canMoveTickets={Boolean(selectedProvider?.capabilities.kanbanWrite)}
         onMoveTicket={handleMoveTicket}
         onSelectTicket={handleSelectTicket}
+        isUnread={isTicketUnread}
       />
     ) : (
       <TicketKanbanShell columns={statusColumns} />
@@ -685,6 +710,7 @@ export function TicketingDashboardView({
         isFetchingNextPage={ticketsQuery.isFetchingNextPage}
         onLoadMore={() => void ticketsQuery.fetchNextPage()}
         onSelectTicket={handleSelectTicket}
+        isUnread={isTicketUnread}
       />
     );
   }
@@ -772,6 +798,7 @@ export function TicketingDashboardView({
         onAssignToMe={handleAssignToMe}
         onClearAssignee={handleClearAssignee}
         onAddComment={handleAddComment}
+        seenUntil={seenBaseline}
         isStartWorkPending={startWorkFromTicket.isPending}
         startWorkError={startWorkError}
         onNavigate={onNavigateToAssociation}

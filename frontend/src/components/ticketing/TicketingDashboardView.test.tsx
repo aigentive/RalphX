@@ -615,6 +615,27 @@ describe("TicketingDashboardView", () => {
     expect(screen.queryByText("Unassigned")).not.toBeInTheDocument();
   });
 
+  it("records a ticket as opened when its row is clicked", () => {
+    mockConnectedDashboard();
+    renderDashboard();
+
+    expect(useTicketingStore.getState().lastOpenedAt["jira:10001"]).toBeUndefined();
+    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
+    expect(useTicketingStore.getState().lastOpenedAt["jira:10001"]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("flags a row as updated when it changed since the last open", () => {
+    mockConnectedDashboard();
+    useTicketingStore.setState({
+      lastOpenedAt: { "jira:10001": "2020-01-01T00:00:00.000Z" },
+    });
+    renderDashboard();
+
+    expect(
+      screen.getByRole("img", { name: /updated since you last opened/i }),
+    ).toBeInTheDocument();
+  });
+
   it("opens ticket detail when a kanban card is clicked", async () => {
     mockConnectedDashboard();
     useTicketingStore.getState().setViewMode("kanban");
