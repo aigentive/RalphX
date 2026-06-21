@@ -928,3 +928,46 @@ async fn list_ticket_rows_include_linked_agent_conversation_count() {
 
     assert_eq!(hydrated[0].association_count, 1);
 }
+
+#[test]
+fn pull_request_items_map_pr_and_branch_only_workspaces() {
+    let summaries = vec![
+        TicketPrBranchSummary {
+            conversation_id: "conv-1".to_string(),
+            branch_name: "ralphx/p/agent-1".to_string(),
+            base_ref: "main".to_string(),
+            pr_number: Some(42),
+            pr_url: Some("https://github.com/x/y/pull/42".to_string()),
+            pr_status: Some("open".to_string()),
+            is_open: true,
+        },
+        TicketPrBranchSummary {
+            conversation_id: "conv-2".to_string(),
+            branch_name: "ralphx/p/agent-2".to_string(),
+            base_ref: "main".to_string(),
+            pr_number: None,
+            pr_url: None,
+            pr_status: None,
+            is_open: false,
+        },
+    ];
+
+    let items = pull_request_association_items(&summaries, "project-1");
+
+    assert_eq!(items.len(), 2);
+    let pr = &items[0];
+    assert_eq!(pr.title, "PR #42");
+    assert_eq!(pr.subtitle.as_deref(), Some("ralphx/p/agent-1"));
+    assert_eq!(pr.status.as_deref(), Some("open"));
+    assert!(pr.active);
+    assert_eq!(pr.id, "https://github.com/x/y/pull/42");
+    assert_eq!(pr.deep_link.view, "agents");
+    assert_eq!(pr.deep_link.id, "conv-1");
+    assert_eq!(pr.deep_link.project_id.as_deref(), Some("project-1"));
+
+    let branch_only = &items[1];
+    assert_eq!(branch_only.title, "ralphx/p/agent-2");
+    assert_eq!(branch_only.status.as_deref(), Some("branch"));
+    assert!(!branch_only.active);
+    assert_eq!(branch_only.id, "conv-2");
+}

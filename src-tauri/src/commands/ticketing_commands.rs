@@ -18,6 +18,7 @@ use crate::application::{
     TicketingCommentResult, TicketingMutationResult, TicketingPersonResult, TicketingService,
     TicketingTicketIdentity, TicketingTransitionOption,
 };
+use crate::application::ticketing_pr_summary::{ticket_pr_branch_summary, TicketPrBranchSummary};
 use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, agent_workspace_response_for_state,
     SendAgentMessageResponse, StartAgentConversationResponse,
@@ -505,7 +506,61 @@ pub async fn get_ticket_associations(
         &ticket_reference,
     )
     .await?;
+
+    // Join the linked conversations to their workspace branch/PR state so the
+    // detail "Pull Requests" tab can show the RalphX git work for this ticket.
+    let conversation_ids: Vec<ChatConversationId> = response
+        .conversations
+        .iter()
+        .map(|item| ChatConversationId::from_string(item.id.clone()))
+        .collect();
+    let summaries = ticket_pr_branch_summary(
+        state.agent_conversation_workspace_repo.as_ref(),
+        &project_id,
+        &conversation_ids,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    response.pull_requests = pull_request_association_items(&summaries, project_id.as_str());
+
     Ok(response)
+}
+
+/// Maps workspace branch/PR summaries to detail "Pull Requests" association items,
+/// deep-linking each back to its conversation. PR status is poll/reconcile-driven,
+/// so `active`/`status` reflect last-known state, not real-time GitHub.
+fn pull_request_association_items(
+    summaries: &[TicketPrBranchSummary],
+    project_id: &str,
+) -> Vec<TicketAssociationItemResponse> {
+    summaries
+        .iter()
+        .filter(|summary| summary.has_pr() || !summary.branch_name.trim().is_empty())
+        .map(|summary| {
+            let title = match summary.pr_number {
+                Some(number) => format!("PR #{number}"),
+                None => summary.branch_name.clone(),
+            };
+            let status = summary.pr_status.clone().or_else(|| {
+                (!summary.branch_name.trim().is_empty()).then(|| "branch".to_string())
+            });
+            TicketAssociationItemResponse {
+                id: summary
+                    .pr_url
+                    .clone()
+                    .unwrap_or_else(|| summary.conversation_id.clone()),
+                title,
+                subtitle: Some(summary.branch_name.clone()),
+                status,
+                active: summary.is_open,
+                deep_link: TicketDeepLinkResponse {
+                    view: "agents".to_string(),
+                    id: summary.conversation_id.clone(),
+                    project_id: Some(project_id.to_string()),
+                },
+            }
+        })
+        .collect()
 }
 
 #[tauri::command]
