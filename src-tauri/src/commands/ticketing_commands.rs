@@ -367,10 +367,13 @@ pub async fn list_ticketing_columns(
     state: State<'_, AppState>,
 ) -> Result<Vec<TicketingColumnResponse>, String> {
     validate_provider(&provider)?;
+    let _ = container_id;
     match provider.as_str() {
         PROVIDER_LINEAR => state
             .linear_integration_service
-            .list_workflow_states(container_id.as_deref())
+            // Linear containers are projects, but workflow states are team-scoped;
+            // passing a project id as a team id errors, so fetch all states.
+            .list_workflow_states(None)
             .await
             .map(|states| {
                 states
@@ -379,10 +382,7 @@ pub async fn list_ticketing_columns(
                     .map(|(index, state)| linear_workflow_state_to_column(state, index))
                     .collect()
             }),
-        _ => {
-            let _ = container_id;
-            Ok(default_ticketing_columns())
-        }
+        _ => Ok(default_ticketing_columns()),
     }
 }
 

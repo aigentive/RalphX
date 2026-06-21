@@ -392,7 +392,7 @@ fn linear_issue_search_query() -> &'static str {
 fn linear_recent_issues_query() -> &'static str {
     r#"
     query RalphXLinearRecentIssues($first: Int!) {
-      issues(first: $first) {
+      issues(first: $first, orderBy: updatedAt) {
         nodes {
           id
           identifier
@@ -848,10 +848,10 @@ mod tests {
     }
 
     #[test]
-    fn recent_issues_query_uses_linear_issues_connection() {
+    fn recent_issues_query_orders_by_updated_at() {
         let query = linear_recent_issues_query();
 
-        assert!(query.contains("issues(first: $first)"));
+        assert!(query.contains("issues(first: $first, orderBy: updatedAt)"));
         assert!(!query.contains("searchIssues"));
         assert!(!query.contains("term:"));
     }
