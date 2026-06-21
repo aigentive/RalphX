@@ -676,3 +676,243 @@ async fn clear_assignee_records_assignment_operation_and_is_idempotent() {
         Some(r#"{"assignee":null}"#)
     );
 }
+
+#[tokio::test]
+async fn assign_ticket_records_jira_operation_and_returns_current_user() {
+    let atlassian_client = Arc::new(RecordingAtlassianClient::default());
+    let atlassian = enabled_atlassian_service(Arc::clone(&atlassian_client)).await;
+    let external_issues = external_issue_service();
+    let (service, _sink) = service_with_sink(
+        atlassian,
+        disabled_linear_service(Arc::new(RecordingLinearClient::default())),
+        Arc::clone(&external_issues),
+    );
+
+    let result = service
+        .assign_ticket(TicketAssignRequest {
+            ticket: jira_ticket(),
+            client_operation_id: Some("op-jira-assign".to_string()),
+        })
+        .await
+        .expect("jira assign should succeed");
+
+    assert_eq!(result.operation.status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(result.operation.operation, ProviderTicketOperationKind::Assign);
+    assert!(!result.idempotent);
+    assert_eq!(
+        *atlassian_client.assignments.lock().await,
+        vec!["JRA-1".to_string()]
+    );
+    // Jira normalizes its external id to the issue key and records operations
+    // under the jira provider/kind pair.
+    let records = external_issues
+        .list_provider_ticket_operations_for_ticket(
+            "jira",
+            "jira",
+            "JRA-1",
+            Some("JRA-1"),
+            Some("project-1"),
+        )
+        .await
+        .expect("operation history should load");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].operation, ProviderTicketOperationKind::Assign);
+    assert_eq!(records[0].status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(
+        records[0].metadata_json.as_deref(),
+        Some(r#"{"assignee":"current_user"}"#)
+    );
+}
+
+#[tokio::test]
+async fn add_comment_records_unlinked_linear_operation_and_is_idempotent() {
+    let linear_client = Arc::new(RecordingLinearClient::default());
+    let linear = enabled_linear_service(Arc::clone(&linear_client)).await;
+    let external_issues = external_issue_service();
+    let (service, sink) = service_with_sink(
+        disabled_atlassian_service(Arc::new(RecordingAtlassianClient::default())),
+        linear,
+        Arc::clone(&external_issues),
+    );
+
+    let request = TicketCommentRequest {
+        ticket: linear_ticket(),
+        body_markdown: "Looks good to me".to_string(),
+        client_operation_id: Some("op-linear-comment".to_string()),
+    };
+    let result = service
+        .add_ticket_comment(request.clone())
+        .await
+        .expect("comment should succeed");
+
+    assert_eq!(result.operation.status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(result.operation.operation, ProviderTicketOperationKind::Comment);
+    assert_eq!(result.operation.link_id, None);
+    assert!(!result.idempotent);
+    let comment = result.comment.expect("comment payload should be present");
+    assert_eq!(comment.body_markdown, "Looks good to me");
+    assert_eq!(comment.author_name.as_deref(), Some("A. User"));
+    assert_eq!(
+        *linear_client.comments.lock().await,
+        vec![("issue-1".to_string(), "Looks good to me".to_string())]
+    );
+
+    let retry = service
+        .add_ticket_comment(request)
+        .await
+        .expect("idempotent comment retry should succeed");
+    assert!(retry.idempotent);
+    // Idempotent retry must not call the provider a second time.
+    assert_eq!(linear_client.comments.lock().await.len(), 1);
+
+    let records = external_issues
+        .list_provider_ticket_operations_for_ticket(
+            "linear",
+            "issue",
+            "issue-1",
+            Some("LIN-1"),
+            Some("project-1"),
+        )
+        .await
+        .expect("operation history should load");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].operation, ProviderTicketOperationKind::Comment);
+    assert_eq!(records[0].status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(
+        sink.events()
+            .iter()
+            .map(|event| event.status)
+            .collect::<Vec<_>>(),
+        vec![
+            ProviderTicketOperationStatus::Pending,
+            ProviderTicketOperationStatus::Succeeded
+        ]
+    );
+}
+
+#[tokio::test]
+async fn add_comment_on_disabled_provider_records_failed_operation() {
+    let linear_client = Arc::new(RecordingLinearClient::default());
+    let linear = disabled_linear_service(Arc::clone(&linear_client));
+    let external_issues = external_issue_service();
+    let (service, _sink) = service_with_sink(
+        disabled_atlassian_service(Arc::new(RecordingAtlassianClient::default())),
+        linear,
+        Arc::clone(&external_issues),
+    );
+
+    let error = service
+        .add_ticket_comment(TicketCommentRequest {
+            ticket: linear_ticket(),
+            body_markdown: "blocked".to_string(),
+            client_operation_id: Some("op-linear-comment-disabled".to_string()),
+        })
+        .await
+        .expect_err("disabled provider should fail to comment");
+
+    assert_eq!(error, "Linear integration is not enabled");
+    assert!(linear_client.comments.lock().await.is_empty());
+    let records = external_issues
+        .list_provider_ticket_operations_for_ticket(
+            "linear",
+            "issue",
+            "issue-1",
+            Some("LIN-1"),
+            Some("project-1"),
+        )
+        .await
+        .expect("operation history should load");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].operation, ProviderTicketOperationKind::Comment);
+    assert_eq!(records[0].status, ProviderTicketOperationStatus::Failed);
+}
+
+#[tokio::test]
+async fn linked_jira_comment_writes_ticket_comment_sync_record() {
+    let atlassian_client = Arc::new(RecordingAtlassianClient::default());
+    let atlassian = enabled_atlassian_service(Arc::clone(&atlassian_client)).await;
+    let external_issues = external_issue_service();
+    let link = external_issues
+        .upsert_link(ExternalIssueLinkUpsert {
+            provider: "atlassian".to_string(),
+            external_kind: "jira".to_string(),
+            external_id: "JRA-1".to_string(),
+            external_key: Some("JRA-1".to_string()),
+            external_url: Some("https://jira.test/browse/JRA-1".to_string()),
+            local_object: ExternalIssueLocalObject::task("task-1"),
+            local_project_id: Some("project-1".to_string()),
+            local_sha: Some("abc123".to_string()),
+            local_state: Some("ready".to_string()),
+            idempotency_key: "atlassian:jira:JRA-1:task:task-1".to_string(),
+            metadata_json: None,
+        })
+        .await
+        .expect("link should save");
+    let (service, _sink) = service_with_sink(
+        atlassian,
+        disabled_linear_service(Arc::new(RecordingLinearClient::default())),
+        Arc::clone(&external_issues),
+    );
+
+    let result = service
+        .add_ticket_comment(TicketCommentRequest {
+            ticket: jira_ticket(),
+            body_markdown: "Linked comment".to_string(),
+            client_operation_id: Some("op-jira-comment".to_string()),
+        })
+        .await
+        .expect("jira comment should succeed");
+
+    assert_eq!(result.operation.link_id.as_deref(), Some(link.id.as_str()));
+    assert_eq!(
+        *atlassian_client.comments.lock().await,
+        vec![("JRA-1".to_string(), "Linked comment".to_string())]
+    );
+    let sync_records = external_issues
+        .list_sync_records_for_link(&link.id)
+        .await
+        .expect("sync records should load");
+    assert_eq!(sync_records.len(), 1);
+    assert_eq!(sync_records[0].sync_kind, "ticket_comment");
+    assert_eq!(sync_records[0].status, ExternalIssueSyncStatus::Succeeded);
+}
+
+#[test]
+fn tauri_event_sink_emits_operation_updated_event_to_listeners() {
+    use std::sync::mpsc;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Listener;
+
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock tauri app should build");
+    let handle = app.handle().clone();
+
+    let (tx, rx) = mpsc::channel::<String>();
+    handle.listen(TICKETING_OPERATION_EVENT, move |event| {
+        let _ = tx.send(event.payload().to_string());
+    });
+
+    let sink = TauriTicketingEventSink::new(handle);
+    sink.emit_ticketing_operation_event(TicketingOperationEvent {
+        provider: "linear".to_string(),
+        external_kind: "issue".to_string(),
+        external_id: "issue-1".to_string(),
+        external_key: Some("LIN-1".to_string()),
+        local_project_id: Some("project-1".to_string()),
+        operation_id: "operation-1".to_string(),
+        operation: ProviderTicketOperationKind::Comment,
+        client_operation_id: "client-op-1".to_string(),
+        status: ProviderTicketOperationStatus::Succeeded,
+        provider_operation_id: Some("comment-1".to_string()),
+        error_message: None,
+    });
+
+    let payload = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("listener should receive the emitted ticketing operation event");
+    assert!(payload.contains("\"provider\":\"linear\""));
+    assert!(payload.contains("\"operationId\":\"operation-1\""));
+    assert!(payload.contains("\"status\":\"succeeded\""));
+    assert!(payload.contains("\"operation\":\"comment\""));
+}
