@@ -395,7 +395,7 @@ export function TicketDetailSheet({
     }}>
       <DialogContent
         hideCloseButton
-        className="left-auto right-0 top-12 h-[calc(100vh-3rem)] max-w-[880px] translate-x-0 translate-y-0 rounded-none p-0"
+        className="left-auto right-0 top-12 h-[calc(100vh-3rem)] w-[64vw] min-w-[820px] max-w-[1180px] translate-x-0 translate-y-0 rounded-none p-0"
         style={{
           backgroundColor: "var(--bg-elevated)",
           borderColor: "var(--border-subtle)",
@@ -422,15 +422,7 @@ export function TicketDetailSheet({
                 </Button>
               </DialogHeader>
               <div className="min-h-0 flex-1 overflow-auto p-5">
-                <div className="flex flex-wrap items-center gap-2 text-sm">
-                  <span className="inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-xs font-medium">
-                    <span
-                      className="h-2 w-2 rounded-full"
-                      aria-hidden="true"
-                      style={{ backgroundColor: categoryToken(ticket.state.category) }}
-                    />
-                    {ticket.state.name}
-                  </span>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
                   <span className="text-xs text-[var(--text-muted)]">
                     Updated {formatTicketDate(ticket.updatedAt)}
                   </span>
@@ -479,79 +471,87 @@ export function TicketDetailSheet({
                   </div>
                 )}
 
-                <div className="mt-4 flex flex-wrap items-center gap-2">
-                  <ControlTooltip reason={statusDisabledReason}>
-                    <select
-                      aria-label="Ticket status"
-                      value={ticket.state.id}
-                      disabled={Boolean(statusDisabledReason) || isTransitionPending}
-                      onChange={(event) => handleStatusChange(event.target.value)}
-                      className="h-8 min-w-[160px] rounded-md px-2 text-xs outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px] disabled:cursor-not-allowed disabled:opacity-50"
-                      style={{
-                        backgroundColor: "var(--bg-surface)",
-                        borderColor: "var(--border-subtle)",
-                        borderStyle: "solid",
-                        borderWidth: "1px",
-                        color: "var(--text-primary)",
-                      }}
-                    >
-                      <option value={ticket.state.id}>{ticket.state.name}</option>
-                      {transitions
-                        .filter((transition) => transition.toStateId !== ticket.state.id)
-                        .map((transition) => (
-                          <option
-                            key={`${transition.toStateId}:${transition.providerTransitionId ?? ""}`}
-                            value={transition.toStateId}
-                            disabled={Boolean(transition.disabledReason)}
-                          >
-                            {transition.name}
-                          </option>
-                        ))}
-                    </select>
-                  </ControlTooltip>
-                  {ticket.assignee ? (
+                <div className="mt-5 grid grid-cols-[84px_minmax(0,1fr)] items-center gap-x-4 gap-y-3 text-sm">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                    Status
+                  </span>
+                  <div className="flex min-w-0 items-center gap-2">
                     <span
-                      className="inline-flex items-center gap-2 rounded-md px-2 py-1"
-                      style={{
-                        backgroundColor: "var(--bg-surface)",
-                        borderColor: "var(--border-subtle)",
-                        borderStyle: "solid",
-                        borderWidth: "1px",
-                      }}
-                    >
-                      <span className="text-[10px] font-semibold uppercase text-[var(--text-muted)]">
-                        Assignee
-                      </span>
-                      <TicketAssigneeChip person={ticket.assignee} size="md" />
-                    </span>
-                  ) : (
-                    <ControlTooltip reason={assignDisabledReason}>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={Boolean(assignDisabledReason) || isAssignPending}
-                        onClick={() => void onAssignToMe?.()}
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      aria-hidden="true"
+                      style={{ backgroundColor: categoryToken(ticket.state.category) }}
+                    />
+                    <ControlTooltip reason={statusDisabledReason}>
+                      <select
+                        aria-label="Ticket status"
+                        value={ticket.state.id}
+                        disabled={Boolean(statusDisabledReason) || isTransitionPending}
+                        onChange={(event) => handleStatusChange(event.target.value)}
+                        className="h-8 min-w-[180px] max-w-[280px] rounded-md px-2 text-xs outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px] disabled:cursor-not-allowed disabled:opacity-50"
+                        style={{
+                          backgroundColor: "var(--bg-surface)",
+                          borderColor: "var(--border-subtle)",
+                          borderStyle: "solid",
+                          borderWidth: "1px",
+                          color: "var(--text-primary)",
+                        }}
                       >
-                        <UserCheck className="h-3.5 w-3.5" aria-hidden="true" />
-                        {isAssignPending ? "Assigning" : "Assign to me"}
-                      </Button>
+                        <option value={ticket.state.id}>{ticket.state.name}</option>
+                        {transitions
+                          .filter((transition) => transition.toStateId !== ticket.state.id)
+                          .map((transition) => (
+                            <option
+                              key={`${transition.toStateId}:${transition.providerTransitionId ?? ""}`}
+                              value={transition.toStateId}
+                              disabled={Boolean(transition.disabledReason)}
+                            >
+                              {transition.name}
+                            </option>
+                          ))}
+                      </select>
                     </ControlTooltip>
-                  )}
-                  {canClearAssignee && (
-                    <ControlTooltip reason={assignDisabledReason}>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={Boolean(assignDisabledReason) || isAssignPending}
-                        onClick={() => void onClearAssignee?.()}
-                      >
-                        <UserX className="h-3.5 w-3.5" aria-hidden="true" />
-                        {isAssignPending ? "Clearing" : "Clear assignee"}
-                      </Button>
-                    </ControlTooltip>
-                  )}
+                  </div>
+
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                    Assignee
+                  </span>
+                  <div className="flex min-w-0 items-center gap-2">
+                    {ticket.assignee ? (
+                      <>
+                        <TicketAssigneeChip person={ticket.assignee} size="md" />
+                        {canClearAssignee && (
+                          <ControlTooltip reason={assignDisabledReason}>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 gap-1 px-2 text-[var(--text-muted)]"
+                              disabled={Boolean(assignDisabledReason) || isAssignPending}
+                              onClick={() => void onClearAssignee?.()}
+                              aria-label="Clear assignee"
+                              title="Clear assignee"
+                            >
+                              <UserX className="h-3.5 w-3.5" aria-hidden="true" />
+                              {isAssignPending ? "Clearing" : "Clear"}
+                            </Button>
+                          </ControlTooltip>
+                        )}
+                      </>
+                    ) : (
+                      <ControlTooltip reason={assignDisabledReason}>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={Boolean(assignDisabledReason) || isAssignPending}
+                          onClick={() => void onAssignToMe?.()}
+                        >
+                          <UserCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                          {isAssignPending ? "Assigning" : "Assign to me"}
+                        </Button>
+                      </ControlTooltip>
+                    )}
+                  </div>
                 </div>
 
                 <section className="mt-5">

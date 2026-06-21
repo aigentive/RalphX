@@ -67,7 +67,6 @@ describe("TicketDetailSheet assignee control", () => {
     renderSheet();
 
     expect(screen.getByRole("button", { name: /assign to me/i })).toBeInTheDocument();
-    expect(screen.queryByText("Assignee")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /clear assignee/i })).not.toBeInTheDocument();
   });
 
