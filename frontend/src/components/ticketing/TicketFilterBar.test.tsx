@@ -66,4 +66,20 @@ describe("TicketFilterBar", () => {
     fireEvent.change(select, { target: { value: "" } });
     expect(props.onFiltersChange).toHaveBeenCalledWith({ assignee: null });
   });
+
+  it("gives every filter select an accessible name and the unified treatment", () => {
+    renderBar();
+
+    const container = screen.getByRole("combobox", { name: "Project" });
+    const status = screen.getByRole("combobox", { name: "Status" });
+    const assignee = screen.getByRole("combobox", { name: /assignee/i });
+
+    for (const select of [container, status, assignee]) {
+      expect(select.className).toContain("appearance-none");
+      expect(select.className).toContain(
+        "focus-visible:[outline:2px_solid_var(--border-focus)]",
+      );
+      expect((select as HTMLSelectElement).style.backgroundColor).toBe("var(--bg-elevated)");
+    }
+  });
 });

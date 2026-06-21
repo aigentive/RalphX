@@ -58,6 +58,7 @@ import {
   isTicketUpdatedSince,
   ticketRefKey,
 } from "./ticketing-read-state";
+import { ticketSelectClassName, ticketSelectStyle, ticketSelectOptionStyle } from "./ticket-select-styles";
 import { providerLabel, ticketKey } from "./ticketing-utils";
 import { useAfterPaint } from "./useAfterPaint";
 
@@ -186,21 +187,16 @@ function StartWorkDialog({
           <label className="grid gap-1.5 text-sm">
             Project
             <select
-              className="h-9 rounded-md px-2 text-sm outline-none"
+              aria-label="Project"
+              className={ticketSelectClassName("md")}
               value={selected.projectId}
               onChange={(event) =>
                 onSelectionChange({ ...selected, projectId: event.target.value })
               }
-              style={{
-                backgroundColor: "var(--bg-elevated)",
-                borderColor: "var(--border-default)",
-                borderStyle: "solid",
-                borderWidth: "1px",
-                color: "var(--text-primary)",
-              }}
+              style={ticketSelectStyle}
             >
               {projects.map((project) => (
-                <option key={project.id} value={project.id}>
+                <option key={project.id} value={project.id} style={ticketSelectOptionStyle}>
                   {project.name}
                 </option>
               ))}
@@ -210,7 +206,8 @@ function StartWorkDialog({
           <label className="grid gap-1.5 text-sm">
             Conversation type
             <select
-              className="h-9 rounded-md px-2 text-sm outline-none"
+              aria-label="Conversation type"
+              className={ticketSelectClassName("md")}
               value={selected.mode}
               onChange={(event) =>
                 onSelectionChange({
@@ -218,16 +215,10 @@ function StartWorkDialog({
                   mode: event.target.value as AgentConversationWorkspaceMode,
                 })
               }
-              style={{
-                backgroundColor: "var(--bg-elevated)",
-                borderColor: "var(--border-default)",
-                borderStyle: "solid",
-                borderWidth: "1px",
-                color: "var(--text-primary)",
-              }}
+              style={ticketSelectStyle}
             >
               {START_WORK_MODES.map((mode) => (
-                <option key={mode.value} value={mode.value}>
+                <option key={mode.value} value={mode.value} style={ticketSelectOptionStyle}>
                   {mode.label}
                 </option>
               ))}

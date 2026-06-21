@@ -34,6 +34,7 @@ pub mod task_metadata;
 pub mod task_qa;
 pub mod task_step;
 pub mod team;
+pub mod ticket_canonical_branch;
 pub mod types;
 pub mod workflow;
 
@@ -159,6 +160,7 @@ pub use task_step::{StepProgressSummary, TaskStep, TaskStepStatus};
 pub use team::{
     TeamMessageId, TeamMessageRecord, TeamSession, TeamSessionId, TeammateCost, TeammateSnapshot,
 };
+pub use ticket_canonical_branch::TicketCanonicalBranch;
 pub use types::{
     ApiKeyId, ChatMessageId, ExecutionPlanId, IdeationSessionId, ProjectId, ReviewIssueId,
     SessionLinkId, TaskId, TaskProposalId, TaskQAId, TaskStepId,

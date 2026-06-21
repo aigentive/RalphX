@@ -8,6 +8,7 @@ import type { TicketingFilterState, TicketingViewMode } from "@/stores/ticketing
 import { cn } from "@/lib/utils";
 
 import { UNASSIGNED_ASSIGNEE } from "./ticketing-read-state";
+import { ticketSelectClassName, ticketSelectStyle, ticketSelectOptionStyle } from "./ticket-select-styles";
 
 interface TicketFilterBarProps {
   containers: TicketingContainer[];
@@ -100,20 +101,15 @@ export function TicketFilterBar({
       <label className="flex min-w-[180px] items-center gap-2 text-xs text-[var(--text-muted)]">
         {containerLabel}
         <select
-          className="h-8 min-w-[150px] rounded-md px-2 text-sm outline-none"
+          aria-label={containerLabel}
+          className={ticketSelectClassName("sm", "min-w-[150px] max-w-[220px]")}
           value={activeContainerId ?? ""}
           onChange={(event) => onContainerChange(event.target.value || null)}
-          style={{
-            backgroundColor: "var(--bg-elevated)",
-            borderColor: "var(--border-default)",
-            borderStyle: "solid",
-            borderWidth: "1px",
-            color: "var(--text-primary)",
-          }}
+          style={ticketSelectStyle}
         >
-          <option value="">{allContainersLabel}</option>
+          <option value="" style={ticketSelectOptionStyle}>{allContainersLabel}</option>
           {containers.map((container) => (
-            <option key={container.id} value={container.id}>
+            <option key={container.id} value={container.id} style={ticketSelectOptionStyle}>
               {container.name}
             </option>
           ))}
@@ -123,24 +119,19 @@ export function TicketFilterBar({
       <label className="flex min-w-[170px] items-center gap-2 text-xs text-[var(--text-muted)]">
         Status
         <select
-          className="h-8 min-w-[120px] rounded-md px-2 text-sm outline-none"
+          aria-label="Status"
+          className={ticketSelectClassName("sm", "min-w-[120px] max-w-[200px]")}
           value={filters.stateIds[0] ?? ""}
           onChange={(event) =>
             onFiltersChange({
               stateIds: event.target.value ? [event.target.value] : [],
             })
           }
-          style={{
-            backgroundColor: "var(--bg-elevated)",
-            borderColor: "var(--border-default)",
-            borderStyle: "solid",
-            borderWidth: "1px",
-            color: "var(--text-primary)",
-          }}
+          style={ticketSelectStyle}
         >
-          <option value="">Any status</option>
+          <option value="" style={ticketSelectOptionStyle}>Any status</option>
           {columns.map((column) => (
-            <option key={column.id} value={column.id}>
+            <option key={column.id} value={column.id} style={ticketSelectOptionStyle}>
               {column.name}
             </option>
           ))}
@@ -150,21 +141,16 @@ export function TicketFilterBar({
       <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
         Assignee
         <select
-          className="h-8 min-w-[130px] rounded-md px-2 text-sm outline-none"
+          aria-label="Assignee"
+          className={ticketSelectClassName("sm", "min-w-[130px] max-w-[200px]")}
           value={filters.assignee ?? ""}
           onChange={(event) => onFiltersChange({ assignee: event.target.value || null })}
-          style={{
-            backgroundColor: "var(--bg-elevated)",
-            borderColor: "var(--border-default)",
-            borderStyle: "solid",
-            borderWidth: "1px",
-            color: "var(--text-primary)",
-          }}
+          style={ticketSelectStyle}
         >
-          <option value="">Everyone</option>
-          <option value={UNASSIGNED_ASSIGNEE}>Unassigned</option>
+          <option value="" style={ticketSelectOptionStyle}>Everyone</option>
+          <option value={UNASSIGNED_ASSIGNEE} style={ticketSelectOptionStyle}>Unassigned</option>
           {assigneeOptions.map((name) => (
-            <option key={name} value={name}>
+            <option key={name} value={name} style={ticketSelectOptionStyle}>
               {name}
             </option>
           ))}

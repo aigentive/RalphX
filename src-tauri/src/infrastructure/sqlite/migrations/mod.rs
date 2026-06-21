@@ -344,6 +344,9 @@ mod v20260619144000_durable_queued_messages_tests;
 mod v20260620075610_provider_ticket_operations;
 #[cfg(test)]
 mod v20260620075610_provider_ticket_operations_tests;
+mod v20260621201947_ticket_canonical_branches;
+#[cfg(test)]
+mod v20260621201947_ticket_canonical_branches_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -434,7 +437,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260620075610;
+pub const SCHEMA_VERSION: i64 = 20260621201947;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1208,6 +1211,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260620075610,
         name: "provider_ticket_operations",
         migrate: v20260620075610_provider_ticket_operations::migrate,
+    },
+    Migration {
+        version: 20260621201947,
+        name: "ticket_canonical_branches",
+        migrate: v20260621201947_ticket_canonical_branches::migrate,
     },
 ];
 

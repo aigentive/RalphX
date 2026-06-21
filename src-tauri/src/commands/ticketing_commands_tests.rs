@@ -971,3 +971,73 @@ fn pull_request_items_map_pr_and_branch_only_workspaces() {
     assert!(!branch_only.active);
     assert_eq!(branch_only.id, "conv-2");
 }
+
+fn base_test_start_input() -> StartAgentConversationInput {
+    StartAgentConversationInput {
+        project_id: "project-1".to_string(),
+        content: "Start work".to_string(),
+        conversation_id: None,
+        provider_harness: None,
+        model_override: None,
+        logical_effort: None,
+        mode: Some("edit".to_string()),
+        base_ref_kind: Some("project_default".to_string()),
+        base_ref: Some("client-supplied-branch".to_string()),
+        base_display_name: Some("Client base".to_string()),
+        base_source_pull_request: None,
+        composer_project_references: Vec::new(),
+        composer_integration_references: Vec::new(),
+        composer_artifact_references: Vec::new(),
+    }
+}
+
+#[test]
+fn ticket_ref_issue_key_prefers_key_then_falls_back_to_id() {
+    let with_key = TicketRefInput {
+        provider: "linear".to_string(),
+        id: "abc-123".to_string(),
+        key: Some("WISE-24".to_string()),
+    };
+    assert_eq!(ticket_ref_issue_key(&with_key), "WISE-24");
+
+    let without_key = TicketRefInput {
+        provider: "linear".to_string(),
+        id: "abc-123".to_string(),
+        key: None,
+    };
+    assert_eq!(ticket_ref_issue_key(&without_key), "abc-123");
+
+    let blank_key = TicketRefInput {
+        provider: "linear".to_string(),
+        id: "abc-123".to_string(),
+        key: Some("   ".to_string()),
+    };
+    assert_eq!(ticket_ref_issue_key(&blank_key), "abc-123");
+}
+
+#[test]
+fn workspace_modes_inherit_canonical_branch_chat_does_not() {
+    assert!(ticket_start_inherits_canonical_branch(Some("edit")));
+    assert!(ticket_start_inherits_canonical_branch(Some("plan")));
+    // Default (unset) is edit, which is workspace-creating.
+    assert!(ticket_start_inherits_canonical_branch(None));
+    // Chat-only ticket starts create no workspace, so they skip base injection.
+    assert!(!ticket_start_inherits_canonical_branch(Some("chat")));
+}
+
+#[test]
+fn apply_canonical_base_overwrites_to_local_branch() {
+    let mut start = base_test_start_input();
+
+    apply_ticket_canonical_branch_base(&mut start, "WISE-24", "ralphx/ticket/linear-wise-24");
+
+    assert_eq!(start.base_ref_kind.as_deref(), Some("local_branch"));
+    assert_eq!(
+        start.base_ref.as_deref(),
+        Some("ralphx/ticket/linear-wise-24")
+    );
+    assert_eq!(
+        start.base_display_name.as_deref(),
+        Some("Ticket WISE-24 (ralphx/ticket/linear-wise-24)")
+    );
+}

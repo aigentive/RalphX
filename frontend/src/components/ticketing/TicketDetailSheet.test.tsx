@@ -93,6 +93,21 @@ describe("TicketDetailSheet assignee control", () => {
     expect(screen.queryByRole("button", { name: /assign to me/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /clear assignee/i })).not.toBeInTheDocument();
   });
+
+  it("applies the unified select treatment to the status control", () => {
+    renderSheet();
+
+    const status = screen.getByRole("combobox", { name: "Ticket status" });
+    // Caret + visible focus ring added by the shared helper.
+    expect(status.className).toContain("appearance-none");
+    expect(status.className).toContain(
+      "focus-visible:[outline:2px_solid_var(--border-focus)]",
+    );
+    // Denser sheet typography preserved.
+    expect(status.className).toContain("text-xs");
+    // Unified off the former --bg-surface outlier onto --bg-elevated.
+    expect((status as HTMLSelectElement).style.backgroundColor).toBe("var(--bg-elevated)");
+  });
 });
 
 describe("TicketDetailSheet new-comment awareness", () => {

@@ -27,6 +27,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { TicketAssigneeChip } from "./TicketAssigneeChip";
 import { TicketLabels } from "./TicketLabels";
 import { countNewComments, isCommentNewSince, sortCommentsByCreatedAt } from "./ticketing-read-state";
+import { ticketSelectClassName, ticketSelectStyle, ticketSelectOptionStyle } from "./ticket-select-styles";
 import { categoryToken, formatTicketDate, providerLabel, ticketKey } from "./ticketing-utils";
 
 interface TicketDetailSheetProps {
@@ -618,16 +619,10 @@ export function TicketDetailSheet({
                         value={ticket.state.id}
                         disabled={Boolean(statusDisabledReason) || isTransitionPending}
                         onChange={(event) => handleStatusChange(event.target.value)}
-                        className="h-8 min-w-[180px] max-w-[280px] rounded-md px-2 text-xs outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px] disabled:cursor-not-allowed disabled:opacity-50"
-                        style={{
-                          backgroundColor: "var(--bg-surface)",
-                          borderColor: "var(--border-subtle)",
-                          borderStyle: "solid",
-                          borderWidth: "1px",
-                          color: "var(--text-primary)",
-                        }}
+                        className={ticketSelectClassName("sm", "min-w-[180px] max-w-[280px] text-xs")}
+                        style={ticketSelectStyle}
                       >
-                        <option value={ticket.state.id}>{ticket.state.name}</option>
+                        <option value={ticket.state.id} style={ticketSelectOptionStyle}>{ticket.state.name}</option>
                         {transitions
                           .filter((transition) => transition.toStateId !== ticket.state.id)
                           .map((transition) => (
@@ -635,6 +630,7 @@ export function TicketDetailSheet({
                               key={`${transition.toStateId}:${transition.providerTransitionId ?? ""}`}
                               value={transition.toStateId}
                               disabled={Boolean(transition.disabledReason)}
+                              style={ticketSelectOptionStyle}
                             >
                               {transition.name}
                             </option>

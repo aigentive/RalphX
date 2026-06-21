@@ -939,6 +939,27 @@ describe("TicketingDashboardView", () => {
     );
   });
 
+  it("applies the unified md select treatment to the Start Work dialog pickers", async () => {
+    mockConnectedDashboard();
+
+    renderDashboard();
+
+    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Start RalphX work" }),
+    );
+    expect(await screen.findByRole("dialog")).toHaveTextContent("Start RalphX Work");
+
+    const project = screen.getByRole("combobox", { name: "Project" });
+    const conversationType = screen.getByRole("combobox", { name: "Conversation type" });
+
+    for (const select of [project, conversationType]) {
+      expect(select.className).toContain("h-9");
+      expect(select.className).toContain("appearance-none");
+      expect((select as HTMLSelectElement).style.backgroundColor).toBe("var(--bg-elevated)");
+    }
+  });
+
   it("binds an existing conversation to the ticket via the provider-correct assign API", async () => {
     mockConnectedDashboard();
     vi.mocked(chatHooks.useConversations).mockReturnValue({
