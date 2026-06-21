@@ -1,10 +1,16 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { TicketSummary } from "@/api/ticketing";
 
+import { TooltipProvider } from "@/components/ui/tooltip";
+
 import { resolveTicketKanbanMove } from "./ticketing-kanban-utils";
 import { TicketKanbanView, TicketListView } from "./TicketViews";
+
+const { openUrlMock } = vi.hoisted(() => ({ openUrlMock: vi.fn() }));
+
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: openUrlMock }));
 
 const tickets: TicketSummary[] = [
   {
@@ -46,7 +52,7 @@ describe("TicketListView", () => {
     expect(screen.getByText("Unassigned")).toBeInTheDocument();
   });
 
-  it("shows a separate open-PR indicator and conversation count for linked RalphX work", () => {
+  it("shows the conversation count for linked RalphX work without a PR icon in the badge", () => {
     render(
       <TicketListView
         tickets={[
@@ -68,34 +74,114 @@ describe("TicketListView", () => {
       />,
     );
 
-    expect(screen.getByRole("img", { name: /1 open pull request/i })).toBeInTheDocument();
+    // The RX badge keeps the conversation (suitcase) count...
     expect(screen.getByRole("img", { name: /2 RalphX conversations/i })).toBeInTheDocument();
+    // ...but no longer carries the open-PR icon (that moved to the dedicated PR column).
+    expect(screen.queryByRole("img", { name: /open pull request/i })).not.toBeInTheDocument();
   });
 
-  it("hides the open-PR indicator when no linked conversation has an open PR", () => {
+  it("renders an interactive PR control opening the PR url when the ticket has a representative open PR", async () => {
+    openUrlMock.mockClear();
     render(
-      <TicketListView
-        tickets={[
-          {
-            ref: { provider: "linear", id: "L-8", key: "L-8" },
-            title: "No open PR",
-            state: { id: "todo", name: "To Do", category: "todo" },
-            labels: [],
-            updatedAt: "2026-06-19T22:00:00.000Z",
-            url: null,
-            associationCount: 1,
-            openPrCount: 0,
-          },
-        ]}
-        hasNextPage={false}
-        isFetchingNextPage={false}
-        onLoadMore={vi.fn()}
-        onSelectTicket={vi.fn()}
-      />,
+      <TooltipProvider>
+        <TicketListView
+          tickets={[
+            {
+              ref: { provider: "linear", id: "L-7", key: "L-7" },
+              title: "Has open PR",
+              state: { id: "started", name: "In Progress", category: "in_progress" },
+              labels: [],
+              updatedAt: "2026-06-19T22:00:00.000Z",
+              url: null,
+              associationCount: 2,
+              openPrCount: 1,
+              openPrNumber: 42,
+              openPrUrl: "https://github.com/x/y/pull/42",
+            },
+          ]}
+          hasNextPage={false}
+          isFetchingNextPage={false}
+          onLoadMore={vi.fn()}
+          onSelectTicket={vi.fn()}
+        />
+      </TooltipProvider>,
     );
 
-    expect(screen.queryByRole("img", { name: /open pull request/i })).not.toBeInTheDocument();
+    const prButton = screen.getByRole("button", { name: /open pull request #42 in browser/i });
+    expect(prButton).toHaveTextContent("#42");
+
+    fireEvent.click(prButton);
+    await waitFor(() => {
+      expect(openUrlMock).toHaveBeenCalledWith("https://github.com/x/y/pull/42");
+    });
+  });
+
+  it("does not render the PR control when the ticket has no representative open PR", () => {
+    render(
+      <TooltipProvider>
+        <TicketListView
+          tickets={[
+            {
+              ref: { provider: "linear", id: "L-8", key: "L-8" },
+              title: "No open PR",
+              state: { id: "todo", name: "To Do", category: "todo" },
+              labels: [],
+              updatedAt: "2026-06-19T22:00:00.000Z",
+              url: null,
+              associationCount: 1,
+              openPrCount: 0,
+              openPrNumber: null,
+              openPrUrl: null,
+            },
+          ]}
+          hasNextPage={false}
+          isFetchingNextPage={false}
+          onLoadMore={vi.fn()}
+          onSelectTicket={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: /open pull request .* in browser/i }),
+    ).not.toBeInTheDocument();
+    // The RX badge conversation count still renders.
     expect(screen.getByRole("img", { name: /1 RalphX conversation/i })).toBeInTheDocument();
+  });
+
+  it("opening the PR control does not also select the ticket row", async () => {
+    openUrlMock.mockClear();
+    const onSelectTicket = vi.fn();
+    render(
+      <TooltipProvider>
+        <TicketListView
+          tickets={[
+            {
+              ref: { provider: "linear", id: "L-7", key: "L-7" },
+              title: "Has open PR",
+              state: { id: "started", name: "In Progress", category: "in_progress" },
+              labels: [],
+              updatedAt: "2026-06-19T22:00:00.000Z",
+              url: null,
+              associationCount: 2,
+              openPrCount: 1,
+              openPrNumber: 42,
+              openPrUrl: "https://github.com/x/y/pull/42",
+            },
+          ]}
+          hasNextPage={false}
+          isFetchingNextPage={false}
+          onLoadMore={vi.fn()}
+          onSelectTicket={onSelectTicket}
+        />
+      </TooltipProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /open pull request #42 in browser/i }));
+    await waitFor(() => {
+      expect(openUrlMock).toHaveBeenCalledTimes(1);
+    });
+    expect(onSelectTicket).not.toHaveBeenCalled();
   });
 
   it("shows up to two labels with a +N overflow chip on dense rows", () => {

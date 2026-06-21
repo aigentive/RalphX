@@ -25,11 +25,19 @@ import { useState, type ReactNode } from "react";
 
 import type { TicketingColumn, TicketSummary } from "@/api/ticketing";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TicketAssigneeChip } from "./TicketAssigneeChip";
 import { TicketLabels } from "./TicketLabels";
 import { groupTicketsByStatus } from "./ticketing-read-state";
 import { resolveTicketKanbanMove, ticketDragId } from "./ticketing-kanban-utils";
 import { categoryToken, formatTicketDate, ticketButtonLabel, ticketKey } from "./ticketing-utils";
+
+/**
+ * Shared grid template for list rows and the column-aligned PR overlay.
+ * Columns: Key | Status | Title | Assignee | PR | RX | Updated.
+ */
+const TICKET_ROW_GRID =
+  "grid grid-cols-[88px_28px_minmax(200px,1fr)_140px_64px_48px_96px] items-center gap-3 px-4";
 
 /** Colored status glyph (Linear-style) with the state name as tooltip/accessible name. */
 function TicketStatusIcon({ state }: { state: TicketSummary["state"] }) {
@@ -83,16 +91,9 @@ function UnreadCommentIndicator() {
 }
 
 /** RalphX work badge: number of agent conversations/tasks linked to this ticket. */
-function TicketAssociationBadge({
-  count,
-  openPrCount,
-}: {
-  count: number;
-  openPrCount: number;
-}) {
+function TicketAssociationBadge({ count }: { count: number }) {
   const hasConversations = count > 0;
-  const hasOpenPr = openPrCount > 0;
-  if (!hasConversations && !hasOpenPr) {
+  if (!hasConversations) {
     return (
       <span
         role="img"
@@ -105,32 +106,59 @@ function TicketAssociationBadge({
     );
   }
   const conversationLabel = `${count} RalphX conversation${count === 1 ? "" : "s"}`;
-  const prLabel = `${openPrCount} open pull request${openPrCount === 1 ? "" : "s"}`;
   return (
     <span className="inline-flex items-center gap-2 text-xs font-medium">
-      {hasOpenPr && (
-        <span
-          role="img"
-          aria-label={prLabel}
-          title={`${prLabel} across linked RalphX conversations`}
-          className="inline-flex items-center gap-1"
-          style={{ color: "var(--status-success)" }}
-        >
-          <GitPullRequestArrow className="h-3.5 w-3.5" aria-hidden="true" />
-          {openPrCount}
-        </span>
-      )}
       <span
         role="img"
         aria-label={conversationLabel}
         title={`${conversationLabel} (open the ticket to view them)`}
         className="inline-flex items-center gap-1"
-        style={{ color: hasConversations ? "var(--status-info)" : "var(--text-muted)" }}
+        style={{ color: "var(--status-info)" }}
       >
         <Briefcase className="h-3.5 w-3.5" aria-hidden="true" />
         {count}
       </span>
     </span>
+  );
+}
+
+/**
+ * Interactive "open this ticket's representative open PR in the browser" control.
+ * Rendered as a sibling overlay aligned to the list row's PR column (not nested
+ * inside the row button) so the markup stays a11y-valid. Icon-primary, so it
+ * carries an explicit accessible name plus the app Tooltip (native title alone
+ * is not sufficient — see .claude/rules/icon-only-buttons.md).
+ */
+function TicketPrOpenControl({
+  prNumber,
+  prUrl,
+}: {
+  prNumber: number;
+  prUrl: string;
+}) {
+  const label = `Open pull request #${prNumber} in browser`;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          className="pointer-events-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:1px]"
+          onClick={(event) => {
+            event.stopPropagation();
+            void (async () => {
+              const { openUrl } = await import("@tauri-apps/plugin-opener");
+              await openUrl(prUrl);
+            })();
+          }}
+          style={{ color: "var(--status-success)" }}
+        >
+          <GitPullRequestArrow className="h-3.5 w-3.5" aria-hidden="true" />
+          <span>#{prNumber}</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -231,7 +259,7 @@ export function TicketListView({
                 <button
                   type="button"
                   data-ticket-row
-                  className="grid w-full grid-cols-[88px_28px_minmax(200px,1fr)_140px_48px_96px] items-center gap-3 px-4 py-1.5 text-left text-sm hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
+                  className={`${TICKET_ROW_GRID} w-full py-1.5 text-left text-sm hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]`}
                   aria-label={ticketButtonLabel(ticket)}
                   onClick={() => onSelectTicket(ticket)}
                   onKeyDown={(event) => {
@@ -264,9 +292,24 @@ export function TicketListView({
                   <span className="min-w-0">
                     <TicketAssigneeChip person={ticket.assignee} />
                   </span>
-                  <TicketAssociationBadge count={ticket.associationCount} openPrCount={ticket.openPrCount} />
+                  {/* PR column placeholder; the interactive control is rendered in the aligned overlay below. */}
+                  <span aria-hidden="true" />
+                  <TicketAssociationBadge count={ticket.associationCount} />
                   <span className="text-xs text-[var(--text-muted)]">{formatTicketDate(ticket.updatedAt)}</span>
                 </button>
+                {ticket.openPrNumber != null && ticket.openPrUrl != null && (
+                  <div className={`${TICKET_ROW_GRID} pointer-events-none absolute inset-0 py-1.5`}>
+                    <span aria-hidden="true" />
+                    <span aria-hidden="true" />
+                    <span aria-hidden="true" />
+                    <span aria-hidden="true" />
+                    <span className="flex min-w-0 items-center">
+                      <TicketPrOpenControl prNumber={ticket.openPrNumber} prUrl={ticket.openPrUrl} />
+                    </span>
+                    <span aria-hidden="true" />
+                    <span aria-hidden="true" />
+                  </div>
+                )}
                 {canQuickAssign && onQuickAssign && !ticket.assignee && (
                   <QuickAssignButton onClick={() => onQuickAssign(ticket)} />
                 )}
@@ -368,7 +411,18 @@ function TicketKanbanCard({
           {unread && <UnreadCommentIndicator />}
           {ticketKey(ticket.ref)}
         </span>
-        <TicketAssociationBadge count={ticket.associationCount} openPrCount={ticket.openPrCount} />
+        <span className="flex items-center gap-2">
+          {ticket.openPrNumber != null && (
+            <span
+              className="inline-flex items-center gap-1 text-xs font-medium"
+              style={{ color: "var(--status-success)" }}
+            >
+              <GitPullRequestArrow className="h-3.5 w-3.5" aria-hidden="true" />
+              #{ticket.openPrNumber}
+            </span>
+          )}
+          <TicketAssociationBadge count={ticket.associationCount} />
+        </span>
       </div>
       <p className="mt-2 line-clamp-2 text-sm font-medium">{ticket.title}</p>
       {ticket.labels.length > 0 && (

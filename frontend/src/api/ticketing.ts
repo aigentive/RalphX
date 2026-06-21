@@ -115,6 +115,8 @@ export const TicketSummarySchema = z.object({
   url: z.string().nullable().optional(),
   associationCount: z.number().default(0),
   openPrCount: z.number().default(0),
+  openPrNumber: z.number().nullable().optional(),
+  openPrUrl: z.string().nullable().optional(),
 });
 export type TicketSummary = z.infer<typeof TicketSummarySchema>;
 
