@@ -247,10 +247,14 @@ async fn ipc_contract_insights_metric_commands_default_all_projects_and_filter_b
     let all_trends = get_insights_trends(None, Some(0), Some(0), app.state::<AppState>())
         .await
         .expect("all-project trends should load");
+    // Assert on the seeded delivery week itself rather than `.last()`: the seed rows
+    // all fall in a single week, which is not necessarily the current (last) bucket
+    // once wall-clock crosses a week boundary. Mirrors metrics_delivery_trends.rs.
     assert_eq!(
         all_trends
             .weekly_delivery_throughput
-            .last()
+            .iter()
+            .find(|point| point.unified_deliveries > 0)
             .map(|point| point.unified_deliveries),
         Some(3)
     );
@@ -265,7 +269,8 @@ async fn ipc_contract_insights_metric_commands_default_all_projects_and_filter_b
     assert_eq!(
         filtered_trends
             .weekly_delivery_throughput
-            .last()
+            .iter()
+            .find(|point| point.unified_deliveries > 0)
             .map(|point| point.unified_deliveries),
         Some(2)
     );
