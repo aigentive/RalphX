@@ -2,8 +2,8 @@ use super::*;
 use std::sync::Arc;
 
 use crate::application::{
-    AppState, LinearIntegrationSettings, TeamService, TeamStateTracker, TicketingMutationResult,
-    TicketingTicketIdentity, TicketingTransitionOption,
+    AppState, AtlassianJiraAttachment, AtlassianJiraComment, LinearIntegrationSettings, TeamService,
+    TeamStateTracker, TicketingMutationResult, TicketingTicketIdentity, TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
@@ -222,6 +222,422 @@ fn linear_detail_maps_provider_comments() {
     assert_eq!(detail.comments[0].author.as_ref().map(|author| author.name.as_str()), Some("Reviewer"));
     assert_eq!(detail.summary.labels, vec!["backend".to_string()]);
     assert_eq!(detail.summary.project.as_deref(), Some("Platform"));
+}
+
+#[test]
+fn jira_summary_maps_with_empty_metadata_and_provider_state() {
+    let summary = jira_summary_to_ticket(AtlassianResourceSummary {
+        kind: AtlassianResourceKind::Jira,
+        id: "10001".to_string(),
+        key: Some("JRA-1".to_string()),
+        title: "Investigate flaky merge".to_string(),
+        url: Some("https://jira.test/browse/JRA-1".to_string()),
+        excerpt: Some("excerpt is ignored by the summary mapper".to_string()),
+    });
+
+    assert_eq!(summary.ref_.provider, "jira");
+    assert_eq!(summary.ref_.id, "10001");
+    assert_eq!(summary.ref_.key.as_deref(), Some("JRA-1"));
+    assert_eq!(summary.title, "Investigate flaky merge");
+    assert_eq!(summary.url.as_deref(), Some("https://jira.test/browse/JRA-1"));
+    // Jira search summaries carry no assignee/reporter/labels/project metadata.
+    assert!(summary.assignee.is_none());
+    assert!(summary.reporter.is_none());
+    assert!(summary.labels.is_empty());
+    assert!(summary.project.is_none());
+    assert!(summary.priority.is_none());
+    assert_eq!(summary.association_count, 0);
+    // Jira summaries fall back to a synthetic provider-result state.
+    assert_eq!(summary.state.name, "Provider result");
+    assert_eq!(summary.state.category, "other");
+    assert!(!summary.updated_at.is_empty());
+}
+
+#[test]
+fn jira_summary_without_key_keeps_none_key() {
+    let summary = jira_summary_to_ticket(AtlassianResourceSummary {
+        kind: AtlassianResourceKind::Jira,
+        id: "10002".to_string(),
+        key: None,
+        title: "No key issue".to_string(),
+        url: None,
+        excerpt: None,
+    });
+
+    assert!(summary.ref_.key.is_none());
+    assert!(summary.url.is_none());
+}
+
+#[test]
+fn linear_summary_prefers_provider_state_fields_when_present() {
+    let summary = linear_summary_to_ticket(LinearIssueSummary {
+        id: "issue-1".to_string(),
+        key: Some("LIN-1".to_string()),
+        title: "Wire dashboard sync".to_string(),
+        url: Some("https://linear.app/issue/LIN-1".to_string()),
+        excerpt: None,
+        state_id: Some("state-123".to_string()),
+        state_name: Some("In Progress".to_string()),
+        state_category: Some("started".to_string()),
+        state_color: Some("#abcdef".to_string()),
+        assignee: Some("Reef Agent".to_string()),
+        updated_at: Some("2026-06-20T12:00:00Z".to_string()),
+        labels: vec!["frontend".to_string(), "linear".to_string()],
+        project: Some("Platform".to_string()),
+    });
+
+    assert_eq!(summary.ref_.provider, "linear");
+    // Provider-supplied state id/category/color win over derivation.
+    assert_eq!(summary.state.id, "state-123");
+    assert_eq!(summary.state.name, "In Progress");
+    assert_eq!(summary.state.category, "started");
+    assert_eq!(summary.state.color.as_deref(), Some("#abcdef"));
+    assert_eq!(
+        summary.assignee.as_ref().map(|person| person.name.as_str()),
+        Some("Reef Agent")
+    );
+    assert_eq!(summary.labels, vec!["frontend".to_string(), "linear".to_string()]);
+    assert_eq!(summary.project.as_deref(), Some("Platform"));
+    assert_eq!(summary.updated_at, "2026-06-20T12:00:00Z");
+}
+
+#[test]
+fn linear_summary_derives_state_when_provider_fields_missing() {
+    let summary = linear_summary_to_ticket(LinearIssueSummary {
+        id: "issue-2".to_string(),
+        key: None,
+        title: "Untriaged issue".to_string(),
+        url: None,
+        excerpt: None,
+        state_id: None,
+        state_name: Some("Done".to_string()),
+        state_category: None,
+        state_color: None,
+        assignee: None,
+        updated_at: None,
+        labels: Vec::new(),
+        project: None,
+    });
+
+    // With only a state name, the id and category are derived from it.
+    assert_eq!(summary.state.name, "Done");
+    assert_eq!(summary.state.id, "done");
+    assert_eq!(summary.state.category, "done");
+    assert!(summary.assignee.is_none());
+    assert!(summary.labels.is_empty());
+    // Missing updated_at falls back to a generated timestamp.
+    assert!(!summary.updated_at.is_empty());
+}
+
+#[test]
+fn linear_summary_falls_back_to_provider_result_state_name() {
+    let summary = linear_summary_to_ticket(LinearIssueSummary {
+        id: "issue-3".to_string(),
+        key: None,
+        title: "No state issue".to_string(),
+        url: None,
+        excerpt: None,
+        state_id: None,
+        state_name: None,
+        state_category: None,
+        state_color: None,
+        assignee: None,
+        updated_at: None,
+        labels: Vec::new(),
+        project: None,
+    });
+
+    assert_eq!(summary.state.name, "Provider result");
+    assert_eq!(summary.state.id, "provider_result");
+    assert_eq!(summary.state.category, "other");
+}
+
+#[test]
+fn jira_content_maps_description_comments_and_attachments() {
+    let detail = jira_content_to_detail(AtlassianResourceContent {
+        kind: AtlassianResourceKind::Jira,
+        id: "10001".to_string(),
+        key: Some("JRA-1".to_string()),
+        title: "Detailed issue".to_string(),
+        url: Some("https://jira.test/browse/JRA-1".to_string()),
+        body: "Body fallback".to_string(),
+        status: Some("In Review".to_string()),
+        assignee: Some("Assignee Name".to_string()),
+        reporter: Some("Reporter Name".to_string()),
+        updated_at_remote: Some("2026-06-20T09:00:00Z".to_string()),
+        description_markdown: None,
+        description_text: Some("Plain description".to_string()),
+        acceptance_criteria_markdown: Some("- criterion".to_string()),
+        acceptance_criteria_text: None,
+        comments: vec![AtlassianJiraComment {
+            id: Some("comment-1".to_string()),
+            author: Some("Commenter".to_string()),
+            body_markdown: "Comment **md**".to_string(),
+            body_text: "Comment md".to_string(),
+            created_at: Some("2026-06-20T09:30:00Z".to_string()),
+            updated_at: None,
+        }],
+        attachments: vec![AtlassianJiraAttachment {
+            id: Some("attachment-1".to_string()),
+            filename: "diagram.png".to_string(),
+            mime_type: Some("image/png".to_string()),
+            size: Some(2048),
+            author: Some("Uploader".to_string()),
+            content_url: Some("https://jira.test/attachment/1".to_string()),
+            thumbnail_url: Some("https://jira.test/thumb/1".to_string()),
+            created_at: Some("2026-06-20T09:45:00Z".to_string()),
+        }],
+    });
+
+    // status maps into the ticket state name.
+    assert_eq!(detail.summary.state.name, "In Review");
+    assert_eq!(detail.summary.state.category, "in_progress");
+    assert_eq!(
+        detail.summary.assignee.as_ref().map(|p| p.name.as_str()),
+        Some("Assignee Name")
+    );
+    assert_eq!(
+        detail.summary.reporter.as_ref().map(|p| p.name.as_str()),
+        Some("Reporter Name")
+    );
+    assert_eq!(detail.summary.updated_at, "2026-06-20T09:00:00Z");
+    // No description_markdown means it falls back to the body.
+    assert_eq!(detail.description_markdown.as_deref(), Some("Body fallback"));
+    assert_eq!(detail.description_text.as_deref(), Some("Plain description"));
+    assert_eq!(
+        detail.acceptance_criteria_markdown.as_deref(),
+        Some("- criterion")
+    );
+    assert_eq!(detail.comments.len(), 1);
+    assert_eq!(detail.comments[0].id.as_deref(), Some("comment-1"));
+    assert_eq!(detail.comments[0].body_markdown, "Comment **md**");
+    assert_eq!(
+        detail.comments[0].author.as_ref().map(|p| p.name.as_str()),
+        Some("Commenter")
+    );
+    assert_eq!(detail.attachments.len(), 1);
+    assert_eq!(detail.attachments[0].filename, "diagram.png");
+    assert_eq!(detail.attachments[0].mime_type.as_deref(), Some("image/png"));
+    assert_eq!(detail.attachments[0].size, Some(2048));
+    assert_eq!(
+        detail.attachments[0].url.as_deref(),
+        Some("https://jira.test/attachment/1")
+    );
+    // Jira detail mapper never carries transitions inline.
+    assert!(detail.transitions.is_empty());
+    assert!(detail.fetched_at.is_some());
+}
+
+#[test]
+fn jira_content_prefers_description_markdown_over_body() {
+    let detail = jira_content_to_detail(AtlassianResourceContent {
+        kind: AtlassianResourceKind::Jira,
+        id: "10003".to_string(),
+        key: None,
+        title: "Markdown issue".to_string(),
+        url: None,
+        body: "Body fallback".to_string(),
+        status: None,
+        assignee: None,
+        reporter: None,
+        updated_at_remote: None,
+        description_markdown: Some("# Real markdown".to_string()),
+        description_text: None,
+        acceptance_criteria_markdown: None,
+        acceptance_criteria_text: None,
+        comments: Vec::new(),
+        attachments: Vec::new(),
+    });
+
+    assert_eq!(detail.description_markdown.as_deref(), Some("# Real markdown"));
+    // status=None falls back to the synthetic provider-result state.
+    assert_eq!(detail.summary.state.name, "Provider result");
+    assert!(detail.summary.assignee.is_none());
+    assert!(detail.comments.is_empty());
+    assert!(detail.attachments.is_empty());
+    assert!(!detail.summary.updated_at.is_empty());
+}
+
+#[test]
+fn linear_content_uses_body_for_description_and_creator_for_reporter() {
+    let detail = linear_content_to_detail(LinearIssueContent {
+        id: "issue-7".to_string(),
+        key: Some("LIN-7".to_string()),
+        title: "Body issue".to_string(),
+        url: Some("https://linear.app/issue/LIN-7".to_string()),
+        body: "Linear body text".to_string(),
+        state_name: Some("Todo".to_string()),
+        assignee: Some("Owner".to_string()),
+        creator: Some("Creator".to_string()),
+        updated_at: Some("2026-06-20T10:00:00Z".to_string()),
+        comments: Vec::new(),
+        labels: vec!["urgent".to_string()],
+        project: Some("Roadmap".to_string()),
+    });
+
+    assert_eq!(detail.description_markdown.as_deref(), Some("Linear body text"));
+    assert_eq!(detail.description_text.as_deref(), Some("Linear body text"));
+    assert!(detail.acceptance_criteria_markdown.is_none());
+    assert_eq!(
+        detail.summary.assignee.as_ref().map(|p| p.name.as_str()),
+        Some("Owner")
+    );
+    assert_eq!(
+        detail.summary.reporter.as_ref().map(|p| p.name.as_str()),
+        Some("Creator")
+    );
+    assert_eq!(detail.summary.state.name, "Todo");
+    assert_eq!(detail.summary.state.category, "todo");
+    assert_eq!(detail.summary.updated_at, "2026-06-20T10:00:00Z");
+    assert!(detail.attachments.is_empty());
+    assert!(detail.comments.is_empty());
+}
+
+#[test]
+fn state_category_classifies_known_state_keywords() {
+    assert_eq!(state_category("Done"), "done");
+    assert_eq!(state_category("Completed"), "done");
+    assert_eq!(state_category("In Progress"), "in_progress");
+    assert_eq!(state_category("Started review"), "in_progress");
+    assert_eq!(state_category("To Do"), "todo");
+    assert_eq!(state_category("Backlog"), "todo");
+    assert_eq!(state_category("Something else"), "other");
+}
+
+#[test]
+fn state_id_normalizes_into_kebab_snake_form() {
+    assert_eq!(state_id("In Progress"), "in_progress");
+    assert_eq!(state_id("To Do"), "to_do");
+    assert_eq!(state_id("Done"), "done");
+}
+
+#[test]
+fn ticket_state_combines_id_name_and_category() {
+    let state = ticket_state("In Progress");
+    assert_eq!(state.id, "in_progress");
+    assert_eq!(state.name, "In Progress");
+    assert_eq!(state.category, "in_progress");
+    assert!(state.color.is_none());
+}
+
+#[test]
+fn linear_workflow_state_maps_into_column_with_order() {
+    let column = linear_workflow_state_to_column(
+        LinearWorkflowState {
+            id: "state-1".to_string(),
+            name: "In Progress".to_string(),
+            category: "started".to_string(),
+            color: Some("#112233".to_string()),
+        },
+        2,
+    );
+
+    assert_eq!(column.id, "state-1");
+    assert_eq!(column.name, "In Progress");
+    assert_eq!(column.category, "started");
+    assert_eq!(column.order, 2);
+    assert_eq!(column.color.as_deref(), Some("#112233"));
+}
+
+#[test]
+fn filter_ticket_summaries_returns_all_when_no_filters() {
+    let items = vec![
+        ticket_summary_fixture("LIN-1", "First", "Todo", None, &[]),
+        ticket_summary_fixture("LIN-2", "Second", "Done", None, &[]),
+    ];
+
+    let filtered = filter_ticket_summaries(items, None);
+    assert_eq!(filtered.len(), 2);
+}
+
+#[test]
+fn ticket_matches_filters_with_empty_filter_input_keeps_all() {
+    let ticket = ticket_summary_fixture("LIN-1", "First", "Todo", None, &[]);
+    let empty = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        state_ids: None,
+        labels: None,
+    };
+    assert!(ticket_matches_filters(&ticket, &empty));
+}
+
+#[test]
+fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
+    let ticket = ticket_summary_fixture("LIN-99", "Some title", "Todo", None, &[]);
+    let by_id = TicketFiltersInput {
+        text: Some("lin-99".to_string()),
+        assignee: None,
+        state_ids: None,
+        labels: None,
+    };
+    assert!(ticket_matches_filters(&ticket, &by_id));
+
+    let by_title = TicketFiltersInput {
+        text: Some("SOME".to_string()),
+        assignee: None,
+        state_ids: None,
+        labels: None,
+    };
+    assert!(ticket_matches_filters(&ticket, &by_title));
+
+    let miss = TicketFiltersInput {
+        text: Some("absent".to_string()),
+        assignee: None,
+        state_ids: None,
+        labels: None,
+    };
+    assert!(!ticket_matches_filters(&ticket, &miss));
+}
+
+#[test]
+fn ticket_matches_filters_state_id_matches_category_alias() {
+    // ticket_summary_fixture sets state via ticket_state(state_name).
+    let ticket = ticket_summary_fixture("LIN-1", "Title", "In Progress", None, &[]);
+    let by_category = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        state_ids: Some(vec!["in_progress".to_string()]),
+        labels: None,
+    };
+    assert!(ticket_matches_filters(&ticket, &by_category));
+
+    let by_state_id = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        state_ids: Some(vec!["in_progress".to_string(), "other".to_string()]),
+        labels: None,
+    };
+    assert!(ticket_matches_filters(&ticket, &by_state_id));
+
+    let miss = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        state_ids: Some(vec!["done".to_string()]),
+        labels: None,
+    };
+    assert!(!ticket_matches_filters(&ticket, &miss));
+}
+
+#[test]
+fn ticket_matches_filters_requires_all_labels_present() {
+    let ticket = ticket_summary_fixture("LIN-1", "Title", "Todo", None, &["backend", "linear"]);
+    let all_present = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        state_ids: None,
+        labels: Some(vec!["Backend".to_string(), "LINEAR".to_string()]),
+    };
+    // Label matching is case-insensitive.
+    assert!(ticket_matches_filters(&ticket, &all_present));
+
+    let missing_one = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        state_ids: None,
+        labels: Some(vec!["backend".to_string(), "frontend".to_string()]),
+    };
+    assert!(!ticket_matches_filters(&ticket, &missing_one));
 }
 
 fn ticket_summary_fixture(
