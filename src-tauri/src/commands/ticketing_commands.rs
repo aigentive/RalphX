@@ -586,6 +586,22 @@ pub async fn assign_ticket(
 }
 
 #[tauri::command]
+pub async fn clear_ticket_assignee(
+    input: AssignTicketInput,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TicketMutationResponse, String> {
+    validate_provider(&input.provider)?;
+    let result = ticketing_service_from_state_with_events(&state, app_handle)
+        .clear_ticket_assignee(TicketAssignRequest {
+            ticket: ticket_identity(&input.provider, &input.ticket_ref, input.project_id.clone()),
+            client_operation_id: input.client_operation_id,
+        })
+        .await?;
+    Ok(ticket_mutation_response(result))
+}
+
+#[tauri::command]
 pub async fn add_ticket_comment(
     input: AddTicketCommentInput,
     app_handle: AppHandle,

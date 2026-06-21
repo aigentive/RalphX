@@ -1,6 +1,8 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createElement } from "react";
 
 import { LinearIntegrationSettingsPanel } from "./LinearIntegrationSettingsPanel";
 
@@ -30,6 +32,21 @@ const linearHook = vi.hoisted(() => ({
   },
 }));
 
+const featureFlagHook = vi.hoisted(() => ({
+  setTicketingDashboardFeatureFlagOverride: vi.fn(),
+  setFeatureFlags: vi.fn(),
+  state: {
+    flags: {
+      activityPage: true,
+      extensibilityPage: true,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: false,
+    },
+  },
+}));
+
 vi.mock("@/hooks/useLinearIntegration", () => ({
   useLinearIntegration: () => ({
     ...linearHook.state,
@@ -39,9 +56,49 @@ vi.mock("@/hooks/useLinearIntegration", () => ({
   }),
 }));
 
+vi.mock("@/hooks/useFeatureFlags", () => ({
+  FEATURE_FLAGS_QUERY_KEY: ["featureFlags"],
+  setTicketingDashboardFeatureFlagOverride:
+    featureFlagHook.setTicketingDashboardFeatureFlagOverride,
+  useFeatureFlags: () => ({
+    data: featureFlagHook.state.flags,
+  }),
+}));
+
+vi.mock("@/stores/uiStore", () => ({
+  useUiStore: {
+    getState: () => ({
+      setFeatureFlags: featureFlagHook.setFeatureFlags,
+    }),
+  },
+}));
+
+function renderPanel() {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+    },
+  });
+  return render(
+    createElement(
+      QueryClientProvider,
+      { client: queryClient },
+      createElement(LinearIntegrationSettingsPanel),
+    ),
+  );
+}
+
 describe("LinearIntegrationSettingsPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    featureFlagHook.state.flags = {
+      activityPage: true,
+      extensibilityPage: true,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: false,
+    };
     linearHook.state.settings = {
       enabled: false,
       hasApiToken: false,
@@ -84,7 +141,7 @@ describe("LinearIntegrationSettingsPanel", () => {
   });
 
   it("shows Linear issue reference configuration status", () => {
-    render(<LinearIntegrationSettingsPanel />);
+    renderPanel();
 
     expect(screen.getByText("Linear")).toBeInTheDocument();
     expect(screen.getByText("Issue references not ready")).toBeInTheDocument();
@@ -94,7 +151,7 @@ describe("LinearIntegrationSettingsPanel", () => {
   it("saves and validates the API token", async () => {
     const user = userEvent.setup();
     linearHook.state.settings.hasApiToken = true;
-    render(<LinearIntegrationSettingsPanel />);
+    renderPanel();
 
     await user.type(screen.getByLabelText("API token"), "lin_api_token");
     await user.click(screen.getByRole("button", { name: /Save API token/ }));
@@ -117,7 +174,7 @@ describe("LinearIntegrationSettingsPanel", () => {
       updatedAt: new Date(0).toISOString(),
     });
 
-    render(<LinearIntegrationSettingsPanel />);
+    renderPanel();
 
     await user.type(screen.getByLabelText("API token"), "lin_api_token");
     await user.click(screen.getByRole("button", { name: /Save API token/ }));
@@ -134,7 +191,7 @@ describe("LinearIntegrationSettingsPanel", () => {
       "Linear API token is missing from secure storage",
     );
 
-    render(<LinearIntegrationSettingsPanel />);
+    renderPanel();
 
     await user.click(screen.getByRole("button", { name: "Validate" }));
 
@@ -146,7 +203,7 @@ describe("LinearIntegrationSettingsPanel", () => {
   });
 
   it("does not offer disconnect when nothing is configured", () => {
-    render(<LinearIntegrationSettingsPanel />);
+    renderPanel();
 
     expect(screen.getByTestId("integration-status-banner")).toHaveAttribute(
       "data-connected",
@@ -168,7 +225,7 @@ describe("LinearIntegrationSettingsPanel", () => {
       updatedAt: new Date(0).toISOString(),
     };
 
-    render(<LinearIntegrationSettingsPanel />);
+    renderPanel();
 
     expect(screen.getByText("Issue references enabled")).toBeInTheDocument();
     expect(screen.getByTestId("integration-status-banner")).toHaveAttribute(
@@ -183,7 +240,7 @@ describe("LinearIntegrationSettingsPanel", () => {
   it("clears the connection after confirming disconnect", async () => {
     const user = userEvent.setup();
     linearHook.state.settings.hasApiToken = true;
-    render(<LinearIntegrationSettingsPanel />);
+    renderPanel();
 
     await user.click(screen.getByRole("button", { name: "Disconnect" }));
     // First click only reveals the confirmation step; nothing cleared yet.
@@ -192,5 +249,24 @@ describe("LinearIntegrationSettingsPanel", () => {
     await user.click(screen.getByRole("button", { name: "Confirm disconnect" }));
 
     expect(linearHook.disconnectAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggles ticketing dashboard access from Linear settings", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByTestId("linear-ticketing-dashboard-toggle"));
+
+    expect(
+      featureFlagHook.setTicketingDashboardFeatureFlagOverride,
+    ).toHaveBeenCalledWith(true);
+    expect(featureFlagHook.setFeatureFlags).toHaveBeenCalledWith({
+      activityPage: true,
+      extensibilityPage: true,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: true,
+    });
   });
 });

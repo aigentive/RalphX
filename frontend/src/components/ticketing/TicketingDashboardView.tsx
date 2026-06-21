@@ -345,6 +345,17 @@ export function TicketingDashboardView({
     });
   }
 
+  async function handleClearAssignee() {
+    if (!selectedTicket) {
+      return;
+    }
+    await ticketingMutations.clearAssignee({
+      provider: selectedTicket.ref.provider,
+      ticketRef: selectedTicket.ref,
+      projectId,
+    });
+  }
+
   async function handleAddComment(bodyMarkdown: string) {
     if (!selectedTicket) {
       return;
@@ -577,6 +588,7 @@ export function TicketingDashboardView({
         isCommentPending={ticketingMutations.addCommentMutation.isPending}
         onTransitionTicket={handleTransitionTicket}
         onAssignToMe={handleAssignToMe}
+        onClearAssignee={handleClearAssignee}
         onAddComment={handleAddComment}
         isStartWorkPending={startWorkFromTicket.isPending}
         startWorkError={startWorkError}

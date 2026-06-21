@@ -162,6 +162,14 @@ pub trait LinearApiClient: Send + Sync {
         Err("Linear issue assignment is not available for this client".to_string())
     }
 
+    async fn clear_issue_assignee(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<(), String> {
+        Err("Linear issue assignee clearing is not available for this client".to_string())
+    }
+
     async fn create_comment(
         &self,
         _auth: &LinearAuthContext,
@@ -260,6 +268,14 @@ impl LinearApiClient for EmptyLinearApiClient {
         })
     }
 
+    async fn clear_issue_assignee(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     async fn create_comment(
         &self,
         _auth: &LinearAuthContext,
@@ -326,6 +342,14 @@ impl LinearApiClient for UnavailableLinearApiClient {
         _auth: &LinearAuthContext,
         _issue_id: &str,
     ) -> Result<LinearUser, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn clear_issue_assignee(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<(), String> {
         Err(self.reason.clone())
     }
 
@@ -521,6 +545,11 @@ impl LinearIntegrationService {
         self.client
             .assign_issue_to_current_user(&auth, issue_id)
             .await
+    }
+
+    pub async fn clear_issue_assignee(&self, issue_id: &str) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.clear_issue_assignee(&auth, issue_id).await
     }
 
     pub async fn create_comment(

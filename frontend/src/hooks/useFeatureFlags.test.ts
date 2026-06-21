@@ -6,7 +6,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement } from "react";
-import { useFeatureFlags, isViewEnabled, FEATURE_FLAGS_QUERY_KEY } from "./useFeatureFlags";
+import {
+  FEATURE_FLAGS_QUERY_KEY,
+  TICKETING_DASHBOARD_OVERRIDE_KEY,
+  applyFeatureFlagOverrides,
+  isViewEnabled,
+  setTicketingDashboardFeatureFlagOverride,
+  useFeatureFlags,
+} from "./useFeatureFlags";
 import { invoke } from "@tauri-apps/api/core";
 import type { FeatureFlags } from "@/types/feature-flags";
 
@@ -74,6 +81,7 @@ describe("isViewEnabled", () => {
 describe("useFeatureFlags", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
   });
 
   it("returns placeholder data (all enabled) before query resolves", () => {
@@ -118,6 +126,46 @@ describe("useFeatureFlags", () => {
 
   it("uses correct query key", () => {
     expect(FEATURE_FLAGS_QUERY_KEY).toEqual(["featureFlags"]);
+  });
+
+  it("overlays the persisted ticketing dashboard override on backend flags", async () => {
+    setTicketingDashboardFeatureFlagOverride(true);
+    vi.mocked(invoke).mockResolvedValueOnce({
+      activityPage: true,
+      extensibilityPage: true,
+      ticketingDashboard: false,
+    });
+
+    const { result } = renderHook(() => useFeatureFlags(), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isPlaceholderData).toBe(false));
+
+    expect(result.current.data.ticketingDashboard).toBe(true);
+    expect(localStorage.getItem(TICKETING_DASHBOARD_OVERRIDE_KEY)).toBe("true");
+  });
+
+  it("applies ticketing dashboard overrides without changing other flags", () => {
+    setTicketingDashboardFeatureFlagOverride(false);
+
+    expect(
+      applyFeatureFlagOverrides({
+        activityPage: false,
+        extensibilityPage: true,
+        battleMode: true,
+        teamMode: false,
+        atlassianOauth: false,
+        ticketingDashboard: true,
+      }),
+    ).toEqual({
+      activityPage: false,
+      extensibilityPage: true,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: false,
+    });
   });
 
   it("shows placeholder data (all enabled) when invoke fails (retry: false)", async () => {

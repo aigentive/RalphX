@@ -207,6 +207,14 @@ pub trait AtlassianApiClient: Send + Sync {
         issue_key: &str,
     ) -> Result<(), String>;
 
+    async fn clear_jira_issue_assignee(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<(), String> {
+        Err("Jira issue assignee clearing is not available for this client".to_string())
+    }
+
     async fn list_jira_issue_transitions(
         &self,
         _auth: &AtlassianAuthContext,
@@ -322,6 +330,14 @@ impl AtlassianApiClient for EmptyAtlassianApiClient {
     }
 
     async fn assign_jira_issue_to_current_user(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn clear_jira_issue_assignee(
         &self,
         _auth: &AtlassianAuthContext,
         _issue_key: &str,
@@ -846,6 +862,11 @@ impl AtlassianIntegrationService {
         self.client
             .assign_jira_issue_to_current_user(&auth, issue_key)
             .await
+    }
+
+    pub async fn clear_jira_issue_assignee(&self, issue_key: &str) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.clear_jira_issue_assignee(&auth, issue_key).await
     }
 
     pub async fn list_jira_issue_transitions(

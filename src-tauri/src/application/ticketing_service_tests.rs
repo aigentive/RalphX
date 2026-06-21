@@ -40,6 +40,7 @@ impl TicketingEventSink for RecordingEventSink {
 struct RecordingLinearClient {
     updates: tokio::sync::Mutex<Vec<(String, String)>>,
     assignments: tokio::sync::Mutex<Vec<String>>,
+    assignment_clears: tokio::sync::Mutex<Vec<String>>,
     comments: tokio::sync::Mutex<Vec<(String, String)>>,
 }
 
@@ -132,6 +133,18 @@ impl LinearApiClient for RecordingLinearClient {
         })
     }
 
+    async fn clear_issue_assignee(
+        &self,
+        _auth: &LinearAuthContext,
+        issue_id: &str,
+    ) -> Result<(), String> {
+        self.assignment_clears
+            .lock()
+            .await
+            .push(issue_id.to_string());
+        Ok(())
+    }
+
     async fn create_comment(
         &self,
         _auth: &LinearAuthContext,
@@ -157,6 +170,7 @@ impl LinearApiClient for RecordingLinearClient {
 struct RecordingAtlassianClient {
     transitions: tokio::sync::Mutex<Vec<(String, String)>>,
     assignments: tokio::sync::Mutex<Vec<String>>,
+    assignment_clears: tokio::sync::Mutex<Vec<String>>,
     comments: tokio::sync::Mutex<Vec<(String, String)>>,
 }
 
@@ -218,6 +232,18 @@ impl AtlassianApiClient for RecordingAtlassianClient {
         issue_key: &str,
     ) -> Result<(), String> {
         self.assignments.lock().await.push(issue_key.to_string());
+        Ok(())
+    }
+
+    async fn clear_jira_issue_assignee(
+        &self,
+        _auth: &AtlassianAuthContext,
+        issue_key: &str,
+    ) -> Result<(), String> {
+        self.assignment_clears
+            .lock()
+            .await
+            .push(issue_key.to_string());
         Ok(())
     }
 
@@ -596,4 +622,57 @@ async fn permission_failure_records_failed_assignment_history() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].operation, ProviderTicketOperationKind::Assign);
     assert_eq!(records[0].status, ProviderTicketOperationStatus::Failed);
+}
+
+#[tokio::test]
+async fn clear_assignee_records_assignment_operation_and_is_idempotent() {
+    let linear_client = Arc::new(RecordingLinearClient::default());
+    let linear = enabled_linear_service(Arc::clone(&linear_client)).await;
+    let external_issues = external_issue_service();
+    let (service, _sink) = service_with_sink(
+        disabled_atlassian_service(Arc::new(RecordingAtlassianClient::default())),
+        linear,
+        Arc::clone(&external_issues),
+    );
+
+    let request = TicketAssignRequest {
+        ticket: linear_ticket(),
+        client_operation_id: Some("op-linear-clear-assignee".to_string()),
+    };
+    let result = service
+        .clear_ticket_assignee(request.clone())
+        .await
+        .expect("clear assignee should succeed");
+
+    assert_eq!(result.operation.status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(result.assignee, None);
+    assert_eq!(
+        *linear_client.assignment_clears.lock().await,
+        vec!["issue-1".to_string()]
+    );
+
+    let retry = service
+        .clear_ticket_assignee(request)
+        .await
+        .expect("idempotent clear retry should succeed");
+    assert!(retry.idempotent);
+    assert_eq!(linear_client.assignment_clears.lock().await.len(), 1);
+
+    let records = external_issues
+        .list_provider_ticket_operations_for_ticket(
+            "linear",
+            "issue",
+            "issue-1",
+            Some("LIN-1"),
+            Some("project-1"),
+        )
+        .await
+        .expect("operation history should load");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].operation, ProviderTicketOperationKind::Assign);
+    assert_eq!(records[0].status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(
+        records[0].metadata_json.as_deref(),
+        Some(r#"{"assignee":null}"#)
+    );
 }

@@ -339,6 +339,55 @@ impl TicketingService {
         Ok(self.result_for(request.ticket, begun, None, assignee, None))
     }
 
+    pub async fn clear_ticket_assignee(
+        &self,
+        request: TicketAssignRequest,
+    ) -> Result<TicketingMutationResult, String> {
+        let identity = normalize_ticket_identity(&request.ticket)?;
+        let client_operation_id = client_operation_id_or_derive(
+            request.client_operation_id.as_deref(),
+            &identity,
+            ProviderTicketOperationKind::Assign,
+            "clear",
+        );
+        let mut begun = self
+            .begin_operation(
+                &identity,
+                ProviderTicketOperationKind::Assign,
+                client_operation_id,
+                json!({ "assignee": null }).to_string(),
+            )
+            .await?;
+        if begun.idempotent {
+            return Ok(self.result_for(request.ticket, begun, None, None, None));
+        }
+
+        if let Err(error) = self
+            .ensure_write_capability(&identity.provider, ProviderTicketOperationKind::Assign)
+            .await
+        {
+            self.fail_operation(&mut begun, error.clone()).await?;
+            return Err(error);
+        }
+
+        let provider_result = match identity.provider.as_str() {
+            PROVIDER_JIRA => self
+                .atlassian
+                .clear_jira_issue_assignee(&identity.external_id)
+                .await,
+            PROVIDER_LINEAR => self.linear.clear_issue_assignee(&identity.external_id).await,
+            _ => unreachable!("ticket provider validated above"),
+        };
+        if let Err(error) = provider_result {
+            self.fail_operation(&mut begun, error.clone()).await?;
+            return Err(error);
+        }
+
+        self.succeed_operation(&mut begun, None, json!({ "assignee": null }).to_string())
+            .await?;
+        Ok(self.result_for(request.ticket, begun, None, None, None))
+    }
+
     pub async fn add_ticket_comment(
         &self,
         request: TicketCommentRequest,

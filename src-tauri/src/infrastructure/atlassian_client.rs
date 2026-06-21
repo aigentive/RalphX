@@ -227,6 +227,14 @@ impl AtlassianApiClient for HyperAtlassianApiClient {
         assign_jira_issue_to_current_user(self, auth, issue_key).await
     }
 
+    async fn clear_jira_issue_assignee(
+        &self,
+        auth: &AtlassianAuthContext,
+        issue_key: &str,
+    ) -> Result<(), String> {
+        clear_jira_issue_assignee(self, auth, issue_key).await
+    }
+
     async fn list_jira_issue_transitions(
         &self,
         auth: &AtlassianAuthContext,
@@ -845,6 +853,33 @@ pub(crate) async fn assign_jira_issue_to_current_user<C: AtlassianJsonRequester 
             ),
             request_auth(auth),
             Some(serde_json::json!({ "accountId": account_id })),
+        )
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn clear_jira_issue_assignee<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    issue_key: &str,
+) -> Result<(), String> {
+    let issue_key = issue_key.trim();
+    if issue_key.is_empty() {
+        return Err("Jira issue key is required".to_string());
+    }
+    client
+        .request_json(
+            Method::PUT,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                &format!(
+                    "/rest/api/3/issue/{}/assignee",
+                    percent_encode_path_segment(issue_key)
+                ),
+            ),
+            request_auth(auth),
+            Some(serde_json::json!({ "accountId": null })),
         )
         .await?;
     Ok(())

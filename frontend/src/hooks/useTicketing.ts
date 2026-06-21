@@ -85,7 +85,7 @@ interface TicketMutationSnapshot {
   previousTicketLists: Array<[QueryKey, InfiniteData<TicketPage> | undefined]>;
 }
 
-type TicketOperationKind = "transition" | "assign" | "comment";
+type TicketOperationKind = "transition" | "assign" | "clear-assignee" | "comment";
 
 export function createTicketClientOperationId(
   operation: TicketOperationKind,
@@ -208,6 +208,13 @@ function assigneePatch(assignee: TicketingPerson) {
     ...ticket,
     assignee,
   });
+}
+
+function clearAssigneePatch(ticket: TicketSummary): TicketSummary {
+  return {
+    ...ticket,
+    assignee: null,
+  };
 }
 
 function optimisticComment(input: AddTicketCommentMutationInput & { clientOperationId: string }): TicketComment {
@@ -474,6 +481,32 @@ export function useTicketingMutations(projectId?: string) {
     },
   });
 
+  const clearAssigneeMutation = useMutation({
+    mutationFn: (input: AssignTicketMutationInput & { clientOperationId: string }) => {
+      const commandInput: AssignTicketInput = {
+        provider: input.provider,
+        ticketRef: input.ticketRef,
+        clientOperationId: input.clientOperationId,
+        ...((input.projectId ?? projectId) !== undefined && { projectId: input.projectId ?? projectId }),
+      };
+      return ticketingApi.clearTicketAssignee(commandInput);
+    },
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: ticketingKeys.all });
+      return snapshotAndPatchTicket(queryClient, input, clearAssigneePatch);
+    },
+    onError: (_error, _input, snapshot) => {
+      restoreTicketSnapshot(queryClient, snapshot);
+    },
+    onSettled: (_data, _error, input) => {
+      invalidateTicketMutationQueries(queryClient, {
+        provider: input.provider,
+        ticketRef: input.ticketRef,
+        ...(input.projectId ?? projectId ? { projectId: input.projectId ?? projectId } : {}),
+      });
+    },
+  });
+
   const addCommentMutation = useMutation({
     mutationFn: (input: AddTicketCommentMutationInput & { clientOperationId: string }) => {
       const commandInput: AddTicketCommentInput = {
@@ -520,10 +553,13 @@ export function useTicketingMutations(projectId?: string) {
       transitionStatusMutation.mutateAsync(withClientOperationId(input, "transition")),
     assignToMe: (input: AssignTicketMutationInput) =>
       assignToMeMutation.mutateAsync(withClientOperationId(input, "assign")),
+    clearAssignee: (input: AssignTicketMutationInput) =>
+      clearAssigneeMutation.mutateAsync(withClientOperationId(input, "clear-assignee")),
     addComment: (input: AddTicketCommentMutationInput) =>
       addCommentMutation.mutateAsync(withClientOperationId(input, "comment")),
     transitionStatusMutation,
     assignToMeMutation,
+    clearAssigneeMutation,
     addCommentMutation,
   };
 }

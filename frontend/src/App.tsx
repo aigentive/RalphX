@@ -123,10 +123,12 @@ function FeatureDisabledPlaceholder({
   view,
   yamlKey,
   envVar,
+  settingsPath,
 }: {
   view: string;
-  yamlKey: string;
-  envVar: string;
+  yamlKey?: string;
+  envVar?: string;
+  settingsPath?: string;
 }) {
   return (
     <div
@@ -137,10 +139,18 @@ function FeatureDisabledPlaceholder({
         {view} page is disabled (dev mode)
       </p>
       <div className="text-xs font-mono rounded p-3 text-left" style={{ backgroundColor: "var(--bg-surface)", color: "var(--text-secondary)" }}>
-        <p className="mb-2 font-sans" style={{ color: "var(--text-muted)" }}>Enable via ralphx.yaml:</p>
-        <pre>{`ui:\n  feature_flags:\n    ${yamlKey}: true`}</pre>
-        <p className="mt-3 mb-1 font-sans" style={{ color: "var(--text-muted)" }}>Or via env var:</p>
-        <pre>{`${envVar}=true`}</pre>
+        {settingsPath ? (
+          <p className="font-sans" style={{ color: "var(--text-muted)" }}>
+            Enable it in {settingsPath}.
+          </p>
+        ) : (
+          <>
+            <p className="mb-2 font-sans" style={{ color: "var(--text-muted)" }}>Enable via ralphx.yaml:</p>
+            <pre>{`ui:\n  feature_flags:\n    ${yamlKey}: true`}</pre>
+            <p className="mt-3 mb-1 font-sans" style={{ color: "var(--text-muted)" }}>Or via env var:</p>
+            <pre>{`${envVar}=true`}</pre>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1121,7 +1131,7 @@ function AppContent() {
                     />
                   )
                   : import.meta.env.DEV
-                    ? <FeatureDisabledPlaceholder view="ticketing" yamlKey="ticketing_dashboard" envVar="RALPHX_UI_TICKETING_DASHBOARD" />
+                    ? <FeatureDisabledPlaceholder view="ticketing" settingsPath="Settings -> Integrations -> Linear -> Ticketing dashboard" />
                     : null
               )}
               {currentView === "insights" && <InsightsView />}

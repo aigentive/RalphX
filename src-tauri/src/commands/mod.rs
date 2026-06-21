@@ -253,7 +253,7 @@ pub use team_commands::{
     TeamHistoryResponse, TeamMessageRecordResponse, TeamSessionResponse, TeammateSnapshotResponse,
 };
 pub use ticketing_commands::{
-    add_ticket_comment, assign_ticket, get_ticket_associations, get_ticket_detail,
+    add_ticket_comment, assign_ticket, clear_ticket_assignee, get_ticket_associations, get_ticket_detail,
     list_ticket_transitions, list_ticketing_columns, list_ticketing_containers,
     list_ticketing_providers, list_tickets, refresh_tickets, start_ralphx_work_from_ticket,
     transition_ticket_status, AddTicketCommentInput, AssignTicketInput, ListTicketsQuery,

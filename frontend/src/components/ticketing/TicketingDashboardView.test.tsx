@@ -179,9 +179,11 @@ function mockConnectedDashboard() {
   vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
     transitionStatus: vi.fn().mockResolvedValue(undefined),
     assignToMe: vi.fn().mockResolvedValue(undefined),
+    clearAssignee: vi.fn().mockResolvedValue(undefined),
     addComment: vi.fn().mockResolvedValue(undefined),
     transitionStatusMutation: { isPending: false },
     assignToMeMutation: { isPending: false },
+    clearAssigneeMutation: { isPending: false },
     addCommentMutation: { isPending: false },
   } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
   vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
@@ -194,6 +196,7 @@ function mockConnectedDashboard() {
 describe("TicketingDashboardView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
     useTicketingStore.getState().reset();
     vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
       data: [],
@@ -242,9 +245,11 @@ describe("TicketingDashboardView", () => {
     vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
       transitionStatus: vi.fn().mockResolvedValue(undefined),
       assignToMe: vi.fn().mockResolvedValue(undefined),
+      clearAssignee: vi.fn().mockResolvedValue(undefined),
       addComment: vi.fn().mockResolvedValue(undefined),
       transitionStatusMutation: { isPending: false },
       assignToMeMutation: { isPending: false },
+      clearAssigneeMutation: { isPending: false },
       addCommentMutation: { isPending: false },
     } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
     vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
@@ -590,17 +595,40 @@ describe("TicketingDashboardView", () => {
     expect(associationCalls[associationCalls.length - 1]?.[0]).toBeNull();
   });
 
-  it("routes status, assign-to-me, and comment controls through ticket mutations", async () => {
+  it("routes status, assignment, comment, and comments jump controls through ticket mutations", async () => {
     mockConnectedDashboard();
     const transitionStatus = vi.fn().mockResolvedValue(undefined);
     const assignToMe = vi.fn().mockResolvedValue(undefined);
+    const clearAssignee = vi.fn().mockResolvedValue(undefined);
     const addComment = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
+      data: {
+        ...ticket,
+        assignee: "A. User",
+        descriptionMarkdown: "When two agents transition the same task.",
+        comments: [],
+        attachments: [],
+        transitions: [
+          {
+            toStateId: "done",
+            providerTransitionId: "transition-31",
+            name: "Done",
+            category: "done",
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketDetail>);
     vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
       transitionStatus,
       assignToMe,
+      clearAssignee,
       addComment,
       transitionStatusMutation: { isPending: false },
       assignToMeMutation: { isPending: false },
+      clearAssigneeMutation: { isPending: false },
       addCommentMutation: { isPending: false },
     } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
 
@@ -611,13 +639,15 @@ describe("TicketingDashboardView", () => {
       target: { value: "done" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Assign to me" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear assignee" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Ticket comment" }), {
       target: { value: "Pushed a fix." },
     });
     fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Comments (1)" }));
 
     expect(await screen.findByText("Pushed a fix.")).toBeInTheDocument();
-    expect(screen.getByText("Comments (1)")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Comments (1)" })).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getByRole("textbox", { name: "Ticket comment" })).toHaveValue("");
     });
@@ -642,6 +672,15 @@ describe("TicketingDashboardView", () => {
       ticketRef: ticket.ref,
       bodyMarkdown: "Pushed a fix.",
       projectId: "project-1",
+    });
+    expect(clearAssignee).toHaveBeenCalledWith({
+      provider: "jira",
+      ticketRef: ticket.ref,
+      projectId: "project-1",
+    });
+    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "start",
     });
   });
 

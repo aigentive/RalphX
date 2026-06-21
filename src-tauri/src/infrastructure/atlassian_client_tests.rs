@@ -10,9 +10,9 @@ use crate::domain::services::ComposerIntegrationReference;
 
 use super::atlassian_client::{
     add_jira_comment, assign_jira_issue_to_current_user, build_confluence_search_cql,
-    build_jira_search_jql, confluence_page_id_query, fetch_confluence, fetch_jira,
-    list_jira_issue_transitions, search_confluence, search_jira, transition_jira_issue,
-    AtlassianJsonRequester, HyperAtlassianApiClient, RequestAuth,
+    build_jira_search_jql, clear_jira_issue_assignee, confluence_page_id_query, fetch_confluence,
+    fetch_jira, list_jira_issue_transitions, search_confluence, search_jira,
+    transition_jira_issue, AtlassianJsonRequester, HyperAtlassianApiClient, RequestAuth,
 };
 
 #[derive(Clone, Debug)]
@@ -262,6 +262,27 @@ async fn jira_assign_to_current_user_puts_my_account_id_on_issue() {
     assert_eq!(
         requests[1].body.as_ref(),
         Some(&json!({ "accountId": "abc-123" }))
+    );
+}
+
+#[tokio::test]
+async fn jira_clear_assignee_puts_null_account_id_on_issue() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(Value::Null)]);
+
+    clear_jira_issue_assignee(&requester, &auth_context(), " rx-42 ")
+        .await
+        .expect("clear Jira assignee");
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, Method::PUT);
+    assert_eq!(
+        requests[0].url,
+        "https://example.atlassian.net/rest/api/3/issue/rx-42/assignee"
+    );
+    assert_eq!(
+        requests[0].body.as_ref(),
+        Some(&json!({ "accountId": Value::Null }))
     );
 }
 

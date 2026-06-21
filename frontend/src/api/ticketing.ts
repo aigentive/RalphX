@@ -442,6 +442,21 @@ export const ticketingApi = {
     );
   },
 
+  clearTicketAssignee(input: AssignTicketInput): Promise<TicketMutationResponse> {
+    return typedInvoke(
+      "clear_ticket_assignee",
+      {
+        input: {
+          provider: input.provider,
+          ticketRef: input.ticketRef,
+          ...(input.clientOperationId !== undefined && { clientOperationId: input.clientOperationId }),
+          ...(input.projectId !== undefined && { projectId: input.projectId }),
+        },
+      },
+      TicketMutationResponseSchema,
+    );
+  },
+
   addTicketComment(input: AddTicketCommentInput): Promise<TicketMutationResponse> {
     return typedInvoke(
       "add_ticket_comment",

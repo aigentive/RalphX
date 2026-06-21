@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { ExternalLink, Send, UserCheck, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ExternalLink, MessageSquare, Send, UserCheck, UserX, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -39,6 +39,7 @@ interface TicketDetailSheetProps {
   isCommentPending: boolean;
   onTransitionTicket?: ((transition: TicketTransitionOption) => Promise<void> | void) | undefined;
   onAssignToMe?: (() => Promise<void> | void) | undefined;
+  onClearAssignee?: (() => Promise<void> | void) | undefined;
   onAddComment?: ((bodyMarkdown: string) => Promise<void> | void) | undefined;
   isStartWorkPending?: boolean | undefined;
   startWorkError?: string | null | undefined;
@@ -246,6 +247,7 @@ export function TicketDetailSheet({
   isCommentPending,
   onTransitionTicket,
   onAssignToMe,
+  onClearAssignee,
   onAddComment,
   isStartWorkPending,
   startWorkError,
@@ -255,6 +257,7 @@ export function TicketDetailSheet({
 }: TicketDetailSheetProps) {
   const [commentDraft, setCommentDraft] = useState("");
   const [localComments, setLocalComments] = useState<TicketComment[]>([]);
+  const commentsSectionRef = useRef<HTMLElement | null>(null);
   const ticketIdentity = ticket ? `${ticket.ref.provider}:${ticket.ref.id}` : null;
   const providerComments = useMemo(
     () => ticket && "comments" in ticket ? ticket.comments : [],
@@ -309,6 +312,7 @@ export function TicketDetailSheet({
   const assignDisabledReason = !capabilities?.assignmentWrite
     ? "Assign-to-me is not available for this provider."
     : null;
+  const canClearAssignee = !assignDisabledReason && Boolean(ticket?.assignee);
   const commentDisabledReason = !capabilities?.commentWrite
     ? "Comment write-back is not available for this provider."
     : null;
@@ -323,6 +327,10 @@ export function TicketDetailSheet({
       return;
     }
     void onTransitionTicket?.(transition);
+  }
+
+  function handleJumpToComments() {
+    commentsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   async function handleAddComment() {
@@ -396,6 +404,16 @@ export function TicketDetailSheet({
                   <span className="text-xs text-[var(--text-muted)]">
                     Updated {formatTicketDate(ticket.updatedAt)}
                   </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={handleJumpToComments}
+                  >
+                    <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+                    Comments ({visibleComments.length})
+                  </Button>
                   {ticket.url && (
                     <a
                       href={ticket.url}
@@ -472,6 +490,20 @@ export function TicketDetailSheet({
                       {isAssignPending ? "Assigning" : "Assign to me"}
                     </Button>
                   </ControlTooltip>
+                  {canClearAssignee && (
+                    <ControlTooltip reason={assignDisabledReason}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={Boolean(assignDisabledReason) || isAssignPending}
+                        onClick={() => void onClearAssignee?.()}
+                      >
+                        <UserX className="h-3.5 w-3.5" aria-hidden="true" />
+                        {isAssignPending ? "Clearing" : "Clear assignee"}
+                      </Button>
+                    </ControlTooltip>
+                  )}
                 </div>
 
                 <section className="mt-5">
@@ -487,7 +519,7 @@ export function TicketDetailSheet({
                   </div>
                 </section>
 
-                <section className="mt-6">
+                <section ref={commentsSectionRef} className="mt-6">
                   <h3 className="text-xs font-semibold uppercase text-[var(--text-muted)]">
                     Comments ({visibleComments.length})
                   </h3>

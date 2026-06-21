@@ -33,6 +33,7 @@ vi.mock("@/api/ticketing", async (importActual) => {
       refreshTickets: vi.fn(),
       transitionTicketStatus: vi.fn(),
       assignTicket: vi.fn(),
+      clearTicketAssignee: vi.fn(),
       addTicketComment: vi.fn(),
     },
   };
@@ -310,6 +311,68 @@ describe("useTicketing hooks", () => {
         ticketingKeys.detail({ provider: "jira", ticketRef }),
       )?.state.name,
     ).toBe("To Do");
+  });
+
+  it("clears assignee optimistically from ticket detail", async () => {
+    const ticketRef: TicketRef = { provider: "linear", id: "LIN-1", key: "LIN-1" };
+    const detail: TicketDetail = {
+      ref: ticketRef,
+      title: "Fix dashboard loading",
+      state: { id: "todo", name: "Todo", category: "todo" },
+      assignee: { id: "user-1", name: "A. User" },
+      labels: [],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+      descriptionMarkdown: "Investigate Linear tickets.",
+      comments: [],
+      attachments: [],
+      transitions: [],
+    };
+    vi.mocked(ticketingApi.clearTicketAssignee).mockResolvedValueOnce({
+      ticketRef,
+      operation: {
+        id: "operation-2",
+        operation: "assign",
+        clientOperationId: "generated",
+        status: "succeeded",
+        providerOperationId: null,
+        linked: true,
+        createdAt: "2026-06-19T22:00:00.000Z",
+        updatedAt: "2026-06-19T22:00:01.000Z",
+      },
+      idempotent: false,
+      assignee: null,
+      comment: null,
+      refreshedAt: "2026-06-19T22:00:01.000Z",
+    });
+
+    const harness = createWrapper();
+    harness.queryClient.setQueryData(ticketingKeys.detail({ provider: "linear", ticketRef }), detail);
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await act(async () => {
+      await result.current.clearAssignee({
+        provider: "linear",
+        ticketRef,
+      });
+    });
+
+    expect(ticketingApi.clearTicketAssignee).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "linear",
+        ticketRef,
+        projectId: "project-1",
+        clientOperationId: expect.stringMatching(/^ticketing:clear-assignee:/),
+      }),
+    );
+    expect(
+      harness.queryClient.getQueryData<TicketDetail>(
+        ticketingKeys.detail({ provider: "linear", ticketRef }),
+      )?.assignee,
+    ).toBeNull();
   });
 
   it("starts RalphX work from a ticket and refreshes association caches", async () => {

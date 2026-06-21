@@ -113,6 +113,10 @@ export function LeftNavRail({
   const visibleItems = hideViews
     ? []
     : ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags, taskCount));
+  const primaryItems = visibleItems.filter((item) => item.view !== "ticketing");
+  const dashboardItems = hideViews
+    ? []
+    : ALL_NAV_ITEMS.filter((item) => item.view === "ticketing");
 
   return (
     <aside
@@ -145,7 +149,7 @@ export function LeftNavRail({
 
       {!hideViews && (
         <nav className="flex flex-col items-center gap-1">
-          {visibleItems.map(({ view, label, icon, shortcut }) => (
+          {primaryItems.map(({ view, label, icon, shortcut }) => (
             <RailItem
               key={view}
               view={view}
@@ -158,6 +162,35 @@ export function LeftNavRail({
               testId={`nav-${view}`}
             />
           ))}
+          {dashboardItems.length > 0 && (
+            <>
+              <div
+                className="my-2 h-px w-7 shrink-0"
+                style={{ backgroundColor: "var(--border-default)" }}
+                aria-hidden="true"
+                data-testid="nav-dashboard-separator"
+              />
+              <div
+                className="flex flex-col items-center gap-1"
+                role="group"
+                aria-label="Dashboard"
+              >
+                {dashboardItems.map(({ view, label, icon, shortcut }) => (
+                  <RailItem
+                    key={view}
+                    view={view}
+                    label={label}
+                    icon={icon}
+                    shortcut={shortcut}
+                    isActive={currentView === view}
+                    onClick={() => onViewChange(view)}
+                    onWarmUp={() => onViewWarmUp?.(view)}
+                    testId={`nav-${view}`}
+                  />
+                ))}
+              </div>
+            </>
+          )}
         </nav>
       )}
 

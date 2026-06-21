@@ -258,6 +258,25 @@ impl LinearApiClient for HyperLinearApiClient {
         Ok(user)
     }
 
+    async fn clear_issue_assignee(
+        &self,
+        auth: &LinearAuthContext,
+        issue_id: &str,
+    ) -> Result<(), String> {
+        let issue_id = required_trimmed(issue_id, "Linear issue id is required")?;
+        let data = self
+            .graphql(
+                &auth.api_token,
+                linear_issue_update_mutation(),
+                serde_json::json!({
+                    "id": issue_id,
+                    "input": { "assigneeId": null },
+                }),
+            )
+            .await?;
+        mutation_success(&data, "issueUpdate")
+    }
+
     async fn create_comment(
         &self,
         auth: &LinearAuthContext,
