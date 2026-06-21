@@ -160,7 +160,7 @@ pub use interactive_process_registry::{InteractiveProcessKey, InteractiveProcess
 pub use linear_integration_service::{
     EmptyLinearApiClient, LinearApiClient, LinearAuthContext, LinearIntegrationService,
     LinearComment, LinearIntegrationSettings, LinearIntegrationSettingsRepository,
-    LinearIssueContent, LinearIssueSummary, LinearUser, LinearWorkflowState,
+    LinearIssueContent, LinearIssueSummary, LinearProject, LinearUser, LinearWorkflowState,
     UnavailableLinearApiClient,
 };
 pub use ideation_service::{

@@ -37,6 +37,20 @@ export function filterTicketsByAssignee(
   return tickets.filter((ticket) => ticket.assignee?.name === assignee);
 }
 
+/**
+ * Client-side container/project filter by display name. null = all containers.
+ * Used until the provider search supports server-side container scoping.
+ */
+export function filterTicketsByProject(
+  tickets: TicketSummary[],
+  project: string | null,
+): TicketSummary[] {
+  if (!project) {
+    return tickets;
+  }
+  return tickets.filter((ticket) => ticket.project === project);
+}
+
 function toTime(value: string | null | undefined): number | null {
   if (!value) {
     return null;

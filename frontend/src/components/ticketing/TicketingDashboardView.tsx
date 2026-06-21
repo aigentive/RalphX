@@ -50,6 +50,7 @@ import { TicketKanbanShell, TicketKanbanView, TicketListView } from "./TicketVie
 import {
   distinctAssigneeNames,
   filterTicketsByAssignee,
+  filterTicketsByProject,
   isTicketUpdatedSince,
   ticketRefKey,
 } from "./ticketing-read-state";
@@ -359,10 +360,11 @@ export function TicketingDashboardView({
     if (!activeProvider || containers.length === 0) {
       return;
     }
-    if (activeContainerId && containers.some((container) => container.id === activeContainerId)) {
-      return;
+    // Default to "All projects" (null); only clear a now-stale selection so the
+    // user opts into a specific container rather than being forced into the first.
+    if (activeContainerId && !containers.some((container) => container.id === activeContainerId)) {
+      setContainerId(null);
     }
-    setContainerId(containers[0]?.id ?? null);
   }, [activeContainerId, activeProvider, containers, setContainerId]);
 
   const columnsQuery = useTicketingColumns(
@@ -391,9 +393,17 @@ export function TicketingDashboardView({
   const ticketsQuery = useTickets(ticketQuery, { enabled: Boolean(ticketQuery) });
   const tickets = useMemo(() => flattenTicketPages(ticketsQuery.data), [ticketsQuery.data]);
   const assigneeOptions = useMemo(() => distinctAssigneeNames(tickets), [tickets]);
+  const activeContainerName = useMemo(
+    () => containers.find((container) => container.id === activeContainerId)?.name ?? null,
+    [containers, activeContainerId],
+  );
   const displayedTickets = useMemo(
-    () => filterTicketsByAssignee(tickets, filters.assignee),
-    [tickets, filters.assignee],
+    () =>
+      filterTicketsByProject(
+        filterTicketsByAssignee(tickets, filters.assignee),
+        activeContainerName,
+      ),
+    [tickets, filters.assignee, activeContainerName],
   );
   const ticketColumns = useMemo(() => columnsFromTickets(tickets), [tickets]);
   // Remember the last non-empty columns so the kanban board does not collapse

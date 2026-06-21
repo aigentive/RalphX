@@ -6,6 +6,7 @@ import {
   countNewComments,
   distinctAssigneeNames,
   filterTicketsByAssignee,
+  filterTicketsByProject,
   isCommentNewSince,
   isOptimisticCommentId,
   isTicketUpdatedSince,
@@ -133,5 +134,21 @@ describe("filterTicketsByAssignee", () => {
   it("returns only tickets matching the named assignee", () => {
     const result = filterTicketsByAssignee(tickets, "Grace");
     expect(result.map((t) => t.ref.id)).toEqual(["3"]);
+  });
+});
+
+describe("filterTicketsByProject", () => {
+  const tickets: TicketSummary[] = [
+    { ...ticket("1", null), project: "FLUX PT" },
+    { ...ticket("2", null), project: "Other" },
+    ticket("3", null),
+  ];
+
+  it("returns all tickets when no project is selected", () => {
+    expect(filterTicketsByProject(tickets, null)).toHaveLength(3);
+  });
+
+  it("returns only tickets in the named project", () => {
+    expect(filterTicketsByProject(tickets, "FLUX PT").map((t) => t.ref.id)).toEqual(["1"]);
   });
 });

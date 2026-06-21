@@ -329,13 +329,35 @@ pub async fn list_ticketing_providers(
 }
 
 #[tauri::command]
-pub fn list_ticketing_containers(
+pub async fn list_ticketing_containers(
     provider: String,
     project_id: Option<String>,
+    state: State<'_, AppState>,
 ) -> Result<Vec<TicketingContainerResponse>, String> {
     validate_provider(&provider)?;
     let _ = project_id;
-    Ok(Vec::new())
+    match provider.as_str() {
+        PROVIDER_LINEAR => state
+            .linear_integration_service
+            .list_projects(100)
+            .await
+            .map(|projects| {
+                projects
+                    .into_iter()
+                    .map(|project| TicketingContainerResponse {
+                        provider: PROVIDER_LINEAR.to_string(),
+                        id: project.id,
+                        key: None,
+                        name: project.name,
+                        kind: "project".to_string(),
+                        parent_id: None,
+                        ticket_count: None,
+                    })
+                    .collect()
+            }),
+        // Jira board/container enumeration is not implemented yet.
+        _ => Ok(Vec::new()),
+    }
 }
 
 #[tauri::command]

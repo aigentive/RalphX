@@ -11,7 +11,7 @@ use tokio_util::bytes::Bytes;
 
 use crate::application::{
     LinearApiClient, LinearAuthContext, LinearComment, LinearIssueContent, LinearIssueSummary,
-    LinearUser, LinearWorkflowState,
+    LinearProject, LinearUser, LinearWorkflowState,
 };
 use crate::domain::services::ComposerIntegrationReference;
 
@@ -299,6 +299,60 @@ impl LinearApiClient for HyperLinearApiClient {
             .await?;
         comment_from_create_data(&data)
     }
+
+    async fn list_projects(
+        &self,
+        auth: &LinearAuthContext,
+        first: usize,
+    ) -> Result<Vec<LinearProject>, String> {
+        let data = self
+            .graphql(
+                &auth.api_token,
+                linear_projects_query(),
+                serde_json::json!({ "first": first as i64 }),
+            )
+            .await?;
+        projects_from_data(&data)
+    }
+}
+
+fn linear_projects_query() -> &'static str {
+    r#"
+    query RalphXLinearProjects($first: Int!) {
+      projects(first: $first) {
+        nodes {
+          id
+          name
+        }
+      }
+    }
+    "#
+}
+
+fn projects_from_data(data: &Value) -> Result<Vec<LinearProject>, String> {
+    let nodes = data
+        .get("projects")
+        .and_then(|projects| projects.get("nodes"))
+        .and_then(|nodes| nodes.as_array())
+        .ok_or_else(|| "Linear projects response was malformed".to_string())?;
+    Ok(nodes.iter().filter_map(project_from_node).collect())
+}
+
+fn project_from_node(node: &Value) -> Option<LinearProject> {
+    let id = node.get("id").and_then(|id| id.as_str())?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let name = node
+        .get("name")
+        .and_then(|name| name.as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(id);
+    Some(LinearProject {
+        id: id.to_string(),
+        name: name.to_string(),
+    })
 }
 
 fn linear_issue_search_query() -> &'static str {
@@ -632,7 +686,7 @@ fn issue_summary_from_node(node: &Value) -> Option<LinearIssueSummary> {
         .and_then(|value| value.as_str())
         .map(str::to_string);
     let state_category = state_type
-        .or_else(|| state_name.as_deref())
+        .or(state_name.as_deref())
         .map(linear_state_category);
     Some(LinearIssueSummary {
         id: node.get("id")?.as_str()?.to_string(),
@@ -800,6 +854,42 @@ mod tests {
         assert!(query.contains("issues(first: $first)"));
         assert!(!query.contains("searchIssues"));
         assert!(!query.contains("term:"));
+    }
+
+    #[test]
+    fn projects_query_uses_projects_connection() {
+        let query = linear_projects_query();
+
+        assert!(query.contains("projects(first: $first)"));
+        assert!(query.contains("nodes"));
+    }
+
+    #[test]
+    fn projects_from_data_parses_ids_and_names() {
+        let data = serde_json::json!({
+            "projects": {
+                "nodes": [
+                    { "id": "p1", "name": "FLUX PT" },
+                    { "id": "p2", "name": "  " },
+                    { "id": "", "name": "skip-me" },
+                ]
+            }
+        });
+
+        let projects = projects_from_data(&data).expect("projects parse");
+
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].id, "p1");
+        assert_eq!(projects[0].name, "FLUX PT");
+        // Blank name falls back to the id; the empty-id node is skipped.
+        assert_eq!(projects[1].id, "p2");
+        assert_eq!(projects[1].name, "p2");
+    }
+
+    #[test]
+    fn projects_from_data_rejects_malformed_payload() {
+        let data = serde_json::json!({ "projects": {} });
+        assert!(projects_from_data(&data).is_err());
     }
 
     #[test]

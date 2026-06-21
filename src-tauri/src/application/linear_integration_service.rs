@@ -90,6 +90,13 @@ pub struct LinearWorkflowState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct LinearProject {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct LinearUser {
     pub id: String,
     pub name: Option<String>,
@@ -177,6 +184,14 @@ pub trait LinearApiClient: Send + Sync {
         _body_markdown: &str,
     ) -> Result<LinearComment, String> {
         Err("Linear comments are not available for this client".to_string())
+    }
+
+    async fn list_projects(
+        &self,
+        _auth: &LinearAuthContext,
+        _first: usize,
+    ) -> Result<Vec<LinearProject>, String> {
+        Err("Linear projects are not available for this client".to_string())
     }
 }
 
@@ -526,6 +541,11 @@ impl LinearIntegrationService {
     ) -> Result<Vec<LinearWorkflowState>, String> {
         let auth = self.enabled_auth_context().await?;
         self.client.list_workflow_states(&auth, team_id).await
+    }
+
+    pub async fn list_projects(&self, first: usize) -> Result<Vec<LinearProject>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_projects(&auth, first.clamp(1, 100)).await
     }
 
     pub async fn current_user(&self) -> Result<LinearUser, String> {
