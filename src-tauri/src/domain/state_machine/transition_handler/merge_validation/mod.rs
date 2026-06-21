@@ -3,8 +3,9 @@
 // Extracted from side_effects.rs — runs project analysis commands to verify merge correctness.
 // Decomposed into setup phase, validate phase, and orchestrator.
 
-mod logging;
+mod frontend_readiness;
 mod install;
+mod logging;
 mod metadata;
 mod setup;
 mod validate;
@@ -40,19 +41,19 @@ use crate::domain::entities::{
 use crate::infrastructure::tool_paths::resolve_shell_cli_path;
 use crate::utils::truncate_str;
 
-pub(crate) use metadata::format_validation_error_metadata;
-pub(crate) use metadata::{
-    extract_cached_validation, format_validation_warn_metadata, take_skip_validation_flag,
-};
-pub(crate) use logging::{cleanup_validation_logs, emit_merge_progress};
-#[cfg(test)]
-pub(crate) use logging::validation_log_dir;
 #[cfg(test)]
 pub(crate) use install::run_install_phase;
 pub use install::run_pre_execution_setup;
 #[cfg(test)]
-pub(crate) use setup::{parse_symlink_command, try_handle_symlink_idempotent};
+pub(crate) use logging::validation_log_dir;
+pub(crate) use logging::{cleanup_validation_logs, emit_merge_progress};
+pub(crate) use metadata::format_validation_error_metadata;
+pub(crate) use metadata::{
+    extract_cached_validation, format_validation_warn_metadata, take_skip_validation_flag,
+};
 use setup::run_setup_phase;
+#[cfg(test)]
+pub(crate) use setup::{parse_symlink_command, try_handle_symlink_idempotent};
 use validate::run_validate_phase;
 
 /// Outcome of a cancellable shell command execution.
@@ -226,6 +227,8 @@ pub(super) struct MergeAnalysisEntry {
     pub(super) path: String,
     #[allow(dead_code)]
     pub(super) label: String,
+    #[serde(default)]
+    pub(super) install: Option<String>,
     #[serde(default)]
     pub(super) validate: Vec<String>,
     #[serde(default)]
