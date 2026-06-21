@@ -98,7 +98,7 @@ describe("AgentsChatHeader", () => {
     useUiStore.setState({ currentView: "agents" });
   });
 
-  it("opens the linked ticket from the header ticket button", () => {
+  it("opens the linked ticket in the artifact sidebar from the header ticket button", () => {
     vi.mocked(useConversationTicket).mockReturnValue({
       data: {
         ticketRef: { provider: "linear", id: "LIN-1", key: "LIN-1" },
@@ -111,6 +111,7 @@ describe("AgentsChatHeader", () => {
       error: null,
     } as ReturnType<typeof useConversationTicket>);
 
+    const onSelectArtifact = vi.fn();
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ id: "conversation-linked", projectId: "project-2" })}
@@ -119,20 +120,15 @@ describe("AgentsChatHeader", () => {
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
         onToggleArtifacts={vi.fn()}
-        onSelectArtifact={vi.fn()}
+        onSelectArtifact={onSelectArtifact}
       />
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Open ticket LIN-1" }));
 
-    expect(useProjectStore.getState().activeProjectId).toBe("project-2");
-    expect(useUiStore.getState().currentView).toBe("ticketing");
-    expect(useTicketingStore.getState().activeProvider).toBe("linear");
-    expect(useTicketingStore.getState().selectedTicketRef).toEqual({
-      provider: "linear",
-      id: "LIN-1",
-      key: "LIN-1",
-    });
+    // Opens the Linear issue tab in the artifact sidebar instead of navigating away.
+    expect(onSelectArtifact).toHaveBeenCalledWith("linear");
+    expect(useUiStore.getState().currentView).toBe("agents");
   });
 
   it("opts the title button out of the high-contrast default button border", () => {

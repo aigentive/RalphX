@@ -46,9 +46,6 @@ import { withAlpha } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
 import { useConversationTicket } from "@/hooks/useTicketing";
 import { useChatStore } from "@/stores/chatStore";
-import { useProjectStore } from "@/stores/projectStore";
-import { useTicketingStore } from "@/stores/ticketingStore";
-import { useUiStore } from "@/stores/uiStore";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import type { ModelDisplay } from "@/types/chat-conversation";
 
@@ -365,10 +362,6 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   const isSending = useChatStore((state) =>
     conversationStoreKey ? state.isSending[conversationStoreKey] ?? false : false,
   );
-  const selectProject = useProjectStore((state) => state.selectProject);
-  const setCurrentView = useUiStore((state) => state.setCurrentView);
-  const setTicketProvider = useTicketingStore((state) => state.setProvider);
-  const setSelectedTicketRef = useTicketingStore((state) => state.setSelectedTicketRef);
   const conversationTicketQuery = useConversationTicket(conversation?.id, {
     enabled: Boolean(conversation),
   });
@@ -403,11 +396,10 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     if (!linkedTicket) {
       return;
     }
-    selectProject(linkedTicket.projectId);
-    setTicketProvider(linkedTicket.ticketRef.provider);
-    setSelectedTicketRef(linkedTicket.ticketRef);
-    setCurrentView("ticketing");
-  }, [linkedTicket, selectProject, setCurrentView, setSelectedTicketRef, setTicketProvider]);
+    // Open the linked issue in the right-hand artifact sidebar (Jira/Linear tab)
+    // rather than navigating away to the ticketing dashboard.
+    onSelectArtifact(linkedTicket.ticketRef.provider === "jira" ? "jira" : "linear");
+  }, [linkedTicket, onSelectArtifact]);
 
   return (
     <div
