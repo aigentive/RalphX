@@ -167,6 +167,7 @@ export type TicketPage = z.infer<typeof TicketPageSchema>;
 export const TicketDeepLinkSchema = z.object({
   view: ViewTypeSchema,
   id: z.string(),
+  projectId: z.string().nullable().optional(),
 });
 export type TicketDeepLink = z.infer<typeof TicketDeepLinkSchema>;
 

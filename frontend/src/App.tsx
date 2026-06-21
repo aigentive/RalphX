@@ -639,8 +639,18 @@ function AppContent() {
       setSelectedTaskId(deepLink.id);
       return;
     }
+    if (deepLink.view === "agents" && deepLink.projectId) {
+      // Select the exact linked conversation (not just switch to the Agents view)
+      // so its linked ticket and artifact are visible on arrival.
+      const projectId = deepLink.projectId;
+      setFocusedAgentProject(projectId);
+      useAgentSessionStore.getState().selectConversation(projectId, deepLink.id);
+      useChatStore.getState().setActiveConversation(`project:${projectId}`, deepLink.id);
+      setCurrentView("agents");
+      return;
+    }
     setCurrentView(deepLink.view);
-  }, [setCurrentView, setSelectedTaskId]);
+  }, [setCurrentView, setSelectedTaskId, setFocusedAgentProject]);
 
   useEffect(() => {
     if (

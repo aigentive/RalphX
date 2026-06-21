@@ -870,6 +870,12 @@ async fn get_ticket_associations_returns_linked_agent_conversations() {
     assert!(linked.active);
     assert_eq!(linked.deep_link.view, "agents");
     assert_eq!(linked.deep_link.id, conversation.id.as_str());
+    // The deep link carries the project so the agents view can select the exact
+    // conversation rather than only switching views.
+    assert_eq!(
+        linked.deep_link.project_id.as_deref(),
+        Some(project_id.as_str())
+    );
 }
 
 #[tokio::test]

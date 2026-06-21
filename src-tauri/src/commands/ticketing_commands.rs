@@ -204,6 +204,9 @@ pub struct TicketPageResponse {
 pub struct TicketDeepLinkResponse {
     pub view: String,
     pub id: String,
+    /// Project the deep-link target lives in (set for conversation associations so
+    /// the agents view can select the exact conversation, not just switch views).
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1363,7 +1366,7 @@ async fn linked_agent_conversation_associations_for_ticket(
                     .as_ref()
                     .is_some_and(|link| jira_link_matches_ticket(link, project_id, &reference))
                 {
-                    associations.push(agent_conversation_association_item(&conversation));
+                    associations.push(agent_conversation_association_item(&conversation, project_id.as_str()));
                 }
             }
         }
@@ -1383,7 +1386,7 @@ async fn linked_agent_conversation_associations_for_ticket(
                     .as_ref()
                     .is_some_and(|link| linear_link_matches_ticket(link, project_id, &reference))
                 {
-                    associations.push(agent_conversation_association_item(&conversation));
+                    associations.push(agent_conversation_association_item(&conversation, project_id.as_str()));
                 }
             }
         }
@@ -1422,20 +1425,25 @@ fn linear_link_matches_ticket(
 
 fn agent_conversation_association_item(
     conversation: &ChatConversation,
+    project_id: &str,
 ) -> TicketAssociationItemResponse {
     let id = conversation.id.as_str();
     TicketAssociationItemResponse {
         id: id.clone(),
+        // Mirror the agents UI fallback (`conversation.title || "Untitled agent"`)
+        // so the ticket panel shows the same label as the actual conversation.
         title: conversation
             .title
             .clone()
-            .unwrap_or_else(|| "Agent conversation".to_string()),
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "Untitled agent".to_string()),
         subtitle: Some("Agent conversation".to_string()),
         status: conversation.agent_mode.map(|mode| mode.to_string()),
         active: conversation.archived_at.is_none(),
         deep_link: TicketDeepLinkResponse {
             view: "agents".to_string(),
             id,
+            project_id: Some(project_id.to_string()),
         },
     }
 }
