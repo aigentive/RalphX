@@ -423,9 +423,14 @@ export function TicketingDashboardView({
     }
   }, [ticketColumns]);
   const effectiveTicketColumns = ticketColumns.length > 0 ? ticketColumns : lastNonEmptyColumns;
-  const statusColumns = effectiveTicketColumns.length > 0
-    ? mergeProviderAndTicketColumns(columns, effectiveTicketColumns)
-    : columns;
+  // When a board-supporting provider has no container selected, show no statuses
+  // at all (the remembered last-non-empty columns must not leak a prior project's
+  // statuses into the filter/board until a project is chosen).
+  const statusColumns = containerSelectionNeeded
+    ? []
+    : effectiveTicketColumns.length > 0
+      ? mergeProviderAndTicketColumns(columns, effectiveTicketColumns)
+      : columns;
   const selectedSummary = selectedTicketRef
     ? tickets.find((ticket) => ticket.ref.id === selectedTicketRef.id && ticket.ref.provider === selectedTicketRef.provider) ?? null
     : null;
@@ -498,6 +503,9 @@ export function TicketingDashboardView({
       void queryClient.invalidateQueries({
         queryKey: ticketingKeys.conversationTicket(conversationId),
       });
+      // Refresh the ticket lists so the RX (association count) column activates for
+      // the ticket whose conversation was just bound.
+      void queryClient.invalidateQueries({ queryKey: ticketingKeys.ticketLists() });
     },
   });
   const bindError = bindConversation.error instanceof Error
@@ -528,10 +536,9 @@ export function TicketingDashboardView({
     [transitionsQuery.data, detailQuery.data],
   );
   const transitionColumns = useMemo(() => columnsFromTransitions(transitions), [transitions]);
-  const filterColumns = mergeProviderAndTicketColumns(
-    statusColumns,
-    transitionColumns,
-  );
+  const filterColumns = containerSelectionNeeded
+    ? []
+    : mergeProviderAndTicketColumns(statusColumns, transitionColumns);
   const providerName = selectedProvider?.label ?? (activeProvider ? providerLabel(activeProvider) : "Provider");
   const containerLabels = containerLabelsForProvider(activeProvider);
   const statusMessage = selectedProvider?.errorMessage ?? selectedProvider?.permissionMessage ?? undefined;

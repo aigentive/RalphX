@@ -466,6 +466,10 @@ describe("TicketingDashboardView", () => {
     // No provider-wide unfiltered fetch fires for tickets or columns.
     expect(ticketingHooks.useTickets).toHaveBeenCalledWith(null, { enabled: false });
     expect(ticketingHooks.useTicketingColumns).toHaveBeenCalledWith(null, { enabled: false });
+    // And no statuses are offered in the filter until a project is selected
+    // (the remembered last-non-empty columns must not leak prior statuses).
+    const statusFilter = screen.getByRole("combobox", { name: "Status" });
+    expect(within(statusFilter).getAllByRole("option")).toHaveLength(1);
   });
 
   it("loads tickets and columns with the containerId once a project is selected", async () => {
