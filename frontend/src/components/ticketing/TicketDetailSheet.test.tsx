@@ -398,3 +398,50 @@ describe("TicketDetailSheet open in provider", () => {
     });
   });
 });
+
+describe("TicketDetailSheet comment keyboard submit", () => {
+  function renderComposer(onAddComment: (body: string) => Promise<void> | void) {
+    return render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={baseTicket}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onAddComment={onAddComment}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+  }
+
+  it("submits the comment on Cmd/Ctrl+Enter", async () => {
+    const onAddComment = vi.fn().mockResolvedValue(undefined);
+    renderComposer(onAddComment);
+
+    const textarea = screen.getByRole("textbox", { name: "Ticket comment" });
+    fireEvent.change(textarea, { target: { value: "Looks good" } });
+    fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+
+    await waitFor(() => {
+      expect(onAddComment).toHaveBeenCalledWith("Looks good");
+    });
+  });
+
+  it("does not submit on Enter without a modifier", () => {
+    const onAddComment = vi.fn().mockResolvedValue(undefined);
+    renderComposer(onAddComment);
+
+    const textarea = screen.getByRole("textbox", { name: "Ticket comment" });
+    fireEvent.change(textarea, { target: { value: "Looks good" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    expect(onAddComment).not.toHaveBeenCalled();
+  });
+});

@@ -830,7 +830,19 @@ export function TicketDetailSheet({
                       value={commentDraft}
                       disabled={Boolean(commentDisabledReason) || isCommentPending}
                       onChange={(event) => setCommentDraft(event.target.value)}
-                      placeholder="Write a provider comment"
+                      onKeyDown={(event) => {
+                        // Cmd/Ctrl+Enter submits, matching the convention in
+                        // Linear/GitHub/Slack comment composers.
+                        if (
+                          event.key === "Enter"
+                          && (event.metaKey || event.ctrlKey)
+                          && canAddComment
+                        ) {
+                          event.preventDefault();
+                          void handleAddComment();
+                        }
+                      }}
+                      placeholder="Write a provider comment (⌘/Ctrl+Enter to send)"
                       className="min-h-20 text-sm"
                       style={{
                         backgroundColor: "var(--bg-surface)",
