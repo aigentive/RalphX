@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { TicketAssigneeChip } from "./TicketAssigneeChip";
@@ -42,5 +42,22 @@ describe("TicketAssigneeChip", () => {
   it("honours a custom unassigned label", () => {
     render(<TicketAssigneeChip person={undefined} unassignedLabel="No owner" />);
     expect(screen.getByText("No owner")).toBeInTheDocument();
+  });
+
+  it("falls back to initials when the avatar image fails to load", () => {
+    const { container } = render(
+      <TicketAssigneeChip
+        person={{ name: "Adrian Demian", avatarUrl: "https://example.com/broken.png" }}
+      />,
+    );
+
+    const img = container.querySelector("img");
+    expect(img).not.toBeNull();
+    expect(screen.queryByText("AD")).not.toBeInTheDocument();
+
+    fireEvent.error(img as HTMLImageElement);
+
+    expect(screen.getByText("AD")).toBeInTheDocument();
+    expect(container.querySelector("img")).toBeNull();
   });
 });

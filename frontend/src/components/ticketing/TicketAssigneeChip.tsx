@@ -1,4 +1,5 @@
 import { UserRound } from "lucide-react";
+import { useState } from "react";
 
 import type { TicketingPerson } from "@/api/ticketing";
 
@@ -22,6 +23,9 @@ export function TicketAssigneeChip({
   unassignedLabel = "Unassigned",
   className,
 }: TicketAssigneeChipProps) {
+  // Track an avatar URL that failed to load so we fall back to initials instead
+  // of a blank circle (provider avatars frequently fail under WKWebView).
+  const [failedAvatarUrl, setFailedAvatarUrl] = useState<string | null>(null);
   const avatarSize = size === "md" ? "h-6 w-6" : "h-5 w-5";
   const textSize = size === "md" ? "text-sm" : "text-xs";
   const wrapperClass = `inline-flex min-w-0 items-center gap-1.5 ${textSize} ${className ?? ""}`.trim();
@@ -52,11 +56,13 @@ export function TicketAssigneeChip({
 
   return (
     <span className={`${wrapperClass} text-[var(--text-secondary)]`} title={tooltip}>
-      {person.avatarUrl ? (
+      {person.avatarUrl && person.avatarUrl !== failedAvatarUrl ? (
         <img
           src={person.avatarUrl}
           alt=""
           aria-hidden="true"
+          loading="lazy"
+          onError={() => setFailedAvatarUrl(person.avatarUrl ?? null)}
           className={`${avatarSize} shrink-0 rounded-full object-cover`}
           style={{
             borderColor: "var(--border-subtle)",
