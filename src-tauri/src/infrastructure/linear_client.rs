@@ -1543,4 +1543,340 @@ mod tests {
         .expect_err("missing team should error");
         assert!(error.contains("Could not resolve Linear team"));
     }
+
+    #[test]
+    fn linear_state_sort_priority_covers_every_branch() {
+        // "unstarted" must be checked before "started" (substring overlap).
+        assert_eq!(linear_state_sort_priority("triage"), 0);
+        assert_eq!(linear_state_sort_priority("started"), 1);
+        assert_eq!(linear_state_sort_priority("In Progress"), 1);
+        assert_eq!(linear_state_sort_priority("In Review"), 1);
+        assert_eq!(linear_state_sort_priority("unstarted"), 2);
+        assert_eq!(linear_state_sort_priority("Todo"), 2);
+        assert_eq!(linear_state_sort_priority("to do"), 2);
+        assert_eq!(linear_state_sort_priority("backlog"), 3);
+        assert_eq!(linear_state_sort_priority("completed"), 4);
+        assert_eq!(linear_state_sort_priority("done"), 4);
+        assert_eq!(linear_state_sort_priority("closed"), 4);
+        assert_eq!(linear_state_sort_priority("resolved"), 4);
+        assert_eq!(linear_state_sort_priority("canceled"), 5);
+        assert_eq!(linear_state_sort_priority("cancelled"), 5);
+        assert_eq!(linear_state_sort_priority("something-else"), 6);
+        assert_eq!(linear_state_sort_priority(""), 6);
+    }
+
+    #[test]
+    fn linear_state_category_covers_every_branch() {
+        assert_eq!(linear_state_category("completed"), "done");
+        assert_eq!(linear_state_category("Done"), "done");
+        assert_eq!(linear_state_category("closed"), "done");
+        assert_eq!(linear_state_category("resolved"), "done");
+        assert_eq!(linear_state_category("unstarted"), "todo");
+        assert_eq!(linear_state_category("backlog"), "todo");
+        assert_eq!(linear_state_category("Todo"), "todo");
+        assert_eq!(linear_state_category("to do"), "todo");
+        assert_eq!(linear_state_category("started"), "in_progress");
+        assert_eq!(linear_state_category("In Progress"), "in_progress");
+        assert_eq!(linear_state_category("review"), "in_progress");
+        assert_eq!(linear_state_category("active"), "in_progress");
+        assert_eq!(linear_state_category("mystery"), "other");
+        assert_eq!(linear_state_category(""), "other");
+    }
+
+    #[test]
+    fn workflow_state_from_node_parses_valid_node() {
+        let state = workflow_state_from_node(&serde_json::json!({
+            "id": " state-1 ",
+            "name": " In Progress ",
+            "type": "started",
+            "color": " #f2c94c "
+        }))
+        .expect("valid node should parse");
+
+        assert_eq!(state.id, "state-1");
+        assert_eq!(state.name, "In Progress");
+        assert_eq!(state.category, "in_progress");
+        assert_eq!(state.color.as_deref(), Some("#f2c94c"));
+    }
+
+    #[test]
+    fn workflow_state_from_node_falls_back_to_name_for_category() {
+        // No "type" → category is derived from the name.
+        let state = workflow_state_from_node(&serde_json::json!({
+            "id": "state-1",
+            "name": "Done"
+        }))
+        .expect("node without type should parse");
+
+        assert_eq!(state.category, "done");
+        assert!(state.color.is_none());
+    }
+
+    #[test]
+    fn workflow_state_from_node_filters_out_empty_id_or_name() {
+        assert!(workflow_state_from_node(&serde_json::json!({
+            "id": "  ",
+            "name": "Todo"
+        }))
+        .is_none());
+        assert!(workflow_state_from_node(&serde_json::json!({
+            "id": "state-1",
+            "name": ""
+        }))
+        .is_none());
+        assert!(workflow_state_from_node(&serde_json::json!({ "name": "Todo" })).is_none());
+    }
+
+    #[test]
+    fn linear_user_name_extracts_trimmed_name() {
+        assert_eq!(
+            linear_user_name(Some(&serde_json::json!({ "name": "  A. User  " }))).as_deref(),
+            Some("A. User")
+        );
+    }
+
+    #[test]
+    fn linear_user_name_returns_none_when_name_absent_or_blank() {
+        assert!(linear_user_name(None).is_none());
+        assert!(linear_user_name(Some(&serde_json::json!({ "id": "u1" }))).is_none());
+        assert!(linear_user_name(Some(&serde_json::json!({ "name": "   " }))).is_none());
+        assert!(linear_user_name(Some(&Value::Null)).is_none());
+    }
+
+    #[test]
+    fn linear_label_names_filters_and_trims_label_nodes() {
+        let labels = linear_label_names(Some(&serde_json::json!({
+            "nodes": [
+                { "name": " backend " },
+                { "name": "" },
+                { "name": "   " },
+                { "id": "no-name" },
+                { "name": "frontend" }
+            ]
+        })));
+
+        assert_eq!(labels, vec!["backend".to_string(), "frontend".to_string()]);
+    }
+
+    #[test]
+    fn linear_label_names_returns_empty_when_nodes_missing() {
+        assert!(linear_label_names(None).is_empty());
+        assert!(linear_label_names(Some(&serde_json::json!({}))).is_empty());
+    }
+
+    #[test]
+    fn linear_project_name_extracts_and_trims() {
+        assert_eq!(
+            linear_project_name(Some(&serde_json::json!({ "name": "  Platform  " }))).as_deref(),
+            Some("Platform")
+        );
+    }
+
+    #[test]
+    fn linear_project_name_returns_none_when_absent_or_blank() {
+        assert!(linear_project_name(None).is_none());
+        assert!(linear_project_name(Some(&serde_json::json!({ "name": "   " }))).is_none());
+        assert!(linear_project_name(Some(&serde_json::json!({ "id": "p1" }))).is_none());
+    }
+
+    #[test]
+    fn issue_comments_from_node_extracts_and_filters_comments() {
+        let comments = issue_comments_from_node(&serde_json::json!({
+            "comments": {
+                "nodes": [
+                    {
+                        "id": "comment-1",
+                        "body": "First",
+                        "createdAt": "2026-06-20T08:00:00Z",
+                        "user": { "id": "user-1", "name": "A. User" }
+                    },
+                    { "id": "comment-2" },
+                    { "body": "no id" }
+                ]
+            }
+        }));
+
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].id, "comment-1");
+        assert_eq!(comments[0].body, "First");
+        assert_eq!(comments[0].author_id.as_deref(), Some("user-1"));
+        assert_eq!(comments[0].author_name.as_deref(), Some("A. User"));
+    }
+
+    #[test]
+    fn issue_comments_from_node_returns_empty_when_comments_missing() {
+        assert!(issue_comments_from_node(&serde_json::json!({})).is_empty());
+        assert!(issue_comments_from_node(&serde_json::json!({ "comments": {} })).is_empty());
+    }
+
+    #[test]
+    fn linear_comment_from_node_parses_fields_and_optional_user() {
+        let comment = linear_comment_from_node(&serde_json::json!({
+            "id": "comment-1",
+            "body": "Looks good",
+            "createdAt": "2026-06-20T08:00:00Z",
+            "updatedAt": "2026-06-20T09:00:00Z",
+            "user": { "id": "user-1", "name": "A. User" }
+        }))
+        .expect("comment should parse");
+
+        assert_eq!(comment.id, "comment-1");
+        assert_eq!(comment.body, "Looks good");
+        assert_eq!(comment.author_id.as_deref(), Some("user-1"));
+        assert_eq!(comment.author_name.as_deref(), Some("A. User"));
+        assert_eq!(comment.created_at.as_deref(), Some("2026-06-20T08:00:00Z"));
+        assert_eq!(comment.updated_at.as_deref(), Some("2026-06-20T09:00:00Z"));
+    }
+
+    #[test]
+    fn linear_comment_from_node_handles_missing_user() {
+        let comment = linear_comment_from_node(&serde_json::json!({
+            "id": "comment-1",
+            "body": "No author"
+        }))
+        .expect("comment without user should parse");
+
+        assert!(comment.author_id.is_none());
+        assert!(comment.author_name.is_none());
+        assert!(comment.created_at.is_none());
+        assert!(comment.updated_at.is_none());
+    }
+
+    #[test]
+    fn linear_comment_from_node_requires_id_and_body() {
+        assert!(linear_comment_from_node(&serde_json::json!({ "body": "no id" })).is_none());
+        assert!(linear_comment_from_node(&serde_json::json!({ "id": "comment-1" })).is_none());
+    }
+
+    #[test]
+    fn issue_summary_from_node_maps_state_type_to_category() {
+        let summary = issue_summary_from_node(&serde_json::json!({
+            "id": "issue-1",
+            "title": "Example",
+            "state": { "id": "state-1", "name": "In Progress", "type": "started" }
+        }))
+        .expect("node should parse");
+
+        assert_eq!(summary.state_category.as_deref(), Some("in_progress"));
+        assert_eq!(summary.state_name.as_deref(), Some("In Progress"));
+    }
+
+    #[test]
+    fn issue_summary_from_node_falls_back_to_state_name_for_category() {
+        // No state "type" → category is derived from the state name.
+        let summary = issue_summary_from_node(&serde_json::json!({
+            "id": "issue-1",
+            "title": "Example",
+            "state": { "name": "Done" }
+        }))
+        .expect("node should parse");
+
+        assert_eq!(summary.state_category.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn required_trimmed_accepts_trimmed_value_and_rejects_blank() {
+        assert_eq!(required_trimmed("  abc  ", "msg").unwrap(), "abc");
+        assert_eq!(required_trimmed("   ", "is required").unwrap_err(), "is required");
+        assert_eq!(required_trimmed("", "is required").unwrap_err(), "is required");
+    }
+
+    #[tokio::test]
+    async fn update_issue_state_rejects_empty_inputs_before_network() {
+        let client = HyperLinearApiClient::new().expect("client builds");
+        let auth = LinearAuthContext {
+            api_token: "lin-api-token".to_string(),
+        };
+
+        assert_eq!(
+            client.update_issue_state(&auth, "  ", "state-1").await.unwrap_err(),
+            "Linear issue id is required"
+        );
+        assert_eq!(
+            client.update_issue_state(&auth, "issue-1", "  ").await.unwrap_err(),
+            "Linear workflow state id is required"
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_issue_assignee_rejects_empty_issue_id_before_network() {
+        let client = HyperLinearApiClient::new().expect("client builds");
+        let auth = LinearAuthContext {
+            api_token: "lin-api-token".to_string(),
+        };
+
+        assert_eq!(
+            client.clear_issue_assignee(&auth, "  ").await.unwrap_err(),
+            "Linear issue id is required"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_comment_rejects_empty_inputs_before_network() {
+        let client = HyperLinearApiClient::new().expect("client builds");
+        let auth = LinearAuthContext {
+            api_token: "lin-api-token".to_string(),
+        };
+
+        assert_eq!(
+            client.create_comment(&auth, "  ", "body").await.unwrap_err(),
+            "Linear issue id is required"
+        );
+        assert_eq!(
+            client.create_comment(&auth, "issue-1", "   ").await.unwrap_err(),
+            "Linear comment body is required"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_issue_team_labels_rejects_empty_issue_id_before_network() {
+        let client = HyperLinearApiClient::new().expect("client builds");
+        let auth = LinearAuthContext {
+            api_token: "lin-api-token".to_string(),
+        };
+
+        assert_eq!(
+            client.list_issue_team_labels(&auth, "  ").await.unwrap_err(),
+            "Linear issue id is required"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_issue_labels_rejects_empty_issue_id_before_network() {
+        let client = HyperLinearApiClient::new().expect("client builds");
+        let auth = LinearAuthContext {
+            api_token: "lin-api-token".to_string(),
+        };
+
+        assert_eq!(
+            client
+                .update_issue_labels(&auth, "  ", vec!["label-1".to_string()])
+                .await
+                .unwrap_err(),
+            "Linear issue id is required"
+        );
+    }
+
+    #[test]
+    fn workflow_states_query_without_team_omits_filter() {
+        let (query, variables) = linear_workflow_states_query(None);
+        assert!(query.contains("workflowStates(first: 100)"));
+        assert!(!query.contains("filter"));
+        assert_eq!(variables, serde_json::json!({}));
+    }
+
+    #[test]
+    fn workflow_states_query_with_team_scopes_filter_and_variables() {
+        let (query, variables) = linear_workflow_states_query(Some("  team-1  "));
+        assert!(query.contains("filter: { team: { id: { eq: $teamId } } }"));
+        // Team id is trimmed before being placed in the variables payload.
+        assert_eq!(variables, serde_json::json!({ "teamId": "team-1" }));
+    }
+
+    #[test]
+    fn workflow_states_query_treats_blank_team_as_none() {
+        let (query, variables) = linear_workflow_states_query(Some("   "));
+        assert!(query.contains("workflowStates(first: 100)"));
+        assert_eq!(variables, serde_json::json!({}));
+    }
 }
