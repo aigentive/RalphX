@@ -10,6 +10,7 @@ use crate::application::{
         AgentConversationStartDeps, AgentConversationStartService, StartAgentConversationInput,
     },
     AppState, AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
+    JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
     LinearComment, LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary,
     LinearLabel, LinearWorkflowState,
     TauriTicketingEventSink, TeamService, TicketAssignRequest, TicketCommentRequest,
@@ -79,6 +80,11 @@ pub async fn list_ticketing_containers(
     validate_provider(&provider)?;
     let _ = project_id;
     match provider.as_str() {
+        PROVIDER_JIRA => state
+            .atlassian_integration_service
+            .list_jira_projects(100)
+            .await
+            .map(|projects| projects.into_iter().map(jira_project_to_container).collect()),
         PROVIDER_LINEAR => state
             .linear_integration_service
             .list_projects(100)
@@ -97,8 +103,7 @@ pub async fn list_ticketing_containers(
                     })
                     .collect()
             }),
-        // Jira board/container enumeration is not implemented yet.
-        _ => Ok(Vec::new()),
+        _ => unreachable!("provider validated above"),
     }
 }
 
@@ -109,8 +114,24 @@ pub async fn list_ticketing_columns(
     state: State<'_, AppState>,
 ) -> Result<Vec<TicketingColumnResponse>, String> {
     validate_provider(&provider)?;
-    let _ = container_id;
     match provider.as_str() {
+        PROVIDER_JIRA => match container_id.as_deref() {
+            // Jira statuses are project-scoped; columns only load meaningfully once
+            // a project is selected (matches the force-select gate). No project →
+            // provider-neutral defaults.
+            Some(key) => state
+                .atlassian_integration_service
+                .list_jira_project_statuses(key)
+                .await
+                .map(|statuses| {
+                    statuses
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, status)| jira_status_to_column(status, index))
+                        .collect()
+                }),
+            None => Ok(default_ticketing_columns()),
+        },
         PROVIDER_LINEAR => state
             .linear_integration_service
             // Linear containers are projects, but workflow states are team-scoped;
@@ -124,7 +145,7 @@ pub async fn list_ticketing_columns(
                     .map(|(index, state)| linear_workflow_state_to_column(state, index))
                     .collect()
             }),
-        _ => Ok(default_ticketing_columns()),
+        _ => unreachable!("provider validated above"),
     }
 }
 
@@ -134,12 +155,7 @@ pub async fn list_tickets(
     state: State<'_, AppState>,
 ) -> Result<TicketPageResponse, String> {
     validate_provider(&query.provider)?;
-    let _ = (
-        &query.project_id,
-        &query.container_id,
-        &query.cursor,
-        &query.sort,
-    );
+    let _ = (&query.project_id, &query.cursor, &query.sort);
     let limit = query.limit.unwrap_or(25).clamp(1, 40);
     let text = query
         .filters
@@ -150,13 +166,26 @@ pub async fn list_tickets(
         .to_string();
     let fetched_at = now_string();
     let items: Vec<TicketSummaryResponse> = match query.provider.as_str() {
-        PROVIDER_JIRA => state
-            .atlassian_integration_service
-            .search_resources(AtlassianResourceKind::Jira, &text, limit)
-            .await?
-            .into_iter()
-            .map(jira_summary_to_ticket)
-            .collect(),
+        // With a selected project, fetch its issues (richer status/assignee/labels
+        // needed for kanban columns). Without one, fall back to global text search
+        // (the frontend force-select gate means this path is rarely hit, but keep
+        // it functional).
+        PROVIDER_JIRA => match container_selected_key(query.container_id.as_deref()) {
+            Some(key) => state
+                .atlassian_integration_service
+                .list_jira_project_issues(key, limit)
+                .await?
+                .into_iter()
+                .map(jira_issue_detail_to_ticket)
+                .collect(),
+            None => state
+                .atlassian_integration_service
+                .search_resources(AtlassianResourceKind::Jira, &text, limit)
+                .await?
+                .into_iter()
+                .map(jira_summary_to_ticket)
+                .collect(),
+        },
         PROVIDER_LINEAR => state
             .linear_integration_service
             .search_issues(&text, limit)
@@ -741,6 +770,85 @@ fn jira_summary_to_ticket(summary: AtlassianResourceSummary) -> TicketSummaryRes
         priority: None,
         updated_at: now_string(),
         url: summary.url,
+        association_count: 0,
+        open_pr_count: 0,
+        open_pr_number: None,
+        open_pr_url: None,
+        open_pr_status: None,
+    }
+}
+
+/// Normalize the optional container id to a non-empty selected project key, or
+/// `None` when no project is selected (the "All projects" / force-select case).
+fn container_selected_key(container_id: Option<&str>) -> Option<&str> {
+    container_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+/// Map a Jira project to a ticketing container. The container `id` is the project
+/// **key** because both the statuses endpoint and the issue JQL key on the
+/// project key (and the frontend stores `containerId` → passes it back).
+fn jira_project_to_container(project: JiraProjectSummary) -> TicketingContainerResponse {
+    TicketingContainerResponse {
+        provider: PROVIDER_JIRA.to_string(),
+        id: project.key.clone(),
+        key: Some(project.key),
+        name: project.name,
+        kind: "project".to_string(),
+        parent_id: None,
+        ticket_count: None,
+    }
+}
+
+/// Map a deduped Jira project status into a kanban column, preserving the real
+/// provider status id/name and the normalized category.
+fn jira_status_to_column(status: JiraStatusSummary, order: usize) -> TicketingColumnResponse {
+    TicketingColumnResponse {
+        id: status.id,
+        name: status.name,
+        category: status.category,
+        order,
+        color: None,
+    }
+}
+
+/// Map a project-scoped Jira issue into a ticket summary, populating the real
+/// status/assignee/labels/updated/priority/url (replaces the lossy
+/// `jira_summary_to_ticket` for project-scoped results).
+fn jira_issue_detail_to_ticket(issue: JiraIssueDetail) -> TicketSummaryResponse {
+    let state_name = issue
+        .status_name
+        .clone()
+        .unwrap_or_else(|| "Provider result".to_string());
+    let state = TicketStateResponse {
+        id: issue.status_id.unwrap_or_else(|| state_id(&state_name)),
+        category: issue
+            .status_category
+            .unwrap_or_else(|| state_category(&state_name)),
+        name: state_name,
+        color: None,
+    };
+    let assignee = issue.assignee_name.as_deref().map(|name| {
+        let mut person = named_person(name);
+        person.avatar_url = issue.assignee_avatar.clone();
+        person
+    });
+    TicketSummaryResponse {
+        ref_: TicketRefInput {
+            provider: PROVIDER_JIRA.to_string(),
+            id: issue.key.clone(),
+            key: Some(issue.key),
+        },
+        title: issue.title,
+        state,
+        assignee,
+        reporter: None,
+        labels: issue.labels,
+        project: None,
+        priority: issue.priority,
+        updated_at: issue.updated.unwrap_or_else(now_string),
+        url: issue.url,
         association_count: 0,
         open_pr_count: 0,
         open_pr_number: None,

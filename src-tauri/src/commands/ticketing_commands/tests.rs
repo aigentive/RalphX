@@ -2,8 +2,9 @@ use super::*;
 use std::sync::Arc;
 
 use crate::application::{
-    AppState, AtlassianJiraAttachment, AtlassianJiraComment, LinearIntegrationSettings, TeamService,
-    TeamStateTracker, TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
+    AppState, AtlassianJiraAttachment, AtlassianJiraComment, JiraIssueDetail, JiraProjectSummary,
+    JiraStatusSummary, LinearIntegrationSettings, TeamService, TeamStateTracker,
+    TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
     TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
@@ -590,6 +591,113 @@ fn linear_workflow_state_maps_into_column_with_order() {
     assert_eq!(column.category, "started");
     assert_eq!(column.order, 2);
     assert_eq!(column.color.as_deref(), Some("#112233"));
+}
+
+#[test]
+fn jira_project_maps_to_container_keyed_by_project_key() {
+    let container = jira_project_to_container(JiraProjectSummary {
+        id: "10000".to_string(),
+        key: "RX".to_string(),
+        name: "RalphX".to_string(),
+    });
+
+    assert_eq!(container.provider, "jira");
+    // Container id is the project KEY (statuses + JQL both key on the key).
+    assert_eq!(container.id, "RX");
+    assert_eq!(container.key.as_deref(), Some("RX"));
+    assert_eq!(container.name, "RalphX");
+    assert_eq!(container.kind, "project");
+    assert!(container.parent_id.is_none());
+}
+
+#[test]
+fn jira_status_maps_into_column_preserving_real_id_and_category() {
+    let column = jira_status_to_column(
+        JiraStatusSummary {
+            id: "3".to_string(),
+            name: "In Progress".to_string(),
+            category: "in_progress".to_string(),
+        },
+        1,
+    );
+
+    assert_eq!(column.id, "3");
+    assert_eq!(column.name, "In Progress");
+    assert_eq!(column.category, "in_progress");
+    assert_eq!(column.order, 1);
+}
+
+#[test]
+fn jira_issue_detail_maps_with_full_metadata() {
+    let ticket = jira_issue_detail_to_ticket(JiraIssueDetail {
+        key: "RX-1".to_string(),
+        title: "Fix merge race".to_string(),
+        status_id: Some("3".to_string()),
+        status_name: Some("In Progress".to_string()),
+        status_category: Some("in_progress".to_string()),
+        assignee_name: Some("A. Dev".to_string()),
+        assignee_avatar: Some("https://avatar/48".to_string()),
+        labels: vec!["backend".to_string(), "urgent".to_string()],
+        updated: Some("2026-06-20T10:00:00.000+0000".to_string()),
+        priority: Some("High".to_string()),
+        url: Some("https://example.atlassian.net/browse/RX-1".to_string()),
+    });
+
+    assert_eq!(ticket.ref_.provider, "jira");
+    assert_eq!(ticket.ref_.id, "RX-1");
+    assert_eq!(ticket.ref_.key.as_deref(), Some("RX-1"));
+    assert_eq!(ticket.title, "Fix merge race");
+    assert_eq!(ticket.state.id, "3");
+    assert_eq!(ticket.state.name, "In Progress");
+    assert_eq!(ticket.state.category, "in_progress");
+    let assignee = ticket.assignee.expect("assignee present");
+    assert_eq!(assignee.name, "A. Dev");
+    assert_eq!(assignee.avatar_url.as_deref(), Some("https://avatar/48"));
+    assert_eq!(ticket.labels, vec!["backend", "urgent"]);
+    assert_eq!(ticket.priority.as_deref(), Some("High"));
+    assert_eq!(ticket.updated_at, "2026-06-20T10:00:00.000+0000");
+    assert_eq!(
+        ticket.url.as_deref(),
+        Some("https://example.atlassian.net/browse/RX-1")
+    );
+}
+
+#[test]
+fn jira_issue_detail_derives_state_when_status_missing() {
+    // No status fields → derive id/category from the fallback name.
+    let ticket = jira_issue_detail_to_ticket(JiraIssueDetail {
+        key: "RX-2".to_string(),
+        title: "No status".to_string(),
+        status_id: None,
+        status_name: None,
+        status_category: None,
+        assignee_name: None,
+        assignee_avatar: None,
+        labels: Vec::new(),
+        updated: None,
+        priority: None,
+        url: None,
+    });
+
+    assert_eq!(ticket.state.name, "Provider result");
+    assert_eq!(ticket.state.category, state_category("Provider result"));
+    assert_eq!(ticket.state.id, state_id("Provider result"));
+    assert!(ticket.assignee.is_none());
+    assert!(ticket.labels.is_empty());
+    assert!(ticket.priority.is_none());
+    // Falls back to a fresh timestamp rather than panicking on a missing value.
+    assert!(!ticket.updated_at.is_empty());
+}
+
+#[test]
+fn container_selected_key_normalizes_presence_and_absence() {
+    // container_id present → selected project key drives the project-scoped path.
+    assert_eq!(container_selected_key(Some("RX")), Some("RX"));
+    assert_eq!(container_selected_key(Some("  RX  ")), Some("RX"));
+    // Absent / blank → None drives the global text-search fallback path.
+    assert_eq!(container_selected_key(None), None);
+    assert_eq!(container_selected_key(Some("   ")), None);
+    assert_eq!(container_selected_key(Some("")), None);
 }
 
 #[test]
