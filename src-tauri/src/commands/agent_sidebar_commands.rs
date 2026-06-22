@@ -10,7 +10,7 @@ use crate::commands::unified_chat_commands::{
     AgentConversationResponse, AgentConversationWorkspaceResponse,
 };
 use crate::domain::entities::{
-    ChatContextType, ChatConversation, ChatConversationId, Project, ProjectId,
+    AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, Project, ProjectId,
 };
 
 const DEFAULT_LIMIT_PER_GROUP: u32 = 6;
@@ -254,7 +254,14 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
             }
 
             let workspace = workspace_by_conversation_id.remove(&conversation.id);
-            let publication_state = publication_state_for_workspace(workspace.as_ref());
+            let latest_run_status = state
+                .agent_run_repo
+                .get_latest_for_conversation(&conversation.id)
+                .await
+                .map_err(|e| e.to_string())?
+                .map(|run| run.status);
+            let publication_state =
+                publication_state_for_workspace(workspace.as_ref(), latest_run_status);
             if !selected_state_set.contains(&publication_state) {
                 continue;
             }
@@ -404,6 +411,7 @@ fn conversation_ref_display(
 
 fn publication_state_for_workspace(
     workspace: Option<&AgentConversationWorkspaceResponse>,
+    latest_run_status: Option<AgentRunStatus>,
 ) -> SidebarPublicationState {
     let pr_status = workspace
         .and_then(|workspace| workspace.publication_pr_status.as_deref())
@@ -418,6 +426,14 @@ fn publication_state_for_workspace(
         (_, Some("needs_agent")) => SidebarPublicationState::Uncommitted,
         (_, Some("pending" | "failed" | "description_failed")) => SidebarPublicationState::Unpushed,
         (Some("draft"), _) => SidebarPublicationState::Draft,
+        (None, None)
+            if matches!(
+                latest_run_status,
+                Some(AgentRunStatus::Failed | AgentRunStatus::Cancelled)
+            ) =>
+        {
+            SidebarPublicationState::Closed
+        }
         _ => SidebarPublicationState::Active,
     }
 }
@@ -589,7 +605,12 @@ async fn get_bulk_workspace_publication_states_inner(
     for id in conversation_ids {
         let conv_id = ChatConversationId::from_string(id);
         let workspace = workspace_repo.get_by_conversation_id(&conv_id).await?;
-        let pub_state = publication_state_from_domain(workspace.as_ref());
+        let latest_run_status = state
+            .agent_run_repo
+            .get_latest_for_conversation(&conv_id)
+            .await?
+            .map(|run| run.status);
+        let pub_state = publication_state_from_domain(workspace.as_ref(), latest_run_status);
         result.insert(
             id.clone(),
             BulkPublicationStateResponse {
@@ -604,6 +625,7 @@ async fn get_bulk_workspace_publication_states_inner(
 
 fn publication_state_from_domain(
     workspace: Option<&crate::domain::entities::AgentConversationWorkspace>,
+    latest_run_status: Option<AgentRunStatus>,
 ) -> SidebarPublicationState {
     let pr_status = workspace
         .and_then(|w| w.publication_pr_status.as_deref())
@@ -618,6 +640,14 @@ fn publication_state_from_domain(
         (_, Some("needs_agent")) => SidebarPublicationState::Uncommitted,
         (_, Some("pending" | "failed" | "description_failed")) => SidebarPublicationState::Unpushed,
         (Some("draft"), _) => SidebarPublicationState::Draft,
+        (None, None)
+            if matches!(
+                latest_run_status,
+                Some(AgentRunStatus::Failed | AgentRunStatus::Cancelled)
+            ) =>
+        {
+            SidebarPublicationState::Closed
+        }
         _ => SidebarPublicationState::Active,
     }
 }
@@ -681,7 +711,7 @@ fn supervision_publication_label(
 mod tests {
     use super::*;
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversation,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ChatConversation,
         IdeationAnalysisBaseRefKind, Project,
     };
 
@@ -751,6 +781,16 @@ mod tests {
             .create_or_update(workspace)
             .await
             .unwrap();
+    }
+
+    async fn create_run_with_status(
+        state: &AppState,
+        conversation: &ChatConversation,
+        status: AgentRunStatus,
+    ) {
+        let mut run = AgentRun::new(conversation.id);
+        run.status = status;
+        state.agent_run_repo.create(run).await.unwrap();
     }
 
     async fn set_workspace_supervision(
@@ -849,6 +889,67 @@ mod tests {
             unpushed.id.as_str()
         );
         assert_eq!(response.groups[1].rows[0].publication_state, "unpushed");
+    }
+
+    #[tokio::test]
+    async fn publication_grouping_treats_failed_unpublished_latest_run_as_closed() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha").await;
+        let now = Utc::now();
+        let stopped = create_conversation(&state, &project.id, "Stopped work", now).await;
+        create_workspace(&state, &stopped, &project.id, None, None, None).await;
+        create_run_with_status(&state, &stopped, AgentRunStatus::Failed).await;
+
+        let mut input = sidebar_input(&project.id);
+        input.publication_states = Some(vec!["closed".to_string()]);
+
+        let response = list_agent_sidebar_conversations_for_app_state(input, &state)
+            .await
+            .unwrap();
+
+        assert_eq!(response.groups.len(), 1);
+        assert_eq!(response.groups[0].key, "closed");
+        assert_eq!(response.groups[0].total, 1);
+        assert_eq!(
+            response.groups[0].rows[0].conversation.id,
+            stopped.id.as_str()
+        );
+        assert_eq!(response.groups[0].rows[0].publication_state, "closed");
+        assert_eq!(
+            response.groups[0].rows[0].publication_label.as_deref(),
+            Some("closed")
+        );
+    }
+
+    #[tokio::test]
+    async fn bulk_publication_states_treat_cancelled_unpublished_latest_run_as_closed() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha").await;
+        let conversation =
+            create_conversation(&state, &project.id, "Cancelled work", Utc::now()).await;
+        create_workspace(&state, &conversation, &project.id, None, None, None).await;
+        create_run_with_status(&state, &conversation, AgentRunStatus::Cancelled).await;
+
+        let response = get_bulk_workspace_publication_states_inner(
+            &[conversation.id.as_str().to_string()],
+            &state,
+        )
+        .await
+        .unwrap();
+        let conversation_id = conversation.id.as_str();
+
+        assert_eq!(
+            response
+                .get(&conversation_id)
+                .map(|row| row.publication_state.as_str()),
+            Some("closed")
+        );
+        assert_eq!(
+            response
+                .get(&conversation_id)
+                .and_then(|row| row.publication_label.as_deref()),
+            Some("closed")
+        );
     }
 
     #[tokio::test]
