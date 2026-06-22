@@ -10,7 +10,8 @@ use crate::domain::agents::{
     AgentConfig, AgentHarnessKind, AgentOutput, AgentRole, AgenticClient, DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{
-    ChatContextType, ChatConversation, ChatConversationId, DelegatedSessionId, IdeationSession,
+    AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatContextType,
+    ChatConversation, ChatConversationId, DelegatedSessionId, IdeationSession,
     IdeationSessionFlow, IdeationSessionId, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
@@ -104,9 +105,9 @@ pub(crate) async fn build_session_namer_agent_spawn(
     state: &AppState,
     target: SessionNamerTarget,
 ) -> AppResult<SessionNamerAgentSpawn> {
-    let prompt = target.prompt();
     let target_label = target.target_label();
     let resolved = resolve_target_context(state, &target).await?;
+    let prompt = target.prompt(resolved.review_pull_request.as_ref());
     let working_directory =
         resolve_project_working_directory(state, resolved.project_id.as_deref()).await?;
 
@@ -149,6 +150,7 @@ struct ResolvedSessionNamerTarget {
     runtime: super::app_state::ResolvedBackgroundAgentRuntime,
     project_id: Option<String>,
     harness_for_log: Option<AgentHarnessKind>,
+    review_pull_request: Option<AgentWorkspaceSourcePullRequest>,
 }
 
 async fn resolve_target_context(
@@ -170,6 +172,7 @@ async fn resolve_target_context(
                 runtime,
                 project_id,
                 harness_for_log,
+                review_pull_request: None,
             })
         }
         SessionNamerTarget::ConversationInitial {
@@ -185,6 +188,8 @@ async fn resolve_target_context(
                     AppError::NotFound(format!("Conversation not found: {conversation_id}"))
                 })?;
             let project_id = resolve_conversation_project_id(state, &conversation).await?;
+            let review_pull_request =
+                resolve_review_pull_request_context(state, &conversation.id).await?;
             let runtime = state
                 .resolve_session_namer_runtime_for_conversation_with_requested_harness(
                     &conversation,
@@ -199,9 +204,27 @@ async fn resolve_target_context(
                 runtime,
                 project_id,
                 harness_for_log,
+                review_pull_request,
             })
         }
     }
+}
+
+async fn resolve_review_pull_request_context(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<Option<AgentWorkspaceSourcePullRequest>> {
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    if workspace.mode != AgentConversationWorkspaceMode::ReviewPr {
+        return Ok(None);
+    }
+    Ok(workspace.source_pull_request)
 }
 
 async fn load_session(state: &AppState, session_id: &str) -> AppResult<IdeationSession> {
@@ -300,7 +323,7 @@ impl SessionNamerTarget {
         }
     }
 
-    fn prompt(&self) -> String {
+    fn prompt(&self, review_pull_request: Option<&AgentWorkspaceSourcePullRequest>) -> String {
         match self {
             Self::SessionInitial {
                 session_id,
@@ -312,9 +335,14 @@ impl SessionNamerTarget {
                 conversation_id,
                 user_message,
                 ..
-            } => build_session_namer_prompt(&format!(
-                "<conversation_id>{conversation_id}</conversation_id>\n<user_message>{user_message}</user_message>"
-            )),
+            } => {
+                let review_pull_request_context = review_pull_request
+                    .map(format_review_pull_request_context)
+                    .unwrap_or_default();
+                build_session_namer_prompt(&format!(
+                    "<conversation_id>{conversation_id}</conversation_id>\n<user_message>{user_message}</user_message>{review_pull_request_context}"
+                ))
+            }
             Self::AcceptedSession {
                 session_id,
                 accepted_proposals,
@@ -334,6 +362,53 @@ impl SessionNamerTarget {
             } => format!("conversation:{conversation_id}"),
         }
     }
+}
+
+fn format_review_pull_request_context(pull_request: &AgentWorkspaceSourcePullRequest) -> String {
+    let mut context = format!(
+        "\n<review_pull_request>\n<number>{}</number>",
+        pull_request.number
+    );
+    append_optional_xml_tag(&mut context, "title", pull_request.title.as_deref());
+    append_optional_xml_tag(
+        &mut context,
+        "head_ref_name",
+        Some(pull_request.head_ref_name.as_str()),
+    );
+    append_optional_xml_tag(
+        &mut context,
+        "base_ref_name",
+        pull_request.base_ref_name.as_deref(),
+    );
+    append_optional_xml_tag(
+        &mut context,
+        "head_ref_oid",
+        pull_request.head_ref_oid.as_deref(),
+    );
+    append_optional_xml_tag(&mut context, "url", pull_request.url.as_deref());
+    context.push_str("\n</review_pull_request>");
+    context
+}
+
+fn append_optional_xml_tag(context: &mut String, tag: &str, value: Option<&str>) {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    context.push('\n');
+    context.push('<');
+    context.push_str(tag);
+    context.push('>');
+    context.push_str(&escape_xml_text(value));
+    context.push_str("</");
+    context.push_str(tag);
+    context.push('>');
+}
+
+fn escape_xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 impl SessionNamerTitleUpdater {
