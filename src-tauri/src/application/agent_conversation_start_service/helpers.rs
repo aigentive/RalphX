@@ -274,3 +274,7 @@ pub(super) fn emit_start_agent_conversation_progress<R: Runtime>(
         },
     );
 }
+
+#[cfg(test)]
+#[path = "helpers_tests.rs"]
+mod tests;
