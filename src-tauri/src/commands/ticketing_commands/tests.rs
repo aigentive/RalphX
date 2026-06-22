@@ -8,8 +8,8 @@ use crate::application::{
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ChatContextType, ChatConversation, ChatConversationId, Project,
-    ProjectId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatContextType, ChatConversation,
+    ChatConversationId, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
 use crate::domain::integrations::{
     AtlassianIntegrationSettings, IntegrationValidationStatus, ProviderTicketOperation,
@@ -666,6 +666,7 @@ fn ticket_summary_fixture(
         open_pr_count: 0,
         open_pr_number: None,
         open_pr_url: None,
+        open_pr_status: None,
     }
 }
 
@@ -910,27 +911,190 @@ async fn list_ticket_rows_include_linked_agent_conversation_count() {
         &state,
         "jira",
         Some(project_id.as_str()),
-        vec![TicketSummaryResponse {
-            ref_: ticket_ref,
-            title: "Linked ticket".to_string(),
-            state: ticket_state("To Do"),
-            assignee: None,
-            reporter: None,
-            labels: Vec::new(),
-            project: None,
-            priority: None,
-            updated_at: now_string(),
-            url: None,
-            association_count: 0,
-            open_pr_count: 0,
-            open_pr_number: None,
-            open_pr_url: None,
-        }],
+        vec![hydrate_input_summary(ticket_ref)],
     )
     .await
     .expect("association counts should hydrate");
 
     assert_eq!(hydrated[0].association_count, 1);
+}
+
+/// Seed an Edit-mode workspace for a conversation, optionally carrying a PR
+/// number/url/status and an explicit `updated_at` used to rank representative PRs.
+async fn seed_workspace_with_pr(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    project_id: &ProjectId,
+    pr_number: Option<i64>,
+    pr_url: Option<&str>,
+    pr_status: Option<&str>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+) {
+    let mut workspace = AgentConversationWorkspace::new(
+        *conversation_id,
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Current branch (main)".to_string()),
+        None,
+        format!("agent/{conversation_id}"),
+        format!("/tmp/worktrees/{conversation_id}"),
+    );
+    workspace.publication_pr_number = pr_number;
+    workspace.publication_pr_url = pr_url.map(str::to_string);
+    workspace.publication_pr_status = pr_status.map(str::to_string);
+    workspace.updated_at = updated_at;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should be created");
+}
+
+fn hydrate_input_summary(ticket_ref: TicketRefInput) -> TicketSummaryResponse {
+    TicketSummaryResponse {
+        ref_: ticket_ref,
+        title: "Linked ticket".to_string(),
+        state: ticket_state("To Do"),
+        assignee: None,
+        reporter: None,
+        labels: Vec::new(),
+        project: None,
+        priority: None,
+        updated_at: now_string(),
+        url: None,
+        association_count: 0,
+        open_pr_count: 0,
+        open_pr_number: None,
+        open_pr_url: None,
+        open_pr_status: None,
+    }
+}
+
+#[tokio::test]
+async fn hydrate_populates_representative_closed_pr_when_no_open_pr_exists() {
+    let state = AppState::new_test();
+    let project_id = seed_ticketing_project(&state, "ticket-closed-pr-jira").await;
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("conversation should be created");
+    let ticket_ref = TicketRefInput {
+        provider: "jira".to_string(),
+        id: "10381".to_string(),
+        key: Some("RX-381".to_string()),
+    };
+    let ticket_reference = ticket_ref_to_composer_reference("jira", &ticket_ref);
+    link_started_ticket_to_conversation(
+        &state,
+        "jira",
+        &conversation.id,
+        &project_id,
+        &ticket_reference,
+    )
+    .await
+    .expect("ticket link should be persisted");
+    // Only a CLOSED PR exists for this ticket — the representative PR must still
+    // be populated, while open_pr_count stays 0.
+    seed_workspace_with_pr(
+        &state,
+        &conversation.id,
+        &project_id,
+        Some(381),
+        Some("https://github.com/x/y/pull/381"),
+        Some("closed"),
+        chrono::Utc::now(),
+    )
+    .await;
+
+    let hydrated = hydrate_ticket_association_counts(
+        &state,
+        "jira",
+        Some(project_id.as_str()),
+        vec![hydrate_input_summary(ticket_ref)],
+    )
+    .await
+    .expect("association counts should hydrate");
+
+    assert_eq!(hydrated[0].association_count, 1);
+    assert_eq!(hydrated[0].open_pr_number, Some(381));
+    assert_eq!(
+        hydrated[0].open_pr_url.as_deref(),
+        Some("https://github.com/x/y/pull/381")
+    );
+    assert_eq!(hydrated[0].open_pr_status.as_deref(), Some("closed"));
+    // open_pr_count counts only OPEN PRs, so a closed-only ticket stays at 0.
+    assert_eq!(hydrated[0].open_pr_count, 0);
+}
+
+#[tokio::test]
+async fn hydrate_prefers_open_pr_over_more_recent_closed_pr() {
+    let state = AppState::new_test();
+    let project_id = seed_ticketing_project(&state, "ticket-open-vs-closed-jira").await;
+    let open_conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("open conversation should be created");
+    let closed_conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("closed conversation should be created");
+    let ticket_ref = TicketRefInput {
+        provider: "jira".to_string(),
+        id: "10500".to_string(),
+        key: Some("RX-500".to_string()),
+    };
+    let ticket_reference = ticket_ref_to_composer_reference("jira", &ticket_ref);
+    for conversation_id in [&open_conversation.id, &closed_conversation.id] {
+        link_started_ticket_to_conversation(
+            &state,
+            "jira",
+            conversation_id,
+            &project_id,
+            &ticket_reference,
+        )
+        .await
+        .expect("ticket link should be persisted");
+    }
+    let now = chrono::Utc::now();
+    // The closed PR is MORE recent, but an open PR must still win.
+    seed_workspace_with_pr(
+        &state,
+        &open_conversation.id,
+        &project_id,
+        Some(100),
+        Some("https://github.com/x/y/pull/100"),
+        Some("open"),
+        now - chrono::Duration::hours(2),
+    )
+    .await;
+    seed_workspace_with_pr(
+        &state,
+        &closed_conversation.id,
+        &project_id,
+        Some(101),
+        Some("https://github.com/x/y/pull/101"),
+        Some("closed"),
+        now,
+    )
+    .await;
+
+    let hydrated = hydrate_ticket_association_counts(
+        &state,
+        "jira",
+        Some(project_id.as_str()),
+        vec![hydrate_input_summary(ticket_ref)],
+    )
+    .await
+    .expect("association counts should hydrate");
+
+    assert_eq!(hydrated[0].open_pr_number, Some(100));
+    assert_eq!(hydrated[0].open_pr_status.as_deref(), Some("open"));
+    assert_eq!(hydrated[0].open_pr_count, 1);
 }
 
 #[test]

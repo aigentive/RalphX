@@ -149,6 +149,180 @@ describe("TicketListView", () => {
     expect(screen.getByRole("img", { name: /1 RalphX conversation/i })).toBeInTheDocument();
   });
 
+  it("renders a muted PR control naming the status for a closed representative PR and opens its url", async () => {
+    openUrlMock.mockClear();
+    render(
+      <TooltipProvider>
+        <TicketListView
+          tickets={[
+            {
+              ref: { provider: "linear", id: "L-381", key: "L-381" },
+              title: "Closed PR ticket",
+              state: { id: "started", name: "In Progress", category: "in_progress" },
+              labels: [],
+              updatedAt: "2026-06-19T22:00:00.000Z",
+              url: null,
+              associationCount: 1,
+              // open_pr_count stays 0 for a closed-only ticket, but the
+              // representative PR is still shown.
+              openPrCount: 0,
+              openPrNumber: 381,
+              openPrUrl: "https://github.com/x/y/pull/381",
+              openPrStatus: "closed",
+            },
+          ]}
+          hasNextPage={false}
+          isFetchingNextPage={false}
+          onLoadMore={vi.fn()}
+          onSelectTicket={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    const prButton = screen.getByRole("button", { name: /pull request #381 \(closed\)/i });
+    expect(prButton).toHaveTextContent("#381");
+    // A closed/merged PR is muted, not green.
+    expect(prButton).toHaveStyle({ color: "var(--text-muted)" });
+
+    fireEvent.click(prButton);
+    await waitFor(() => {
+      expect(openUrlMock).toHaveBeenCalledWith("https://github.com/x/y/pull/381");
+    });
+  });
+
+  it("colors an open representative PR green", () => {
+    render(
+      <TooltipProvider>
+        <TicketListView
+          tickets={[
+            {
+              ref: { provider: "linear", id: "L-99", key: "L-99" },
+              title: "Open PR ticket",
+              state: { id: "started", name: "In Progress", category: "in_progress" },
+              labels: [],
+              updatedAt: "2026-06-19T22:00:00.000Z",
+              url: null,
+              associationCount: 1,
+              openPrCount: 1,
+              openPrNumber: 99,
+              openPrUrl: "https://github.com/x/y/pull/99",
+              openPrStatus: "open",
+            },
+          ]}
+          hasNextPage={false}
+          isFetchingNextPage={false}
+          onLoadMore={vi.fn()}
+          onSelectTicket={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    const prButton = screen.getByRole("button", { name: /open pull request #99 in browser/i });
+    expect(prButton).toHaveStyle({ color: "var(--status-success)" });
+  });
+
+  it("places the PR control after the RX/suitcase badge in the row", () => {
+    render(
+      <TooltipProvider>
+        <TicketListView
+          tickets={[
+            {
+              ref: { provider: "linear", id: "L-7", key: "L-7" },
+              title: "Both badges",
+              state: { id: "started", name: "In Progress", category: "in_progress" },
+              labels: [],
+              updatedAt: "2026-06-19T22:00:00.000Z",
+              url: null,
+              associationCount: 2,
+              openPrCount: 1,
+              openPrNumber: 42,
+              openPrUrl: "https://github.com/x/y/pull/42",
+              openPrStatus: "open",
+            },
+          ]}
+          hasNextPage={false}
+          isFetchingNextPage={false}
+          onLoadMore={vi.fn()}
+          onSelectTicket={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    const rxBadge = screen.getByRole("img", { name: /2 RalphX conversations/i });
+    const prButton = screen.getByRole("button", { name: /open pull request #42 in browser/i });
+    // The PR column sits to the RIGHT of the RX (suitcase) column, so the PR
+    // control appears after the RX badge in document order.
+    expect(
+      rxBadge.compareDocumentPosition(prButton) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("opens the status options and moves the ticket on select when writable", async () => {
+    const onMoveTicket = vi.fn();
+    const onSelectTicket = vi.fn();
+    render(
+      <TooltipProvider>
+        <TicketListView
+          tickets={[tickets[0]!]}
+          columns={[
+            { id: "todo", name: "To Do", category: "todo", order: 0 },
+            { id: "done", name: "Done", category: "done", order: 1 },
+          ]}
+          hasNextPage={false}
+          isFetchingNextPage={false}
+          onLoadMore={vi.fn()}
+          onSelectTicket={onSelectTicket}
+          canMoveTickets
+          onMoveTicket={onMoveTicket}
+        />
+      </TooltipProvider>,
+    );
+
+    const statusTrigger = screen.getByRole("button", {
+      name: /change status \(current: to do\)/i,
+    });
+    // Radix DropdownMenu opens on pointerDown, not click.
+    fireEvent.pointerDown(statusTrigger, { button: 0, ctrlKey: false });
+    // Opening the status control must NOT select the row.
+    expect(onSelectTicket).not.toHaveBeenCalled();
+
+    const doneOption = screen.getByRole("menuitem", { name: /done/i });
+    fireEvent.click(doneOption);
+    expect(onMoveTicket).toHaveBeenCalledTimes(1);
+    expect(onMoveTicket.mock.calls[0]?.[0]?.ref.id).toBe("10001");
+    expect(onMoveTicket.mock.calls[0]?.[1]?.id).toBe("done");
+    // Selecting a status still must not open the ticket detail.
+    expect(onSelectTicket).not.toHaveBeenCalled();
+  });
+
+  it("keeps the status icon read-only when ticket moves are not writable", () => {
+    render(
+      <TooltipProvider>
+        <TicketListView
+          tickets={[tickets[0]!]}
+          columns={[
+            { id: "todo", name: "To Do", category: "todo", order: 0 },
+            { id: "done", name: "Done", category: "done", order: 1 },
+          ]}
+          hasNextPage={false}
+          isFetchingNextPage={false}
+          onLoadMore={vi.fn()}
+          onSelectTicket={vi.fn()}
+          canMoveTickets={false}
+          onMoveTicket={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: /change status/i }),
+    ).not.toBeInTheDocument();
+    // Read-only status glyph still renders (group heading + row both carry one).
+    expect(
+      screen.getAllByRole("img", { name: /^Status: To Do/ }).length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
   it("opening the PR control does not also select the ticket row", async () => {
     openUrlMock.mockClear();
     const onSelectTicket = vi.fn();

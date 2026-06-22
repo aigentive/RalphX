@@ -110,11 +110,15 @@ pub struct TicketSummaryResponse {
     pub association_count: usize,
     /// Linked conversations whose workspace currently has an open (non-terminal) PR.
     pub open_pr_count: usize,
-    /// Representative open PR number for the list PR column (first linked
-    /// conversation with an open PR that has a number), if any.
+    /// Representative PR number for the list PR column: an open PR if any linked
+    /// conversation has one, otherwise the most-recent PR by workspace
+    /// `updated_at` regardless of status (merged/closed/draft).
     pub open_pr_number: Option<i64>,
-    /// URL of the representative open PR, for opening it in the browser.
+    /// URL of the representative PR, for opening it in the browser.
     pub open_pr_url: Option<String>,
+    /// Status of the representative PR (e.g. "open", "draft", "merged",
+    /// "closed") so the list can color the PR icon by status.
+    pub open_pr_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

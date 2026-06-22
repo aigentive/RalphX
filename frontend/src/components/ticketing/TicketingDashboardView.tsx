@@ -819,6 +819,8 @@ export function TicketingDashboardView({
         isUnread={isTicketUnread}
         canQuickAssign={Boolean(selectedProvider?.capabilities.assignmentWrite)}
         onQuickAssign={handleQuickAssign}
+        canMoveTickets={Boolean(selectedProvider?.capabilities.kanbanWrite)}
+        onMoveTicket={handleMoveTicket}
       />
     );
   }
