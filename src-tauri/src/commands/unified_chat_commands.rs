@@ -116,8 +116,6 @@ const AGENT_WORKSPACE_REPAIR_SENT_STEP: &str = "repair_sent";
 const AGENT_WORKSPACE_REPAIR_ACTION_PREFIX: &str = "agent_fixable:";
 const AGENT_WORKSPACE_REPAIR_ACTION_PUBLISH: &str = "publish";
 const AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY: &str = "update_only";
-const AGENT_WORKSPACE_BASE_UPDATE_RUNNING_MESSAGE: &str =
-    "Cannot change workspace base while the agent is responding";
 pub const AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE: &str =
     "Agent workspace publish is already in progress";
 
@@ -4902,14 +4900,6 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
     conversation_id: ChatConversationId,
     selection: AgentConversationWorkspaceBaseSelection,
 ) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
-    let running_key = RunningAgentKey::new(
-        ChatContextType::Project.to_string(),
-        conversation_id.as_str(),
-    );
-    let interactive_slot_key = agent_workspace_interactive_slot_key(&conversation_id);
-    let running_agent_blocks_update = state.running_agent_registry.is_running(&running_key).await
-        && !execution_state.is_interactive_idle(&interactive_slot_key);
-
     let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let _pr_description_invalidation =
         AgentWorkspacePrDescriptionInvalidationGuard::new(&conversation_id, true);
@@ -4929,20 +4919,6 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
         state.build_chat_service_with_execution_state(Arc::clone(execution_state));
     if let Some(team_service) = team_service {
         repair_service = repair_service.with_team_service(team_service);
-    }
-
-    if running_agent_blocks_update {
-        let repair_target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
-        mark_agent_workspace_agent_fixable_update_failure_with_target(
-            state,
-            &workspace,
-            AGENT_WORKSPACE_BASE_UPDATE_RUNNING_MESSAGE,
-            None,
-            &repair_service,
-            &repair_target,
-        )
-        .await;
-        return Err(AGENT_WORKSPACE_BASE_UPDATE_RUNNING_MESSAGE.to_string());
     }
 
     let explicit_base = normalize_explicit_publish_base_selection(selection)?;
@@ -6997,30 +6973,6 @@ async fn mark_agent_workspace_update_failure_with_target<S>(
         true,
         target,
         AgentWorkspacePostRepairAction::UpdateOnly,
-    )
-    .await;
-}
-
-async fn mark_agent_workspace_agent_fixable_update_failure_with_target<S>(
-    state: &AppState,
-    workspace: &AgentConversationWorkspace,
-    error: &str,
-    pr_status_override: Option<&str>,
-    repair_service: &S,
-    target: &AgentConversationWorkspaceRepairTarget,
-) where
-    S: ChatService + ?Sized,
-{
-    mark_agent_workspace_failure_with_routing_and_action_classified(
-        state,
-        workspace,
-        error,
-        pr_status_override,
-        repair_service,
-        true,
-        target,
-        AgentWorkspacePostRepairAction::UpdateOnly,
-        PublishFailureClass::AgentFixable,
     )
     .await;
 }
@@ -11012,7 +10964,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_workspace_from_base_rejects_running_conversation() {
+    async fn update_workspace_from_base_running_conversation_does_not_stick_refreshing() {
         let (_temp, state, conversation_id, _github) = setup_publish_command_state(
             "update-running-conversation",
             true,
@@ -11039,7 +10991,7 @@ mod tests {
             )
             .await;
 
-        let error = update_agent_conversation_workspace_from_base_for_app_state(
+        let result = update_agent_conversation_workspace_from_base_for_app_state(
             &state,
             &execution_state,
             Some(team_service),
@@ -11052,12 +11004,9 @@ mod tests {
             },
         )
         .await
-        .expect_err("running conversation should reject workspace base update");
+        .expect("running conversation should allow workspace base update");
 
-        assert_eq!(
-            error,
-            "Cannot change workspace base while the agent is responding"
-        );
+        assert_eq!(result.workspace.conversation_id, conversation_id.as_str());
         let stored = state
             .agent_conversation_workspace_repo
             .get_by_conversation_id(&conversation_id)
@@ -11071,26 +11020,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_workspace_from_base_queues_repair_when_agent_is_running() {
+    async fn update_workspace_from_base_succeeds_when_agent_is_running() {
         let (_temp, state, conversation_id, _github) = setup_publish_command_state(
-            "update-running-conversation-repair",
+            "update-running-conversation-allowed",
             true,
-            Some(404),
+            None,
             Arc::new(MockGithubService::new()),
         )
         .await;
-        let mut workspace = state
-            .agent_conversation_workspace_repo
-            .get_by_conversation_id(&conversation_id)
-            .await
-            .expect("workspace lookup should succeed")
-            .expect("workspace should exist");
-        workspace.publication_push_status = Some("needs_agent".to_string());
-        state
-            .agent_conversation_workspace_repo
-            .create_or_update(workspace)
-            .await
-            .expect("workspace status should update");
         let execution_state = Arc::new(ExecutionState::new());
         let team_service = Arc::new(TeamService::new_without_events(Arc::new(
             TeamStateTracker::new(),
@@ -11110,7 +11047,7 @@ mod tests {
             )
             .await;
 
-        let error = update_agent_conversation_workspace_from_base_for_app_state(
+        let result = update_agent_conversation_workspace_from_base_for_app_state(
             &state,
             &execution_state,
             Some(team_service),
@@ -11123,32 +11060,9 @@ mod tests {
             },
         )
         .await
-        .expect_err("running conversation should still reject immediate base update");
+        .expect("running conversation should allow workspace base update");
 
-        assert_eq!(
-            error,
-            "Cannot change workspace base while the agent is responding"
-        );
-        let events = state
-            .agent_conversation_workspace_repo
-            .list_publication_events(&conversation_id)
-            .await
-            .expect("events should list");
-        let stored = state
-            .agent_conversation_workspace_repo
-            .get_by_conversation_id(&conversation_id)
-            .await
-            .expect("workspace lookup should succeed")
-            .expect("workspace should exist");
-        assert_eq!(
-            stored.publication_push_status.as_deref(),
-            Some("needs_agent")
-        );
-        assert!(events.iter().any(|event| {
-            event.step == "repair_requested"
-                && event.status == "started"
-                && event.classification.as_deref() == Some("agent_fixable:update_only")
-        }));
+        assert_eq!(result.workspace.conversation_id, conversation_id.as_str());
     }
 
     #[tokio::test]
