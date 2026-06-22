@@ -278,6 +278,11 @@ describe("TicketListView", () => {
       </TooltipProvider>,
     );
 
+    // No-overlap regression: an editable row shows the interactive control, not a
+    // second read-only status icon on top of it — only the group heading carries
+    // the read-only "Status" glyph.
+    expect(screen.getAllByRole("img", { name: "Status: To Do" })).toHaveLength(1);
+
     const statusTrigger = screen.getByRole("button", {
       name: /change status \(current: to do\)/i,
     });

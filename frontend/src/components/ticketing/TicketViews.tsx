@@ -372,7 +372,14 @@ export function TicketListView({
                   }}
                 >
                   <span className="font-mono text-xs text-[var(--text-secondary)]">{ticketKey(ticket.ref)}</span>
-                  <TicketStatusIcon state={ticket.state} />
+                  {/* When status is editable the interactive control is rendered in
+                      the aligned overlay below; keep this cell a placeholder so the
+                      two status icons don't overlap. */}
+                  {canMoveStatus ? (
+                    <span aria-hidden="true" />
+                  ) : (
+                    <TicketStatusIcon state={ticket.state} />
+                  )}
                   <span className="flex min-w-0 items-center gap-2">
                     {isUnread?.(ticket) && <UnreadCommentIndicator />}
                     <span className="truncate font-medium">{ticket.title}</span>
