@@ -67,6 +67,9 @@ describe("formatTicketDate", () => {
     expect(formatted.length).toBeGreaterThan(0);
     // The label includes a short month abbreviation for the date.
     expect(formatted).toMatch(/[A-Za-z]{3}/);
+    // Minimal: month + day only, with no time-of-day.
+    expect(formatted).not.toMatch(/\d{1,2}:\d{2}/);
+    expect(formatted).not.toMatch(/\b[AP]M\b/i);
   });
 });
 

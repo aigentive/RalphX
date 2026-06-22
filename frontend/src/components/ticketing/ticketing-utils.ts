@@ -16,11 +16,14 @@ export function formatTicketDate(value: string | null | undefined): string {
   if (Number.isNaN(date.getTime())) {
     return "Unknown";
   }
+  // Minimal, scannable date (e.g. "Jan 28") — no time-of-day. Include the year
+  // only when it differs from the current year, to disambiguate older tickets
+  // without cluttering the common (current-year) case.
+  const sameYear = date.getFullYear() === new Date().getFullYear();
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
+    ...(sameYear ? {} : { year: "numeric" }),
   }).format(date);
 }
 
