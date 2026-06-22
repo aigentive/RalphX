@@ -3,9 +3,27 @@ use std::sync::Arc;
 use super::ExternalIssueLinkService;
 use crate::domain::integrations::{
     ExternalIssueLinkRepository, ExternalIssueLinkUpsert, ExternalIssueLocalObject,
-    ExternalIssueSyncRecordUpsert, ExternalIssueSyncStatus,
+    ExternalIssueSyncRecordUpsert, ExternalIssueSyncStatus, ProviderTicketOperationKind,
+    ProviderTicketOperationStatus, ProviderTicketOperationUpsert,
 };
 use crate::infrastructure::memory::MemoryExternalIssueLinkRepository;
+
+fn sample_ticket_operation() -> ProviderTicketOperationUpsert {
+    ProviderTicketOperationUpsert {
+        provider: "linear".to_string(),
+        external_kind: "issue".to_string(),
+        external_id: "lin_123".to_string(),
+        external_key: Some("LIN-42".to_string()),
+        link_id: None,
+        local_project_id: Some("project-1".to_string()),
+        operation: ProviderTicketOperationKind::Comment,
+        client_operation_id: "client-operation-1".to_string(),
+        status: ProviderTicketOperationStatus::Pending,
+        provider_operation_id: None,
+        error_message: None,
+        metadata_json: Some(r#"{"body":"hello"}"#.to_string()),
+    }
+}
 
 fn sample_linear_link() -> ExternalIssueLinkUpsert {
     ExternalIssueLinkUpsert {
@@ -200,4 +218,90 @@ async fn service_derives_jira_and_linear_links_from_metadata() {
             .len(),
         2
     );
+}
+
+#[tokio::test]
+async fn service_delegates_provider_ticket_operation_apis_to_repo() {
+    let repo: Arc<dyn ExternalIssueLinkRepository> =
+        Arc::new(MemoryExternalIssueLinkRepository::new());
+    let service = ExternalIssueLinkService::new(Arc::clone(&repo));
+
+    // upsert_provider_ticket_operation forwards the input and returns the repo result.
+    let created = service
+        .upsert_provider_ticket_operation(sample_ticket_operation())
+        .await
+        .unwrap();
+    assert_eq!(created.client_operation_id, "client-operation-1");
+    assert_eq!(created.operation, ProviderTicketOperationKind::Comment);
+    assert_eq!(created.status, ProviderTicketOperationStatus::Pending);
+    // Same row is visible directly through the backing repo (proves delegation, not a copy).
+    assert_eq!(
+        repo.find_provider_ticket_operation_by_client_operation_id("client-operation-1")
+            .await
+            .unwrap()
+            .expect("repo should hold the upserted operation")
+            .id,
+        created.id
+    );
+
+    // find_provider_ticket_operation_by_client_operation_id forwards the lookup key.
+    let found = service
+        .find_provider_ticket_operation_by_client_operation_id("client-operation-1")
+        .await
+        .unwrap()
+        .expect("service should resolve the operation");
+    assert_eq!(found.id, created.id);
+    assert!(service
+        .find_provider_ticket_operation_by_client_operation_id("missing")
+        .await
+        .unwrap()
+        .is_none());
+
+    // list_provider_ticket_operations_for_ticket forwards all five filter args unchanged.
+    let listed = service
+        .list_provider_ticket_operations_for_ticket(
+            "linear",
+            "issue",
+            "lin_123",
+            Some("LIN-42"),
+            Some("project-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, created.id);
+    // A mismatched required arg forwards through and yields no rows.
+    assert!(service
+        .list_provider_ticket_operations_for_ticket("github", "issue", "lin_123", None, None)
+        .await
+        .unwrap()
+        .is_empty());
+
+    // update_provider_ticket_operation_status forwards id/status/provider id/error and
+    // returns the repo result.
+    let updated = service
+        .update_provider_ticket_operation_status(
+            &created.id,
+            ProviderTicketOperationStatus::Succeeded,
+            Some("provider-op-1"),
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("operation should update");
+    assert_eq!(updated.id, created.id);
+    assert_eq!(updated.status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(updated.provider_operation_id.as_deref(), Some("provider-op-1"));
+    assert!(updated.completed_at.is_some());
+    // Missing id forwards through and returns None.
+    assert!(service
+        .update_provider_ticket_operation_status(
+            "missing-operation",
+            ProviderTicketOperationStatus::Failed,
+            None,
+            Some("nope"),
+        )
+        .await
+        .unwrap()
+        .is_none());
 }
