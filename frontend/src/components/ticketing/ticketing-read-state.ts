@@ -5,10 +5,21 @@ import type {
   TicketStateCategory,
   TicketSummary,
 } from "@/api/ticketing";
+import type { TicketingFilterState } from "@/stores/ticketingStore";
 
 /** Stable per-ticket key used for read-state bookkeeping. */
 export function ticketRefKey(ref: TicketRef): string {
   return `${ref.provider}:${ref.id}`;
+}
+
+/** Whether any ticket filter (text, status, labels, assignee) is currently active. */
+export function hasActiveTicketFilters(filters: TicketingFilterState): boolean {
+  return (
+    filters.text.trim() !== ""
+    || filters.stateIds.length > 0
+    || filters.labels.length > 0
+    || filters.assignee !== null
+  );
 }
 
 /** Sentinel assignee-filter value selecting tickets with no assignee. */

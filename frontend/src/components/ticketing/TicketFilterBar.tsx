@@ -7,7 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import type { TicketingFilterState, TicketingViewMode } from "@/stores/ticketingStore";
 import { cn } from "@/lib/utils";
 
-import { UNASSIGNED_ASSIGNEE } from "./ticketing-read-state";
+import { hasActiveTicketFilters, UNASSIGNED_ASSIGNEE } from "./ticketing-read-state";
 import { ticketSelectClassName, ticketSelectStyle, ticketSelectOptionStyle } from "./ticket-select-styles";
 
 interface TicketFilterBarProps {
@@ -25,15 +25,6 @@ interface TicketFilterBarProps {
   onResetFilters: () => void;
   onViewModeChange: (mode: TicketingViewMode) => void;
   onRefresh: () => void;
-}
-
-function hasActiveFilters(filters: TicketingFilterState): boolean {
-  return (
-    filters.text.trim() !== ""
-    || filters.stateIds.length > 0
-    || filters.labels.length > 0
-    || filters.assignee !== null
-  );
 }
 
 function ViewModeButton({
@@ -87,7 +78,7 @@ export function TicketFilterBar({
   onViewModeChange,
   onRefresh,
 }: TicketFilterBarProps) {
-  const filtersActive = hasActiveFilters(filters);
+  const filtersActive = hasActiveTicketFilters(filters);
   return (
     <div
       className="flex flex-wrap items-center gap-2 px-4 py-3"

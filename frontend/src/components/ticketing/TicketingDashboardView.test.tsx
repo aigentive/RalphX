@@ -684,6 +684,27 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByText("No tickets match these filters")).toBeInTheDocument();
   });
 
+  it("shows a non-filter empty state when there are no tickets and no active filters", () => {
+    mockConnectedDashboard();
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: { pages: [{ items: [], nextCursor: null, total: 0 }], pageParams: [null] },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+    useTicketingStore.setState({
+      filters: { text: "", assignee: null, stateIds: [], labels: [] },
+    });
+    renderDashboard();
+
+    expect(screen.getByText("No tickets here yet")).toBeInTheDocument();
+    expect(screen.queryByText("No tickets match these filters")).not.toBeInTheDocument();
+  });
+
   it("shows the detail preloader instead of stale content until the detail matches", async () => {
     mockConnectedDashboard();
     // Detail has not resolved for the opened ticket yet (no matching data).

@@ -55,6 +55,7 @@ import {
   distinctAssigneeNames,
   filterTicketsByAssignee,
   filterTicketsByProject,
+  hasActiveTicketFilters,
   isTicketUpdatedSince,
   ticketRefKey,
 } from "./ticketing-read-state";
@@ -774,13 +775,21 @@ export function TicketingDashboardView({
       />
     );
   } else if (displayedTickets.length === 0) {
-    content = (
+    content = hasActiveTicketFilters(filters) ? (
       <TicketingStatePanel
         state="empty"
         title="No tickets match these filters"
         description="Adjust filters or refresh this provider."
         actionLabel="Reset filters"
         onAction={resetFilters}
+      />
+    ) : (
+      <TicketingStatePanel
+        state="empty"
+        title="No tickets here yet"
+        description="Refresh this provider or start RalphX work from a ticket."
+        actionLabel="Refresh"
+        onAction={handleRefresh}
       />
     );
   } else if (viewMode === "kanban") {

@@ -8,6 +8,7 @@ import {
   filterTicketsByAssignee,
   filterTicketsByProject,
   groupTicketsByStatus,
+  hasActiveTicketFilters,
   isCommentNewSince,
   isOptimisticCommentId,
   isTicketUpdatedSince,
@@ -187,5 +188,21 @@ describe("groupTicketsByStatus", () => {
       [],
     );
     expect(groups.map((group) => group.name)).toEqual(["Alpha", "Zeta"]);
+  });
+});
+
+describe("hasActiveTicketFilters", () => {
+  const empty = { text: "", stateIds: [], labels: [], assignee: null };
+
+  it("is false when no filter is set (whitespace-only text counts as empty)", () => {
+    expect(hasActiveTicketFilters(empty)).toBe(false);
+    expect(hasActiveTicketFilters({ ...empty, text: "   " })).toBe(false);
+  });
+
+  it("is true when any of text, status, labels, or assignee is set", () => {
+    expect(hasActiveTicketFilters({ ...empty, text: "bug" })).toBe(true);
+    expect(hasActiveTicketFilters({ ...empty, stateIds: ["todo"] })).toBe(true);
+    expect(hasActiveTicketFilters({ ...empty, labels: ["backend"] })).toBe(true);
+    expect(hasActiveTicketFilters({ ...empty, assignee: "Me" })).toBe(true);
   });
 });
