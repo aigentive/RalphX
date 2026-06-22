@@ -679,4 +679,55 @@ mod tests {
             .to_string()
             .contains("does not exist locally or on origin"));
     }
+
+    #[tokio::test]
+    async fn check_ref_format_rejects_empty_branch() {
+        let (_temp, repo) = init_repo_with_origin();
+        assert!(!GitService::check_ref_format(&repo, "")
+            .await
+            .expect("check should run"));
+    }
+
+    #[tokio::test]
+    async fn check_ref_format_rejects_leading_dash() {
+        // A leading '-' must be rejected so it can never be parsed as a CLI flag.
+        let (_temp, repo) = init_repo_with_origin();
+        assert!(!GitService::check_ref_format(&repo, "-rf")
+            .await
+            .expect("check should run"));
+    }
+
+    #[tokio::test]
+    async fn check_ref_format_rejects_spaces() {
+        let (_temp, repo) = init_repo_with_origin();
+        assert!(!GitService::check_ref_format(&repo, "has space")
+            .await
+            .expect("check should run"));
+    }
+
+    #[tokio::test]
+    async fn check_ref_format_rejects_lock_suffix() {
+        let (_temp, repo) = init_repo_with_origin();
+        assert!(!GitService::check_ref_format(&repo, "feature.lock")
+            .await
+            .expect("check should run"));
+    }
+
+    #[tokio::test]
+    async fn check_ref_format_rejects_path_traversal() {
+        // "../escape" contains ".." which git rejects in a ref component, and the
+        // full-ref validation prevents using it as a filesystem-traversal vector.
+        let (_temp, repo) = init_repo_with_origin();
+        assert!(!GitService::check_ref_format(&repo, "../escape")
+            .await
+            .expect("check should run"));
+    }
+
+    #[tokio::test]
+    async fn check_ref_format_accepts_valid_branch() {
+        let (_temp, repo) = init_repo_with_origin();
+        assert!(GitService::check_ref_format(&repo, "feature/my-branch")
+            .await
+            .expect("check should run"));
+    }
 }
