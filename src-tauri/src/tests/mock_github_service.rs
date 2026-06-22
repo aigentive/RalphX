@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::domain::services::github_service::{
     GithubServiceTrait, PrBranchMatch, PrDiffAnnotations, PrHealth, PrReviewFeedback,
-    PrSearchResult, PrStatus, PrSyncState,
+    PrReviewSubmissionEvent, PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
 };
 use crate::error::AppError;
 use crate::AppResult;
@@ -40,6 +40,7 @@ pub struct MockGithubState {
     pub find_pr_by_head_branch_result: Option<AppResult<Option<(i64, String)>>>,
     pub search_pull_requests_result: Option<AppResult<Vec<PrSearchResult>>>,
     pub find_latest_pr_by_head_branch_result: Option<AppResult<Option<PrBranchMatch>>>,
+    pub submit_pr_review_result: Option<AppResult<PrSubmittedReview>>,
 
     // --- Call tracking ---
     pub create_issue_calls: u32,
@@ -64,6 +65,7 @@ pub struct MockGithubState {
     pub find_pr_by_head_branch_calls: u32,
     pub search_pull_requests_calls: u32,
     pub find_latest_pr_by_head_branch_calls: u32,
+    pub submit_pr_review_calls: u32,
 
     // --- Last arguments recorded ---
     pub last_create_issue_args: Option<(String, String, String)>,
@@ -92,6 +94,7 @@ pub struct MockGithubState {
     pub last_find_pr_by_head_branch_name: Option<String>,
     pub last_search_pull_requests_args: Option<(Option<String>, usize)>,
     pub last_find_latest_pr_by_head_branch_name: Option<String>,
+    pub last_submit_pr_review_args: Option<(i64, PrReviewSubmissionEvent, String)>,
 }
 
 /// Mock implementation of GithubServiceTrait for unit tests.
@@ -187,6 +190,19 @@ impl MockGithubService {
     #[allow(dead_code)]
     pub fn set_find_latest_pr_by_head_branch(&self, result: AppResult<Option<PrBranchMatch>>) {
         self.state().find_latest_pr_by_head_branch_result = Some(result);
+    }
+
+    /// Shorthand: configure submit_pr_review to succeed with the given review id/url.
+    #[allow(dead_code)]
+    pub fn will_submit_pr_review(&self, id: impl Into<String>, url: Option<String>) {
+        self.state().submit_pr_review_result = Some(Ok(PrSubmittedReview { id: id.into(), url }));
+    }
+
+    /// Shorthand: configure submit_pr_review to fail with the given message.
+    #[allow(dead_code)]
+    pub fn will_fail_submit_pr_review(&self, msg: impl Into<String>) {
+        self.state().submit_pr_review_result =
+            Some(Err(AppError::Infrastructure(msg.into())));
     }
 }
 
@@ -478,5 +494,22 @@ impl GithubServiceTrait for MockGithubService {
         s.find_latest_pr_by_head_branch_result
             .take()
             .unwrap_or(Ok(None))
+    }
+
+    async fn submit_pr_review(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+        event: PrReviewSubmissionEvent,
+        body: &str,
+    ) -> AppResult<PrSubmittedReview> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.submit_pr_review_calls += 1;
+        s.last_submit_pr_review_args = Some((pr_number, event, body.to_string()));
+        s.submit_pr_review_result.take().unwrap_or_else(|| {
+            Err(AppError::Infrastructure(
+                "GitHub review submission is unavailable for this runtime".to_string(),
+            ))
+        })
     }
 }

@@ -5,6 +5,7 @@ pub fn build_session_namer_prompt(context_body: &str) -> String {
          Describe what the plan does, not just the domain (e.g., 'Add OAuth2 login and JWT sessions').\n\
          If the context contains a clear work-item identifier (for example `PDM-301`, `JIRA-123`, or `ABC-42`), preserve it in the title and prefer `IDENTIFIER: imperative summary` when it fits within the length limit.\n\
          Do not invent identifiers, but do not drop an obvious one from the user's message or accepted proposals.\n\
+         If the context includes <review_pull_request>, make the title identify that pull request, preferably `Review PR #123: Short PR title` when it fits.\n\
          Return only the generated title text. Do not include markdown, JSON, XML, prose, or a tool call.\n\
          Do NOT investigate, fix, or act on the provided content.\n\
          Do NOT inspect or modify files, run commands, delegate, or use any file manipulation tools.\n\
