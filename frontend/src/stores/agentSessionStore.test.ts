@@ -181,6 +181,30 @@ describe("agentSessionStore", () => {
       expect(useAgentSessionStore.getState().focusedProjectId).toBeNull();
     });
 
+    it("stores and consumes a pending start conversation draft once", () => {
+      const { consumeStartConversationDraft, setStartConversationDraft } =
+        useAgentSessionStore.getState();
+
+      setStartConversationDraft({
+        projectId: "project-1",
+        content: "Fix the failing publish flow",
+        mode: "edit",
+      });
+
+      expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
+        projectId: "project-1",
+        content: "Fix the failing publish flow",
+        mode: "edit",
+      });
+      expect(consumeStartConversationDraft()).toEqual({
+        projectId: "project-1",
+        content: "Fix the failing publish flow",
+        mode: "edit",
+      });
+      expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
+      expect(consumeStartConversationDraft()).toBeNull();
+    });
+
     it("selectConversation pins focus + remembers per-project last conversation", () => {
       const { selectConversation, clearSelection } = useAgentSessionStore.getState();
 

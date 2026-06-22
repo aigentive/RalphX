@@ -10,7 +10,7 @@
  * - Merge watchdog polling
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
 import { taskKeys } from "@/hooks/useTasks";
@@ -91,9 +91,18 @@ export function useChatRecovery({
   const queryClient = useQueryClient();
   const hydratedConversationIdRef = useRef<string | null>(null);
 
+  const [hydrationKeyId, setHydrationKeyId] = useState(activeConversationId);
+  const [isStreamingHydrated, setIsStreamingHydrated] = useState(false);
+
+  if (hydrationKeyId !== activeConversationId) {
+    setHydrationKeyId(activeConversationId);
+    setIsStreamingHydrated(false);
+  }
+
   useEffect(() => {
     if (!activeConversationId) {
       hydratedConversationIdRef.current = null;
+      setIsStreamingHydrated(true);
       return;
     }
     const canHydrateStreamingState =
@@ -101,9 +110,11 @@ export function useChatRecovery({
       Boolean(setStreamingToolCalls) ||
       Boolean(setStreamingContentBlocks);
     if (isHistoryMode || !isConversationInCurrentContext || !canHydrateStreamingState) {
+      setIsStreamingHydrated(true);
       return;
     }
     if (hydratedConversationIdRef.current === activeConversationId) {
+      setIsStreamingHydrated(true);
       return;
     }
 
@@ -135,6 +146,11 @@ export function useChatRecovery({
       })
       .catch(() => {
         // Best-effort recovery only. Live events remain authoritative.
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsStreamingHydrated(true);
+        }
       });
 
     return () => {
@@ -359,4 +375,6 @@ export function useChatRecovery({
       clearTimeout(timeoutId);
     };
   }, [activeConversationId, currentContextType, ideationSessionId, isAgentContext, projectId, queryClient, selectedTaskId]);
+
+  return { isStreamingHydrated };
 }

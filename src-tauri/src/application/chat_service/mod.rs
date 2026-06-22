@@ -499,6 +499,33 @@ fn resolve_agent_name_for_send<'a>(
         })
 }
 
+/// Resolve the effective agent-conversation mode used for agent selection on a
+/// `send_message` spawn.
+///
+/// A linked agent-conversation workspace's display mode governs the *workspace
+/// conversation itself* (a `Project` context in the Agents view). It must never
+/// hijack a genuine ideation **session** (`ChatContextType::Ideation`): a
+/// child/linked ideation session always resolves to the ideation orchestrator
+/// via its context type. The single exception is `Plan` mode, whose linked
+/// planning session keeps its constrained plan profile.
+///
+/// Without this guard, an ideation session linked to a workspace in `Ideation`
+/// mode resolved to `ralphx-chat-project`, which lacks the proposal/plan/finalize
+/// tools, so the session produced no durable ideation outputs.
+fn agent_conversation_mode_for_send(
+    context_type: ChatContextType,
+    conversation_agent_mode: Option<AgentConversationWorkspaceMode>,
+    workspace_mode: Option<AgentConversationWorkspaceMode>,
+) -> Option<AgentConversationWorkspaceMode> {
+    let resolved = conversation_agent_mode.or(workspace_mode);
+    match context_type {
+        ChatContextType::Ideation => {
+            resolved.filter(|mode| matches!(mode, AgentConversationWorkspaceMode::Plan))
+        }
+        _ => resolved,
+    }
+}
+
 fn plan_mode_runtime_message(
     message: String,
     workspace: Option<&AgentConversationWorkspace>,
@@ -3483,9 +3510,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             .await?;
         let entity_status = self.get_entity_status(context_type, context_id).await;
         let team_mode_val = self.team_mode.load(Ordering::Relaxed);
-        let agent_conversation_mode = conversation
-            .agent_mode
-            .or_else(|| agent_workspace.as_ref().map(|workspace| workspace.mode));
+        let agent_conversation_mode = agent_conversation_mode_for_send(
+            context_type,
+            conversation.agent_mode,
+            agent_workspace.as_ref().map(|workspace| workspace.mode),
+        );
         let agent_name = resolve_agent_name_for_send(
             &context_type,
             entity_status.as_deref(),

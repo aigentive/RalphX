@@ -277,6 +277,19 @@ fn build_create_pr_args(
     args
 }
 
+fn build_create_issue_args(repository: &str, title: &str, body_file: &str) -> Vec<String> {
+    vec![
+        "issue".to_string(),
+        "create".to_string(),
+        "--repo".to_string(),
+        repository.to_string(),
+        "--title".to_string(),
+        title.to_string(),
+        "--body-file".to_string(),
+        body_file.to_string(),
+    ]
+}
+
 fn build_update_pr_args(pr_number: i64, title: &str, body_file: &str) -> Vec<String> {
     vec![
         "pr".to_string(),
@@ -527,6 +540,31 @@ pub(crate) fn scrub_token_urls(s: &str) -> String {
 
 #[async_trait]
 impl GithubServiceTrait for GhCliGithubService {
+    async fn create_issue(
+        &self,
+        working_dir: &Path,
+        repository: &str,
+        title: &str,
+        body_file: &Path,
+    ) -> AppResult<String> {
+        let body_file_str = body_file
+            .to_str()
+            .ok_or_else(|| {
+                AppError::Infrastructure("body_file path is not valid UTF-8".to_string())
+            })?
+            .to_string();
+
+        let stdout = self
+            .runner
+            .run_gh(
+                working_dir,
+                &build_create_issue_args(repository, title, &body_file_str),
+            )
+            .await?;
+
+        parse_issue_create_plain_output(&stdout.join("\n"))
+    }
+
     async fn create_draft_pr(
         &self,
         working_dir: &Path,
@@ -1078,6 +1116,19 @@ pub(crate) fn parse_pr_create_plain_output(stdout_str: &str) -> AppResult<(i64, 
         })?;
 
     Ok((pr_number, url))
+}
+
+pub(crate) fn parse_issue_create_plain_output(stdout_str: &str) -> AppResult<String> {
+    stdout_str
+        .split_whitespace()
+        .map(|token| token.trim_matches(|c: char| "()[]<>{},'\"".contains(c)))
+        .find(|token| token.starts_with("https://") && token.contains("/issues/"))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            AppError::Infrastructure(format!(
+                "gh issue create: could not find issue URL in output: {stdout_str}"
+            ))
+        })
 }
 
 pub(crate) fn parse_pr_list_output(json_str: &str) -> AppResult<Option<(i64, String)>> {

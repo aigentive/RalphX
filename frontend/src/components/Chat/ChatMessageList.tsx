@@ -374,7 +374,7 @@ function collectToolCallGroupRun(
     previous = next;
   }
 
-  return group.length > 1 ? group : null;
+  return group.length >= 1 ? group : null;
 }
 
 function toolCallGroupKey(messages: ChatMessageData[]): string {
@@ -447,7 +447,7 @@ function ToolCallGroupToggle({
   isExpanded: boolean;
   onToggle: React.MouseEventHandler<HTMLButtonElement>;
 }) {
-  const label = isExpanded ? `Hide ${count} tool calls` : `Agent called ${count} tools`;
+  const label = isExpanded ? `Hide ${count} tool call${count === 1 ? "" : "s"}` : `Agent called ${count} tool${count === 1 ? "" : "s"}`;
   return (
     <button
       type="button"
@@ -2548,10 +2548,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           endIndex += 1;
         }
 
-        if (entries.length === 1) {
-          const entry = entries[0]!;
-          streamingContentNodes.push(renderStreamingToolCallBlock(entry.block, entry.index));
-        } else if (entries.length > 1) {
+        if (entries.length > 0) {
           const groupKey = streamingToolGroupKey(entries);
           const isExpanded = expandedToolGroupKeys.has(groupKey);
           streamingContentNodes.push(
@@ -2578,7 +2575,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           .map((toolCall, index) => ({ toolCall, index }))
           .filter(({ toolCall }) => !shouldHideCompletedProjectOrchestrationToolCall(toolCall))
         : [];
-      const fallbackToolGroupKey = visibleFallbackToolCalls.length > 1
+      const fallbackToolGroupKey = visibleFallbackToolCalls.length > 0
         ? [
           "streaming-pending-tool-group",
           visibleFallbackToolCalls[0]?.toolCall.id || visibleFallbackToolCalls[0]?.index || "empty",
@@ -2586,8 +2583,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         : null;
       const isFallbackToolGroupExpanded =
         fallbackToolGroupKey != null && expandedToolGroupKeys.has(fallbackToolGroupKey);
-      const singleFallbackToolCall =
-        visibleFallbackToolCalls.length === 1 ? visibleFallbackToolCalls[0] : null;
       return (
         <>
           {shouldRenderStreamingContentGroup && (
@@ -2622,18 +2617,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
               {/* Fallback when agent is running but no content blocks yet:
                   Tool calls pending show immediate visibility into what agent is doing. */}
-              {singleFallbackToolCall && (
-                <ToolCallIndicator
-                  key={`pending-tool-${singleFallbackToolCall.index}`}
-                  toolCall={singleFallbackToolCall.toolCall}
-                  isStreaming={
-                    singleFallbackToolCall.toolCall.result == null
-                    && !singleFallbackToolCall.toolCall.error
-                  }
-                  className="mb-2"
-                />
-              )}
-              {fallbackToolGroupKey != null && visibleFallbackToolCalls.length > 1 && (
+              {fallbackToolGroupKey != null && (
                 <>
                   <div className="mb-2">
                     <ToolCallGroupToggle
