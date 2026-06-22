@@ -118,6 +118,12 @@ struct RecordedJiraCalls {
     transitioned: Vec<(String, String)>,
     comments: Vec<(String, String)>,
     label_writes: Vec<(String, Vec<String>)>,
+    assigned: Vec<String>,
+    searches: Vec<(AtlassianResourceKind, String, usize)>,
+    fetched: Vec<String>,
+    listed_projects: Vec<usize>,
+    listed_statuses: Vec<String>,
+    listed_issues: Vec<(String, usize)>,
 }
 
 /// Fake [`AtlassianApiClient`] that records the Jira write/read calls routed
@@ -164,28 +170,122 @@ impl AtlassianApiClient for TestAtlassianClient {
 
     async fn search(
         &self,
-        _auth: &AtlassianAuthContext,
-        _kind: AtlassianResourceKind,
-        _query: &str,
-        _limit: usize,
+        auth: &AtlassianAuthContext,
+        kind: AtlassianResourceKind,
+        query: &str,
+        limit: usize,
     ) -> Result<Vec<AtlassianResourceSummary>, String> {
-        Ok(Vec::new())
+        self.assert_api_token_auth(auth).await;
+        if let Some(error) = self.error.lock().await.clone() {
+            return Err(error);
+        }
+        self.calls
+            .lock()
+            .await
+            .searches
+            .push((kind, query.to_string(), limit));
+        Ok(vec![AtlassianResourceSummary {
+            kind,
+            id: "RX-1".to_string(),
+            key: Some("RX-1".to_string()),
+            title: "Example".to_string(),
+            url: None,
+            excerpt: None,
+        }])
     }
 
     async fn fetch(
         &self,
-        _auth: &AtlassianAuthContext,
-        _reference: &ComposerIntegrationReference,
+        auth: &AtlassianAuthContext,
+        reference: &ComposerIntegrationReference,
     ) -> Result<AtlassianResourceContent, String> {
-        Err("not used in these tests".to_string())
+        self.assert_api_token_auth(auth).await;
+        if let Some(error) = self.error.lock().await.clone() {
+            return Err(error);
+        }
+        self.calls.lock().await.fetched.push(reference.id.clone());
+        Ok(resource_content(&reference.id, "Issue body"))
     }
 
     async fn assign_jira_issue_to_current_user(
         &self,
-        _auth: &AtlassianAuthContext,
-        _issue_key: &str,
+        auth: &AtlassianAuthContext,
+        issue_key: &str,
     ) -> Result<(), String> {
+        self.assert_api_token_auth(auth).await;
+        if let Some(error) = self.error.lock().await.clone() {
+            return Err(error);
+        }
+        self.calls.lock().await.assigned.push(issue_key.to_string());
         Ok(())
+    }
+
+    async fn list_jira_projects(
+        &self,
+        auth: &AtlassianAuthContext,
+        limit: usize,
+    ) -> Result<Vec<JiraProjectSummary>, String> {
+        self.assert_api_token_auth(auth).await;
+        if let Some(error) = self.error.lock().await.clone() {
+            return Err(error);
+        }
+        self.calls.lock().await.listed_projects.push(limit);
+        Ok(vec![JiraProjectSummary {
+            id: "10000".to_string(),
+            key: "RX".to_string(),
+            name: "RalphX".to_string(),
+        }])
+    }
+
+    async fn list_jira_project_statuses(
+        &self,
+        auth: &AtlassianAuthContext,
+        project_key: &str,
+    ) -> Result<Vec<JiraStatusSummary>, String> {
+        self.assert_api_token_auth(auth).await;
+        if let Some(error) = self.error.lock().await.clone() {
+            return Err(error);
+        }
+        self.calls
+            .lock()
+            .await
+            .listed_statuses
+            .push(project_key.to_string());
+        Ok(vec![JiraStatusSummary {
+            id: "1".to_string(),
+            name: "To Do".to_string(),
+            category: "todo".to_string(),
+        }])
+    }
+
+    async fn list_jira_project_issues(
+        &self,
+        auth: &AtlassianAuthContext,
+        project_key: &str,
+        limit: usize,
+    ) -> Result<Vec<JiraIssueDetail>, String> {
+        self.assert_api_token_auth(auth).await;
+        if let Some(error) = self.error.lock().await.clone() {
+            return Err(error);
+        }
+        self.calls
+            .lock()
+            .await
+            .listed_issues
+            .push((project_key.to_string(), limit));
+        Ok(vec![JiraIssueDetail {
+            key: "RX-1".to_string(),
+            title: "Example".to_string(),
+            status_id: Some("1".to_string()),
+            status_name: Some("To Do".to_string()),
+            status_category: Some("todo".to_string()),
+            assignee_name: None,
+            assignee_avatar: None,
+            labels: Vec::new(),
+            updated: None,
+            priority: None,
+            url: None,
+        }])
     }
 
     async fn clear_jira_issue_assignee(
@@ -330,6 +430,39 @@ fn disabled_service(client: Arc<TestAtlassianClient>) -> AtlassianIntegrationSer
     let repo = Arc::new(TestSettingsRepo::disabled());
     let secrets = Arc::new(MemorySecretStore::new());
     AtlassianIntegrationService::new(repo, secrets, client)
+}
+
+/// Builds a minimal Jira-kind resource content payload for fetch/expand tests.
+fn resource_content(id: &str, body: &str) -> AtlassianResourceContent {
+    AtlassianResourceContent {
+        kind: AtlassianResourceKind::Jira,
+        id: id.to_string(),
+        key: Some("RX-1".to_string()),
+        title: "Example".to_string(),
+        url: Some("https://example.atlassian.net/browse/RX-1".to_string()),
+        body: body.to_string(),
+        status: Some("To Do".to_string()),
+        assignee: None,
+        reporter: None,
+        updated_at_remote: None,
+        description_markdown: None,
+        description_text: None,
+        acceptance_criteria_markdown: None,
+        acceptance_criteria_text: None,
+        comments: Vec::new(),
+        attachments: Vec::new(),
+    }
+}
+
+fn atlassian_reference(id: &str) -> ComposerIntegrationReference {
+    ComposerIntegrationReference {
+        provider: "atlassian".to_string(),
+        kind: "jira".to_string(),
+        id: id.to_string(),
+        key: Some("RX-1".to_string()),
+        title: Some("Example".to_string()),
+        url: None,
+    }
 }
 
 #[tokio::test]
@@ -478,4 +611,240 @@ async fn jira_writes_are_blocked_when_integration_disabled() {
     assert!(calls.transitioned.is_empty());
     assert!(calls.comments.is_empty());
     assert!(calls.label_writes.is_empty());
+}
+
+// ---- Read/query delegations (enabled, disabled, error) ----------------------
+
+#[tokio::test]
+async fn search_resources_clamps_limit_and_routes_to_client() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let results = service
+        .search_resources(AtlassianResourceKind::Jira, "bug", 100)
+        .await
+        .expect("search should succeed");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].id, "RX-1");
+    // Limit is clamped into 1..=25 before reaching the client.
+    assert_eq!(
+        client.calls.lock().await.searches,
+        vec![(AtlassianResourceKind::Jira, "bug".to_string(), 25)]
+    );
+}
+
+#[tokio::test]
+async fn search_resources_clamps_zero_limit_to_one() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+    service
+        .search_resources(AtlassianResourceKind::Confluence, "doc", 0)
+        .await
+        .expect("search should succeed");
+    assert_eq!(
+        client.calls.lock().await.searches,
+        vec![(AtlassianResourceKind::Confluence, "doc".to_string(), 1)]
+    );
+}
+
+#[tokio::test]
+async fn fetch_resource_content_routes_to_client() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let content = service
+        .fetch_resource_content(&atlassian_reference("RX-1"))
+        .await
+        .expect("fetch should succeed");
+    assert_eq!(content.id, "RX-1");
+    assert_eq!(client.calls.lock().await.fetched, vec!["RX-1".to_string()]);
+}
+
+#[tokio::test]
+async fn assign_jira_issue_routes_to_client_when_enabled() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    service
+        .assign_jira_issue_to_current_user("PROJ-1")
+        .await
+        .expect("assign should succeed");
+    assert_eq!(
+        client.calls.lock().await.assigned,
+        vec!["PROJ-1".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn list_jira_projects_routes_to_client() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let projects = service.list_jira_projects(50).await.expect("list projects");
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].key, "RX");
+    assert_eq!(client.calls.lock().await.listed_projects, vec![50]);
+}
+
+#[tokio::test]
+async fn list_jira_project_statuses_routes_to_client() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let statuses = service
+        .list_jira_project_statuses("RX")
+        .await
+        .expect("list statuses");
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(
+        client.calls.lock().await.listed_statuses,
+        vec!["RX".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn list_jira_project_issues_routes_to_client() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let issues = service
+        .list_jira_project_issues("RX", 20)
+        .await
+        .expect("list issues");
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].key, "RX-1");
+    assert_eq!(
+        client.calls.lock().await.listed_issues,
+        vec![("RX".to_string(), 20)]
+    );
+}
+
+#[tokio::test]
+async fn read_queries_are_blocked_when_integration_disabled() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = disabled_service(client.clone());
+
+    assert_eq!(
+        service
+            .search_resources(AtlassianResourceKind::Jira, "bug", 10)
+            .await
+            .unwrap_err(),
+        "Atlassian integration is not enabled"
+    );
+    assert_eq!(
+        service
+            .fetch_resource_content(&atlassian_reference("RX-1"))
+            .await
+            .unwrap_err(),
+        "Atlassian integration is not enabled"
+    );
+    assert_eq!(
+        service
+            .assign_jira_issue_to_current_user("PROJ-1")
+            .await
+            .unwrap_err(),
+        "Atlassian integration is not enabled"
+    );
+    assert_eq!(
+        service.list_jira_projects(10).await.unwrap_err(),
+        "Atlassian integration is not enabled"
+    );
+    assert_eq!(
+        service.list_jira_project_statuses("RX").await.unwrap_err(),
+        "Atlassian integration is not enabled"
+    );
+    assert_eq!(
+        service.list_jira_project_issues("RX", 10).await.unwrap_err(),
+        "Atlassian integration is not enabled"
+    );
+
+    let calls = client.calls.lock().await;
+    assert!(calls.searches.is_empty());
+    assert!(calls.fetched.is_empty());
+    assert!(calls.assigned.is_empty());
+    assert!(calls.listed_projects.is_empty());
+    assert!(calls.listed_statuses.is_empty());
+    assert!(calls.listed_issues.is_empty());
+}
+
+#[tokio::test]
+async fn read_query_propagates_client_error() {
+    let client = Arc::new(TestAtlassianClient::default());
+    *client.error.lock().await = Some("Jira is down".to_string());
+    let service = enabled_service(client.clone()).await;
+
+    assert_eq!(
+        service
+            .search_resources(AtlassianResourceKind::Jira, "bug", 10)
+            .await
+            .unwrap_err(),
+        "Jira is down"
+    );
+    assert_eq!(
+        service.list_jira_projects(10).await.unwrap_err(),
+        "Jira is down"
+    );
+}
+
+// ---- Prompt reference expansion ---------------------------------------------
+
+#[tokio::test]
+async fn expand_references_returns_message_when_no_references() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client).await;
+    assert_eq!(
+        service.expand_references_for_prompt("Original", &[]).await,
+        "Original"
+    );
+}
+
+#[tokio::test]
+async fn expand_references_returns_message_when_disabled() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = disabled_service(client);
+    let expanded = service
+        .expand_references_for_prompt("Original", &[atlassian_reference("RX-1")])
+        .await;
+    assert_eq!(expanded, "Original");
+}
+
+#[tokio::test]
+async fn expand_references_renders_atlassian_and_skips_others() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client).await;
+
+    let non_atlassian = ComposerIntegrationReference {
+        provider: "linear".to_string(),
+        kind: "linear".to_string(),
+        id: "issue-1".to_string(),
+        key: None,
+        title: None,
+        url: None,
+    };
+    let expanded = service
+        .expand_references_for_prompt(
+            "Fix this",
+            &[non_atlassian, atlassian_reference("RX-1")],
+        )
+        .await;
+
+    assert!(expanded.contains("ralphx_integration_references"));
+    assert!(expanded.contains("RX-1"));
+    assert!(expanded.contains("Issue body"));
+    // The non-atlassian reference id never appears.
+    assert!(!expanded.contains("issue-1"));
+}
+
+#[tokio::test]
+async fn expand_references_reports_fetch_errors_as_skipped() {
+    let client = Arc::new(TestAtlassianClient::default());
+    *client.error.lock().await = Some("Jira issue not found".to_string());
+    let service = enabled_service(client).await;
+
+    let expanded = service
+        .expand_references_for_prompt("Fix this", &[atlassian_reference("RX-1")])
+        .await;
+    assert!(expanded.contains("integration_reference_skipped"));
+    assert!(expanded.contains("Jira issue not found"));
 }
