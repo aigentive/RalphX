@@ -44,6 +44,13 @@ async function openTicketing(page: Page) {
   await page.locator('[data-testid="nav-ticketing"]').click();
   await page.locator('[data-testid="ticketing-dashboard"]').waitFor({ timeout: 10000 });
   await expect(page.getByRole("heading", { name: "Ticketing" })).toBeVisible();
+  // The provider requires a project selection before tickets/statuses load; pick
+  // the mock project so the list, kanban, and detail render. Scope to the dashboard
+  // since "Project" also labels the top-bar project selector.
+  await page
+    .getByTestId("ticketing-dashboard")
+    .getByLabel("Project")
+    .selectOption("RX");
 }
 
 async function expectNoAxeViolations(page: Page, selector = '[data-testid="ticketing-dashboard"]') {
@@ -76,7 +83,9 @@ for (const theme of THEMES) {
     });
 
     test("filter controls preserve keyboard focus order", async ({ page }) => {
-      await page.getByLabel("Search tickets").focus();
+      // A search term keeps the Reset button mounted (it only renders with active
+      // filters) so its keyboard-focus position is deterministic.
+      await page.getByLabel("Search tickets").fill("RX");
       await expect(page.getByLabel("Search tickets")).toBeFocused();
 
       await page.keyboard.press("Tab");
