@@ -110,6 +110,8 @@ describe("TicketDetailSheet assignee control", () => {
     );
     // Denser sheet typography preserved.
     expect(status.className).toContain("text-xs");
+    // Left padding reserves room for the status color dot rendered inside the select.
+    expect(status.className).toContain("pl-7");
     // Unified off the former --bg-surface outlier onto --bg-elevated.
     expect((status as HTMLSelectElement).style.backgroundColor).toBe("var(--bg-elevated)");
   });

@@ -704,20 +704,22 @@ export function TicketDetailSheet({
                     Status
                   </span>
                   <div className="flex min-w-0 items-center gap-2">
-                    <span
-                      className="h-2.5 w-2.5 shrink-0 rounded-full"
-                      aria-hidden="true"
-                      style={{ backgroundColor: categoryToken(ticket.state.category) }}
-                    />
                     <ControlTooltip reason={statusDisabledReason}>
-                      <select
-                        aria-label="Ticket status"
-                        value={ticket.state.id}
-                        disabled={Boolean(statusDisabledReason) || isTransitionPending}
-                        onChange={(event) => handleStatusChange(event.target.value)}
-                        className={ticketSelectClassName("sm", "min-w-[180px] max-w-[280px] text-xs")}
-                        style={ticketSelectStyle}
-                      >
+                      <span className="relative inline-flex min-w-0 items-center">
+                        {/* Status color dot sits inside the select's left padding. */}
+                        <span
+                          className="pointer-events-none absolute left-2.5 z-10 h-2.5 w-2.5 rounded-full"
+                          aria-hidden="true"
+                          style={{ backgroundColor: categoryToken(ticket.state.category) }}
+                        />
+                        <select
+                          aria-label="Ticket status"
+                          value={ticket.state.id}
+                          disabled={Boolean(statusDisabledReason) || isTransitionPending}
+                          onChange={(event) => handleStatusChange(event.target.value)}
+                          className={ticketSelectClassName("sm", "min-w-[180px] max-w-[280px] pl-7 text-xs")}
+                          style={ticketSelectStyle}
+                        >
                         <option value={ticket.state.id} style={ticketSelectOptionStyle}>{ticket.state.name}</option>
                         {transitions
                           .filter((transition) => transition.toStateId !== ticket.state.id)
@@ -731,7 +733,8 @@ export function TicketDetailSheet({
                               {transition.name}
                             </option>
                           ))}
-                      </select>
+                        </select>
+                      </span>
                     </ControlTooltip>
                   </div>
 
