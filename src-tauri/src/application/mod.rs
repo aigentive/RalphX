@@ -160,10 +160,10 @@ pub use git_service::{
 };
 pub use interactive_process_registry::{InteractiveProcessKey, InteractiveProcessRegistry};
 pub use linear_integration_service::{
-    EmptyLinearApiClient, LinearApiClient, LinearAuthContext, LinearIntegrationService,
-    LinearComment, LinearIntegrationSettings, LinearIntegrationSettingsRepository,
-    LinearIssueContent, LinearIssueSummary, LinearProject, LinearUser, LinearWorkflowState,
-    UnavailableLinearApiClient,
+    resolve_linear_label_ids, EmptyLinearApiClient, LinearApiClient, LinearAuthContext,
+    LinearIntegrationService, LinearComment, LinearIntegrationSettings,
+    LinearIntegrationSettingsRepository, LinearIssueContent, LinearIssueSummary, LinearLabel,
+    LinearProject, LinearUser, LinearWorkflowState, UnavailableLinearApiClient,
 };
 pub use ideation_service::{
     CreateProposalOptions, IdeationService, SessionStats, SessionWithData, UpdateProposalOptions,
@@ -195,10 +195,10 @@ pub use ticketing_cache_invalidator::{
     TICKETING_CACHE_INVALIDATED_EVENT,
 };
 pub use ticketing_service::{
-    TauriTicketingEventSink, TicketAssignRequest, TicketCommentRequest, TicketTransitionRequest,
-    TicketingCommentResult, TicketingEventSink, TicketingMutationResult, TicketingPersonResult,
-    TicketingOperationEvent, TicketingService, TicketingTicketIdentity, TicketingTransitionOption,
-    TICKETING_OPERATION_EVENT,
+    TauriTicketingEventSink, TicketAssignRequest, TicketCommentRequest, TicketSetLabelsRequest,
+    TicketTransitionRequest, TicketingCommentResult, TicketingEventSink, TicketingLabelResult,
+    TicketingMutationResult, TicketingPersonResult, TicketingOperationEvent, TicketingService,
+    TicketingTicketIdentity, TicketingTransitionOption, TICKETING_OPERATION_EVENT,
 };
 pub use services::PrPollerRegistry;
 pub use resume_validator::{ResumeValidationResult, ResumeValidator};

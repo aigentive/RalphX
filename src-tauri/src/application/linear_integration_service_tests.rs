@@ -6,8 +6,9 @@ use std::collections::HashMap;
 use tokio::sync::{Mutex, RwLock};
 
 use super::{
-    LinearApiClient, LinearAuthContext, LinearIntegrationService, LinearIntegrationSettings,
-    LinearIntegrationSettingsRepository, LinearIssueContent, LinearIssueSummary,
+    resolve_linear_label_ids, LinearApiClient, LinearAuthContext, LinearIntegrationService,
+    LinearIntegrationSettings, LinearIntegrationSettingsRepository, LinearIssueContent,
+    LinearIssueSummary, LinearLabel,
 };
 use crate::domain::integrations::IntegrationValidationStatus;
 use crate::domain::services::{ComposerIntegrationReference, SecretStore, SecretStoreError};
@@ -428,4 +429,64 @@ async fn expand_references_skips_non_linear_and_reports_fetch_errors() {
     assert!(expanded.contains("integration_reference_skipped"));
     assert!(expanded.contains("Linear issue not found"));
     assert!(!expanded.contains("RX-1"));
+}
+
+fn team_labels() -> Vec<LinearLabel> {
+    vec![
+        LinearLabel {
+            id: "label-bug".to_string(),
+            name: "Bug".to_string(),
+        },
+        LinearLabel {
+            id: "label-feature".to_string(),
+            name: "Feature".to_string(),
+        },
+    ]
+}
+
+#[test]
+fn resolve_linear_label_ids_matches_exact_names() {
+    let ids = resolve_linear_label_ids(
+        &["Bug".to_string(), "Feature".to_string()],
+        &team_labels(),
+    )
+    .expect("exact names should resolve");
+    assert_eq!(ids, vec!["label-bug".to_string(), "label-feature".to_string()]);
+}
+
+#[test]
+fn resolve_linear_label_ids_is_case_insensitive_and_trims() {
+    let ids = resolve_linear_label_ids(&[" bug ".to_string(), "FEATURE".to_string()], &team_labels())
+        .expect("case-insensitive trimmed names should resolve");
+    assert_eq!(ids, vec!["label-bug".to_string(), "label-feature".to_string()]);
+}
+
+#[test]
+fn resolve_linear_label_ids_dedupes_repeated_names() {
+    let ids = resolve_linear_label_ids(
+        &["Bug".to_string(), "bug".to_string(), " BUG ".to_string()],
+        &team_labels(),
+    )
+    .expect("duplicate names should resolve once");
+    assert_eq!(ids, vec!["label-bug".to_string()]);
+}
+
+#[test]
+fn resolve_linear_label_ids_skips_empty_names() {
+    let ids = resolve_linear_label_ids(
+        &["".to_string(), "   ".to_string(), "Bug".to_string()],
+        &team_labels(),
+    )
+    .expect("empty names are ignored");
+    assert_eq!(ids, vec!["label-bug".to_string()]);
+}
+
+#[test]
+fn resolve_linear_label_ids_rejects_unknown_names() {
+    let error = resolve_linear_label_ids(
+        &["Bug".to_string(), "Nonexistent".to_string()],
+        &team_labels(),
+    )
+    .expect_err("unknown names should error");
+    assert!(error.contains("Nonexistent"), "error should name the missing label: {error}");
 }

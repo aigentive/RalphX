@@ -31,6 +31,7 @@ export const TicketingCapabilitiesSchema = z.object({
   statusWrite: z.boolean().default(false),
   assignmentWrite: z.boolean().default(false),
   commentWrite: z.boolean().default(false),
+  labelWrite: z.boolean().default(false),
   freshness: TicketingFreshnessSchema.default("manual"),
 });
 export type TicketingCapabilities = z.infer<typeof TicketingCapabilitiesSchema>;
@@ -149,6 +150,17 @@ export const TicketTransitionOptionSchema = z.object({
 });
 export type TicketTransitionOption = z.infer<typeof TicketTransitionOptionSchema>;
 
+export const TicketLabelOptionSchema = z.object({
+  id: z.string().nullable().optional(),
+  name: z.string(),
+});
+export type TicketLabelOption = z.infer<typeof TicketLabelOptionSchema>;
+
+export const TicketLabelsResponseSchema = z.object({
+  labels: z.array(z.string()).default([]),
+});
+export type TicketLabelsResponse = z.infer<typeof TicketLabelsResponseSchema>;
+
 export const TicketDetailSchema = TicketSummarySchema.extend({
   descriptionMarkdown: z.string().nullable().optional(),
   descriptionText: z.string().nullable().optional(),
@@ -231,6 +243,7 @@ export const TicketMutationResponseSchema = z.object({
   transition: TicketTransitionOptionSchema.nullable().optional(),
   assignee: TicketingPersonSchema.nullable().optional(),
   comment: TicketCommentSchema.nullable().optional(),
+  labels: TicketLabelsResponseSchema.nullable().optional(),
   refreshedAt: z.string(),
 });
 export type TicketMutationResponse = z.infer<typeof TicketMutationResponseSchema>;
@@ -301,6 +314,12 @@ export interface AssignTicketInput extends TicketRefInput {
 
 export interface AddTicketCommentInput extends TicketRefInput {
   bodyMarkdown: string;
+  clientOperationId?: string | undefined;
+  projectId?: string | undefined;
+}
+
+export interface SetTicketLabelsInput extends TicketRefInput {
+  labels: string[];
   clientOperationId?: string | undefined;
   projectId?: string | undefined;
 }
@@ -491,6 +510,33 @@ export const ticketingApi = {
         },
       },
       TicketMutationResponseSchema,
+    );
+  },
+
+  setTicketLabels(input: SetTicketLabelsInput): Promise<TicketMutationResponse> {
+    return typedInvoke(
+      "set_ticket_labels",
+      {
+        input: {
+          provider: input.provider,
+          ticketRef: input.ticketRef,
+          labels: input.labels,
+          ...(input.clientOperationId !== undefined && { clientOperationId: input.clientOperationId }),
+          ...(input.projectId !== undefined && { projectId: input.projectId }),
+        },
+      },
+      TicketMutationResponseSchema,
+    );
+  },
+
+  listTicketLabels(input: TicketRefInput): Promise<TicketLabelOption[]> {
+    return typedInvoke(
+      "list_ticket_labels",
+      {
+        provider: input.provider,
+        ticketRef: input.ticketRef,
+      },
+      z.array(TicketLabelOptionSchema),
     );
   },
 };

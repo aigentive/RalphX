@@ -36,6 +36,8 @@ vi.mock("@/api/ticketing", async (importActual) => {
       assignTicket: vi.fn(),
       clearTicketAssignee: vi.fn(),
       addTicketComment: vi.fn(),
+      setTicketLabels: vi.fn(),
+      listTicketLabels: vi.fn(),
     },
   };
 });
@@ -435,6 +437,142 @@ describe("useTicketing hooks", () => {
         provider: "jira",
         ticketRef,
       }),
+    });
+  });
+
+  it("sets labels with the full new array, a clientOperationId, and optimistic patch", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const detail: TicketDetail = {
+      ref: ticketRef,
+      title: "Fix merge race",
+      state: { id: "todo", name: "To Do", category: "todo" },
+      labels: ["bug"],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+      descriptionMarkdown: "Investigate transition race.",
+      comments: [],
+      attachments: [],
+      transitions: [],
+    };
+    vi.mocked(ticketingApi.setTicketLabels).mockResolvedValueOnce({
+      ticketRef,
+      operation: {
+        id: "operation-1",
+        operation: "set_labels",
+        clientOperationId: "generated",
+        status: "succeeded",
+        providerOperationId: null,
+        linked: true,
+        createdAt: "2026-06-19T22:00:00.000Z",
+        updatedAt: "2026-06-19T22:00:01.000Z",
+      },
+      idempotent: false,
+      labels: { labels: ["bug", "frontend"] },
+      refreshedAt: "2026-06-19T22:00:01.000Z",
+    });
+
+    const harness = createWrapper();
+    harness.queryClient.setQueryData(ticketingKeys.detail({ provider: "jira", ticketRef }), detail);
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await act(async () => {
+      await result.current.setLabels({
+        provider: "jira",
+        ticketRef,
+        labels: ["bug", "frontend"],
+      });
+    });
+
+    expect(ticketingApi.setTicketLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "jira",
+        ticketRef,
+        labels: ["bug", "frontend"],
+        projectId: "project-1",
+        clientOperationId: expect.stringMatching(/^ticketing:set-labels:/),
+      }),
+    );
+    expect(
+      harness.queryClient.getQueryData<TicketDetail>(
+        ticketingKeys.detail({ provider: "jira", ticketRef }),
+      )?.labels,
+    ).toEqual(["bug", "frontend"]);
+  });
+
+  it("rolls back optimistic label updates when the label mutation fails", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const detail: TicketDetail = {
+      ref: ticketRef,
+      title: "Fix merge race",
+      state: { id: "todo", name: "To Do", category: "todo" },
+      labels: ["bug"],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+      descriptionMarkdown: "Investigate transition race.",
+      comments: [],
+      attachments: [],
+      transitions: [],
+    };
+    vi.mocked(ticketingApi.setTicketLabels).mockRejectedValueOnce(new Error("Label write failed"));
+
+    const harness = createWrapper();
+    harness.queryClient.setQueryData(ticketingKeys.detail({ provider: "jira", ticketRef }), detail);
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await expect(
+      act(() =>
+        result.current.setLabels({
+          provider: "jira",
+          ticketRef,
+          labels: ["bug", "frontend"],
+        }),
+      ),
+    ).rejects.toThrow("Label write failed");
+
+    expect(
+      harness.queryClient.getQueryData<TicketDetail>(
+        ticketingKeys.detail({ provider: "jira", ticketRef }),
+      )?.labels,
+    ).toEqual(["bug"]);
+  });
+
+  it("invalidates ticket caches after a label mutation settles", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    vi.mocked(ticketingApi.setTicketLabels).mockResolvedValueOnce({
+      ticketRef,
+      operation: {
+        id: "operation-1",
+        operation: "set_labels",
+        clientOperationId: "generated",
+        status: "succeeded",
+        providerOperationId: null,
+        linked: true,
+        createdAt: "2026-06-19T22:00:00.000Z",
+        updatedAt: "2026-06-19T22:00:01.000Z",
+      },
+      idempotent: false,
+      labels: { labels: ["bug"] },
+      refreshedAt: "2026-06-19T22:00:01.000Z",
+    });
+
+    const harness = createWrapper();
+    const invalidateSpy = vi.spyOn(harness.queryClient, "invalidateQueries");
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await act(async () => {
+      await result.current.setLabels({ provider: "jira", ticketRef, labels: ["bug"] });
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ticketingKeys.detail({ provider: "jira", ticketRef }),
     });
   });
 });

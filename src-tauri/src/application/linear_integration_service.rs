@@ -97,6 +97,13 @@ pub struct LinearProject {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct LinearLabel {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct LinearUser {
     pub id: String,
     pub name: Option<String>,
@@ -192,6 +199,23 @@ pub trait LinearApiClient: Send + Sync {
         _first: usize,
     ) -> Result<Vec<LinearProject>, String> {
         Err("Linear projects are not available for this client".to_string())
+    }
+
+    async fn list_issue_team_labels(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<Vec<LinearLabel>, String> {
+        Err("Linear issue labels are not available for this client".to_string())
+    }
+
+    async fn update_issue_labels(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+        _label_ids: Vec<String>,
+    ) -> Result<(), String> {
+        Err("Linear issue label updates are not available for this client".to_string())
     }
 }
 
@@ -583,6 +607,27 @@ impl LinearIntegrationService {
             .await
     }
 
+    pub async fn list_issue_team_labels(
+        &self,
+        issue_id: &str,
+    ) -> Result<Vec<LinearLabel>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_issue_team_labels(&auth, issue_id).await
+    }
+
+    pub async fn set_issue_labels(
+        &self,
+        issue_id: &str,
+        desired_names: Vec<String>,
+    ) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        let labels = self.client.list_issue_team_labels(&auth, issue_id).await?;
+        let label_ids = resolve_linear_label_ids(&desired_names, &labels)?;
+        self.client
+            .update_issue_labels(&auth, issue_id, label_ids)
+            .await
+    }
+
     pub async fn expand_references_for_prompt(
         &self,
         message: &str,
@@ -707,6 +752,53 @@ fn escape_attr(value: &str) -> String {
         .replace('"', "&quot;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// Resolves desired Linear label names to their team-scoped label ids.
+///
+/// Matching is case-insensitive and trims surrounding whitespace. The desired
+/// set is treated as a full replacement set; duplicate desired names resolve to
+/// the same id only once. Linear label creation is out of scope, so any desired
+/// name that does not match an existing team label is rejected.
+///
+/// # Errors
+///
+/// Returns an error naming every desired label that could not be matched to an
+/// existing team label.
+pub fn resolve_linear_label_ids(
+    desired_names: &[String],
+    team_labels: &[LinearLabel],
+) -> Result<Vec<String>, String> {
+    let mut resolved: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for desired in desired_names {
+        let needle = desired.trim();
+        if needle.is_empty() {
+            continue;
+        }
+        match team_labels
+            .iter()
+            .find(|label| label.name.trim().eq_ignore_ascii_case(needle))
+        {
+            Some(label) => {
+                if !resolved.contains(&label.id) {
+                    resolved.push(label.id.clone());
+                }
+            }
+            None => {
+                if !missing.iter().any(|name| name == needle) {
+                    missing.push(needle.to_string());
+                }
+            }
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "These labels do not exist on the issue's Linear team: {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(resolved)
 }
 
 #[cfg(test)]

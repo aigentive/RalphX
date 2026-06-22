@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use crate::application::{
     AppState, AtlassianJiraAttachment, AtlassianJiraComment, LinearIntegrationSettings, TeamService,
-    TeamStateTracker, TicketingMutationResult, TicketingTicketIdentity, TicketingTransitionOption,
+    TeamStateTracker, TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
+    TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
@@ -43,13 +44,21 @@ fn provider_summaries_reflect_existing_integration_settings() {
     assert!(jira_summary.capabilities.status_write);
     assert!(jira_summary.capabilities.assignment_write);
     assert!(jira_summary.capabilities.comment_write);
+    assert!(jira_summary.capabilities.label_write);
     assert_eq!(linear_summary.provider, "linear");
     assert_eq!(linear_summary.connection_status, "error");
     assert!(!linear_summary.capabilities.status_write);
+    assert!(!linear_summary.capabilities.label_write);
     assert_eq!(
         linear_summary.error_message.as_deref(),
         Some("Token rejected")
     );
+}
+
+#[test]
+fn capability_helpers_expose_label_write_flag() {
+    assert!(writable_capabilities("manual").label_write);
+    assert!(!read_only_capabilities("manual").label_write);
 }
 
 #[test]
@@ -126,6 +135,7 @@ fn mutation_response_maps_operation_status_and_linked_flag() {
         }),
         assignee: None,
         comment: None,
+        labels: None,
     });
 
     assert_eq!(response.ticket_ref.provider, "jira");
@@ -141,6 +151,49 @@ fn mutation_response_maps_operation_status_and_linked_flag() {
             .as_deref(),
         Some("31")
     );
+}
+
+#[test]
+fn mutation_response_maps_label_result_payload() {
+    let now = chrono::Utc::now();
+    let response = ticket_mutation_response(TicketingMutationResult {
+        ticket: TicketingTicketIdentity {
+            provider: "jira".to_string(),
+            id: "10001".to_string(),
+            key: Some("JRA-1".to_string()),
+            local_project_id: Some("project-1".to_string()),
+        },
+        operation: ProviderTicketOperation {
+            id: "operation-1".to_string(),
+            provider: "jira".to_string(),
+            external_kind: "jira".to_string(),
+            external_id: "JRA-1".to_string(),
+            external_key: Some("JRA-1".to_string()),
+            link_id: None,
+            local_project_id: Some("project-1".to_string()),
+            operation: ProviderTicketOperationKind::SetLabels,
+            client_operation_id: "client-op-1".to_string(),
+            status: ProviderTicketOperationStatus::Succeeded,
+            provider_operation_id: None,
+            error_message: None,
+            metadata_json: None,
+            last_attempt_at: Some(now),
+            completed_at: Some(now),
+            created_at: now,
+            updated_at: now,
+        },
+        idempotent: false,
+        transition: None,
+        assignee: None,
+        comment: None,
+        labels: Some(TicketingLabelResult {
+            labels: vec!["bug".to_string(), "frontend".to_string()],
+        }),
+    });
+
+    assert_eq!(response.operation.operation, "set_labels");
+    let labels = response.labels.expect("labels payload should map through");
+    assert_eq!(labels.labels, vec!["bug".to_string(), "frontend".to_string()]);
 }
 
 #[test]

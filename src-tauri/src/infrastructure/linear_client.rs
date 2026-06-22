@@ -11,7 +11,7 @@ use tokio_util::bytes::Bytes;
 
 use crate::application::{
     LinearApiClient, LinearAuthContext, LinearComment, LinearIssueContent, LinearIssueSummary,
-    LinearProject, LinearUser, LinearWorkflowState,
+    LinearLabel, LinearProject, LinearUser, LinearWorkflowState,
 };
 use crate::domain::services::ComposerIntegrationReference;
 
@@ -314,6 +314,92 @@ impl LinearApiClient for HyperLinearApiClient {
             .await?;
         projects_from_data(&data)
     }
+
+    async fn list_issue_team_labels(
+        &self,
+        auth: &LinearAuthContext,
+        issue_id: &str,
+    ) -> Result<Vec<LinearLabel>, String> {
+        let issue_id = required_trimmed(issue_id, "Linear issue id is required")?;
+        let data = self
+            .graphql(
+                &auth.api_token,
+                linear_issue_team_labels_query(),
+                serde_json::json!({ "id": issue_id }),
+            )
+            .await?;
+        issue_team_labels_from_data(&data)
+    }
+
+    async fn update_issue_labels(
+        &self,
+        auth: &LinearAuthContext,
+        issue_id: &str,
+        label_ids: Vec<String>,
+    ) -> Result<(), String> {
+        let issue_id = required_trimmed(issue_id, "Linear issue id is required")?;
+        let data = self
+            .graphql(
+                &auth.api_token,
+                linear_issue_update_mutation(),
+                serde_json::json!({
+                    "id": issue_id,
+                    "input": { "labelIds": label_ids },
+                }),
+            )
+            .await?;
+        mutation_success(&data, "issueUpdate")
+    }
+}
+
+fn linear_issue_team_labels_query() -> &'static str {
+    r#"
+    query RalphXLinearIssueTeamLabels($id: String!) {
+      issue(id: $id) {
+        team {
+          id
+          labels(first: 250) {
+            nodes {
+              id
+              name
+            }
+          }
+        }
+      }
+    }
+    "#
+}
+
+fn issue_team_labels_from_data(data: &Value) -> Result<Vec<LinearLabel>, String> {
+    let team = data
+        .get("issue")
+        .and_then(|issue| issue.get("team"))
+        .filter(|team| !team.is_null())
+        .ok_or_else(|| "Could not resolve Linear team for this issue".to_string())?;
+    let nodes = team
+        .get("labels")
+        .and_then(|labels| labels.get("nodes"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Ok(nodes.iter().filter_map(label_from_node).collect())
+}
+
+fn label_from_node(node: &Value) -> Option<LinearLabel> {
+    let id = node
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let name = node
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    Some(LinearLabel {
+        id: id.to_string(),
+        name: name.to_string(),
+    })
 }
 
 fn linear_projects_query() -> &'static str {
@@ -1413,5 +1499,48 @@ mod tests {
         ];
 
         assert_eq!(render_graphql_errors(&errors), "first; second");
+    }
+
+    #[test]
+    fn issue_team_labels_query_scopes_to_issue_team() {
+        let query = linear_issue_team_labels_query();
+        assert!(query.contains("issue(id: $id)"));
+        assert!(query.contains("team {"));
+        assert!(query.contains("labels(first: 250)"));
+    }
+
+    #[test]
+    fn issue_team_labels_from_data_parses_id_and_name_nodes() {
+        let labels = issue_team_labels_from_data(&serde_json::json!({
+            "issue": {
+                "team": {
+                    "id": "team-1",
+                    "labels": {
+                        "nodes": [
+                            { "id": "label-1", "name": "Bug" },
+                            { "id": "label-2", "name": "  " },
+                            { "id": "label-3", "name": "Feature" }
+                        ]
+                    }
+                }
+            }
+        }))
+        .expect("labels should parse");
+
+        // The blank-named node is dropped during parsing.
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels[0].id, "label-1");
+        assert_eq!(labels[0].name, "Bug");
+        assert_eq!(labels[1].id, "label-3");
+        assert_eq!(labels[1].name, "Feature");
+    }
+
+    #[test]
+    fn issue_team_labels_from_data_errors_when_team_missing() {
+        let error = issue_team_labels_from_data(&serde_json::json!({
+            "issue": { "team": null }
+        }))
+        .expect_err("missing team should error");
+        assert!(error.contains("Could not resolve Linear team"));
     }
 }

@@ -70,6 +70,20 @@ pub struct TicketCommentRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TicketSetLabelsRequest {
+    pub ticket: TicketingTicketIdentity,
+    pub labels: Vec<String>,
+    pub client_operation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketingLabelResult {
+    pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TicketingCommentResult {
     pub id: Option<String>,
     pub body_markdown: String,
@@ -95,6 +109,7 @@ pub struct TicketingMutationResult {
     pub transition: Option<TicketingTransitionOption>,
     pub assignee: Option<TicketingPersonResult>,
     pub comment: Option<TicketingCommentResult>,
+    pub labels: Option<TicketingLabelResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,7 +231,7 @@ impl TicketingService {
             )
             .await?;
         if begun.idempotent {
-            return Ok(self.result_for(request.ticket, begun, None, None, None));
+            return Ok(self.result_for(request.ticket, begun, None, None, None, None));
         }
 
         if let Err(error) = self
@@ -276,7 +291,7 @@ impl TicketingService {
             success_transition_metadata(&transition),
         )
         .await?;
-        Ok(self.result_for(request.ticket, begun, Some(transition), None, None))
+        Ok(self.result_for(request.ticket, begun, Some(transition), None, None, None))
     }
 
     pub async fn assign_ticket(
@@ -299,7 +314,7 @@ impl TicketingService {
             )
             .await?;
         if begun.idempotent {
-            return Ok(self.result_for(request.ticket, begun, None, None, None));
+            return Ok(self.result_for(request.ticket, begun, None, None, None, None));
         }
 
         if let Err(error) = self
@@ -336,7 +351,7 @@ impl TicketingService {
 
         self.succeed_operation(&mut begun, None, json!({ "assignee": "current_user" }).to_string())
             .await?;
-        Ok(self.result_for(request.ticket, begun, None, assignee, None))
+        Ok(self.result_for(request.ticket, begun, None, assignee, None, None))
     }
 
     pub async fn clear_ticket_assignee(
@@ -359,7 +374,7 @@ impl TicketingService {
             )
             .await?;
         if begun.idempotent {
-            return Ok(self.result_for(request.ticket, begun, None, None, None));
+            return Ok(self.result_for(request.ticket, begun, None, None, None, None));
         }
 
         if let Err(error) = self
@@ -385,7 +400,7 @@ impl TicketingService {
 
         self.succeed_operation(&mut begun, None, json!({ "assignee": null }).to_string())
             .await?;
-        Ok(self.result_for(request.ticket, begun, None, None, None))
+        Ok(self.result_for(request.ticket, begun, None, None, None, None))
     }
 
     pub async fn add_ticket_comment(
@@ -411,7 +426,7 @@ impl TicketingService {
             )
             .await?;
         if begun.idempotent {
-            return Ok(self.result_for(request.ticket, begun, None, None, None));
+            return Ok(self.result_for(request.ticket, begun, None, None, None, None));
         }
 
         if let Err(error) = self
@@ -449,7 +464,74 @@ impl TicketingService {
             json!({ "commentId": comment.id }).to_string(),
         )
         .await?;
-        Ok(self.result_for(request.ticket, begun, None, None, Some(comment)))
+        Ok(self.result_for(request.ticket, begun, None, None, Some(comment), None))
+    }
+
+    pub async fn set_ticket_labels(
+        &self,
+        request: TicketSetLabelsRequest,
+    ) -> Result<TicketingMutationResult, String> {
+        let identity = normalize_ticket_identity(&request.ticket)?;
+        let normalized = normalize_labels(&request.labels);
+        let labels_hash = stable_hash(&normalized.join("\u{1f}"));
+        let client_operation_id = client_operation_id_or_derive(
+            request.client_operation_id.as_deref(),
+            &identity,
+            ProviderTicketOperationKind::SetLabels,
+            &labels_hash,
+        );
+        let mut begun = self
+            .begin_operation(
+                &identity,
+                ProviderTicketOperationKind::SetLabels,
+                client_operation_id,
+                json!({ "labelsHash": labels_hash, "count": normalized.len() }).to_string(),
+            )
+            .await?;
+        if begun.idempotent {
+            return Ok(self.result_for(request.ticket, begun, None, None, None, None));
+        }
+
+        if let Err(error) = self
+            .ensure_write_capability(&identity.provider, ProviderTicketOperationKind::SetLabels)
+            .await
+        {
+            self.fail_operation(&mut begun, error.clone()).await?;
+            return Err(error);
+        }
+
+        let write_result = match identity.provider.as_str() {
+            PROVIDER_JIRA => {
+                self.atlassian
+                    .set_jira_issue_labels(&identity.external_id, normalized.clone())
+                    .await
+            }
+            PROVIDER_LINEAR => {
+                self.linear
+                    .set_issue_labels(&identity.external_id, normalized.clone())
+                    .await
+            }
+            _ => unreachable!("ticket provider validated above"),
+        };
+        if let Err(error) = write_result {
+            self.fail_operation(&mut begun, error.clone()).await?;
+            return Err(error);
+        }
+
+        self.succeed_operation(
+            &mut begun,
+            None,
+            json!({ "labels": normalized }).to_string(),
+        )
+        .await?;
+        Ok(self.result_for(
+            request.ticket,
+            begun,
+            None,
+            None,
+            None,
+            Some(TicketingLabelResult { labels: normalized }),
+        ))
     }
 
     async fn ensure_write_capability(
@@ -650,6 +732,7 @@ impl TicketingService {
         transition: Option<TicketingTransitionOption>,
         assignee: Option<TicketingPersonResult>,
         comment: Option<TicketingCommentResult>,
+        labels: Option<TicketingLabelResult>,
     ) -> TicketingMutationResult {
         TicketingMutationResult {
             ticket,
@@ -658,6 +741,7 @@ impl TicketingService {
             transition,
             assignee,
             comment,
+            labels,
         }
     }
 
@@ -747,6 +831,29 @@ fn client_operation_id_or_derive(
 
 fn stable_hash(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+/// Normalizes a desired label set: trims each label, drops empties, removes
+/// case-insensitive duplicates (keeping the first surface form seen), and sorts
+/// case-insensitively so that the same logical set always hashes the same way
+/// regardless of input order or whitespace. Original casing is preserved in the
+/// returned values so the provider/UI sees the user's intended label text.
+fn normalize_labels(labels: &[String]) -> Vec<String> {
+    let mut normalized: Vec<String> = Vec::new();
+    for label in labels {
+        let trimmed = label.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !normalized
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(trimmed))
+        {
+            normalized.push(trimmed.to_string());
+        }
+    }
+    normalized.sort_by_key(|label| label.to_lowercase());
+    normalized
 }
 
 fn find_transition(
@@ -847,6 +954,7 @@ fn sync_kind_for(operation: ProviderTicketOperationKind) -> &'static str {
         ProviderTicketOperationKind::Transition => "ticket_transition",
         ProviderTicketOperationKind::Assign => "ticket_assignment",
         ProviderTicketOperationKind::Comment => "ticket_comment",
+        ProviderTicketOperationKind::SetLabels => "ticket_labels",
     }
 }
 

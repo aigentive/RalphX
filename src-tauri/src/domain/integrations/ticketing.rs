@@ -7,6 +7,7 @@ pub enum ProviderTicketOperationKind {
     Transition,
     Assign,
     Comment,
+    SetLabels,
 }
 
 impl ProviderTicketOperationKind {
@@ -15,6 +16,7 @@ impl ProviderTicketOperationKind {
             Self::Transition => "transition",
             Self::Assign => "assign",
             Self::Comment => "comment",
+            Self::SetLabels => "set_labels",
         }
     }
 }
@@ -27,6 +29,7 @@ impl std::str::FromStr for ProviderTicketOperationKind {
             "transition" => Ok(Self::Transition),
             "assign" => Ok(Self::Assign),
             "comment" => Ok(Self::Comment),
+            "set_labels" => Ok(Self::SetLabels),
             other => Err(format!("Unknown provider ticket operation kind: {other}")),
         }
     }

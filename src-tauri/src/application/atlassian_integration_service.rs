@@ -241,6 +241,15 @@ pub trait AtlassianApiClient: Send + Sync {
         Err("Jira comments are not available for this client".to_string())
     }
 
+    async fn set_jira_issue_labels(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _labels: Vec<String>,
+    ) -> Result<(), String> {
+        Err("Jira label writes are not available for this client".to_string())
+    }
+
     async fn exchange_oauth_code(
         &self,
         client_id: &str,
@@ -896,6 +905,17 @@ impl AtlassianIntegrationService {
         let auth = self.enabled_auth_context().await?;
         self.client
             .add_jira_comment(&auth, issue_key, body_markdown)
+            .await
+    }
+
+    pub async fn set_jira_issue_labels(
+        &self,
+        issue_key: &str,
+        labels: Vec<String>,
+    ) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .set_jira_issue_labels(&auth, issue_key, labels)
             .await
     }
 

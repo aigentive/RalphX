@@ -429,6 +429,8 @@ macro_rules! register_tauri_commands {
             commands::ticketing_commands::assign_ticket,
             commands::ticketing_commands::clear_ticket_assignee,
             commands::ticketing_commands::add_ticket_comment,
+            commands::ticketing_commands::set_ticket_labels,
+            commands::ticketing_commands::list_ticket_labels,
             // Workspace open commands
             commands::workspace_open_commands::list_workspace_open_targets,
             commands::workspace_open_commands::open_agent_conversation_workspace,

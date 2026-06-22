@@ -26,6 +26,7 @@ import {
   useTicketingContainers,
   useTicketingProviders,
   ticketingKeys,
+  useTicketLabelOptions,
   useTicketTransitions,
   useTickets,
 } from "@/hooks/useTicketing";
@@ -424,6 +425,10 @@ export function TicketingDashboardView({
     : null;
   const detailQuery = useTicketDetail(detailInput, { enabled: Boolean(detailInput) });
   const transitionsQuery = useTicketTransitions(detailInput, { enabled: Boolean(detailInput) });
+  // Linear pick-list needs the issue team's labels; Jira is free-text and skips it.
+  const labelOptionsQuery = useTicketLabelOptions(detailInput, {
+    enabled: Boolean(detailInput) && activeProvider === "linear",
+  });
   const associationsQuery = useTicketAssociations(
     detailInput ? { ...detailInput, projectId } : null,
     { enabled: Boolean(detailInput && projectId) },
@@ -641,6 +646,18 @@ export function TicketingDashboardView({
       provider: selectedTicket.ref.provider,
       ticketRef: selectedTicket.ref,
       bodyMarkdown,
+      projectId,
+    });
+  }
+
+  async function handleSetLabels(labels: string[]) {
+    if (!selectedTicket) {
+      return;
+    }
+    await ticketingMutations.setLabels({
+      provider: selectedTicket.ref.provider,
+      ticketRef: selectedTicket.ref,
+      labels,
       projectId,
     });
   }
@@ -905,10 +922,14 @@ export function TicketingDashboardView({
         isTransitionPending={ticketingMutations.transitionStatusMutation.isPending}
         isAssignPending={ticketingMutations.assignToMeMutation.isPending}
         isCommentPending={ticketingMutations.addCommentMutation.isPending}
+        isLabelPending={ticketingMutations.setLabelsMutation.isPending}
+        labelOptions={labelOptionsQuery.data}
+        isLabelOptionsLoading={labelOptionsQuery.isLoading}
         onTransitionTicket={handleTransitionTicket}
         onAssignToMe={handleAssignToMe}
         onClearAssignee={handleClearAssignee}
         onAddComment={handleAddComment}
+        onSetLabels={selectedTicket ? handleSetLabels : undefined}
         seenUntil={seenBaseline}
         isStartWorkPending={startWorkFromTicket.isPending}
         startWorkError={startWorkError}

@@ -22,6 +22,7 @@ const baseCapabilities: TicketingCapabilities = {
   statusWrite: true,
   assignmentWrite: true,
   commentWrite: true,
+  labelWrite: true,
   freshness: "manual",
 };
 
@@ -443,6 +444,109 @@ describe("TicketDetailSheet comment keyboard submit", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
 
     expect(onAddComment).not.toHaveBeenCalled();
+  });
+});
+
+describe("TicketDetailSheet label editing", () => {
+  function renderLabelSheet(overrides: {
+    ticket?: TicketSummary;
+    capabilities?: TicketingCapabilities;
+    onSetLabels?: (labels: string[]) => void;
+    labelOptions?: { id?: string | null; name: string }[];
+  }) {
+    return render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={overrides.ticket ?? baseTicket}
+          capabilities={overrides.capabilities ?? baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          {...(overrides.onSetLabels ? { onSetLabels: overrides.onSetLabels } : {})}
+          {...(overrides.labelOptions ? { labelOptions: overrides.labelOptions } : {})}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+  }
+
+  it("renders read-only labels and shows a disabled reason when label write is unavailable", () => {
+    const onSetLabels = vi.fn();
+    renderLabelSheet({
+      ticket: { ...baseTicket, labels: ["backend"] },
+      capabilities: { ...baseCapabilities, labelWrite: false },
+      onSetLabels,
+    });
+
+    expect(screen.getByText("backend")).toBeInTheDocument();
+    // No add/remove controls when editing is unavailable.
+    expect(screen.queryByLabelText("Add a label")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Remove label backend")).not.toBeInTheDocument();
+    expect(onSetLabels).not.toHaveBeenCalled();
+  });
+
+  it("Jira: typing + Enter adds a label to the full set", () => {
+    const onSetLabels = vi.fn();
+    renderLabelSheet({
+      ticket: { ...baseTicket, ref: { provider: "jira", id: "JRA-1", key: "JRA-1" }, labels: ["bug"] },
+      onSetLabels,
+    });
+
+    const input = screen.getByLabelText("Add a label");
+    fireEvent.change(input, { target: { value: "frontend" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSetLabels).toHaveBeenCalledWith(["bug", "frontend"]);
+  });
+
+  it("Jira: blocks labels containing spaces with a clear message", () => {
+    const onSetLabels = vi.fn();
+    renderLabelSheet({
+      ticket: { ...baseTicket, ref: { provider: "jira", id: "JRA-1", key: "JRA-1" }, labels: [] },
+      onSetLabels,
+    });
+
+    const input = screen.getByLabelText("Add a label");
+    fireEvent.change(input, { target: { value: "needs triage" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSetLabels).not.toHaveBeenCalled();
+    expect(screen.getByText("Jira labels can't contain spaces")).toBeInTheDocument();
+  });
+
+  it("removes a label via the chip × button", () => {
+    const onSetLabels = vi.fn();
+    renderLabelSheet({
+      ticket: { ...baseTicket, ref: { provider: "jira", id: "JRA-1", key: "JRA-1" }, labels: ["bug", "frontend"] },
+      onSetLabels,
+    });
+
+    fireEvent.click(screen.getByLabelText("Remove label bug"));
+    expect(onSetLabels).toHaveBeenCalledWith(["frontend"]);
+  });
+
+  it("Linear: choosing an existing team label appends it; no free typing", () => {
+    const onSetLabels = vi.fn();
+    renderLabelSheet({
+      ticket: { ...baseTicket, ref: { provider: "linear", id: "LIN-1", key: "LIN-1" }, labels: ["bug"] },
+      onSetLabels,
+      labelOptions: [
+        { id: "label-bug", name: "bug" },
+        { id: "label-feature", name: "feature" },
+      ],
+    });
+
+    // No free-text input in Linear mode.
+    expect(screen.queryByRole("textbox", { name: "Add a label" })).not.toBeInTheDocument();
+    const select = screen.getByLabelText("Add a label");
+    // Already-applied "bug" is filtered out of the options.
+    fireEvent.change(select, { target: { value: "feature" } });
+    expect(onSetLabels).toHaveBeenCalledWith(["bug", "feature"]);
   });
 });
 

@@ -11,11 +11,11 @@ use crate::application::{
     },
     AppState, AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
     LinearComment, LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary,
-    LinearWorkflowState,
+    LinearLabel, LinearWorkflowState,
     TauriTicketingEventSink, TeamService, TicketAssignRequest, TicketCommentRequest,
-    TicketTransitionRequest,
-    TicketingCommentResult, TicketingMutationResult, TicketingPersonResult, TicketingService,
-    TicketingTicketIdentity, TicketingTransitionOption,
+    TicketSetLabelsRequest, TicketTransitionRequest,
+    TicketingCommentResult, TicketingLabelResult, TicketingMutationResult, TicketingPersonResult,
+    TicketingService, TicketingTicketIdentity, TicketingTransitionOption,
 };
 use crate::application::ticket_canonical_branch::ensure_ticket_canonical_branch;
 use crate::application::ticketing_pr_summary::{ticket_pr_branch_summary, TicketPrBranchSummary};
@@ -552,6 +552,48 @@ pub async fn add_ticket_comment(
     Ok(ticket_mutation_response(result))
 }
 
+#[tauri::command]
+pub async fn set_ticket_labels(
+    input: SetTicketLabelsInput,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TicketMutationResponse, String> {
+    validate_provider(&input.provider)?;
+    let result = ticketing_service_from_state_with_events(&state, app_handle)
+        .set_ticket_labels(TicketSetLabelsRequest {
+            ticket: ticket_identity(&input.provider, &input.ticket_ref, input.project_id.clone()),
+            labels: input.labels,
+            client_operation_id: input.client_operation_id,
+        })
+        .await?;
+    Ok(ticket_mutation_response(result))
+}
+
+#[tauri::command]
+pub async fn list_ticket_labels(
+    provider: String,
+    ticket_ref: TicketRefInput,
+    state: State<'_, AppState>,
+) -> Result<Vec<TicketLabelOptionResponse>, String> {
+    validate_provider(&provider)?;
+    match provider.as_str() {
+        PROVIDER_LINEAR => state
+            .linear_integration_service
+            .list_issue_team_labels(&ticket_ref.id)
+            .await
+            .map(|labels| labels.into_iter().map(ticket_label_option_response).collect()),
+        // Jira labels are free-text with no fixed selectable list.
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn ticket_label_option_response(label: LinearLabel) -> TicketLabelOptionResponse {
+    TicketLabelOptionResponse {
+        id: Some(label.id),
+        name: label.name,
+    }
+}
+
 fn jira_provider_summary(
     settings: &AtlassianIntegrationSettings,
 ) -> TicketingProviderSummaryResponse {
@@ -632,6 +674,7 @@ fn read_only_capabilities(freshness: &str) -> TicketingCapabilitiesResponse {
         status_write: false,
         assignment_write: false,
         comment_write: false,
+        label_write: false,
         freshness: freshness.to_string(),
     }
 }
@@ -644,6 +687,7 @@ fn writable_capabilities(freshness: &str) -> TicketingCapabilitiesResponse {
         status_write: true,
         assignment_write: true,
         comment_write: true,
+        label_write: true,
         freshness: freshness.to_string(),
     }
 }
@@ -1149,7 +1193,14 @@ fn ticket_mutation_response(result: TicketingMutationResult) -> TicketMutationRe
         transition: result.transition.map(ticket_transition_option_response),
         assignee: result.assignee.map(ticket_person_result_response),
         comment: result.comment.map(ticket_comment_response),
+        labels: result.labels.map(ticket_labels_response),
         refreshed_at: now_string(),
+    }
+}
+
+fn ticket_labels_response(labels: TicketingLabelResult) -> TicketLabelsResponse {
+    TicketLabelsResponse {
+        labels: labels.labels,
     }
 }
 

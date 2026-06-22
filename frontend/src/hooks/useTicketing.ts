@@ -17,12 +17,14 @@ import {
   type ListTicketingContainersInput,
   type ListTicketsInput,
   type RefreshTicketsInput,
+  type SetTicketLabelsInput,
   type StartWorkFromTicketInput,
   type TicketAssociations,
   type TicketComment,
   type TicketDetail,
   type TicketingColumn,
   type TicketingPerson,
+  type TicketLabelOption,
   type TicketPage,
   type TicketRefInput,
   type TicketSummary,
@@ -58,6 +60,8 @@ export const ticketingKeys = {
     [...ticketingKeys.all, "detail", input.provider, input.ticketRef.id, input.ticketRef.key ?? null] as const,
   transitions: (input: TicketRefInput) =>
     [...ticketingKeys.detail(input), "transitions"] as const,
+  labels: (input: TicketRefInput) =>
+    [...ticketingKeys.detail(input), "labels"] as const,
   associations: (input: GetTicketAssociationsInput) =>
     [...ticketingKeys.detail(input), "associations", input.projectId] as const,
   conversationTicket: (conversationId: string) =>
@@ -81,13 +85,19 @@ export interface AddTicketCommentMutationInput extends TicketRefInput {
   projectId?: string | undefined;
 }
 
+export interface SetLabelsMutationInput extends TicketRefInput {
+  labels: string[];
+  clientOperationId?: string | undefined;
+  projectId?: string | undefined;
+}
+
 interface TicketMutationSnapshot {
   detailKey: ReturnType<typeof ticketingKeys.detail>;
   previousDetail: TicketDetail | undefined;
   previousTicketLists: Array<[QueryKey, InfiniteData<TicketPage> | undefined]>;
 }
 
-type TicketOperationKind = "transition" | "assign" | "clear-assignee" | "comment";
+type TicketOperationKind = "transition" | "assign" | "clear-assignee" | "comment" | "set-labels";
 
 export function createTicketClientOperationId(
   operation: TicketOperationKind,
@@ -212,6 +222,13 @@ function assigneePatch(assignee: TicketingPerson) {
   });
 }
 
+function setLabelsPatch(labels: string[]) {
+  return (ticket: TicketSummary): TicketSummary => ({
+    ...ticket,
+    labels,
+  });
+}
+
 function clearAssigneePatch(ticket: TicketSummary): TicketSummary {
   return {
     ...ticket,
@@ -301,6 +318,23 @@ export function useTicketingColumns(
         throw new Error("Ticketing provider is required");
       }
       return ticketingApi.listColumns(input);
+    },
+    enabled: (options.enabled ?? true) && Boolean(input?.provider),
+    staleTime: 60_000,
+  });
+}
+
+export function useTicketLabelOptions(
+  input: TicketRefInput | null,
+  options: QueryOptions = {},
+): ReturnType<typeof useQuery<TicketLabelOption[]>> {
+  return useQuery({
+    queryKey: input ? ticketingKeys.labels(input) : [...ticketingKeys.all, "labels", null],
+    queryFn: () => {
+      if (!input) {
+        throw new Error("Ticket reference is required");
+      }
+      return ticketingApi.listTicketLabels(input);
     },
     enabled: (options.enabled ?? true) && Boolean(input?.provider),
     staleTime: 60_000,
@@ -569,6 +603,40 @@ export function useTicketingMutations(projectId?: string) {
     },
   });
 
+  const setLabelsMutation = useMutation({
+    mutationFn: (input: SetLabelsMutationInput & { clientOperationId: string }) => {
+      const commandInput: SetTicketLabelsInput = {
+        provider: input.provider,
+        ticketRef: input.ticketRef,
+        labels: input.labels,
+        clientOperationId: input.clientOperationId,
+        ...((input.projectId ?? projectId) !== undefined && { projectId: input.projectId ?? projectId }),
+      };
+      return ticketingApi.setTicketLabels(commandInput);
+    },
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: ticketingKeys.all });
+      return snapshotAndPatchTicket(queryClient, input, setLabelsPatch(input.labels));
+    },
+    onSuccess: (data, input) => {
+      if (!data.labels) {
+        return;
+      }
+      // Re-patch with the server-confirmed labels (handles Linear casing/normalization).
+      snapshotAndPatchTicket(queryClient, input, setLabelsPatch(data.labels.labels));
+    },
+    onError: (_error, _input, snapshot) => {
+      restoreTicketSnapshot(queryClient, snapshot);
+    },
+    onSettled: (_data, _error, input) => {
+      invalidateTicketMutationQueries(queryClient, {
+        provider: input.provider,
+        ticketRef: input.ticketRef,
+        ...(input.projectId ?? projectId ? { projectId: input.projectId ?? projectId } : {}),
+      });
+    },
+  });
+
   return {
     transitionStatus: (input: TransitionTicketStatusMutationInput) =>
       transitionStatusMutation.mutateAsync(withClientOperationId(input, "transition")),
@@ -578,10 +646,13 @@ export function useTicketingMutations(projectId?: string) {
       clearAssigneeMutation.mutateAsync(withClientOperationId(input, "clear-assignee")),
     addComment: (input: AddTicketCommentMutationInput) =>
       addCommentMutation.mutateAsync(withClientOperationId(input, "comment")),
+    setLabels: (input: SetLabelsMutationInput) =>
+      setLabelsMutation.mutateAsync(withClientOperationId(input, "set-labels")),
     transitionStatusMutation,
     assignToMeMutation,
     clearAssigneeMutation,
     addCommentMutation,
+    setLabelsMutation,
   };
 }
 

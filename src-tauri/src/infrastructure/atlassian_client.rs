@@ -261,6 +261,15 @@ impl AtlassianApiClient for HyperAtlassianApiClient {
         add_jira_comment(self, auth, issue_key, body_markdown).await
     }
 
+    async fn set_jira_issue_labels(
+        &self,
+        auth: &AtlassianAuthContext,
+        issue_key: &str,
+        labels: Vec<String>,
+    ) -> Result<(), String> {
+        set_jira_issue_labels(self, auth, issue_key, labels).await
+    }
+
     async fn exchange_oauth_code(
         &self,
         client_id: &str,
@@ -880,6 +889,31 @@ pub(crate) async fn clear_jira_issue_assignee<C: AtlassianJsonRequester + ?Sized
             ),
             request_auth(auth),
             Some(serde_json::json!({ "accountId": null })),
+        )
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn set_jira_issue_labels<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    issue_key: &str,
+    labels: Vec<String>,
+) -> Result<(), String> {
+    let issue_key = required_trimmed(issue_key, "Jira issue key is required")?;
+    client
+        .request_json(
+            Method::PUT,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                &format!(
+                    "/rest/api/3/issue/{}",
+                    percent_encode_path_segment(issue_key)
+                ),
+            ),
+            request_auth(auth),
+            Some(serde_json::json!({ "fields": { "labels": labels } })),
         )
         .await?;
     Ok(())

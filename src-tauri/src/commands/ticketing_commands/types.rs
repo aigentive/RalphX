@@ -11,6 +11,7 @@ pub struct TicketingCapabilitiesResponse {
     pub status_write: bool,
     pub assignment_write: bool,
     pub comment_write: bool,
+    pub label_write: bool,
     pub freshness: String,
 }
 
@@ -246,6 +247,29 @@ pub struct AddTicketCommentInput {
     pub project_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetTicketLabelsInput {
+    pub provider: String,
+    pub ticket_ref: TicketRefInput,
+    pub labels: Vec<String>,
+    pub client_operation_id: Option<String>,
+    pub project_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketLabelsResponse {
+    pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketLabelOptionResponse {
+    pub id: Option<String>,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TicketOperationResponse {
@@ -269,6 +293,7 @@ pub struct TicketMutationResponse {
     pub transition: Option<TicketTransitionOptionResponse>,
     pub assignee: Option<TicketingPersonResponse>,
     pub comment: Option<TicketCommentResponse>,
+    pub labels: Option<TicketLabelsResponse>,
     pub refreshed_at: String,
 }
 

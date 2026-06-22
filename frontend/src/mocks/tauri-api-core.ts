@@ -602,6 +602,7 @@ const mockTicketingCapabilities = {
   statusWrite: false,
   assignmentWrite: false,
   commentWrite: false,
+  labelWrite: false,
   freshness: "manual",
 };
 
@@ -1139,6 +1140,42 @@ const commandHandlers: Record<
     };
   },
   list_ticket_transitions: async () => [],
+  list_ticket_labels: async (args) => {
+    const provider = args.provider as string | undefined;
+    if (provider === "linear") {
+      return [
+        { id: "label-bug", name: "Bug" },
+        { id: "label-feature", name: "Feature" },
+      ];
+    }
+    return [];
+  },
+  set_ticket_labels: async (args) => {
+    const input = args.input as {
+      provider?: string;
+      ticketRef?: { provider?: string; id?: string; key?: string | null };
+      labels?: string[];
+      clientOperationId?: string;
+    } | undefined;
+    const labels = input?.labels ?? [];
+    return {
+      ticketRef: input?.ticketRef ?? { provider: input?.provider ?? "jira", id: "10001" },
+      operation: {
+        id: "op-labels-1",
+        operation: "set_labels",
+        clientOperationId: input?.clientOperationId ?? "mock-op",
+        status: "succeeded",
+        providerOperationId: null,
+        errorMessage: null,
+        linked: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      idempotent: false,
+      labels: { labels },
+      refreshedAt: new Date().toISOString(),
+    };
+  },
   get_ticket_associations: async () => mockTicketingAssociations,
   get_conversation_ticket: async () => null,
   refresh_tickets: async () => ({ refreshedAt: "2026-06-19T22:00:00.000Z" }),

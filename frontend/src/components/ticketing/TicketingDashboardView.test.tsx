@@ -69,6 +69,7 @@ vi.mock("@/hooks/useTicketing", () => ({
   useTicketingColumns: vi.fn(),
   useTicketingContainers: vi.fn(),
   useTicketingProviders: vi.fn(),
+  useTicketLabelOptions: vi.fn(),
   useTicketTransitions: vi.fn(),
   useTickets: vi.fn(),
 }));
@@ -229,15 +230,23 @@ function mockConnectedDashboard() {
     mutate: vi.fn(),
     isPending: false,
   } as unknown as ReturnType<typeof ticketingHooks.useRefreshTickets>);
+  vi.mocked(ticketingHooks.useTicketLabelOptions).mockReturnValue({
+    data: [],
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as unknown as ReturnType<typeof ticketingHooks.useTicketLabelOptions>);
   vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
     transitionStatus: vi.fn().mockResolvedValue(undefined),
     assignToMe: vi.fn().mockResolvedValue(undefined),
     clearAssignee: vi.fn().mockResolvedValue(undefined),
     addComment: vi.fn().mockResolvedValue(undefined),
+    setLabels: vi.fn().mockResolvedValue(undefined),
     transitionStatusMutation: { isPending: false },
     assignToMeMutation: { isPending: false },
     clearAssigneeMutation: { isPending: false },
     addCommentMutation: { isPending: false },
+    setLabelsMutation: { isPending: false },
   } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
   vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
     mutate: vi.fn(),
@@ -334,15 +343,23 @@ describe("TicketingDashboardView", () => {
       mutate: vi.fn(),
       isPending: false,
     } as unknown as ReturnType<typeof ticketingHooks.useRefreshTickets>);
+    vi.mocked(ticketingHooks.useTicketLabelOptions).mockReturnValue({
+      data: [],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof ticketingHooks.useTicketLabelOptions>);
     vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
       transitionStatus: vi.fn().mockResolvedValue(undefined),
       assignToMe: vi.fn().mockResolvedValue(undefined),
       clearAssignee: vi.fn().mockResolvedValue(undefined),
       addComment: vi.fn().mockResolvedValue(undefined),
+      setLabels: vi.fn().mockResolvedValue(undefined),
       transitionStatusMutation: { isPending: false },
       assignToMeMutation: { isPending: false },
       clearAssigneeMutation: { isPending: false },
       addCommentMutation: { isPending: false },
+      setLabelsMutation: { isPending: false },
     } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
     vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
       mutate: vi.fn(),
@@ -747,6 +764,7 @@ describe("TicketingDashboardView", () => {
       assignToMeMutation: { isPending: false },
       clearAssigneeMutation: { isPending: false },
       addCommentMutation: { isPending: false },
+      setLabelsMutation: { isPending: false },
     } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
 
     renderDashboard();
@@ -831,6 +849,7 @@ describe("TicketingDashboardView", () => {
       assignToMeMutation: { isPending: false },
       clearAssigneeMutation: { isPending: false },
       addCommentMutation: { isPending: false },
+      setLabelsMutation: { isPending: false },
     } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
 
     renderDashboard();
@@ -906,6 +925,7 @@ describe("TicketingDashboardView", () => {
       assignToMeMutation: { isPending: false },
       clearAssigneeMutation: { isPending: false },
       addCommentMutation: { isPending: false },
+      setLabelsMutation: { isPending: false },
     } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
 
     renderDashboard();

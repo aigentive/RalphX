@@ -7,7 +7,7 @@ use crate::application::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
     AtlassianIntegrationService, AtlassianResourceContent, AtlassianResourceKind,
     AtlassianResourceSummary, LinearApiClient, LinearAuthContext, LinearIntegrationService,
-    LinearIssueContent, LinearIssueSummary, LinearUser,
+    LinearIssueContent, LinearIssueSummary, LinearLabel, LinearUser,
 };
 use crate::domain::integrations::{
     AtlassianAuthMethod, ExternalIssueLinkUpsert, ExternalIssueLocalObject,
@@ -42,6 +42,7 @@ struct RecordingLinearClient {
     assignments: tokio::sync::Mutex<Vec<String>>,
     assignment_clears: tokio::sync::Mutex<Vec<String>>,
     comments: tokio::sync::Mutex<Vec<(String, String)>>,
+    label_updates: tokio::sync::Mutex<Vec<(String, Vec<String>)>>,
 }
 
 #[async_trait]
@@ -164,6 +165,36 @@ impl LinearApiClient for RecordingLinearClient {
             updated_at: Some("2026-06-20T08:00:00Z".to_string()),
         })
     }
+
+    async fn list_issue_team_labels(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<Vec<LinearLabel>, String> {
+        Ok(vec![
+            LinearLabel {
+                id: "label-bug".to_string(),
+                name: "Bug".to_string(),
+            },
+            LinearLabel {
+                id: "label-feature".to_string(),
+                name: "Feature".to_string(),
+            },
+        ])
+    }
+
+    async fn update_issue_labels(
+        &self,
+        _auth: &LinearAuthContext,
+        issue_id: &str,
+        label_ids: Vec<String>,
+    ) -> Result<(), String> {
+        self.label_updates
+            .lock()
+            .await
+            .push((issue_id.to_string(), label_ids));
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -172,6 +203,7 @@ struct RecordingAtlassianClient {
     assignments: tokio::sync::Mutex<Vec<String>>,
     assignment_clears: tokio::sync::Mutex<Vec<String>>,
     comments: tokio::sync::Mutex<Vec<(String, String)>>,
+    label_writes: tokio::sync::Mutex<Vec<(String, Vec<String>)>>,
 }
 
 #[async_trait]
@@ -292,6 +324,19 @@ impl AtlassianApiClient for RecordingAtlassianClient {
             created_at: Some("2026-06-20T08:00:00Z".to_string()),
             updated_at: Some("2026-06-20T08:00:00Z".to_string()),
         })
+    }
+
+    async fn set_jira_issue_labels(
+        &self,
+        _auth: &AtlassianAuthContext,
+        issue_key: &str,
+        labels: Vec<String>,
+    ) -> Result<(), String> {
+        self.label_writes
+            .lock()
+            .await
+            .push((issue_key.to_string(), labels));
+        Ok(())
     }
 
     async fn exchange_oauth_code(
@@ -875,6 +920,188 @@ async fn linked_jira_comment_writes_ticket_comment_sync_record() {
     assert_eq!(sync_records.len(), 1);
     assert_eq!(sync_records[0].sync_kind, "ticket_comment");
     assert_eq!(sync_records[0].status, ExternalIssueSyncStatus::Succeeded);
+}
+
+#[tokio::test]
+async fn set_ticket_labels_forwards_full_array_for_jira_and_is_idempotent() {
+    let atlassian_client = Arc::new(RecordingAtlassianClient::default());
+    let atlassian = enabled_atlassian_service(Arc::clone(&atlassian_client)).await;
+    let external_issues = external_issue_service();
+    let (service, sink) = service_with_sink(
+        atlassian,
+        disabled_linear_service(Arc::new(RecordingLinearClient::default())),
+        Arc::clone(&external_issues),
+    );
+
+    let request = TicketSetLabelsRequest {
+        ticket: jira_ticket(),
+        labels: vec!["frontend".to_string(), "bug".to_string()],
+        client_operation_id: Some("op-jira-labels".to_string()),
+    };
+    let result = service
+        .set_ticket_labels(request.clone())
+        .await
+        .expect("label set should succeed");
+
+    assert_eq!(result.operation.status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(
+        result.operation.operation,
+        ProviderTicketOperationKind::SetLabels
+    );
+    assert!(!result.idempotent);
+    let labels = result.labels.expect("labels payload should be present");
+    // Normalized: sorted + deduped.
+    assert_eq!(labels.labels, vec!["bug".to_string(), "frontend".to_string()]);
+    assert_eq!(
+        *atlassian_client.label_writes.lock().await,
+        vec![(
+            "JRA-1".to_string(),
+            vec!["bug".to_string(), "frontend".to_string()]
+        )]
+    );
+
+    // Second call with the same client_operation_id is idempotent and does not
+    // re-invoke the provider.
+    let retry = service
+        .set_ticket_labels(request)
+        .await
+        .expect("idempotent label retry should succeed");
+    assert!(retry.idempotent);
+    assert_eq!(atlassian_client.label_writes.lock().await.len(), 1);
+
+    assert_eq!(
+        sink.events()
+            .iter()
+            .map(|event| event.status)
+            .collect::<Vec<_>>(),
+        vec![
+            ProviderTicketOperationStatus::Pending,
+            ProviderTicketOperationStatus::Succeeded
+        ]
+    );
+}
+
+#[tokio::test]
+async fn set_ticket_labels_resolves_names_to_ids_for_linear() {
+    let linear_client = Arc::new(RecordingLinearClient::default());
+    let linear = enabled_linear_service(Arc::clone(&linear_client)).await;
+    let external_issues = external_issue_service();
+    let (service, _sink) = service_with_sink(
+        disabled_atlassian_service(Arc::new(RecordingAtlassianClient::default())),
+        linear,
+        Arc::clone(&external_issues),
+    );
+
+    let result = service
+        .set_ticket_labels(TicketSetLabelsRequest {
+            ticket: linear_ticket(),
+            // Mixed case / whitespace exercises the resolver's normalization.
+            labels: vec![" bug ".to_string(), "Feature".to_string()],
+            client_operation_id: Some("op-linear-labels".to_string()),
+        })
+        .await
+        .expect("label set should succeed");
+
+    assert_eq!(
+        result.operation.operation,
+        ProviderTicketOperationKind::SetLabels
+    );
+    // Resolved to team label ids (issue-1 is the external id for linear_ticket()).
+    assert_eq!(
+        *linear_client.label_updates.lock().await,
+        vec![(
+            "issue-1".to_string(),
+            vec!["label-bug".to_string(), "label-feature".to_string()]
+        )]
+    );
+}
+
+#[tokio::test]
+async fn set_ticket_labels_normalization_produces_stable_idempotency() {
+    let atlassian_client = Arc::new(RecordingAtlassianClient::default());
+    let atlassian = enabled_atlassian_service(Arc::clone(&atlassian_client)).await;
+    let external_issues = external_issue_service();
+    let (service, _sink) = service_with_sink(
+        atlassian,
+        disabled_linear_service(Arc::new(RecordingLinearClient::default())),
+        Arc::clone(&external_issues),
+    );
+
+    // First call: duplicate + whitespace + reversed order, no explicit op id.
+    let first = service
+        .set_ticket_labels(TicketSetLabelsRequest {
+            ticket: jira_ticket(),
+            labels: vec![
+                "frontend".to_string(),
+                " bug ".to_string(),
+                "bug".to_string(),
+            ],
+            client_operation_id: None,
+        })
+        .await
+        .expect("first label set should succeed");
+    assert!(!first.idempotent);
+
+    // Second call: same logical set, different surface form (reordered + extra
+    // whitespace), no explicit op id. The derived client_operation_id (hash of
+    // the normalized set) must match, so this short-circuits as idempotent.
+    let second = service
+        .set_ticket_labels(TicketSetLabelsRequest {
+            ticket: jira_ticket(),
+            labels: vec!["  bug".to_string(), "frontend  ".to_string()],
+            client_operation_id: None,
+        })
+        .await
+        .expect("second label set should succeed");
+    assert!(second.idempotent);
+    assert_eq!(atlassian_client.label_writes.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn set_ticket_labels_on_disabled_provider_records_failed_operation() {
+    let atlassian_client = Arc::new(RecordingAtlassianClient::default());
+    let atlassian = disabled_atlassian_service(Arc::clone(&atlassian_client));
+    let external_issues = external_issue_service();
+    let (service, sink) = service_with_sink(
+        atlassian,
+        disabled_linear_service(Arc::new(RecordingLinearClient::default())),
+        Arc::clone(&external_issues),
+    );
+
+    let error = service
+        .set_ticket_labels(TicketSetLabelsRequest {
+            ticket: jira_ticket(),
+            labels: vec!["bug".to_string()],
+            client_operation_id: Some("op-jira-labels-disabled".to_string()),
+        })
+        .await
+        .expect_err("disabled provider should fail to set labels");
+
+    assert_eq!(error, "Jira integration is not enabled");
+    assert!(atlassian_client.label_writes.lock().await.is_empty());
+    let records = external_issues
+        .list_provider_ticket_operations_for_ticket(
+            "jira",
+            "jira",
+            "JRA-1",
+            Some("JRA-1"),
+            Some("project-1"),
+        )
+        .await
+        .expect("operation history should load");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].operation, ProviderTicketOperationKind::SetLabels);
+    assert_eq!(records[0].status, ProviderTicketOperationStatus::Failed);
+    assert_eq!(
+        sink.events()
+            .iter()
+            .map(|event| event.status)
+            .collect::<Vec<_>>(),
+        vec![
+            ProviderTicketOperationStatus::Pending,
+            ProviderTicketOperationStatus::Failed
+        ]
+    );
 }
 
 #[test]

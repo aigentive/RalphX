@@ -10,6 +10,7 @@ import type {
   TicketDeepLink,
   TicketDetail,
   TicketingCapabilities,
+  TicketLabelOption,
   TicketSummary,
   TicketTransitionOption,
 } from "@/api/ticketing";
@@ -25,6 +26,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TicketAssigneeChip } from "./TicketAssigneeChip";
+import { TicketLabelEditor } from "./TicketLabelEditor";
 import { TicketLabels } from "./TicketLabels";
 import { openExternalTicketUrl } from "./ticketing-open-external";
 import { countNewComments, isCommentNewSince, sortCommentsByCreatedAt } from "./ticketing-read-state";
@@ -42,10 +44,15 @@ interface TicketDetailSheetProps {
   isTransitionPending: boolean;
   isAssignPending: boolean;
   isCommentPending: boolean;
+  isLabelPending?: boolean | undefined;
+  /** Selectable team labels for Linear pick-list mode. */
+  labelOptions?: TicketLabelOption[] | undefined;
+  isLabelOptionsLoading?: boolean | undefined;
   onTransitionTicket?: ((transition: TicketTransitionOption) => Promise<void> | void) | undefined;
   onAssignToMe?: (() => Promise<void> | void) | undefined;
   onClearAssignee?: (() => Promise<void> | void) | undefined;
   onAddComment?: ((bodyMarkdown: string) => Promise<void> | void) | undefined;
+  onSetLabels?: ((labels: string[]) => Promise<void> | void) | undefined;
   /** Timestamp the viewer last opened this ticket; comments newer than it are "new". */
   seenUntil?: string | null | undefined;
   isStartWorkPending?: boolean | undefined;
@@ -444,10 +451,14 @@ export function TicketDetailSheet({
   isTransitionPending,
   isAssignPending,
   isCommentPending,
+  isLabelPending,
+  labelOptions,
+  isLabelOptionsLoading,
   onTransitionTicket,
   onAssignToMe,
   onClearAssignee,
   onAddComment,
+  onSetLabels,
   seenUntil,
   isStartWorkPending,
   startWorkError,
@@ -527,6 +538,9 @@ export function TicketDetailSheet({
     ? "Comment write-back is not available for this provider."
     : null;
   const canAddComment = !commentDisabledReason && commentDraft.trim().length > 0 && !isCommentPending;
+  const labelDisabledReason = !capabilities?.labelWrite
+    ? "Label editing is not available for this provider."
+    : null;
   const descriptionMarkdown = ticket && "descriptionMarkdown" in ticket && ticket.descriptionMarkdown
     ? ticket.descriptionMarkdown
     : null;
@@ -646,7 +660,7 @@ export function TicketDetailSheet({
                     </a>
                   )}
                 </div>
-                {(ticket.project || ticket.labels.length > 0) && (
+                {(ticket.project || (!capabilities?.labelWrite && ticket.labels.length > 0)) && (
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
                     {ticket.project && (
                       <span
@@ -666,7 +680,22 @@ export function TicketDetailSheet({
                         {ticket.project}
                       </span>
                     )}
-                    <TicketLabels labels={ticket.labels} max={ticket.labels.length} size="md" />
+                    {!capabilities?.labelWrite && (
+                      <TicketLabels labels={ticket.labels} max={ticket.labels.length} size="md" />
+                    )}
+                  </div>
+                )}
+                {capabilities?.labelWrite && (
+                  <div className="mt-3">
+                    <TicketLabelEditor
+                      provider={ticket.ref.provider}
+                      labels={ticket.labels}
+                      labelOptions={labelOptions}
+                      isLabelOptionsLoading={isLabelOptionsLoading}
+                      isLabelPending={isLabelPending}
+                      disabledReason={labelDisabledReason}
+                      onSetLabels={onSetLabels}
+                    />
                   </div>
                 )}
 
