@@ -20,8 +20,8 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversation, DelegatedSession,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId, Project,
-    Task,
+    AgentWorkspaceSourcePullRequest, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionFlow, IdeationSessionId, Project, Task,
 };
 use crate::infrastructure::agents::claude::agent_names;
 use crate::infrastructure::{MockAgenticClient, MockCallType};
@@ -381,6 +381,72 @@ async fn session_namer_conversation_spawn_prefers_requested_harness_before_persi
     assert_eq!(spawn.config.model.as_deref(), Some("gpt-5.4-mini"));
     assert_eq!(spawn.config.logical_effort, Some(LogicalEffort::Medium));
     assert_eq!(spawn.config.working_directory, project_dir.path());
+}
+
+#[tokio::test]
+async fn session_namer_conversation_spawn_includes_review_pr_context() {
+    let default_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test().with_agent_client(default_client);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    let project = Project::new(
+        "Review PR Naming Project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::ReviewPr,
+        IdeationAnalysisBaseRefKind::LocalBranch,
+        "feature/pr-review-title".to_string(),
+        Some("PR #411: Add branch review metadata".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/project/review-pr-title".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 411,
+        url: Some("https://github.com/aigentive/ralphx.app/pull/411".to_string()),
+        title: Some("Add branch review metadata".to_string()),
+        head_ref_name: "feature/pr-review-title".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("abcdef1234567890".to_string()),
+    });
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let spawn = build_session_namer_agent_spawn(
+        &state,
+        conversation_initial(conversation.id.as_str(), "Review this PR"),
+    )
+    .await
+    .unwrap();
+
+    assert!(spawn.config.prompt.contains("<review_pull_request>"));
+    assert!(spawn.config.prompt.contains("<number>411</number>"));
+    assert!(
+        spawn
+            .config
+            .prompt
+            .contains("<title>Add branch review metadata</title>")
+    );
+    assert!(
+        spawn
+            .config
+            .prompt
+            .contains("<head_ref_name>feature/pr-review-title</head_ref_name>")
+    );
+    assert!(spawn.config.prompt.contains("<base_ref_name>main</base_ref_name>"));
 }
 
 #[tokio::test]

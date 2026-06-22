@@ -16,6 +16,10 @@ import { conversationWorkspaceFixture } from "./agentsTestFixtures";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 import { AgentWorkspacePrReviewCard } from "./AgentWorkspacePrReviewCard";
 
+const { openUrlMock } = vi.hoisted(() => ({
+  openUrlMock: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/api/chat", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/chat")>();
   return {
@@ -27,6 +31,10 @@ vi.mock("@/api/chat", async (importOriginal) => {
     },
   };
 });
+
+vi.mock("@tauri-apps/plugin-opener", () => ({
+  openUrl: (...args: unknown[]) => openUrlMock(...args),
+}));
 
 vi.mock("sonner", () => ({
   toast: {
@@ -144,6 +152,8 @@ describe("AgentWorkspacePrReviewCard", () => {
     vi.mocked(chatApi.skipAgentWorkspacePrReviewAction).mockReset();
     vi.mocked(toast.success).mockReset();
     vi.mocked(toast.error).mockReset();
+    openUrlMock.mockReset();
+    openUrlMock.mockResolvedValue(undefined);
   });
 
   it("renders loading and unavailable states without PR review context", () => {
@@ -177,6 +187,23 @@ describe("AgentWorkspacePrReviewCard", () => {
     expect(
       screen.getByTestId("agent-workspace-pr-review-card-error"),
     ).toHaveTextContent("Review PR context is unavailable.");
+  });
+
+  it("opens the reviewed pull request from the monitor header", async () => {
+    const user = userEvent.setup();
+
+    renderCard();
+
+    const openPrButton = screen.getByRole("button", {
+      name: "Open PR #411 in GitHub",
+    });
+    expect(screen.getByText(/PR #411 · head abcdef12/i)).toBeInTheDocument();
+
+    await user.click(openPrButton);
+
+    expect(openUrlMock).toHaveBeenCalledWith(
+      "https://github.com/aigentive/ralphx.app/pull/411",
+    );
   });
 
   it("submits a proposed approval and updates the cached review action", async () => {
@@ -214,7 +241,8 @@ describe("AgentWorkspacePrReviewCard", () => {
     });
 
     expect(screen.getByText("Approve PR proposed")).toBeInTheDocument();
-    expect(screen.getByText(/head abcdef12 · refreshing/)).toBeInTheDocument();
+    expect(screen.getByText(/head abcdef12/i)).toBeInTheDocument();
+    expect(screen.getByText("refreshing")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Approve PR/i }));
 
     await waitFor(() => {
@@ -270,6 +298,24 @@ describe("AgentWorkspacePrReviewCard", () => {
 
     expect(chatApi.submitAgentWorkspacePrReviewAction).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Skip" })).toBeEnabled();
+  });
+
+  it("shows retry guidance when a pending action has a saved submit failure", () => {
+    renderCard({
+      context: reviewContext({
+        monitor: monitor({
+          status: "awaiting_user",
+          lastError: "network unavailable",
+        }),
+        pendingAction: reviewAction({ id: "retry-action" }),
+      }),
+    });
+
+    expect(screen.getByText(/Previous submit failed/i)).toBeInTheDocument();
+    expect(screen.getByText(/network unavailable/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Request Changes/i }),
+    ).toBeEnabled();
   });
 
   it("skips a proposed comment and shows the last resolved action summary", async () => {
