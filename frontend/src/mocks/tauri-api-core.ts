@@ -1082,11 +1082,12 @@ const commandHandlers: Record<
     const provider = args.provider as string | undefined;
     return [
       {
+        // Jira/Linear containers are projects; the container id is the project key.
         provider: provider ?? "jira",
-        id: "board-1",
+        id: "RX",
         key: "RX",
-        name: "Sprint Board",
-        kind: "board",
+        name: "RalphX",
+        kind: "project",
         parentId: null,
         ticketCount: mockTicketingTickets.length,
       },

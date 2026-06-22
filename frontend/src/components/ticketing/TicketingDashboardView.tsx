@@ -136,7 +136,8 @@ function containerLabelsForProvider(provider: string | null): {
     return { containerLabel: "Project", allContainersLabel: "All projects" };
   }
   if (provider === "jira") {
-    return { containerLabel: "Board", allContainersLabel: "All boards" };
+    // Jira containers are projects (read:jira-work), not Agile boards.
+    return { containerLabel: "Project", allContainersLabel: "All projects" };
   }
   return { containerLabel: "Container", allContainersLabel: "All containers" };
 }
@@ -353,6 +354,12 @@ export function TicketingDashboardView({
   );
   const containers = useMemo(() => containersQuery.data ?? [], [containersQuery.data]);
 
+  // When a readable provider exposes containers but none is selected, force the
+  // user to pick one (no auto-select) and gate the columns/tickets queries so no
+  // provider-wide unfiltered fetch fires.
+  const requiresContainer = readableProvider && containers.length > 0;
+  const containerSelectionNeeded = requiresContainer && activeContainerId === null;
+
   useEffect(() => {
     if (!activeProvider || containers.length === 0) {
       return;
@@ -365,18 +372,18 @@ export function TicketingDashboardView({
   }, [activeContainerId, activeProvider, containers, setContainerId]);
 
   const columnsQuery = useTicketingColumns(
-    activeProvider
+    activeProvider && !containerSelectionNeeded
       ? {
           provider: activeProvider,
           ...(activeContainerId !== null && { containerId: activeContainerId }),
         }
       : null,
-    { enabled: Boolean(activeProvider && readableProvider) },
+    { enabled: Boolean(activeProvider && readableProvider && !containerSelectionNeeded) },
   );
   const columns = columnsQuery.data ?? [];
 
   const ticketFilters = toTicketFilters(filters);
-  const ticketQuery: ListTicketsInput | null = activeProvider && readableProvider
+  const ticketQuery: ListTicketsInput | null = activeProvider && readableProvider && !containerSelectionNeeded
     ? {
         provider: activeProvider,
         projectId,
@@ -394,13 +401,17 @@ export function TicketingDashboardView({
     () => containers.find((container) => container.id === activeContainerId)?.name ?? null,
     [containers, activeContainerId],
   );
+  // Jira scopes tickets to the selected project server-side (issues carry no
+  // matching `project` field), so the client-side container-name filter must be
+  // skipped for Jira; Linear returns all issues and relies on this client filter.
+  const clientContainerFilter = activeProvider === "jira" ? null : activeContainerName;
   const displayedTickets = useMemo(
     () =>
       filterTicketsByProject(
         filterTicketsByAssignee(tickets, filters.assignee),
-        activeContainerName,
+        clientContainerFilter,
       ),
-    [tickets, filters.assignee, activeContainerName],
+    [tickets, filters.assignee, clientContainerFilter],
   );
   const ticketColumns = useMemo(() => columnsFromTickets(tickets), [tickets]);
   // Remember the last non-empty columns so the kanban board does not collapse
@@ -791,6 +802,15 @@ export function TicketingDashboardView({
         onAction={handleRefresh}
       />
     );
+  } else if (containerSelectionNeeded) {
+    const containerNoun = containerLabels.containerLabel.toLowerCase();
+    content = (
+      <TicketingStatePanel
+        state="empty"
+        title={`Select a ${containerNoun}`}
+        description={`Choose a ${containerNoun} to load its tickets and statuses.`}
+      />
+    );
   } else if (displayedTickets.length === 0) {
     content = hasActiveTicketFilters(filters) ? (
       <TicketingStatePanel
@@ -883,6 +903,7 @@ export function TicketingDashboardView({
         containerLabel={containerLabels.containerLabel}
         allContainersLabel={containerLabels.allContainersLabel}
         activeContainerId={activeContainerId}
+        containerSelectionNeeded={containerSelectionNeeded}
         filters={filters}
         viewMode={viewMode}
         isRefreshing={refreshTickets.isPending || ticketsQuery.isFetching}

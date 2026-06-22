@@ -147,11 +147,17 @@ function mockConnectedDashboard() {
     error: null,
   } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
   vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
-    data: [{ provider: "jira", id: "board-1", name: "Sprint Board", kind: "board" }],
+    data: [{ provider: "jira", id: "RX", key: "RX", name: "RalphX", kind: "project" }],
     isLoading: false,
     isError: false,
     error: null,
   } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+  // With containers present, the dashboard forces a container selection before
+  // loading tickets/columns; pre-select one so the connected-state assertions see
+  // tickets. Set the provider first (otherwise the auto-provider effect would
+  // clear the selection) then the container.
+  useTicketingStore.getState().setProvider("jira");
+  useTicketingStore.getState().setContainerId("RX");
   vi.mocked(ticketingHooks.useTicketingColumns).mockReturnValue({
     data: [{ id: "todo", name: "To Do", category: "todo", order: 0 }],
     isLoading: false,
@@ -426,6 +432,63 @@ describe("TicketingDashboardView", () => {
     expect(ticketingHooks.useTickets).toHaveBeenCalledWith(null, { enabled: false });
   });
 
+  it("forces a project selection and skips ticket/column queries when containers exist but none is selected", () => {
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "jira",
+          label: "Jira",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    // Readable provider exposes a project container, but nothing is selected.
+    vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
+      data: [{ provider: "jira", id: "RX", key: "RX", name: "RalphX", kind: "project" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+
+    renderDashboard();
+
+    // The "Select a project" prompt renders (Jira containers are projects).
+    expect(screen.getByText("Select a project")).toBeInTheDocument();
+    expect(
+      screen.getByText("Choose a project to load its tickets and statuses."),
+    ).toBeInTheDocument();
+    // No provider-wide unfiltered fetch fires for tickets or columns.
+    expect(ticketingHooks.useTickets).toHaveBeenCalledWith(null, { enabled: false });
+    expect(ticketingHooks.useTicketingColumns).toHaveBeenCalledWith(null, { enabled: false });
+  });
+
+  it("loads tickets and columns with the containerId once a project is selected", async () => {
+    mockConnectedDashboard();
+
+    renderDashboard();
+
+    // mockConnectedDashboard pre-selects the "RX" project; both queries fire with
+    // the containerId and the project's tickets render.
+    await waitFor(() => {
+      expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
+        expect.objectContaining({ provider: "jira", containerId: "RX" }),
+        { enabled: true },
+      );
+    });
+    expect(ticketingHooks.useTicketingColumns).toHaveBeenLastCalledWith(
+      expect.objectContaining({ provider: "jira", containerId: "RX" }),
+      { enabled: true },
+    );
+    expect(screen.getByRole("button", { name: /RX-1/ })).toBeInTheDocument();
+    expect(screen.getByText("Fix merge race in transition handler")).toBeInTheDocument();
+  });
+
   it("auto-selects the only enabled provider and hides provider tabs", async () => {
     useTicketingStore.getState().setProvider("jira");
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
@@ -490,7 +553,7 @@ describe("TicketingDashboardView", () => {
   it("shows metadata refresh failures without blanking tickets", () => {
     mockConnectedDashboard();
     vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
-      data: [{ provider: "jira", id: "board-1", name: "Sprint Board", kind: "board" }],
+      data: [{ provider: "jira", id: "RX", key: "RX", name: "RalphX", kind: "project" }],
       isLoading: false,
       isError: true,
       error: new Error("Rate limit exceeded"),
@@ -959,15 +1022,18 @@ describe("TicketingDashboardView", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "Start RalphX work" }),
     );
-    expect(await screen.findByRole("dialog")).toHaveTextContent("Start RalphX Work");
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Start RalphX Work");
 
-    fireEvent.change(screen.getByLabelText("Project"), {
+    // Scope to the dialog: the container filter bar is also labeled "Project"
+    // now that Jira containers are projects.
+    fireEvent.change(within(dialog).getByLabelText("Project"), {
       target: { value: "project-2" },
     });
-    fireEvent.change(screen.getByLabelText("Conversation type"), {
+    fireEvent.change(within(dialog).getByLabelText("Conversation type"), {
       target: { value: "plan" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start" }));
 
     expect(startWork).toHaveBeenCalledWith(
       {

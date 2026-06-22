@@ -17,6 +17,8 @@ interface TicketFilterBarProps {
   containerLabel: string;
   allContainersLabel: string;
   activeContainerId: string | null;
+  /** When true, a container must be selected before tickets load — shows a `*`. */
+  containerSelectionNeeded?: boolean;
   filters: TicketingFilterState;
   viewMode: TicketingViewMode;
   isRefreshing: boolean;
@@ -69,6 +71,7 @@ export function TicketFilterBar({
   containerLabel,
   allContainersLabel,
   activeContainerId,
+  containerSelectionNeeded = false,
   filters,
   viewMode,
   isRefreshing,
@@ -90,7 +93,12 @@ export function TicketFilterBar({
       }}
     >
       <label className="flex min-w-[180px] items-center gap-2 text-xs text-[var(--text-muted)]">
-        {containerLabel}
+        <span>
+          {containerLabel}
+          {containerSelectionNeeded ? (
+            <span aria-hidden="true" className="ml-0.5 text-[var(--accent-primary)]">*</span>
+          ) : null}
+        </span>
         <select
           aria-label={containerLabel}
           className={ticketSelectClassName("sm", "min-w-[150px] max-w-[220px]")}
