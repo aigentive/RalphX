@@ -6,10 +6,11 @@ use std::collections::HashMap;
 use tokio::sync::{Mutex, RwLock};
 
 use super::{
+    escape_attr, pending_status_for_settings, render_issue_content, render_skipped_reference,
     resolve_linear_label_ids, LinearApiClient, LinearAuthContext, LinearComment,
     LinearIntegrationService, LinearIntegrationSettings, LinearIntegrationSettingsRepository,
     LinearIssueContent, LinearIssueSummary, LinearLabel, LinearProject, LinearUser,
-    LinearWorkflowState,
+    LinearWorkflowState, MAX_RESOURCE_BYTES,
 };
 use crate::domain::integrations::IntegrationValidationStatus;
 use crate::domain::services::{ComposerIntegrationReference, SecretStore, SecretStoreError};
@@ -828,4 +829,184 @@ async fn set_issue_labels_rejects_unknown_names_without_updating() {
 
     assert!(error.contains("Nonexistent"), "error should name the missing label: {error}");
     assert!(client.update_issue_labels_calls.lock().await.is_empty());
+}
+
+// ── pure rendering helpers ──────────────────────────────────────────────────
+
+fn issue_content(id: &str, body: &str) -> LinearIssueContent {
+    LinearIssueContent {
+        id: id.to_string(),
+        key: Some("LIN-1".to_string()),
+        title: "Title".to_string(),
+        url: Some("https://linear.app/x".to_string()),
+        body: body.to_string(),
+        state_name: Some("In Progress".to_string()),
+        assignee: Some("A. User".to_string()),
+        creator: Some("C. User".to_string()),
+        updated_at: Some("2026-06-18T08:00:00Z".to_string()),
+        comments: Vec::new(),
+        labels: Vec::new(),
+        project: None,
+    }
+}
+
+#[test]
+fn escape_attr_escapes_xml_significant_characters() {
+    assert_eq!(
+        escape_attr("a & b < c > d \" e"),
+        "a &amp; b &lt; c &gt; d &quot; e"
+    );
+    // Ampersand is escaped first so existing entities aren't double-broken.
+    assert_eq!(escape_attr("&lt;"), "&amp;lt;");
+}
+
+#[test]
+fn render_issue_content_emits_attributes_and_decrements_budget() {
+    let mut budget = MAX_RESOURCE_BYTES;
+    let rendered = render_issue_content(issue_content("id-1", "Hello body"), &mut budget);
+
+    assert!(rendered.starts_with("<linear_issue id=\"id-1\""));
+    assert!(rendered.contains("key=\"LIN-1\""));
+    assert!(rendered.contains("truncated=\"false\""));
+    assert!(rendered.contains("bytes=\"10\""), "original body length is 10");
+    assert!(rendered.contains("Hello body"));
+    // Budget shrinks by the rendered body length.
+    assert_eq!(budget, MAX_RESOURCE_BYTES - "Hello body".len());
+}
+
+#[test]
+fn render_issue_content_escapes_attribute_values() {
+    let mut content = issue_content("id-1", "body");
+    content.title = "A & B <tag>".to_string();
+    let mut budget = MAX_RESOURCE_BYTES;
+    let rendered = render_issue_content(content, &mut budget);
+    assert!(rendered.contains("title=\"A &amp; B &lt;tag&gt;\""));
+}
+
+#[test]
+fn render_issue_content_truncates_when_over_budget() {
+    // A tiny remaining budget forces truncation to that byte count.
+    let mut budget = 4usize;
+    let rendered = render_issue_content(issue_content("id-1", "abcdefgh"), &mut budget);
+    assert!(rendered.contains("truncated=\"true\""));
+    assert!(rendered.contains("bytes=\"8\""), "original length is reported");
+    // Body trimmed to the 4-byte budget; remaining budget is consumed.
+    assert!(rendered.contains("abcd"));
+    assert!(!rendered.contains("efgh"));
+    assert_eq!(budget, 0);
+}
+
+#[test]
+fn render_issue_content_respects_utf8_char_boundaries() {
+    // "héllo": 'é' is 2 bytes (UTF-8), so a 2-byte budget must back off to 1.
+    let mut budget = 2usize;
+    let rendered = render_issue_content(issue_content("id-1", "héllo"), &mut budget);
+    assert!(rendered.contains("truncated=\"true\""));
+    // Only the ASCII 'h' survives — the multi-byte boundary is respected.
+    assert!(rendered.contains("```\nh\n```"));
+}
+
+#[test]
+fn render_skipped_reference_emits_escaped_skip_tag() {
+    let reference = ComposerIntegrationReference {
+        provider: "lin&ear".to_string(),
+        kind: "linear".to_string(),
+        id: "is<sue>".to_string(),
+        key: None,
+        title: None,
+        url: None,
+    };
+    let rendered = render_skipped_reference(&reference, "budget \"exhausted\"");
+    assert!(rendered.starts_with("<integration_reference_skipped"));
+    assert!(rendered.contains("provider=\"lin&amp;ear\""));
+    assert!(rendered.contains("id=\"is&lt;sue&gt;\""));
+    assert!(rendered.contains("reason=\"budget &quot;exhausted&quot;\""));
+    assert!(rendered.trim_end().ends_with("/>"));
+}
+
+// ── pending_status_for_settings ─────────────────────────────────────────────
+
+#[test]
+fn pending_status_reflects_token_presence() {
+    let mut settings = LinearIntegrationSettings::default();
+    assert_eq!(
+        pending_status_for_settings(&settings),
+        IntegrationValidationStatus::NotConfigured
+    );
+    settings.token_secret_ref = Some("secret-ref".to_string());
+    assert_eq!(
+        pending_status_for_settings(&settings),
+        IntegrationValidationStatus::Pending
+    );
+}
+
+// ── expand_references_for_prompt early-return branches ──────────────────────
+
+#[tokio::test]
+async fn expand_references_returns_message_when_no_references() {
+    let client = Arc::new(TestLinearClient::default());
+    let service = enabled_service(client).await;
+    let expanded = service.expand_references_for_prompt("Original", &[]).await;
+    assert_eq!(expanded, "Original");
+}
+
+#[tokio::test]
+async fn expand_references_returns_message_when_integration_disabled() {
+    // A service that was never validated/enabled must gracefully return the
+    // original message rather than erroring inside prompt expansion.
+    let repo = Arc::new(TestSettingsRepo::default());
+    let secrets = Arc::new(MemorySecretStore::new());
+    let client = Arc::new(TestLinearClient::default());
+    let service = LinearIntegrationService::new(repo, secrets, client);
+
+    let expanded = service
+        .expand_references_for_prompt(
+            "Original",
+            &[ComposerIntegrationReference {
+                provider: "linear".to_string(),
+                kind: "linear".to_string(),
+                id: "issue-id".to_string(),
+                key: None,
+                title: None,
+                url: None,
+            }],
+        )
+        .await;
+    assert_eq!(expanded, "Original");
+}
+
+#[tokio::test]
+async fn expand_references_returns_message_when_only_non_linear_refs() {
+    let client = Arc::new(TestLinearClient::default());
+    let service = enabled_service(client).await;
+    // A non-linear reference is skipped, leaving nothing rendered → original.
+    let expanded = service
+        .expand_references_for_prompt(
+            "Original",
+            &[ComposerIntegrationReference {
+                provider: "atlassian".to_string(),
+                kind: "jira".to_string(),
+                id: "RX-1".to_string(),
+                key: None,
+                title: None,
+                url: None,
+            }],
+        )
+        .await;
+    assert_eq!(expanded, "Original");
+}
+
+// ── list_workflow_states None team filter ───────────────────────────────────
+
+#[tokio::test]
+async fn list_workflow_states_records_none_team_filter() {
+    let client = Arc::new(TestLinearClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let states = service.list_workflow_states(None).await.unwrap();
+    assert_eq!(states.len(), 1);
+    assert_eq!(
+        client.list_workflow_states_team.lock().await.as_slice(),
+        &[None]
+    );
 }
