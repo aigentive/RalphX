@@ -567,6 +567,250 @@ mod pr_comment_evidence_tests {
 }
 
 #[cfg(test)]
+mod publication_status_helpers_tests {
+    use super::{
+        is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
+        IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId,
+    };
+
+    fn workspace() -> AgentConversationWorkspace {
+        AgentConversationWorkspace::new(
+            ChatConversationId::new(),
+            ProjectId("project-1".to_string()),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            None,
+            None,
+            "feature/branch".to_string(),
+            "/tmp/worktree".to_string(),
+        )
+    }
+
+    #[test]
+    fn terminal_publication_pr_status_matches_merged_and_closed_only() {
+        assert!(is_terminal_publication_pr_status(Some("merged")));
+        assert!(is_terminal_publication_pr_status(Some("closed")));
+        assert!(!is_terminal_publication_pr_status(Some("open")));
+        assert!(!is_terminal_publication_pr_status(Some("draft")));
+        assert!(!is_terminal_publication_pr_status(None));
+    }
+
+    #[test]
+    fn pr_status_pollable_push_status_matches_none_pushed_and_refreshed() {
+        assert!(is_pr_status_pollable_push_status(None));
+        assert!(is_pr_status_pollable_push_status(Some("pushed")));
+        assert!(is_pr_status_pollable_push_status(Some("refreshed")));
+        assert!(!is_pr_status_pollable_push_status(Some("pending")));
+        assert!(!is_pr_status_pollable_push_status(Some("failed")));
+    }
+
+    #[test]
+    fn has_terminal_publication_pr_status_delegates() {
+        let mut ws = workspace();
+        ws.publication_pr_status = Some("merged".to_string());
+        assert!(ws.has_terminal_publication_pr_status());
+        ws.publication_pr_status = Some("open".to_string());
+        assert!(!ws.has_terminal_publication_pr_status());
+        ws.publication_pr_status = None;
+        assert!(!ws.has_terminal_publication_pr_status());
+    }
+
+    #[test]
+    fn has_pr_status_pollable_push_status_delegates() {
+        let mut ws = workspace();
+        ws.publication_push_status = None;
+        assert!(ws.has_pr_status_pollable_push_status());
+        ws.publication_push_status = Some("pushed".to_string());
+        assert!(ws.has_pr_status_pollable_push_status());
+        ws.publication_push_status = Some("failed".to_string());
+        assert!(!ws.has_pr_status_pollable_push_status());
+    }
+
+    #[test]
+    fn is_execution_owned_tracks_linked_plan_branch() {
+        let mut ws = workspace();
+        assert!(!ws.is_execution_owned());
+        ws.linked_plan_branch_id = Some(PlanBranchId::new());
+        assert!(ws.is_execution_owned());
+    }
+
+    #[test]
+    fn new_workspace_uses_default_auto_merge_method_and_active_status() {
+        let ws = workspace();
+        assert_eq!(
+            ws.pr_auto_merge_method,
+            super::super::DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
+        );
+        assert_eq!(ws.status, super::super::AgentConversationWorkspaceStatus::Active);
+        assert!(ws.auto_publish_enabled);
+        assert!(!ws.auto_publish_initial_pr_enabled);
+    }
+}
+
+#[cfg(test)]
+mod pr_description_tests {
+    use super::AgentWorkspacePrDescription;
+
+    #[test]
+    fn new_trims_title_and_drops_blank() {
+        let desc = AgentWorkspacePrDescription::new(
+            Some("  My PR title  ".to_string()),
+            "body".to_string(),
+        );
+        assert_eq!(desc.title.as_deref(), Some("My PR title"));
+        assert_eq!(desc.body_markdown, "body");
+    }
+
+    #[test]
+    fn new_drops_blank_or_absent_title() {
+        assert!(AgentWorkspacePrDescription::new(Some("   ".to_string()), "b".to_string())
+            .title
+            .is_none());
+        assert!(AgentWorkspacePrDescription::new(None, "b".to_string())
+            .title
+            .is_none());
+    }
+}
+
+#[cfg(test)]
+mod monitor_and_action_constructor_tests {
+    use super::{
+        AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+        AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
+        AgentWorkspacePrReviewMonitorStatus, ChatConversationId, ProjectId,
+    };
+
+    #[test]
+    fn monitor_new_starts_idle_and_disabled() {
+        let monitor = AgentWorkspacePrReviewMonitor::new(
+            ChatConversationId::new(),
+            ProjectId("p".to_string()),
+            42,
+            Some("abc".to_string()),
+        );
+        assert_eq!(monitor.status, AgentWorkspacePrReviewMonitorStatus::Idle);
+        assert!(!monitor.monitor_enabled);
+        assert!(!monitor.first_review_completed);
+        assert_eq!(monitor.pr_number, 42);
+        assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("abc"));
+        assert!(monitor.last_reviewed_head_sha.is_none());
+    }
+
+    #[test]
+    fn action_new_starts_pending_with_generated_id() {
+        let action = AgentWorkspacePrReviewAction::new(
+            ChatConversationId::new(),
+            7,
+            "head-sha".to_string(),
+            AgentWorkspacePrReviewActionKind::Approve,
+            "summary".to_string(),
+            "review body".to_string(),
+            Some("{}".to_string()),
+            Some("run-1".to_string()),
+        );
+        assert_eq!(action.status, AgentWorkspacePrReviewActionStatus::Pending);
+        assert!(!action.id.is_empty());
+        assert_eq!(action.proposed_action, AgentWorkspacePrReviewActionKind::Approve);
+        assert_eq!(action.head_sha, "head-sha");
+        assert_eq!(action.created_by_run_id.as_deref(), Some("run-1"));
+        assert!(action.submitted_review_id.is_none());
+        assert!(action.resolved_at.is_none());
+    }
+}
+
+#[cfg(test)]
+mod enum_roundtrip_tests {
+    use super::{
+        AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+        AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
+        AgentWorkspacePrReviewMonitorStatus,
+    };
+    use std::str::FromStr;
+
+    #[test]
+    fn workspace_mode_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentConversationWorkspaceMode::Chat, "chat"),
+            (AgentConversationWorkspaceMode::Edit, "edit"),
+            (AgentConversationWorkspaceMode::Plan, "plan"),
+            (AgentConversationWorkspaceMode::Ideation, "ideation"),
+            (AgentConversationWorkspaceMode::ReviewPr, "review_pr"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(AgentConversationWorkspaceMode::from_str(text).unwrap(), variant);
+        }
+        assert!(AgentConversationWorkspaceMode::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn workspace_status_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentConversationWorkspaceStatus::Active, "active"),
+            (AgentConversationWorkspaceStatus::Archived, "archived"),
+            (AgentConversationWorkspaceStatus::Missing, "missing"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(AgentConversationWorkspaceStatus::from_str(text).unwrap(), variant);
+        }
+        assert!(AgentConversationWorkspaceStatus::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn monitor_status_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentWorkspacePrReviewMonitorStatus::Idle, "idle"),
+            (AgentWorkspacePrReviewMonitorStatus::Reviewing, "reviewing"),
+            (AgentWorkspacePrReviewMonitorStatus::AwaitingUser, "awaiting_user"),
+            (AgentWorkspacePrReviewMonitorStatus::Watching, "watching"),
+            (AgentWorkspacePrReviewMonitorStatus::Submitting, "submitting"),
+            (AgentWorkspacePrReviewMonitorStatus::Blocked, "blocked"),
+            (AgentWorkspacePrReviewMonitorStatus::Terminal, "terminal"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(
+                AgentWorkspacePrReviewMonitorStatus::from_str(text).unwrap(),
+                variant
+            );
+        }
+        assert!(AgentWorkspacePrReviewMonitorStatus::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn action_kind_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentWorkspacePrReviewActionKind::RequestChanges, "request_changes"),
+            (AgentWorkspacePrReviewActionKind::Approve, "approve"),
+            (AgentWorkspacePrReviewActionKind::Comment, "comment"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(AgentWorkspacePrReviewActionKind::from_str(text).unwrap(), variant);
+        }
+        assert!(AgentWorkspacePrReviewActionKind::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn action_status_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentWorkspacePrReviewActionStatus::Pending, "pending"),
+            (AgentWorkspacePrReviewActionStatus::Approved, "approved"),
+            (AgentWorkspacePrReviewActionStatus::Skipped, "skipped"),
+            (AgentWorkspacePrReviewActionStatus::Submitting, "submitting"),
+            (AgentWorkspacePrReviewActionStatus::Submitted, "submitted"),
+            (AgentWorkspacePrReviewActionStatus::Failed, "failed"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(
+                AgentWorkspacePrReviewActionStatus::from_str(text).unwrap(),
+                variant
+            );
+        }
+        assert!(AgentWorkspacePrReviewActionStatus::from_str("bogus").is_err());
+    }
+}
+
+#[cfg(test)]
 mod is_open_pr_tests {
     use super::{
         is_open_pr, AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,

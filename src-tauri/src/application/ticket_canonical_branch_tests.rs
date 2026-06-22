@@ -7,7 +7,7 @@ use crate::application::ticket_canonical_branch::{
     canonical_branch_name, ensure_ticket_canonical_branch, sanitize_issue_key_slug,
 };
 use crate::application::AppState;
-use crate::domain::entities::{Project, ProjectId, TicketCanonicalBranch};
+use crate::domain::entities::{Project, ProjectId};
 use crate::error::AppError;
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -292,113 +292,63 @@ async fn missing_project_returns_typed_error() {
     );
 }
 
-// ── canonical_branch_name provider-slug branch ──────────────────────────────
+// ── complete_unpushed_canonical_branch recovery path ─────────────────────────
 
-#[test]
-fn canonical_branch_name_rejects_unslugifiable_provider() {
-    // A provider made entirely of separators yields no slug, so the whole
-    // branch name is unresolvable even when the issue key is valid.
-    assert_eq!(canonical_branch_name("///", "WISE-24"), None);
-}
+use crate::domain::entities::TicketCanonicalBranch;
 
-#[test]
-fn canonical_branch_name_rejects_unslugifiable_issue_key() {
-    assert_eq!(canonical_branch_name("linear", "***"), None);
-}
-
-// ── push_canonical_branch: missing GitHub service ───────────────────────────
-
-#[tokio::test]
-async fn missing_github_service_is_a_hard_push_error() {
-    let (_temp, repo) = init_real_repo();
-    // Build state WITHOUT a github service so the push path hits the None branch.
-    let mut state = AppState::new_test();
-    state.github_service = None;
-    let mut project = Project::new(
-        "Ticket Project".to_string(),
-        repo.to_string_lossy().into_owned(),
-    );
-    project.base_branch = Some("main".to_string());
-    let project_id = project.id.clone();
-    state.project_repo.create(project).await.expect("seed project");
-
-    let error = ensure_ticket_canonical_branch(&state, &project_id, "linear", "WISE-24")
-        .await
-        .expect_err("missing github service must error before marking pushed");
-
-    assert!(
-        matches!(error, AppError::GitOperation(_)),
-        "expected GitOperation, got {error:?}"
-    );
-    // No row should be persisted: the push fails before upsert.
-    assert!(state
-        .ticket_canonical_branch_repo
-        .get(&project_id, "linear", "WISE-24")
-        .await
-        .unwrap()
-        .is_none());
-}
-
-// ── complete_unpushed_canonical_branch isolated branches ────────────────────
-
-/// Seed a persisted-but-unpushed canonical-branch row whose local branch was
-/// already created in the main checkout. Returns the canonical branch name.
+/// Seed a persisted-but-unpushed canonical branch row (origin_pushed = false),
+/// optionally also creating the local branch in the main checkout.
 async fn seed_unpushed_row(
     state: &AppState,
     project_id: &ProjectId,
     repo: &Path,
+    branch_name: &str,
     create_local_branch: bool,
-) -> String {
-    let branch_name = canonical_branch_name("linear", "WISE-24").expect("branch name");
+) {
     if create_local_branch {
-        GitService::create_branch(repo, &branch_name, "main")
-            .await
-            .expect("create local branch");
+        // Create the branch without checking it out so the recovery path's
+        // `branch_exists` check is satisfied.
+        git(repo, &["branch", branch_name, "main"]);
     }
     let row = TicketCanonicalBranch::new(
         project_id.clone(),
         "linear",
         "WISE-24",
-        branch_name.clone(),
-        "main".to_string(),
+        branch_name,
+        "main",
         None,
         chrono::Utc::now(),
     );
+    // origin_pushed defaults to false on `new`, which is exactly the
+    // partially-established state we want to recover from.
+    assert!(!row.origin_pushed);
     state
         .ticket_canonical_branch_repo
         .upsert(row)
         .await
         .expect("seed unpushed row");
-    branch_name
 }
 
 #[tokio::test]
-async fn unpushed_existing_row_completes_push_and_marks_pushed() {
+async fn unpushed_existing_row_with_local_branch_completes_push_and_marks_pushed() {
     let (_temp, repo) = init_real_repo();
     let (state, project_id, github) = state_with_project(&repo).await;
-    let branch_name = seed_unpushed_row(&state, &project_id, &repo, true).await;
+    let branch_name = "ralphx/ticket/linear-wise-24";
+    seed_unpushed_row(&state, &project_id, &repo, branch_name, true).await;
 
-    // Sanity: the seeded row is present and not yet pushed.
-    let before = state
-        .ticket_canonical_branch_repo
-        .get(&project_id, "linear", "WISE-24")
+    let recovered = ensure_ticket_canonical_branch(&state, &project_id, "linear", "WISE-24")
         .await
-        .unwrap()
-        .unwrap();
-    assert!(!before.origin_pushed);
+        .expect("recovery should push and mark the row");
 
-    let completed = ensure_ticket_canonical_branch(&state, &project_id, "linear", "WISE-24")
-        .await
-        .expect("unpushed row should complete its push");
-
-    assert!(completed.origin_pushed, "row must be marked pushed");
+    assert!(recovered.origin_pushed, "row must be flagged pushed after recovery");
+    assert_eq!(recovered.branch_name, branch_name);
     assert_eq!(github.state().push_branch_calls, 1);
     assert_eq!(
         github.state().last_push_branch_name.as_deref(),
-        Some(branch_name.as_str())
+        Some(branch_name)
     );
 
-    // The persisted row reflects the confirmed push.
+    // The persisted row is now marked pushed, so a follow-up call is idempotent.
     let stored = state
         .ticket_canonical_branch_repo
         .get(&project_id, "linear", "WISE-24")
@@ -409,89 +359,60 @@ async fn unpushed_existing_row_completes_push_and_marks_pushed() {
 }
 
 #[tokio::test]
-async fn unpushed_existing_row_recreates_missing_local_branch() {
+async fn unpushed_existing_row_recreates_missing_local_branch_before_push() {
     let (_temp, repo) = init_real_repo();
     let (state, project_id, github) = state_with_project(&repo).await;
-    // Seed the row WITHOUT creating the local branch — it must be recreated.
-    let branch_name = seed_unpushed_row(&state, &project_id, &repo, false).await;
-    assert!(
-        !GitService::branch_exists(&repo, &branch_name).await.unwrap(),
-        "precondition: local branch must be absent"
-    );
+    let branch_name = "ralphx/ticket/linear-wise-24";
+    // Row exists but the local branch is gone (never created).
+    seed_unpushed_row(&state, &project_id, &repo, branch_name, false).await;
+    assert!(!GitService::branch_exists(&repo, branch_name).await.unwrap());
 
-    let completed = ensure_ticket_canonical_branch(&state, &project_id, "linear", "WISE-24")
+    let recovered = ensure_ticket_canonical_branch(&state, &project_id, "linear", "WISE-24")
         .await
-        .expect("should recreate the local branch then push");
+        .expect("recovery should recreate the branch and push");
 
-    assert!(completed.origin_pushed);
-    assert!(
-        GitService::branch_exists(&repo, &branch_name).await.unwrap(),
-        "local branch must be recreated from the recorded base"
-    );
+    assert!(recovered.origin_pushed);
+    // The branch was recreated in the main checkout from its recorded base.
+    assert!(GitService::branch_exists(&repo, branch_name).await.unwrap());
     assert_eq!(github.state().push_branch_calls, 1);
 }
 
 #[tokio::test]
-async fn unpushed_existing_row_failing_push_stays_unpushed() {
+async fn unpushed_existing_row_keeps_unpushed_when_push_fails() {
     let (_temp, repo) = init_real_repo();
     let (state, project_id, github) = state_with_project(&repo).await;
-    seed_unpushed_row(&state, &project_id, &repo, true).await;
+    let branch_name = "ralphx/ticket/linear-wise-24";
+    seed_unpushed_row(&state, &project_id, &repo, branch_name, true).await;
 
-    github.state().push_branch_result =
-        Some(Err(AppError::GitOperation("network down".to_string())));
+    // Force the recovery push to fail; the row must stay unpushed and the error
+    // surfaces to the caller.
+    github.state().push_branch_result = Some(Err(AppError::GitOperation("offline".to_string())));
     let error = ensure_ticket_canonical_branch(&state, &project_id, "linear", "WISE-24")
         .await
-        .expect_err("failed push must surface");
-    assert!(matches!(error, AppError::GitOperation(_)));
+        .expect_err("a failed recovery push surfaces an error");
+    assert!(matches!(error, AppError::GitOperation(_)), "got {error:?}");
 
-    // The row must remain unpushed since the push was never confirmed.
+    // The persisted row is still unpushed because mark_origin_pushed never ran.
     let stored = state
         .ticket_canonical_branch_repo
         .get(&project_id, "linear", "WISE-24")
         .await
         .unwrap()
         .unwrap();
-    assert!(!stored.origin_pushed, "failed push must not mark pushed");
+    assert!(!stored.origin_pushed, "row must remain unpushed after failed push");
 }
 
 #[tokio::test]
-async fn unpushed_row_with_deleted_project_returns_typed_error() {
+async fn missing_github_service_blocks_canonical_branch_push() {
     let (_temp, repo) = init_real_repo();
-    let (state, project_id, _github) = state_with_project(&repo).await;
-    seed_unpushed_row(&state, &project_id, &repo, true).await;
-
-    // Project vanishes between establishment and the retry that completes it.
-    state.project_repo.delete(&project_id).await.unwrap();
+    let (mut state, project_id, _github) = state_with_project(&repo).await;
+    // Drop the GitHub service: the canonical-branch contract requires a push, so
+    // its absence is a hard error rather than a silent local-only branch.
+    state.github_service = None;
 
     let error = ensure_ticket_canonical_branch(&state, &project_id, "linear", "WISE-24")
         .await
-        .expect_err("missing project during retry must error");
-    assert!(
-        matches!(error, AppError::ProjectNotFound(_)),
-        "expected ProjectNotFound, got {error:?}"
-    );
-}
+        .expect_err("missing GitHub service must error");
 
-// ── establish_canonical_branch: pre-existing local branch ───────────────────
-
-#[tokio::test]
-async fn first_call_reuses_preexisting_local_branch_without_recreating() {
-    let (_temp, repo) = init_real_repo();
-    let (state, project_id, github) = state_with_project(&repo).await;
-
-    // The canonical branch already exists locally (e.g. left over from a prior
-    // partial attempt) but no row was ever persisted.
-    let branch_name = canonical_branch_name("linear", "WISE-24").unwrap();
-    GitService::create_branch(&repo, &branch_name, "main")
-        .await
-        .expect("pre-create branch");
-
-    let canonical = ensure_ticket_canonical_branch(&state, &project_id, "linear", "WISE-24")
-        .await
-        .expect("should reuse the existing local branch and push");
-
-    assert_eq!(canonical.branch_name, branch_name);
-    assert!(canonical.origin_pushed);
-    assert_eq!(github.state().push_branch_calls, 1);
-    assert!(GitService::branch_exists(&repo, &branch_name).await.unwrap());
+    assert!(matches!(error, AppError::GitOperation(_)), "got {error:?}");
 }

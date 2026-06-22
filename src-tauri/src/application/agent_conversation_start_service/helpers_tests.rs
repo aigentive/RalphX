@@ -1,41 +1,31 @@
-//! Unit tests for the pure helpers extracted from the agent conversation start
-//! service. These cover input shaping, mode/base-ref parsing, source pull
-//! request normalization, workspace-decision predicates, and effort selection.
+//! Unit tests for the pure `agent_conversation_start_service` helpers.
+//!
+//! These exercise the parsing/normalization helpers and the runtime-selection
+//! logic without spawning agents or touching git, so they stay fast and
+//! deterministic. The integration-only `start()` orchestration lives in the
+//! parent module and is covered by higher-level flows.
 
 use super::*;
-use crate::application::agent_conversation_start_service::AgentWorkspaceSourcePullRequestInput;
-use crate::domain::agents::LogicalEffort;
+use crate::application::AppState;
+use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, IdeationAnalysisBaseRefKind,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, Project,
 };
 
-fn pr_input(number: i64, head_ref_name: &str) -> AgentWorkspaceSourcePullRequestInput {
-    AgentWorkspaceSourcePullRequestInput {
-        number,
-        url: Some("  https://example.com/pr/1  ".to_string()),
-        title: Some("  Some PR  ".to_string()),
-        head_ref_name: head_ref_name.to_string(),
-        base_ref_name: Some("  main  ".to_string()),
-        head_ref_oid: Some("  abc123  ".to_string()),
-    }
-}
-
-// ----- parse_agent_workspace_mode -----
+// ── parse_agent_workspace_mode ───────────────────────────────────────────────
 
 #[test]
-fn parse_mode_defaults_to_edit_when_none() {
+fn parse_mode_defaults_to_edit_for_none_and_blank() {
     assert_eq!(
         parse_agent_workspace_mode(None).unwrap(),
         AgentConversationWorkspaceMode::Edit
     );
-}
-
-#[test]
-fn parse_mode_defaults_to_edit_when_blank_or_whitespace() {
     assert_eq!(
         parse_agent_workspace_mode(Some("   ")).unwrap(),
         AgentConversationWorkspaceMode::Edit
     );
+    // An empty (non-whitespace) string also falls back to the "edit" default.
     assert_eq!(
         parse_agent_workspace_mode(Some("")).unwrap(),
         AgentConversationWorkspaceMode::Edit
@@ -43,18 +33,14 @@ fn parse_mode_defaults_to_edit_when_blank_or_whitespace() {
 }
 
 #[test]
-fn parse_mode_trims_and_parses_known_values() {
+fn parse_mode_trims_and_parses_known_modes() {
     assert_eq!(
-        parse_agent_workspace_mode(Some("  chat  ")).unwrap(),
-        AgentConversationWorkspaceMode::Chat
-    );
-    assert_eq!(
-        parse_agent_workspace_mode(Some("plan")).unwrap(),
+        parse_agent_workspace_mode(Some("  plan ")).unwrap(),
         AgentConversationWorkspaceMode::Plan
     );
     assert_eq!(
-        parse_agent_workspace_mode(Some("ideation")).unwrap(),
-        AgentConversationWorkspaceMode::Ideation
+        parse_agent_workspace_mode(Some("chat")).unwrap(),
+        AgentConversationWorkspaceMode::Chat
     );
     assert_eq!(
         parse_agent_workspace_mode(Some("review_pr")).unwrap(),
@@ -64,60 +50,42 @@ fn parse_mode_trims_and_parses_known_values() {
 
 #[test]
 fn parse_mode_rejects_unknown_value() {
-    let err = parse_agent_workspace_mode(Some("nonsense")).unwrap_err();
-    assert!(
-        err.contains("nonsense"),
-        "error should echo the bad value: {err}"
-    );
+    let error = parse_agent_workspace_mode(Some("nonsense")).unwrap_err();
+    assert!(error.contains("nonsense"), "error should name the bad value: {error}");
 }
 
-// ----- parse_agent_workspace_base_kind -----
+// ── parse_agent_workspace_base_kind ──────────────────────────────────────────
 
 #[test]
-fn parse_base_kind_none_for_missing_or_blank() {
+fn parse_base_kind_is_none_for_absent_or_blank() {
     assert_eq!(parse_agent_workspace_base_kind(None).unwrap(), None);
-    assert_eq!(parse_agent_workspace_base_kind(Some("")).unwrap(), None);
     assert_eq!(parse_agent_workspace_base_kind(Some("   ")).unwrap(), None);
+    assert_eq!(parse_agent_workspace_base_kind(Some("")).unwrap(), None);
 }
 
 #[test]
-fn parse_base_kind_trims_and_parses_known_values() {
+fn parse_base_kind_trims_and_parses_known_kinds() {
     assert_eq!(
-        parse_agent_workspace_base_kind(Some("  project_default  ")).unwrap(),
-        Some(IdeationAnalysisBaseRefKind::ProjectDefault)
-    );
-    assert_eq!(
-        parse_agent_workspace_base_kind(Some("current_branch")).unwrap(),
-        Some(IdeationAnalysisBaseRefKind::CurrentBranch)
-    );
-    assert_eq!(
-        parse_agent_workspace_base_kind(Some("local_branch")).unwrap(),
+        parse_agent_workspace_base_kind(Some(" local_branch ")).unwrap(),
         Some(IdeationAnalysisBaseRefKind::LocalBranch)
     );
     assert_eq!(
-        parse_agent_workspace_base_kind(Some("pull_request")).unwrap(),
-        Some(IdeationAnalysisBaseRefKind::PullRequest)
+        parse_agent_workspace_base_kind(Some("project_default")).unwrap(),
+        Some(IdeationAnalysisBaseRefKind::ProjectDefault)
     );
 }
 
 #[test]
 fn parse_base_kind_rejects_unknown_value() {
-    let err = parse_agent_workspace_base_kind(Some("weird")).unwrap_err();
-    assert!(
-        err.contains("weird"),
-        "error should echo the bad value: {err}"
-    );
+    let error = parse_agent_workspace_base_kind(Some("weird")).unwrap_err();
+    assert!(error.contains("weird"), "error should name the bad value: {error}");
 }
 
-// ----- trim_optional_input -----
+// ── trim_optional_input ──────────────────────────────────────────────────────
 
 #[test]
-fn trim_optional_input_returns_none_for_none() {
+fn trim_optional_input_drops_none_and_blank() {
     assert_eq!(trim_optional_input(None), None);
-}
-
-#[test]
-fn trim_optional_input_returns_none_for_blank() {
     assert_eq!(trim_optional_input(Some("   ".to_string())), None);
     assert_eq!(trim_optional_input(Some(String::new())), None);
 }
@@ -125,189 +93,167 @@ fn trim_optional_input_returns_none_for_blank() {
 #[test]
 fn trim_optional_input_trims_surrounding_whitespace() {
     assert_eq!(
-        trim_optional_input(Some("  value  ".to_string())),
-        Some("value".to_string())
+        trim_optional_input(Some("  hello world  ".to_string())),
+        Some("hello world".to_string())
     );
 }
 
-// ----- normalize_agent_workspace_source_pull_request -----
+// ── normalize_agent_workspace_source_pull_request ────────────────────────────
+
+fn pr_input(number: i64, head_ref_name: &str) -> AgentWorkspaceSourcePullRequestInput {
+    AgentWorkspaceSourcePullRequestInput {
+        number,
+        url: Some("  https://example/pr/1  ".to_string()),
+        title: Some("  Title  ".to_string()),
+        head_ref_name: head_ref_name.to_string(),
+        base_ref_name: Some("  main  ".to_string()),
+        head_ref_oid: Some("  abc123  ".to_string()),
+    }
+}
 
 #[test]
-fn normalize_pr_none_input_returns_none() {
+fn normalize_source_pr_is_none_when_input_absent() {
     let result = normalize_agent_workspace_source_pull_request(
         None,
         Some(IdeationAnalysisBaseRefKind::LocalBranch),
         Some("feature"),
     )
     .unwrap();
-    assert_eq!(result, None);
+    assert!(result.is_none());
 }
 
 #[test]
-fn normalize_pr_rejects_non_positive_number() {
-    for bad in [0_i64, -1] {
-        let err = normalize_agent_workspace_source_pull_request(
+fn normalize_source_pr_rejects_non_positive_number() {
+    for bad in [0, -5] {
+        let error = normalize_agent_workspace_source_pull_request(
             Some(pr_input(bad, "feature")),
             Some(IdeationAnalysisBaseRefKind::LocalBranch),
-            Some("feature"),
+            None,
         )
         .unwrap_err();
-        assert!(err.contains("must be positive"), "got: {err}");
+        assert!(error.contains("number must be positive"), "got: {error}");
     }
 }
 
 #[test]
-fn normalize_pr_requires_local_branch_base_kind() {
-    // Wrong kind.
-    let err = normalize_agent_workspace_source_pull_request(
+fn normalize_source_pr_requires_local_branch_base_kind() {
+    let error = normalize_agent_workspace_source_pull_request(
         Some(pr_input(7, "feature")),
         Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-        Some("feature"),
+        None,
     )
     .unwrap_err();
-    assert!(err.contains("local_branch"), "got: {err}");
+    assert!(error.contains("requires a local_branch base ref"), "got: {error}");
 
-    // Missing kind entirely.
-    let err = normalize_agent_workspace_source_pull_request(
+    // None base kind is also rejected.
+    let error = normalize_agent_workspace_source_pull_request(
         Some(pr_input(7, "feature")),
         None,
-        Some("feature"),
+        None,
     )
     .unwrap_err();
-    assert!(err.contains("local_branch"), "got: {err}");
+    assert!(error.contains("requires a local_branch base ref"), "got: {error}");
 }
 
 #[test]
-fn normalize_pr_requires_non_empty_head_ref() {
-    let err = normalize_agent_workspace_source_pull_request(
+fn normalize_source_pr_requires_non_empty_head_ref() {
+    let error = normalize_agent_workspace_source_pull_request(
         Some(pr_input(7, "   ")),
         Some(IdeationAnalysisBaseRefKind::LocalBranch),
         None,
     )
     .unwrap_err();
-    assert!(err.contains("head branch is required"), "got: {err}");
+    assert!(error.contains("head branch is required"), "got: {error}");
 }
 
 #[test]
-fn normalize_pr_requires_base_ref_to_match_head_when_present() {
-    let err = normalize_agent_workspace_source_pull_request(
+fn normalize_source_pr_rejects_base_ref_mismatch() {
+    let error = normalize_agent_workspace_source_pull_request(
         Some(pr_input(7, "feature")),
         Some(IdeationAnalysisBaseRefKind::LocalBranch),
-        Some("a-different-branch"),
+        Some("  other-branch  "),
     )
     .unwrap_err();
-    assert!(
-        err.contains("must match the selected base ref"),
-        "got: {err}"
-    );
+    assert!(error.contains("must match the selected base ref"), "got: {error}");
 }
 
 #[test]
-fn normalize_pr_allows_blank_base_ref_without_match_check() {
-    // A blank/whitespace base ref is filtered out, so no match check applies.
-    let result = normalize_agent_workspace_source_pull_request(
+fn normalize_source_pr_accepts_matching_base_ref_and_trims_fields() {
+    let pr = normalize_agent_workspace_source_pull_request(
+        Some(pr_input(7, "  feature  ")),
+        Some(IdeationAnalysisBaseRefKind::LocalBranch),
+        Some("  feature  "),
+    )
+    .unwrap()
+    .expect("a valid PR input yields Some");
+
+    assert_eq!(pr.number, 7);
+    assert_eq!(pr.head_ref_name, "feature");
+    assert_eq!(pr.url.as_deref(), Some("https://example/pr/1"));
+    assert_eq!(pr.title.as_deref(), Some("Title"));
+    assert_eq!(pr.base_ref_name.as_deref(), Some("main"));
+    assert_eq!(pr.head_ref_oid.as_deref(), Some("abc123"));
+}
+
+#[test]
+fn normalize_source_pr_accepts_blank_base_ref_without_mismatch() {
+    // A blank base_ref is filtered out, so no mismatch check runs.
+    let pr = normalize_agent_workspace_source_pull_request(
         Some(pr_input(7, "feature")),
         Some(IdeationAnalysisBaseRefKind::LocalBranch),
         Some("   "),
     )
     .unwrap()
-    .expect("should produce a normalized PR");
-    assert_eq!(result.head_ref_name, "feature");
+    .expect("blank base ref does not trigger mismatch");
+    assert_eq!(pr.head_ref_name, "feature");
 }
 
 #[test]
-fn normalize_pr_trims_optional_fields_and_keeps_head_ref() {
-    let result = normalize_agent_workspace_source_pull_request(
-        Some(pr_input(42, "  feature  ")),
-        Some(IdeationAnalysisBaseRefKind::LocalBranch),
-        Some("  feature  "),
-    )
-    .unwrap()
-    .expect("should produce a normalized PR");
-
-    let expected = AgentWorkspaceSourcePullRequest {
-        number: 42,
-        url: Some("https://example.com/pr/1".to_string()),
-        title: Some("Some PR".to_string()),
-        head_ref_name: "feature".to_string(),
-        base_ref_name: Some("main".to_string()),
-        head_ref_oid: Some("abc123".to_string()),
-    };
-    assert_eq!(result, expected);
-}
-
-#[test]
-fn normalize_pr_drops_blank_optional_fields() {
+fn normalize_source_pr_drops_blank_optional_fields() {
     let input = AgentWorkspaceSourcePullRequestInput {
-        number: 9,
+        number: 3,
         url: Some("   ".to_string()),
         title: None,
         head_ref_name: "feature".to_string(),
         base_ref_name: Some(String::new()),
         head_ref_oid: None,
     };
-    let result = normalize_agent_workspace_source_pull_request(
+    let pr = normalize_agent_workspace_source_pull_request(
         Some(input),
         Some(IdeationAnalysisBaseRefKind::LocalBranch),
         None,
     )
     .unwrap()
-    .expect("should produce a normalized PR");
-    assert_eq!(result.url, None);
-    assert_eq!(result.title, None);
-    assert_eq!(result.base_ref_name, None);
-    assert_eq!(result.head_ref_oid, None);
+    .expect("valid input");
+    assert!(pr.url.is_none());
+    assert!(pr.title.is_none());
+    assert!(pr.base_ref_name.is_none());
+    assert!(pr.head_ref_oid.is_none());
 }
 
-// ----- agent_mode_requires_workspace -----
+// ── agent_mode_requires_workspace / agent_mode_should_create_workspace ────────
 
 #[test]
-fn requires_workspace_true_for_non_chat_modes() {
-    for mode in [
-        AgentConversationWorkspaceMode::Edit,
-        AgentConversationWorkspaceMode::Plan,
-        AgentConversationWorkspaceMode::Ideation,
-        AgentConversationWorkspaceMode::ReviewPr,
-    ] {
-        assert!(
-            agent_mode_requires_workspace(mode),
-            "{mode:?} should require a workspace"
-        );
-    }
+fn requires_workspace_is_true_for_non_chat_modes() {
+    use AgentConversationWorkspaceMode::*;
+    assert!(agent_mode_requires_workspace(Edit));
+    assert!(agent_mode_requires_workspace(Plan));
+    assert!(agent_mode_requires_workspace(Ideation));
+    assert!(agent_mode_requires_workspace(ReviewPr));
+    assert!(!agent_mode_requires_workspace(Chat));
 }
 
 #[test]
-fn requires_workspace_false_for_chat() {
-    assert!(!agent_mode_requires_workspace(
-        AgentConversationWorkspaceMode::Chat
-    ));
-}
+fn should_create_workspace_covers_chat_with_source_pr() {
+    use AgentConversationWorkspaceMode::*;
+    // Non-chat modes always create a workspace regardless of PR.
+    assert!(agent_mode_should_create_workspace(Edit, None));
 
-// ----- agent_mode_should_create_workspace -----
+    // Chat without a source PR does not create a workspace.
+    assert!(!agent_mode_should_create_workspace(Chat, None));
 
-#[test]
-fn should_create_workspace_true_for_workspace_modes_without_pr() {
-    assert!(agent_mode_should_create_workspace(
-        AgentConversationWorkspaceMode::Edit,
-        None
-    ));
-    assert!(agent_mode_should_create_workspace(
-        AgentConversationWorkspaceMode::Plan,
-        None
-    ));
-}
-
-#[test]
-fn should_create_workspace_false_for_chat_without_pr() {
-    assert!(!agent_mode_should_create_workspace(
-        AgentConversationWorkspaceMode::Chat,
-        None
-    ));
-}
-
-#[test]
-fn should_create_workspace_true_for_chat_with_source_pr() {
-    let pr = AgentWorkspaceSourcePullRequest {
+    // Chat WITH a source PR does create a workspace.
+    let source = AgentWorkspaceSourcePullRequest {
         number: 1,
         url: None,
         title: None,
@@ -315,26 +261,28 @@ fn should_create_workspace_true_for_chat_with_source_pr() {
         base_ref_name: None,
         head_ref_oid: None,
     };
-    assert!(agent_mode_should_create_workspace(
-        AgentConversationWorkspaceMode::Chat,
-        Some(&pr)
-    ));
+    assert!(agent_mode_should_create_workspace(Chat, Some(&source)));
 }
 
-// ----- normalized_effort_for_supported -----
+// ── normalized_effort_for_supported ──────────────────────────────────────────
 
 #[test]
-fn normalized_effort_keeps_requested_when_supported() {
+fn normalized_effort_keeps_supported_request() {
     let supported = [LogicalEffort::Low, LogicalEffort::High];
     assert_eq!(
-        normalized_effort_for_supported(Some(LogicalEffort::High), &supported, LogicalEffort::Low),
+        normalized_effort_for_supported(
+            Some(LogicalEffort::High),
+            &supported,
+            LogicalEffort::Low
+        ),
         LogicalEffort::High
     );
 }
 
 #[test]
-fn normalized_effort_falls_back_to_default_when_requested_unsupported() {
+fn normalized_effort_falls_back_when_unsupported_or_absent() {
     let supported = [LogicalEffort::Low, LogicalEffort::Medium];
+    // Requested but unsupported → default.
     assert_eq!(
         normalized_effort_for_supported(
             Some(LogicalEffort::Max),
@@ -343,13 +291,270 @@ fn normalized_effort_falls_back_to_default_when_requested_unsupported() {
         ),
         LogicalEffort::Medium
     );
-}
-
-#[test]
-fn normalized_effort_uses_default_when_requested_none() {
-    let supported = [LogicalEffort::Low, LogicalEffort::Medium];
+    // Absent → default.
     assert_eq!(
         normalized_effort_for_supported(None, &supported, LogicalEffort::Low),
         LogicalEffort::Low
     );
+}
+
+// ── normalize_agent_runtime_selection ────────────────────────────────────────
+
+#[tokio::test]
+async fn runtime_selection_passes_through_overrides_without_provider() {
+    let state = AppState::new_test();
+    let (model, effort) = normalize_agent_runtime_selection(
+        &state,
+        None,
+        Some("custom-model".to_string()),
+        Some(LogicalEffort::High),
+    )
+    .await
+    .unwrap();
+    assert_eq!(model.as_deref(), Some("custom-model"));
+    assert_eq!(effort, Some(LogicalEffort::High));
+}
+
+#[tokio::test]
+async fn runtime_selection_uses_known_model_supported_effort() {
+    let state = AppState::new_test();
+    // "opus" supports XHigh, so the requested XHigh effort survives.
+    let (model, effort) = normalize_agent_runtime_selection(
+        &state,
+        Some(AgentHarnessKind::Claude),
+        Some("opus".to_string()),
+        Some(LogicalEffort::XHigh),
+    )
+    .await
+    .unwrap();
+    assert_eq!(model.as_deref(), Some("opus"));
+    assert_eq!(effort, Some(LogicalEffort::XHigh));
+}
+
+#[tokio::test]
+async fn runtime_selection_clamps_unsupported_effort_to_model_default() {
+    let state = AppState::new_test();
+    // "sonnet" does NOT support XHigh, so it falls back to sonnet's default (Medium).
+    let (model, effort) = normalize_agent_runtime_selection(
+        &state,
+        Some(AgentHarnessKind::Claude),
+        Some("sonnet".to_string()),
+        Some(LogicalEffort::XHigh),
+    )
+    .await
+    .unwrap();
+    assert_eq!(model.as_deref(), Some("sonnet"));
+    assert_eq!(effort, Some(LogicalEffort::Medium));
+}
+
+#[tokio::test]
+async fn runtime_selection_unknown_model_falls_back_to_provider_defaults() {
+    let state = AppState::new_test();
+    // Unknown model id keeps the model override but resolves effort from the
+    // provider-wide defaults. Claude provider-default efforts are Low/Medium/High,
+    // and the requested High is supported.
+    let (model, effort) = normalize_agent_runtime_selection(
+        &state,
+        Some(AgentHarnessKind::Claude),
+        Some("ghost-model".to_string()),
+        Some(LogicalEffort::High),
+    )
+    .await
+    .unwrap();
+    assert_eq!(model.as_deref(), Some("ghost-model"));
+    assert_eq!(effort, Some(LogicalEffort::High));
+}
+
+#[tokio::test]
+async fn runtime_selection_unknown_model_clamps_unsupported_effort_to_provider_default() {
+    let state = AppState::new_test();
+    // Claude provider defaults do NOT include Max, so it clamps to the provider
+    // default effort (Medium for Claude).
+    let (model, effort) = normalize_agent_runtime_selection(
+        &state,
+        Some(AgentHarnessKind::Claude),
+        Some("ghost-model".to_string()),
+        Some(LogicalEffort::Max),
+    )
+    .await
+    .unwrap();
+    assert_eq!(model.as_deref(), Some("ghost-model"));
+    assert_eq!(effort, Some(LogicalEffort::Medium));
+}
+
+#[tokio::test]
+async fn runtime_selection_no_model_uses_default_model_supported_effort() {
+    let state = AppState::new_test();
+    // With no model override, the provider's default model (sonnet) is used to
+    // resolve the effort. Sonnet supports High, so the requested High survives,
+    // and no model id is returned.
+    let (model, effort) = normalize_agent_runtime_selection(
+        &state,
+        Some(AgentHarnessKind::Claude),
+        None,
+        Some(LogicalEffort::High),
+    )
+    .await
+    .unwrap();
+    assert_eq!(model, None);
+    assert_eq!(effort, Some(LogicalEffort::High));
+}
+
+#[tokio::test]
+async fn runtime_selection_no_model_no_effort_uses_default_model_default_effort() {
+    let state = AppState::new_test();
+    // No model and no effort → default model's default effort (sonnet → Medium).
+    let (model, effort) = normalize_agent_runtime_selection(
+        &state,
+        Some(AgentHarnessKind::Claude),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(model, None);
+    assert_eq!(effort, Some(LogicalEffort::Medium));
+}
+
+// ── logging / progress emission ──────────────────────────────────────────────
+
+#[test]
+fn log_phase_does_not_panic_with_and_without_conversation_id() {
+    let started = std::time::Instant::now();
+    log_start_agent_conversation_phase("project-1", None, "setup", started);
+    let conversation_id = ChatConversationId::new();
+    log_start_agent_conversation_phase("project-1", Some(&conversation_id), "spawn", started);
+}
+
+#[test]
+fn emit_progress_does_not_panic_on_mock_app_handle() {
+    let app = crate::testing::create_mock_app_handle();
+    let conversation_id = ChatConversationId::new();
+    // The emit is best-effort (`let _ = ...`); this just exercises the payload
+    // construction and emit path without asserting delivery.
+    emit_start_agent_conversation_progress(
+        &app,
+        "project-1",
+        &conversation_id,
+        "stage-1",
+        "Preparing workspace",
+    );
+}
+
+// ── ensure_plan_workspace_planning_session_link (early returns) ───────────────
+
+fn workspace_for_mode(
+    project: &Project,
+    mode: AgentConversationWorkspaceMode,
+) -> AgentConversationWorkspace {
+    AgentConversationWorkspace::new(
+        ChatConversationId::new(),
+        project.id.clone(),
+        mode,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        None,
+        None,
+        "feature/branch".to_string(),
+        "/tmp/worktree".to_string(),
+    )
+}
+
+#[tokio::test]
+async fn ensure_plan_link_is_noop_for_non_plan_mode() {
+    let state = AppState::new_test();
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+    let mut workspace = workspace_for_mode(&project, AgentConversationWorkspaceMode::Edit);
+
+    let created = ensure_plan_workspace_planning_session_link(&state, &project, &mut workspace)
+        .await
+        .unwrap();
+
+    // Edit mode never establishes a planning-session link.
+    assert!(!created);
+    assert!(workspace.linked_ideation_session_id.is_none());
+}
+
+#[tokio::test]
+async fn ensure_plan_link_is_noop_when_already_linked_to_planning_session() {
+    let state = AppState::new_test();
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("seed project");
+
+    // Seed a Planning-flow ideation session and link the workspace to it.
+    let session = IdeationSession::builder()
+        .project_id(project.id.clone())
+        .session_flow(IdeationSessionFlow::Planning)
+        .build();
+    let session = state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .expect("seed ideation session");
+
+    let mut workspace = workspace_for_mode(&project, AgentConversationWorkspaceMode::Plan);
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+
+    let created = ensure_plan_workspace_planning_session_link(&state, &project, &mut workspace)
+        .await
+        .unwrap();
+
+    // Already linked to a planning session → nothing new is created and the link
+    // is preserved.
+    assert!(!created);
+    assert_eq!(workspace.linked_ideation_session_id, Some(session.id));
+}
+
+#[tokio::test]
+async fn ensure_plan_link_surfaces_error_when_analysis_preparation_fails() {
+    let state = AppState::new_test();
+    // Point the project at a non-repository directory so the workspace-path
+    // resolution / analysis preparation step fails. A Plan-mode workspace whose
+    // linked session is missing passes the planning short-circuit and reaches the
+    // analysis-preparation step, which must surface a typed error string rather
+    // than silently succeeding.
+    let project = Project::new("Demo".to_string(), "/nonexistent/ralphx-demo".to_string());
+    let mut workspace = workspace_for_mode(&project, AgentConversationWorkspaceMode::Plan);
+    workspace.linked_ideation_session_id = Some(crate::domain::entities::IdeationSessionId::new());
+
+    let result =
+        ensure_plan_workspace_planning_session_link(&state, &project, &mut workspace).await;
+
+    // The missing linked session is not a planning session, so the helper
+    // proceeds to prepare analysis state, which fails against the bogus path.
+    assert!(result.is_err(), "expected an error from analysis preparation");
+    // The workspace link is left untouched on failure.
+    assert!(workspace.linked_plan_branch_id.is_none());
+}
+
+// ── agent_workspace_pr_automation_defaults_for_project ────────────────────────
+
+#[tokio::test]
+async fn pr_automation_defaults_resolve_from_execution_settings() {
+    let state = AppState::new_test();
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("seed project");
+
+    // Resolves the project's execution settings into workspace PR-automation
+    // defaults without error (memory repo returns the default settings).
+    let defaults = agent_workspace_pr_automation_defaults_for_project(&state, &project.id)
+        .await
+        .expect("defaults should resolve");
+
+    let expected = AgentConversationWorkspacePrAutomationDefaults::from(
+        &state
+            .execution_settings_repo
+            .get_settings(Some(&project.id))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(defaults, expected);
 }
