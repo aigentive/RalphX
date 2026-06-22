@@ -1337,4 +1337,62 @@ mod tests {
         assert_eq!(rows[1].conversation.id, priority.id.as_str());
         assert_eq!(rows[2].conversation.id, unpinned.id.as_str());
     }
+
+    #[test]
+    fn publication_state_for_workspace_no_workspace_failed_run_is_closed() {
+        assert_eq!(
+            publication_state_for_workspace(None, Some(AgentRunStatus::Failed)),
+            SidebarPublicationState::Closed
+        );
+    }
+
+    #[test]
+    fn publication_state_for_workspace_no_workspace_cancelled_run_is_closed() {
+        assert_eq!(
+            publication_state_for_workspace(None, Some(AgentRunStatus::Cancelled)),
+            SidebarPublicationState::Closed
+        );
+    }
+
+    #[test]
+    fn publication_state_for_workspace_no_workspace_running_run_is_active() {
+        // A non-terminal latest run (or no run) must not flip an unpublished
+        // workspace-less conversation to Closed.
+        assert_eq!(
+            publication_state_for_workspace(None, Some(AgentRunStatus::Running)),
+            SidebarPublicationState::Active
+        );
+        assert_eq!(
+            publication_state_for_workspace(None, None),
+            SidebarPublicationState::Active
+        );
+    }
+
+    #[test]
+    fn publication_state_from_domain_no_workspace_failed_run_is_closed() {
+        assert_eq!(
+            publication_state_from_domain(None, Some(AgentRunStatus::Failed)),
+            SidebarPublicationState::Closed
+        );
+    }
+
+    #[test]
+    fn publication_state_from_domain_no_workspace_cancelled_run_is_closed() {
+        assert_eq!(
+            publication_state_from_domain(None, Some(AgentRunStatus::Cancelled)),
+            SidebarPublicationState::Closed
+        );
+    }
+
+    #[test]
+    fn publication_state_from_domain_no_workspace_running_run_is_active() {
+        assert_eq!(
+            publication_state_from_domain(None, Some(AgentRunStatus::Running)),
+            SidebarPublicationState::Active
+        );
+        assert_eq!(
+            publication_state_from_domain(None, None),
+            SidebarPublicationState::Active
+        );
+    }
 }
