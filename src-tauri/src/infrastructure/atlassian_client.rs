@@ -15,7 +15,7 @@ use crate::application::{
     AtlassianJiraAttachment, AtlassianJiraComment, AtlassianJiraTransition,
     AtlassianOAuthResource,
     AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
-    AtlassianResourceSummary,
+    AtlassianResourceSummary, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
 };
 use crate::domain::services::ComposerIntegrationReference;
 
@@ -268,6 +268,31 @@ impl AtlassianApiClient for HyperAtlassianApiClient {
         labels: Vec<String>,
     ) -> Result<(), String> {
         set_jira_issue_labels(self, auth, issue_key, labels).await
+    }
+
+    async fn list_jira_projects(
+        &self,
+        auth: &AtlassianAuthContext,
+        limit: usize,
+    ) -> Result<Vec<JiraProjectSummary>, String> {
+        list_jira_projects(self, auth, limit).await
+    }
+
+    async fn list_jira_project_statuses(
+        &self,
+        auth: &AtlassianAuthContext,
+        project_key: &str,
+    ) -> Result<Vec<JiraStatusSummary>, String> {
+        list_jira_project_statuses(self, auth, project_key).await
+    }
+
+    async fn list_jira_project_issues(
+        &self,
+        auth: &AtlassianAuthContext,
+        project_key: &str,
+        limit: usize,
+    ) -> Result<Vec<JiraIssueDetail>, String> {
+        search_jira_by_project(self, auth, project_key, limit).await
     }
 
     async fn exchange_oauth_code(
@@ -1003,6 +1028,241 @@ pub(crate) async fn add_jira_comment<C: AtlassianJsonRequester + ?Sized>(
         .await?;
     jira_comment_from_value(&value).ok_or_else(|| {
         "Jira comment response did not include a readable created comment".to_string()
+    })
+}
+
+/// List Jira projects used as ticketing containers. Single page (`limit`) ordered
+/// by name — sufficient for v1, no offset pagination loop.
+pub(crate) async fn list_jira_projects<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    limit: usize,
+) -> Result<Vec<JiraProjectSummary>, String> {
+    let value = client
+        .request_json(
+            Method::GET,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                &format!("/rest/api/3/project/search?maxResults={limit}&orderBy=name"),
+            ),
+            request_auth(auth),
+            None,
+        )
+        .await?;
+    Ok(value
+        .get("values")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(jira_project_from_value)
+        .take(limit)
+        .collect())
+}
+
+fn jira_project_from_value(project: &Value) -> Option<JiraProjectSummary> {
+    let key = project.get("key").and_then(Value::as_str)?.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let id = project
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| key.to_string());
+    let name = project
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(key)
+        .to_string();
+    Some(JiraProjectSummary {
+        id,
+        key: key.to_string(),
+        name,
+    })
+}
+
+/// List the statuses available for a project, flattened across all issue types
+/// and deduped by status id. Uses the non-admin `project/{key}/statuses` endpoint
+/// (the `/statuses/search` variant needs admin).
+pub(crate) async fn list_jira_project_statuses<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    project_key: &str,
+) -> Result<Vec<JiraStatusSummary>, String> {
+    let project_key = required_trimmed(project_key, "Jira project key is required")?;
+    let value = client
+        .request_json(
+            Method::GET,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                &format!(
+                    "/rest/api/3/project/{}/statuses",
+                    percent_encode_path_segment(project_key)
+                ),
+            ),
+            request_auth(auth),
+            None,
+        )
+        .await?;
+    Ok(jira_project_statuses_from_value(&value))
+}
+
+/// Flatten the `[ { statuses: [ { id, name, statusCategory } ] } ]` issue-type
+/// grouping into a deduped status list (first occurrence of each id wins),
+/// mapping each status to a normalized category via [`jira_status_category`].
+fn jira_project_statuses_from_value(value: &Value) -> Vec<JiraStatusSummary> {
+    let mut seen = std::collections::HashSet::new();
+    let mut statuses = Vec::new();
+    for issue_type in value.as_array().into_iter().flatten() {
+        for status in issue_type
+            .get("statuses")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(id) = status.get("id").and_then(Value::as_str).map(str::trim) else {
+                continue;
+            };
+            if id.is_empty() || !seen.insert(id.to_string()) {
+                continue;
+            }
+            let name = status
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(id)
+                .to_string();
+            statuses.push(JiraStatusSummary {
+                category: jira_status_category(status, &name),
+                id: id.to_string(),
+                name,
+            });
+        }
+    }
+    statuses
+}
+
+/// Build the JQL used to list a project's issues for kanban browse:
+/// `project = "<escaped>" ORDER BY updated DESC`. Status filtering stays
+/// client-side (kanban columns), so no status clause is needed for v1.
+pub(crate) fn build_jira_project_jql(project_key: &str) -> String {
+    format!(
+        "project = \"{}\" ORDER BY updated DESC",
+        escape_search_string(project_key)
+    )
+}
+
+/// Fetch a project's issues (single page) with the richer field set needed for
+/// kanban columns and the ticket list. Reuses the `/rest/api/3/search/jql`
+/// endpoint/body shape from [`search_jira_with_jql`].
+pub(crate) async fn search_jira_by_project<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    project_key: &str,
+    limit: usize,
+) -> Result<Vec<JiraIssueDetail>, String> {
+    let project_key = required_trimmed(project_key, "Jira project key is required")?;
+    let jql = build_jira_project_jql(project_key);
+    let value = client
+        .request_json(
+            Method::POST,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                "/rest/api/3/search/jql",
+            ),
+            request_auth(auth),
+            Some(serde_json::json!({
+                "jql": jql,
+                "fields": ["summary", "status", "assignee", "labels", "updated", "priority"],
+                "maxResults": limit,
+            })),
+        )
+        .await?;
+    let site_url = &auth.site_url;
+    Ok(value
+        .get("issues")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|issue| jira_ticket_from_issue_value(issue, site_url))
+        .take(limit)
+        .collect())
+}
+
+/// Parse a Jira issue payload into a [`JiraIssueDetail`], preserving the
+/// status/assignee/labels/updated/priority the kanban + ticket list require
+/// (the existing `jira_summary_from_issue_value` is too lossy — it only keeps
+/// id/key/title and drops status).
+fn jira_ticket_from_issue_value(issue: &Value, site_url: &str) -> Option<JiraIssueDetail> {
+    let key = issue.get("key").and_then(Value::as_str)?.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let fields = issue.get("fields").unwrap_or(&Value::Null);
+    let title = fields
+        .get("summary")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(key)
+        .to_string();
+    let status = fields.get("status");
+    let status_id = status
+        .and_then(|status| status.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let status_name = status
+        .and_then(|status| status.get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let status_category = status.map(|status| {
+        jira_status_category(status, status_name.as_deref().unwrap_or_default())
+    });
+    let assignee = fields.get("assignee").filter(|value| !value.is_null());
+    let assignee_name = jira_user_display_name(assignee);
+    let assignee_avatar = assignee
+        .and_then(|user| user.get("avatarUrls"))
+        .and_then(|avatars| avatars.get("48x48").or_else(|| avatars.get("24x24")))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let labels = fields
+        .get("labels")
+        .and_then(Value::as_array)
+        .map(|labels| {
+            labels
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let updated = fields
+        .get("updated")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let priority = fields
+        .get("priority")
+        .and_then(|priority| priority.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    Some(JiraIssueDetail {
+        key: key.to_string(),
+        title,
+        status_id,
+        status_name,
+        status_category,
+        assignee_name,
+        assignee_avatar,
+        labels,
+        updated,
+        priority,
+        url: Some(format!("{site_url}/browse/{key}")),
     })
 }
 
@@ -1984,5 +2244,244 @@ mod tests {
             error.contains("did not include a readable created comment"),
             "unexpected error: {error}"
         );
+    }
+
+    // ---- build_jira_project_jql ---------------------------------------------
+
+    #[test]
+    fn build_jira_project_jql_quotes_and_orders_by_updated() {
+        assert_eq!(
+            build_jira_project_jql("RX"),
+            "project = \"RX\" ORDER BY updated DESC"
+        );
+    }
+
+    #[test]
+    fn build_jira_project_jql_escapes_quotes_and_backslashes() {
+        // A project key with a quote/backslash must be escaped so the JQL stays
+        // well-formed (reuses escape_search_string).
+        assert_eq!(
+            build_jira_project_jql("a\"b\\c"),
+            "project = \"a\\\"b\\\\c\" ORDER BY updated DESC"
+        );
+    }
+
+    // ---- list_jira_projects parsing -----------------------------------------
+
+    #[tokio::test]
+    async fn list_jira_projects_parses_values_and_requests_search_endpoint() {
+        let response = serde_json::json!({
+            "values": [
+                { "id": "10000", "key": "RX", "name": "RalphX" },
+                { "id": "10001", "key": "OPS", "name": "Operations" },
+                // Malformed: no key → filtered out.
+                { "id": "10002", "name": "No Key" }
+            ]
+        });
+        let requester = FakeRequester::with_response(response);
+        let projects = list_jira_projects(&requester, &api_token_auth(), 100)
+            .await
+            .expect("projects should parse");
+
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].id, "10000");
+        assert_eq!(projects[0].key, "RX");
+        assert_eq!(projects[0].name, "RalphX");
+        assert_eq!(projects[1].key, "OPS");
+
+        let recorded = requester.recorded();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].method, Method::GET);
+        assert!(recorded[0].url.contains("/rest/api/3/project/search"));
+        assert!(recorded[0].url.contains("maxResults=100"));
+    }
+
+    #[tokio::test]
+    async fn list_jira_projects_returns_empty_when_values_absent() {
+        let requester = FakeRequester::with_response(serde_json::json!({}));
+        let projects = list_jira_projects(&requester, &api_token_auth(), 100)
+            .await
+            .expect("missing values is treated as empty");
+        assert!(projects.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_jira_projects_falls_back_to_key_when_id_or_name_missing() {
+        let response = serde_json::json!({ "values": [ { "key": "RX" } ] });
+        let requester = FakeRequester::with_response(response);
+        let projects = list_jira_projects(&requester, &api_token_auth(), 100)
+            .await
+            .expect("projects should parse");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].id, "RX");
+        assert_eq!(projects[0].key, "RX");
+        assert_eq!(projects[0].name, "RX");
+    }
+
+    // ---- list_jira_project_statuses flatten + dedupe ------------------------
+
+    #[tokio::test]
+    async fn list_jira_project_statuses_flattens_dedupes_and_maps_category() {
+        // Two issue types share "To Do" (id 1); it must appear once. Categories
+        // are mapped via the existing jira_status_category helper.
+        let response = serde_json::json!([
+            {
+                "name": "Story",
+                "statuses": [
+                    { "id": "1", "name": "To Do", "statusCategory": { "key": "new" } },
+                    { "id": "3", "name": "In Progress", "statusCategory": { "key": "indeterminate" } }
+                ]
+            },
+            {
+                "name": "Bug",
+                "statuses": [
+                    { "id": "1", "name": "To Do", "statusCategory": { "key": "new" } },
+                    { "id": "5", "name": "Done", "statusCategory": { "key": "done" } }
+                ]
+            }
+        ]);
+        let requester = FakeRequester::with_response(response);
+        let statuses = list_jira_project_statuses(&requester, &api_token_auth(), "RX")
+            .await
+            .expect("statuses should parse");
+
+        assert_eq!(statuses.len(), 3, "duplicate status id should be deduped");
+        assert_eq!(statuses[0].id, "1");
+        assert_eq!(statuses[0].name, "To Do");
+        assert_eq!(statuses[0].category, "todo");
+        assert_eq!(statuses[1].id, "3");
+        assert_eq!(statuses[1].category, "in_progress");
+        assert_eq!(statuses[2].id, "5");
+        assert_eq!(statuses[2].category, "done");
+
+        let recorded = requester.recorded();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].method, Method::GET);
+        assert!(recorded[0].url.contains("/rest/api/3/project/RX/statuses"));
+    }
+
+    #[tokio::test]
+    async fn list_jira_project_statuses_returns_empty_for_empty_array() {
+        let requester = FakeRequester::with_response(serde_json::json!([]));
+        let statuses = list_jira_project_statuses(&requester, &api_token_auth(), "RX")
+            .await
+            .expect("empty array is treated as empty");
+        assert!(statuses.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_jira_project_statuses_rejects_empty_project_key() {
+        let requester = FakeRequester::with_response(Value::Null);
+        let error = list_jira_project_statuses(&requester, &api_token_auth(), "  ")
+            .await
+            .unwrap_err();
+        assert_eq!(error, "Jira project key is required");
+        assert!(requester.recorded().is_empty(), "no request should be sent");
+    }
+
+    // ---- search_jira_by_project parsing + body ------------------------------
+
+    #[tokio::test]
+    async fn search_jira_by_project_parses_full_issue_fields() {
+        let response = serde_json::json!({
+            "issues": [
+                {
+                    "key": "RX-1",
+                    "fields": {
+                        "summary": "Fix merge race",
+                        "status": {
+                            "id": "3",
+                            "name": "In Progress",
+                            "statusCategory": { "key": "indeterminate" }
+                        },
+                        "assignee": {
+                            "displayName": "A. Dev",
+                            "avatarUrls": { "48x48": "https://avatar/48" }
+                        },
+                        "labels": ["backend", "urgent"],
+                        "updated": "2026-06-20T10:00:00.000+0000",
+                        "priority": { "name": "High" }
+                    }
+                }
+            ]
+        });
+        let requester = FakeRequester::with_response(response);
+        let issues = search_jira_by_project(&requester, &api_token_auth(), "RX", 40)
+            .await
+            .expect("issues should parse");
+
+        assert_eq!(issues.len(), 1);
+        let issue = &issues[0];
+        assert_eq!(issue.key, "RX-1");
+        assert_eq!(issue.title, "Fix merge race");
+        assert_eq!(issue.status_id.as_deref(), Some("3"));
+        assert_eq!(issue.status_name.as_deref(), Some("In Progress"));
+        assert_eq!(issue.status_category.as_deref(), Some("in_progress"));
+        assert_eq!(issue.assignee_name.as_deref(), Some("A. Dev"));
+        assert_eq!(issue.assignee_avatar.as_deref(), Some("https://avatar/48"));
+        assert_eq!(issue.labels, vec!["backend", "urgent"]);
+        assert_eq!(issue.updated.as_deref(), Some("2026-06-20T10:00:00.000+0000"));
+        assert_eq!(issue.priority.as_deref(), Some("High"));
+        assert_eq!(
+            issue.url.as_deref(),
+            Some("https://example.atlassian.net/browse/RX-1")
+        );
+
+        let recorded = requester.recorded();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].method, Method::POST);
+        assert!(recorded[0].url.contains("/rest/api/3/search/jql"));
+        let body = recorded[0].body.as_ref().expect("request body");
+        assert_eq!(body["jql"], "project = \"RX\" ORDER BY updated DESC");
+        assert_eq!(body["maxResults"], 40);
+        let fields = body["fields"].as_array().expect("fields array");
+        assert!(fields.iter().any(|field| field == "status"));
+        assert!(fields.iter().any(|field| field == "assignee"));
+    }
+
+    #[tokio::test]
+    async fn search_jira_by_project_tolerates_missing_fields() {
+        // Only the key is present; everything else is None/empty.
+        let response = serde_json::json!({ "issues": [ { "key": "RX-2" } ] });
+        let requester = FakeRequester::with_response(response);
+        let issues = search_jira_by_project(&requester, &api_token_auth(), "RX", 40)
+            .await
+            .expect("issues should parse");
+
+        assert_eq!(issues.len(), 1);
+        let issue = &issues[0];
+        assert_eq!(issue.key, "RX-2");
+        assert_eq!(issue.title, "RX-2", "title falls back to key");
+        assert!(issue.status_id.is_none());
+        assert!(issue.status_category.is_none());
+        assert!(issue.assignee_name.is_none());
+        assert!(issue.labels.is_empty());
+        assert!(issue.priority.is_none());
+    }
+
+    #[tokio::test]
+    async fn search_jira_by_project_filters_issues_without_key() {
+        let response = serde_json::json!({
+            "issues": [
+                { "fields": { "summary": "No key" } },
+                { "key": "RX-3", "fields": { "summary": "Has key" } }
+            ]
+        });
+        let requester = FakeRequester::with_response(response);
+        let issues = search_jira_by_project(&requester, &api_token_auth(), "RX", 40)
+            .await
+            .expect("issues should parse");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].key, "RX-3");
+    }
+
+    #[tokio::test]
+    async fn search_jira_by_project_rejects_empty_project_key() {
+        let requester = FakeRequester::with_response(Value::Null);
+        let error = search_jira_by_project(&requester, &api_token_auth(), "", 40)
+            .await
+            .unwrap_err();
+        assert_eq!(error, "Jira project key is required");
+        assert!(requester.recorded().is_empty(), "no request should be sent");
     }
 }

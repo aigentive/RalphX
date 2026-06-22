@@ -101,6 +101,44 @@ pub struct AtlassianJiraTransition {
     pub category: String,
 }
 
+/// Lightweight summary of a Jira project used as a ticketing container.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraProjectSummary {
+    pub id: String,
+    pub key: String,
+    pub name: String,
+}
+
+/// A Jira status (deduped across issue types) with a normalized category, used to
+/// build kanban columns for a selected project.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraStatusSummary {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+}
+
+/// Project-scoped Jira issue detail preserving the status/assignee/labels needed
+/// to render kanban columns and the ticket list (richer than the lossy
+/// search-summary shape, which only keeps id/key/title).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraIssueDetail {
+    pub key: String,
+    pub title: String,
+    pub status_id: Option<String>,
+    pub status_name: Option<String>,
+    pub status_category: Option<String>,
+    pub assignee_name: Option<String>,
+    pub assignee_avatar: Option<String>,
+    pub labels: Vec<String>,
+    pub updated: Option<String>,
+    pub priority: Option<String>,
+    pub url: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AtlassianResourceContent {
@@ -248,6 +286,31 @@ pub trait AtlassianApiClient: Send + Sync {
         _labels: Vec<String>,
     ) -> Result<(), String> {
         Err("Jira label writes are not available for this client".to_string())
+    }
+
+    async fn list_jira_projects(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _limit: usize,
+    ) -> Result<Vec<JiraProjectSummary>, String> {
+        Err("Jira project enumeration is not available for this client".to_string())
+    }
+
+    async fn list_jira_project_statuses(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _project_key: &str,
+    ) -> Result<Vec<JiraStatusSummary>, String> {
+        Err("Jira project statuses are not available for this client".to_string())
+    }
+
+    async fn list_jira_project_issues(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _project_key: &str,
+        _limit: usize,
+    ) -> Result<Vec<JiraIssueDetail>, String> {
+        Err("Jira project issues are not available for this client".to_string())
     }
 
     async fn exchange_oauth_code(
@@ -916,6 +979,35 @@ impl AtlassianIntegrationService {
         let auth = self.enabled_auth_context().await?;
         self.client
             .set_jira_issue_labels(&auth, issue_key, labels)
+            .await
+    }
+
+    pub async fn list_jira_projects(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<JiraProjectSummary>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_jira_projects(&auth, limit).await
+    }
+
+    pub async fn list_jira_project_statuses(
+        &self,
+        project_key: &str,
+    ) -> Result<Vec<JiraStatusSummary>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .list_jira_project_statuses(&auth, project_key)
+            .await
+    }
+
+    pub async fn list_jira_project_issues(
+        &self,
+        project_key: &str,
+        limit: usize,
+    ) -> Result<Vec<JiraIssueDetail>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .list_jira_project_issues(&auth, project_key, limit)
             .await
     }
 

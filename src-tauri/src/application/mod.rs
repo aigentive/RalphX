@@ -132,7 +132,8 @@ pub use atlassian_integration_service::{
     AtlassianJiraTransition, AtlassianOAuthAuthorization, AtlassianOAuthResource,
     AtlassianOAuthTokenResponse,
     AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
-    EmptyAtlassianApiClient, UnavailableAtlassianApiClient,
+    EmptyAtlassianApiClient, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
+    UnavailableAtlassianApiClient,
 };
 pub use chat_attachment_service::ChatAttachmentService;
 pub use agent_terminal::AgentTerminalService;
