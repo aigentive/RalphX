@@ -563,7 +563,8 @@ test.describe("Task Chat Replay", () => {
     });
 
     await expect(page.getByText("I am checking the merge target now.")).toHaveCount(1);
-    await expect(page.locator('[data-testid="merge-widget-target"]')).toHaveCount(1);
+    await expect(panel.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
+    await expect(page.locator('[data-testid="merge-widget-target"]')).toHaveCount(0);
 
     await emitChatEvent(page, "agent:message_created", {
       conversation_id: mergeContractConversationId,
@@ -618,7 +619,8 @@ test.describe("Task Chat Replay", () => {
     });
 
     await expect(page.getByText("I am reading the message renderer now.")).toHaveCount(1);
-    await expect(page.getByText("frontend/src/components/Chat/MessageItem.tsx")).toHaveCount(1);
+    await expect(panel.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
+    await expect(page.getByText("frontend/src/components/Chat/MessageItem.tsx")).toHaveCount(0);
 
     await emitChatEvent(page, "agent:message_created", {
       conversation_id: executionContractConversationId,
@@ -680,7 +682,8 @@ test.describe("Task Chat Replay", () => {
     });
 
     await expect(page.getByText("I am completing the review now.")).toHaveCount(1);
-    await expect(page.locator('[data-testid="review-widget-complete"]')).toHaveCount(1);
+    await expect(panel.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
+    await expect(page.locator('[data-testid="review-widget-complete"]')).toHaveCount(0);
 
     await emitChatEvent(page, "agent:message_created", {
       conversation_id: reviewContractConversationId,
