@@ -566,6 +566,67 @@ mod pr_comment_evidence_tests {
     }
 }
 
+#[cfg(test)]
+mod is_open_pr_tests {
+    use super::{
+        is_open_pr, AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
+        IdeationAnalysisBaseRefKind, ProjectId,
+    };
+
+    #[test]
+    fn no_pr_number_is_not_open() {
+        // No PR number → never open, regardless of status.
+        assert!(!is_open_pr(None, None));
+        assert!(!is_open_pr(None, Some("open")));
+        assert!(!is_open_pr(None, Some("draft")));
+    }
+
+    #[test]
+    fn terminal_status_is_not_open() {
+        assert!(!is_open_pr(Some(42), Some("merged")));
+        assert!(!is_open_pr(Some(42), Some("closed")));
+    }
+
+    #[test]
+    fn non_terminal_status_with_number_is_open() {
+        assert!(is_open_pr(Some(42), Some("draft")));
+        assert!(is_open_pr(Some(42), Some("open")));
+        // An unknown / not-yet-known status with a PR number is treated as open.
+        assert!(is_open_pr(Some(42), None));
+        assert!(is_open_pr(Some(42), Some("queued")));
+    }
+
+    fn workspace_with_pr(
+        publication_pr_number: Option<i64>,
+        publication_pr_status: Option<&str>,
+    ) -> AgentConversationWorkspace {
+        let mut workspace = AgentConversationWorkspace::new(
+            ChatConversationId::new(),
+            ProjectId("project-1".to_string()),
+            AgentConversationWorkspaceMode::Chat,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            None,
+            None,
+            "feature/branch".to_string(),
+            "/tmp/worktree".to_string(),
+        );
+        workspace.publication_pr_number = publication_pr_number;
+        workspace.publication_pr_status = publication_pr_status.map(str::to_string);
+        workspace
+    }
+
+    #[test]
+    fn has_open_pr_delegates_to_is_open_pr() {
+        assert!(!workspace_with_pr(None, None).has_open_pr());
+        assert!(!workspace_with_pr(Some(7), Some("merged")).has_open_pr());
+        assert!(!workspace_with_pr(Some(7), Some("closed")).has_open_pr());
+        assert!(workspace_with_pr(Some(7), Some("open")).has_open_pr());
+        assert!(workspace_with_pr(Some(7), Some("draft")).has_open_pr());
+        assert!(workspace_with_pr(Some(7), None).has_open_pr());
+    }
+}
+
 impl AgentConversationWorkspacePublicationEvent {
     pub fn new(
         conversation_id: ChatConversationId,
