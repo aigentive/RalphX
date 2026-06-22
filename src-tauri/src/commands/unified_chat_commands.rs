@@ -11305,7 +11305,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_workspace_from_base_rejects_running_conversation() {
+    async fn update_workspace_from_base_running_conversation_does_not_stick_refreshing() {
         let (_temp, state, conversation_id, _github) = setup_publish_command_state(
             "update-running-conversation",
             true,
@@ -11332,7 +11332,7 @@ mod tests {
             )
             .await;
 
-        let error = update_agent_conversation_workspace_from_base_for_app_state(
+        let result = update_agent_conversation_workspace_from_base_for_app_state(
             &state,
             &execution_state,
             Some(team_service),
@@ -11345,12 +11345,9 @@ mod tests {
             },
         )
         .await
-        .expect_err("running conversation should reject workspace base update");
+        .expect("running conversation should allow workspace base update");
 
-        assert_eq!(
-            error,
-            "Cannot change workspace base while the agent is responding"
-        );
+        assert_eq!(result.workspace.conversation_id, conversation_id.as_str());
         let stored = state
             .agent_conversation_workspace_repo
             .get_by_conversation_id(&conversation_id)
