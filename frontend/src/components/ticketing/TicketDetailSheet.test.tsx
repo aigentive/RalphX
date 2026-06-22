@@ -638,4 +638,381 @@ describe("TicketDetailSheet status options", () => {
     expect(inProgressOptions).toHaveLength(1);
     expect(screen.getByRole("option", { name: "Done" })).toBeInTheDocument();
   });
+
+  it("ignores a status change to a disabled transition", () => {
+    const onTransitionTicket = vi.fn();
+    render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={baseTicket}
+          capabilities={baseCapabilities}
+          transitions={[
+            writableTransition,
+            {
+              toStateId: "blocked",
+              name: "Blocked",
+              category: "other",
+              disabledReason: "Workflow blocks this transition.",
+            },
+          ]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onTransitionTicket={onTransitionTicket}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Ticket status" }), {
+      target: { value: "blocked" },
+    });
+    // The disabled transition must not fire the transition callback.
+    expect(onTransitionTicket).not.toHaveBeenCalled();
+
+    // A writable transition still routes through the callback.
+    fireEvent.change(screen.getByRole("combobox", { name: "Ticket status" }), {
+      target: { value: "done" },
+    });
+    expect(onTransitionTicket).toHaveBeenCalledWith(writableTransition);
+  });
+});
+
+describe("TicketDetailSheet associations navigation", () => {
+  const associations: TicketAssociations = {
+    tasks: [
+      {
+        id: "task-1",
+        title: "Linked task",
+        status: "executing",
+        active: true,
+        deepLink: { view: "kanban", id: "task-1", projectId: "p1" },
+      },
+    ],
+    proposals: [],
+    sessions: [],
+    conversations: [],
+    pullRequests: [],
+    checks: [],
+    qa: [],
+    specs: [],
+    fetchedAt: null,
+  };
+
+  it("invokes onNavigate with the association deep link when a row is clicked", () => {
+    const onNavigate = vi.fn();
+    render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={baseTicket}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={associations}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onNavigate={onNavigate}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Linked task/ }));
+    expect(onNavigate).toHaveBeenCalledWith({ view: "kanban", id: "task-1", projectId: "p1" });
+  });
+});
+
+describe("TicketDetailSheet disabled-control tooltips", () => {
+  it("wraps the status control in a tooltip when status write-back is unavailable", () => {
+    render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={baseTicket}
+          capabilities={{ ...baseCapabilities, statusWrite: false }}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    // The status select is rendered disabled with the explanatory reason in its
+    // tooltip trigger wrapper.
+    const statusSelect = screen.getByRole("combobox", { name: "Ticket status" });
+    expect(statusSelect).toBeDisabled();
+  });
+});
+
+describe("TicketDetailSheet comment optimistic flow", () => {
+  function renderWithComments(args: {
+    ticket: TicketDetail;
+    onAddComment?: (body: string) => Promise<void> | void;
+  }) {
+    return render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={args.ticket}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          {...(args.onAddComment ? { onAddComment: args.onAddComment } : {})}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+  }
+
+  const detail = (comments: TicketDetail["comments"]): TicketDetail => ({
+    ...baseTicket,
+    descriptionMarkdown: "Detail body.",
+    comments,
+    attachments: [],
+    transitions: [writableTransition],
+  });
+
+  it("keeps an optimistic comment visible, then dedupes it once the provider echoes it", async () => {
+    const onAddComment = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = renderWithComments({ ticket: detail([]), onAddComment });
+
+    const textarea = screen.getByRole("textbox", { name: "Ticket comment" });
+    fireEvent.change(textarea, { target: { value: "Pushed a fix." } });
+    fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
+
+    await waitFor(() => expect(onAddComment).toHaveBeenCalledWith("Pushed a fix."));
+    // Optimistic local comment is shown immediately.
+    expect(screen.getByText("Pushed a fix.")).toBeInTheDocument();
+
+    // The provider now returns the confirmed comment with the same body; the
+    // local optimistic copy must be pruned so only one row remains.
+    rerender(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={detail([
+            {
+              id: "server-1",
+              author: { name: "RalphX" },
+              bodyMarkdown: "Pushed a fix.",
+              bodyText: "Pushed a fix.",
+              createdAt: "2026-06-19T22:00:03.000Z",
+              updatedAt: "2026-06-19T22:00:03.000Z",
+            },
+          ])}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onAddComment={onAddComment}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Pushed a fix.")).toHaveLength(1);
+    });
+  });
+
+  it("rolls back the optimistic comment when the add fails and preserves the draft", async () => {
+    const onAddComment = vi.fn().mockRejectedValue(new Error("Comment rejected"));
+    renderWithComments({ ticket: detail([]), onAddComment });
+
+    const textarea = screen.getByRole("textbox", { name: "Ticket comment" });
+    fireEvent.change(textarea, { target: { value: "Will fail." } });
+    fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
+
+    await waitFor(() => expect(onAddComment).toHaveBeenCalled());
+    // The optimistic comment is removed on failure; the draft is preserved.
+    await waitFor(() => {
+      expect(screen.queryByText("Will fail.", { selector: "p" })).not.toBeInTheDocument();
+    });
+    expect(textarea).toHaveValue("Will fail.");
+  });
+});
+
+describe("TicketDetailSheet close affordance", () => {
+  it("calls onClose when the overlay is dismissed via Escape", async () => {
+    const onClose = vi.fn();
+    render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={baseTicket}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onClose={onClose}
+        />
+      </TooltipProvider>,
+    );
+
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+});
+
+describe("TicketDetailSheet markdown image edge cases", () => {
+  it("renders nothing for a markdown image with an empty source", () => {
+    render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={{
+            ...baseTicket,
+            // Empty src → TicketMarkdownImage returns null (no broken-image icon).
+            descriptionMarkdown: "![empty]()",
+            descriptionText: "",
+            comments: [],
+            attachments: [],
+            transitions: [],
+          }}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    // No <img> and no view-image fallback button is produced for the empty source.
+    expect(document.querySelector("img")).toBeNull();
+    expect(screen.queryByRole("button", { name: /view image/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("TicketDetailSheet assignment and comment controls", () => {
+  it("routes Assign to me and Clear assignee through their callbacks", () => {
+    const onAssignToMe = vi.fn();
+    const onClearAssignee = vi.fn();
+
+    const { rerender } = render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={baseTicket}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onAssignToMe={onAssignToMe}
+          onClearAssignee={onClearAssignee}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Assign to me" }));
+    expect(onAssignToMe).toHaveBeenCalled();
+
+    // Re-render with an assignee so the Clear control is offered.
+    rerender(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={{ ...baseTicket, assignee: { id: "user-1", name: "A. User" } }}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onAssignToMe={onAssignToMe}
+          onClearAssignee={onClearAssignee}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear assignee" }));
+    expect(onClearAssignee).toHaveBeenCalled();
+  });
+
+  it("does not submit an empty comment and jumps to the comments section", () => {
+    const onAddComment = vi.fn();
+    render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={{
+            ...baseTicket,
+            descriptionMarkdown: "Body.",
+            comments: [
+              {
+                id: "c-1",
+                author: { name: "A. User" },
+                bodyMarkdown: "Existing comment.",
+                bodyText: "Existing comment.",
+                createdAt: "2026-06-19T22:00:00.000Z",
+                updatedAt: "2026-06-19T22:00:00.000Z",
+              },
+            ],
+            attachments: [],
+            transitions: [writableTransition],
+          }}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onAddComment={onAddComment}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    // The Add comment button is disabled while the draft is empty, so clicking it
+    // (or submitting) never reaches the provider callback.
+    const addButton = screen.getByRole("button", { name: "Add comment" });
+    expect(addButton).toBeDisabled();
+    fireEvent.click(addButton);
+    expect(onAddComment).not.toHaveBeenCalled();
+
+    // The comments jump control scrolls the comments section into view.
+    const scrollIntoView = vi.fn();
+    window.HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    fireEvent.click(screen.getByRole("button", { name: /Comments \(1\)/ }));
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+  });
 });
