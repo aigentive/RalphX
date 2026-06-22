@@ -1,12 +1,14 @@
 import { useMemo } from "react";
 import {
   CheckCircle2,
+  ExternalLink,
   GitPullRequestArrow,
   Loader2,
   MessageSquare,
   ShieldCheck,
   XCircle,
 } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -146,6 +148,9 @@ export function AgentWorkspacePrReviewCard({
       toast.error(
         err instanceof Error ? err.message : "Failed to submit PR review",
       );
+      void queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.prReview(conversationId),
+      });
     },
   });
 
@@ -238,6 +243,7 @@ export function AgentWorkspacePrReviewCard({
   const isSubmitBlockedByMissingReviewArtifact = Boolean(
     pendingAction && !hasReviewArtifactForPendingAction,
   );
+  const submitFailureMessage = pendingAction ? context.monitor?.lastError : null;
 
   return (
     <section
@@ -273,11 +279,25 @@ export function AgentWorkspacePrReviewCard({
             {copy?.title ?? "Review PR monitor"}
           </div>
           <div
-            className="truncate text-[0.72rem]"
+            className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[0.72rem]"
             style={{ color: "var(--text-muted)" }}
           >
-            PR #{context.prNumber} · head {shortSha(headSha)}
-            {isFetching ? " · refreshing" : ""}
+            <span className="min-w-0 truncate">
+              PR #{context.prNumber} · head {shortSha(headSha)}
+            </span>
+            {context.prUrl ? (
+              <button
+                type="button"
+                className="inline-flex shrink-0 items-center gap-1 font-semibold hover:underline"
+                style={{ color: "var(--accent-primary)" }}
+                aria-label={`Open PR #${context.prNumber} in GitHub`}
+                onClick={() => void openUrl(context.prUrl!)}
+              >
+                Open in GitHub
+                <ExternalLink className="h-3 w-3" aria-hidden="true" />
+              </button>
+            ) : null}
+            {isFetching ? <span className="shrink-0">refreshing</span> : null}
           </div>
         </div>
         <span
@@ -332,6 +352,19 @@ export function AgentWorkspacePrReviewCard({
                 }}
               >
                 Write the Review artifact for this PR head before submitting.
+              </div>
+            ) : null}
+            {submitFailureMessage ? (
+              <div
+                className="rounded-md border px-2.5 py-2 text-[0.75rem] leading-relaxed"
+                style={{
+                  background: "var(--status-warning-muted)",
+                  borderColor: "var(--status-warning-border)",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                Previous submit failed. {submitFailureMessage} You can retry
+                from this card.
               </div>
             ) : null}
             <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
