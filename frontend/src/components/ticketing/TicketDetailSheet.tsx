@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, FolderKanban, GitBranch, GitPullRequestArrow, MessageSquare, Send, UserCheck, UserX, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import { ExternalLink, FolderKanban, GitBranch, GitPullRequestArrow, Image as ImageIcon, MessageSquare, Send, UserCheck, UserX, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -412,10 +412,53 @@ function ControlTooltip({
   );
 }
 
+/**
+ * Markdown image renderer for ticket content. Provider images (Jira/Linear) are
+ * frequently authed/CORS-restricted and fail to load inline under WKWebView, which
+ * would otherwise show a broken-image icon. On load failure we fall back to a
+ * button that opens the image in the browser, where the user's session can fetch it.
+ */
+function TicketMarkdownImage({ src, alt }: ComponentProps<"img">) {
+  const [failed, setFailed] = useState(false);
+  const url = typeof src === "string" ? src : undefined;
+  if (!url) {
+    return null;
+  }
+  if (failed) {
+    return (
+      <button
+        type="button"
+        onClick={() => void openExternalTicketUrl(url)}
+        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-[var(--status-info)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+        style={{
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+        }}
+      >
+        <ImageIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        {alt?.trim() ? alt : "View image"}
+      </button>
+    );
+  }
+  return (
+    <img
+      src={url}
+      alt={alt ?? ""}
+      loading="lazy"
+      onError={() => setFailed(true)}
+      className="max-w-full rounded"
+    />
+  );
+}
+
 function TicketMarkdown({ content }: { content: string }) {
   return (
     <div className="prose prose-sm prose-invert max-w-none text-sm leading-6 text-[var(--text-secondary)] prose-code:before:content-none prose-code:after:content-none">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{ ...markdownComponents, img: TicketMarkdownImage }}
+      >
         {content}
       </ReactMarkdown>
     </div>

@@ -564,3 +564,45 @@ describe("TicketDetailSheet project chip", () => {
     expect(screen.getByText("backend")).toBeInTheDocument();
   });
 });
+
+describe("TicketDetailSheet description images", () => {
+  it("falls back to an open-in-browser button when a description image fails to load", async () => {
+    openUrlMock.mockClear();
+    render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={{
+            ...baseTicket,
+            descriptionMarkdown: "![diagram](https://provider.example/img.png)",
+            descriptionText: "",
+            comments: [],
+            attachments: [],
+            transitions: [],
+          }}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    const img = document.querySelector(
+      "img[src='https://provider.example/img.png']",
+    ) as HTMLImageElement | null;
+    expect(img).not.toBeNull();
+    fireEvent.error(img as HTMLImageElement);
+
+    const viewButton = screen.getByRole("button", { name: "diagram" });
+    fireEvent.click(viewButton);
+    await waitFor(() => {
+      expect(openUrlMock).toHaveBeenCalledWith("https://provider.example/img.png");
+    });
+  });
+});
