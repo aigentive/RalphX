@@ -3273,11 +3273,19 @@ pub async fn fork_agent_conversation<R: Runtime + 'static>(
 
 /// Switch a project-backed agent conversation between chat/edit/ideation modes.
 #[tauri::command]
-pub async fn switch_agent_conversation_mode(
+pub async fn switch_agent_conversation_mode<R: Runtime + 'static>(
     input: SwitchAgentConversationModeInput,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    app: tauri::AppHandle<R>,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
-    switch_agent_conversation_mode_for_state(input, state.inner()).await
+    let service = create_chat_service(&state, app, &execution_state, None);
+    switch_agent_conversation_mode_for_state_stopping_running_agent(
+        input,
+        state.inner(),
+        &service,
+    )
+    .await
 }
 
 #[doc(hidden)]
@@ -3285,7 +3293,12 @@ pub async fn switch_agent_conversation_mode_for_state(
     input: SwitchAgentConversationModeInput,
     state: &AppState,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
-    switch_agent_conversation_mode_for_state_with_running_policy(input, state, false).await
+    switch_agent_conversation_mode_for_state_with_running_policy(
+        input,
+        state,
+        ModeSwitchRunningAgentPolicy::Reject,
+    )
+    .await
 }
 
 #[doc(hidden)]
@@ -3293,13 +3306,39 @@ pub(crate) async fn switch_agent_conversation_mode_for_state_allowing_running(
     input: SwitchAgentConversationModeInput,
     state: &AppState,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
-    switch_agent_conversation_mode_for_state_with_running_policy(input, state, true).await
+    switch_agent_conversation_mode_for_state_with_running_policy(
+        input,
+        state,
+        ModeSwitchRunningAgentPolicy::Allow,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn switch_agent_conversation_mode_for_state_stopping_running_agent(
+    input: SwitchAgentConversationModeInput,
+    state: &AppState,
+    chat_service: &dyn ChatService,
+) -> Result<SwitchAgentConversationModeResponse, String> {
+    switch_agent_conversation_mode_for_state_with_running_policy(
+        input,
+        state,
+        ModeSwitchRunningAgentPolicy::StopWithService(chat_service),
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+enum ModeSwitchRunningAgentPolicy<'a> {
+    Reject,
+    Allow,
+    StopWithService(&'a dyn ChatService),
 }
 
 async fn switch_agent_conversation_mode_for_state_with_running_policy(
     input: SwitchAgentConversationModeInput,
     state: &AppState,
-    allow_running_agent: bool,
+    running_agent_policy: ModeSwitchRunningAgentPolicy<'_>,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let target_mode = parse_agent_workspace_mode(Some(input.mode.as_str()))?;
@@ -3329,15 +3368,20 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
         conversation.id.as_str(),
     );
     let agent_is_running = state.running_agent_registry.is_running(&running_key).await;
-    if agent_is_running && !allow_running_agent {
-        return Err("Cannot change mode while the agent is running".to_string());
-    }
     if agent_is_running {
-        tracing::info!(
-            conversation_id = %conversation.id,
-            target_mode = %target_mode,
-            "Switching project agent conversation mode while its current run is still registered"
-        );
+        match running_agent_policy {
+            ModeSwitchRunningAgentPolicy::Reject => {
+                return Err("Cannot change mode while the agent is running".to_string());
+            }
+            ModeSwitchRunningAgentPolicy::Allow => {
+                tracing::info!(
+                    conversation_id = %conversation.id,
+                    target_mode = %target_mode,
+                    "Switching project agent conversation mode while its current run is still registered"
+                );
+            }
+            ModeSwitchRunningAgentPolicy::StopWithService(_) => {}
+        }
     }
 
     let existing_workspace = state
@@ -3355,6 +3399,25 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     };
 
     validate_agent_conversation_mode_transition(current_mode, target_mode, &workspace_mode_lock)?;
+
+    if agent_is_running {
+        if let ModeSwitchRunningAgentPolicy::StopWithService(chat_service) = running_agent_policy {
+            let stop_context_id = conversation.id.as_str();
+            let stopped = chat_service
+                .stop_agent(ChatContextType::Project, &stop_context_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            tracing::info!(
+                conversation_id = %conversation.id,
+                target_mode = %target_mode,
+                stopped,
+                "Stopped running project agent before switching conversation mode"
+            );
+            if state.running_agent_registry.is_running(&running_key).await {
+                return Err("Cannot change mode while the agent is running".to_string());
+            }
+        }
+    }
 
     let workspace = match existing_workspace {
         Some(mut workspace) => {

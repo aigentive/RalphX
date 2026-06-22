@@ -153,6 +153,7 @@ fn insert_plan_pr(conn: &Connection, project_id: &str, task_id: &str) {
     .unwrap();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_workspace(
     conn: &Connection,
     conversation_id: &str,
