@@ -6,6 +6,7 @@ import type { TicketSummary } from "@/api/ticketing";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { resolveTicketKanbanMove } from "./ticketing-kanban-utils";
+import { formatTicketDate } from "./ticketing-utils";
 import { TicketKanbanView, TicketListView } from "./TicketViews";
 
 const { openUrlMock } = vi.hoisted(() => ({ openUrlMock: vi.fn() }));
@@ -50,6 +51,35 @@ describe("TicketListView", () => {
 
     expect(screen.getByText("Adrian Demian")).toBeInTheDocument();
     expect(screen.getByText("Unassigned")).toBeInTheDocument();
+  });
+
+  it("renders the project (category) in its own column just before the timestamp", () => {
+    render(
+      <TicketListView
+        tickets={[
+          {
+            ref: { provider: "linear", id: "L-3", key: "L-3" },
+            title: "Has a project",
+            state: { id: "todo", name: "To Do", category: "todo" },
+            project: "Platform",
+            labels: [],
+            updatedAt: "2026-06-19T22:00:00.000Z",
+            url: null,
+            associationCount: 0,
+            openPrCount: 0,
+          },
+        ]}
+        hasNextPage={false}
+        isFetchingNextPage={false}
+        onLoadMore={vi.fn()}
+        onSelectTicket={vi.fn()}
+      />,
+    );
+
+    const project = screen.getByText("Platform");
+    const updated = screen.getByText(formatTicketDate("2026-06-19T22:00:00.000Z"));
+    // Project (category) sits to the left of the updated timestamp.
+    expect(project.compareDocumentPosition(updated) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("shows the conversation count for linked RalphX work without a PR icon in the badge", () => {

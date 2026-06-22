@@ -45,7 +45,7 @@ import { categoryToken, formatTicketDate, ticketButtonLabel, ticketKey } from ".
  * The PR column intentionally sits AFTER the RX (suitcase) column.
  */
 const TICKET_ROW_GRID =
-  "grid grid-cols-[88px_28px_minmax(200px,1fr)_140px_48px_64px_96px] items-center gap-3 px-4";
+  "grid grid-cols-[88px_28px_minmax(200px,1fr)_140px_48px_64px_minmax(0,120px)_96px] items-center gap-3 px-4";
 
 /** Status strings that mean a PR is still live (open/draft) → color the icon green. */
 function isLivePrStatus(status: string | null | undefined): boolean {
@@ -383,9 +383,6 @@ export function TicketListView({
                   <span className="flex min-w-0 items-center gap-2">
                     {isUnread?.(ticket) && <UnreadCommentIndicator />}
                     <span className="truncate font-medium">{ticket.title}</span>
-                    {ticket.project && (
-                      <span className="shrink-0 truncate text-[11px] text-[var(--text-muted)]">{ticket.project}</span>
-                    )}
                     <TicketLabels labels={ticket.labels} max={2} className="shrink-0 text-[var(--text-muted)]" />
                   </span>
                   <span className="min-w-0">
@@ -395,12 +392,19 @@ export function TicketListView({
                       interactive PR control is rendered in the aligned overlay below. */}
                   <TicketAssociationBadge count={ticket.associationCount} />
                   <span aria-hidden="true" />
+                  {/* Project (category) column, just left of the timestamp. */}
+                  <span
+                    className="truncate text-[11px] text-[var(--text-muted)]"
+                    title={ticket.project ?? undefined}
+                  >
+                    {ticket.project ?? ""}
+                  </span>
                   <span className="text-xs text-[var(--text-muted)]">{formatTicketDate(ticket.updatedAt)}</span>
                 </button>
                 {ticket.openPrNumber != null && ticket.openPrUrl != null && (
                   <div className={`${TICKET_ROW_GRID} pointer-events-none absolute inset-0 py-1.5`}>
-                    {/* Key | Status | Title | Assignee | RX | PR | Updated — the PR
-                        control sits in the 6th cell, after the RX (suitcase) column. */}
+                    {/* Key | Status | Title | Assignee | RX | PR | Project | Updated —
+                        the PR control sits in the 6th cell, after the RX column. */}
                     <span aria-hidden="true" />
                     <span aria-hidden="true" />
                     <span aria-hidden="true" />
@@ -413,6 +417,7 @@ export function TicketListView({
                         prStatus={ticket.openPrStatus}
                       />
                     </span>
+                    <span aria-hidden="true" />
                     <span aria-hidden="true" />
                   </div>
                 )}
@@ -427,6 +432,7 @@ export function TicketListView({
                         onMoveTicket={onMoveTicket}
                       />
                     </span>
+                    <span aria-hidden="true" />
                     <span aria-hidden="true" />
                     <span aria-hidden="true" />
                     <span aria-hidden="true" />
