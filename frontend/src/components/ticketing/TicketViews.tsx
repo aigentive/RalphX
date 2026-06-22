@@ -25,6 +25,12 @@ import { useState, type ReactNode } from "react";
 
 import type { TicketingColumn, TicketSummary } from "@/api/ticketing";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TicketAssigneeChip } from "./TicketAssigneeChip";
 import { TicketLabels } from "./TicketLabels";
@@ -34,15 +40,39 @@ import { resolveTicketKanbanMove, ticketDragId } from "./ticketing-kanban-utils"
 import { categoryToken, formatTicketDate, ticketButtonLabel, ticketKey } from "./ticketing-utils";
 
 /**
- * Shared grid template for list rows and the column-aligned PR overlay.
- * Columns: Key | Status | Title | Assignee | PR | RX | Updated.
+ * Shared grid template for list rows and the column-aligned overlays.
+ * Columns: Key | Status | Title | Assignee | RX | PR | Updated.
+ * The PR column intentionally sits AFTER the RX (suitcase) column.
  */
 const TICKET_ROW_GRID =
-  "grid grid-cols-[88px_28px_minmax(200px,1fr)_140px_64px_48px_96px] items-center gap-3 px-4";
+  "grid grid-cols-[88px_28px_minmax(200px,1fr)_140px_48px_64px_96px] items-center gap-3 px-4";
+
+/** Status strings that mean a PR is still live (open/draft) → color the icon green. */
+function isLivePrStatus(status: string | null | undefined): boolean {
+  if (status == null) {
+    // No status but a representative PR number means an open PR (backend default).
+    return true;
+  }
+  const normalized = status.trim().toLowerCase();
+  return normalized === "" || normalized === "open" || normalized === "draft";
+}
+
+/** Glyph picker shared by the read-only status icon and the interactive trigger. */
+function statusGlyph(category: TicketSummary["state"]["category"], className: string) {
+  if (category === "done") {
+    return <CircleCheck className={className} />;
+  }
+  if (category === "in_progress") {
+    return <CircleDot className={className} />;
+  }
+  if (category === "other") {
+    return <CircleDashed className={className} />;
+  }
+  return <Circle className={className} />;
+}
 
 /** Colored status glyph (Linear-style) with the state name as tooltip/accessible name. */
 function TicketStatusIcon({ state }: { state: TicketSummary["state"] }) {
-  const iconClassName = "h-4 w-4";
   return (
     <span
       role="img"
@@ -51,16 +81,64 @@ function TicketStatusIcon({ state }: { state: TicketSummary["state"] }) {
       className="inline-flex shrink-0"
       style={{ color: categoryToken(state.category) }}
     >
-      {state.category === "done" ? (
-        <CircleCheck className={iconClassName} />
-      ) : state.category === "in_progress" ? (
-        <CircleDot className={iconClassName} />
-      ) : state.category === "other" ? (
-        <CircleDashed className={iconClassName} />
-      ) : (
-        <Circle className={iconClassName} />
-      )}
+      {statusGlyph(state.category, "h-4 w-4")}
     </span>
+  );
+}
+
+/**
+ * Interactive status control for the list. Opens a dropdown of the available
+ * status columns and moves the ticket on select via the shared `onMoveTicket`
+ * pipeline (the same one the kanban uses). Rendered as a sibling overlay aligned
+ * to the row's Status column (not nested inside the row button) so the markup
+ * stays a11y-valid. The trigger is icon-only, so it carries an explicit
+ * accessible name plus the app Tooltip (native title alone is not sufficient —
+ * see .claude/rules/icon-only-buttons.md).
+ */
+function TicketStatusControl({
+  ticket,
+  columns,
+  onMoveTicket,
+}: {
+  ticket: TicketSummary;
+  columns: TicketingColumn[];
+  onMoveTicket: (ticket: TicketSummary, column: TicketingColumn) => void;
+}) {
+  const label = `Change status (current: ${ticket.state.name})`;
+  return (
+    <DropdownMenu>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label={label}
+              className="pointer-events-auto inline-flex shrink-0 items-center justify-center rounded-md p-0.5 hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:1px]"
+              onClick={(event) => event.stopPropagation()}
+              style={{ color: categoryToken(ticket.state.category) }}
+            >
+              {statusGlyph(ticket.state.category, "h-4 w-4")}
+            </button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{label}</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="start" onClick={(event) => event.stopPropagation()}>
+        {columns.map((column) => (
+          <DropdownMenuItem
+            key={column.id}
+            onSelect={() => onMoveTicket(ticket, column)}
+          >
+            <span
+              className="mr-2 inline-block h-2 w-2 shrink-0 rounded-full"
+              aria-hidden="true"
+              style={{ backgroundColor: categoryToken(column.category) }}
+            />
+            {column.name}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -74,6 +152,8 @@ interface TicketListViewProps {
   isUnread?: ((ticket: TicketSummary) => boolean) | undefined;
   canQuickAssign?: boolean | undefined;
   onQuickAssign?: ((ticket: TicketSummary) => void) | undefined;
+  canMoveTickets?: boolean | undefined;
+  onMoveTicket?: ((ticket: TicketSummary, column: TicketingColumn) => void) | undefined;
 }
 
 /** Orange comment glyph shown when a ticket changed since the viewer last opened it. */
@@ -124,20 +204,29 @@ function TicketAssociationBadge({ count }: { count: number }) {
 }
 
 /**
- * Interactive "open this ticket's representative open PR in the browser" control.
- * Rendered as a sibling overlay aligned to the list row's PR column (not nested
- * inside the row button) so the markup stays a11y-valid. Icon-primary, so it
- * carries an explicit accessible name plus the app Tooltip (native title alone
- * is not sufficient — see .claude/rules/icon-only-buttons.md).
+ * Interactive "open this ticket's representative PR in the browser" control.
+ * Shows the representative PR regardless of status; the icon is colored green
+ * for a live (open/draft) PR and muted for a terminal one (merged/closed). The
+ * accessible name and tooltip name the status for non-live PRs. Rendered as a
+ * sibling overlay aligned to the list row's PR column (not nested inside the row
+ * button) so the markup stays a11y-valid. Icon-primary, so it carries an
+ * explicit accessible name plus the app Tooltip (native title alone is not
+ * sufficient — see .claude/rules/icon-only-buttons.md).
  */
 function TicketPrOpenControl({
   prNumber,
   prUrl,
+  prStatus,
 }: {
   prNumber: number;
   prUrl: string;
+  prStatus: string | null | undefined;
 }) {
-  const label = `Open pull request #${prNumber} in browser`;
+  const live = isLivePrStatus(prStatus);
+  const label = live
+    ? `Open pull request #${prNumber} in browser`
+    : `Pull request #${prNumber} (${prStatus?.trim() ?? "closed"}) in browser`;
+  const color = live ? "var(--status-success)" : "var(--text-muted)";
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -149,7 +238,7 @@ function TicketPrOpenControl({
             event.stopPropagation();
             void openExternalTicketUrl(prUrl);
           }}
-          style={{ color: "var(--status-success)" }}
+          style={{ color }}
         >
           <GitPullRequestArrow className="h-3.5 w-3.5" aria-hidden="true" />
           <span>#{prNumber}</span>
@@ -213,8 +302,13 @@ export function TicketListView({
   isUnread,
   canQuickAssign,
   onQuickAssign,
+  canMoveTickets,
+  onMoveTicket,
 }: TicketListViewProps) {
   const groups = groupTicketsByStatus(tickets, columns);
+  // The interactive status control only appears when ticket moves are writable
+  // and we have both a move handler and status columns to choose from.
+  const canMoveStatus = Boolean(canMoveTickets && onMoveTicket && columns.length > 0);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const toggleGroup = (id: string) =>
     setCollapsed((previous) => {
@@ -290,20 +384,45 @@ export function TicketListView({
                   <span className="min-w-0">
                     <TicketAssigneeChip person={ticket.assignee} />
                   </span>
-                  {/* PR column placeholder; the interactive control is rendered in the aligned overlay below. */}
-                  <span aria-hidden="true" />
+                  {/* RX (suitcase) column, then the PR column placeholder; the
+                      interactive PR control is rendered in the aligned overlay below. */}
                   <TicketAssociationBadge count={ticket.associationCount} />
+                  <span aria-hidden="true" />
                   <span className="text-xs text-[var(--text-muted)]">{formatTicketDate(ticket.updatedAt)}</span>
                 </button>
                 {ticket.openPrNumber != null && ticket.openPrUrl != null && (
                   <div className={`${TICKET_ROW_GRID} pointer-events-none absolute inset-0 py-1.5`}>
+                    {/* Key | Status | Title | Assignee | RX | PR | Updated — the PR
+                        control sits in the 6th cell, after the RX (suitcase) column. */}
+                    <span aria-hidden="true" />
                     <span aria-hidden="true" />
                     <span aria-hidden="true" />
                     <span aria-hidden="true" />
                     <span aria-hidden="true" />
                     <span className="flex min-w-0 items-center">
-                      <TicketPrOpenControl prNumber={ticket.openPrNumber} prUrl={ticket.openPrUrl} />
+                      <TicketPrOpenControl
+                        prNumber={ticket.openPrNumber}
+                        prUrl={ticket.openPrUrl}
+                        prStatus={ticket.openPrStatus}
+                      />
                     </span>
+                    <span aria-hidden="true" />
+                  </div>
+                )}
+                {canMoveStatus && onMoveTicket && (
+                  <div className={`${TICKET_ROW_GRID} pointer-events-none absolute inset-0 py-1.5`}>
+                    {/* Interactive status control aligned to the Status (2nd) cell. */}
+                    <span aria-hidden="true" />
+                    <span className="flex items-center">
+                      <TicketStatusControl
+                        ticket={ticket}
+                        columns={columns}
+                        onMoveTicket={onMoveTicket}
+                      />
+                    </span>
+                    <span aria-hidden="true" />
+                    <span aria-hidden="true" />
+                    <span aria-hidden="true" />
                     <span aria-hidden="true" />
                     <span aria-hidden="true" />
                   </div>
@@ -413,7 +532,11 @@ function TicketKanbanCard({
           {ticket.openPrNumber != null && (
             <span
               className="inline-flex items-center gap-1 text-xs font-medium"
-              style={{ color: "var(--status-success)" }}
+              style={{
+                color: isLivePrStatus(ticket.openPrStatus)
+                  ? "var(--status-success)"
+                  : "var(--text-muted)",
+              }}
             >
               <GitPullRequestArrow className="h-3.5 w-3.5" aria-hidden="true" />
               #{ticket.openPrNumber}

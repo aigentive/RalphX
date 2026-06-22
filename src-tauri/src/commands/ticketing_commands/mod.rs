@@ -701,6 +701,7 @@ fn jira_summary_to_ticket(summary: AtlassianResourceSummary) -> TicketSummaryRes
         open_pr_count: 0,
         open_pr_number: None,
         open_pr_url: None,
+        open_pr_status: None,
     }
 }
 
@@ -735,6 +736,7 @@ fn linear_summary_to_ticket(summary: LinearIssueSummary) -> TicketSummaryRespons
         open_pr_count: 0,
         open_pr_number: None,
         open_pr_url: None,
+        open_pr_status: None,
     }
 }
 
@@ -755,10 +757,10 @@ async fn hydrate_ticket_association_counts(
     let conversation_associations =
         project_ticket_conversation_associations(state, provider, &project_id).await?;
 
-    // Load the project's workspaces once and roll up open-PR state by conversation
-    // (open flag + the PR number/url for the representative-PR column), so the
-    // per-ticket loop below does not add a second N+1 query.
-    let pr_by_conversation: HashMap<String, (bool, Option<i64>, Option<String>)> = state
+    // Load the project's workspaces once and roll up PR state by conversation
+    // (open flag + number/url/status + the workspace `updated_at` used to rank
+    // fallback PRs), so the per-ticket loop below does not add a second N+1 query.
+    let pr_by_conversation: HashMap<String, ConversationPrRollup> = state
         .agent_conversation_workspace_repo
         .get_by_project_id(&project_id)
         .await
@@ -771,11 +773,13 @@ async fn hydrate_ticket_association_counts(
             );
             (
                 workspace.conversation_id.to_string(),
-                (
+                ConversationPrRollup {
                     open,
-                    workspace.publication_pr_number,
-                    workspace.publication_pr_url,
-                ),
+                    pr_number: workspace.publication_pr_number,
+                    pr_url: workspace.publication_pr_url,
+                    pr_status: workspace.publication_pr_status,
+                    updated_at: workspace.updated_at,
+                },
             )
         })
         .collect();
@@ -790,23 +794,48 @@ async fn hydrate_ticket_association_counts(
             &conversation_associations,
         )?;
         item.association_count = associations.len();
-        let open_prs: Vec<&(bool, Option<i64>, Option<String>)> = associations
+
+        // All workspaces (carrying a PR number) linked to this ticket.
+        let prs: Vec<&ConversationPrRollup> = associations
             .iter()
             .filter_map(|association| pr_by_conversation.get(&association.id))
-            .filter(|(open, _, _)| *open)
+            .filter(|rollup| rollup.pr_number.is_some())
             .collect();
-        item.open_pr_count = open_prs.len();
-        // Representative open PR (first open one carrying a number) for the column.
-        if let Some((_, number, url)) = open_prs
-            .iter()
-            .find(|(_, number, _)| number.is_some())
-        {
-            item.open_pr_number = *number;
-            item.open_pr_url = url.clone();
+        // `open_pr_count` keeps its meaning: number of OPEN PRs (unchanged).
+        item.open_pr_count = prs.iter().filter(|rollup| rollup.open).count();
+
+        if let Some(representative) = representative_pr(&prs) {
+            item.open_pr_number = representative.pr_number;
+            item.open_pr_url = representative.pr_url.clone();
+            item.open_pr_status = representative.pr_status.clone();
         }
         hydrated.push(item);
     }
     Ok(hydrated)
+}
+
+/// Per-conversation PR rollup used to pick the representative PR for a ticket's
+/// list PR column without an N+1 query (workspaces are batch-loaded once).
+#[derive(Debug, Clone)]
+struct ConversationPrRollup {
+    open: bool,
+    pr_number: Option<i64>,
+    pr_url: Option<String>,
+    pr_status: Option<String>,
+    updated_at: chrono::DateTime<Utc>,
+}
+
+/// Pick the representative PR for a ticket's list column from its linked
+/// workspaces (all of which already carry a PR number): prefer an open PR, then
+/// fall back to the most-recent PR by workspace `updated_at` regardless of
+/// status (merged/closed/draft). Ties break on the most-recent `updated_at`.
+fn representative_pr<'a>(prs: &[&'a ConversationPrRollup]) -> Option<&'a ConversationPrRollup> {
+    let open = prs
+        .iter()
+        .filter(|rollup| rollup.open)
+        .max_by_key(|rollup| rollup.updated_at)
+        .copied();
+    open.or_else(|| prs.iter().max_by_key(|rollup| rollup.updated_at).copied())
 }
 
 fn filter_ticket_summaries(
@@ -909,6 +938,7 @@ fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResp
         open_pr_count: 0,
         open_pr_number: None,
         open_pr_url: None,
+        open_pr_status: None,
     };
     TicketDetailResponse {
         summary,
@@ -966,6 +996,7 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
         open_pr_count: 0,
         open_pr_number: None,
         open_pr_url: None,
+        open_pr_status: None,
     };
     TicketDetailResponse {
         summary,
