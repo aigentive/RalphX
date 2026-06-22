@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, GitBranch, GitPullRequestArrow, MessageSquare, Send, UserCheck, UserX, X } from "lucide-react";
+import { ExternalLink, FolderKanban, GitBranch, GitPullRequestArrow, MessageSquare, Send, UserCheck, UserX, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -650,9 +650,19 @@ export function TicketDetailSheet({
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
                     {ticket.project && (
                       <span
-                        className="rounded border px-2 py-1"
-                        style={{ borderColor: "var(--border-subtle)" }}
+                        className="inline-flex items-center gap-1 rounded px-2 py-1 font-medium text-[var(--text-secondary)]"
+                        title={`Project: ${ticket.project}`}
+                        style={{
+                          backgroundColor: "var(--bg-elevated)",
+                          borderColor: "var(--border-subtle)",
+                          borderStyle: "solid",
+                          borderWidth: "1px",
+                        }}
                       >
+                        <FolderKanban
+                          className="h-3 w-3 shrink-0 text-[var(--text-muted)]"
+                          aria-hidden="true"
+                        />
                         {ticket.project}
                       </span>
                     )}

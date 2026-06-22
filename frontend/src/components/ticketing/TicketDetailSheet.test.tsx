@@ -445,3 +445,16 @@ describe("TicketDetailSheet comment keyboard submit", () => {
     expect(onAddComment).not.toHaveBeenCalled();
   });
 });
+
+describe("TicketDetailSheet project chip", () => {
+  it("renders the project as a distinct labeled chip, not a plain tag", () => {
+    renderSheet({
+      ticket: { ...baseTicket, project: "Platform", labels: ["backend"] },
+    });
+
+    // The project carries a "Project:" title to set it apart from label tags.
+    expect(screen.getByTitle("Project: Platform")).toBeInTheDocument();
+    expect(screen.getByText("Platform")).toBeInTheDocument();
+    expect(screen.getByText("backend")).toBeInTheDocument();
+  });
+});
