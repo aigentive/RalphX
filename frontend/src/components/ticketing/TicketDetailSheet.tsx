@@ -765,7 +765,12 @@ export function TicketDetailSheet({
                         >
                         <option value={ticket.state.id} style={ticketSelectOptionStyle}>{ticket.state.name}</option>
                         {transitions
-                          .filter((transition) => transition.toStateId !== ticket.state.id)
+                          .filter(
+                            (transition) =>
+                              transition.toStateId !== ticket.state.id &&
+                              transition.name.trim().toLowerCase() !==
+                                ticket.state.name.trim().toLowerCase(),
+                          )
                           .map((transition) => (
                             <option
                               key={`${transition.toStateId}:${transition.providerTransitionId ?? ""}`}

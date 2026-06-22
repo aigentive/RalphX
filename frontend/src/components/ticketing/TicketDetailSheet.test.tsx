@@ -606,3 +606,36 @@ describe("TicketDetailSheet description images", () => {
     });
   });
 });
+
+describe("TicketDetailSheet status options", () => {
+  it("does not list the current status twice when a transition shares its name", () => {
+    render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={{ ...baseTicket, state: { id: "s-current", name: "In Progress", category: "todo" } }}
+          capabilities={baseCapabilities}
+          transitions={[
+            // Same display name as the current state but a different id (the provider
+            // can return the current state in its transition list with a divergent id).
+            { toStateId: "s-other", name: "In Progress", category: "todo" },
+            { toStateId: "s-done", name: "Done", category: "done" },
+          ]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    const inProgressOptions = screen
+      .getAllByRole("option")
+      .filter((option) => option.textContent === "In Progress");
+    expect(inProgressOptions).toHaveLength(1);
+    expect(screen.getByRole("option", { name: "Done" })).toBeInTheDocument();
+  });
+});
