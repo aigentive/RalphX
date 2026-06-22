@@ -1,17 +1,32 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, type InfiniteData } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ticketingApi } from "@/api/ticketing";
-import type { TicketDetail, TicketRef, TicketTransitionOption } from "@/api/ticketing";
+import type {
+  TicketDetail,
+  TicketPage,
+  TicketRef,
+  TicketSummary,
+  TicketTransitionOption,
+} from "@/api/ticketing";
 
 import {
+  createTicketClientOperationId,
   fetchTicketTransitionsForMove,
   findTicketTransitionForColumn,
   flattenTicketPages,
   ticketingKeys,
+  useConversationTicket,
+  useRefreshTickets,
+  useTicketAssociations,
+  useTicketDetail,
+  useTicketingColumns,
+  useTicketingContainers,
   useTicketingMutations,
+  useTicketLabelOptions,
+  useTicketTransitions,
   useStartWorkFromTicket,
   useTicketingProviders,
   useTickets,
@@ -575,4 +590,879 @@ describe("useTicketing hooks", () => {
       queryKey: ticketingKeys.detail({ provider: "jira", ticketRef }),
     });
   });
+
+  it("builds query keys with null fallbacks for optional segments", () => {
+    expect(ticketingKeys.providers()).toEqual(["ticketing", "providers", null]);
+    expect(ticketingKeys.containers({ provider: "jira" })).toEqual([
+      "ticketing",
+      "containers",
+      "jira",
+      null,
+    ]);
+    expect(ticketingKeys.columns({ provider: "linear" })).toEqual([
+      "ticketing",
+      "columns",
+      "linear",
+      null,
+    ]);
+    // detail.key falls back to null when absent
+    expect(
+      ticketingKeys.detail({ provider: "jira", ticketRef: { provider: "jira", id: "10001" } }),
+    ).toEqual(["ticketing", "detail", "jira", "10001", null]);
+    // tickets key threads filters/sort/limit nulls
+    expect(ticketingKeys.tickets({ provider: "jira" })).toEqual([
+      "ticketing",
+      "tickets",
+      "jira",
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
+    expect(ticketingKeys.conversationTicket("conv-1")).toEqual([
+      "ticketing",
+      "conversation-ticket",
+      "conv-1",
+    ]);
+  });
+
+  it("creates a deterministic-prefixed client operation id with a crypto uuid", () => {
+    const id = createTicketClientOperationId("transition", {
+      provider: "jira",
+      id: "10001",
+      key: "RX-1",
+    });
+    expect(id).toMatch(/^ticketing:transition:jira:RX-1:/);
+
+    // Falls back to id when key is absent.
+    const idNoKey = createTicketClientOperationId("comment", {
+      provider: "linear",
+      id: "LIN-9",
+    });
+    expect(idNoKey).toMatch(/^ticketing:comment:linear:LIN-9:/);
+  });
+
+  it("generates a non-crypto client operation id when randomUUID is unavailable", () => {
+    const originalCrypto = globalThis.crypto;
+    Object.defineProperty(globalThis, "crypto", {
+      value: { ...originalCrypto, randomUUID: undefined },
+      configurable: true,
+    });
+    try {
+      const id = createTicketClientOperationId("assign", {
+        provider: "jira",
+        id: "10001",
+        key: "RX-1",
+      });
+      expect(id).toMatch(/^ticketing:assign:jira:RX-1:\d+-/);
+    } finally {
+      Object.defineProperty(globalThis, "crypto", {
+        value: originalCrypto,
+        configurable: true,
+      });
+    }
+  });
+
+  it("loads ticketing containers and threads the provider through the read command", async () => {
+    vi.mocked(ticketingApi.listContainers).mockResolvedValueOnce([
+      { provider: "jira", id: "board-1", name: "Board 1", kind: "board" },
+    ]);
+
+    const { result } = renderHook(
+      () => useTicketingContainers({ provider: "jira", projectId: "project-1" }),
+      { wrapper: createWrapper().wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(ticketingApi.listContainers).toHaveBeenCalledWith({
+      provider: "jira",
+      projectId: "project-1",
+    });
+    expect(result.current.data?.[0]?.id).toBe("board-1");
+  });
+
+  it("keeps the containers query disabled when input is null", () => {
+    const { result } = renderHook(() => useTicketingContainers(null), {
+      wrapper: createWrapper().wrapper,
+    });
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(ticketingApi.listContainers).not.toHaveBeenCalled();
+  });
+
+  it("loads ticketing columns for a container", async () => {
+    vi.mocked(ticketingApi.listColumns).mockResolvedValueOnce([
+      { id: "todo", name: "To Do", category: "todo", order: 0 },
+    ]);
+
+    const { result } = renderHook(
+      () => useTicketingColumns({ provider: "jira", containerId: "board-1" }),
+      { wrapper: createWrapper().wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(ticketingApi.listColumns).toHaveBeenCalledWith({
+      provider: "jira",
+      containerId: "board-1",
+    });
+    expect(result.current.data?.[0]?.category).toBe("todo");
+  });
+
+  it("keeps the columns query disabled when input is null", () => {
+    const { result } = renderHook(() => useTicketingColumns(null), {
+      wrapper: createWrapper().wrapper,
+    });
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(ticketingApi.listColumns).not.toHaveBeenCalled();
+  });
+
+  it("loads label options for a ticket", async () => {
+    vi.mocked(ticketingApi.listTicketLabels).mockResolvedValueOnce([
+      { id: "label-1", name: "bug" },
+      { name: "frontend" },
+    ]);
+
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const { result } = renderHook(
+      () => useTicketLabelOptions({ provider: "jira", ticketRef }),
+      { wrapper: createWrapper().wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(ticketingApi.listTicketLabels).toHaveBeenCalledWith({
+      provider: "jira",
+      ticketRef,
+    });
+    expect(result.current.data?.map((label) => label.name)).toEqual(["bug", "frontend"]);
+  });
+
+  it("keeps the label-options query disabled when input is null", () => {
+    const { result } = renderHook(() => useTicketLabelOptions(null), {
+      wrapper: createWrapper().wrapper,
+    });
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(ticketingApi.listTicketLabels).not.toHaveBeenCalled();
+  });
+
+  it("loads ticket detail when a ticket id is present", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const detail: TicketDetail = {
+      ref: ticketRef,
+      title: "Fix merge race",
+      state: { id: "todo", name: "To Do", category: "todo" },
+      labels: [],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+      descriptionMarkdown: "Investigate transition race.",
+      comments: [],
+      attachments: [],
+      transitions: [],
+    };
+    vi.mocked(ticketingApi.getTicketDetail).mockResolvedValueOnce(detail);
+
+    const { result } = renderHook(
+      () => useTicketDetail({ provider: "jira", ticketRef }),
+      { wrapper: createWrapper().wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(ticketingApi.getTicketDetail).toHaveBeenCalledWith({ provider: "jira", ticketRef });
+    expect(result.current.data?.title).toBe("Fix merge race");
+  });
+
+  it("keeps the ticket-detail query disabled when input is null", () => {
+    const { result } = renderHook(() => useTicketDetail(null), {
+      wrapper: createWrapper().wrapper,
+    });
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(ticketingApi.getTicketDetail).not.toHaveBeenCalled();
+  });
+
+  it("loads ticket transitions", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    vi.mocked(ticketingApi.listTicketTransitions).mockResolvedValueOnce([
+      { toStateId: "done", name: "Done", category: "done" },
+    ]);
+
+    const { result } = renderHook(
+      () => useTicketTransitions({ provider: "jira", ticketRef }),
+      { wrapper: createWrapper().wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(ticketingApi.listTicketTransitions).toHaveBeenCalledWith({ provider: "jira", ticketRef });
+    expect(result.current.data?.[0]?.toStateId).toBe("done");
+  });
+
+  it("keeps the transitions query disabled when input is null", () => {
+    const { result } = renderHook(() => useTicketTransitions(null), {
+      wrapper: createWrapper().wrapper,
+    });
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(ticketingApi.listTicketTransitions).not.toHaveBeenCalled();
+  });
+
+  it("loads ticket associations when projectId and ticket id are present", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    vi.mocked(ticketingApi.getTicketAssociations).mockResolvedValueOnce({
+      tasks: [],
+      proposals: [],
+      sessions: [],
+      conversations: [],
+      pullRequests: [],
+      checks: [],
+      qa: [],
+      specs: [],
+    });
+
+    const { result } = renderHook(
+      () => useTicketAssociations({ provider: "jira", ticketRef, projectId: "project-1" }),
+      { wrapper: createWrapper().wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(ticketingApi.getTicketAssociations).toHaveBeenCalledWith({
+      provider: "jira",
+      ticketRef,
+      projectId: "project-1",
+    });
+    expect(result.current.data?.tasks).toEqual([]);
+  });
+
+  it("keeps the associations query disabled when input is null", () => {
+    const { result } = renderHook(() => useTicketAssociations(null), {
+      wrapper: createWrapper().wrapper,
+    });
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(ticketingApi.getTicketAssociations).not.toHaveBeenCalled();
+  });
+
+  it("loads the conversation ticket binding when a conversation id is present", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    vi.mocked(ticketingApi.getConversationTicket).mockResolvedValueOnce({
+      ticketRef,
+      projectId: "project-1",
+      title: "RX-1",
+      url: null,
+    });
+
+    const { result } = renderHook(() => useConversationTicket("conversation-1"), {
+      wrapper: createWrapper().wrapper,
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(ticketingApi.getConversationTicket).toHaveBeenCalledWith("conversation-1");
+    expect(result.current.data?.projectId).toBe("project-1");
+  });
+
+  it("keeps the conversation-ticket query disabled when id is null", () => {
+    const { result } = renderHook(() => useConversationTicket(null), {
+      wrapper: createWrapper().wrapper,
+    });
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(ticketingApi.getConversationTicket).not.toHaveBeenCalled();
+  });
+
+  it("refreshes tickets and invalidates the whole ticketing namespace", async () => {
+    const queryClient = createQueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    vi.mocked(ticketingApi.refreshTickets).mockResolvedValueOnce({
+      refreshedAt: "2026-06-19T22:05:00.000Z",
+    });
+
+    const { result } = renderHook(() => useRefreshTickets(), {
+      wrapper: createWrapper(queryClient).wrapper,
+    });
+
+    await act(() => result.current.mutateAsync({ provider: "jira", containerId: "board-1" }));
+
+    expect(ticketingApi.refreshTickets).toHaveBeenCalledWith({
+      provider: "jira",
+      containerId: "board-1",
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ticketingKeys.all });
+  });
+
+  it("assigns the ticket to me optimistically and patches the detail cache", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const detail: TicketDetail = {
+      ref: ticketRef,
+      title: "Fix merge race",
+      state: { id: "todo", name: "To Do", category: "todo" },
+      assignee: null,
+      labels: [],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+      descriptionMarkdown: "Investigate transition race.",
+      comments: [],
+      attachments: [],
+      transitions: [],
+    };
+    vi.mocked(ticketingApi.assignTicket).mockResolvedValueOnce({
+      ticketRef,
+      operation: {
+        id: "operation-assign",
+        operation: "assign",
+        clientOperationId: "generated",
+        status: "succeeded",
+        providerOperationId: null,
+        linked: true,
+        createdAt: "2026-06-19T22:00:00.000Z",
+        updatedAt: "2026-06-19T22:00:01.000Z",
+      },
+      idempotent: false,
+      assignee: { id: "me", name: "Me" },
+      comment: null,
+      refreshedAt: "2026-06-19T22:00:01.000Z",
+    });
+
+    const harness = createWrapper();
+    harness.queryClient.setQueryData(ticketingKeys.detail({ provider: "jira", ticketRef }), detail);
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await act(async () => {
+      await result.current.assignToMe({ provider: "jira", ticketRef });
+    });
+
+    expect(ticketingApi.assignTicket).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "jira",
+        ticketRef,
+        projectId: "project-1",
+        clientOperationId: expect.stringMatching(/^ticketing:assign:/),
+      }),
+    );
+    expect(
+      harness.queryClient.getQueryData<TicketDetail>(
+        ticketingKeys.detail({ provider: "jira", ticketRef }),
+      )?.assignee?.name,
+    ).toBe("Me");
+  });
+
+  it("rolls back optimistic assign-to-me when the assign mutation fails", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const detail: TicketDetail = {
+      ref: ticketRef,
+      title: "Fix merge race",
+      state: { id: "todo", name: "To Do", category: "todo" },
+      assignee: { id: "orig", name: "Original" },
+      labels: [],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+      descriptionMarkdown: "Investigate transition race.",
+      comments: [],
+      attachments: [],
+      transitions: [],
+    };
+    vi.mocked(ticketingApi.assignTicket).mockRejectedValueOnce(new Error("Assign failed"));
+
+    const harness = createWrapper();
+    harness.queryClient.setQueryData(ticketingKeys.detail({ provider: "jira", ticketRef }), detail);
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await expect(
+      act(() => result.current.assignToMe({ provider: "jira", ticketRef })),
+    ).rejects.toThrow("Assign failed");
+
+    expect(
+      harness.queryClient.getQueryData<TicketDetail>(
+        ticketingKeys.detail({ provider: "jira", ticketRef }),
+      )?.assignee?.name,
+    ).toBe("Original");
+  });
+
+  it("appends an optimistic comment then replaces it with the server comment", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const detail: TicketDetail = {
+      ref: ticketRef,
+      title: "Fix merge race",
+      state: { id: "todo", name: "To Do", category: "todo" },
+      labels: [],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+      descriptionMarkdown: "Investigate transition race.",
+      comments: [],
+      attachments: [],
+      transitions: [],
+    };
+    vi.mocked(ticketingApi.addTicketComment).mockResolvedValueOnce({
+      ticketRef,
+      operation: {
+        id: "operation-comment",
+        operation: "comment",
+        clientOperationId: "generated",
+        status: "succeeded",
+        providerOperationId: "comment-1",
+        linked: true,
+        createdAt: "2026-06-19T22:00:02.000Z",
+        updatedAt: "2026-06-19T22:00:03.000Z",
+      },
+      idempotent: false,
+      comment: {
+        id: "server-comment-1",
+        author: { name: "RalphX" },
+        bodyMarkdown: "Pushed a fix.",
+        bodyText: "Pushed a fix.",
+        createdAt: "2026-06-19T22:00:03.000Z",
+        updatedAt: "2026-06-19T22:00:03.000Z",
+      },
+      refreshedAt: "2026-06-19T22:00:03.000Z",
+    });
+
+    const harness = createWrapper();
+    harness.queryClient.setQueryData(ticketingKeys.detail({ provider: "jira", ticketRef }), detail);
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await act(async () => {
+      await result.current.addComment({
+        provider: "jira",
+        ticketRef,
+        bodyMarkdown: "Pushed a fix.",
+      });
+    });
+
+    expect(ticketingApi.addTicketComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "jira",
+        ticketRef,
+        bodyMarkdown: "Pushed a fix.",
+        projectId: "project-1",
+        clientOperationId: expect.stringMatching(/^ticketing:comment:/),
+      }),
+    );
+    const comments = harness.queryClient.getQueryData<TicketDetail>(
+      ticketingKeys.detail({ provider: "jira", ticketRef }),
+    )?.comments;
+    // Optimistic placeholder replaced by the confirmed server comment id.
+    expect(comments).toHaveLength(1);
+    expect(comments?.[0]?.id).toBe("server-comment-1");
+  });
+
+  it("rolls back the optimistic comment when the comment mutation fails", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const detail: TicketDetail = {
+      ref: ticketRef,
+      title: "Fix merge race",
+      state: { id: "todo", name: "To Do", category: "todo" },
+      labels: [],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+      descriptionMarkdown: "Investigate transition race.",
+      comments: [],
+      attachments: [],
+      transitions: [],
+    };
+    vi.mocked(ticketingApi.addTicketComment).mockRejectedValueOnce(new Error("Comment failed"));
+
+    const harness = createWrapper();
+    harness.queryClient.setQueryData(ticketingKeys.detail({ provider: "jira", ticketRef }), detail);
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await expect(
+      act(() =>
+        result.current.addComment({
+          provider: "jira",
+          ticketRef,
+          bodyMarkdown: "Pushed a fix.",
+        }),
+      ),
+    ).rejects.toThrow("Comment failed");
+
+    expect(
+      harness.queryClient.getQueryData<TicketDetail>(
+        ticketingKeys.detail({ provider: "jira", ticketRef }),
+      )?.comments,
+    ).toEqual([]);
+  });
+
+  it("patches the assignee from the transition response when the backend returns one", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const transition: TicketTransitionOption = {
+      toStateId: "in_progress",
+      providerTransitionId: "transition-21",
+      name: "In Progress",
+      category: "in_progress",
+    };
+    const detail: TicketDetail = {
+      ref: ticketRef,
+      title: "Fix merge race",
+      state: { id: "todo", name: "To Do", category: "todo" },
+      assignee: null,
+      labels: [],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+      descriptionMarkdown: "Investigate transition race.",
+      comments: [],
+      attachments: [],
+      transitions: [transition],
+    };
+    vi.mocked(ticketingApi.transitionTicketStatus).mockResolvedValueOnce({
+      ticketRef,
+      operation: {
+        id: "operation-1",
+        operation: "transition",
+        clientOperationId: "generated",
+        status: "succeeded",
+        providerOperationId: "transition-21",
+        linked: true,
+        createdAt: "2026-06-19T22:00:00.000Z",
+        updatedAt: "2026-06-19T22:00:01.000Z",
+      },
+      idempotent: false,
+      transition,
+      assignee: { id: "auto", name: "Auto Assignee" },
+      comment: null,
+      refreshedAt: "2026-06-19T22:00:01.000Z",
+    });
+
+    const harness = createWrapper();
+    harness.queryClient.setQueryData(ticketingKeys.detail({ provider: "jira", ticketRef }), detail);
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await act(async () => {
+      await result.current.transitionStatus({ provider: "jira", ticketRef, transition });
+    });
+
+    const cached = harness.queryClient.getQueryData<TicketDetail>(
+      ticketingKeys.detail({ provider: "jira", ticketRef }),
+    );
+    expect(cached?.state.name).toBe("In Progress");
+    expect(cached?.assignee?.name).toBe("Auto Assignee");
+  });
+
+  it("honors an explicit projectId override and an explicit clientOperationId", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    vi.mocked(ticketingApi.assignTicket).mockResolvedValueOnce({
+      ticketRef,
+      operation: {
+        id: "operation-assign",
+        operation: "assign",
+        clientOperationId: "explicit-op",
+        status: "succeeded",
+        linked: true,
+        createdAt: "2026-06-19T22:00:00.000Z",
+        updatedAt: "2026-06-19T22:00:01.000Z",
+      },
+      idempotent: false,
+      assignee: { id: "me", name: "Me" },
+      refreshedAt: "2026-06-19T22:00:01.000Z",
+    });
+
+    // No hook-level projectId — input-level projectId must win.
+    const { result } = renderHook(() => useTicketingMutations(), {
+      wrapper: createWrapper().wrapper,
+    });
+
+    await act(async () => {
+      await result.current.assignToMe({
+        provider: "jira",
+        ticketRef,
+        projectId: "project-override",
+        clientOperationId: "explicit-op",
+      });
+    });
+
+    expect(ticketingApi.assignTicket).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "project-override",
+        clientOperationId: "explicit-op",
+      }),
+    );
+  });
+
+  it("invalidates the project-scoped associations cache after start-work", async () => {
+    const queryClient = createQueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const ticketRef = { provider: "jira" as const, id: "10001", key: "RX-1" };
+    vi.mocked(ticketingApi.startWorkFromTicket).mockResolvedValueOnce({
+      conversation: {
+        id: "conversation-ticket",
+        contextType: "project",
+        contextId: "project-1",
+        title: "RX-1",
+        messageCount: 1,
+        createdAt: "2026-06-19T22:00:00Z",
+        updatedAt: "2026-06-19T22:00:00Z",
+        archivedAt: null,
+        lastMessageAt: null,
+        claudeSessionId: null,
+        providerSessionId: null,
+        providerHarness: null,
+        agentMode: "edit",
+      },
+      workspace: null,
+      sendResult: {
+        conversationId: "conversation-ticket",
+        agentRunId: "",
+        isNewConversation: true,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    const { result } = renderHook(() => useStartWorkFromTicket(), {
+      wrapper: createWrapper(queryClient).wrapper,
+    });
+
+    await act(() =>
+      result.current.mutateAsync({
+        projectId: "project-1",
+        content: "Start work",
+        ticketRef,
+      }),
+    );
+
+    // The ticket-list invalidation key is project + provider scoped.
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ["ticketing", "tickets", "jira", "project-1"],
+    });
+  });
+
+  it("optimistically patches the matching ticket in cached ticket-list pages", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const otherRef: TicketRef = { provider: "jira", id: "20002", key: "RX-2" };
+    const summary = (ref: TicketRef, name: string): TicketSummary => ({
+      ref,
+      title: `Ticket ${ref.id}`,
+      state: { id: "todo", name, category: "todo" },
+      labels: [],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+    });
+    const listKey = ticketingKeys.tickets({ provider: "jira", projectId: "project-1" });
+    const pages: InfiniteData<TicketPage> = {
+      pages: [
+        {
+          items: [summary(ticketRef, "To Do"), summary(otherRef, "To Do")],
+          nextCursor: null,
+          total: 2,
+        },
+      ],
+      pageParams: [null],
+    };
+
+    const transition: TicketTransitionOption = {
+      toStateId: "done",
+      providerTransitionId: "transition-31",
+      name: "Done",
+      category: "done",
+    };
+    vi.mocked(ticketingApi.transitionTicketStatus).mockResolvedValueOnce({
+      ticketRef,
+      operation: {
+        id: "operation-1",
+        operation: "transition",
+        clientOperationId: "generated",
+        status: "succeeded",
+        providerOperationId: "transition-31",
+        linked: true,
+        createdAt: "2026-06-19T22:00:00.000Z",
+        updatedAt: "2026-06-19T22:00:01.000Z",
+      },
+      idempotent: false,
+      transition,
+      comment: null,
+      refreshedAt: "2026-06-19T22:00:01.000Z",
+    });
+
+    const harness = createWrapper();
+    harness.queryClient.setQueryData(listKey, pages);
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await act(async () => {
+      await result.current.transitionStatus({ provider: "jira", ticketRef, transition });
+    });
+
+    const cached = harness.queryClient.getQueryData<InfiniteData<TicketPage>>(listKey);
+    const items = cached?.pages[0]?.items ?? [];
+    // Only the matching ref is patched; the sibling row keeps its original state.
+    expect(items.find((t) => t.ref.id === "10001")?.state.name).toBe("Done");
+    expect(items.find((t) => t.ref.id === "20002")?.state.name).toBe("To Do");
+  });
+
+  it("restores cached ticket-list pages when the mutation fails", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const summary: TicketSummary = {
+      ref: ticketRef,
+      title: "Fix merge race",
+      state: { id: "todo", name: "To Do", category: "todo" },
+      labels: ["bug"],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+    };
+    const listKey = ticketingKeys.tickets({ provider: "jira", projectId: "project-1" });
+    const pages: InfiniteData<TicketPage> = {
+      pages: [{ items: [summary], nextCursor: null, total: 1 }],
+      pageParams: [null],
+    };
+    vi.mocked(ticketingApi.setTicketLabels).mockRejectedValueOnce(new Error("Label write failed"));
+
+    const harness = createWrapper();
+    harness.queryClient.setQueryData(listKey, pages);
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await expect(
+      act(() => result.current.setLabels({ provider: "jira", ticketRef, labels: ["bug", "ui"] })),
+    ).rejects.toThrow("Label write failed");
+
+    const restored = harness.queryClient.getQueryData<InfiniteData<TicketPage>>(listKey);
+    expect(restored?.pages[0]?.items[0]?.labels).toEqual(["bug"]);
+  });
+
+  it("rolls back the optimistic clear-assignee when the clear mutation fails", async () => {
+    const ticketRef: TicketRef = { provider: "linear", id: "LIN-1", key: "LIN-1" };
+    const detail: TicketDetail = {
+      ref: ticketRef,
+      title: "Fix dashboard loading",
+      state: { id: "todo", name: "Todo", category: "todo" },
+      assignee: { id: "user-1", name: "A. User" },
+      labels: [],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+      descriptionMarkdown: "Investigate Linear tickets.",
+      comments: [],
+      attachments: [],
+      transitions: [],
+    };
+    vi.mocked(ticketingApi.clearTicketAssignee).mockRejectedValueOnce(new Error("Clear failed"));
+
+    const harness = createWrapper();
+    harness.queryClient.setQueryData(ticketingKeys.detail({ provider: "linear", ticketRef }), detail);
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await expect(
+      act(() => result.current.clearAssignee({ provider: "linear", ticketRef })),
+    ).rejects.toThrow("Clear failed");
+
+    expect(
+      harness.queryClient.getQueryData<TicketDetail>(
+        ticketingKeys.detail({ provider: "linear", ticketRef }),
+      )?.assignee?.name,
+    ).toBe("A. User");
+  });
+
+  it("leaves a ticket-list summary unchanged when a comment mutation patches it", async () => {
+    // Comment patches only apply to detail entries (which carry a comments array);
+    // a plain summary row in the ticket-list cache must be left untouched.
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const summary: TicketSummary = {
+      ref: ticketRef,
+      title: "Fix merge race",
+      state: { id: "todo", name: "To Do", category: "todo" },
+      labels: [],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+    };
+    const listKey = ticketingKeys.tickets({ provider: "jira", projectId: "project-1" });
+
+    const harness = createWrapper();
+    harness.queryClient.setQueryData<InfiniteData<TicketPage>>(listKey, {
+      pages: [{ items: [summary], nextCursor: null, total: 1 }],
+      pageParams: [null],
+    });
+    vi.mocked(ticketingApi.addTicketComment).mockResolvedValueOnce({
+      ticketRef,
+      operation: {
+        id: "operation-comment",
+        operation: "comment",
+        clientOperationId: "generated",
+        status: "succeeded",
+        providerOperationId: "comment-1",
+        linked: true,
+        createdAt: "2026-06-19T22:00:02.000Z",
+        updatedAt: "2026-06-19T22:00:03.000Z",
+      },
+      idempotent: false,
+      comment: null,
+      refreshedAt: "2026-06-19T22:00:03.000Z",
+    });
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await act(async () => {
+      await result.current.addComment({ provider: "jira", ticketRef, bodyMarkdown: "note" });
+    });
+
+    const cached = harness.queryClient.getQueryData<InfiniteData<TicketPage>>(listKey);
+    const row = cached?.pages[0]?.items[0];
+    expect(row).toBeDefined();
+    // No comments key leaks onto the summary row.
+    expect("comments" in (row as object)).toBe(false);
+  });
+
+  it("keeps the optimistic labels when the set-labels response omits labels", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const detail: TicketDetail = {
+      ref: ticketRef,
+      title: "Fix merge race",
+      state: { id: "todo", name: "To Do", category: "todo" },
+      labels: ["bug"],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+      descriptionMarkdown: "Investigate transition race.",
+      comments: [],
+      attachments: [],
+      transitions: [],
+    };
+    vi.mocked(ticketingApi.setTicketLabels).mockResolvedValueOnce({
+      ticketRef,
+      operation: {
+        id: "operation-labels",
+        operation: "transition",
+        clientOperationId: "generated",
+        status: "succeeded",
+        linked: true,
+        createdAt: "2026-06-19T22:00:00.000Z",
+        updatedAt: "2026-06-19T22:00:01.000Z",
+      },
+      idempotent: false,
+      // labels omitted → onSuccess takes the early-return path and keeps the optimistic patch.
+      refreshedAt: "2026-06-19T22:00:01.000Z",
+    });
+
+    const harness = createWrapper();
+    harness.queryClient.setQueryData(ticketingKeys.detail({ provider: "jira", ticketRef }), detail);
+    const { result } = renderHook(() => useTicketingMutations("project-1"), {
+      wrapper: harness.wrapper,
+    });
+
+    await act(async () => {
+      await result.current.setLabels({ provider: "jira", ticketRef, labels: ["bug", "ui"] });
+    });
+
+    expect(
+      harness.queryClient.getQueryData<TicketDetail>(
+        ticketingKeys.detail({ provider: "jira", ticketRef }),
+      )?.labels,
+    ).toEqual(["bug", "ui"]);
+  });
 });
+
