@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TicketAssigneeChip } from "./TicketAssigneeChip";
 import { TicketLabels } from "./TicketLabels";
+import { openExternalTicketUrl } from "./ticketing-open-external";
 import { groupTicketsByStatus } from "./ticketing-read-state";
 import { resolveTicketKanbanMove, ticketDragId } from "./ticketing-kanban-utils";
 import { categoryToken, formatTicketDate, ticketButtonLabel, ticketKey } from "./ticketing-utils";
@@ -146,10 +147,7 @@ function TicketPrOpenControl({
           className="pointer-events-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:1px]"
           onClick={(event) => {
             event.stopPropagation();
-            void (async () => {
-              const { openUrl } = await import("@tauri-apps/plugin-opener");
-              await openUrl(prUrl);
-            })();
+            void openExternalTicketUrl(prUrl);
           }}
           style={{ color: "var(--status-success)" }}
         >

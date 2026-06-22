@@ -26,6 +26,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TicketAssigneeChip } from "./TicketAssigneeChip";
 import { TicketLabels } from "./TicketLabels";
+import { openExternalTicketUrl } from "./ticketing-open-external";
 import { countNewComments, isCommentNewSince, sortCommentsByCreatedAt } from "./ticketing-read-state";
 import { ticketSelectClassName, ticketSelectStyle, ticketSelectOptionStyle } from "./ticket-select-styles";
 import { categoryToken, formatTicketDate, providerLabel, ticketKey } from "./ticketing-utils";
@@ -635,14 +636,9 @@ export function TicketDetailSheet({
                         // the system browser; route through the app opener (keeping
                         // the anchor for semantics/accessibility).
                         event.preventDefault();
-                        const providerUrl = ticket.url;
-                        if (!providerUrl) {
-                          return;
+                        if (ticket.url) {
+                          void openExternalTicketUrl(ticket.url);
                         }
-                        void (async () => {
-                          const { openUrl } = await import("@tauri-apps/plugin-opener");
-                          await openUrl(providerUrl);
-                        })();
                       }}
                     >
                       Open in provider
