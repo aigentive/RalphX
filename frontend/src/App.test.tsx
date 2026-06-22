@@ -21,6 +21,10 @@ import { useRunningProcesses } from "@/hooks/useRunningProcesses";
 import { useMergePipeline } from "@/hooks/useMergePipeline";
 import { useIdeationSession, useIdeationSessions } from "@/hooks/useIdeation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import {
+  setTicketingDashboardFeatureFlagOverride,
+  TICKETING_DASHBOARD_OVERRIDE_KEY,
+} from "@/hooks/useFeatureFlags";
 import { toast } from "sonner";
 import type { Project } from "@/types/project";
 
@@ -117,6 +121,46 @@ vi.mock("@/components/activity", () => ({
   ActivityView: ({ showHeader }: { showHeader?: boolean }) => (
     <div data-testid="activity-view-mock">Activity View {showHeader && "(with header)"}</div>
   ),
+}));
+
+// Capture the props the App passes to the TicketingDashboardView so we can
+// drive its onNavigateToAssociation callback from tests without a real backend.
+const ticketingViewProps = vi.hoisted(() => ({
+  current: null as null | {
+    projectId: string | null;
+    onNavigateToAssociation: (deepLink: {
+      view: string;
+      id: string;
+      projectId?: string | null;
+    }) => void;
+  },
+}));
+
+// Mock the ticketing dashboard surface (and its data hooks) so navigating to
+// the ticketing view does not require live Tauri ticketing endpoints.
+vi.mock("@/components/ticketing", () => ({
+  TicketingDashboardView: (props: {
+    projectId: string | null;
+    onNavigateToAssociation: (deepLink: {
+      view: string;
+      id: string;
+      projectId?: string | null;
+    }) => void;
+  }) => {
+    ticketingViewProps.current = props;
+    return (
+      <div
+        data-testid="ticketing-dashboard-view-mock"
+        data-project-id={props.projectId ?? ""}
+      >
+        Ticketing Dashboard View
+      </div>
+    );
+  },
+}));
+
+vi.mock("@/hooks/useTicketingEvents", () => ({
+  useTicketingCacheEvents: vi.fn(),
 }));
 
 // Mock AgentsView
@@ -1287,6 +1331,105 @@ describe("App", () => {
       });
       expect(useUiStore.getState().selectedTaskId).toBe("task-42");
       expect(screen.getByTestId("task-graph-view-mock")).toBeInTheDocument();
+    });
+  });
+
+  describe("Ticketing view", () => {
+    beforeEach(() => {
+      ticketingViewProps.current = null;
+      window.localStorage.removeItem(TICKETING_DASHBOARD_OVERRIDE_KEY);
+      getQueryClient().clear();
+    });
+
+    it("renders the ticketing dashboard when the feature flag is enabled", async () => {
+      setTicketingDashboardFeatureFlagOverride(true);
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+
+      expect(
+        await screen.findByTestId("ticketing-dashboard-view-mock"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("ticketing-dashboard-view-mock"),
+      ).toHaveAttribute("data-project-id", "demo-project-1");
+    });
+
+    it("shows the disabled placeholder with a settings path when the flag is off (dev)", async () => {
+      setTicketingDashboardFeatureFlagOverride(false);
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+
+      expect(
+        await screen.findByTestId("feature-disabled-ticketing"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("ticketing-dashboard-view-mock"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /Enable it in Settings -> Integrations -> Linear -> Ticketing dashboard\./,
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it("routes a kanban deep link to the kanban view and selects the task", async () => {
+      setTicketingDashboardFeatureFlagOverride(true);
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+      await screen.findByTestId("ticketing-dashboard-view-mock");
+
+      expect(ticketingViewProps.current).not.toBeNull();
+      ticketingViewProps.current?.onNavigateToAssociation({
+        view: "kanban",
+        id: "task-99",
+      });
+
+      await waitFor(() => {
+        expect(useUiStore.getState().currentView).toBe("kanban");
+      });
+      expect(useUiStore.getState().selectedTaskId).toBe("task-99");
+    });
+
+    it("routes an agents deep link by focusing the project and selecting the conversation", async () => {
+      setTicketingDashboardFeatureFlagOverride(true);
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+      await screen.findByTestId("ticketing-dashboard-view-mock");
+
+      ticketingViewProps.current?.onNavigateToAssociation({
+        view: "agents",
+        id: "conversation-77",
+        projectId: "project-x",
+      });
+
+      await waitFor(() => {
+        expect(useUiStore.getState().currentView).toBe("agents");
+      });
+      expect(useAgentSessionStore.getState().focusedProjectId).toBe("project-x");
+      expect(
+        useChatStore.getState().activeConversationIds["project:project-x"],
+      ).toBe("conversation-77");
+    });
+
+    it("routes other deep-link views by switching the current view directly", async () => {
+      setTicketingDashboardFeatureFlagOverride(true);
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+      await screen.findByTestId("ticketing-dashboard-view-mock");
+
+      ticketingViewProps.current?.onNavigateToAssociation({
+        view: "ideation",
+        id: "irrelevant",
+      });
+
+      await waitFor(() => {
+        expect(useUiStore.getState().currentView).toBe("ideation");
+      });
     });
   });
 

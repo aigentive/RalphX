@@ -76,4 +76,74 @@ describe("LeftNavRail", () => {
     expect(screen.getByTestId("nav-dashboard-separator")).toBeInTheDocument();
     expect(screen.getByTestId("nav-ticketing")).toBeInTheDocument();
   });
+
+  it("filters the ticketing item out of the primary nav section", () => {
+    render(
+      <LeftNavRail
+        currentView="agents"
+        onViewChange={vi.fn()}
+      />,
+    );
+
+    // The Dashboard group wraps the ticketing item; the primary <nav> should not.
+    const dashboardGroup = screen.getByRole("group", { name: "Dashboard" });
+    expect(dashboardGroup).toContainElement(screen.getByTestId("nav-ticketing"));
+    // Primary views like Agents/Kanban are NOT inside the Dashboard group.
+    expect(dashboardGroup).not.toContainElement(screen.getByTestId("nav-agents"));
+    expect(dashboardGroup).not.toContainElement(screen.getByTestId("nav-kanban"));
+  });
+
+  it("renders the dashboard items in a group labeled Dashboard", () => {
+    render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
+
+    const dashboardGroup = screen.getByRole("group", { name: "Dashboard" });
+    expect(dashboardGroup).toBeInTheDocument();
+    expect(dashboardGroup).toContainElement(screen.getByTestId("nav-ticketing"));
+  });
+
+  it("warms up a primary view on pointer enter and focus", () => {
+    const onViewWarmUp = vi.fn();
+    render(
+      <LeftNavRail
+        currentView="agents"
+        onViewChange={vi.fn()}
+        onViewWarmUp={onViewWarmUp}
+      />,
+    );
+
+    const kanbanButton = screen.getByTestId("nav-kanban");
+    fireEvent.pointerEnter(kanbanButton);
+    expect(onViewWarmUp).toHaveBeenCalledWith("kanban");
+
+    onViewWarmUp.mockClear();
+    fireEvent.focus(kanbanButton);
+    expect(onViewWarmUp).toHaveBeenCalledWith("kanban");
+  });
+
+  it("warms up the ticketing dashboard item on pointer enter and focus", () => {
+    const onViewWarmUp = vi.fn();
+    render(
+      <LeftNavRail
+        currentView="agents"
+        onViewChange={vi.fn()}
+        onViewWarmUp={onViewWarmUp}
+      />,
+    );
+
+    const ticketingButton = screen.getByTestId("nav-ticketing");
+    fireEvent.pointerEnter(ticketingButton);
+    expect(onViewWarmUp).toHaveBeenCalledWith("ticketing");
+
+    onViewWarmUp.mockClear();
+    fireEvent.focus(ticketingButton);
+    expect(onViewWarmUp).toHaveBeenCalledWith("ticketing");
+  });
+
+  it("does not throw when onViewWarmUp is not provided", () => {
+    render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
+
+    expect(() =>
+      fireEvent.pointerEnter(screen.getByTestId("nav-ticketing")),
+    ).not.toThrow();
+  });
 });
