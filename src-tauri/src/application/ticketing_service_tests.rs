@@ -1143,3 +1143,458 @@ fn tauri_event_sink_emits_operation_updated_event_to_listeners() {
     assert!(payload.contains("\"status\":\"succeeded\""));
     assert!(payload.contains("\"operation\":\"comment\""));
 }
+
+// ── normalize_ticket_identity ───────────────────────────────────────────────
+
+#[test]
+fn normalize_ticket_identity_rejects_unknown_provider() {
+    let ticket = TicketingTicketIdentity {
+        provider: "asana".to_string(),
+        id: "1".to_string(),
+        key: None,
+        local_project_id: None,
+    };
+    let err = normalize_ticket_identity(&ticket).unwrap_err();
+    assert!(err.contains("Unknown ticketing provider"), "got: {err}");
+}
+
+#[test]
+fn normalize_ticket_identity_rejects_blank_id() {
+    let ticket = TicketingTicketIdentity {
+        provider: "jira".to_string(),
+        id: "   ".to_string(),
+        key: Some("JRA-1".to_string()),
+        local_project_id: None,
+    };
+    let err = normalize_ticket_identity(&ticket).unwrap_err();
+    assert!(err.contains("Ticket id is required"), "got: {err}");
+}
+
+#[test]
+fn normalize_ticket_identity_jira_uses_key_as_external_id() {
+    let ticket = TicketingTicketIdentity {
+        provider: " jira ".to_string(),
+        id: " 10001 ".to_string(),
+        key: Some("  JRA-1  ".to_string()),
+        local_project_id: Some("  proj-1  ".to_string()),
+    };
+    let identity = normalize_ticket_identity(&ticket).unwrap();
+    assert_eq!(identity.provider, "jira");
+    assert_eq!(identity.external_kind, "jira");
+    assert_eq!(identity.external_id, "JRA-1");
+    assert_eq!(identity.external_key.as_deref(), Some("JRA-1"));
+    assert_eq!(identity.local_project_id.as_deref(), Some("proj-1"));
+}
+
+#[test]
+fn normalize_ticket_identity_jira_falls_back_to_id_without_key() {
+    let ticket = TicketingTicketIdentity {
+        provider: "jira".to_string(),
+        id: "10001".to_string(),
+        key: None,
+        local_project_id: None,
+    };
+    let identity = normalize_ticket_identity(&ticket).unwrap();
+    assert_eq!(identity.external_id, "10001");
+    assert_eq!(identity.external_key, None);
+}
+
+#[test]
+fn normalize_ticket_identity_linear_uses_id_not_key() {
+    let ticket = TicketingTicketIdentity {
+        provider: "linear".to_string(),
+        id: "issue-1".to_string(),
+        key: Some("LIN-1".to_string()),
+        local_project_id: None,
+    };
+    let identity = normalize_ticket_identity(&ticket).unwrap();
+    assert_eq!(identity.external_kind, "issue");
+    assert_eq!(identity.external_id, "issue-1");
+    assert_eq!(identity.external_key.as_deref(), Some("LIN-1"));
+}
+
+#[test]
+fn normalize_ticket_identity_drops_blank_key_and_project() {
+    let ticket = TicketingTicketIdentity {
+        provider: "linear".to_string(),
+        id: "issue-1".to_string(),
+        key: Some("   ".to_string()),
+        local_project_id: Some(String::new()),
+    };
+    let identity = normalize_ticket_identity(&ticket).unwrap();
+    assert_eq!(identity.external_key, None);
+    assert_eq!(identity.local_project_id, None);
+}
+
+// ── required_trimmed ────────────────────────────────────────────────────────
+
+#[test]
+fn required_trimmed_errors_on_empty_or_whitespace() {
+    assert_eq!(required_trimmed("", "needed").unwrap_err(), "needed");
+    assert_eq!(required_trimmed("   ", "needed").unwrap_err(), "needed");
+}
+
+#[test]
+fn required_trimmed_returns_trimmed_value() {
+    assert_eq!(required_trimmed("  hi  ", "needed").unwrap(), "hi");
+}
+
+// ── normalize_labels ────────────────────────────────────────────────────────
+
+#[test]
+fn normalize_labels_trims_dedupes_case_insensitively_and_sorts() {
+    let input = vec![
+        "  Frontend ".to_string(),
+        "bug".to_string(),
+        "BUG".to_string(),
+        "   ".to_string(),
+        "apex".to_string(),
+    ];
+    // Empty entry dropped; "BUG" deduped (first surface form "bug" kept);
+    // sorted case-insensitively.
+    assert_eq!(
+        normalize_labels(&input),
+        vec!["apex".to_string(), "bug".to_string(), "Frontend".to_string()]
+    );
+}
+
+#[test]
+fn normalize_labels_empty_input_yields_empty() {
+    assert!(normalize_labels(&[]).is_empty());
+    assert!(normalize_labels(&["  ".to_string()]).is_empty());
+}
+
+// ── find_transition ─────────────────────────────────────────────────────────
+
+fn transition(to_state_id: &str, provider_transition_id: Option<&str>) -> TicketingTransitionOption {
+    TicketingTransitionOption {
+        to_state_id: to_state_id.to_string(),
+        provider_transition_id: provider_transition_id.map(str::to_string),
+        name: format!("To {to_state_id}"),
+        category: "todo".to_string(),
+        disabled_reason: None,
+    }
+}
+
+#[test]
+fn find_transition_by_provider_transition_id_takes_precedence() {
+    let options = vec![
+        transition("done", Some("31")),
+        transition("in_progress", Some("21")),
+    ];
+    // Match by provider transition id even when to_state_id differs.
+    let found = find_transition(&options, "ignored-state", Some("21")).unwrap();
+    assert_eq!(found.to_state_id, "in_progress");
+}
+
+#[test]
+fn find_transition_by_to_state_id_when_no_provider_id() {
+    let options = vec![transition("done", None), transition("in_progress", None)];
+    let found = find_transition(&options, "done", None).unwrap();
+    assert_eq!(found.to_state_id, "done");
+}
+
+#[test]
+fn find_transition_blank_provider_id_falls_back_to_state_id() {
+    let options = vec![transition("done", Some("31"))];
+    // A blank provider id is filtered out, so it matches on to_state_id.
+    let found = find_transition(&options, "done", Some("   ")).unwrap();
+    assert_eq!(found.to_state_id, "done");
+}
+
+#[test]
+fn find_transition_not_found_errors() {
+    let options = vec![transition("done", Some("31"))];
+    let err = find_transition(&options, "nope", None).unwrap_err();
+    assert!(err.contains("not available"), "got: {err}");
+    let err = find_transition(&options, "done", Some("99")).unwrap_err();
+    assert!(err.contains("not available"), "got: {err}");
+}
+
+#[test]
+fn find_transition_disabled_returns_reason() {
+    let mut disabled = transition("done", Some("31"));
+    disabled.disabled_reason = Some("Requires approval".to_string());
+    let err = find_transition(&[disabled], "done", None).unwrap_err();
+    assert_eq!(err, "Requires approval");
+}
+
+// ── provider → ticketing mapping ────────────────────────────────────────────
+
+#[test]
+fn jira_transition_option_maps_all_fields() {
+    let option = jira_transition_option(AtlassianJiraTransition {
+        provider_transition_id: "31".to_string(),
+        to_state_id: "done".to_string(),
+        name: "Done".to_string(),
+        category: "done".to_string(),
+    });
+    assert_eq!(option.to_state_id, "done");
+    assert_eq!(option.provider_transition_id.as_deref(), Some("31"));
+    assert_eq!(option.name, "Done");
+    assert_eq!(option.category, "done");
+    assert_eq!(option.disabled_reason, None);
+}
+
+#[test]
+fn linear_transition_option_has_no_provider_transition_id() {
+    let option = linear_transition_option(LinearWorkflowState {
+        id: "state-done".to_string(),
+        name: "Done".to_string(),
+        category: "done".to_string(),
+        color: Some("#fff".to_string()),
+    });
+    assert_eq!(option.to_state_id, "state-done");
+    assert_eq!(option.provider_transition_id, None);
+    assert_eq!(option.name, "Done");
+}
+
+#[test]
+fn jira_comment_result_maps_author_and_bodies() {
+    let result = jira_comment_result(AtlassianJiraComment {
+        id: Some("c1".to_string()),
+        author: Some("A. User".to_string()),
+        body_markdown: "**hi**".to_string(),
+        body_text: "hi".to_string(),
+        created_at: Some("2026-06-20T08:00:00Z".to_string()),
+        updated_at: None,
+    });
+    assert_eq!(result.id.as_deref(), Some("c1"));
+    assert_eq!(result.author_name.as_deref(), Some("A. User"));
+    assert_eq!(result.body_markdown, "**hi**");
+    assert_eq!(result.body_text, "hi");
+    assert_eq!(result.updated_at, None);
+}
+
+#[test]
+fn linear_comment_result_duplicates_body_into_text() {
+    let result = linear_comment_result(LinearComment {
+        id: "c1".to_string(),
+        body: "hello".to_string(),
+        author_id: Some("u1".to_string()),
+        author_name: Some("A. User".to_string()),
+        created_at: None,
+        updated_at: None,
+    });
+    assert_eq!(result.id.as_deref(), Some("c1"));
+    assert_eq!(result.body_markdown, "hello");
+    assert_eq!(result.body_text, "hello");
+    assert_eq!(result.author_name.as_deref(), Some("A. User"));
+}
+
+#[test]
+fn linear_user_to_person_defaults_name_to_me() {
+    let person = linear_user_to_ticketing_person(LinearUser {
+        id: "u1".to_string(),
+        name: None,
+    });
+    assert_eq!(person.id.as_deref(), Some("u1"));
+    assert_eq!(person.name, "Me");
+
+    let named = linear_user_to_ticketing_person(LinearUser {
+        id: "u2".to_string(),
+        name: Some("Ada".to_string()),
+    });
+    assert_eq!(named.name, "Ada");
+}
+
+// ── metadata + sync mapping ─────────────────────────────────────────────────
+
+#[test]
+fn transition_metadata_serializes_ids() {
+    let json = transition_metadata("done", Some("31"));
+    assert!(json.contains("\"toStateId\":\"done\""));
+    assert!(json.contains("\"providerTransitionId\":\"31\""));
+
+    let json_none = transition_metadata("done", None);
+    assert!(json_none.contains("\"providerTransitionId\":null"));
+}
+
+#[test]
+fn success_transition_metadata_includes_name_and_category() {
+    let json = success_transition_metadata(&transition("done", Some("31")));
+    assert!(json.contains("\"toStateId\":\"done\""));
+    assert!(json.contains("\"providerTransitionId\":\"31\""));
+    assert!(json.contains("\"category\":\"todo\""));
+}
+
+#[test]
+fn sync_kind_for_maps_each_operation_kind() {
+    assert_eq!(
+        sync_kind_for(ProviderTicketOperationKind::Transition),
+        "ticket_transition"
+    );
+    assert_eq!(
+        sync_kind_for(ProviderTicketOperationKind::Assign),
+        "ticket_assignment"
+    );
+    assert_eq!(
+        sync_kind_for(ProviderTicketOperationKind::Comment),
+        "ticket_comment"
+    );
+    assert_eq!(
+        sync_kind_for(ProviderTicketOperationKind::SetLabels),
+        "ticket_labels"
+    );
+}
+
+#[test]
+fn sync_status_for_collapses_failure_variants() {
+    assert_eq!(
+        sync_status_for(ProviderTicketOperationStatus::Pending),
+        ExternalIssueSyncStatus::Pending
+    );
+    assert_eq!(
+        sync_status_for(ProviderTicketOperationStatus::Succeeded),
+        ExternalIssueSyncStatus::Succeeded
+    );
+    for failed in [
+        ProviderTicketOperationStatus::Failed,
+        ProviderTicketOperationStatus::TimedOut,
+        ProviderTicketOperationStatus::Canceled,
+    ] {
+        assert_eq!(sync_status_for(failed), ExternalIssueSyncStatus::Failed);
+    }
+}
+
+// ── client_operation_id_or_derive + stable_hash ─────────────────────────────
+
+#[test]
+fn client_operation_id_prefers_provided_value() {
+    let identity = normalize_ticket_identity(&jira_ticket()).unwrap();
+    let id = client_operation_id_or_derive(
+        Some("  explicit-op  "),
+        &identity,
+        ProviderTicketOperationKind::Transition,
+        "ignored",
+    );
+    assert_eq!(id, "explicit-op");
+}
+
+#[test]
+fn client_operation_id_derives_deterministically_when_absent() {
+    let identity = normalize_ticket_identity(&jira_ticket()).unwrap();
+    let a = client_operation_id_or_derive(
+        None,
+        &identity,
+        ProviderTicketOperationKind::Transition,
+        "suffix",
+    );
+    let b = client_operation_id_or_derive(
+        Some("   "),
+        &identity,
+        ProviderTicketOperationKind::Transition,
+        "suffix",
+    );
+    // Blank provided value is treated as absent → same derived id.
+    assert_eq!(a, b);
+    assert!(a.starts_with("ticketing:jira:jira:JRA-1:transition:"));
+
+    // Different suffix → different derived id.
+    let c = client_operation_id_or_derive(
+        None,
+        &identity,
+        ProviderTicketOperationKind::Transition,
+        "other",
+    );
+    assert_ne!(a, c);
+}
+
+#[test]
+fn stable_hash_is_deterministic_and_hex() {
+    let a = stable_hash("payload");
+    let b = stable_hash("payload");
+    assert_eq!(a, b);
+    assert_eq!(a.len(), 64, "sha256 hex is 64 chars");
+    assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_ne!(a, stable_hash("different"));
+}
+
+// ── list_transitions + capability gating ────────────────────────────────────
+
+#[tokio::test]
+async fn list_transitions_routes_to_jira_client() {
+    let atlassian_client = Arc::new(RecordingAtlassianClient::default());
+    let atlassian = enabled_atlassian_service(Arc::clone(&atlassian_client)).await;
+    let (service, _sink) = service_with_sink(
+        atlassian,
+        disabled_linear_service(Arc::new(RecordingLinearClient::default())),
+        external_issue_service(),
+    );
+
+    let options = service
+        .list_transitions(&jira_ticket())
+        .await
+        .expect("jira transitions should load");
+    assert_eq!(options.len(), 1);
+    assert_eq!(options[0].to_state_id, "done");
+    assert_eq!(options[0].provider_transition_id.as_deref(), Some("31"));
+}
+
+#[tokio::test]
+async fn list_transitions_routes_to_linear_client() {
+    let linear_client = Arc::new(RecordingLinearClient::default());
+    let linear = enabled_linear_service(Arc::clone(&linear_client)).await;
+    let (service, _sink) = service_with_sink(
+        disabled_atlassian_service(Arc::new(RecordingAtlassianClient::default())),
+        linear,
+        external_issue_service(),
+    );
+
+    let options = service
+        .list_transitions(&linear_ticket())
+        .await
+        .expect("linear transitions should load");
+    let ids: Vec<&str> = options.iter().map(|o| o.to_state_id.as_str()).collect();
+    assert_eq!(ids, vec!["todo", "done"]);
+    // Linear workflow states never carry a provider transition id.
+    assert!(options.iter().all(|o| o.provider_transition_id.is_none()));
+}
+
+#[tokio::test]
+async fn list_transitions_on_disabled_provider_errors() {
+    let (service, _sink) = service_with_sink(
+        disabled_atlassian_service(Arc::new(RecordingAtlassianClient::default())),
+        disabled_linear_service(Arc::new(RecordingLinearClient::default())),
+        external_issue_service(),
+    );
+
+    let err = service
+        .list_transitions(&linear_ticket())
+        .await
+        .expect_err("disabled provider must reject list_transitions");
+    assert!(!err.is_empty());
+}
+
+// ── event emission without a sink ───────────────────────────────────────────
+
+#[tokio::test]
+async fn operations_succeed_without_an_event_sink() {
+    // Build a service WITHOUT calling with_event_sink, exercising the
+    // emit_operation_event no-sink branch end-to-end.
+    let linear_client = Arc::new(RecordingLinearClient::default());
+    let linear = enabled_linear_service(Arc::clone(&linear_client)).await;
+    let service = TicketingService::new(
+        disabled_atlassian_service(Arc::new(RecordingAtlassianClient::default())),
+        linear,
+        external_issue_service(),
+    );
+
+    let result = service
+        .transition_ticket_status(TicketTransitionRequest {
+            ticket: linear_ticket(),
+            to_state_id: "done".to_string(),
+            provider_transition_id: None,
+            client_operation_id: Some("op-no-sink".to_string()),
+        })
+        .await
+        .expect("transition should succeed even without an event sink");
+    assert_eq!(
+        result.operation.status,
+        ProviderTicketOperationStatus::Succeeded
+    );
+    assert_eq!(
+        *linear_client.updates.lock().await,
+        vec![("issue-1".to_string(), "done".to_string())]
+    );
+}

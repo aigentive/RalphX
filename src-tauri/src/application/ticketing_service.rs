@@ -148,6 +148,7 @@ impl<R: Runtime> TicketingEventSink for TauriTicketingEventSink<R> {
     }
 }
 
+#[derive(Debug)]
 struct TicketIdentity {
     provider: String,
     external_kind: String,
