@@ -527,6 +527,65 @@ mod tests {
         }
     }
 
+    /// The handler's dedupe gate (`if !outcome.duplicate`) skips cache
+    /// invalidation only for `DuplicateDelivery`. Confirm that action is the
+    /// sole one mapping to the `duplicate_delivery` label, so the gate can never
+    /// silently start (or stop) matching the wrong action.
+    #[test]
+    fn duplicate_delivery_is_the_only_skipped_invalidation_label() {
+        let task_id = TaskId::from_string("task-1".to_string());
+        let non_duplicate_actions = [
+            LinearWebhookAction::TransitionedTask {
+                task_id,
+                target_status: InternalStatus::Executing,
+            },
+            LinearWebhookAction::RecordedIssue,
+            LinearWebhookAction::RecordedIssueActivity,
+            LinearWebhookAction::NoLinkedTask,
+            LinearWebhookAction::NoMappedStatus,
+            LinearWebhookAction::UnsupportedEvent,
+        ];
+
+        assert_eq!(
+            linear_action_label(&LinearWebhookAction::DuplicateDelivery),
+            "duplicate_delivery"
+        );
+        for action in non_duplicate_actions {
+            assert_ne!(
+                linear_action_label(&action),
+                "duplicate_delivery",
+                "non-duplicate actions must not share the skipped label"
+            );
+        }
+    }
+
+    /// For a non-duplicate outcome the handler invokes `invalidate_linear_webhook`
+    /// with the action label as the reason. Exercise that exact call (the branch
+    /// the dedupe gate runs) and confirm it constructs a ticketing-cache event
+    /// carrying the action label as its reason.
+    #[test]
+    fn non_duplicate_branch_invalidates_with_action_label_reason() {
+        use crate::application::TicketingCacheInvalidator;
+
+        let action = LinearWebhookAction::RecordedIssue;
+        let body = serde_json::json!({
+            "type": "Issue",
+            "data": { "id": "issue-1", "identifier": "LIN-1" }
+        })
+        .to_string();
+
+        // No app_handle (as in test AppState) → no emit, but the event is built.
+        let event = TicketingCacheInvalidator::invalidate_linear_webhook(
+            None,
+            body.as_bytes(),
+            linear_action_label(&action),
+        )
+        .expect("non-duplicate Issue webhook should produce an invalidation event");
+
+        assert_eq!(event.reason, "recorded_issue");
+        assert_eq!(event.ticket_id.as_deref(), Some("issue-1"));
+    }
+
     #[test]
     fn linear_webhook_errors_map_to_http_statuses() {
         let cases = [
