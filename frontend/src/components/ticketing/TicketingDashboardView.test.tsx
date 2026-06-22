@@ -9,6 +9,8 @@ import * as chatHooks from "@/hooks/useChat";
 import * as ticketingHooks from "@/hooks/useTicketing";
 import * as projectHooks from "@/hooks/useProjects";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useChatStore } from "@/stores/chatStore";
 import { useTicketingStore } from "@/stores/ticketingStore";
 
 import { TicketingDashboardView } from "./TicketingDashboardView";
@@ -1106,5 +1108,497 @@ describe("TicketingDashboardView", () => {
     });
     // The Jira ticket must not route through the Linear assign API.
     expect(linearApi.assignAgentConversationLinearIssue).not.toHaveBeenCalled();
+  });
+
+  it("renders the provider loading state", () => {
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+
+    renderDashboard();
+
+    expect(screen.getByText("Loading ticketing providers")).toBeInTheDocument();
+  });
+
+  it("renders the provider load-error state with the error message", () => {
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("Provider catalog unavailable"),
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+
+    renderDashboard();
+
+    expect(screen.getByText("Ticketing providers failed to load")).toBeInTheDocument();
+    expect(screen.getByText("Provider catalog unavailable")).toBeInTheDocument();
+  });
+
+  it("renders the no-providers empty state", () => {
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+
+    renderDashboard();
+
+    expect(screen.getByText("No ticketing providers available")).toBeInTheDocument();
+  });
+
+  it("renders the provider error connection state", () => {
+    useTicketingStore.getState().setProvider("jira");
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "jira",
+          label: "Jira",
+          enabled: true,
+          connectionStatus: "error",
+          capabilities,
+          errorMessage: "Token expired.",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+
+    renderDashboard();
+
+    expect(screen.getByText("Jira tickets failed to load")).toBeInTheDocument();
+    expect(screen.getByText("Token expired.")).toBeInTheDocument();
+  });
+
+  it("renders the tickets loading state while data hydrates", () => {
+    mockConnectedDashboard();
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isFetching: true,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+
+    renderDashboard();
+
+    expect(screen.getByText("Loading tickets")).toBeInTheDocument();
+  });
+
+  it("renders a full error panel with a Refresh action when tickets fail and none are cached", () => {
+    mockConnectedDashboard();
+    const refreshMutate = vi.fn();
+    vi.mocked(ticketingHooks.useRefreshTickets).mockReturnValue({
+      mutate: refreshMutate,
+      isPending: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof ticketingHooks.useRefreshTickets>);
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: { pages: [{ items: [], nextCursor: null, total: 0 }], pageParams: [null] },
+      isLoading: false,
+      isFetching: false,
+      isError: true,
+      error: new Error("Tickets endpoint down"),
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+
+    renderDashboard();
+
+    expect(screen.getByText("Tickets failed to load")).toBeInTheDocument();
+    expect(screen.getByText("Tickets endpoint down")).toBeInTheDocument();
+    // The panel's Refresh action routes through the manual refresh mutation.
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(refreshMutate).toHaveBeenCalledWith({ provider: "jira", containerId: "RX" });
+  });
+
+  it("surfaces a manual-refresh failure as an error notice", () => {
+    mockConnectedDashboard();
+    vi.mocked(ticketingHooks.useRefreshTickets).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      isError: true,
+      error: new Error("Refresh rejected"),
+    } as unknown as ReturnType<typeof ticketingHooks.useRefreshTickets>);
+
+    renderDashboard();
+
+    expect(screen.getByRole("status")).toHaveTextContent("Manual refresh failed");
+    expect(screen.getByText("Refresh rejected")).toBeInTheDocument();
+  });
+
+  it("triggers a manual refresh with the active provider and container", () => {
+    mockConnectedDashboard();
+    const refreshMutate = vi.fn();
+    vi.mocked(ticketingHooks.useRefreshTickets).mockReturnValue({
+      mutate: refreshMutate,
+      isPending: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof ticketingHooks.useRefreshTickets>);
+
+    renderDashboard();
+
+    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+    expect(refreshMutate).toHaveBeenCalledWith({ provider: "jira", containerId: "RX" });
+  });
+
+  it("surfaces a column-refresh failure as a warning notice", () => {
+    mockConnectedDashboard();
+    vi.mocked(ticketingHooks.useTicketingColumns).mockReturnValue({
+      data: [{ id: "todo", name: "To Do", category: "todo", order: 0 }],
+      isLoading: false,
+      isError: true,
+      error: new Error("Columns endpoint down"),
+    } as ReturnType<typeof ticketingHooks.useTicketingColumns>);
+
+    renderDashboard();
+
+    expect(screen.getByRole("status")).toHaveTextContent("Ticket statuses failed to refresh");
+    expect(screen.getByText("Columns endpoint down")).toBeInTheDocument();
+  });
+
+  it("moves a ticket through the resolved transition from the list status control", async () => {
+    mockConnectedDashboard();
+    const transition = {
+      toStateId: "done",
+      providerTransitionId: "transition-31",
+      name: "Done",
+      category: "done" as const,
+    };
+    vi.mocked(ticketingHooks.fetchTicketTransitionsForMove).mockResolvedValue([transition]);
+    vi.mocked(ticketingHooks.findTicketTransitionForColumn).mockReturnValue(transition);
+    const transitionStatus = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
+      transitionStatus,
+      assignToMe: vi.fn(),
+      clearAssignee: vi.fn(),
+      addComment: vi.fn(),
+      setLabels: vi.fn(),
+      transitionStatusMutation: { isPending: false },
+      assignToMeMutation: { isPending: false },
+      clearAssigneeMutation: { isPending: false },
+      addCommentMutation: { isPending: false },
+      setLabelsMutation: { isPending: false },
+    } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
+
+    renderDashboard();
+
+    // Open the per-row status control (writable provider) and pick a target column.
+    // Radix DropdownMenu opens on pointerDown, not click.
+    fireEvent.pointerDown(screen.getByRole("button", { name: /change status/i }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /to do/i }));
+
+    await waitFor(() => {
+      expect(ticketingHooks.fetchTicketTransitionsForMove).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(transitionStatus).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "jira", projectId: "project-1", transition }),
+      );
+    });
+  });
+
+  it("ignores a status move when no enabled transition resolves for the column", async () => {
+    mockConnectedDashboard();
+    vi.mocked(ticketingHooks.fetchTicketTransitionsForMove).mockResolvedValue([]);
+    // No matching/enabled transition → handleMoveTicket short-circuits.
+    vi.mocked(ticketingHooks.findTicketTransitionForColumn).mockReturnValue(null);
+    const transitionStatus = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(ticketingHooks.useTicketingMutations).mockReturnValue({
+      transitionStatus,
+      assignToMe: vi.fn(),
+      clearAssignee: vi.fn(),
+      addComment: vi.fn(),
+      setLabels: vi.fn(),
+      transitionStatusMutation: { isPending: false },
+      assignToMeMutation: { isPending: false },
+      clearAssigneeMutation: { isPending: false },
+      addCommentMutation: { isPending: false },
+      setLabelsMutation: { isPending: false },
+    } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
+
+    renderDashboard();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: /change status/i }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /to do/i }));
+
+    await waitFor(() => {
+      expect(ticketingHooks.findTicketTransitionForColumn).toHaveBeenCalled();
+    });
+    expect(transitionStatus).not.toHaveBeenCalled();
+  });
+
+  it("refreshes with only the provider when no container is selected", () => {
+    mockConnectedDashboard();
+    // Drop back to the "All projects" selection so the refresh omits containerId.
+    useTicketingStore.getState().setContainerId(null);
+    // No containers means no forced selection gate, so content (and the refresh
+    // affordance) still renders.
+    vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
+      data: [],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+    const refreshMutate = vi.fn();
+    vi.mocked(ticketingHooks.useRefreshTickets).mockReturnValue({
+      mutate: refreshMutate,
+      isPending: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof ticketingHooks.useRefreshTickets>);
+
+    renderDashboard();
+
+    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+    expect(refreshMutate).toHaveBeenCalledWith({ provider: "jira" });
+  });
+
+  it("binds an existing conversation to a Linear ticket through the Linear assign API", async () => {
+    mockConnectedDashboard();
+    useTicketingStore.getState().setProvider("linear");
+    useTicketingStore.getState().setContainerId("TEAM");
+    const linearTicket = {
+      ...ticket,
+      ref: { provider: "linear" as const, id: "LIN-1", key: "ENG-1" },
+      // Linear filters tickets client-side by the selected container name, so the
+      // row's project must match the active team container ("Engineering").
+      project: "Engineering",
+    };
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "linear",
+          label: "Linear",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
+      data: [{ provider: "linear", id: "TEAM", key: "TEAM", name: "Engineering", kind: "team" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: { pages: [{ items: [linearTicket], nextCursor: null, total: 1 }], pageParams: [null] },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+    vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
+      data: { ...linearTicket, descriptionMarkdown: "Linear ticket.", comments: [], attachments: [], transitions: [] },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketDetail>);
+    vi.mocked(chatHooks.useConversations).mockReturnValue({
+      data: [{ id: "conv-lin", title: "Linear pairing" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof chatHooks.useConversations>);
+
+    renderDashboard();
+    fireEvent.click(screen.getByRole("button", { name: /ENG-1/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Bind existing conversation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Linear pairing" }));
+
+    await waitFor(() => {
+      expect(linearApi.assignAgentConversationLinearIssue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: "conv-lin",
+          projectId: "project-1",
+          issueId: "LIN-1",
+          issueKey: "ENG-1",
+          refresh: true,
+        }),
+      );
+    });
+    expect(atlassianApi.assignAgentConversationJiraIssue).not.toHaveBeenCalled();
+  });
+
+  it("navigates to the agents view when start-work succeeds", async () => {
+    mockConnectedDashboard();
+    let capturedOnSuccess: ((result: { conversation: { id: string } }) => void) | undefined;
+    const startWork = vi.fn((_input, options?: { onSuccess?: (r: { conversation: { id: string } }) => void }) => {
+      capturedOnSuccess = options?.onSuccess;
+    });
+    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
+      mutate: startWork,
+      isPending: false,
+      error: null,
+    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
+
+    renderDashboard();
+    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start RalphX work" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Start" }));
+
+    expect(startWork).toHaveBeenCalled();
+    // Drive the captured onSuccess to exercise the navigation side-effects.
+    capturedOnSuccess?.({ conversation: { id: "conv-new" } });
+
+    await waitFor(() => {
+      expect(useChatStore.getState().activeConversationIds["project:project-1"]).toBe("conv-new");
+    });
+    expect(useAgentSessionStore.getState().selectedConversationId).toBe("conv-new");
+    expect(useAgentSessionStore.getState().focusedProjectId).toBe("project-1");
+  });
+
+  it("surfaces a start-work error in the detail sheet", async () => {
+    mockConnectedDashboard();
+    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      error: new Error("Worktree creation failed"),
+    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
+
+    renderDashboard();
+    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
+
+    expect(await screen.findByText("Worktree creation failed")).toBeInTheDocument();
+  });
+
+  it("surfaces a bind error in the detail sheet when the assign API rejects", async () => {
+    mockConnectedDashboard();
+    vi.mocked(atlassianApi.assignAgentConversationJiraIssue).mockRejectedValueOnce(
+      new Error("Issue link rejected"),
+    );
+    vi.mocked(chatHooks.useConversations).mockReturnValue({
+      data: [{ id: "conv-err", title: "Failing bind" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof chatHooks.useConversations>);
+
+    renderDashboard();
+    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Bind existing conversation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Failing bind" }));
+
+    expect(await screen.findByText("Issue link rejected")).toBeInTheDocument();
+  });
+
+  it("loads more tickets from the list view when a next page is available", () => {
+    mockConnectedDashboard();
+    const fetchNextPage = vi.fn();
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: { pages: [{ items: [ticket], nextCursor: "cursor-2", total: 5 }], pageParams: [null] },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: true,
+      fetchNextPage,
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+
+    renderDashboard();
+
+    const loadMore = screen.getByRole("button", { name: /load more/i });
+    fireEvent.click(loadMore);
+    expect(fetchNextPage).toHaveBeenCalled();
+  });
+
+  it("closes the start-work dialog without starting when cancelled", async () => {
+    mockConnectedDashboard();
+    const startWork = vi.fn();
+    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
+      mutate: startWork,
+      isPending: false,
+      error: null,
+    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
+
+    renderDashboard();
+    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start RalphX work" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => {
+      expect(within(dialog).queryByText("Start RalphX Work")).not.toBeInTheDocument();
+    });
+    expect(startWork).not.toHaveBeenCalled();
+  });
+
+  it("dedupes ticket-derived status columns when rows share a state", () => {
+    mockConnectedDashboard();
+    vi.mocked(ticketingHooks.useTicketingColumns).mockReturnValue({
+      data: [],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingColumns>);
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: {
+        pages: [
+          {
+            items: [
+              ticket,
+              { ...ticket, ref: { provider: "jira", id: "10002", key: "RX-2" }, title: "Second" },
+            ],
+            nextCursor: null,
+            total: 2,
+          },
+        ],
+        pageParams: [null],
+      },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+
+    renderDashboard();
+
+    // Both rows share the "To Do" state, so the status filter offers exactly one
+    // "To Do" option (the duplicate is skipped in columnsFromTickets).
+    const statusFilter = screen.getByRole("combobox", { name: "Status" });
+    expect(within(statusFilter).getAllByRole("option", { name: "To Do" })).toHaveLength(1);
+  });
+
+  it("closes the ticket detail sheet and clears the selected ref", async () => {
+    mockConnectedDashboard();
+
+    renderDashboard();
+    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(useTicketingStore.getState().selectedTicketRef).not.toBeNull();
+
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+
+    await waitFor(() => {
+      expect(useTicketingStore.getState().selectedTicketRef).toBeNull();
+    });
   });
 });
