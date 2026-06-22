@@ -19,6 +19,7 @@ use ralphx_lib::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, get_agent_running_states_for_service,
     mark_agent_workspace_publish_failure, parse_context_type,
     send_agent_workspace_publish_repair_message, switch_agent_conversation_mode_for_state,
+    switch_agent_conversation_mode_for_state_stopping_running_agent,
     AgentRunStatusResponse, AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides,
     QueuedMessageResponse, SendAgentMessageResponse, SwitchAgentConversationModeInput,
 };
@@ -290,6 +291,112 @@ async fn active_linked_ideation_session_blocks_mode_switch() {
     .expect_err("active linked ideation should lock mode switch");
 
     assert!(error.contains("Ideation session is still active"));
+}
+
+#[tokio::test]
+async fn mode_switch_stopping_running_agent_stops_current_run_and_switches() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-stop-before-mode-switch".to_string());
+    let conversation_id = ChatConversationId::from_string("35353535-3535-4535-8535-353535353535");
+    seed_mode_switch_workspace(
+        &state,
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::Plan,
+    )
+    .await;
+
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        conversation_id.as_str(),
+    );
+    state
+        .running_agent_registry
+        .register(
+            running_key.clone(),
+            0,
+            conversation_id.as_str().to_string(),
+            "run-plan-proposal".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let service = state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+    let response = switch_agent_conversation_mode_for_state_stopping_running_agent(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+        &service,
+    )
+    .await
+    .expect("stop-and-switch mode change should succeed");
+
+    assert_eq!(response.conversation.agent_mode.as_deref(), Some("edit"));
+    assert_eq!(response.workspace.expect("workspace should remain").mode, "edit");
+    assert!(
+        !state.running_agent_registry.is_running(&running_key).await,
+        "running agent registry entry should be stopped before switching"
+    );
+}
+
+#[tokio::test]
+async fn mode_switch_stopping_running_agent_applies_to_other_valid_mode_switches() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-stop-before-plan-switch".to_string());
+    let conversation_id = ChatConversationId::from_string("36363636-3636-4636-8636-363636363636");
+    seed_mode_switch_workspace(
+        &state,
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::Edit,
+    )
+    .await;
+
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        conversation_id.as_str(),
+    );
+    state
+        .running_agent_registry
+        .register(
+            running_key.clone(),
+            0,
+            conversation_id.as_str().to_string(),
+            "run-edit-work".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let service = state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+    let response = switch_agent_conversation_mode_for_state_stopping_running_agent(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "plan".to_string(),
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+        &service,
+    )
+    .await
+    .expect("stop-and-switch should apply to any valid mode switch");
+
+    assert_eq!(response.conversation.agent_mode.as_deref(), Some("plan"));
+    assert_eq!(response.workspace.expect("workspace should remain").mode, "plan");
+    assert!(
+        !state.running_agent_registry.is_running(&running_key).await,
+        "running agent registry entry should be stopped before switching"
+    );
 }
 
 #[tokio::test]
