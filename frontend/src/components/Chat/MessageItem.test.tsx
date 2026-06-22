@@ -93,10 +93,10 @@ describe("MessageItem - Attachment Integration", () => {
       "message-reference-integration:jira:RX-42",
     );
     expect(jiraReference).toHaveTextContent("RX-42");
-    expect(jiraReference).toHaveAttribute(
-      "href",
-      "https://example.atlassian.net/browse/RX-42",
-    );
+    // Ticket references render as in-app navigation buttons (they open the ticketing
+    // view), not external links, so there is no href.
+    expect(jiraReference.tagName).toBe("BUTTON");
+    expect(jiraReference).not.toHaveAttribute("href");
     expect(jiraReference).toHaveClass("no-underline", "flex-wrap");
     expect(jiraReference).toHaveStyle({ textDecoration: "none" });
     expect(screen.getByText("Fix composer references")).toHaveClass("break-words");
