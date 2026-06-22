@@ -279,10 +279,8 @@ impl<'a> PlanPrPublisher<'a> {
         if review_state == PrReviewState::Ready {
             if let Some(ref description) = self.description_override {
                 sections.push(description.clone());
-            } else {
-                if let Some(template) = read_pull_request_template(repo_path).await {
-                    sections.push(template);
-                }
+            } else if let Some(template) = read_pull_request_template(repo_path).await {
+                sections.push(template);
             }
         } else if let Some(template) = read_pull_request_template(repo_path).await {
             sections.push(template);

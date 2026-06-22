@@ -5543,6 +5543,7 @@ mod managed_provider_launch_path_tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn rx_managed_codex_provider_rejects_missing_chat_launch_cli_path() {
         let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
             .lock()
