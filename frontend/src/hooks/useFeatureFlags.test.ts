@@ -10,6 +10,7 @@ import {
   FEATURE_FLAGS_QUERY_KEY,
   TICKETING_DASHBOARD_OVERRIDE_KEY,
   applyFeatureFlagOverrides,
+  getTicketingDashboardFeatureFlagOverride,
   isViewEnabled,
   setTicketingDashboardFeatureFlagOverride,
   useFeatureFlags,
@@ -71,6 +72,98 @@ describe("isViewEnabled", () => {
 
   it("returns true for unknown views (safe default)", () => {
     expect(isViewEnabled("unknown-view", allDisabled)).toBe(true);
+  });
+});
+
+// ============================================================================
+// getTicketingDashboardFeatureFlagOverride (localStorage reader)
+// ============================================================================
+
+describe("getTicketingDashboardFeatureFlagOverride", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("returns null when the localStorage key is not set", () => {
+    expect(getTicketingDashboardFeatureFlagOverride()).toBeNull();
+  });
+
+  it("returns true when localStorage value is the string 'true'", () => {
+    localStorage.setItem(TICKETING_DASHBOARD_OVERRIDE_KEY, "true");
+    expect(getTicketingDashboardFeatureFlagOverride()).toBe(true);
+  });
+
+  it("returns false when localStorage value is the string 'false'", () => {
+    localStorage.setItem(TICKETING_DASHBOARD_OVERRIDE_KEY, "false");
+    expect(getTicketingDashboardFeatureFlagOverride()).toBe(false);
+  });
+
+  it("returns null for invalid stored values (non 'true'/'false' strings)", () => {
+    localStorage.setItem(TICKETING_DASHBOARD_OVERRIDE_KEY, "yes");
+    expect(getTicketingDashboardFeatureFlagOverride()).toBeNull();
+
+    localStorage.setItem(TICKETING_DASHBOARD_OVERRIDE_KEY, "1");
+    expect(getTicketingDashboardFeatureFlagOverride()).toBeNull();
+
+    localStorage.setItem(TICKETING_DASHBOARD_OVERRIDE_KEY, "");
+    expect(getTicketingDashboardFeatureFlagOverride()).toBeNull();
+  });
+});
+
+// ============================================================================
+// applyFeatureFlagOverrides (pure overlay)
+// ============================================================================
+
+describe("applyFeatureFlagOverrides", () => {
+  const baseFlags: FeatureFlags = {
+    activityPage: true,
+    extensibilityPage: true,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: true,
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("returns flags unchanged when no override is set (override null)", () => {
+    expect(applyFeatureFlagOverrides(baseFlags)).toEqual(baseFlags);
+  });
+
+  it("sets ticketingDashboard=true when override is true", () => {
+    setTicketingDashboardFeatureFlagOverride(true);
+    expect(
+      applyFeatureFlagOverrides({ ...baseFlags, ticketingDashboard: false }),
+    ).toEqual({ ...baseFlags, ticketingDashboard: true });
+  });
+
+  it("sets ticketingDashboard=false when override is false", () => {
+    setTicketingDashboardFeatureFlagOverride(false);
+    expect(
+      applyFeatureFlagOverrides({ ...baseFlags, ticketingDashboard: true }),
+    ).toEqual({ ...baseFlags, ticketingDashboard: false });
+  });
+});
+
+// ============================================================================
+// setTicketingDashboardFeatureFlagOverride (localStorage writer)
+// ============================================================================
+
+describe("setTicketingDashboardFeatureFlagOverride", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("writes 'true' to localStorage when passed true", () => {
+    setTicketingDashboardFeatureFlagOverride(true);
+    expect(localStorage.getItem(TICKETING_DASHBOARD_OVERRIDE_KEY)).toBe("true");
+  });
+
+  it("writes 'false' to localStorage when passed false", () => {
+    setTicketingDashboardFeatureFlagOverride(false);
+    expect(localStorage.getItem(TICKETING_DASHBOARD_OVERRIDE_KEY)).toBe("false");
   });
 });
 

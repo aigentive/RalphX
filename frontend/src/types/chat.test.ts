@@ -6,6 +6,7 @@ import {
   isKanbanContext,
   isIdeationContext,
   isTaskDetailContext,
+  isTicketingContext,
   createKanbanContext,
   createIdeationContext,
   createTaskDetailContext,
@@ -142,6 +143,19 @@ describe("Context helper functions", () => {
       expect(isTaskDetailContext({ view: "kanban", projectId: "p1" })).toBe(false);
     });
   });
+
+  describe("isTicketingContext", () => {
+    it("should return true for ticketing view", () => {
+      expect(isTicketingContext({ view: "ticketing", projectId: "p1" })).toBe(true);
+    });
+
+    it("should return false for non-ticketing views", () => {
+      expect(isTicketingContext({ view: "kanban", projectId: "p1" })).toBe(false);
+      expect(isTicketingContext({ view: "ideation", projectId: "p1" })).toBe(false);
+      expect(isTicketingContext({ view: "activity", projectId: "p1" })).toBe(false);
+      expect(isTicketingContext({ view: "agents", projectId: "p1" })).toBe(false);
+    });
+  });
 });
 
 describe("Context factory functions", () => {
@@ -188,6 +202,13 @@ describe("Context factory functions", () => {
     it("should create activity context", () => {
       const ctx = createProjectContext("project-123", "activity");
       expect(ctx.view).toBe("activity");
+    });
+
+    it("should accept 'ticketing' as a valid view and create a ticketing context", () => {
+      const ctx = createProjectContext("project-123", "ticketing");
+      expect(ctx.view).toBe("ticketing");
+      expect(ctx.projectId).toBe("project-123");
+      expect(isTicketingContext(ctx)).toBe(true);
     });
   });
 });
