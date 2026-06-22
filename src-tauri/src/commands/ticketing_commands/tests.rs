@@ -308,6 +308,19 @@ fn jira_summary_maps_with_empty_metadata_and_provider_state() {
 }
 
 #[test]
+fn jira_status_category_rank_orders_todo_progress_done_then_other() {
+    // Jira has no status order field; category is the only stable signal, so
+    // columns must read To Do → In Progress → Done, with unknowns last.
+    assert!(jira_status_category_rank("todo") < jira_status_category_rank("in_progress"));
+    assert!(jira_status_category_rank("in_progress") < jira_status_category_rank("done"));
+    assert!(jira_status_category_rank("done") < jira_status_category_rank("other"));
+    assert_eq!(
+        jira_status_category_rank("anything-unknown"),
+        jira_status_category_rank("other")
+    );
+}
+
+#[test]
 fn jira_summary_without_key_keeps_none_key() {
     let summary = jira_summary_to_ticket(AtlassianResourceSummary {
         kind: AtlassianResourceKind::Jira,
@@ -887,6 +900,9 @@ fn ticket_start_input(
 
 #[tokio::test]
 async fn start_work_from_ticket_queues_message_and_links_jira_after_successful_start() {
+    // Seed harness availability so the start runtime check passes on sandboxed CI
+    // runners that have no real agent CLI on PATH (the probe is otherwise ambient).
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
     let state = AppState::new_test();
     let project_id = seed_ticketing_project(&state, "ticket-start-jira").await;
     let execution_state = Arc::new(ExecutionState::new());
@@ -945,6 +961,9 @@ async fn start_work_from_ticket_queues_message_and_links_jira_after_successful_s
 
 #[tokio::test]
 async fn start_work_from_ticket_does_not_link_when_existing_conversation_is_invalid() {
+    // Seed harness availability so the start runtime check passes on sandboxed CI
+    // runners that have no real agent CLI on PATH (the probe is otherwise ambient).
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
     let state = AppState::new_test();
     let project_id = seed_ticketing_project(&state, "ticket-start-link-rollback").await;
     let other_project_id = seed_ticketing_project(&state, "ticket-start-link-rollback-other").await;

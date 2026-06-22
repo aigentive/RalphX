@@ -123,14 +123,21 @@ pub async fn list_ticketing_columns(
                 .atlassian_integration_service
                 .list_jira_project_statuses(key)
                 .await
-                .map(|statuses| {
+                .map(|mut statuses| {
+                    // Jira's status endpoint exposes no order field; category is the
+                    // only stable signal, so sort To Do → In Progress → Done (stable
+                    // within a category, preserving the API order) for left-to-right
+                    // columns.
+                    statuses.sort_by_key(|status| jira_status_category_rank(&status.category));
                     statuses
                         .into_iter()
                         .enumerate()
                         .map(|(index, status)| jira_status_to_column(status, index))
                         .collect()
                 }),
-            None => Ok(default_ticketing_columns()),
+            // No project selected → no statuses; the dashboard forces a project pick
+            // before loading per-project statuses.
+            None => Ok(Vec::new()),
         },
         PROVIDER_LINEAR => state
             .linear_integration_service
@@ -721,6 +728,10 @@ fn writable_capabilities(freshness: &str) -> TicketingCapabilitiesResponse {
     }
 }
 
+// Test-only helper: a provider-neutral default column set. No production path uses
+// it now that Jira columns load per project (None → empty) and Linear always
+// fetches workflow states.
+#[cfg(test)]
 fn default_ticketing_columns() -> Vec<TicketingColumnResponse> {
     vec![
         ticketing_column("todo", "To Do", "todo", 0),
@@ -730,6 +741,7 @@ fn default_ticketing_columns() -> Vec<TicketingColumnResponse> {
     ]
 }
 
+#[cfg(test)]
 fn ticketing_column(id: &str, name: &str, category: &str, order: usize) -> TicketingColumnResponse {
     TicketingColumnResponse {
         id: id.to_string(),
@@ -798,6 +810,18 @@ fn jira_project_to_container(project: JiraProjectSummary) -> TicketingContainerR
         kind: "project".to_string(),
         parent_id: None,
         ticket_count: None,
+    }
+}
+
+/// Display rank for a normalized status category so Jira columns read
+/// left-to-right as To Do → In Progress → Done. Jira's status endpoint exposes
+/// no explicit order; category is the only stable ordering signal.
+fn jira_status_category_rank(category: &str) -> u8 {
+    match category {
+        "todo" => 0,
+        "in_progress" => 1,
+        "done" => 2,
+        _ => 3,
     }
 }
 
