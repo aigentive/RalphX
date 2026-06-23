@@ -28,6 +28,8 @@ export const TaskSchema = z.object({
   /** Ideation session ID (plan association). Backend Option<String> → null when the
    * task has no plan (e.g. Kanban-created), so accept null as well as absent. */
   ideation_session_id: z.string().nullable().optional(),
+  /** Execution plan ID for implementation-flow tasks */
+  execution_plan_id: z.string().nullable().optional(),
   // Accept RFC3339 timestamps with offset (e.g., +00:00)
   created_at: z.string().datetime({ offset: true }),
   updated_at: z.string().datetime({ offset: true }),
@@ -61,6 +63,8 @@ export interface Task {
   needsReviewPoint: boolean;
   /** Ideation session ID (plan association) */
   ideationSessionId?: string | undefined;
+  /** Execution plan ID for implementation-flow tasks */
+  executionPlanId?: string | undefined;
   createdAt: string;
   updatedAt: string;
   startedAt: string | null;
@@ -96,6 +100,7 @@ export function transformTask(raw: z.infer<typeof TaskSchema>): Task {
     internalStatus: raw.internal_status,
     needsReviewPoint: raw.needs_review_point,
     ideationSessionId: raw.ideation_session_id ?? undefined,
+    executionPlanId: raw.execution_plan_id ?? undefined,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
     startedAt: raw.started_at,
@@ -138,6 +143,10 @@ export const CreateTaskSchema = z.object({
   needsQa: z.boolean().nullable().optional(),
   /** Optional list of step titles to create for this task */
   steps: z.array(z.string()).optional(),
+  /** Optional ideation session association for plan-scoped task creation */
+  ideationSessionId: z.string().optional(),
+  /** Optional execution plan association for implementation-flow task creation */
+  executionPlanId: z.string().optional(),
 });
 
 export type CreateTask = z.infer<typeof CreateTaskSchema>;
