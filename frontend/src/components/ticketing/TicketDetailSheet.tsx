@@ -28,9 +28,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { TicketAssigneeChip } from "./TicketAssigneeChip";
 import { TicketLabelEditor } from "./TicketLabelEditor";
 import { TicketLabels } from "./TicketLabels";
+import { TicketSearchableSelect } from "./TicketSearchableSelect";
 import { openExternalTicketUrl } from "./ticketing-open-external";
 import { countNewComments, isCommentNewSince, sortCommentsByCreatedAt } from "./ticketing-read-state";
-import { ticketSelectClassName, ticketSelectStyle, ticketSelectOptionStyle } from "./ticket-select-styles";
 import { categoryToken, formatTicketDate, providerLabel, ticketKey } from "./ticketing-utils";
 
 interface TicketDetailSheetProps {
@@ -748,41 +748,35 @@ export function TicketDetailSheet({
                   </span>
                   <div className="flex min-w-0 items-center gap-2">
                     <ControlTooltip reason={statusDisabledReason}>
-                      <span className="relative inline-flex min-w-0 items-center">
-                        {/* Status color dot sits inside the select's left padding. */}
-                        <span
-                          className="pointer-events-none absolute left-2.5 z-10 h-2.5 w-2.5 rounded-full"
-                          aria-hidden="true"
-                          style={{ backgroundColor: categoryToken(ticket.state.category) }}
-                        />
-                        <select
-                          aria-label="Ticket status"
-                          value={ticket.state.id}
-                          disabled={Boolean(statusDisabledReason) || isTransitionPending}
-                          onChange={(event) => handleStatusChange(event.target.value)}
-                          className={ticketSelectClassName("sm", "min-w-[180px] max-w-[280px] pl-7 text-xs")}
-                          style={ticketSelectStyle}
-                        >
-                        <option value={ticket.state.id} style={ticketSelectOptionStyle}>{ticket.state.name}</option>
-                        {transitions
-                          .filter(
-                            (transition) =>
-                              transition.toStateId !== ticket.state.id &&
-                              transition.name.trim().toLowerCase() !==
-                                ticket.state.name.trim().toLowerCase(),
-                          )
-                          .map((transition) => (
-                            <option
-                              key={`${transition.toStateId}:${transition.providerTransitionId ?? ""}`}
-                              value={transition.toStateId}
-                              disabled={Boolean(transition.disabledReason)}
-                              style={ticketSelectOptionStyle}
-                            >
-                              {transition.name}
-                            </option>
-                          ))}
-                        </select>
-                      </span>
+                      <TicketSearchableSelect
+                        ariaLabel="Ticket status"
+                        value={ticket.state.id}
+                        disabled={Boolean(statusDisabledReason) || isTransitionPending}
+                        onValueChange={handleStatusChange}
+                        className="min-w-[180px] max-w-[280px] text-xs"
+                        searchPlaceholder="Search statuses..."
+                        options={[
+                          {
+                            value: ticket.state.id,
+                            label: ticket.state.name,
+                            leadingColor: categoryToken(ticket.state.category),
+                          },
+                          ...transitions
+                            .filter(
+                              (transition) =>
+                                transition.toStateId !== ticket.state.id &&
+                                transition.name.trim().toLowerCase() !==
+                                  ticket.state.name.trim().toLowerCase(),
+                            )
+                            .map((transition) => ({
+                              value: transition.toStateId,
+                              label: transition.name,
+                              disabled: Boolean(transition.disabledReason),
+                              description: transition.disabledReason ?? undefined,
+                              leadingColor: categoryToken(transition.category),
+                            })),
+                        ]}
+                      />
                     </ControlTooltip>
                   </div>
 

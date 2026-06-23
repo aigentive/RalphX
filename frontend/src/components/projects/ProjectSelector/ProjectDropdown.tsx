@@ -159,6 +159,12 @@ export function ProjectDropdown({
     setVisibleCount(pageSize);
   };
 
+  const revealNextPage = () => {
+    if (hasMoreProjects) {
+      setVisibleCount((count) => count + pageSize);
+    }
+  };
+
   const triggerClassName =
     variant === "insights"
       ? "h-9 min-w-[180px] max-w-[260px] justify-between rounded-lg border px-3 text-[0.75rem] font-medium shadow-none transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
@@ -245,7 +251,16 @@ export function ProjectDropdown({
           </div>
         </div>
 
-        <div className="max-h-72 overflow-y-auto overscroll-contain">
+        <div
+          className="max-h-72 overflow-y-auto overscroll-contain"
+          onScroll={(event) => {
+            const target = event.currentTarget;
+            const remaining = target.scrollHeight - target.scrollTop - target.clientHeight;
+            if (remaining < 32) {
+              revealNextPage();
+            }
+          }}
+        >
           <div className="p-1" role="listbox" aria-label="Projects" data-testid={listTestId}>
             {showAllProjectsOption && (
               <ProjectOption
@@ -281,7 +296,7 @@ export function ProjectDropdown({
               <button
                 type="button"
                 className="mt-1 flex w-full items-center justify-center rounded-md px-2 py-2 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                onClick={() => setVisibleCount((count) => count + pageSize)}
+                onClick={revealNextPage}
                 data-testid={showMoreTestId}
               >
                 Show {Math.min(pageSize, filteredProjects.length - visibleProjects.length)} more

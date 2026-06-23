@@ -68,6 +68,10 @@ export const ticketingKeys = {
     [...ticketingKeys.all, "conversation-ticket", conversationId] as const,
 };
 
+export function invalidateTicketingQueries(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: ticketingKeys.all });
+}
+
 export interface TransitionTicketStatusMutationInput extends TicketRefInput {
   transition: TicketTransitionOption;
   clientOperationId?: string | undefined;
@@ -459,7 +463,7 @@ export function useRefreshTickets() {
   return useMutation({
     mutationFn: (input: RefreshTicketsInput) => ticketingApi.refreshTickets(input),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ticketingKeys.all });
+      invalidateTicketingQueries(queryClient);
     },
   });
 }

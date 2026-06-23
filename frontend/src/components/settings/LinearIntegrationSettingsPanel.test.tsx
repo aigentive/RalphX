@@ -32,21 +32,6 @@ const linearHook = vi.hoisted(() => ({
   },
 }));
 
-const featureFlagHook = vi.hoisted(() => ({
-  setTicketingDashboardFeatureFlagOverride: vi.fn(),
-  setFeatureFlags: vi.fn(),
-  state: {
-    flags: {
-      activityPage: true,
-      extensibilityPage: true,
-      battleMode: true,
-      teamMode: false,
-      atlassianOauth: false,
-      ticketingDashboard: false,
-    },
-  },
-}));
-
 vi.mock("@/hooks/useLinearIntegration", () => ({
   useLinearIntegration: () => ({
     ...linearHook.state,
@@ -54,23 +39,6 @@ vi.mock("@/hooks/useLinearIntegration", () => ({
     validateAsync: linearHook.validateAsync,
     disconnectAsync: linearHook.disconnectAsync,
   }),
-}));
-
-vi.mock("@/hooks/useFeatureFlags", () => ({
-  FEATURE_FLAGS_QUERY_KEY: ["featureFlags"],
-  setTicketingDashboardFeatureFlagOverride:
-    featureFlagHook.setTicketingDashboardFeatureFlagOverride,
-  useFeatureFlags: () => ({
-    data: featureFlagHook.state.flags,
-  }),
-}));
-
-vi.mock("@/stores/uiStore", () => ({
-  useUiStore: {
-    getState: () => ({
-      setFeatureFlags: featureFlagHook.setFeatureFlags,
-    }),
-  },
 }));
 
 function renderPanel() {
@@ -94,14 +62,6 @@ function renderPanel() {
 describe("LinearIntegrationSettingsPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    featureFlagHook.state.flags = {
-      activityPage: true,
-      extensibilityPage: true,
-      battleMode: true,
-      teamMode: false,
-      atlassianOauth: false,
-      ticketingDashboard: false,
-    };
     linearHook.state.settings = {
       enabled: false,
       hasApiToken: false,
@@ -254,139 +214,15 @@ describe("LinearIntegrationSettingsPanel", () => {
     expect(linearHook.disconnectAsync).toHaveBeenCalledTimes(1);
   });
 
-  it("toggles ticketing dashboard access from Linear settings", async () => {
-    const user = userEvent.setup();
-    renderPanel();
-
-    await user.click(screen.getByTestId("linear-ticketing-dashboard-toggle"));
-
-    expect(
-      featureFlagHook.setTicketingDashboardFeatureFlagOverride,
-    ).toHaveBeenCalledWith(true);
-    expect(featureFlagHook.setFeatureFlags).toHaveBeenCalledWith({
-      activityPage: true,
-      extensibilityPage: true,
-      battleMode: true,
-      teamMode: false,
-      atlassianOauth: false,
-      ticketingDashboard: true,
-    });
-  });
-
-  it("writes the enabled flag into the feature flags query cache", async () => {
-    const user = userEvent.setup();
-    const { queryClient } = renderPanel();
-
-    await user.click(screen.getByTestId("linear-ticketing-dashboard-toggle"));
-
-    expect(queryClient.getQueryData(["featureFlags"])).toEqual({
-      activityPage: true,
-      extensibilityPage: true,
-      battleMode: true,
-      teamMode: false,
-      atlassianOauth: false,
-      ticketingDashboard: true,
-    });
-  });
-
-  it("disables ticketing dashboard access when toggled off", async () => {
-    const user = userEvent.setup();
-    featureFlagHook.state.flags = {
-      ...featureFlagHook.state.flags,
-      ticketingDashboard: true,
-    };
-    renderPanel();
-
-    await user.click(screen.getByTestId("linear-ticketing-dashboard-toggle"));
-
-    expect(
-      featureFlagHook.setTicketingDashboardFeatureFlagOverride,
-    ).toHaveBeenCalledWith(false);
-    expect(featureFlagHook.setFeatureFlags).toHaveBeenCalledWith({
-      activityPage: true,
-      extensibilityPage: true,
-      battleMode: true,
-      teamMode: false,
-      atlassianOauth: false,
-      ticketingDashboard: false,
-    });
-  });
-
-  it("renders the ticketing dashboard label and sidebar description", () => {
-    renderPanel();
-
-    expect(screen.getByText("Ticketing dashboard")).toBeInTheDocument();
-    expect(
-      screen.getByText(/Show the Ticketing dashboard entry in the mini sidebar/),
-    ).toBeInTheDocument();
-  });
-
-  it("reflects the persisted ticketing dashboard flag in the toggle checked state", () => {
-    featureFlagHook.state.flags = {
-      ...featureFlagHook.state.flags,
-      ticketingDashboard: true,
-    };
+  it("does not render a ticketing dashboard access switch", () => {
     renderPanel();
 
     expect(
-      screen.getByTestId("linear-ticketing-dashboard-toggle"),
-    ).toHaveAttribute("aria-checked", "true");
-  });
-
-  it("shows the toggle unchecked when the dashboard flag is off", () => {
-    renderPanel();
-
+      screen.queryByTestId("linear-ticketing-dashboard-toggle"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Ticketing dashboard")).not.toBeInTheDocument();
     expect(
-      screen.getByTestId("linear-ticketing-dashboard-toggle"),
-    ).toHaveAttribute("aria-checked", "false");
-  });
-
-  it("handles an enable -> disable -> enable toggle cycle", async () => {
-    const user = userEvent.setup();
-    const { rerender } = renderPanel();
-
-    // Enable
-    await user.click(screen.getByTestId("linear-ticketing-dashboard-toggle"));
-    expect(
-      featureFlagHook.setTicketingDashboardFeatureFlagOverride,
-    ).toHaveBeenLastCalledWith(true);
-
-    // Simulate the persisted flag flipping on, then disable.
-    featureFlagHook.state.flags = {
-      ...featureFlagHook.state.flags,
-      ticketingDashboard: true,
-    };
-    rerender(
-      createElement(
-        QueryClientProvider,
-        { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
-        createElement(LinearIntegrationSettingsPanel),
-      ),
-    );
-    await user.click(screen.getByTestId("linear-ticketing-dashboard-toggle"));
-    expect(
-      featureFlagHook.setTicketingDashboardFeatureFlagOverride,
-    ).toHaveBeenLastCalledWith(false);
-
-    // Simulate the persisted flag flipping off, then enable again.
-    featureFlagHook.state.flags = {
-      ...featureFlagHook.state.flags,
-      ticketingDashboard: false,
-    };
-    rerender(
-      createElement(
-        QueryClientProvider,
-        { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
-        createElement(LinearIntegrationSettingsPanel),
-      ),
-    );
-    await user.click(screen.getByTestId("linear-ticketing-dashboard-toggle"));
-    expect(
-      featureFlagHook.setTicketingDashboardFeatureFlagOverride,
-    ).toHaveBeenLastCalledWith(true);
-
-    expect(
-      featureFlagHook.setTicketingDashboardFeatureFlagOverride,
-    ).toHaveBeenCalledTimes(3);
+      screen.queryByText(/Show the Ticketing dashboard entry in the mini sidebar/),
+    ).not.toBeInTheDocument();
   });
 });

@@ -2,15 +2,25 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   atlassianApi,
+  type AtlassianIntegrationSettings,
   type CompleteAtlassianOAuthLocalCallbackInput,
   type ExchangeAtlassianOAuthCodeInput,
   type SaveAtlassianIntegrationSettingsInput,
 } from "@/api/atlassian";
+import { invalidateTicketingQueries } from "@/hooks/useTicketing";
 
 export const atlassianIntegrationKeys = {
   all: ["atlassian-integration"] as const,
   settings: () => [...atlassianIntegrationKeys.all, "settings"] as const,
 };
+
+function updateSettingsAndRefreshTicketing(
+  queryClient: ReturnType<typeof useQueryClient>,
+  settings: AtlassianIntegrationSettings,
+) {
+  queryClient.setQueryData(atlassianIntegrationKeys.settings(), settings);
+  invalidateTicketingQueries(queryClient);
+}
 
 export function useAtlassianIntegration() {
   const queryClient = useQueryClient();
@@ -24,14 +34,14 @@ export function useAtlassianIntegration() {
     mutationFn: (input: SaveAtlassianIntegrationSettingsInput) =>
       atlassianApi.saveSettings(input),
     onSuccess: (settings) => {
-      queryClient.setQueryData(atlassianIntegrationKeys.settings(), settings);
+      updateSettingsAndRefreshTicketing(queryClient, settings);
     },
   });
 
   const validateMutation = useMutation({
     mutationFn: () => atlassianApi.validate(),
     onSuccess: (settings) => {
-      queryClient.setQueryData(atlassianIntegrationKeys.settings(), settings);
+      updateSettingsAndRefreshTicketing(queryClient, settings);
     },
   });
 
@@ -47,7 +57,7 @@ export function useAtlassianIntegration() {
     mutationFn: (input: CompleteAtlassianOAuthLocalCallbackInput) =>
       atlassianApi.completeOAuthLocalCallback(input),
     onSuccess: (settings) => {
-      queryClient.setQueryData(atlassianIntegrationKeys.settings(), settings);
+      updateSettingsAndRefreshTicketing(queryClient, settings);
     },
   });
 
@@ -55,14 +65,14 @@ export function useAtlassianIntegration() {
     mutationFn: (input: ExchangeAtlassianOAuthCodeInput) =>
       atlassianApi.exchangeOAuthCode(input),
     onSuccess: (settings) => {
-      queryClient.setQueryData(atlassianIntegrationKeys.settings(), settings);
+      updateSettingsAndRefreshTicketing(queryClient, settings);
     },
   });
 
   const disconnectMutation = useMutation({
     mutationFn: () => atlassianApi.disconnect(),
     onSuccess: (settings) => {
-      queryClient.setQueryData(atlassianIntegrationKeys.settings(), settings);
+      updateSettingsAndRefreshTicketing(queryClient, settings);
     },
   });
 

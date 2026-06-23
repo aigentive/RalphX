@@ -4,7 +4,7 @@ import { X } from "lucide-react";
 import type { TicketingProvider } from "@/api/ticketing";
 import type { TicketLabelOption } from "@/api/ticketing";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ticketSelectClassName, ticketSelectStyle, ticketSelectOptionStyle } from "./ticket-select-styles";
+import { TicketSearchableSelect } from "./TicketSearchableSelect";
 
 export interface TicketLabelEditorProps {
   provider: TicketingProvider;
@@ -248,29 +248,25 @@ function LinearLabelPicker({
     );
   }
   return (
-    <select
-      id={inputId}
-      aria-label="Add a label"
-      disabled={disabled}
-      value=""
-      className={ticketSelectClassName("sm", "w-full")}
-      style={ticketSelectStyle}
-      onChange={(event) => {
-        const name = event.target.value;
-        if (name) {
-          onSelect(name);
-        }
-        event.currentTarget.value = "";
-      }}
-    >
-      <option value="" style={ticketSelectOptionStyle}>
-        Add a label…
-      </option>
-      {options.map((option) => (
-        <option key={option.id ?? option.name} value={option.name} style={ticketSelectOptionStyle}>
-          {option.name}
-        </option>
-      ))}
-    </select>
+    <div id={inputId}>
+      <TicketSearchableSelect
+        ariaLabel="Add a label"
+        disabled={disabled}
+        value=""
+        className="w-full"
+        placeholder="Add a label..."
+        searchPlaceholder="Search labels..."
+        emptyLabel="No labels found"
+        onValueChange={(name) => {
+          if (name) {
+            onSelect(name);
+          }
+        }}
+        options={options.map((option) => ({
+          value: option.name,
+          label: option.name,
+        }))}
+      />
+    </div>
   );
 }

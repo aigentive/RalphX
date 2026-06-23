@@ -10,6 +10,7 @@ interface TicketAssigneeChipProps {
   size?: "sm" | "md";
   unassignedLabel?: string;
   className?: string;
+  unassignedTone?: "muted" | "secondary";
 }
 
 /**
@@ -22,6 +23,7 @@ export function TicketAssigneeChip({
   size = "sm",
   unassignedLabel = "Unassigned",
   className,
+  unassignedTone = "muted",
 }: TicketAssigneeChipProps) {
   // Track an avatar URL that failed to load so we fall back to initials instead
   // of a blank circle (provider avatars frequently fail under WKWebView).
@@ -29,10 +31,11 @@ export function TicketAssigneeChip({
   const avatarSize = size === "md" ? "h-6 w-6" : "h-5 w-5";
   const textSize = size === "md" ? "text-sm" : "text-xs";
   const wrapperClass = `inline-flex min-w-0 items-center gap-1.5 ${textSize} ${className ?? ""}`.trim();
+  const unassignedColor = unassignedTone === "secondary" ? "var(--text-secondary)" : "var(--text-muted)";
 
   if (!person) {
     return (
-      <span className={`${wrapperClass} text-[var(--text-muted)]`}>
+      <span className={wrapperClass} style={{ color: unassignedColor }}>
         <span
           className={`inline-flex ${avatarSize} shrink-0 items-center justify-center rounded-full`}
           aria-hidden="true"
@@ -41,7 +44,7 @@ export function TicketAssigneeChip({
             borderColor: "var(--border-subtle)",
             borderStyle: "dashed",
             borderWidth: "1px",
-            color: "var(--text-muted)",
+            color: unassignedColor,
           }}
         >
           <UserRound className="h-3 w-3" aria-hidden="true" />

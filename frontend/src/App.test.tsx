@@ -21,10 +21,6 @@ import { useRunningProcesses } from "@/hooks/useRunningProcesses";
 import { useMergePipeline } from "@/hooks/useMergePipeline";
 import { useIdeationSession, useIdeationSessions } from "@/hooks/useIdeation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
-import {
-  setTicketingDashboardFeatureFlagOverride,
-  TICKETING_DASHBOARD_OVERRIDE_KEY,
-} from "@/hooks/useFeatureFlags";
 import { toast } from "sonner";
 import type { Project } from "@/types/project";
 
@@ -1337,12 +1333,10 @@ describe("App", () => {
   describe("Ticketing view", () => {
     beforeEach(() => {
       ticketingViewProps.current = null;
-      window.localStorage.removeItem(TICKETING_DASHBOARD_OVERRIDE_KEY);
       getQueryClient().clear();
     });
 
-    it("renders the ticketing dashboard when the feature flag is enabled", async () => {
-      setTicketingDashboardFeatureFlagOverride(true);
+    it("renders the ticketing dashboard without a manual feature override", async () => {
       render(<App />);
 
       useUiStore.getState().setCurrentView("ticketing");
@@ -1355,27 +1349,18 @@ describe("App", () => {
       ).toHaveAttribute("data-project-id", "demo-project-1");
     });
 
-    it("shows the disabled placeholder with a settings path when the flag is off (dev)", async () => {
-      setTicketingDashboardFeatureFlagOverride(false);
+    it("does not show a disabled placeholder for the old dashboard flag", async () => {
       render(<App />);
 
       useUiStore.getState().setCurrentView("ticketing");
 
       expect(
-        await screen.findByTestId("feature-disabled-ticketing"),
+        await screen.findByTestId("ticketing-dashboard-view-mock"),
       ).toBeInTheDocument();
-      expect(
-        screen.queryByTestId("ticketing-dashboard-view-mock"),
-      ).not.toBeInTheDocument();
-      expect(
-        screen.getByText(
-          /Enable it in Settings -> Integrations -> Linear -> Ticketing dashboard\./,
-        ),
-      ).toBeInTheDocument();
+      expect(screen.queryByTestId("feature-disabled-ticketing")).not.toBeInTheDocument();
     });
 
     it("routes a kanban deep link to the kanban view and selects the task", async () => {
-      setTicketingDashboardFeatureFlagOverride(true);
       render(<App />);
 
       useUiStore.getState().setCurrentView("ticketing");
@@ -1394,7 +1379,6 @@ describe("App", () => {
     });
 
     it("routes an agents deep link by focusing the project and selecting the conversation", async () => {
-      setTicketingDashboardFeatureFlagOverride(true);
       render(<App />);
 
       useUiStore.getState().setCurrentView("ticketing");
@@ -1416,7 +1400,6 @@ describe("App", () => {
     });
 
     it("routes other deep-link views by switching the current view directly", async () => {
-      setTicketingDashboardFeatureFlagOverride(true);
       render(<App />);
 
       useUiStore.getState().setCurrentView("ticketing");

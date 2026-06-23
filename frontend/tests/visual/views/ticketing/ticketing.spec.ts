@@ -47,10 +47,11 @@ async function openTicketing(page: Page) {
   // The provider requires a project selection before tickets/statuses load; pick
   // the mock project so the list, kanban, and detail render. Scope to the dashboard
   // since "Project" also labels the top-bar project selector.
-  await page
-    .getByTestId("ticketing-dashboard")
-    .getByLabel("Project")
-    .selectOption("RX");
+  const dashboard = page.getByTestId("ticketing-dashboard");
+  const projectSelect = dashboard.getByRole("combobox", { name: "Project" });
+  await projectSelect.click();
+  await page.getByRole("option", { name: /^RalphX/ }).click();
+  await expect(projectSelect).toContainText("RalphX");
 }
 
 async function expectNoAxeViolations(page: Page, selector = '[data-testid="ticketing-dashboard"]') {

@@ -7,8 +7,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import type { TicketingFilterState, TicketingViewMode } from "@/stores/ticketingStore";
 import { cn } from "@/lib/utils";
 
+import { TicketSearchableSelect } from "./TicketSearchableSelect";
 import { hasActiveTicketFilters, UNASSIGNED_ASSIGNEE } from "./ticketing-read-state";
-import { ticketSelectClassName, ticketSelectStyle, ticketSelectOptionStyle } from "./ticket-select-styles";
+import { categoryToken } from "./ticketing-utils";
 
 interface TicketFilterBarProps {
   containers: TicketingContainer[];
@@ -99,61 +100,69 @@ export function TicketFilterBar({
             <span aria-hidden="true" className="ml-0.5 text-[var(--accent-primary)]">*</span>
           ) : null}
         </span>
-        <select
-          aria-label={containerLabel}
-          className={ticketSelectClassName("sm", "min-w-[150px] max-w-[220px]")}
+        <TicketSearchableSelect
+          ariaLabel={containerLabel}
+          className="min-w-[150px] max-w-[220px]"
           value={activeContainerId ?? ""}
-          onChange={(event) => onContainerChange(event.target.value || null)}
-          style={ticketSelectStyle}
-        >
-          <option value="" style={ticketSelectOptionStyle}>{allContainersLabel}</option>
-          {containers.map((container) => (
-            <option key={container.id} value={container.id} style={ticketSelectOptionStyle}>
-              {container.name}
-            </option>
-          ))}
-        </select>
+          onValueChange={(nextValue) => onContainerChange(nextValue || null)}
+          placeholder={allContainersLabel}
+          searchPlaceholder={`Search ${containerLabel.toLowerCase()}s...`}
+          clearable
+          clearLabel={`Clear ${containerLabel.toLowerCase()} filter`}
+          options={[
+            { value: "", label: allContainersLabel },
+            ...containers.map((container) => ({
+              value: container.id,
+              label: container.name,
+              description: container.key ?? undefined,
+            })),
+          ]}
+        />
       </label>
 
       <label className="flex min-w-[170px] items-center gap-2 text-xs text-[var(--text-muted)]">
         Status
-        <select
-          aria-label="Status"
-          className={ticketSelectClassName("sm", "min-w-[120px] max-w-[200px]")}
+        <TicketSearchableSelect
+          ariaLabel="Status"
+          className="min-w-[120px] max-w-[200px]"
           value={filters.stateIds[0] ?? ""}
-          onChange={(event) =>
+          onValueChange={(nextValue) =>
             onFiltersChange({
-              stateIds: event.target.value ? [event.target.value] : [],
+              stateIds: nextValue ? [nextValue] : [],
             })
           }
-          style={ticketSelectStyle}
-        >
-          <option value="" style={ticketSelectOptionStyle}>Any status</option>
-          {columns.map((column) => (
-            <option key={column.id} value={column.id} style={ticketSelectOptionStyle}>
-              {column.name}
-            </option>
-          ))}
-        </select>
+          placeholder="Any status"
+          searchPlaceholder="Search statuses..."
+          clearable
+          clearLabel="Clear status filter"
+          options={[
+            { value: "", label: "Any status" },
+            ...columns.map((column) => ({
+              value: column.id,
+              label: column.name,
+              leadingColor: categoryToken(column.category),
+            })),
+          ]}
+        />
       </label>
 
       <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
         Assignee
-        <select
-          aria-label="Assignee"
-          className={ticketSelectClassName("sm", "min-w-[130px] max-w-[200px]")}
+        <TicketSearchableSelect
+          ariaLabel="Assignee"
+          className="min-w-[130px] max-w-[200px]"
           value={filters.assignee ?? ""}
-          onChange={(event) => onFiltersChange({ assignee: event.target.value || null })}
-          style={ticketSelectStyle}
-        >
-          <option value="" style={ticketSelectOptionStyle}>Everyone</option>
-          <option value={UNASSIGNED_ASSIGNEE} style={ticketSelectOptionStyle}>Unassigned</option>
-          {assigneeOptions.map((name) => (
-            <option key={name} value={name} style={ticketSelectOptionStyle}>
-              {name}
-            </option>
-          ))}
-        </select>
+          onValueChange={(nextValue) => onFiltersChange({ assignee: nextValue || null })}
+          placeholder="Everyone"
+          searchPlaceholder="Search assignees..."
+          clearable
+          clearLabel="Clear assignee filter"
+          options={[
+            { value: "", label: "Everyone" },
+            { value: UNASSIGNED_ASSIGNEE, label: "Unassigned" },
+            ...assigneeOptions.map((name) => ({ value: name, label: name })),
+          ]}
+        />
       </label>
 
       <div className="relative min-w-[220px] flex-1">
