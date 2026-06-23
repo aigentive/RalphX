@@ -18,6 +18,8 @@ pub mod sqlite_agent_task_repo;
 pub mod sqlite_atlassian_integration_settings_repo;
 pub mod sqlite_clickup_integration_settings_repo;
 #[cfg(test)]
+mod sqlite_clickup_integration_settings_repo_tests;
+#[cfg(test)]
 mod sqlite_agent_task_repo_tests;
 pub mod sqlite_agent_run_repo;
 pub mod sqlite_app_state_repo;

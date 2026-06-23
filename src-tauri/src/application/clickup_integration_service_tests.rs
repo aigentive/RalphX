@@ -98,6 +98,10 @@ struct TestClickUpClient {
     seen_tokens: Mutex<Vec<String>>,
     list_tasks_calls: Mutex<Vec<(String, Vec<String>)>>,
     list_spaces_calls: Mutex<Vec<String>>,
+    status_updates: Mutex<Vec<(String, String)>>,
+    assignments: Mutex<Vec<String>>,
+    cleared_assignees: Mutex<Vec<String>>,
+    tag_updates: Mutex<Vec<(String, Vec<String>)>>,
 }
 
 impl TestClickUpClient {
@@ -118,6 +122,22 @@ impl TestClickUpClient {
 
     async fn list_spaces_calls(&self) -> Vec<String> {
         self.list_spaces_calls.lock().await.clone()
+    }
+
+    async fn status_updates(&self) -> Vec<(String, String)> {
+        self.status_updates.lock().await.clone()
+    }
+
+    async fn assignments(&self) -> Vec<String> {
+        self.assignments.lock().await.clone()
+    }
+
+    async fn cleared_assignees(&self) -> Vec<String> {
+        self.cleared_assignees.lock().await.clone()
+    }
+
+    async fn tag_updates(&self) -> Vec<(String, Vec<String>)> {
+        self.tag_updates.lock().await.clone()
     }
 }
 
@@ -254,6 +274,77 @@ impl ClickUpApiClient for TestClickUpClient {
             created_at: None,
             replies: Vec::new(),
         })
+    }
+
+    async fn update_task_status(
+        &self,
+        auth: &ClickUpAuthContext,
+        task_id: &str,
+        status_name: &str,
+    ) -> Result<(), String> {
+        self.seen_tokens.lock().await.push(auth.api_token.clone());
+        self.status_updates
+            .lock()
+            .await
+            .push((task_id.to_string(), status_name.to_string()));
+        Ok(())
+    }
+
+    async fn assign_task_to_current_user(
+        &self,
+        auth: &ClickUpAuthContext,
+        task_id: &str,
+    ) -> Result<ClickUpUser, String> {
+        self.seen_tokens.lock().await.push(auth.api_token.clone());
+        self.assignments.lock().await.push(task_id.to_string());
+        Ok(ClickUpUser {
+            id: 42,
+            username: Some("dev".to_string()),
+            email: Some("dev@example.com".to_string()),
+        })
+    }
+
+    async fn clear_task_assignee(
+        &self,
+        auth: &ClickUpAuthContext,
+        task_id: &str,
+    ) -> Result<(), String> {
+        self.seen_tokens.lock().await.push(auth.api_token.clone());
+        self.cleared_assignees
+            .lock()
+            .await
+            .push(task_id.to_string());
+        Ok(())
+    }
+
+    async fn set_task_tags(
+        &self,
+        auth: &ClickUpAuthContext,
+        task_id: &str,
+        tags: Vec<String>,
+    ) -> Result<(), String> {
+        self.seen_tokens.lock().await.push(auth.api_token.clone());
+        self.tag_updates
+            .lock()
+            .await
+            .push((task_id.to_string(), tags));
+        Ok(())
+    }
+}
+
+struct MinimalClickUpClient;
+
+#[async_trait]
+impl ClickUpApiClient for MinimalClickUpClient {
+    async fn validate(&self, _auth: &ClickUpAuthContext) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn list_workspaces(
+        &self,
+        _auth: &ClickUpAuthContext,
+    ) -> Result<Vec<ClickUpWorkspace>, String> {
+        Ok(Vec::new())
     }
 }
 
@@ -567,6 +658,235 @@ async fn create_comment_passes_through_when_enabled() {
         .await
         .unwrap();
     assert_eq!(comment.body, "looks good");
+}
+
+#[tokio::test]
+async fn enabled_service_passes_through_task_detail_user_status_assignment_and_tags() {
+    let client = Arc::new(TestClickUpClient::default());
+    let (service, _repo, _secret) = build_service(client.clone());
+
+    service
+        .save_settings(Some("pk_token".to_string()), Some("9000".to_string()))
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+
+    let detail = service.fetch_task("abc123").await.unwrap();
+    assert_eq!(detail.id, "abc123");
+    assert_eq!(detail.description, "body");
+
+    let statuses = service.list_statuses("space-1").await.unwrap();
+    assert_eq!(statuses[0].status, "in progress");
+
+    let current_user = service.current_user().await.unwrap();
+    assert_eq!(current_user.username.as_deref(), Some("dev"));
+
+    service.update_task_status("abc123", "done").await.unwrap();
+    let assigned = service.assign_task_to_current_user("abc123").await.unwrap();
+    assert_eq!(assigned.email.as_deref(), Some("dev@example.com"));
+    service.clear_task_assignee("abc123").await.unwrap();
+    service
+        .set_task_tags("abc123", vec!["bug".to_string(), "backend".to_string()])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        client.status_updates().await,
+        vec![("abc123".to_string(), "done".to_string())]
+    );
+    assert_eq!(client.assignments().await, vec!["abc123".to_string()]);
+    assert_eq!(client.cleared_assignees().await, vec!["abc123".to_string()]);
+    assert_eq!(
+        client.tag_updates().await,
+        vec![(
+            "abc123".to_string(),
+            vec!["bug".to_string(), "backend".to_string()]
+        )]
+    );
+}
+
+#[tokio::test]
+async fn empty_client_covers_minimal_success_paths() {
+    let client = EmptyClickUpApiClient;
+    let auth = ClickUpAuthContext {
+        api_token: "pk_test".to_string(),
+    };
+
+    client.validate(&auth).await.unwrap();
+    assert!(client.list_workspaces(&auth).await.unwrap().is_empty());
+    assert!(client.list_spaces(&auth, "9000").await.unwrap().is_empty());
+    assert!(client
+        .list_tasks(&auth, "9000", &["space-1".to_string()])
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(client
+        .list_statuses(&auth, "space-1")
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(client.current_user(&auth).await.unwrap().id, 0);
+    client
+        .update_task_status(&auth, "abc123", "done")
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .assign_task_to_current_user(&auth, "abc123")
+            .await
+            .unwrap()
+            .username
+            .as_deref(),
+        Some("Test User")
+    );
+    client.clear_task_assignee(&auth, "abc123").await.unwrap();
+    assert_eq!(
+        client
+            .create_comment(&auth, "abc123", "body")
+            .await
+            .unwrap()
+            .body,
+        "body"
+    );
+    client
+        .set_task_tags(&auth, "abc123", vec!["tag".to_string()])
+        .await
+        .unwrap();
+
+    let task = client.fetch_task(&auth, "abc123").await.unwrap();
+    assert_eq!(task.id, "abc123");
+    assert!(task.comments.is_empty());
+}
+
+#[tokio::test]
+async fn unavailable_client_returns_reason_from_all_methods() {
+    let client = UnavailableClickUpApiClient::new("not available");
+    let auth = ClickUpAuthContext {
+        api_token: "pk_test".to_string(),
+    };
+
+    assert_eq!(client.validate(&auth).await.unwrap_err(), "not available");
+    assert_eq!(
+        client.list_workspaces(&auth).await.unwrap_err(),
+        "not available"
+    );
+    assert_eq!(
+        client.list_spaces(&auth, "9000").await.unwrap_err(),
+        "not available"
+    );
+    assert_eq!(
+        client
+            .list_tasks(&auth, "9000", &["space-1".to_string()])
+            .await
+            .unwrap_err(),
+        "not available"
+    );
+    assert_eq!(
+        client.fetch_task(&auth, "abc123").await.unwrap_err(),
+        "not available"
+    );
+    assert_eq!(
+        client.list_statuses(&auth, "space-1").await.unwrap_err(),
+        "not available"
+    );
+    assert_eq!(
+        client.current_user(&auth).await.unwrap_err(),
+        "not available"
+    );
+    assert_eq!(
+        client
+            .update_task_status(&auth, "abc123", "done")
+            .await
+            .unwrap_err(),
+        "not available"
+    );
+    assert_eq!(
+        client
+            .assign_task_to_current_user(&auth, "abc123")
+            .await
+            .unwrap_err(),
+        "not available"
+    );
+    assert_eq!(
+        client
+            .clear_task_assignee(&auth, "abc123")
+            .await
+            .unwrap_err(),
+        "not available"
+    );
+    assert_eq!(
+        client
+            .create_comment(&auth, "abc123", "body")
+            .await
+            .unwrap_err(),
+        "not available"
+    );
+    assert_eq!(
+        client
+            .set_task_tags(&auth, "abc123", vec!["tag".to_string()])
+            .await
+            .unwrap_err(),
+        "not available"
+    );
+}
+
+#[tokio::test]
+async fn trait_default_methods_report_unavailable_features() {
+    let client = MinimalClickUpClient;
+    let auth = ClickUpAuthContext {
+        api_token: "pk_test".to_string(),
+    };
+
+    assert!(client
+        .list_spaces(&auth, "9000")
+        .await
+        .unwrap_err()
+        .contains("spaces are not available"));
+    assert!(client
+        .list_tasks(&auth, "9000", &[])
+        .await
+        .unwrap_err()
+        .contains("tasks are not available"));
+    assert!(client
+        .fetch_task(&auth, "abc123")
+        .await
+        .unwrap_err()
+        .contains("task lookup is not available"));
+    assert!(client
+        .list_statuses(&auth, "space-1")
+        .await
+        .unwrap_err()
+        .contains("statuses are not available"));
+    assert!(client
+        .current_user(&auth)
+        .await
+        .unwrap_err()
+        .contains("current-user lookup is not available"));
+    assert!(client
+        .update_task_status(&auth, "abc123", "done")
+        .await
+        .unwrap_err()
+        .contains("status updates are not available"));
+    assert!(client
+        .assign_task_to_current_user(&auth, "abc123")
+        .await
+        .unwrap_err()
+        .contains("assignment is not available"));
+    assert!(client
+        .clear_task_assignee(&auth, "abc123")
+        .await
+        .unwrap_err()
+        .contains("assignee clearing is not available"));
+    assert!(client
+        .create_comment(&auth, "abc123", "body")
+        .await
+        .unwrap_err()
+        .contains("comments are not available"));
+    assert!(client
+        .set_task_tags(&auth, "abc123", vec!["tag".to_string()])
+        .await
+        .unwrap_err()
+        .contains("tag updates are not available"));
 }
 
 #[tokio::test]

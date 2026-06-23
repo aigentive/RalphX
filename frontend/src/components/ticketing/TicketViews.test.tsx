@@ -542,6 +542,25 @@ describe("TicketListView", () => {
     fireEvent.keyDown(second, { key: "ArrowUp" });
     expect(first).toHaveFocus();
   });
+
+  it("keeps the row list as the vertical scroll container", () => {
+    render(
+      <TicketListView
+        tickets={tickets}
+        columns={[
+          { id: "todo", name: "To Do", category: "todo", order: 0 },
+          { id: "started", name: "In Progress", category: "in_progress", order: 1 },
+        ]}
+        hasNextPage={false}
+        isFetchingNextPage={false}
+        onLoadMore={vi.fn()}
+        onSelectTicket={vi.fn()}
+      />,
+    );
+
+    const scrollRegion = document.querySelector("[data-ticket-list]");
+    expect(scrollRegion).toHaveClass("min-h-0", "flex-1", "overflow-auto", "overscroll-contain");
+  });
 });
 
 describe("TicketKanbanView", () => {
@@ -569,6 +588,24 @@ describe("TicketKanbanView", () => {
     expect(screen.getByText("frontend")).toBeInTheDocument();
     expect(screen.getByText("ux")).toBeInTheDocument();
     expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+  });
+
+  it("bounds each kanban column body to its own vertical scroll region", () => {
+    render(
+      <TicketKanbanView
+        columns={[{ id: "todo", name: "To Do", category: "todo", order: 0 }]}
+        tickets={tickets.map((ticket) => ({
+          ...ticket,
+          state: { id: "todo", name: "To Do", category: "todo" },
+        }))}
+        onSelectTicket={vi.fn()}
+      />,
+    );
+
+    const column = screen.getByTestId("ticket-column-todo");
+    expect(column).toHaveClass("h-full", "min-h-0", "overflow-hidden");
+    const scrollRegion = column.querySelector(".overflow-y-auto");
+    expect(scrollRegion).toHaveClass("min-h-0", "flex-1", "overscroll-contain");
   });
 });
 
