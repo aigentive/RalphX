@@ -156,6 +156,17 @@ describe("distinctAssigneeNames", () => {
     const tickets = [ticket("1", "Ada"), ticket("2", null), ticket("3", "Ada"), ticket("4", "Grace")];
     expect(distinctAssigneeNames(tickets)).toEqual(["Ada", "Grace"]);
   });
+
+  it("includes every assignee from multi-assignee tickets", () => {
+    const tickets = [
+      {
+        ...ticket("1", "Ada"),
+        assignees: [{ name: "Ada" }, { name: "Grace" }],
+      },
+      ticket("2", null),
+    ];
+    expect(distinctAssigneeNames(tickets)).toEqual(["Ada", "Grace"]);
+  });
 });
 
 describe("filterTicketsByAssignee", () => {
@@ -173,6 +184,17 @@ describe("filterTicketsByAssignee", () => {
   it("returns only tickets matching the named assignee", () => {
     const result = filterTicketsByAssignee(tickets, "Grace");
     expect(result.map((t) => t.ref.id)).toEqual(["3"]);
+  });
+
+  it("returns tickets when the selected assignee appears anywhere in the assignee list", () => {
+    const result = filterTicketsByAssignee(
+      [
+        { ...ticket("1", "Ada"), assignees: [{ name: "Ada" }, { name: "Grace" }] },
+        ticket("2", "Linus"),
+      ],
+      "Grace",
+    );
+    expect(result.map((t) => t.ref.id)).toEqual(["1"]);
   });
 });
 

@@ -890,6 +890,7 @@ fn jira_summary_to_ticket(summary: AtlassianResourceSummary) -> TicketSummaryRes
         title: summary.title,
         state,
         assignee: None,
+        assignees: Vec::new(),
         reporter: None,
         labels: Vec::new(),
         project: None,
@@ -973,6 +974,7 @@ fn jira_issue_detail_to_ticket(issue: JiraIssueDetail) -> TicketSummaryResponse 
         person.avatar_url = issue.assignee_avatar.clone();
         person
     });
+    let assignees = assignee.iter().cloned().collect();
     TicketSummaryResponse {
         ref_: TicketRefInput {
             provider: PROVIDER_JIRA.to_string(),
@@ -982,6 +984,7 @@ fn jira_issue_detail_to_ticket(issue: JiraIssueDetail) -> TicketSummaryResponse 
         title: issue.title,
         state,
         assignee,
+        assignees,
         reporter: None,
         labels: issue.labels,
         project: None,
@@ -1009,6 +1012,8 @@ fn linear_summary_to_ticket(summary: LinearIssueSummary) -> TicketSummaryRespons
             .unwrap_or_else(|| state_category(&state_name)),
         color: summary.state_color,
     };
+    let assignee = summary.assignee.as_deref().map(named_person);
+    let assignees = assignee.iter().cloned().collect();
     TicketSummaryResponse {
         ref_: TicketRefInput {
             provider: PROVIDER_LINEAR.to_string(),
@@ -1017,7 +1022,8 @@ fn linear_summary_to_ticket(summary: LinearIssueSummary) -> TicketSummaryRespons
         },
         title: summary.title,
         state,
-        assignee: summary.assignee.as_deref().map(named_person),
+        assignee,
+        assignees,
         reporter: None,
         labels: summary.labels,
         project: summary.project,
@@ -1187,26 +1193,29 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let Some(ticket_assignee) = ticket.assignee.as_ref() else {
-            return false;
-        };
         let assignee = assignee.to_ascii_lowercase();
-        let matches_assignee = ticket_assignee
-            .name
-            .to_ascii_lowercase()
-            .contains(&assignee)
-            || ticket_assignee
-                .id
-                .as_deref()
-                .unwrap_or("")
-                .to_ascii_lowercase()
-                .contains(&assignee)
-            || ticket_assignee
-                .email
-                .as_deref()
-                .unwrap_or("")
-                .to_ascii_lowercase()
-                .contains(&assignee);
+        let matches_assignee = ticket
+            .assignees
+            .iter()
+            .chain(ticket.assignee.iter())
+            .any(|ticket_assignee| {
+                ticket_assignee
+                    .name
+                    .to_ascii_lowercase()
+                    .contains(&assignee)
+                    || ticket_assignee
+                        .id
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .contains(&assignee)
+                    || ticket_assignee
+                        .email
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .contains(&assignee)
+            });
         if !matches_assignee {
             return false;
         }
@@ -1227,6 +1236,8 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
 }
 
 fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResponse {
+    let assignee = content.assignee.as_deref().map(named_person);
+    let assignees = assignee.iter().cloned().collect();
     let summary = TicketSummaryResponse {
         ref_: TicketRefInput {
             provider: PROVIDER_JIRA.to_string(),
@@ -1235,7 +1246,8 @@ fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResp
         },
         title: content.title.clone(),
         state: ticket_state(content.status.as_deref().unwrap_or("Provider result")),
-        assignee: content.assignee.as_deref().map(named_person),
+        assignee,
+        assignees,
         reporter: content.reporter.as_deref().map(named_person),
         labels: Vec::new(),
         project: None,
@@ -1287,6 +1299,8 @@ fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResp
 }
 
 fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse {
+    let assignee = content.assignee.as_deref().map(named_person);
+    let assignees = assignee.iter().cloned().collect();
     let summary = TicketSummaryResponse {
         ref_: TicketRefInput {
             provider: PROVIDER_LINEAR.to_string(),
@@ -1295,7 +1309,8 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
         },
         title: content.title.clone(),
         state: ticket_state(content.state_name.as_deref().unwrap_or("Provider result")),
-        assignee: content.assignee.as_deref().map(named_person),
+        assignee,
+        assignees,
         reporter: content.creator.as_deref().map(named_person),
         labels: content.labels.clone(),
         project: content.project.clone(),
@@ -1359,7 +1374,8 @@ fn clickup_status_to_column(status: ClickUpStatus, order: usize) -> TicketingCol
 /// the status name (ClickUp carries no task-level status id) so it aligns with the
 /// column id for kanban grouping; the category comes from the already-derived
 /// `status.type` mapping, falling back to a name-based heuristic. ClickUp tags map
-/// to labels; the first assignee populates the single assignee slot.
+/// to labels; the full ClickUp assignee list is preserved while the legacy
+/// single-assignee slot keeps the first assignee for compatibility.
 fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryResponse {
     let state_name = summary
         .status_name
@@ -1374,6 +1390,12 @@ fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryRespon
         name: state_name,
         color: summary.status_color,
     };
+    let assignees: Vec<TicketingPersonResponse> = summary
+        .assignees
+        .iter()
+        .map(|name| named_person(name))
+        .collect();
+    let assignee = assignees.first().cloned();
     TicketSummaryResponse {
         ref_: TicketRefInput {
             provider: PROVIDER_CLICKUP.to_string(),
@@ -1382,7 +1404,8 @@ fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryRespon
         },
         title: summary.name,
         state,
-        assignee: summary.assignees.first().map(|name| named_person(name)),
+        assignee,
+        assignees,
         reporter: None,
         labels: summary.tags,
         project: summary.list_name,
@@ -1429,6 +1452,12 @@ fn clickup_content_to_detail(content: ClickUpTaskContent) -> TicketDetailRespons
         name: state_name,
         color: None,
     };
+    let assignees: Vec<TicketingPersonResponse> = content
+        .assignees
+        .iter()
+        .map(|name| named_person(name))
+        .collect();
+    let assignee = assignees.first().cloned();
     let summary = TicketSummaryResponse {
         ref_: TicketRefInput {
             provider: PROVIDER_CLICKUP.to_string(),
@@ -1437,7 +1466,8 @@ fn clickup_content_to_detail(content: ClickUpTaskContent) -> TicketDetailRespons
         },
         title: content.name.clone(),
         state,
-        assignee: content.assignees.first().map(|name| named_person(name)),
+        assignee,
+        assignees,
         reporter: content.creator.as_deref().map(named_person),
         labels: content.tags.clone(),
         project: content.list_name.clone(),

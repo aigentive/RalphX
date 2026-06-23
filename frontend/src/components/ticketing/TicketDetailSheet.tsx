@@ -25,12 +25,12 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { TicketAssigneeChip } from "./TicketAssigneeChip";
+import { TicketAssigneeChips } from "./TicketAssigneeChip";
 import { TicketLabelEditor } from "./TicketLabelEditor";
 import { TicketLabels } from "./TicketLabels";
 import { TicketSearchableSelect } from "./TicketSearchableSelect";
 import { openExternalTicketUrl } from "./ticketing-open-external";
-import { countNewComments, isCommentNewSince, sortCommentsByCreatedAt } from "./ticketing-read-state";
+import { countNewComments, isCommentNewSince, sortCommentsByCreatedAt, ticketAssignees } from "./ticketing-read-state";
 import { categoryToken, formatTicketDate, providerLabel, ticketCanonicalBranchName, ticketKey } from "./ticketing-utils";
 
 interface TicketDetailSheetProps {
@@ -655,7 +655,8 @@ export function TicketDetailSheet({
   const assignDisabledReason = !capabilities?.assignmentWrite
     ? "Assign-to-me is not available for this provider."
     : null;
-  const canClearAssignee = !assignDisabledReason && Boolean(ticket?.assignee);
+  const assignees = ticket ? ticketAssignees(ticket) : [];
+  const canClearAssignee = !assignDisabledReason && assignees.length > 0;
   const commentDisabledReason = !capabilities?.commentWrite
     ? "Comment write-back is not available for this provider."
     : null;
@@ -875,9 +876,9 @@ export function TicketDetailSheet({
                     Assignee
                   </span>
                   <div className="flex min-w-0 items-center gap-2">
-                    {ticket.assignee ? (
+                    {assignees.length > 0 ? (
                       <>
-                        <TicketAssigneeChip person={ticket.assignee} size="md" />
+                        <TicketAssigneeChips people={assignees} size="md" />
                         {canClearAssignee && (
                           <ControlTooltip reason={assignDisabledReason}>
                             <Button

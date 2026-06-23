@@ -4,11 +4,12 @@ import { describe, expect, it } from "vitest";
 import { TicketAssigneeChip } from "./TicketAssigneeChip";
 
 describe("TicketAssigneeChip", () => {
-  it("renders the assignee name with initials when no avatar is provided", () => {
+  it("renders initials only and exposes the assignee name as hover text", () => {
     render(<TicketAssigneeChip person={{ name: "Adrian Demian" }} />);
 
-    expect(screen.getByText("Adrian Demian")).toBeInTheDocument();
     expect(screen.getByText("AD")).toBeInTheDocument();
+    expect(screen.getByLabelText("Adrian Demian")).toHaveAttribute("title", "Adrian Demian");
+    expect(screen.queryByText("Adrian Demian")).not.toBeInTheDocument();
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });
 

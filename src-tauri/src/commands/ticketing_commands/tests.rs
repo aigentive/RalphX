@@ -230,10 +230,18 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
     // Category comes from the already-derived status.type mapping.
     assert_eq!(ticket.state.category, "in_progress");
     assert_eq!(ticket.state.color.as_deref(), Some("#112233"));
-    // Only the first assignee fills the single assignee slot.
+    // The first assignee still fills the legacy single assignee slot.
     assert_eq!(
         ticket.assignee.as_ref().map(|person| person.name.as_str()),
         Some("Reef Agent")
+    );
+    assert_eq!(
+        ticket
+            .assignees
+            .iter()
+            .map(|person| person.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Reef Agent", "Second Person"]
     );
     // ClickUp tags surface as labels.
     assert_eq!(
@@ -1227,6 +1235,28 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
 }
 
 #[test]
+fn ticket_matches_filters_assignee_matches_any_assignee() {
+    let mut ticket = ticket_summary_fixture("CU-1", "Multi-assignee task", "Todo", None, &[]);
+    ticket.assignees = vec![named_person("Ada Lovelace"), named_person("Grace Hopper")];
+
+    let by_second_assignee = TicketFiltersInput {
+        text: None,
+        assignee: Some("Grace".to_string()),
+        state_ids: None,
+        labels: None,
+    };
+    assert!(ticket_matches_filters(&ticket, &by_second_assignee));
+
+    let miss = TicketFiltersInput {
+        text: None,
+        assignee: Some("Katherine".to_string()),
+        state_ids: None,
+        labels: None,
+    };
+    assert!(!ticket_matches_filters(&ticket, &miss));
+}
+
+#[test]
 fn ticket_matches_filters_requires_all_labels_present() {
     let ticket = ticket_summary_fixture("LIN-1", "Title", "Todo", None, &["backend", "linear"]);
     let all_present = TicketFiltersInput {
@@ -1254,6 +1284,8 @@ fn ticket_summary_fixture(
     assignee: Option<&str>,
     labels: &[&str],
 ) -> TicketSummaryResponse {
+    let assignee = assignee.map(named_person);
+    let assignees = assignee.iter().cloned().collect();
     TicketSummaryResponse {
         ref_: TicketRefInput {
             provider: "linear".to_string(),
@@ -1262,7 +1294,8 @@ fn ticket_summary_fixture(
         },
         title: title.to_string(),
         state: ticket_state(state_name),
-        assignee: assignee.map(named_person),
+        assignee,
+        assignees,
         reporter: None,
         labels: labels.iter().map(|label| label.to_string()).collect(),
         project: None,
@@ -1572,6 +1605,7 @@ fn hydrate_input_summary(ticket_ref: TicketRefInput) -> TicketSummaryResponse {
         title: "Linked ticket".to_string(),
         state: ticket_state("To Do"),
         assignee: None,
+        assignees: Vec::new(),
         reporter: None,
         labels: Vec::new(),
         project: None,

@@ -102,6 +102,7 @@ pub struct TicketSummaryResponse {
     pub title: String,
     pub state: TicketStateResponse,
     pub assignee: Option<TicketingPersonResponse>,
+    pub assignees: Vec<TicketingPersonResponse>,
     pub reporter: Option<TicketingPersonResponse>,
     pub labels: Vec<String>,
     pub project: Option<String>,

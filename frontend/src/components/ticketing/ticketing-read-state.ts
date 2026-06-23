@@ -1,6 +1,7 @@
 import type {
   TicketComment,
   TicketingColumn,
+  TicketingPerson,
   TicketRef,
   TicketStateCategory,
   TicketSummary,
@@ -26,13 +27,22 @@ export function hasActiveTicketFilters(filters: TicketingFilterState): boolean {
 /** Sentinel assignee-filter value selecting tickets with no assignee. */
 export const UNASSIGNED_ASSIGNEE = "__unassigned__";
 
+export function ticketAssignees(ticket: TicketSummary): TicketingPerson[] {
+  if (ticket.assignees && ticket.assignees.length > 0) {
+    return ticket.assignees;
+  }
+  return ticket.assignee ? [ticket.assignee] : [];
+}
+
 /** Distinct, sorted assignee display names present in the given tickets. */
 export function distinctAssigneeNames(tickets: TicketSummary[]): string[] {
   const names = new Set<string>();
   for (const ticket of tickets) {
-    const name = ticket.assignee?.name?.trim();
-    if (name) {
-      names.add(name);
+    for (const person of ticketAssignees(ticket)) {
+      const name = person.name?.trim();
+      if (name) {
+        names.add(name);
+      }
     }
   }
   return Array.from(names).sort((left, right) => left.localeCompare(right));
@@ -65,9 +75,11 @@ export function filterTicketsByAssignee(
     return tickets;
   }
   if (assignee === UNASSIGNED_ASSIGNEE) {
-    return tickets.filter((ticket) => !ticket.assignee);
+    return tickets.filter((ticket) => ticketAssignees(ticket).length === 0);
   }
-  return tickets.filter((ticket) => ticket.assignee?.name === assignee);
+  return tickets.filter((ticket) =>
+    ticketAssignees(ticket).some((person) => person.name === assignee),
+  );
 }
 
 /**

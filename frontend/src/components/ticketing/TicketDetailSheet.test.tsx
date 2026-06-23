@@ -86,7 +86,8 @@ describe("TicketDetailSheet assignee control", () => {
     });
 
     expect(screen.getByText("Assignee")).toBeInTheDocument();
-    expect(screen.getByText("Adrian Demian")).toBeInTheDocument();
+    expect(screen.getByLabelText("Adrian Demian")).toHaveAttribute("title", "Adrian Demian");
+    expect(screen.queryByText("Adrian Demian")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /assign to me/i })).not.toBeInTheDocument();
     // Clear assignee stays available because assignment write-back is enabled.
     expect(screen.getByRole("button", { name: /clear assignee/i })).toBeInTheDocument();
@@ -98,7 +99,8 @@ describe("TicketDetailSheet assignee control", () => {
       capabilities: { ...baseCapabilities, assignmentWrite: false },
     });
 
-    expect(screen.getByText("Adrian Demian")).toBeInTheDocument();
+    expect(screen.getByLabelText("Adrian Demian")).toHaveAttribute("title", "Adrian Demian");
+    expect(screen.queryByText("Adrian Demian")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /assign to me/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /clear assignee/i })).not.toBeInTheDocument();
   });

@@ -108,6 +108,7 @@ export const TicketSummarySchema = z.object({
   title: z.string(),
   state: TicketingStateSchema,
   assignee: TicketingPersonSchema.nullable().optional(),
+  assignees: z.array(TicketingPersonSchema).default([]),
   reporter: TicketingPersonSchema.nullable().optional(),
   labels: z.array(z.string()).default([]),
   project: z.string().nullable().optional(),
@@ -122,8 +123,9 @@ export const TicketSummarySchema = z.object({
   currentUserAssigned: z.boolean().default(false),
 });
 type ParsedTicketSummary = z.infer<typeof TicketSummarySchema>;
-export type TicketSummary = Omit<ParsedTicketSummary, "currentUserAssigned"> & {
+export type TicketSummary = Omit<ParsedTicketSummary, "currentUserAssigned" | "assignees"> & {
   currentUserAssigned?: boolean;
+  assignees?: TicketingPerson[];
 };
 
 const TicketCommentBaseSchema = z.object({
@@ -181,8 +183,9 @@ export const TicketDetailSchema = TicketSummarySchema.extend({
   fetchedAt: z.string().nullable().optional(),
 });
 type ParsedTicketDetail = z.infer<typeof TicketDetailSchema>;
-export type TicketDetail = Omit<ParsedTicketDetail, "currentUserAssigned"> & {
+export type TicketDetail = Omit<ParsedTicketDetail, "currentUserAssigned" | "assignees"> & {
   currentUserAssigned?: boolean;
+  assignees?: TicketingPerson[];
 };
 
 export const TicketPageSchema = z.object({

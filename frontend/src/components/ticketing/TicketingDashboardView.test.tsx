@@ -947,7 +947,8 @@ describe("TicketingDashboardView", () => {
     // Scope to the ticket list so filter-bar options (Unassigned / assignee
     // names) do not collide with row content.
     const list = within(document.querySelector("[data-ticket-list]") as HTMLElement);
-    expect(list.getByText("A. User")).toBeInTheDocument();
+    expect(list.getByLabelText("A. User")).toHaveAttribute("title", "A. User");
+    expect(list.queryByText("A. User")).not.toBeInTheDocument();
     expect(list.getByText("Platform")).toBeInTheDocument();
     expect(list.getByText("linear")).toBeInTheDocument();
     expect(list.getByRole("img", { name: /3 RalphX conversation/i })).toBeInTheDocument();
@@ -1196,7 +1197,8 @@ describe("TicketingDashboardView", () => {
 
     // Assignee is shown and "Assign to me" is hidden in the sheet when assigned.
     const sheet = within(screen.getByRole("dialog"));
-    expect(await screen.findByText("A. User")).toBeInTheDocument();
+    expect(await sheet.findByLabelText("A. User")).toHaveAttribute("title", "A. User");
+    expect(sheet.queryByText("A. User")).not.toBeInTheDocument();
     expect(sheet.queryByRole("button", { name: "Assign to me" })).not.toBeInTheDocument();
 
     fireEvent.click(sheet.getByRole("button", { name: "Clear assignee" }));
