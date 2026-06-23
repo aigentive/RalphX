@@ -125,6 +125,21 @@ pub async fn count_unpublished_publish_commits(
         .map(Some)
 }
 
+pub async fn count_publishable_commits_with_base_fallback(
+    repo_path: &Path,
+    source_branch: &str,
+    fallback_review_base: &str,
+) -> AppResult<u32> {
+    if let Some(unpublished_count) =
+        count_unpublished_publish_commits(repo_path, source_branch).await?
+    {
+        return Ok(unpublished_count);
+    }
+
+    count_existing_publish_branch_reviewable_commits(repo_path, source_branch, fallback_review_base)
+        .await
+}
+
 pub async fn push_publish_branch(
     github: &Arc<dyn GithubServiceTrait>,
     repo_path: &Path,
