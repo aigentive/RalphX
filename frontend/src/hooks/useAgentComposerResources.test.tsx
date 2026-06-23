@@ -144,6 +144,21 @@ describe("useAgentComposerIntegrationResources", () => {
     expect(result.current.data?.[0]).toMatchObject({ id: "task-0" });
   });
 
+  it("runs empty ClickUp searches immediately for menu-open suggestions", async () => {
+    vi.mocked(clickupApi.searchTasks).mockResolvedValue([]);
+
+    const { result } = renderIntegrationHook({
+      kind: "clickup",
+      query: "   ",
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(clickupApi.searchTasks).toHaveBeenCalledWith({
+      query: "",
+      limit: 10,
+    });
+  });
+
   it("does not call provider APIs while disabled or kindless", () => {
     const disabled = renderIntegrationHook({
       kind: "clickup",

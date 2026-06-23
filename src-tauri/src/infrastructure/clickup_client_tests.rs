@@ -320,6 +320,81 @@ async fn filtered_tasks_searches_metadata_and_stops_at_limit() {
 }
 
 #[tokio::test]
+async fn filtered_tasks_matches_key_status_list_and_assignee_metadata() {
+    let fake = FakeClickUpRequester::new(vec![Ok(json!({
+        "tasks": [
+            {
+                "id": "opaque-1",
+                "custom_id": "MBE-2857",
+                "name": "Different title",
+                "status": { "status": "Awaiting Staging", "type": "custom" },
+                "assignees": [{ "email": "adrian@example.com" }],
+                "tags": [],
+                "list": { "name": "Current Sprint" }
+            },
+            {
+                "id": "opaque-2",
+                "name": "Another title",
+                "status": { "status": "to do", "type": "open" },
+                "assignees": [{ "username": "Adrian" }],
+                "tags": [],
+                "list": { "name": "Backlog" }
+            }
+        ],
+        "last_page": true
+    }))]);
+
+    let by_key = fetch_filtered_tasks(
+        &fake,
+        "tok",
+        "9000",
+        &[],
+        ClickUpTaskListOptions {
+            query: Some("mbe-2857".to_string()),
+            limit: Some(10),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(by_key.len(), 1);
+    assert_eq!(by_key[0].id, "opaque-1");
+    assert_eq!(by_key[0].list_name.as_deref(), Some("Current Sprint"));
+}
+
+#[tokio::test]
+async fn filtered_tasks_stops_inside_page_when_limit_is_reached() {
+    let fake = FakeClickUpRequester::new(vec![Ok(json!({
+        "tasks": [
+            sample_task("match-1", "custom"),
+            sample_task("match-2", "custom")
+        ],
+        "last_page": false
+    }))]);
+
+    let tasks = fetch_filtered_tasks(
+        &fake,
+        "tok",
+        "9000",
+        &[],
+        ClickUpTaskListOptions {
+            query: Some("fix".to_string()),
+            limit: Some(1),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].id, "match-1");
+    assert_eq!(
+        fake.requests().len(),
+        1,
+        "limit should stop before fetching a second page"
+    );
+}
+
+#[tokio::test]
 async fn filtered_tasks_encodes_workspace_and_space_ids() {
     let fake = FakeClickUpRequester::new(vec![Ok(json!({ "tasks": [], "last_page": true }))]);
 
