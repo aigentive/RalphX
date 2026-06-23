@@ -31,7 +31,7 @@ import { TicketLabels } from "./TicketLabels";
 import { TicketSearchableSelect } from "./TicketSearchableSelect";
 import { openExternalTicketUrl } from "./ticketing-open-external";
 import { countNewComments, isCommentNewSince, sortCommentsByCreatedAt } from "./ticketing-read-state";
-import { categoryToken, formatTicketDate, providerLabel, ticketKey } from "./ticketing-utils";
+import { categoryToken, formatTicketDate, providerLabel, ticketCanonicalBranchName, ticketKey } from "./ticketing-utils";
 
 interface TicketDetailSheetProps {
   open: boolean;
@@ -246,6 +246,7 @@ function BindConversationControl({
 }
 
 function RalphxAssociationPanel({
+  ticket,
   associations,
   isLoading,
   isStartWorkPending = false,
@@ -258,6 +259,7 @@ function RalphxAssociationPanel({
   onNavigate,
   onStartWork,
 }: {
+  ticket: TicketDetail | TicketSummary | null;
   associations: TicketAssociations | undefined;
   isLoading: boolean;
   isStartWorkPending?: boolean | undefined;
@@ -270,6 +272,9 @@ function RalphxAssociationPanel({
   onNavigate?: ((deepLink: TicketDeepLink) => void) | undefined;
   onStartWork?: (() => void) | undefined;
 }) {
+  const ticketBranchName = ticket ? ticketCanonicalBranchName(ticket.ref) : null;
+  const hasTicketPr = Boolean(ticket?.openPrNumber);
+  const hasTicketGitMetadata = Boolean(ticketBranchName || hasTicketPr);
   const activeCount = ASSOCIATION_GROUPS.reduce((count, group) => {
     return count + (associations?.[group.key].filter((item) => item.active).length ?? 0);
   }, 0);
@@ -313,7 +318,11 @@ function RalphxAssociationPanel({
             disabled={!onStartWork || isStartWorkPending}
             onClick={onStartWork}
           >
-            {isStartWorkPending ? "Starting..." : "Start RalphX work"}
+            {isStartWorkPending
+              ? "Starting..."
+              : ticketBranchName
+                ? "Start from ticket branch"
+                : "Start RalphX work"}
           </Button>
           {startWorkError && (
             <p className="mt-2 text-xs text-[var(--status-error)]" role="alert">
@@ -330,10 +339,65 @@ function RalphxAssociationPanel({
       )}
       {isLoading ? (
         <p className="mt-4 text-sm text-[var(--text-muted)]">Loading associations</p>
-      ) : totalCount === 0 ? (
-        <p className="mt-4 text-sm text-[var(--text-muted)]">No RalphX links yet.</p>
       ) : (
         <div className="mt-4 min-h-0 space-y-4 overflow-auto">
+          {hasTicketGitMetadata && (
+            <section>
+              <h4 className="mb-2 text-[11px] font-semibold uppercase text-[var(--text-muted)]">
+                Ticket Git
+              </h4>
+              <div
+                className="space-y-2 rounded-md p-3"
+                style={{
+                  backgroundColor: "var(--bg-elevated)",
+                  borderColor: "var(--border-subtle)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
+                }}
+              >
+                {ticketBranchName && (
+                  <div>
+                    <p className="text-[11px] font-medium uppercase text-[var(--text-muted)]">
+                      Branch
+                    </p>
+                    <p className="mt-1 break-all font-mono text-xs text-[var(--text-primary)]">
+                      {ticketBranchName}
+                    </p>
+                  </div>
+                )}
+                {hasTicketPr && (
+                  <div>
+                    <p className="text-[11px] font-medium uppercase text-[var(--text-muted)]">
+                      Pull request
+                    </p>
+                    {ticket?.openPrUrl ? (
+                      <button
+                        type="button"
+                        className="mt-1 inline-flex items-center gap-1.5 rounded text-xs font-medium text-[var(--status-info)] hover:underline focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                        onClick={() => void openExternalTicketUrl(ticket.openPrUrl ?? "")}
+                      >
+                        <GitPullRequestArrow className="h-3.5 w-3.5" aria-hidden="true" />
+                        PR #{ticket.openPrNumber}
+                        {ticket.openPrStatus ? ` (${ticket.openPrStatus})` : ""}
+                      </button>
+                    ) : (
+                      <p className="mt-1 text-xs text-[var(--text-primary)]">
+                        PR #{ticket?.openPrNumber}
+                        {ticket?.openPrStatus ? ` (${ticket.openPrStatus})` : ""}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+          {totalCount === 0 && (
+            <p className="text-sm text-[var(--text-muted)]">
+              {ticketBranchName
+                ? `No RalphX links yet. Start work from ${ticketBranchName}.`
+                : "No RalphX links yet."}
+            </p>
+          )}
           {ASSOCIATION_GROUPS.map((group) => {
             const items = associations?.[group.key] ?? [];
             if (items.length === 0) {
@@ -1034,6 +1098,7 @@ export function TicketDetailSheet({
               </div>
             </div>
             <RalphxAssociationPanel
+              ticket={ticket}
               associations={associations}
               isLoading={isAssociationsLoading}
               isStartWorkPending={isStartWorkPending}

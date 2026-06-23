@@ -67,7 +67,7 @@ import {
   isTicketUpdatedSince,
   ticketRefKey,
 } from "./ticketing-read-state";
-import { providerLabel, ticketKey } from "./ticketing-utils";
+import { providerLabel, ticketCanonicalBranchName, ticketKey } from "./ticketing-utils";
 import { useAfterPaint } from "./useAfterPaint";
 
 interface TicketingDashboardViewProps {
@@ -182,6 +182,7 @@ function StartWorkDialog({
   onConfirm: () => void;
   onClose: () => void;
 }) {
+  const ticketBranchName = ticket ? ticketCanonicalBranchName(ticket.ref) : null;
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
       <DialogContent className="sm:max-w-[460px]">
@@ -189,6 +190,9 @@ function StartWorkDialog({
           <DialogTitle>Start RalphX Work</DialogTitle>
           <DialogDescription>
             Choose where to start the linked conversation for {ticket ? ticketKey(ticket.ref) : "this ticket"}.
+            {ticketBranchName
+              ? ` Edit and Plan work will start from ${ticketBranchName}.`
+              : ""}
           </DialogDescription>
         </DialogHeader>
 

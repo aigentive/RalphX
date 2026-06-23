@@ -1063,7 +1063,7 @@ describe("TicketingDashboardView", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /RX-1/ }));
 
-    expect(await screen.findByRole("button", { name: "Start RalphX work" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Start from ticket branch" })).toBeInTheDocument();
     expect(screen.getByText("When two agents transition the same task.")).toBeInTheDocument();
   });
 
@@ -1220,10 +1220,13 @@ describe("TicketingDashboardView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
     fireEvent.click(
-      await screen.findByRole("button", { name: "Start RalphX work" }),
+      await screen.findByRole("button", { name: "Start from ticket branch" }),
     );
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent("Start RalphX Work");
+    expect(dialog).toHaveTextContent(
+      "Edit and Plan work will start from ralphx/ticket/jira-rx-1.",
+    );
 
     // Scope to the dialog: the container filter bar is also labeled "Project"
     // now that Jira containers are projects.
@@ -1251,7 +1254,7 @@ describe("TicketingDashboardView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
     fireEvent.click(
-      await screen.findByRole("button", { name: "Start RalphX work" }),
+      await screen.findByRole("button", { name: "Start from ticket branch" }),
     );
     expect(await screen.findByRole("dialog")).toHaveTextContent("Start RalphX Work");
 
@@ -1716,7 +1719,7 @@ describe("TicketingDashboardView", () => {
 
     // Deferral preserved: the start-work + bind-conversation affordance is hidden
     // for ClickUp (capability-gated), so no clickup conversation API is invoked.
-    expect(screen.queryByRole("button", { name: "Start RalphX work" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start from ticket branch" })).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /bind existing conversation/i }),
     ).not.toBeInTheDocument();
@@ -1736,7 +1739,7 @@ describe("TicketingDashboardView", () => {
 
     renderDashboard();
     fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Start RalphX work" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start from ticket branch" }));
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Start" }));
 
     expect(startWork).toHaveBeenCalled();
@@ -1816,7 +1819,7 @@ describe("TicketingDashboardView", () => {
 
     renderDashboard();
     fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Start RalphX work" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start from ticket branch" }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
 

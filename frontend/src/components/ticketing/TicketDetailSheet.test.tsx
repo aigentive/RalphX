@@ -48,6 +48,8 @@ function renderSheet(
   overrides: {
     ticket?: TicketSummary;
     capabilities?: TicketingCapabilities;
+    associations?: TicketAssociations;
+    onStartWork?: () => void;
   } = {},
 ) {
   return render(
@@ -57,12 +59,13 @@ function renderSheet(
         ticket={overrides.ticket ?? baseTicket}
         capabilities={overrides.capabilities ?? baseCapabilities}
         transitions={[writableTransition]}
-        associations={undefined}
+        associations={overrides.associations}
         isDetailLoading={false}
         isAssociationsLoading={false}
         isTransitionPending={false}
         isAssignPending={false}
         isCommentPending={false}
+        {...(overrides.onStartWork ? { onStartWork: overrides.onStartWork } : {})}
         onClose={vi.fn()}
       />
     </TooltipProvider>,
@@ -113,6 +116,64 @@ describe("TicketDetailSheet assignee control", () => {
     expect(status.className).toContain("text-xs");
     // Unified off the former --bg-surface outlier onto --bg-elevated.
     expect((status as HTMLElement).style.backgroundColor).toBe("var(--bg-elevated)");
+  });
+});
+
+describe("TicketDetailSheet ticket git metadata", () => {
+  it("shows the ticket branch prompt when there are no RalphX links yet", () => {
+    const onStartWork = vi.fn();
+    renderSheet({
+      onStartWork,
+      associations: {
+        tasks: [],
+        proposals: [],
+        sessions: [],
+        conversations: [],
+        pullRequests: [],
+        checks: [],
+        qa: [],
+        specs: [],
+        fetchedAt: null,
+      },
+    });
+
+    expect(screen.getByText("Ticket Git")).toBeInTheDocument();
+    expect(screen.getByText("ralphx/ticket/linear-abc-1")).toBeInTheDocument();
+    expect(
+      screen.getByText("No RalphX links yet. Start work from ralphx/ticket/linear-abc-1."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Start from ticket branch" }));
+    expect(onStartWork).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads pull request metadata from the ticket even without association links", async () => {
+    openUrlMock.mockClear();
+    renderSheet({
+      ticket: {
+        ...baseTicket,
+        openPrNumber: 42,
+        openPrUrl: "https://github.com/acme/app/pull/42",
+        openPrStatus: "open",
+      },
+      associations: {
+        tasks: [],
+        proposals: [],
+        sessions: [],
+        conversations: [],
+        pullRequests: [],
+        checks: [],
+        qa: [],
+        specs: [],
+        fetchedAt: null,
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "PR #42 (open)" }));
+
+    await waitFor(() => {
+      expect(openUrlMock).toHaveBeenCalledWith("https://github.com/acme/app/pull/42");
+    });
   });
 });
 
