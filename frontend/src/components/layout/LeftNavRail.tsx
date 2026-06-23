@@ -15,6 +15,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useProjectStats } from "@/hooks/useProjectStats";
+import { useTicketingProviders } from "@/hooks/useTicketing";
 import { useProjectStore } from "@/stores/projectStore";
 import { ALL_NAV_ITEMS } from "./nav-items";
 import { BrandMark } from "./BrandMark";
@@ -108,15 +109,25 @@ export function LeftNavRail({
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const { data: stats } = useProjectStats(activeProjectId ?? undefined);
   const { data: featureFlags } = useFeatureFlags();
+  const { data: ticketingProviders } = useTicketingProviders(
+    activeProjectId ?? undefined,
+    { enabled: !hideViews },
+  );
+  const hasEnabledTicketingProvider = (ticketingProviders ?? []).some(
+    (provider) => provider.enabled,
+  );
 
   const taskCount = stats?.taskCount ?? 0;
   const visibleItems = hideViews
     ? []
     : ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags, taskCount));
   const primaryItems = visibleItems.filter((item) => item.view !== "ticketing");
-  const dashboardItems = hideViews
-    ? []
-    : ALL_NAV_ITEMS.filter((item) => item.view === "ticketing");
+  // The Ticketing dashboard entry only appears when the feature flag is on (via
+  // `visible`) AND at least one ticketing provider (Linear or Jira) is enabled in
+  // Settings; without a usable provider the dashboard has nothing to show.
+  const dashboardItems = hasEnabledTicketingProvider
+    ? visibleItems.filter((item) => item.view === "ticketing")
+    : [];
 
   return (
     <aside

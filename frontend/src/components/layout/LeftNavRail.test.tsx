@@ -23,11 +23,17 @@ let mockFeatureFlags: FeatureFlags = {
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
-  ticketingDashboard: false,
+  ticketingDashboard: true,
 };
 
 vi.mock("@/hooks/useFeatureFlags", () => ({
   useFeatureFlags: vi.fn(() => ({ data: mockFeatureFlags })),
+}));
+
+let mockTicketingProviders: Array<{ provider: string; enabled: boolean }> = [];
+
+vi.mock("@/hooks/useTicketing", () => ({
+  useTicketingProviders: vi.fn(() => ({ data: mockTicketingProviders })),
 }));
 
 vi.mock("@/components/ui/tooltip", () => ({
@@ -44,15 +50,14 @@ describe("LeftNavRail", () => {
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
-      ticketingDashboard: false,
+      ticketingDashboard: true,
     };
+    // Default: one connected/enabled ticketing provider so the Ticketing entry is
+    // visible for the grouping/warm-up assertions below.
+    mockTicketingProviders = [{ provider: "linear", enabled: true }];
   });
 
   it("separates dashboard access from primary mini-sidebar views", () => {
-    mockFeatureFlags = {
-      ...mockFeatureFlags,
-      ticketingDashboard: true,
-    };
     const onViewChange = vi.fn();
 
     render(<LeftNavRail currentView="agents" onViewChange={onViewChange} />);
@@ -70,7 +75,28 @@ describe("LeftNavRail", () => {
     expect(onViewChange).toHaveBeenCalledWith("ticketing");
   });
 
-  it("keeps dashboard access discoverable when the dashboard feature is disabled", () => {
+  it("hides the Ticketing entry when no Linear/Jira provider is enabled", () => {
+    mockTicketingProviders = [
+      { provider: "linear", enabled: false },
+      { provider: "jira", enabled: false },
+    ];
+
+    render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
+
+    expect(screen.queryByTestId("nav-ticketing")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("nav-dashboard-separator")).not.toBeInTheDocument();
+  });
+
+  it("hides the Ticketing entry when the dashboard feature flag is off", () => {
+    mockFeatureFlags = { ...mockFeatureFlags, ticketingDashboard: false };
+
+    render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
+
+    expect(screen.queryByTestId("nav-ticketing")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("nav-dashboard-separator")).not.toBeInTheDocument();
+  });
+
+  it("shows the Ticketing entry when the flag is on and a provider is enabled", () => {
     render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
 
     expect(screen.getByTestId("nav-dashboard-separator")).toBeInTheDocument();
