@@ -67,7 +67,8 @@ fn non_empty_input(value: &Option<String>) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
-async fn attach_create_task_plan_scope(
+#[doc(hidden)]
+pub async fn attach_create_task_plan_scope(
     task: &mut Task,
     input: &CreateTaskInput,
     state: &AppState,

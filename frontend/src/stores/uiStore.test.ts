@@ -481,6 +481,29 @@ describe("uiStore", () => {
     });
   });
 
+  describe("taskCreationContext", () => {
+    it("stores optional flow context when opening task creation", () => {
+      useUiStore.getState().openTaskCreation("project-1", "New task", {
+        ideationSessionId: "session-1",
+        executionPlanId: "exec-plan-1",
+      });
+
+      expect(useUiStore.getState().taskCreationContext).toEqual({
+        projectId: "project-1",
+        defaultTitle: "New task",
+        ideationSessionId: "session-1",
+        executionPlanId: "exec-plan-1",
+      });
+    });
+
+    it("closes task creation context", () => {
+      useUiStore.getState().openTaskCreation("project-1", "New task");
+      useUiStore.getState().closeTaskCreation();
+
+      expect(useUiStore.getState().taskCreationContext).toBeNull();
+    });
+  });
+
   describe("battle mode", () => {
     it("enters battle mode and hides graph panels", () => {
       useUiStore.setState({
