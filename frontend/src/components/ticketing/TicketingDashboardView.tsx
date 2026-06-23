@@ -41,6 +41,7 @@ import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import { formatRelativeTime } from "@/lib/formatters";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -930,7 +931,20 @@ export function TicketingDashboardView({
         }}
       >
         <div className="min-w-0">
-          <h1 className="text-lg font-semibold text-[var(--text-primary)]">Ticketing</h1>
+          <h1
+            aria-label="Ticketing"
+            className="flex min-w-0 items-center gap-2 text-lg font-semibold text-[var(--text-primary)]"
+          >
+            <span>Ticketing</span>
+            <Badge
+              data-testid="ticketing-visible-count"
+              aria-label={`${displayedTickets.length} visible ${displayedTickets.length === 1 ? "ticket" : "tickets"}`}
+              variant="outline"
+              className="h-5 rounded-full border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 text-xs font-medium leading-none text-[var(--text-muted)]"
+            >
+              {displayedTickets.length}
+            </Badge>
+          </h1>
           <p className="mt-0.5 text-xs text-[var(--text-muted)]">
             Browse provider tickets and inspect RalphX associations.
           </p>

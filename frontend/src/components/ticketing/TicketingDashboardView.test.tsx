@@ -743,6 +743,53 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByRole("button", { name: /RX-1/ })).toBeInTheDocument();
   });
 
+  it("shows the visible ticket count beside the dashboard title", () => {
+    mockConnectedDashboard();
+    useTicketingStore.getState().setFilters({
+      text: "",
+      assignee: "Ada",
+      stateIds: [],
+      labels: [],
+      sprint: null,
+    });
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: {
+        pages: [
+          {
+            items: [
+              { ...ticket, assignee: { id: "ada", name: "Ada" } },
+              {
+                ...ticket,
+                ref: { provider: "jira" as const, id: "10002", key: "RX-2" },
+                title: "Unassigned backlog item",
+                assignee: null,
+              },
+            ],
+            nextCursor: null,
+            total: 2,
+          },
+        ],
+        pageParams: [null],
+      },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+
+    renderDashboard();
+
+    expect(screen.getByRole("heading", { name: "Ticketing" })).toBeInTheDocument();
+    expect(screen.getByTestId("ticketing-visible-count")).toHaveTextContent("1");
+    expect(screen.getByTestId("ticketing-visible-count")).toHaveAttribute(
+      "aria-label",
+      "1 visible ticket",
+    );
+  });
+
   it("renders list and kanban views, then opens ticket detail with RalphX associations", async () => {
     mockConnectedDashboard();
 
