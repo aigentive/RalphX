@@ -1,0 +1,671 @@
+use async_trait::async_trait;
+use http_body_util::{BodyExt, Full};
+use hyper::{Method, Request};
+use hyper_rustls::HttpsConnector;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioExecutor;
+use serde_json::{json, Value};
+use tokio::time::Duration;
+use tokio_util::bytes::Bytes;
+
+use crate::application::{
+    ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpSpace, ClickUpStatus,
+    ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace,
+};
+
+const CLICKUP_API_BASE: &str = "https://api.clickup.com/api/v2";
+/// Safety cap so a misbehaving `last_page` flag can never spin forever.
+const MAX_TASK_PAGES: usize = 50;
+
+pub struct HyperClickUpApiClient {
+    client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
+    timeout: Duration,
+}
+
+impl HyperClickUpApiClient {
+    pub fn new() -> Result<Self, String> {
+        install_rustls_crypto_provider();
+        let https = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .map_err(|error| format!("native root certificates unavailable: {error}"))?
+            .https_only()
+            .enable_http1()
+            .build();
+        Ok(Self {
+            client: Client::builder(TokioExecutor::new()).build(https),
+            timeout: Duration::from_secs(20),
+        })
+    }
+
+    async fn send_json_request(
+        &self,
+        method: Method,
+        url: String,
+        token: &str,
+        body: Option<Value>,
+    ) -> Result<Value, String> {
+        let uri = url
+            .parse::<hyper::Uri>()
+            .map_err(|error| format!("Invalid ClickUp URL: {error}"))?;
+        let body_bytes = body
+            .map(|value| serde_json::to_vec(&value))
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        // ClickUp Personal API tokens are sent verbatim — no `Bearer` prefix.
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("Accept", "application/json")
+            .header("Authorization", clickup_authorization_header(token));
+        if !body_bytes.is_empty() {
+            builder = builder.header("Content-Type", "application/json");
+        }
+        let request = builder
+            .body(Full::new(Bytes::from(body_bytes)))
+            .map_err(|error| format!("Failed to build ClickUp request: {error}"))?;
+        let response = tokio::time::timeout(self.timeout, self.client.request(request))
+            .await
+            .map_err(|_| "ClickUp request timed out".to_string())?
+            .map_err(|error| format!("ClickUp request failed: {error}"))?;
+        let status = response.status();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .map_err(|error| format!("Failed to read ClickUp response: {error}"))?
+            .to_bytes();
+        if !status.is_success() {
+            return Err(format!("ClickUp returned HTTP {}", status.as_u16()));
+        }
+        if bytes.is_empty() {
+            return Ok(Value::Null);
+        }
+        serde_json::from_slice(&bytes)
+            .map_err(|error| format!("Failed to parse ClickUp response: {error}"))
+    }
+}
+
+fn install_rustls_crypto_provider() {
+    static INSTALL_PROVIDER: std::sync::Once = std::sync::Once::new();
+    INSTALL_PROVIDER.call_once(|| {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
+}
+
+/// The ClickUp `Authorization` header value is the raw Personal API token with
+/// NO `Bearer` prefix and NO `Basic` encoding (unlike Atlassian).
+pub(crate) fn clickup_authorization_header(token: &str) -> String {
+    token.to_string()
+}
+
+#[async_trait]
+pub(crate) trait ClickUpJsonRequester: Send + Sync {
+    async fn request_json(
+        &self,
+        method: Method,
+        url: String,
+        token: &str,
+        body: Option<Value>,
+    ) -> Result<Value, String>;
+}
+
+#[async_trait]
+impl ClickUpJsonRequester for HyperClickUpApiClient {
+    async fn request_json(
+        &self,
+        method: Method,
+        url: String,
+        token: &str,
+        body: Option<Value>,
+    ) -> Result<Value, String> {
+        self.send_json_request(method, url, token, body).await
+    }
+}
+
+#[async_trait]
+impl ClickUpApiClient for HyperClickUpApiClient {
+    async fn validate(&self, auth: &ClickUpAuthContext) -> Result<(), String> {
+        validate_token(self, &auth.api_token).await
+    }
+
+    async fn list_workspaces(
+        &self,
+        auth: &ClickUpAuthContext,
+    ) -> Result<Vec<ClickUpWorkspace>, String> {
+        fetch_workspaces(self, &auth.api_token).await
+    }
+
+    async fn list_spaces(
+        &self,
+        auth: &ClickUpAuthContext,
+        team_id: &str,
+    ) -> Result<Vec<ClickUpSpace>, String> {
+        fetch_spaces(self, &auth.api_token, team_id).await
+    }
+
+    async fn list_tasks(
+        &self,
+        auth: &ClickUpAuthContext,
+        team_id: &str,
+        space_ids: &[String],
+    ) -> Result<Vec<ClickUpTaskSummary>, String> {
+        fetch_filtered_tasks(self, &auth.api_token, team_id, space_ids).await
+    }
+
+    async fn fetch_task(
+        &self,
+        auth: &ClickUpAuthContext,
+        task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        fetch_task_detail(self, &auth.api_token, task_id).await
+    }
+
+    async fn list_statuses(
+        &self,
+        auth: &ClickUpAuthContext,
+        space_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        fetch_space_statuses(self, &auth.api_token, space_id).await
+    }
+
+    async fn current_user(&self, auth: &ClickUpAuthContext) -> Result<ClickUpUser, String> {
+        fetch_current_user(self, &auth.api_token).await
+    }
+
+    async fn update_task_status(
+        &self,
+        auth: &ClickUpAuthContext,
+        task_id: &str,
+        status_name: &str,
+    ) -> Result<(), String> {
+        put_task_status(self, &auth.api_token, task_id, status_name).await
+    }
+
+    async fn assign_task_to_current_user(
+        &self,
+        auth: &ClickUpAuthContext,
+        task_id: &str,
+    ) -> Result<ClickUpUser, String> {
+        assign_task_to_user(self, &auth.api_token, task_id).await
+    }
+
+    async fn clear_task_assignee(
+        &self,
+        auth: &ClickUpAuthContext,
+        task_id: &str,
+    ) -> Result<(), String> {
+        clear_task_assignees(self, &auth.api_token, task_id).await
+    }
+
+    async fn create_comment(
+        &self,
+        auth: &ClickUpAuthContext,
+        task_id: &str,
+        body_markdown: &str,
+    ) -> Result<ClickUpComment, String> {
+        create_task_comment(self, &auth.api_token, task_id, body_markdown).await
+    }
+
+    async fn set_task_tags(
+        &self,
+        auth: &ClickUpAuthContext,
+        task_id: &str,
+        tags: Vec<String>,
+    ) -> Result<(), String> {
+        apply_task_tags(self, &auth.api_token, task_id, tags).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mappers — unit-testable via a `ClickUpJsonRequester` fake (no real network).
+// ---------------------------------------------------------------------------
+
+/// Maps a ClickUp `status.type` to a RalphX ticketing category.
+///
+/// ClickUp emits four status types: `open` (not started), `custom`
+/// (user-defined active states), `done` (completed), and `closed` (archived).
+/// Anything unexpected falls back to `in_progress`.
+pub(crate) fn map_status_type_to_category(status_type: &str) -> String {
+    match status_type {
+        "open" => "todo",
+        "custom" => "in_progress",
+        "done" | "closed" => "done",
+        _ => "in_progress",
+    }
+    .to_string()
+}
+
+pub(crate) async fn validate_token<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+) -> Result<(), String> {
+    client
+        .request_json(Method::GET, format!("{CLICKUP_API_BASE}/user"), token, None)
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn fetch_current_user<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+) -> Result<ClickUpUser, String> {
+    let value = client
+        .request_json(Method::GET, format!("{CLICKUP_API_BASE}/user"), token, None)
+        .await?;
+    value
+        .get("user")
+        .and_then(user_from_value)
+        .ok_or_else(|| "ClickUp user response was missing user details".to_string())
+}
+
+pub(crate) async fn fetch_workspaces<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+) -> Result<Vec<ClickUpWorkspace>, String> {
+    let value = client
+        .request_json(Method::GET, format!("{CLICKUP_API_BASE}/team"), token, None)
+        .await?;
+    Ok(value
+        .get("teams")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(workspace_from_value)
+        .collect())
+}
+
+pub(crate) async fn fetch_spaces<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    team_id: &str,
+) -> Result<Vec<ClickUpSpace>, String> {
+    let url = format!(
+        "{CLICKUP_API_BASE}/team/{}/space?archived=false",
+        percent_encode_path_segment(team_id)
+    );
+    let value = client.request_json(Method::GET, url, token, None).await?;
+    Ok(value
+        .get("spaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(space_from_value)
+        .collect())
+}
+
+/// Loads workspace-scoped filtered tasks, walking `?page=N` until ClickUp
+/// reports `last_page` (or returns an empty page).
+pub(crate) async fn fetch_filtered_tasks<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    team_id: &str,
+    space_ids: &[String],
+) -> Result<Vec<ClickUpTaskSummary>, String> {
+    let mut tasks = Vec::new();
+    let mut page = 0usize;
+    loop {
+        let url = filtered_tasks_url(team_id, space_ids, page);
+        let value = client.request_json(Method::GET, url, token, None).await?;
+        let page_tasks = value.get("tasks").and_then(Value::as_array);
+        let count = page_tasks.map(Vec::len).unwrap_or(0);
+        if let Some(page_tasks) = page_tasks {
+            for task in page_tasks {
+                if let Some(summary) = task_summary_from_value(task) {
+                    tasks.push(summary);
+                }
+            }
+        }
+        let last_page = value
+            .get("last_page")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        page += 1;
+        if last_page || count == 0 || page >= MAX_TASK_PAGES {
+            break;
+        }
+    }
+    Ok(tasks)
+}
+
+pub(crate) async fn fetch_task_detail<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    task_id: &str,
+) -> Result<ClickUpTaskContent, String> {
+    let url = format!(
+        "{CLICKUP_API_BASE}/task/{}",
+        percent_encode_path_segment(task_id)
+    );
+    let value = client.request_json(Method::GET, url, token, None).await?;
+    task_content_from_value(&value)
+        .ok_or_else(|| "ClickUp task response was missing task details".to_string())
+}
+
+pub(crate) async fn fetch_space_statuses<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    space_id: &str,
+) -> Result<Vec<ClickUpStatus>, String> {
+    let url = format!(
+        "{CLICKUP_API_BASE}/space/{}",
+        percent_encode_path_segment(space_id)
+    );
+    let value = client.request_json(Method::GET, url, token, None).await?;
+    Ok(value
+        .get("statuses")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(status_from_value)
+        .collect())
+}
+
+pub(crate) async fn put_task_status<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    task_id: &str,
+    status_name: &str,
+) -> Result<(), String> {
+    let url = format!(
+        "{CLICKUP_API_BASE}/task/{}",
+        percent_encode_path_segment(task_id)
+    );
+    client
+        .request_json(Method::PUT, url, token, Some(json!({ "status": status_name })))
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn assign_task_to_user<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    task_id: &str,
+) -> Result<ClickUpUser, String> {
+    let user = fetch_current_user(client, token).await?;
+    let url = format!(
+        "{CLICKUP_API_BASE}/task/{}",
+        percent_encode_path_segment(task_id)
+    );
+    client
+        .request_json(
+            Method::PUT,
+            url,
+            token,
+            Some(json!({ "assignees": { "add": [user.id] } })),
+        )
+        .await?;
+    Ok(user)
+}
+
+pub(crate) async fn clear_task_assignees<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    task_id: &str,
+) -> Result<(), String> {
+    let task_url = format!(
+        "{CLICKUP_API_BASE}/task/{}",
+        percent_encode_path_segment(task_id)
+    );
+    let task = client
+        .request_json(Method::GET, task_url.clone(), token, None)
+        .await?;
+    let assignee_ids: Vec<i64> = task
+        .get("assignees")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|assignee| assignee.get("id").and_then(Value::as_i64))
+        .collect();
+    if assignee_ids.is_empty() {
+        return Ok(());
+    }
+    client
+        .request_json(
+            Method::PUT,
+            task_url,
+            token,
+            Some(json!({ "assignees": { "rem": assignee_ids } })),
+        )
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn create_task_comment<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    task_id: &str,
+    body_markdown: &str,
+) -> Result<ClickUpComment, String> {
+    let url = format!(
+        "{CLICKUP_API_BASE}/task/{}/comment",
+        percent_encode_path_segment(task_id)
+    );
+    let value = client
+        .request_json(
+            Method::POST,
+            url,
+            token,
+            Some(json!({ "comment_text": body_markdown })),
+        )
+        .await?;
+    Ok(ClickUpComment {
+        id: value
+            .get("id")
+            .and_then(json_scalar_to_string)
+            .unwrap_or_default(),
+        body: body_markdown.to_string(),
+        author_id: None,
+        author_name: None,
+        created_at: value.get("date").and_then(json_scalar_to_string),
+    })
+}
+
+/// Reconciles a task's tags to exactly `desired`: removes current tags absent
+/// from the desired set and adds desired tags not already present. ClickUp adds
+/// and removes tags one at a time (`POST`/`DELETE /task/{id}/tag/{name}`).
+pub(crate) async fn apply_task_tags<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    task_id: &str,
+    desired: Vec<String>,
+) -> Result<(), String> {
+    let task_url = format!(
+        "{CLICKUP_API_BASE}/task/{}",
+        percent_encode_path_segment(task_id)
+    );
+    let task = client.request_json(Method::GET, task_url, token, None).await?;
+    let current = collect_tag_names(&task);
+
+    for name in &current {
+        if !desired.iter().any(|wanted| wanted.eq_ignore_ascii_case(name)) {
+            let url = format!(
+                "{CLICKUP_API_BASE}/task/{}/tag/{}",
+                percent_encode_path_segment(task_id),
+                percent_encode_path_segment(name)
+            );
+            client.request_json(Method::DELETE, url, token, None).await?;
+        }
+    }
+    for name in &desired {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !current.iter().any(|existing| existing.eq_ignore_ascii_case(trimmed)) {
+            let url = format!(
+                "{CLICKUP_API_BASE}/task/{}/tag/{}",
+                percent_encode_path_segment(task_id),
+                percent_encode_path_segment(trimmed)
+            );
+            client.request_json(Method::POST, url, token, None).await?;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Value mapping helpers
+// ---------------------------------------------------------------------------
+
+fn filtered_tasks_url(team_id: &str, space_ids: &[String], page: usize) -> String {
+    let mut url = format!(
+        "{CLICKUP_API_BASE}/team/{}/task?page={page}",
+        percent_encode_path_segment(team_id)
+    );
+    for space_id in space_ids {
+        // ClickUp expects repeated `space_ids[]=` params; encode the brackets so
+        // the query parses as a valid URI.
+        url.push_str(&format!("&space_ids%5B%5D={}", percent_encode(space_id)));
+    }
+    url
+}
+
+fn user_from_value(value: &Value) -> Option<ClickUpUser> {
+    Some(ClickUpUser {
+        id: value.get("id").and_then(Value::as_i64)?,
+        username: opt_str(value, "username"),
+        email: opt_str(value, "email"),
+    })
+}
+
+fn workspace_from_value(value: &Value) -> Option<ClickUpWorkspace> {
+    Some(ClickUpWorkspace {
+        id: opt_str(value, "id")?,
+        name: opt_str(value, "name").unwrap_or_default(),
+        color: opt_str(value, "color"),
+    })
+}
+
+fn space_from_value(value: &Value) -> Option<ClickUpSpace> {
+    Some(ClickUpSpace {
+        id: opt_str(value, "id")?,
+        name: opt_str(value, "name").unwrap_or_default(),
+        private: value
+            .get("private")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+fn status_from_value(value: &Value) -> Option<ClickUpStatus> {
+    let status = opt_str(value, "status")?;
+    let status_type = opt_str(value, "type").unwrap_or_default();
+    let category = map_status_type_to_category(&status_type);
+    Some(ClickUpStatus {
+        id: opt_str(value, "id"),
+        status,
+        status_type,
+        category,
+        color: opt_str(value, "color"),
+        orderindex: value.get("orderindex").and_then(Value::as_i64),
+    })
+}
+
+fn task_summary_from_value(task: &Value) -> Option<ClickUpTaskSummary> {
+    let id = opt_str(task, "id")?;
+    let status = task.get("status");
+    let status_type = status.and_then(|value| opt_str(value, "type"));
+    Some(ClickUpTaskSummary {
+        id,
+        custom_id: opt_str(task, "custom_id"),
+        name: opt_str(task, "name").unwrap_or_default(),
+        url: opt_str(task, "url"),
+        status_name: status.and_then(|value| opt_str(value, "status")),
+        status_category: status_type
+            .as_deref()
+            .map(map_status_type_to_category),
+        status_type,
+        status_color: status.and_then(|value| opt_str(value, "color")),
+        assignees: collect_assignee_names(task),
+        tags: collect_tag_names(task),
+        space_id: task.get("space").and_then(|value| opt_str(value, "id")),
+        list_name: task.get("list").and_then(|value| opt_str(value, "name")),
+        updated_at: opt_str(task, "date_updated"),
+    })
+}
+
+fn task_content_from_value(task: &Value) -> Option<ClickUpTaskContent> {
+    let id = opt_str(task, "id")?;
+    let status = task.get("status");
+    let status_type = status.and_then(|value| opt_str(value, "type"));
+    let description = opt_str(task, "description")
+        .or_else(|| opt_str(task, "text_content"))
+        .unwrap_or_default();
+    Some(ClickUpTaskContent {
+        id,
+        custom_id: opt_str(task, "custom_id"),
+        name: opt_str(task, "name").unwrap_or_default(),
+        url: opt_str(task, "url"),
+        description,
+        status_name: status.and_then(|value| opt_str(value, "status")),
+        status_category: status_type
+            .as_deref()
+            .map(map_status_type_to_category),
+        status_type,
+        creator: task
+            .get("creator")
+            .and_then(|value| opt_str(value, "username")),
+        assignees: collect_assignee_names(task),
+        tags: collect_tag_names(task),
+        comments: Vec::new(),
+        updated_at: opt_str(task, "date_updated"),
+        space_id: task.get("space").and_then(|value| opt_str(value, "id")),
+        list_name: task.get("list").and_then(|value| opt_str(value, "name")),
+    })
+}
+
+fn collect_assignee_names(task: &Value) -> Vec<String> {
+    task.get("assignees")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|assignee| {
+            opt_str(assignee, "username").or_else(|| opt_str(assignee, "email"))
+        })
+        .collect()
+}
+
+fn collect_tag_names(task: &Value) -> Vec<String> {
+    task.get("tags")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tag| opt_str(tag, "name"))
+        .collect()
+}
+
+fn opt_str(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|text| !text.is_empty())
+}
+
+/// Stringifies a scalar JSON value (ClickUp returns ids/dates as either strings
+/// or numbers depending on the endpoint).
+fn json_scalar_to_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
+}
+
+fn percent_encode(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                vec![byte as char]
+            }
+            _ => format!("%{byte:02X}").chars().collect(),
+        })
+        .collect()
+}
+
+fn percent_encode_path_segment(value: &str) -> String {
+    percent_encode(value)
+}

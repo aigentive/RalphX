@@ -1,0 +1,719 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::domain::integrations::{
+    ClickUpIntegrationSettings, ClickUpIntegrationSettingsRepository, IntegrationValidationStatus,
+};
+use crate::domain::services::SecretStore;
+
+const CLICKUP_API_TOKEN_SECRET_REF_PREFIX: &str = "integrations/clickup/default/api-token";
+
+/// Auth context for ClickUp REST calls.
+///
+/// ClickUp v1 uses a single Personal API token sent verbatim in the
+/// `Authorization` header (no `Bearer` prefix, no OAuth).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClickUpAuthContext {
+    pub api_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpWorkspace {
+    pub id: String,
+    pub name: String,
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpSpace {
+    pub id: String,
+    pub name: String,
+    pub private: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpStatus {
+    pub id: Option<String>,
+    pub status: String,
+    /// ClickUp's raw `status.type` (`open`/`custom`/`done`/`closed`).
+    pub status_type: String,
+    /// RalphX ticketing category derived from `status_type`.
+    pub category: String,
+    pub color: Option<String>,
+    pub orderindex: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpTag {
+    pub name: String,
+    pub tag_bg: Option<String>,
+    pub tag_fg: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpUser {
+    pub id: i64,
+    pub username: Option<String>,
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpComment {
+    pub id: String,
+    pub body: String,
+    pub author_id: Option<i64>,
+    pub author_name: Option<String>,
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpTaskSummary {
+    pub id: String,
+    pub custom_id: Option<String>,
+    pub name: String,
+    pub url: Option<String>,
+    pub status_name: Option<String>,
+    pub status_type: Option<String>,
+    pub status_category: Option<String>,
+    pub status_color: Option<String>,
+    pub assignees: Vec<String>,
+    pub tags: Vec<String>,
+    pub space_id: Option<String>,
+    pub list_name: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpTaskContent {
+    pub id: String,
+    pub custom_id: Option<String>,
+    pub name: String,
+    pub url: Option<String>,
+    pub description: String,
+    pub status_name: Option<String>,
+    pub status_type: Option<String>,
+    pub status_category: Option<String>,
+    pub creator: Option<String>,
+    pub assignees: Vec<String>,
+    pub tags: Vec<String>,
+    pub comments: Vec<ClickUpComment>,
+    pub updated_at: Option<String>,
+    pub space_id: Option<String>,
+    pub list_name: Option<String>,
+}
+
+#[async_trait]
+pub trait ClickUpApiClient: Send + Sync {
+    async fn validate(&self, auth: &ClickUpAuthContext) -> Result<(), String>;
+
+    async fn list_workspaces(
+        &self,
+        auth: &ClickUpAuthContext,
+    ) -> Result<Vec<ClickUpWorkspace>, String>;
+
+    async fn list_spaces(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _team_id: &str,
+    ) -> Result<Vec<ClickUpSpace>, String> {
+        Err("ClickUp spaces are not available for this client".to_string())
+    }
+
+    async fn list_tasks(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _team_id: &str,
+        _space_ids: &[String],
+    ) -> Result<Vec<ClickUpTaskSummary>, String> {
+        Err("ClickUp tasks are not available for this client".to_string())
+    }
+
+    async fn fetch_task(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        Err("ClickUp task lookup is not available for this client".to_string())
+    }
+
+    async fn list_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _space_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        Err("ClickUp statuses are not available for this client".to_string())
+    }
+
+    async fn current_user(&self, _auth: &ClickUpAuthContext) -> Result<ClickUpUser, String> {
+        Err("ClickUp current-user lookup is not available for this client".to_string())
+    }
+
+    async fn update_task_status(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+        _status_name: &str,
+    ) -> Result<(), String> {
+        Err("ClickUp task status updates are not available for this client".to_string())
+    }
+
+    async fn assign_task_to_current_user(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+    ) -> Result<ClickUpUser, String> {
+        Err("ClickUp task assignment is not available for this client".to_string())
+    }
+
+    async fn clear_task_assignee(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+    ) -> Result<(), String> {
+        Err("ClickUp task assignee clearing is not available for this client".to_string())
+    }
+
+    async fn create_comment(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+        _body_markdown: &str,
+    ) -> Result<ClickUpComment, String> {
+        Err("ClickUp comments are not available for this client".to_string())
+    }
+
+    async fn set_task_tags(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+        _tags: Vec<String>,
+    ) -> Result<(), String> {
+        Err("ClickUp tag updates are not available for this client".to_string())
+    }
+}
+
+/// No-op client used in tests and when the integration is disabled. Returns
+/// empty/minimal success values so happy-path flows can be exercised without a
+/// network.
+pub struct EmptyClickUpApiClient;
+
+/// Client used when ClickUp could not be initialized (e.g. TLS unavailable);
+/// every call fails with the captured reason.
+pub struct UnavailableClickUpApiClient {
+    reason: String,
+}
+
+impl UnavailableClickUpApiClient {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl ClickUpApiClient for EmptyClickUpApiClient {
+    async fn validate(&self, _auth: &ClickUpAuthContext) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn list_workspaces(
+        &self,
+        _auth: &ClickUpAuthContext,
+    ) -> Result<Vec<ClickUpWorkspace>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn list_spaces(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _team_id: &str,
+    ) -> Result<Vec<ClickUpSpace>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn list_tasks(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _team_id: &str,
+        _space_ids: &[String],
+    ) -> Result<Vec<ClickUpTaskSummary>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn fetch_task(
+        &self,
+        _auth: &ClickUpAuthContext,
+        task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        Ok(ClickUpTaskContent {
+            id: task_id.to_string(),
+            custom_id: None,
+            name: task_id.to_string(),
+            url: None,
+            description: String::new(),
+            status_name: None,
+            status_type: None,
+            status_category: None,
+            creator: None,
+            assignees: Vec::new(),
+            tags: Vec::new(),
+            comments: Vec::new(),
+            updated_at: None,
+            space_id: None,
+            list_name: None,
+        })
+    }
+
+    async fn list_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _space_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn current_user(&self, _auth: &ClickUpAuthContext) -> Result<ClickUpUser, String> {
+        Ok(ClickUpUser {
+            id: 0,
+            username: Some("Test User".to_string()),
+            email: None,
+        })
+    }
+
+    async fn update_task_status(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+        _status_name: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn assign_task_to_current_user(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+    ) -> Result<ClickUpUser, String> {
+        Ok(ClickUpUser {
+            id: 0,
+            username: Some("Test User".to_string()),
+            email: None,
+        })
+    }
+
+    async fn clear_task_assignee(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn create_comment(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+        body_markdown: &str,
+    ) -> Result<ClickUpComment, String> {
+        Ok(ClickUpComment {
+            id: "test-comment".to_string(),
+            body: body_markdown.to_string(),
+            author_id: None,
+            author_name: None,
+            created_at: None,
+        })
+    }
+
+    async fn set_task_tags(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+        _tags: Vec<String>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ClickUpApiClient for UnavailableClickUpApiClient {
+    async fn validate(&self, _auth: &ClickUpAuthContext) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+
+    async fn list_workspaces(
+        &self,
+        _auth: &ClickUpAuthContext,
+    ) -> Result<Vec<ClickUpWorkspace>, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn list_spaces(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _team_id: &str,
+    ) -> Result<Vec<ClickUpSpace>, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn list_tasks(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _team_id: &str,
+        _space_ids: &[String],
+    ) -> Result<Vec<ClickUpTaskSummary>, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn fetch_task(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn list_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _space_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn current_user(&self, _auth: &ClickUpAuthContext) -> Result<ClickUpUser, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn update_task_status(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+        _status_name: &str,
+    ) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+
+    async fn assign_task_to_current_user(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+    ) -> Result<ClickUpUser, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn clear_task_assignee(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+    ) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+
+    async fn create_comment(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+        _body_markdown: &str,
+    ) -> Result<ClickUpComment, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn set_task_tags(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _task_id: &str,
+        _tags: Vec<String>,
+    ) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+}
+
+pub struct ClickUpIntegrationService {
+    settings_repo: Arc<dyn ClickUpIntegrationSettingsRepository>,
+    secret_store: Arc<dyn SecretStore>,
+    client: Arc<dyn ClickUpApiClient>,
+}
+
+impl ClickUpIntegrationService {
+    pub fn new(
+        settings_repo: Arc<dyn ClickUpIntegrationSettingsRepository>,
+        secret_store: Arc<dyn SecretStore>,
+        client: Arc<dyn ClickUpApiClient>,
+    ) -> Self {
+        Self {
+            settings_repo,
+            secret_store,
+            client,
+        }
+    }
+
+    pub async fn get_settings(&self) -> Result<ClickUpIntegrationSettings, String> {
+        self.settings_repo
+            .get()
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Persists ClickUp settings. Both arguments are tri-state: `None` leaves
+    /// the existing value untouched, `Some("")` clears it, and `Some(value)`
+    /// sets it. Saving always returns the integration to a pending,
+    /// not-enabled state so the caller re-validates afterwards.
+    pub async fn save_settings(
+        &self,
+        api_token: Option<String>,
+        workspace_id: Option<String>,
+    ) -> Result<ClickUpIntegrationSettings, String> {
+        let mut settings = self.get_settings().await?;
+        if let Some(token) = api_token.map(|value| value.trim().to_string()) {
+            if token.is_empty() {
+                if let Some(secret_ref) = settings.token_secret_ref.as_ref() {
+                    self.secret_store
+                        .delete_secret(secret_ref)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                settings.token_secret_ref = None;
+            } else {
+                let previous_secret_ref = settings.token_secret_ref.clone();
+                let next_secret_ref =
+                    format!("{}/{}", CLICKUP_API_TOKEN_SECRET_REF_PREFIX, Uuid::new_v4());
+                self.secret_store
+                    .put_secret(&next_secret_ref, &token)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let stored_token = self
+                    .secret_store
+                    .get_secret(&next_secret_ref)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "ClickUp API token was saved but could not be read back from secure storage: {error}"
+                        )
+                    })?
+                    .ok_or_else(|| {
+                        "ClickUp API token was saved but secure storage returned no value"
+                            .to_string()
+                    })?;
+                if stored_token != token {
+                    let _ = self.secret_store.delete_secret(&next_secret_ref).await;
+                    return Err(
+                        "ClickUp API token was saved but secure storage returned a different value"
+                            .to_string(),
+                    );
+                }
+                if let Some(previous_secret_ref) = previous_secret_ref.as_deref() {
+                    if previous_secret_ref != next_secret_ref {
+                        if let Err(error) =
+                            self.secret_store.delete_secret(previous_secret_ref).await
+                        {
+                            tracing::warn!(
+                                error = %error,
+                                secret_ref = previous_secret_ref,
+                                "failed to delete previous ClickUp API token secret after replacement"
+                            );
+                        }
+                    }
+                }
+                settings.token_secret_ref = Some(next_secret_ref);
+            }
+        }
+        if let Some(workspace) = workspace_id.map(|value| value.trim().to_string()) {
+            settings.workspace_id = if workspace.is_empty() {
+                None
+            } else {
+                Some(workspace)
+            };
+        }
+        settings.enabled = false;
+        settings.validation_status = pending_status_for_settings(&settings);
+        settings.task_search_available = false;
+        settings.last_validated_at = None;
+        settings.last_error = None;
+        settings.updated_at = chrono::Utc::now();
+        self.settings_repo
+            .upsert(&settings)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Clears the stored ClickUp API token and resets the integration to a
+    /// not-configured state so the user can disconnect a valid connection.
+    pub async fn disconnect(&self) -> Result<ClickUpIntegrationSettings, String> {
+        let settings = self.get_settings().await?;
+        if let Some(secret_ref) = settings.token_secret_ref.as_deref() {
+            self.secret_store
+                .delete_secret(secret_ref)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        let cleared = ClickUpIntegrationSettings::default();
+        self.settings_repo
+            .upsert(&cleared)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn validate_and_enable(&self) -> Result<ClickUpIntegrationSettings, String> {
+        let mut settings = self.get_settings().await?;
+        let auth = self.auth_context(&settings).await?;
+        match self.client.validate(&auth).await {
+            Ok(()) => {
+                settings.enabled = true;
+                settings.validation_status = IntegrationValidationStatus::Valid;
+                settings.task_search_available = true;
+                settings.last_error = None;
+            }
+            Err(error) => {
+                settings.enabled = false;
+                settings.validation_status = IntegrationValidationStatus::Invalid;
+                settings.task_search_available = false;
+                settings.last_error = Some(error);
+            }
+        }
+        settings.last_validated_at = Some(chrono::Utc::now());
+        settings.updated_at = chrono::Utc::now();
+        self.settings_repo
+            .upsert(&settings)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn list_workspaces(&self) -> Result<Vec<ClickUpWorkspace>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_workspaces(&auth).await
+    }
+
+    pub async fn list_spaces(&self) -> Result<Vec<ClickUpSpace>, String> {
+        let (auth, workspace_id) = self.enabled_workspace_context().await?;
+        self.client.list_spaces(&auth, &workspace_id).await
+    }
+
+    pub async fn list_tasks(
+        &self,
+        space_ids: Vec<String>,
+    ) -> Result<Vec<ClickUpTaskSummary>, String> {
+        let (auth, workspace_id) = self.enabled_workspace_context().await?;
+        self.client.list_tasks(&auth, &workspace_id, &space_ids).await
+    }
+
+    pub async fn list_statuses(&self, space_id: &str) -> Result<Vec<ClickUpStatus>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_statuses(&auth, space_id).await
+    }
+
+    pub async fn fetch_task(&self, task_id: &str) -> Result<ClickUpTaskContent, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.fetch_task(&auth, task_id).await
+    }
+
+    pub async fn current_user(&self) -> Result<ClickUpUser, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.current_user(&auth).await
+    }
+
+    pub async fn update_task_status(
+        &self,
+        task_id: &str,
+        status_name: &str,
+    ) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .update_task_status(&auth, task_id, status_name)
+            .await
+    }
+
+    pub async fn assign_task_to_current_user(
+        &self,
+        task_id: &str,
+    ) -> Result<ClickUpUser, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.assign_task_to_current_user(&auth, task_id).await
+    }
+
+    pub async fn clear_task_assignee(&self, task_id: &str) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.clear_task_assignee(&auth, task_id).await
+    }
+
+    pub async fn create_comment(
+        &self,
+        task_id: &str,
+        body_markdown: &str,
+    ) -> Result<ClickUpComment, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .create_comment(&auth, task_id, body_markdown)
+            .await
+    }
+
+    pub async fn set_task_tags(
+        &self,
+        task_id: &str,
+        tags: Vec<String>,
+    ) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.set_task_tags(&auth, task_id, tags).await
+    }
+
+    async fn enabled_auth_context(&self) -> Result<ClickUpAuthContext, String> {
+        let settings = self.get_settings().await?;
+        if !settings.enabled || settings.validation_status != IntegrationValidationStatus::Valid {
+            return Err("ClickUp integration is not enabled".to_string());
+        }
+        self.auth_context(&settings).await
+    }
+
+    async fn enabled_workspace_context(
+        &self,
+    ) -> Result<(ClickUpAuthContext, String), String> {
+        let settings = self.get_settings().await?;
+        if !settings.enabled || settings.validation_status != IntegrationValidationStatus::Valid {
+            return Err("ClickUp integration is not enabled".to_string());
+        }
+        let workspace_id = settings
+            .workspace_id
+            .clone()
+            .ok_or_else(|| "ClickUp workspace is not selected".to_string())?;
+        let auth = self.auth_context(&settings).await?;
+        Ok((auth, workspace_id))
+    }
+
+    async fn auth_context(
+        &self,
+        settings: &ClickUpIntegrationSettings,
+    ) -> Result<ClickUpAuthContext, String> {
+        let secret_ref = settings
+            .token_secret_ref
+            .as_deref()
+            .ok_or_else(|| "ClickUp API token is required".to_string())?;
+        let api_token = self
+            .secret_store
+            .get_secret(secret_ref)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "ClickUp API token is missing from secure storage".to_string())?;
+        Ok(ClickUpAuthContext { api_token })
+    }
+}
+
+fn pending_status_for_settings(
+    settings: &ClickUpIntegrationSettings,
+) -> IntegrationValidationStatus {
+    if settings.token_secret_ref.is_some() {
+        IntegrationValidationStatus::Pending
+    } else {
+        IntegrationValidationStatus::NotConfigured
+    }
+}
