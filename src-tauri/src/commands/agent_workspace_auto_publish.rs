@@ -11,7 +11,8 @@ use crate::application::agent_conversation_workspace_base::{resolve_workspace_ba
 use crate::application::chat_service::events::{AGENT_RUN_COMPLETED, AGENT_TURN_COMPLETED};
 use crate::application::git_service::git_cmd;
 use crate::application::publish_resilience::{
-    count_unpublished_publish_commits, inspect_publish_branch_freshness_for_source_after_fetch,
+    count_publishable_commits_with_base_fallback, count_unpublished_publish_commits,
+    inspect_publish_branch_freshness_for_source_after_fetch,
 };
 use crate::application::{AppState, GitService, TeamService};
 use crate::commands::unified_chat_commands::{
@@ -446,10 +447,6 @@ async fn collect_auto_publish_facts(
     let has_uncommitted_changes = GitService::has_uncommitted_changes(worktree_path)
         .await
         .map_err(|error| error.to_string())?;
-    let unpublished_commit_count =
-        count_unpublished_publish_commits(worktree_path, &publish_target.branch_name)
-            .await
-            .map_err(|error| error.to_string())?;
     let base_resolution = if workspace.mode == AgentConversationWorkspaceMode::Edit {
         Some(
             resolve_workspace_base(project, workspace)
@@ -462,26 +459,45 @@ async fn collect_auto_publish_facts(
     let base_is_blocked = base_resolution
         .as_ref()
         .is_some_and(|resolution| resolution.status == BaseStatus::Blocked);
-    let base_is_ahead = if base_is_blocked {
-        false
+    let effective_base_ref = if base_is_blocked {
+        None
     } else {
-        let effective_base_ref = if let Some(base_resolution) = base_resolution.as_ref() {
+        Some(if let Some(base_resolution) = base_resolution.as_ref() {
             base_resolution
                 .effective_checkout_ref()
                 .map_err(|error| error.to_string())?
                 .to_string()
         } else {
             publish_target.base_ref.clone()
-        };
+        })
+    };
+    let unpublished_commit_count = if let Some(effective_base_ref) = effective_base_ref.as_deref() {
+        Some(
+            count_publishable_commits_with_base_fallback(
+                worktree_path,
+                &publish_target.branch_name,
+                effective_base_ref,
+            )
+            .await
+            .map_err(|error| error.to_string())?,
+        )
+    } else {
+        count_unpublished_publish_commits(worktree_path, &publish_target.branch_name)
+            .await
+            .map_err(|error| error.to_string())?
+    };
+    let base_is_ahead = if let Some(effective_base_ref) = effective_base_ref.as_deref() {
         inspect_publish_branch_freshness_for_source_after_fetch(
             worktree_path,
-            &effective_base_ref,
+            effective_base_ref,
             &publish_target.branch_name,
             workspace.base_commit.as_deref(),
         )
         .await
         .map_err(|error| error.to_string())?
         .is_base_ahead
+    } else {
+        false
     };
 
     Ok(AutoPublishFacts {

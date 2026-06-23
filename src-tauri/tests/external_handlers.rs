@@ -824,7 +824,7 @@ async fn test_start_ideation_tauri_parent_workspace_reuses_linked_session() {
     .0;
 
     assert_eq!(second.session_id, first.session_id);
-    assert_eq!(second.agent_spawned, false);
+    assert!(!second.agent_spawned);
     assert_eq!(second.next_action, "use_existing_session");
     let conversation_id = conversation.id.as_str();
     assert_eq!(
@@ -4860,7 +4860,7 @@ async fn setup_plan_import_test_with_state(state: HttpServerState) -> PlanImport
         IdeationSessionId::from_string("dummy".to_string()),
         "Start from plan",
     );
-    msg.conversation_id = Some(conversation.id.clone());
+    msg.conversation_id = Some(conversation.id);
     msg.metadata = Some(
         serde_json::json!({
             "composer_artifact_references": [{
@@ -4879,7 +4879,7 @@ async fn setup_plan_import_test_with_state(state: HttpServerState) -> PlanImport
         project_id,
         source_session_id: source_session.id.clone(),
         source_artifact_id: source_artifact.id.clone(),
-        conversation_id: conversation.id.clone(),
+        conversation_id: conversation.id,
         _repo_dir: repo_dir,
         _worktree_parent: worktree_parent,
     }
@@ -5218,7 +5218,7 @@ async fn test_plan_import_multiple_refs_error() {
         IdeationSessionId::from_string("dummy".to_string()),
         "Start from two plans",
     );
-    msg.conversation_id = Some(fix.conversation_id.clone());
+    msg.conversation_id = Some(fix.conversation_id);
     msg.metadata = Some(
         serde_json::json!({
             "composer_artifact_references": [
@@ -5310,7 +5310,7 @@ async fn test_plan_import_missing_artifact_error() {
         IdeationSessionId::from_string("dummy".to_string()),
         "Missing artifact",
     );
-    msg.conversation_id = Some(conv2.id.clone());
+    msg.conversation_id = Some(conv2.id);
     msg.metadata = Some(
         serde_json::json!({
             "composer_artifact_references": [{
@@ -5433,7 +5433,7 @@ async fn test_plan_import_wrong_project_error() {
         IdeationSessionId::from_string("dummy".to_string()),
         "Wrong project",
     );
-    msg.conversation_id = Some(conv2.id.clone());
+    msg.conversation_id = Some(conv2.id);
     msg.metadata = Some(
         serde_json::json!({
             "composer_artifact_references": [{
@@ -5605,7 +5605,7 @@ async fn test_plan_import_verification_child_error() {
         IdeationSessionId::from_string("dummy".to_string()),
         "From verification child",
     );
-    msg.conversation_id = Some(conversation.id.clone());
+    msg.conversation_id = Some(conversation.id);
     msg.metadata = Some(
         serde_json::json!({
             "composer_artifact_references": [{
@@ -5712,7 +5712,7 @@ async fn test_plan_import_non_spec_artifact_error() {
         IdeationSessionId::from_string("dummy".to_string()),
         "Non-spec artifact",
     );
-    msg.conversation_id = Some(conv2.id.clone());
+    msg.conversation_id = Some(conv2.id);
     msg.metadata = Some(
         serde_json::json!({
             "composer_artifact_references": [{

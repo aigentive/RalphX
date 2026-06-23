@@ -12,7 +12,7 @@ import { enableMapSet } from "immer";
 import { invoke } from "@tauri-apps/api/core";
 import { featureFlagsSchema } from "@/types/feature-flags";
 import type { FeatureFlags } from "@/types/feature-flags";
-import { isViewEnabled } from "@/hooks/useFeatureFlags";
+import { applyFeatureFlagOverrides, isViewEnabled } from "@/hooks/useFeatureFlags";
 import type { AskUserQuestionPayload } from "@/types/ask-user-question";
 import type { ExecutionStatusResponse } from "@/lib/tauri";
 import type { RecoveryPromptEvent } from "@/types/events";
@@ -162,6 +162,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
+  ticketingDashboard: false,
 };
 
 // ============================================================================
@@ -529,7 +530,10 @@ export const useUiStore = create<UiState & UiActions>()(
 
     setCurrentView: (view) =>
       set((state) => {
-        const safeView = isViewEnabled(view, state.featureFlags) ? view : DEFAULT_PROJECT_VIEW;
+        const safeView =
+          view === "ticketing" || isViewEnabled(view, state.featureFlags)
+            ? view
+            : DEFAULT_PROJECT_VIEW;
         const projectId = useProjectStore.getState().activeProjectId;
         state.currentView = safeView;
         if (projectId) {
@@ -987,7 +991,7 @@ void invoke<unknown>("get_ui_feature_flags")
   .then((raw) => {
     const result = featureFlagsSchema.safeParse(raw);
     if (result.success) {
-      useUiStore.getState().setFeatureFlags(result.data);
+      useUiStore.getState().setFeatureFlags(applyFeatureFlagOverrides(result.data));
     }
   })
   .catch(() => {

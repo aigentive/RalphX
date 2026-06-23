@@ -52,7 +52,14 @@ pub struct LinearIssueSummary {
     pub title: String,
     pub url: Option<String>,
     pub excerpt: Option<String>,
+    pub state_id: Option<String>,
     pub state_name: Option<String>,
+    pub state_category: Option<String>,
+    pub state_color: Option<String>,
+    pub assignee: Option<String>,
+    pub updated_at: Option<String>,
+    pub labels: Vec<String>,
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -66,6 +73,50 @@ pub struct LinearIssueContent {
     pub state_name: Option<String>,
     pub assignee: Option<String>,
     pub creator: Option<String>,
+    pub updated_at: Option<String>,
+    pub comments: Vec<LinearComment>,
+    pub labels: Vec<String>,
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearWorkflowState {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearProject {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearLabel {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearUser {
+    pub id: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearComment {
+    pub id: String,
+    pub body: String,
+    pub author_id: Option<String>,
+    pub author_name: Option<String>,
+    pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
 
@@ -95,6 +146,77 @@ pub trait LinearApiClient: Send + Sync {
         auth: &LinearAuthContext,
         reference: &crate::domain::services::ComposerIntegrationReference,
     ) -> Result<LinearIssueContent, String>;
+
+    async fn list_workflow_states(
+        &self,
+        _auth: &LinearAuthContext,
+        _team_id: Option<&str>,
+    ) -> Result<Vec<LinearWorkflowState>, String> {
+        Err("Linear workflow states are not available for this client".to_string())
+    }
+
+    async fn current_user(&self, _auth: &LinearAuthContext) -> Result<LinearUser, String> {
+        Err("Linear current-user lookup is not available for this client".to_string())
+    }
+
+    async fn update_issue_state(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+        _state_id: &str,
+    ) -> Result<(), String> {
+        Err("Linear issue state updates are not available for this client".to_string())
+    }
+
+    async fn assign_issue_to_current_user(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<LinearUser, String> {
+        Err("Linear issue assignment is not available for this client".to_string())
+    }
+
+    async fn clear_issue_assignee(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<(), String> {
+        Err("Linear issue assignee clearing is not available for this client".to_string())
+    }
+
+    async fn create_comment(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+        _body_markdown: &str,
+    ) -> Result<LinearComment, String> {
+        Err("Linear comments are not available for this client".to_string())
+    }
+
+    async fn list_projects(
+        &self,
+        _auth: &LinearAuthContext,
+        _first: usize,
+    ) -> Result<Vec<LinearProject>, String> {
+        Err("Linear projects are not available for this client".to_string())
+    }
+
+    async fn list_issue_team_labels(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<Vec<LinearLabel>, String> {
+        Err("Linear issue labels are not available for this client".to_string())
+    }
+
+    async fn update_issue_labels(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+        _label_ids: Vec<String>,
+    ) -> Result<(), String> {
+        Err("Linear issue label updates are not available for this client".to_string())
+    }
 }
 
 pub struct EmptyLinearApiClient;
@@ -144,6 +266,68 @@ impl LinearApiClient for EmptyLinearApiClient {
             assignee: None,
             creator: None,
             updated_at: None,
+            comments: Vec::new(),
+            labels: Vec::new(),
+            project: None,
+        })
+    }
+
+    async fn list_workflow_states(
+        &self,
+        _auth: &LinearAuthContext,
+        _team_id: Option<&str>,
+    ) -> Result<Vec<LinearWorkflowState>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn current_user(&self, _auth: &LinearAuthContext) -> Result<LinearUser, String> {
+        Ok(LinearUser {
+            id: "test-user".to_string(),
+            name: Some("Test User".to_string()),
+        })
+    }
+
+    async fn update_issue_state(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+        _state_id: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn assign_issue_to_current_user(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<LinearUser, String> {
+        Ok(LinearUser {
+            id: "test-user".to_string(),
+            name: Some("Test User".to_string()),
+        })
+    }
+
+    async fn clear_issue_assignee(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn create_comment(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+        body_markdown: &str,
+    ) -> Result<LinearComment, String> {
+        Ok(LinearComment {
+            id: "test-comment".to_string(),
+            body: body_markdown.to_string(),
+            author_id: None,
+            author_name: None,
+            created_at: None,
+            updated_at: None,
         })
     }
 }
@@ -168,6 +352,52 @@ impl LinearApiClient for UnavailableLinearApiClient {
         _auth: &LinearAuthContext,
         _reference: &crate::domain::services::ComposerIntegrationReference,
     ) -> Result<LinearIssueContent, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn list_workflow_states(
+        &self,
+        _auth: &LinearAuthContext,
+        _team_id: Option<&str>,
+    ) -> Result<Vec<LinearWorkflowState>, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn current_user(&self, _auth: &LinearAuthContext) -> Result<LinearUser, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn update_issue_state(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+        _state_id: &str,
+    ) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+
+    async fn assign_issue_to_current_user(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<LinearUser, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn clear_issue_assignee(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+    ) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+
+    async fn create_comment(
+        &self,
+        _auth: &LinearAuthContext,
+        _issue_id: &str,
+        _body_markdown: &str,
+    ) -> Result<LinearComment, String> {
         Err(self.reason.clone())
     }
 }
@@ -329,6 +559,75 @@ impl LinearIntegrationService {
         self.client.fetch_issue(&auth, reference).await
     }
 
+    pub async fn list_workflow_states(
+        &self,
+        team_id: Option<&str>,
+    ) -> Result<Vec<LinearWorkflowState>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_workflow_states(&auth, team_id).await
+    }
+
+    pub async fn list_projects(&self, first: usize) -> Result<Vec<LinearProject>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_projects(&auth, first.clamp(1, 100)).await
+    }
+
+    pub async fn current_user(&self) -> Result<LinearUser, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.current_user(&auth).await
+    }
+
+    pub async fn update_issue_state(&self, issue_id: &str, state_id: &str) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .update_issue_state(&auth, issue_id, state_id)
+            .await
+    }
+
+    pub async fn assign_issue_to_current_user(&self, issue_id: &str) -> Result<LinearUser, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .assign_issue_to_current_user(&auth, issue_id)
+            .await
+    }
+
+    pub async fn clear_issue_assignee(&self, issue_id: &str) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.clear_issue_assignee(&auth, issue_id).await
+    }
+
+    pub async fn create_comment(
+        &self,
+        issue_id: &str,
+        body_markdown: &str,
+    ) -> Result<LinearComment, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .create_comment(&auth, issue_id, body_markdown)
+            .await
+    }
+
+    pub async fn list_issue_team_labels(
+        &self,
+        issue_id: &str,
+    ) -> Result<Vec<LinearLabel>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_issue_team_labels(&auth, issue_id).await
+    }
+
+    pub async fn set_issue_labels(
+        &self,
+        issue_id: &str,
+        desired_names: Vec<String>,
+    ) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        let labels = self.client.list_issue_team_labels(&auth, issue_id).await?;
+        let label_ids = resolve_linear_label_ids(&desired_names, &labels)?;
+        self.client
+            .update_issue_labels(&auth, issue_id, label_ids)
+            .await
+    }
+
     pub async fn expand_references_for_prompt(
         &self,
         message: &str,
@@ -453,6 +752,53 @@ fn escape_attr(value: &str) -> String {
         .replace('"', "&quot;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// Resolves desired Linear label names to their team-scoped label ids.
+///
+/// Matching is case-insensitive and trims surrounding whitespace. The desired
+/// set is treated as a full replacement set; duplicate desired names resolve to
+/// the same id only once. Linear label creation is out of scope, so any desired
+/// name that does not match an existing team label is rejected.
+///
+/// # Errors
+///
+/// Returns an error naming every desired label that could not be matched to an
+/// existing team label.
+pub fn resolve_linear_label_ids(
+    desired_names: &[String],
+    team_labels: &[LinearLabel],
+) -> Result<Vec<String>, String> {
+    let mut resolved: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for desired in desired_names {
+        let needle = desired.trim();
+        if needle.is_empty() {
+            continue;
+        }
+        match team_labels
+            .iter()
+            .find(|label| label.name.trim().eq_ignore_ascii_case(needle))
+        {
+            Some(label) => {
+                if !resolved.contains(&label.id) {
+                    resolved.push(label.id.clone());
+                }
+            }
+            None => {
+                if !missing.iter().any(|name| name == needle) {
+                    missing.push(needle.to_string());
+                }
+            }
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "These labels do not exist on the issue's Linear team: {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(resolved)
 }
 
 #[cfg(test)]

@@ -19,6 +19,7 @@ import { ProposalDetailSheet } from "@/components/Ideation/ProposalDetailSheet";
 import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDetailSheet";
 import { ExtensibilityView } from "@/components/ExtensibilityView";
 import { ActivityView } from "@/components/activity";
+import { TicketingDashboardView } from "@/components/ticketing";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { InsightsView } from "@/components/views/InsightsView";
 import { AgentsView, AgentIssueReportDialog } from "@/components/agents";
@@ -61,12 +62,15 @@ import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useNavCompactBreakpoint } from "@/hooks";
 import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
+import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
 import { extractErrorMessage } from "@/lib/errors";
 import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
 import { executionApi } from "@/api/execution";
 import { tasksApi } from "@/api/tasks";
+import { ticketingApi, type TicketDeepLink } from "@/api/ticketing";
+import { ticketingKeys } from "@/hooks/useTicketing";
 import type { SelectionSource } from "@/api/plan";
 import type { ProjectSettings } from "@/types/settings";
 import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
@@ -119,10 +123,12 @@ function FeatureDisabledPlaceholder({
   view,
   yamlKey,
   envVar,
+  settingsPath,
 }: {
   view: string;
-  yamlKey: string;
-  envVar: string;
+  yamlKey?: string;
+  envVar?: string;
+  settingsPath?: string;
 }) {
   return (
     <div
@@ -132,11 +138,19 @@ function FeatureDisabledPlaceholder({
       <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
         {view} page is disabled (dev mode)
       </p>
-      <div className="text-xs font-mono rounded p-3 text-left" style={{ background: "var(--bg-surface)", color: "var(--text-secondary)" }}>
-        <p className="mb-2 font-sans" style={{ color: "var(--text-muted)" }}>Enable via ralphx.yaml:</p>
-        <pre>{`ui:\n  feature_flags:\n    ${yamlKey}: true`}</pre>
-        <p className="mt-3 mb-1 font-sans" style={{ color: "var(--text-muted)" }}>Or via env var:</p>
-        <pre>{`${envVar}=true`}</pre>
+      <div className="text-xs font-mono rounded p-3 text-left" style={{ backgroundColor: "var(--bg-surface)", color: "var(--text-secondary)" }}>
+        {settingsPath ? (
+          <p className="font-sans" style={{ color: "var(--text-muted)" }}>
+            Enable it in {settingsPath}.
+          </p>
+        ) : (
+          <>
+            <p className="mb-2 font-sans" style={{ color: "var(--text-muted)" }}>Enable via ralphx.yaml:</p>
+            <pre>{`ui:\n  feature_flags:\n    ${yamlKey}: true`}</pre>
+            <p className="mt-3 mb-1 font-sans" style={{ color: "var(--text-muted)" }}>Or via env var:</p>
+            <pre>{`${envVar}=true`}</pre>
+          </>
+        )}
       </div>
     </div>
   );
@@ -324,6 +338,7 @@ function AppContent() {
 
   // Real-time execution status updates via Tauri events
   useExecutionEvents();
+  useTicketingCacheEvents();
   // Fetch initial execution status and poll every 30s as fallback
   // Pass currentProjectId for per-project execution status scoping
   useExecutionStatus(currentProjectId || undefined, {
@@ -604,6 +619,38 @@ function AppContent() {
   const handleOpenIntegrationSettings = useCallback(() => {
     openModal("settings", { section: "integrations" });
   }, [openModal]);
+
+  const handleWarmView = useCallback((view: ViewType) => {
+    if (view !== "ticketing" || !currentProjectId) {
+      return;
+    }
+    void queryClient.prefetchQuery({
+      queryKey: ticketingKeys.providers(currentProjectId),
+      queryFn: () => ticketingApi.listProviders({ projectId: currentProjectId }),
+      staleTime: 60_000,
+    }).catch(() => {
+      // Warm-up failures are non-blocking; opening the view surfaces real state.
+    });
+  }, [currentProjectId]);
+
+  const handleNavigateFromTicketAssociation = useCallback((deepLink: TicketDeepLink) => {
+    if (deepLink.view === "kanban") {
+      setCurrentView("kanban");
+      setSelectedTaskId(deepLink.id);
+      return;
+    }
+    if (deepLink.view === "agents" && deepLink.projectId) {
+      // Select the exact linked conversation (not just switch to the Agents view)
+      // so its linked ticket and artifact are visible on arrival.
+      const projectId = deepLink.projectId;
+      setFocusedAgentProject(projectId);
+      useAgentSessionStore.getState().selectConversation(projectId, deepLink.id);
+      useChatStore.getState().setActiveConversation(`project:${projectId}`, deepLink.id);
+      setCurrentView("agents");
+      return;
+    }
+    setCurrentView(deepLink.view);
+  }, [setCurrentView, setSelectedTaskId, setFocusedAgentProject]);
 
   useEffect(() => {
     if (
@@ -998,6 +1045,7 @@ function AppContent() {
             <LeftNavRail
               currentView={currentView}
               onViewChange={handleViewChange}
+              onViewWarmUp={handleWarmView}
               onOpenSettings={handleOpenSettings}
               {...(agentIssueReportContext
                 ? { onOpenIssueReport: handleOpenAgentIssueReport }
@@ -1083,6 +1131,12 @@ function AppContent() {
                   : import.meta.env.DEV
                     ? <FeatureDisabledPlaceholder view="activity" yamlKey="activity_page" envVar="RALPHX_UI_ACTIVITY_PAGE" />
                     : null
+              )}
+              {currentView === "ticketing" && (
+                <TicketingDashboardView
+                  projectId={currentProjectId}
+                  onNavigateToAssociation={handleNavigateFromTicketAssociation}
+                />
               )}
               {currentView === "insights" && <InsightsView />}
               {currentView === "team" && <TeamSplitView />}

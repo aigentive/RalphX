@@ -7,12 +7,14 @@ use ralphx_lib::testing::SqliteTestDb;
 async fn sqlite_repo_persists_linear_integration_settings() {
     let db = SqliteTestDb::new("linear-integration-settings");
     let repo = SqliteLinearIntegrationSettingsRepository::from_shared(db.shared_conn());
-    let mut settings = LinearIntegrationSettings::default();
-    settings.enabled = true;
-    settings.token_secret_ref = Some("integrations/linear/default/api-token".to_string());
-    settings.validation_status = IntegrationValidationStatus::Valid;
-    settings.issue_search_available = true;
-    settings.last_error = None;
+    let settings = LinearIntegrationSettings {
+        enabled: true,
+        token_secret_ref: Some("integrations/linear/default/api-token".to_string()),
+        validation_status: IntegrationValidationStatus::Valid,
+        issue_search_available: true,
+        last_error: None,
+        ..Default::default()
+    };
 
     repo.upsert(&settings).await.unwrap();
     let stored = repo.get().await.unwrap();
@@ -40,10 +42,12 @@ async fn sqlite_repo_returns_defaults_and_preserves_invalid_state() {
     );
     assert!(!default_settings.issue_search_available);
 
-    let mut settings = LinearIntegrationSettings::default();
-    settings.token_secret_ref = Some("integrations/linear/default/api-token/invalid".to_string());
-    settings.validation_status = IntegrationValidationStatus::Invalid;
-    settings.last_error = Some("Linear rejected credentials".to_string());
+    let settings = LinearIntegrationSettings {
+        token_secret_ref: Some("integrations/linear/default/api-token/invalid".to_string()),
+        validation_status: IntegrationValidationStatus::Invalid,
+        last_error: Some("Linear rejected credentials".to_string()),
+        ..Default::default()
+    };
 
     let saved = repo.upsert(&settings).await.unwrap();
     let stored = repo.get().await.unwrap();

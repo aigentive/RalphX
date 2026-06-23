@@ -79,7 +79,7 @@ impl ChatConversationRepository for MockChatConversationRepository {
                     && conversation.context_id == context_id
                     && (include_archived || conversation.archived_at.is_none())
                     && (!archived_only || conversation.archived_at.is_some())
-                    && search.map_or(true, |term| {
+                    && search.is_none_or(|term| {
                         let normalized = term.trim().to_lowercase();
                         let title = conversation
                             .title

@@ -200,6 +200,28 @@ impl GitService {
             .unwrap_or_else(|_| "main".to_string())
     }
 
+    /// Validate that a branch name is well-formed per `git check-ref-format`.
+    ///
+    /// Returns `Ok(true)` only when git accepts the name as a valid ref under
+    /// `refs/heads/`. Rejects (returns `Ok(false)`) traversal-prone or malformed
+    /// names such as `../escape`, names ending in `.lock`, names containing spaces,
+    /// `..`, control chars, or a trailing `/`. This MUST be called before any branch
+    /// name derived from external input (e.g. an issue key) is used as a git argument
+    /// or filesystem ref component.
+    ///
+    /// A leading `-` is rejected up front so the candidate can never be parsed as a
+    /// CLI flag, and the candidate is validated as a full `refs/heads/<branch>` ref
+    /// to avoid the shorthand-resolution ambiguity of `--branch`.
+    pub async fn check_ref_format(repo: &Path, branch: &str) -> AppResult<bool> {
+        if branch.is_empty() || branch.starts_with('-') {
+            return Ok(false);
+        }
+        let full_ref = format!("refs/heads/{branch}");
+        Ok(git_cmd::run_status(&["check-ref-format", &full_ref], repo)
+            .await
+            .unwrap_or(false))
+    }
+
     /// Create a new branch pointing at a specific commit SHA
     ///
     /// Unlike `create_branch` which branches from another branch name,
@@ -656,5 +678,56 @@ mod tests {
         assert!(missing_error
             .to_string()
             .contains("does not exist locally or on origin"));
+    }
+
+    #[tokio::test]
+    async fn check_ref_format_rejects_empty_branch() {
+        let (_temp, repo) = init_repo_with_origin();
+        assert!(!GitService::check_ref_format(&repo, "")
+            .await
+            .expect("check should run"));
+    }
+
+    #[tokio::test]
+    async fn check_ref_format_rejects_leading_dash() {
+        // A leading '-' must be rejected so it can never be parsed as a CLI flag.
+        let (_temp, repo) = init_repo_with_origin();
+        assert!(!GitService::check_ref_format(&repo, "-rf")
+            .await
+            .expect("check should run"));
+    }
+
+    #[tokio::test]
+    async fn check_ref_format_rejects_spaces() {
+        let (_temp, repo) = init_repo_with_origin();
+        assert!(!GitService::check_ref_format(&repo, "has space")
+            .await
+            .expect("check should run"));
+    }
+
+    #[tokio::test]
+    async fn check_ref_format_rejects_lock_suffix() {
+        let (_temp, repo) = init_repo_with_origin();
+        assert!(!GitService::check_ref_format(&repo, "feature.lock")
+            .await
+            .expect("check should run"));
+    }
+
+    #[tokio::test]
+    async fn check_ref_format_rejects_path_traversal() {
+        // "../escape" contains ".." which git rejects in a ref component, and the
+        // full-ref validation prevents using it as a filesystem-traversal vector.
+        let (_temp, repo) = init_repo_with_origin();
+        assert!(!GitService::check_ref_format(&repo, "../escape")
+            .await
+            .expect("check should run"));
+    }
+
+    #[tokio::test]
+    async fn check_ref_format_accepts_valid_branch() {
+        let (_temp, repo) = init_repo_with_origin();
+        assert!(GitService::check_ref_format(&repo, "feature/my-branch")
+            .await
+            .expect("check should run"));
     }
 }

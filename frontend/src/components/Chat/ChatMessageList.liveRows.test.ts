@@ -107,6 +107,6 @@ describe("ChatMessageList live transcript rows", () => {
     );
 
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ kind: "tool_call", toolCall: { id: "tool-2" } });
+    expect(rows[0]).toMatchObject({ kind: "tool_group", count: 1 });
   });
 });

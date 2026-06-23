@@ -40,6 +40,22 @@ fn seed_conversation(db: &SqliteTestDb, conversation_id: &ChatConversationId) {
     });
 }
 
+fn set_workspace_updated_at(
+    db: &SqliteTestDb,
+    conversation_id: &ChatConversationId,
+    updated_at: chrono::DateTime<chrono::Utc>,
+) {
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE agent_conversation_workspaces
+             SET updated_at = ?2
+             WHERE conversation_id = ?1",
+            rusqlite::params![conversation_id.as_str(), updated_at.to_rfc3339()],
+        )
+        .unwrap();
+    });
+}
+
 fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
     AgentConversationWorkspace::new(
         conversation_id,
@@ -936,6 +952,78 @@ async fn list_active_needs_agent_workspaces_filters_to_open_active_workspaces() 
     assert_eq!(
         workspaces[0].publication_push_status.as_deref(),
         Some("needs_agent")
+    );
+}
+
+#[tokio::test]
+async fn list_active_transient_publish_status_workspaces_filters_stale_open_rows() {
+    let (db, repo, conversation_id) = setup_repo();
+    let stale = chrono::Utc::now() - chrono::Duration::minutes(10);
+    let older = chrono::Utc::now() - chrono::Duration::minutes(20);
+
+    let mut refreshing = make_workspace(conversation_id);
+    refreshing.publication_pr_number = Some(91);
+    refreshing.publication_pr_status = Some("open".to_string());
+    refreshing.publication_push_status = Some("refreshing".to_string());
+    repo.create_or_update(refreshing.clone()).await.unwrap();
+    set_workspace_updated_at(&db, &refreshing.conversation_id, stale);
+
+    let describing_id = ChatConversationId::from_string("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    seed_conversation(&db, &describing_id);
+    let mut describing = make_workspace(describing_id);
+    describing.publication_pr_number = Some(92);
+    describing.publication_pr_status = Some("open".to_string());
+    describing.publication_push_status = Some("describing".to_string());
+    repo.create_or_update(describing.clone()).await.unwrap();
+    set_workspace_updated_at(&db, &describing.conversation_id, older);
+
+    let recent_id = ChatConversationId::from_string("cccccccc-cccc-cccc-cccc-cccccccccccc");
+    seed_conversation(&db, &recent_id);
+    let mut recent = make_workspace(recent_id);
+    recent.publication_pr_number = Some(93);
+    recent.publication_pr_status = Some("open".to_string());
+    recent.publication_push_status = Some("checking".to_string());
+    repo.create_or_update(recent).await.unwrap();
+
+    let closed_id = ChatConversationId::from_string("dddddddd-dddd-dddd-dddd-dddddddddddd");
+    seed_conversation(&db, &closed_id);
+    let mut closed = make_workspace(closed_id);
+    closed.publication_pr_number = Some(94);
+    closed.publication_pr_status = Some("closed".to_string());
+    closed.publication_push_status = Some("committing".to_string());
+    repo.create_or_update(closed.clone()).await.unwrap();
+    set_workspace_updated_at(&db, &closed.conversation_id, stale);
+
+    let pushed_id = ChatConversationId::from_string("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+    seed_conversation(&db, &pushed_id);
+    let mut pushed = make_workspace(pushed_id);
+    pushed.publication_pr_number = Some(95);
+    pushed.publication_pr_status = Some("open".to_string());
+    pushed.publication_push_status = Some("pushed".to_string());
+    repo.create_or_update(pushed.clone()).await.unwrap();
+    set_workspace_updated_at(&db, &pushed.conversation_id, stale);
+
+    let archived_id = ChatConversationId::from_string("ffffffff-ffff-ffff-ffff-ffffffffffff");
+    seed_conversation(&db, &archived_id);
+    let mut archived = make_workspace(archived_id);
+    archived.status = AgentConversationWorkspaceStatus::Archived;
+    archived.publication_pr_number = Some(96);
+    archived.publication_pr_status = Some("open".to_string());
+    archived.publication_push_status = Some("refreshing".to_string());
+    repo.create_or_update(archived.clone()).await.unwrap();
+    set_workspace_updated_at(&db, &archived.conversation_id, stale);
+
+    let workspaces = repo
+        .list_active_transient_publish_status_workspaces(300)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        workspaces
+            .into_iter()
+            .map(|workspace| workspace.conversation_id)
+            .collect::<Vec<_>>(),
+        vec![describing.conversation_id, refreshing.conversation_id]
     );
 }
 

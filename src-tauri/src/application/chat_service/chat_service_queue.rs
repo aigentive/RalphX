@@ -162,9 +162,7 @@ async fn pop_next_queued_message(
         return Some(message);
     }
 
-    let Some(repo) = queued_message_repo else {
-        return None;
-    };
+    let repo = queued_message_repo?;
     match repo.pop_front(key).await {
         Ok(message) => message,
         Err(error) => {

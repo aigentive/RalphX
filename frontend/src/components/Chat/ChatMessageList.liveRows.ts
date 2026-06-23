@@ -119,16 +119,7 @@ export function buildLiveTranscriptRows(
       endIndex += 1;
     }
 
-    if (entries.length === 1) {
-      const entry = entries[0]!;
-      rows.push({
-        kind: "tool_call",
-        key: `streaming-tool:${entry.block.toolCall.id || blockKeyPart(entry.block, entry.index)}`,
-        block: entry.block,
-        index: entry.index,
-        toolCall: entry.block.toolCall,
-      });
-    } else if (entries.length > 1) {
+    if (entries.length > 0) {
       rows.push({
         kind: "tool_group",
         key: liveToolGroupKey(entries),
