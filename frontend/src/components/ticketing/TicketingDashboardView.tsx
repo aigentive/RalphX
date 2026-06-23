@@ -32,6 +32,10 @@ import {
 } from "@/hooks/useTicketing";
 import { useConversations } from "@/hooks/useChat";
 import { useProjects } from "@/hooks/useProjects";
+import {
+  getValidTicketingProviders,
+  isValidTicketingProvider,
+} from "@/lib/ticketing-provider-state";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
@@ -48,6 +52,7 @@ import {
 } from "@/components/ui/dialog";
 
 import { ProviderSwitcher } from "./ProviderSwitcher";
+import { TicketSearchableSelect } from "./TicketSearchableSelect";
 import { TicketDetailSheet } from "./TicketDetailSheet";
 import { TicketFilterBar } from "./TicketFilterBar";
 import { TicketingStatePanel } from "./TicketingStatePanel";
@@ -60,7 +65,6 @@ import {
   isTicketUpdatedSince,
   ticketRefKey,
 } from "./ticketing-read-state";
-import { ticketSelectClassName, ticketSelectStyle, ticketSelectOptionStyle } from "./ticket-select-styles";
 import { providerLabel, ticketKey } from "./ticketing-utils";
 import { useAfterPaint } from "./useAfterPaint";
 
@@ -78,10 +82,6 @@ function toTicketFilters(filters: ReturnType<typeof useTicketingStore.getState>[
     ...(filters.labels.length > 0 && { labels: filters.labels }),
   };
   return Object.keys(next).length > 0 ? next : undefined;
-}
-
-function isProviderReadable(status: string | undefined): boolean {
-  return status === "connected";
 }
 
 function columnsFromTickets(tickets: TicketSummary[]): TicketingColumn[] {
@@ -189,43 +189,40 @@ function StartWorkDialog({
         <div className="grid gap-4 py-2">
           <label className="grid gap-1.5 text-sm">
             Project
-            <select
-              aria-label="Project"
-              className={ticketSelectClassName("md")}
+            <TicketSearchableSelect
+              ariaLabel="Project"
+              size="md"
               value={selected.projectId}
-              onChange={(event) =>
-                onSelectionChange({ ...selected, projectId: event.target.value })
-              }
-              style={ticketSelectStyle}
-            >
-              {projects.map((project) => (
-                <option key={project.id} value={project.id} style={ticketSelectOptionStyle}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
+              onValueChange={(projectId) => onSelectionChange({ ...selected, projectId })}
+              placeholder={projects.length === 0 ? "No projects" : "Select project"}
+              searchPlaceholder="Search projects..."
+              emptyLabel="No projects found"
+              options={projects.map((project) => ({
+                value: project.id,
+                label: project.name,
+                description: project.workingDirectory ?? undefined,
+              }))}
+            />
           </label>
 
           <label className="grid gap-1.5 text-sm">
             Conversation type
-            <select
-              aria-label="Conversation type"
-              className={ticketSelectClassName("md")}
+            <TicketSearchableSelect
+              ariaLabel="Conversation type"
+              size="md"
               value={selected.mode}
-              onChange={(event) =>
+              onValueChange={(nextMode) =>
                 onSelectionChange({
                   ...selected,
-                  mode: event.target.value as AgentConversationWorkspaceMode,
+                  mode: nextMode as AgentConversationWorkspaceMode,
                 })
               }
-              style={ticketSelectStyle}
-            >
-              {START_WORK_MODES.map((mode) => (
-                <option key={mode.value} value={mode.value} style={ticketSelectOptionStyle}>
-                  {mode.label}
-                </option>
-              ))}
-            </select>
+              searchPlaceholder="Search conversation types..."
+              options={START_WORK_MODES.map((mode) => ({
+                value: mode.value,
+                label: mode.label,
+              }))}
+            />
           </label>
         </div>
 
@@ -328,25 +325,27 @@ export function TicketingDashboardView({
   const projectsQuery = useProjects();
   const providersQuery = useTicketingProviders(projectId, { enabled: Boolean(projectId) });
   const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
-  const enabledProviders = useMemo(
-    () => providers.filter((provider) => provider.enabled),
+  const validProviders = useMemo(
+    () => getValidTicketingProviders(providers),
     [providers],
   );
-  const selectableProviders = enabledProviders.length > 0 ? enabledProviders : providers;
-  const selectedProvider = providers.find((provider) => provider.provider === activeProvider) ?? null;
-  const readableProvider = isProviderReadable(selectedProvider?.connectionStatus);
+  const selectedProvider = validProviders.find((provider) => provider.provider === activeProvider) ?? null;
+  const readableProvider = isValidTicketingProvider(selectedProvider);
 
   useEffect(() => {
-    if (selectableProviders.length === 0) {
+    if (validProviders.length === 0) {
+      if (activeProvider !== null) {
+        setProvider(null);
+      }
       return;
     }
     if (
       !activeProvider
-      || !selectableProviders.some((provider) => provider.provider === activeProvider)
+      || !validProviders.some((provider) => provider.provider === activeProvider)
     ) {
-      setProvider(selectableProviders[0]?.provider ?? null);
+      setProvider(validProviders[0]?.provider ?? null);
     }
-  }, [activeProvider, selectableProviders, setProvider]);
+  }, [activeProvider, validProviders, setProvider]);
 
   const containersQuery = useTicketingContainers(
     activeProvider ? { provider: activeProvider, projectId } : null,
@@ -360,7 +359,7 @@ export function TicketingDashboardView({
   // adds friction for a single-provider Linear dashboard. Jira keeps the gate
   // because its statuses/issues are meaningfully project-scoped.
   const autoLoadsWithoutContainer =
-    enabledProviders.length === 1 && activeProvider === "linear";
+    validProviders.length === 1 && activeProvider === "linear";
   // When a readable provider exposes containers but none is selected, force the
   // user to pick one (no auto-select) and gate the columns/tickets queries so no
   // provider-wide unfiltered fetch fires.
@@ -775,6 +774,14 @@ export function TicketingDashboardView({
         description="Connect Jira or Linear from Settings to browse tickets."
       />
     );
+  } else if (validProviders.length === 0) {
+    content = (
+      <TicketingStatePanel
+        state="disconnected"
+        title="No valid ticketing integration"
+        description="Connect a valid Jira or Linear integration from Settings to browse tickets."
+      />
+    );
   } else if (selectedProvider?.connectionStatus === "disconnected") {
     content = (
       <TicketingStatePanel
@@ -902,9 +909,9 @@ export function TicketingDashboardView({
             Browse provider tickets and inspect RalphX associations.
           </p>
         </div>
-        {enabledProviders.length > 1 && (
+        {validProviders.length > 1 && (
           <ProviderSwitcher
-            providers={enabledProviders}
+            providers={validProviders}
             activeProvider={activeProvider}
             onProviderChange={setProvider}
           />
@@ -945,7 +952,7 @@ export function TicketingDashboardView({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-hidden">{content}</div>
+      <div className="flex min-h-0 flex-1 overflow-hidden">{content}</div>
 
       <TicketDetailSheet
         open={selectedTicketRef !== null}

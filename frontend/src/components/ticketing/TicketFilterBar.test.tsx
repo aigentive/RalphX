@@ -48,8 +48,10 @@ describe("TicketFilterBar", () => {
 
   it("renders Everyone, Unassigned, and each assignee option", () => {
     renderBar();
-    const select = screen.getByRole("combobox", { name: /assignee/i });
-    const options = within(select).getAllByRole("option").map((option) => option.textContent);
+    fireEvent.click(screen.getByRole("combobox", { name: /assignee/i }));
+    const options = within(screen.getByRole("listbox", { name: /assignee/i }))
+      .getAllByRole("option")
+      .map((option) => option.textContent);
     expect(options).toEqual(["Everyone", "Unassigned", "Ada", "Grace"]);
   });
 
@@ -57,14 +59,68 @@ describe("TicketFilterBar", () => {
     const props = renderBar({ filters: { ...baseFilters, assignee: "Ada" } });
     const select = screen.getByRole("combobox", { name: /assignee/i });
 
-    fireEvent.change(select, { target: { value: "Grace" } });
+    fireEvent.click(select);
+    fireEvent.click(screen.getByRole("option", { name: "Grace" }));
     expect(props.onFiltersChange).toHaveBeenCalledWith({ assignee: "Grace" });
 
-    fireEvent.change(select, { target: { value: UNASSIGNED_ASSIGNEE } });
+    fireEvent.click(select);
+    fireEvent.click(screen.getByRole("option", { name: "Unassigned" }));
     expect(props.onFiltersChange).toHaveBeenCalledWith({ assignee: UNASSIGNED_ASSIGNEE });
 
-    fireEvent.change(select, { target: { value: "" } });
+    fireEvent.click(select);
+    fireEvent.click(screen.getByRole("option", { name: "Everyone" }));
     expect(props.onFiltersChange).toHaveBeenCalledWith({ assignee: null });
+  });
+
+  it("clears selected filter values from the select trigger", () => {
+    const props = renderBar({
+      containers: [{ provider: "jira", id: "project-1", name: "Reef", kind: "project" }],
+      columns: [{ id: "todo", name: "To Do", category: "todo", order: 0 }],
+      activeContainerId: "project-1",
+      filters: { ...baseFilters, assignee: "Ada", stateIds: ["todo"] },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear project filter" }));
+    expect(props.onContainerChange).toHaveBeenCalledWith(null);
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear status filter" }));
+    expect(props.onFiltersChange).toHaveBeenCalledWith({ stateIds: [] });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear assignee filter" }));
+    expect(props.onFiltersChange).toHaveBeenCalledWith({ assignee: null });
+  });
+
+  it("filters select options through search", () => {
+    renderBar();
+
+    fireEvent.click(screen.getByRole("combobox", { name: /assignee/i }));
+    fireEvent.change(screen.getByLabelText("Search assignee"), {
+      target: { value: "gra" },
+    });
+
+    const listbox = screen.getByRole("listbox", { name: /assignee/i });
+    expect(within(listbox).getByRole("option", { name: "Grace" })).toBeInTheDocument();
+    expect(within(listbox).queryByRole("option", { name: "Ada" })).not.toBeInTheDocument();
+  });
+
+  it("reveals more select options when the option list scrolls near the bottom", () => {
+    const assigneeOptions = Array.from(
+      { length: 25 },
+      (_, index) => `User ${String(index + 1).padStart(2, "0")}`,
+    );
+    renderBar({ assigneeOptions });
+
+    fireEvent.click(screen.getByRole("combobox", { name: /assignee/i }));
+    const listbox = screen.getByRole("listbox", { name: /assignee/i });
+    expect(within(listbox).queryByRole("option", { name: "User 25" })).not.toBeInTheDocument();
+
+    const scrollContainer = listbox.parentElement as HTMLElement;
+    Object.defineProperty(scrollContainer, "scrollHeight", { configurable: true, value: 240 });
+    Object.defineProperty(scrollContainer, "scrollTop", { configurable: true, value: 210 });
+    Object.defineProperty(scrollContainer, "clientHeight", { configurable: true, value: 40 });
+    fireEvent.scroll(scrollContainer);
+
+    expect(within(listbox).getByRole("option", { name: "User 25" })).toBeInTheDocument();
   });
 
   it("gives every filter select an accessible name and the unified treatment", () => {
@@ -79,7 +135,7 @@ describe("TicketFilterBar", () => {
       expect(select.className).toContain(
         "focus-visible:[outline:2px_solid_var(--border-focus)]",
       );
-      expect((select as HTMLSelectElement).style.backgroundColor).toBe("var(--bg-elevated)");
+      expect((select as HTMLElement).style.backgroundColor).toBe("var(--bg-elevated)");
     }
   });
 });

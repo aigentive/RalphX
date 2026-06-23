@@ -110,10 +110,8 @@ describe("TicketDetailSheet assignee control", () => {
     );
     // Denser sheet typography preserved.
     expect(status.className).toContain("text-xs");
-    // Left padding reserves room for the status color dot rendered inside the select.
-    expect(status.className).toContain("pl-7");
     // Unified off the former --bg-surface outlier onto --bg-elevated.
-    expect((status as HTMLSelectElement).style.backgroundColor).toBe("var(--bg-elevated)");
+    expect((status as HTMLElement).style.backgroundColor).toBe("var(--bg-elevated)");
   });
 });
 
@@ -545,9 +543,11 @@ describe("TicketDetailSheet label editing", () => {
 
     // No free-text input in Linear mode.
     expect(screen.queryByRole("textbox", { name: "Add a label" })).not.toBeInTheDocument();
-    const select = screen.getByLabelText("Add a label");
+    const select = screen.getByRole("combobox", { name: "Add a label" });
     // Already-applied "bug" is filtered out of the options.
-    fireEvent.change(select, { target: { value: "feature" } });
+    fireEvent.click(select);
+    expect(screen.queryByRole("option", { name: "bug" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("option", { name: "feature" }));
     expect(onSetLabels).toHaveBeenCalledWith(["bug", "feature"]);
   });
 });
@@ -632,6 +632,7 @@ describe("TicketDetailSheet status options", () => {
       </TooltipProvider>,
     );
 
+    fireEvent.click(screen.getByRole("combobox", { name: "Ticket status" }));
     const inProgressOptions = screen
       .getAllByRole("option")
       .filter((option) => option.textContent === "In Progress");
@@ -668,16 +669,13 @@ describe("TicketDetailSheet status options", () => {
       </TooltipProvider>,
     );
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Ticket status" }), {
-      target: { value: "blocked" },
-    });
+    fireEvent.click(screen.getByRole("combobox", { name: "Ticket status" }));
+    fireEvent.click(screen.getByRole("option", { name: /Blocked/ }));
     // The disabled transition must not fire the transition callback.
     expect(onTransitionTicket).not.toHaveBeenCalled();
 
     // A writable transition still routes through the callback.
-    fireEvent.change(screen.getByRole("combobox", { name: "Ticket status" }), {
-      target: { value: "done" },
-    });
+    fireEvent.click(screen.getByRole("option", { name: "Done" }));
     expect(onTransitionTicket).toHaveBeenCalledWith(writableTransition);
   });
 });

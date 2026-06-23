@@ -382,7 +382,7 @@ describe("TicketingDashboardView", () => {
     } as unknown as ReturnType<typeof chatHooks.useConversations>);
   });
 
-  it("renders provider-specific disconnected state without blanking the shell", () => {
+  it("renders a no-valid-integration state without blanking the shell", () => {
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
       data: [
         {
@@ -406,8 +406,10 @@ describe("TicketingDashboardView", () => {
     renderDashboard();
 
     expect(screen.getByRole("heading", { name: "Ticketing" })).toBeInTheDocument();
-    expect(screen.getByText("Jira is disconnected")).toBeInTheDocument();
-    expect(screen.getByText("Connect Jira from Settings.")).toBeInTheDocument();
+    expect(screen.getByText("No valid ticketing integration")).toBeInTheDocument();
+    expect(
+      screen.getByText("Connect a valid Jira or Linear integration from Settings to browse tickets."),
+    ).toBeInTheDocument();
   });
 
   it("does not load tickets for permission-limited providers", () => {
@@ -429,8 +431,7 @@ describe("TicketingDashboardView", () => {
 
     renderDashboard();
 
-    expect(screen.getByText("Linear ticket access is limited")).toBeInTheDocument();
-    expect(screen.getAllByText("Linear issue search is not available for this connection.").length).toBeGreaterThan(0);
+    expect(screen.getByText("No valid ticketing integration")).toBeInTheDocument();
     expect(ticketingHooks.useTickets).toHaveBeenCalledWith(null, { enabled: false });
   });
 
@@ -470,8 +471,10 @@ describe("TicketingDashboardView", () => {
     expect(ticketingHooks.useTicketingColumns).toHaveBeenCalledWith(null, { enabled: false });
     // And no statuses are offered in the filter until a project is selected
     // (the remembered last-non-empty columns must not leak prior statuses).
-    const statusFilter = screen.getByRole("combobox", { name: "Status" });
-    expect(within(statusFilter).getAllByRole("option")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("combobox", { name: "Status" }));
+    expect(
+      within(screen.getByRole("listbox", { name: "Status" })).getAllByRole("option"),
+    ).toHaveLength(1);
   });
 
   it("loads tickets and columns with the containerId once a project is selected", async () => {
@@ -495,7 +498,7 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByText("Fix merge race in transition handler")).toBeInTheDocument();
   });
 
-  it("auto-selects the only enabled provider and hides provider tabs", async () => {
+  it("auto-selects the only valid provider and hides provider tabs", async () => {
     useTicketingStore.getState().setProvider("jira");
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
       data: [
@@ -710,9 +713,8 @@ describe("TicketingDashboardView", () => {
       );
     });
 
-    fireEvent.change(screen.getByLabelText("Status"), {
-      target: { value: "todo" },
-    });
+    fireEvent.click(screen.getByRole("combobox", { name: "Status" }));
+    fireEvent.click(screen.getByRole("option", { name: "To Do" }));
     await waitFor(() => {
       expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
         expect.objectContaining({
@@ -754,6 +756,7 @@ describe("TicketingDashboardView", () => {
 
     renderDashboard();
 
+    fireEvent.click(screen.getByRole("combobox", { name: "Status" }));
     expect(screen.getByRole("option", { name: "Blocked" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "To Do" })).toBeInTheDocument();
 
@@ -967,9 +970,8 @@ describe("TicketingDashboardView", () => {
     renderDashboard();
     fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
 
-    fireEvent.change(await screen.findByRole("combobox", { name: "Ticket status" }), {
-      target: { value: "done" },
-    });
+    fireEvent.click(await screen.findByRole("combobox", { name: "Ticket status" }));
+    fireEvent.click(screen.getByRole("option", { name: "Done" }));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Assign to me" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Ticket comment" }), {
       target: { value: "Pushed a fix." },
@@ -1076,12 +1078,10 @@ describe("TicketingDashboardView", () => {
 
     // Scope to the dialog: the container filter bar is also labeled "Project"
     // now that Jira containers are projects.
-    fireEvent.change(within(dialog).getByLabelText("Project"), {
-      target: { value: "project-2" },
-    });
-    fireEvent.change(within(dialog).getByLabelText("Conversation type"), {
-      target: { value: "plan" },
-    });
+    fireEvent.click(within(dialog).getByRole("combobox", { name: "Project" }));
+    fireEvent.click(screen.getByRole("option", { name: /Target Project.*repo\/target/ }));
+    fireEvent.click(within(dialog).getByRole("combobox", { name: "Conversation type" }));
+    fireEvent.click(screen.getByRole("option", { name: "Plan" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Start" }));
 
     expect(startWork).toHaveBeenCalledWith(
@@ -1112,7 +1112,7 @@ describe("TicketingDashboardView", () => {
     for (const select of [project, conversationType]) {
       expect(select.className).toContain("h-9");
       expect(select.className).toContain("appearance-none");
-      expect((select as HTMLSelectElement).style.backgroundColor).toBe("var(--bg-elevated)");
+      expect((select as HTMLElement).style.backgroundColor).toBe("var(--bg-elevated)");
     }
   });
 
@@ -1193,7 +1193,7 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByText("No ticketing providers available")).toBeInTheDocument();
   });
 
-  it("renders the provider error connection state", () => {
+  it("does not select providers with errored connections", () => {
     useTicketingStore.getState().setProvider("jira");
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
       data: [
@@ -1213,8 +1213,8 @@ describe("TicketingDashboardView", () => {
 
     renderDashboard();
 
-    expect(screen.getByText("Jira tickets failed to load")).toBeInTheDocument();
-    expect(screen.getByText("Token expired.")).toBeInTheDocument();
+    expect(screen.getByText("No valid ticketing integration")).toBeInTheDocument();
+    expect(ticketingHooks.useTickets).toHaveBeenCalledWith(null, { enabled: false });
   });
 
   it("renders the tickets loading state while data hydrates", () => {
@@ -1627,7 +1627,13 @@ describe("TicketingDashboardView", () => {
     // Both rows share the "To Do" state, so the status filter offers exactly one
     // "To Do" option (the duplicate is skipped in columnsFromTickets).
     const statusFilter = screen.getByRole("combobox", { name: "Status" });
-    expect(within(statusFilter).getAllByRole("option", { name: "To Do" })).toHaveLength(1);
+    fireEvent.click(statusFilter);
+    expect(
+      within(screen.getByRole("listbox", { name: "Status" })).getAllByRole(
+        "option",
+        { name: "To Do" },
+      ),
+    ).toHaveLength(1);
   });
 
   it("closes the ticket detail sheet and clears the selected ref", async () => {
