@@ -380,7 +380,7 @@ async fn save_settings_writes_token_to_keychain_and_stores_only_ref() {
         .token_secret_ref
         .clone()
         .expect("token ref should be set");
-    assert!(secret_ref.starts_with(TOKEN_REF_PREFIX), "ref={secret_ref}");
+    assert!(secret_ref.starts_with(TOKEN_REF_PREFIX));
     assert_eq!(settings.workspace_id.as_deref(), Some("9000"));
     assert_eq!(
         settings.validation_status,

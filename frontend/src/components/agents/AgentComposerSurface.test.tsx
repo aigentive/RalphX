@@ -711,6 +711,50 @@ describe("AgentComposerSurface", () => {
     });
   });
 
+  it("hydrates initial ticket references and waits for the user prompt before sending", async () => {
+    const onSend = vi.fn();
+    renderComposer({
+      onSend,
+      initialIntegrationReferences: [
+        {
+          provider: "clickup",
+          kind: "clickup",
+          id: "MBE-2857",
+          key: "MBE-2857",
+          title: "Inbox classifier",
+          url: "https://app.clickup.com/t/6925357/MBE-2857",
+        },
+      ],
+    });
+
+    const pill = await screen.findByTestId(
+      "agent-composer-reference-pill-integration:clickup:MBE-2857",
+    );
+    expect(pill).toHaveTextContent("ClickUp");
+    expect(pill).toHaveTextContent("Inbox classifier");
+
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+    expect(onSend).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "Please scope this ticket" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Please scope this ticket", {
+      integrationReferences: [
+        {
+          provider: "clickup",
+          kind: "clickup",
+          id: "MBE-2857",
+          key: "MBE-2857",
+          title: "Inbox classifier",
+          url: "https://app.clickup.com/t/6925357/MBE-2857",
+        },
+      ],
+    });
+  });
+
   it("sends selected plans as structured artifact references", async () => {
     const onSend = vi.fn();
     vi.mocked(invoke).mockImplementation((cmd) => {

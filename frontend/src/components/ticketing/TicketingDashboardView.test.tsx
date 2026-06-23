@@ -1640,6 +1640,7 @@ describe("TicketingDashboardView", () => {
       ...ticket,
       ref: { provider: "clickup" as const, id: "cu-1001", key: "CU-1001" },
       title: "Wire ClickUp tasks into the unified dashboard",
+      url: "https://app.clickup.com/t/CU-1001",
     };
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
       data: [
@@ -1712,6 +1713,22 @@ describe("TicketingDashboardView", () => {
     // conversation stays hidden until ClickUp link persistence exists.
     fireEvent.click(screen.getByRole("button", { name: "Start conversation" }));
     expect(await screen.findByRole("dialog", { name: "Start Conversation" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open composer" }));
+    expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
+      projectId: "project-1",
+      content: "",
+      mode: "edit",
+      composerIntegrationReferences: [
+        {
+          provider: "clickup",
+          kind: "clickup",
+          id: "CU-1001",
+          key: "CU-1001",
+          title: "Wire ClickUp tasks into the unified dashboard",
+          url: "https://app.clickup.com/t/CU-1001",
+        },
+      ],
+    });
     expect(
       screen.queryByRole("button", { name: /bind existing conversation/i }),
     ).not.toBeInTheDocument();
