@@ -1,6 +1,8 @@
 use super::*;
 use std::sync::Arc;
 
+use crate::application::clickup_integration_service::ClickUpAttachment;
+use crate::application::linear_integration_service::LinearAttachment;
 use crate::application::{
     AppState, AtlassianJiraAttachment, AtlassianJiraComment, ClickUpComment, ClickUpSpace,
     ClickUpStatus, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail,
@@ -8,8 +10,6 @@ use crate::application::{
     TeamStateTracker, TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
     TicketingTransitionOption,
 };
-use crate::application::clickup_integration_service::ClickUpAttachment;
-use crate::application::linear_integration_service::LinearAttachment;
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
@@ -299,6 +299,13 @@ fn clickup_summary_detects_current_user_assignment_by_username_or_email() {
         ..summary
     };
     assert!(clickup_summary_assigned_to_user(&id_only_summary, &user));
+
+    let username_summary = ClickUpTaskSummary {
+        assignees: vec!["AGENT".to_string()],
+        assignee_ids: Vec::new(),
+        ..id_only_summary
+    };
+    assert!(clickup_summary_assigned_to_user(&username_summary, &user));
 }
 
 #[test]
@@ -412,7 +419,10 @@ fn clickup_content_maps_description_comments_and_creator() {
     assert!(detail.acceptance_criteria_markdown.is_none());
     assert_eq!(detail.attachments.len(), 1);
     assert_eq!(detail.attachments[0].filename, "screenshot.png");
-    assert_eq!(detail.attachments[0].mime_type.as_deref(), Some("image/png"));
+    assert_eq!(
+        detail.attachments[0].mime_type.as_deref(),
+        Some("image/png")
+    );
     assert_eq!(detail.attachments[0].size, Some(4096));
     assert_eq!(
         detail.attachments[0].url.as_deref(),
@@ -434,6 +444,98 @@ fn clickup_content_maps_description_comments_and_creator() {
     );
     assert_eq!(comment.created_at.as_deref(), Some("2026-06-21T09:00:00Z"));
     assert!(comment.updated_at.is_none());
+}
+
+#[test]
+fn clickup_content_maps_empty_provider_payload_with_fallbacks() {
+    let detail = clickup_content_to_detail(ClickUpTaskContent {
+        id: "task-empty".to_string(),
+        custom_id: None,
+        name: "Sparse ClickUp task".to_string(),
+        url: None,
+        description: String::new(),
+        status_name: None,
+        status_type: None,
+        status_category: None,
+        creator: None,
+        assignees: Vec::new(),
+        tags: Vec::new(),
+        comments: Vec::new(),
+        attachments: Vec::new(),
+        updated_at: None,
+        space_id: None,
+        list_name: None,
+    });
+
+    assert_eq!(detail.summary.ref_.provider, "clickup");
+    assert_eq!(detail.summary.ref_.id, "task-empty");
+    assert!(detail.summary.ref_.key.is_none());
+    assert_eq!(detail.summary.state.name, "Provider result");
+    assert_eq!(detail.summary.state.id, state_id("Provider result"));
+    assert_eq!(
+        detail.summary.state.category,
+        state_category("Provider result")
+    );
+    assert!(detail.summary.assignee.is_none());
+    assert!(detail.summary.assignees.is_empty());
+    assert!(detail.summary.reporter.is_none());
+    assert!(detail.summary.labels.is_empty());
+    assert!(detail.summary.project.is_none());
+    assert!(detail.summary.url.is_none());
+    assert!(!detail.summary.updated_at.is_empty());
+    assert_eq!(detail.description_markdown.as_deref(), Some(""));
+    assert_eq!(detail.description_text.as_deref(), Some(""));
+    assert!(detail.comments.is_empty());
+    assert!(detail.attachments.is_empty());
+    assert!(detail.transitions.is_empty());
+    assert!(detail.fetched_at.is_some());
+}
+
+#[test]
+fn clickup_comment_mapper_preserves_sparse_nested_comments() {
+    let comment = ticket_comment_from_clickup_comment(ClickUpComment {
+        id: "root".to_string(),
+        body: "Root".to_string(),
+        author_id: None,
+        author_name: None,
+        created_at: None,
+        attachments: vec![ClickUpAttachment {
+            id: None,
+            filename: "capture.png".to_string(),
+            mime_type: None,
+            size: None,
+            url: None,
+        }],
+        replies: vec![ClickUpComment {
+            id: "reply".to_string(),
+            body: "Reply".to_string(),
+            author_id: Some(99),
+            author_name: Some("Responder".to_string()),
+            created_at: Some("2026-06-23T12:00:00Z".to_string()),
+            attachments: Vec::new(),
+            replies: Vec::new(),
+        }],
+    });
+
+    assert_eq!(comment.id.as_deref(), Some("root"));
+    assert!(comment.author.is_none());
+    assert!(comment.created_at.is_none());
+    assert_eq!(comment.attachments.len(), 1);
+    assert_eq!(comment.attachments[0].filename, "capture.png");
+    assert!(comment.attachments[0].url.is_none());
+    assert_eq!(comment.replies.len(), 1);
+    assert_eq!(comment.replies[0].body_text, "Reply");
+    assert_eq!(
+        comment.replies[0]
+            .author
+            .as_ref()
+            .map(|person| person.name.as_str()),
+        Some("Responder")
+    );
+    assert_eq!(
+        comment.replies[0].created_at.as_deref(),
+        Some("2026-06-23T12:00:00Z")
+    );
 }
 
 #[test]

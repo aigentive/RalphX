@@ -234,6 +234,27 @@ async fn filtered_tasks_stops_on_first_last_page() {
 }
 
 #[tokio::test]
+async fn filtered_tasks_stops_at_safety_page_cap() {
+    let responses = (0..60)
+        .map(|page| {
+            Ok(json!({
+                "tasks": [sample_task(&format!("t{page}"), "custom")],
+                "last_page": false
+            }))
+        })
+        .collect();
+    let fake = FakeClickUpRequester::new(responses);
+
+    let tasks = fetch_filtered_tasks(&fake, "tok", "9000", &[])
+        .await
+        .unwrap();
+
+    assert_eq!(tasks.len(), 50);
+    assert_eq!(fake.requests().len(), 50);
+    assert!(fake.requests()[49].url.contains("page=49"));
+}
+
+#[tokio::test]
 async fn filtered_tasks_encodes_workspace_and_space_ids() {
     let fake = FakeClickUpRequester::new(vec![Ok(json!({ "tasks": [], "last_page": true }))]);
 
@@ -455,6 +476,20 @@ async fn fetch_task_detail_maps_clickup_attachment_fallback_fields() {
 }
 
 #[tokio::test]
+async fn fetch_task_detail_errors_when_task_payload_is_missing() {
+    let fake = FakeClickUpRequester::new(vec![Ok(json!({ "name": "Missing id" }))]);
+
+    let error = fetch_task_detail(&fake, "tok", "abc123").await.unwrap_err();
+
+    assert_eq!(error, "ClickUp task response was missing task details");
+    assert_eq!(
+        fake.requests().len(),
+        1,
+        "comments must not load when the task payload is invalid"
+    );
+}
+
+#[tokio::test]
 async fn put_task_status_sends_status_body() {
     let fake = FakeClickUpRequester::new(vec![Ok(json!({}))]);
 
@@ -556,4 +591,24 @@ async fn apply_tags_adds_missing_and_removes_extra() {
     assert!(requests[1].url.ends_with("/task/abc123/tag/old"));
     assert_eq!(requests[2].method, Method::POST);
     assert!(requests[2].url.ends_with("/task/abc123/tag/new"));
+}
+
+#[tokio::test]
+async fn apply_tags_ignores_case_matches_and_blank_desired_tags() {
+    let fake = FakeClickUpRequester::new(vec![Ok(json!({ "tags": [{ "name": "Keep" }] }))]);
+
+    apply_task_tags(
+        &fake,
+        "tok",
+        "abc123",
+        vec!["keep".to_string(), "   ".to_string()],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        fake.requests().len(),
+        1,
+        "case-insensitive matches and blanks need no mutation calls"
+    );
 }

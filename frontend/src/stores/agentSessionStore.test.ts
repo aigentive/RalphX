@@ -185,49 +185,62 @@ describe("agentSessionStore", () => {
       const { consumeStartConversationDraft, setStartConversationDraft } =
         useAgentSessionStore.getState();
 
+      const composerProjectReferences = [
+        {
+          projectId: "project-1",
+          name: "ralphx",
+          path: "/work/ralphx",
+        },
+      ];
+      const composerArtifactReferences = [
+        {
+          kind: "plan" as const,
+          artifactId: "plan-1",
+          label: "Plan",
+          title: "Fix flow",
+        },
+      ];
+      const composerIntegrationReferences = [
+        {
+          provider: "clickup" as const,
+          kind: "clickup" as const,
+          id: "MBE-2857",
+          key: "MBE-2857",
+          title: "Inbox classifier",
+        },
+      ];
+
       setStartConversationDraft({
         projectId: "project-1",
         content: "Fix the failing publish flow",
         mode: "edit",
-        composerIntegrationReferences: [
-          {
-            provider: "clickup",
-            kind: "clickup",
-            id: "MBE-2857",
-            key: "MBE-2857",
-            title: "Inbox classifier",
-          },
-        ],
+        composerProjectReferences,
+        composerArtifactReferences,
+        composerIntegrationReferences,
       });
 
       expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
         projectId: "project-1",
         content: "Fix the failing publish flow",
         mode: "edit",
-        composerIntegrationReferences: [
-          {
-            provider: "clickup",
-            kind: "clickup",
-            id: "MBE-2857",
-            key: "MBE-2857",
-            title: "Inbox classifier",
-          },
-        ],
+        composerProjectReferences,
+        composerArtifactReferences,
+        composerIntegrationReferences,
       });
-      expect(consumeStartConversationDraft()).toEqual({
+      const consumed = consumeStartConversationDraft();
+      expect(consumed).toEqual({
         projectId: "project-1",
         content: "Fix the failing publish flow",
         mode: "edit",
-        composerIntegrationReferences: [
-          {
-            provider: "clickup",
-            kind: "clickup",
-            id: "MBE-2857",
-            key: "MBE-2857",
-            title: "Inbox classifier",
-          },
-        ],
+        composerProjectReferences,
+        composerArtifactReferences,
+        composerIntegrationReferences,
       });
+      expect(consumed?.composerProjectReferences?.[0]).not.toBe(composerProjectReferences[0]);
+      expect(consumed?.composerArtifactReferences?.[0]).not.toBe(composerArtifactReferences[0]);
+      expect(consumed?.composerIntegrationReferences?.[0]).not.toBe(
+        composerIntegrationReferences[0],
+      );
       expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
       expect(consumeStartConversationDraft()).toBeNull();
     });
