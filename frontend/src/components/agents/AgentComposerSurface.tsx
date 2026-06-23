@@ -1260,6 +1260,7 @@ export function AgentComposerSurface({
       setSelectedIntegrationReferences((current) => {
         const nextSet = new Map(current);
         nextSet.delete(`${reference.kind}:${reference.id}`);
+        nextSet.delete(`${reference.provider}:${reference.kind}:${reference.id}`);
         return nextSet;
       });
       focusTextareaAtComposerCursor(cursorPosition);

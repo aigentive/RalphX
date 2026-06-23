@@ -713,7 +713,7 @@ describe("AgentComposerSurface", () => {
 
   it("hydrates initial ticket references and waits for the user prompt before sending", async () => {
     const onSend = vi.fn();
-    renderComposer({
+    const view = renderComposer({
       onSend,
       initialIntegrationReferences: [
         {
@@ -732,6 +732,35 @@ describe("AgentComposerSurface", () => {
     );
     expect(pill).toHaveTextContent("ClickUp");
     expect(pill).toHaveTextContent("Inbox classifier");
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Remove ClickUp reference MBE-2857",
+      }),
+    );
+    expect(
+      screen.queryByTestId(
+        "agent-composer-reference-pill-integration:clickup:MBE-2857",
+      ),
+    ).not.toBeInTheDocument();
+
+    view.unmount();
+    renderComposer({
+      onSend,
+      initialIntegrationReferences: [
+        {
+          provider: "clickup",
+          kind: "clickup",
+          id: "MBE-2857",
+          key: "MBE-2857",
+          title: "Inbox classifier",
+          url: "https://app.clickup.com/t/6925357/MBE-2857",
+        },
+      ],
+    });
+    await screen.findByTestId(
+      "agent-composer-reference-pill-integration:clickup:MBE-2857",
+    );
 
     fireEvent.click(screen.getByTestId("agent-composer-submit"));
     expect(onSend).not.toHaveBeenCalled();
