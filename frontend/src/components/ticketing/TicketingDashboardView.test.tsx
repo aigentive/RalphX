@@ -531,6 +531,49 @@ describe("TicketingDashboardView", () => {
     expect(screen.queryByRole("tablist", { name: "Ticketing provider" })).not.toBeInTheDocument();
   });
 
+  it("auto-loads Linear tickets without forcing a project pick when Linear is the only enabled provider", async () => {
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "jira",
+          label: "Jira",
+          enabled: false,
+          connectionStatus: "disconnected",
+          capabilities,
+        },
+        {
+          provider: "linear",
+          label: "Linear",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: { ...writableCapabilities, freshness: "webhook" },
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    // Linear exposes projects as containers, but with a single enabled provider the
+    // dashboard must auto-load rather than gating behind a project selection.
+    vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
+      data: [{ provider: "linear", id: "proj-1", key: null, name: "Roadmap", kind: "project" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
+        expect.objectContaining({ provider: "linear" }),
+        { enabled: true },
+      );
+    });
+    expect(screen.queryByText("Select a project")).not.toBeInTheDocument();
+  });
+
   it("surfaces stale provider freshness without hiding ticket content", () => {
     mockConnectedDashboard();
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({

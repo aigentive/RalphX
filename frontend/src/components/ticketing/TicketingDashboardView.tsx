@@ -354,10 +354,18 @@ export function TicketingDashboardView({
   );
   const containers = useMemo(() => containersQuery.data ?? [], [containersQuery.data]);
 
+  // When Linear is the only enabled provider, auto-load its tickets instead of
+  // forcing a project pick: Linear search is provider-wide, so the container gate
+  // (meant to avoid broad fetches while choosing among providers/projects) only
+  // adds friction for a single-provider Linear dashboard. Jira keeps the gate
+  // because its statuses/issues are meaningfully project-scoped.
+  const autoLoadsWithoutContainer =
+    enabledProviders.length === 1 && activeProvider === "linear";
   // When a readable provider exposes containers but none is selected, force the
   // user to pick one (no auto-select) and gate the columns/tickets queries so no
   // provider-wide unfiltered fetch fires.
-  const requiresContainer = readableProvider && containers.length > 0;
+  const requiresContainer =
+    readableProvider && containers.length > 0 && !autoLoadsWithoutContainer;
   const containerSelectionNeeded = requiresContainer && activeContainerId === null;
 
   useEffect(() => {
