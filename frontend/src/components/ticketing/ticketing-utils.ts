@@ -41,6 +41,14 @@ export function categoryToken(category: TicketStateCategory): string {
   }
 }
 
+const PROVIDER_LABELS: Record<string, string> = {
+  jira: "Jira",
+  linear: "Linear",
+  clickup: "ClickUp",
+};
+
 export function providerLabel(provider: string): string {
-  return provider === "jira" ? "Jira" : "Linear";
+  // 3-way map: a binary ternary would silently render ClickUp tickets as
+  // "Linear". Unknown providers get a neutral, non-misleading fallback.
+  return PROVIDER_LABELS[provider] ?? "Provider";
 }

@@ -64,6 +64,12 @@ interface TicketDetailSheetProps {
   bindError?: string | null | undefined;
   onNavigate?: ((deepLink: TicketDeepLink) => void) | undefined;
   onStartWork?: (() => void) | undefined;
+  /**
+   * Whether the start-work + bind-conversation affordances are shown. Providers
+   * without a conversation-link backend (e.g. ClickUp, deferred) pass `false` so
+   * the non-functional affordance stays hidden. Defaults to `true`.
+   */
+  showConversationBinding?: boolean | undefined;
   onClose: () => void;
 }
 
@@ -244,6 +250,7 @@ function RalphxAssociationPanel({
   isLoading,
   isStartWorkPending = false,
   startWorkError,
+  showConversationBinding = true,
   bindableConversations,
   onBindConversation,
   isBindPending,
@@ -255,6 +262,7 @@ function RalphxAssociationPanel({
   isLoading: boolean;
   isStartWorkPending?: boolean | undefined;
   startWorkError?: string | null | undefined;
+  showConversationBinding?: boolean | undefined;
   bindableConversations?: { id: string; title: string | null }[] | undefined;
   onBindConversation?: ((conversationId: string) => void) | undefined;
   isBindPending?: boolean | undefined;
@@ -295,27 +303,31 @@ function RalphxAssociationPanel({
           </span>
         )}
       </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="mt-3 w-full justify-center"
-        disabled={!onStartWork || isStartWorkPending}
-        onClick={onStartWork}
-      >
-        {isStartWorkPending ? "Starting..." : "Start RalphX work"}
-      </Button>
-      {startWorkError && (
-        <p className="mt-2 text-xs text-[var(--status-error)]" role="alert">
-          {startWorkError}
-        </p>
+      {showConversationBinding && (
+        <>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-3 w-full justify-center"
+            disabled={!onStartWork || isStartWorkPending}
+            onClick={onStartWork}
+          >
+            {isStartWorkPending ? "Starting..." : "Start RalphX work"}
+          </Button>
+          {startWorkError && (
+            <p className="mt-2 text-xs text-[var(--status-error)]" role="alert">
+              {startWorkError}
+            </p>
+          )}
+          <BindConversationControl
+            conversations={bindableConversations ?? []}
+            onBindConversation={onBindConversation}
+            isBindPending={isBindPending}
+            bindError={bindError}
+          />
+        </>
       )}
-      <BindConversationControl
-        conversations={bindableConversations ?? []}
-        onBindConversation={onBindConversation}
-        isBindPending={isBindPending}
-        bindError={bindError}
-      />
       {isLoading ? (
         <p className="mt-4 text-sm text-[var(--text-muted)]">Loading associations</p>
       ) : totalCount === 0 ? (
@@ -511,6 +523,7 @@ export function TicketDetailSheet({
   bindError,
   onNavigate,
   onStartWork,
+  showConversationBinding = true,
   onClose,
 }: TicketDetailSheetProps) {
   const [commentDraft, setCommentDraft] = useState("");
@@ -958,6 +971,7 @@ export function TicketDetailSheet({
               isLoading={isAssociationsLoading}
               isStartWorkPending={isStartWorkPending}
               startWorkError={startWorkError}
+              showConversationBinding={showConversationBinding}
               bindableConversations={bindableConversations}
               onBindConversation={onBindConversation}
               isBindPending={isBindPending}

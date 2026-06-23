@@ -87,13 +87,16 @@ describe("categoryToken", () => {
 });
 
 describe("providerLabel", () => {
-  it("returns Jira only for the jira provider", () => {
+  it("maps each known provider to its display label", () => {
     expect(providerLabel("jira")).toBe("Jira");
+    expect(providerLabel("linear")).toBe("Linear");
+    expect(providerLabel("clickup")).toBe("ClickUp");
   });
 
-  it("returns Linear for every other provider value", () => {
-    expect(providerLabel("linear")).toBe("Linear");
-    expect(providerLabel("github")).toBe("Linear");
-    expect(providerLabel("")).toBe("Linear");
+  it("falls back to a neutral label for unknown provider values", () => {
+    // ClickUp must never be silently rendered as "Linear" (the old binary
+    // ternary's bug); unknown providers get a neutral, non-misleading label.
+    expect(providerLabel("github")).toBe("Provider");
+    expect(providerLabel("")).toBe("Provider");
   });
 });

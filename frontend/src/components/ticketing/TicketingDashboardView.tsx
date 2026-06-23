@@ -139,6 +139,10 @@ function containerLabelsForProvider(provider: string | null): {
     // Jira containers are projects (read:jira-work), not Agile boards.
     return { containerLabel: "Project", allContainersLabel: "All projects" };
   }
+  if (provider === "clickup") {
+    // ClickUp containers are Spaces within the selected Workspace (Team).
+    return { containerLabel: "Space", allContainersLabel: "All spaces" };
+  }
   return { containerLabel: "Container", allContainersLabel: "All containers" };
 }
 
@@ -408,10 +412,12 @@ export function TicketingDashboardView({
     () => containers.find((container) => container.id === activeContainerId)?.name ?? null,
     [containers, activeContainerId],
   );
-  // Jira scopes tickets to the selected project server-side (issues carry no
-  // matching `project` field), so the client-side container-name filter must be
-  // skipped for Jira; Linear returns all issues and relies on this client filter.
-  const clientContainerFilter = activeProvider === "jira" ? null : activeContainerName;
+  // Jira and ClickUp scope tickets to the selected container server-side (issues
+  // carry no matching `project` field), so the client-side container-name filter
+  // must be skipped for them; Linear returns all issues and relies on this
+  // client filter.
+  const clientContainerFilter =
+    activeProvider === "jira" || activeProvider === "clickup" ? null : activeContainerName;
   const displayedTickets = useMemo(
     () =>
       filterTicketsByProject(
@@ -548,6 +554,11 @@ export function TicketingDashboardView({
     : mergeProviderAndTicketColumns(statusColumns, transitionColumns);
   const providerName = selectedProvider?.label ?? (activeProvider ? providerLabel(activeProvider) : "Provider");
   const containerLabels = containerLabelsForProvider(activeProvider);
+  // ClickUp's conversation-link/start-work backend is deferred (no clickup
+  // conversation API exists yet), so the start-work + bind-conversation
+  // affordances are gated off entirely for ClickUp — the dashboard never invokes
+  // a clickup conversation API and hides the non-functional affordance.
+  const supportsConversationBinding = activeProvider !== "clickup";
   const statusMessage = selectedProvider?.errorMessage ?? selectedProvider?.permissionMessage ?? undefined;
   const startWorkError = startWorkFromTicket.error instanceof Error
     ? startWorkFromTicket.error.message
@@ -771,7 +782,7 @@ export function TicketingDashboardView({
       <TicketingStatePanel
         state="empty"
         title="No ticketing providers available"
-        description="Connect Jira or Linear from Settings to browse tickets."
+        description="Connect Jira, Linear, or ClickUp from Settings to browse tickets."
       />
     );
   } else if (validProviders.length === 0) {
@@ -976,12 +987,13 @@ export function TicketingDashboardView({
         seenUntil={seenBaseline}
         isStartWorkPending={startWorkFromTicket.isPending}
         startWorkError={startWorkError}
+        showConversationBinding={supportsConversationBinding}
         bindableConversations={bindableConversations}
-        onBindConversation={selectedTicket ? handleBindConversation : undefined}
+        onBindConversation={selectedTicket && supportsConversationBinding ? handleBindConversation : undefined}
         isBindPending={bindConversation.isPending}
         bindError={bindError}
         onNavigate={onNavigateToAssociation}
-        onStartWork={selectedTicket ? handleStartWorkFromTicket : undefined}
+        onStartWork={selectedTicket && supportsConversationBinding ? handleStartWorkFromTicket : undefined}
         onClose={() => setSelectedTicketRef(null)}
       />
 

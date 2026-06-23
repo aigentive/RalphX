@@ -10,7 +10,7 @@ import {
 import { typedInvoke, TauriVoidSchema } from "@/lib/tauri";
 import { ViewTypeSchema } from "@/types/chat";
 
-export const TicketingProviderSchema = z.enum(["jira", "linear"]);
+export const TicketingProviderSchema = z.enum(["jira", "linear", "clickup"]);
 export type TicketingProvider = z.infer<typeof TicketingProviderSchema>;
 
 export const TicketingConnectionStatusSchema = z.enum([

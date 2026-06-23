@@ -1487,6 +1487,92 @@ describe("TicketingDashboardView", () => {
     expect(atlassianApi.assignAgentConversationJiraIssue).not.toHaveBeenCalled();
   });
 
+  it("surfaces ClickUp in the switcher, loads its tasks, and hides the deferred start-work/bind affordance", async () => {
+    mockConnectedDashboard();
+    // Make ClickUp the active provider in a 3-provider dashboard so the switcher
+    // renders a ClickUp tab (the switcher only shows when >1 provider is enabled).
+    useTicketingStore.getState().setProvider("clickup");
+    useTicketingStore.getState().setContainerId("space-eng");
+    const clickupTicket = {
+      ...ticket,
+      ref: { provider: "clickup" as const, id: "cu-1001", key: "CU-1001" },
+      title: "Wire ClickUp tasks into the unified dashboard",
+    };
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "jira",
+          label: "Jira",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+        {
+          provider: "linear",
+          label: "Linear",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: { ...writableCapabilities, freshness: "webhook" },
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+        {
+          provider: "clickup",
+          label: "ClickUp",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    // ClickUp containers are Spaces; one is pre-selected so tasks load (ClickUp is
+    // server-scoped like Jira, so the client container-name filter is skipped).
+    vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
+      data: [{ provider: "clickup", id: "space-eng", key: null, name: "Engineering", kind: "project" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: { pages: [{ items: [clickupTicket], nextCursor: null, total: 1 }], pageParams: [null] },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+    vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
+      data: { ...clickupTicket, descriptionMarkdown: "ClickUp task.", comments: [], attachments: [], transitions: [] },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketDetail>);
+
+    renderDashboard();
+
+    // ClickUp appears as a provider tab (labelled "ClickUp", not "Linear").
+    expect(screen.getByRole("tab", { name: "ClickUp" })).toBeInTheDocument();
+    // ClickUp tasks load and render their rows.
+    expect(await screen.findByRole("button", { name: /CU-1001/ })).toBeInTheDocument();
+
+    // Open the ticket detail.
+    fireEvent.click(screen.getByRole("button", { name: /CU-1001/ }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+
+    // Deferral preserved: the start-work + bind-conversation affordance is hidden
+    // for ClickUp (capability-gated), so no clickup conversation API is invoked.
+    expect(screen.queryByRole("button", { name: "Start RalphX work" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /bind existing conversation/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("navigates to the agents view when start-work succeeds", async () => {
     mockConnectedDashboard();
     let capturedOnSuccess: ((result: { conversation: { id: string } }) => void) | undefined;
