@@ -10,6 +10,7 @@ use crate::application::{
         AgentConversationStartDeps, AgentConversationStartService, StartAgentConversationInput,
     },
     AppState, AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
+    ClickUpComment, ClickUpSpace, ClickUpStatus, ClickUpTaskContent, ClickUpTaskSummary,
     JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
     LinearComment, LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary,
     LinearLabel, LinearWorkflowState,
@@ -31,7 +32,8 @@ use crate::domain::entities::{
     ProjectId,
 };
 use crate::domain::integrations::{
-    AtlassianIntegrationSettings, IntegrationValidationStatus, ProviderTicketOperation,
+    AtlassianIntegrationSettings, ClickUpIntegrationSettings, IntegrationValidationStatus,
+    ProviderTicketOperation,
 };
 use crate::domain::services::{
     jira_reference_from_composer_reference, ComposerIntegrationReference,
@@ -43,6 +45,7 @@ pub use types::*;
 
 const PROVIDER_JIRA: &str = "jira";
 const PROVIDER_LINEAR: &str = "linear";
+const PROVIDER_CLICKUP: &str = "clickup";
 
 
 #[derive(Debug, Clone)]
@@ -65,9 +68,11 @@ pub async fn list_ticketing_providers(
     let _ = project_id;
     let jira = state.atlassian_integration_service.get_settings().await?;
     let linear = state.linear_integration_service.get_settings().await?;
+    let clickup = state.clickup_integration_service.get_settings().await?;
     Ok(vec![
         jira_provider_summary(&jira),
         linear_provider_summary(&linear),
+        clickup_provider_summary(&clickup),
     ])
 }
 
@@ -103,6 +108,13 @@ pub async fn list_ticketing_containers(
                     })
                     .collect()
             }),
+        // ClickUp containers are Spaces within the stored workspace; the workspace
+        // id is resolved server-side from the saved settings.
+        PROVIDER_CLICKUP => state
+            .clickup_integration_service
+            .list_spaces()
+            .await
+            .map(|spaces| spaces.into_iter().map(clickup_space_to_container).collect()),
         _ => unreachable!("provider validated above"),
     }
 }
@@ -152,6 +164,24 @@ pub async fn list_ticketing_columns(
                     .map(|(index, state)| linear_workflow_state_to_column(state, index))
                     .collect()
             }),
+        // ClickUp statuses are Space-scoped, so columns only load meaningfully once
+        // a Space (container) is selected, mirroring the Jira project gate. ClickUp
+        // exposes an explicit `orderindex`, so sort by it for left-to-right columns.
+        PROVIDER_CLICKUP => match container_selected_key(container_id.as_deref()) {
+            Some(space_id) => state
+                .clickup_integration_service
+                .list_statuses(space_id)
+                .await
+                .map(|mut statuses| {
+                    statuses.sort_by_key(|status| status.orderindex.unwrap_or(i64::MAX));
+                    statuses
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, status)| clickup_status_to_column(status, index))
+                        .collect()
+                }),
+            None => Ok(Vec::new()),
+        },
         _ => unreachable!("provider validated above"),
     }
 }
@@ -200,6 +230,22 @@ pub async fn list_tickets(
             .into_iter()
             .map(linear_summary_to_ticket)
             .collect(),
+        // ClickUp tasks load via the workspace-scoped filtered-tasks endpoint
+        // (Jira-like server-side scoping). A selected Space narrows the query; with
+        // no Space selected the workspace returns all of its tasks. Text filtering
+        // is applied provider-neutrally by `filter_ticket_summaries` below.
+        PROVIDER_CLICKUP => {
+            let space_ids = container_selected_key(query.container_id.as_deref())
+                .map(|space_id| vec![space_id.to_string()])
+                .unwrap_or_default();
+            state
+                .clickup_integration_service
+                .list_tasks(space_ids)
+                .await?
+                .into_iter()
+                .map(clickup_summary_to_ticket)
+                .collect()
+        }
         _ => unreachable!("provider validated above"),
     };
     let items = filter_ticket_summaries(items, query.filters.as_ref());
@@ -237,6 +283,13 @@ pub async fn get_ticket_detail(
             .fetch_issue_content(&reference)
             .await
             .map(linear_content_to_detail),
+        // ClickUp addresses tasks by their opaque id, so fetch by id directly
+        // rather than via the composer reference used by Jira/Linear.
+        PROVIDER_CLICKUP => state
+            .clickup_integration_service
+            .fetch_task(&ticket_ref.id)
+            .await
+            .map(clickup_content_to_detail),
         _ => unreachable!("provider validated above"),
     }
 }
@@ -618,7 +671,8 @@ pub async fn list_ticket_labels(
             .list_issue_team_labels(&ticket_ref.id)
             .await
             .map(|labels| labels.into_iter().map(ticket_label_option_response).collect()),
-        // Jira labels are free-text with no fixed selectable list.
+        // Jira labels and ClickUp tags are free-text with no fixed selectable list,
+        // so neither exposes label options (the pick-list gating stays Linear-only).
         _ => Ok(Vec::new()),
     }
 }
@@ -698,6 +752,46 @@ fn linear_provider_summary(
                 .last_error
                 .clone()
                 .unwrap_or_else(|| "Linear integration is not valid.".to_string())
+        }),
+    }
+}
+
+fn clickup_provider_summary(
+    settings: &ClickUpIntegrationSettings,
+) -> TicketingProviderSummaryResponse {
+    let is_valid = settings.validation_status == IntegrationValidationStatus::Valid;
+    let connection_status = if !settings.enabled {
+        "disconnected"
+    } else if !is_valid {
+        "error"
+    } else if !settings.task_search_available {
+        "permission_limited"
+    } else {
+        "connected"
+    };
+    TicketingProviderSummaryResponse {
+        provider: PROVIDER_CLICKUP.to_string(),
+        label: "ClickUp".to_string(),
+        enabled: settings.enabled && is_valid && settings.task_search_available,
+        connection_status: connection_status.to_string(),
+        // ClickUp has full write-back parity (transition/assign/comment/tags) but no
+        // webhook reconciliation, so freshness is "manual" like Jira. The deferred
+        // start-work/conversation-link affordance has no backend capability flag; it
+        // is gated client-side, preserving the deferral without a half-wired button.
+        capabilities: if settings.enabled && is_valid && settings.task_search_available {
+            writable_capabilities("manual")
+        } else {
+            read_only_capabilities("manual")
+        },
+        fetched_at: Some(now_string()),
+        stale_at: None,
+        permission_message: (!settings.task_search_available && is_valid)
+            .then(|| "ClickUp task search is not available for this connection.".to_string()),
+        error_message: (!is_valid && settings.enabled).then(|| {
+            settings
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "ClickUp integration is not valid.".to_string())
         }),
     }
 }
@@ -1190,6 +1284,146 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
     }
 }
 
+/// Map a ClickUp Space to a ticketing container. Spaces reuse the existing
+/// `project` container kind (no shared enum widening); the frontend supplies the
+/// "Space" label for the ClickUp provider.
+fn clickup_space_to_container(space: ClickUpSpace) -> TicketingContainerResponse {
+    TicketingContainerResponse {
+        provider: PROVIDER_CLICKUP.to_string(),
+        id: space.id,
+        key: None,
+        name: space.name,
+        kind: "project".to_string(),
+        parent_id: None,
+        ticket_count: None,
+    }
+}
+
+/// Map a ClickUp Space status into a kanban column. ClickUp tasks expose their
+/// status by NAME (no stable per-task status id), so the column id is derived from
+/// the status name to match the ticket `state.id` produced by the ticket mappers
+/// (kanban groups by `state.id == column.id`). `category` is the already-derived
+/// `status.type` category.
+fn clickup_status_to_column(status: ClickUpStatus, order: usize) -> TicketingColumnResponse {
+    TicketingColumnResponse {
+        id: state_id(&status.status),
+        name: status.status,
+        category: status.category,
+        order,
+        color: status.color,
+    }
+}
+
+/// Map a ClickUp task summary into a ticket summary. The `state.id` is derived from
+/// the status name (ClickUp carries no task-level status id) so it aligns with the
+/// column id for kanban grouping; the category comes from the already-derived
+/// `status.type` mapping, falling back to a name-based heuristic. ClickUp tags map
+/// to labels; the first assignee populates the single assignee slot.
+fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryResponse {
+    let state_name = summary
+        .status_name
+        .clone()
+        .unwrap_or_else(|| "Provider result".to_string());
+    let state = TicketStateResponse {
+        id: state_id(&state_name),
+        category: summary
+            .status_category
+            .clone()
+            .unwrap_or_else(|| state_category(&state_name)),
+        name: state_name,
+        color: summary.status_color,
+    };
+    TicketSummaryResponse {
+        ref_: TicketRefInput {
+            provider: PROVIDER_CLICKUP.to_string(),
+            id: summary.id,
+            key: summary.custom_id,
+        },
+        title: summary.name,
+        state,
+        assignee: summary.assignees.first().map(|name| named_person(name)),
+        reporter: None,
+        labels: summary.tags,
+        project: summary.list_name,
+        priority: None,
+        updated_at: summary.updated_at.unwrap_or_else(now_string),
+        url: summary.url,
+        association_count: 0,
+        open_pr_count: 0,
+        open_pr_number: None,
+        open_pr_url: None,
+        open_pr_status: None,
+    }
+}
+
+/// Map full ClickUp task content into a ticket detail. Mirrors
+/// `clickup_summary_to_ticket` for the summary block (task content carries no
+/// status color), uses the task description for the markdown/text body, maps the
+/// creator to the reporter, and maps ClickUp comments. ClickUp task content has no
+/// attachments here, and transitions are loaded separately.
+fn clickup_content_to_detail(content: ClickUpTaskContent) -> TicketDetailResponse {
+    let state_name = content
+        .status_name
+        .clone()
+        .unwrap_or_else(|| "Provider result".to_string());
+    let state = TicketStateResponse {
+        id: state_id(&state_name),
+        category: content
+            .status_category
+            .clone()
+            .unwrap_or_else(|| state_category(&state_name)),
+        name: state_name,
+        color: None,
+    };
+    let summary = TicketSummaryResponse {
+        ref_: TicketRefInput {
+            provider: PROVIDER_CLICKUP.to_string(),
+            id: content.id.clone(),
+            key: content.custom_id.clone(),
+        },
+        title: content.name.clone(),
+        state,
+        assignee: content.assignees.first().map(|name| named_person(name)),
+        reporter: content.creator.as_deref().map(named_person),
+        labels: content.tags.clone(),
+        project: content.list_name.clone(),
+        priority: None,
+        updated_at: content.updated_at.clone().unwrap_or_else(now_string),
+        url: content.url.clone(),
+        association_count: 0,
+        open_pr_count: 0,
+        open_pr_number: None,
+        open_pr_url: None,
+        open_pr_status: None,
+    };
+    TicketDetailResponse {
+        summary,
+        description_markdown: Some(content.description.clone()),
+        description_text: Some(content.description),
+        acceptance_criteria_markdown: None,
+        comments: content
+            .comments
+            .into_iter()
+            .map(ticket_comment_from_clickup_comment)
+            .collect(),
+        attachments: Vec::new(),
+        transitions: Vec::new(),
+        fetched_at: Some(now_string()),
+    }
+}
+
+fn ticket_comment_from_clickup_comment(comment: ClickUpComment) -> TicketCommentResponse {
+    TicketCommentResponse {
+        id: Some(comment.id),
+        author: comment.author_name.as_deref().map(named_person),
+        body_markdown: comment.body.clone(),
+        body_text: comment.body,
+        created_at: comment.created_at,
+        // ClickUp comment payloads do not carry an updated timestamp.
+        updated_at: None,
+    }
+}
+
 fn named_person(name: &str) -> TicketingPersonResponse {
     TicketingPersonResponse {
         id: None,
@@ -1254,17 +1488,16 @@ fn ticket_ref_to_composer_reference(
     provider: &str,
     ticket_ref: &TicketRefInput,
 ) -> ComposerIntegrationReference {
+    // Jira composer references live under the `atlassian` provider with a `jira`
+    // kind; Linear and ClickUp use their own name for both provider and kind.
+    let (ref_provider, ref_kind) = match provider {
+        PROVIDER_JIRA => ("atlassian", "jira"),
+        PROVIDER_CLICKUP => (PROVIDER_CLICKUP, PROVIDER_CLICKUP),
+        _ => (PROVIDER_LINEAR, PROVIDER_LINEAR),
+    };
     ComposerIntegrationReference {
-        provider: if provider == PROVIDER_JIRA {
-            "atlassian".to_string()
-        } else {
-            PROVIDER_LINEAR.to_string()
-        },
-        kind: if provider == PROVIDER_JIRA {
-            "jira".to_string()
-        } else {
-            PROVIDER_LINEAR.to_string()
-        },
+        provider: ref_provider.to_string(),
+        kind: ref_kind.to_string(),
         id: ticket_ref.id.clone(),
         key: ticket_ref.key.clone(),
         title: None,
@@ -1518,6 +1751,10 @@ async fn project_ticket_conversation_associations(
                 }
             }
         }
+        // ClickUp conversation-linking is deferred (no link table yet), so ClickUp
+        // tickets have no conversation associations; the list still renders with a
+        // zero association count rather than erroring.
+        PROVIDER_CLICKUP => {}
         _ => return Err(format!("Unknown ticketing provider: {provider}")),
     }
 
@@ -1562,6 +1799,9 @@ fn linked_agent_conversation_associations_from_batch(
                 })
                 .collect())
         }
+        // ClickUp conversation-linking is deferred, so there are never any batched
+        // ClickUp associations to match against.
+        PROVIDER_CLICKUP => Ok(Vec::new()),
         _ => Err(format!("Unknown ticketing provider: {provider}")),
     }
 }
@@ -1634,7 +1874,7 @@ fn empty_associations() -> TicketAssociationsResponse {
 
 fn validate_provider(provider: &str) -> Result<(), String> {
     match provider {
-        PROVIDER_JIRA | PROVIDER_LINEAR => Ok(()),
+        PROVIDER_JIRA | PROVIDER_LINEAR | PROVIDER_CLICKUP => Ok(()),
         other => Err(format!("Unknown ticketing provider: {other}")),
     }
 }

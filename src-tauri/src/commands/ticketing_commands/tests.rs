@@ -2,7 +2,8 @@ use super::*;
 use std::sync::Arc;
 
 use crate::application::{
-    AppState, AtlassianJiraAttachment, AtlassianJiraComment, JiraIssueDetail, JiraProjectSummary,
+    AppState, AtlassianJiraAttachment, AtlassianJiraComment, ClickUpComment, ClickUpSpace,
+    ClickUpStatus, ClickUpTaskContent, ClickUpTaskSummary, JiraIssueDetail, JiraProjectSummary,
     JiraStatusSummary, LinearIntegrationSettings, TeamService, TeamStateTracker,
     TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
     TicketingTransitionOption,
@@ -14,8 +15,8 @@ use crate::domain::entities::{
     ChatConversationId, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
 use crate::domain::integrations::{
-    AtlassianIntegrationSettings, IntegrationValidationStatus, ProviderTicketOperation,
-    ProviderTicketOperationKind, ProviderTicketOperationStatus,
+    AtlassianIntegrationSettings, ClickUpIntegrationSettings, IntegrationValidationStatus,
+    ProviderTicketOperation, ProviderTicketOperationKind, ProviderTicketOperationStatus,
 };
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
@@ -77,6 +78,362 @@ fn provider_validation_rejects_unknown_ticketing_provider() {
     let error = validate_provider("github").expect_err("unknown provider should fail");
 
     assert!(error.contains("Unknown ticketing provider"));
+}
+
+#[test]
+fn provider_validation_accepts_clickup() {
+    validate_provider("clickup").expect("clickup is a supported ticketing provider");
+}
+
+#[test]
+fn clickup_ticket_ref_maps_to_clickup_composer_reference() {
+    let reference = ticket_ref_to_composer_reference(
+        "clickup",
+        &TicketRefInput {
+            provider: "clickup".to_string(),
+            id: "task-1".to_string(),
+            key: Some("RX-7".to_string()),
+        },
+    );
+
+    assert_eq!(reference.provider, "clickup");
+    assert_eq!(reference.kind, "clickup");
+    assert_eq!(reference.id, "task-1");
+    assert_eq!(reference.key.as_deref(), Some("RX-7"));
+}
+
+#[test]
+fn clickup_provider_summary_reports_writeback_caps_with_manual_freshness() {
+    let settings = ClickUpIntegrationSettings {
+        enabled: true,
+        validation_status: IntegrationValidationStatus::Valid,
+        task_search_available: true,
+        ..Default::default()
+    };
+
+    let summary = clickup_provider_summary(&settings);
+
+    assert_eq!(summary.provider, "clickup");
+    assert_eq!(summary.label, "ClickUp");
+    assert_eq!(summary.connection_status, "connected");
+    assert!(summary.enabled);
+    // Full write-back parity (transition/assign/comment/tags) is exposed.
+    assert!(summary.capabilities.status_write);
+    assert!(summary.capabilities.assignment_write);
+    assert!(summary.capabilities.comment_write);
+    assert!(summary.capabilities.label_write);
+    assert!(summary.capabilities.supports_kanban);
+    // ClickUp has no webhook reconciliation, so freshness is manual like Jira. The
+    // deferred start-work/conversation-link affordance is gated client-side, so
+    // there is no backend capability flag for it to assert here.
+    assert_eq!(summary.capabilities.freshness, "manual");
+    assert!(summary.permission_message.is_none());
+    assert!(summary.error_message.is_none());
+}
+
+#[test]
+fn clickup_provider_summary_reflects_disabled_error_and_limited_states() {
+    let disconnected = clickup_provider_summary(&ClickUpIntegrationSettings::default());
+    assert_eq!(disconnected.connection_status, "disconnected");
+    assert!(!disconnected.enabled);
+    // No accidental write affordance when not connected.
+    assert!(!disconnected.capabilities.status_write);
+    assert!(!disconnected.capabilities.label_write);
+
+    let errored = clickup_provider_summary(&ClickUpIntegrationSettings {
+        enabled: true,
+        validation_status: IntegrationValidationStatus::Invalid,
+        last_error: Some("Token rejected".to_string()),
+        ..Default::default()
+    });
+    assert_eq!(errored.connection_status, "error");
+    assert!(!errored.enabled);
+    assert_eq!(errored.error_message.as_deref(), Some("Token rejected"));
+
+    let limited = clickup_provider_summary(&ClickUpIntegrationSettings {
+        enabled: true,
+        validation_status: IntegrationValidationStatus::Valid,
+        task_search_available: false,
+        ..Default::default()
+    });
+    assert_eq!(limited.connection_status, "permission_limited");
+    assert!(!limited.enabled);
+    assert!(limited.permission_message.is_some());
+}
+
+#[test]
+fn clickup_space_maps_to_project_container() {
+    let container = clickup_space_to_container(ClickUpSpace {
+        id: "space-1".to_string(),
+        name: "Platform".to_string(),
+        private: false,
+    });
+
+    assert_eq!(container.provider, "clickup");
+    assert_eq!(container.id, "space-1");
+    assert!(container.key.is_none());
+    assert_eq!(container.name, "Platform");
+    // Spaces reuse the existing `project` kind (no shared enum widening).
+    assert_eq!(container.kind, "project");
+    assert!(container.parent_id.is_none());
+}
+
+#[test]
+fn clickup_status_maps_into_column_with_name_derived_id() {
+    let column = clickup_status_to_column(
+        ClickUpStatus {
+            id: Some("status-99".to_string()),
+            status: "In Progress".to_string(),
+            status_type: "custom".to_string(),
+            category: "in_progress".to_string(),
+            color: Some("#abcdef".to_string()),
+            orderindex: Some(1),
+        },
+        1,
+    );
+
+    // The column id is derived from the status NAME (not the optional ClickUp
+    // status id) so it matches the ticket state id for kanban grouping.
+    assert_eq!(column.id, state_id("In Progress"));
+    assert_eq!(column.name, "In Progress");
+    assert_eq!(column.category, "in_progress");
+    assert_eq!(column.order, 1);
+    assert_eq!(column.color.as_deref(), Some("#abcdef"));
+}
+
+#[test]
+fn clickup_summary_maps_status_assignee_tags_and_project() {
+    let ticket = clickup_summary_to_ticket(ClickUpTaskSummary {
+        id: "task-1".to_string(),
+        custom_id: Some("RX-7".to_string()),
+        name: "Wire ClickUp dashboard".to_string(),
+        url: Some("https://app.clickup.com/t/task-1".to_string()),
+        status_name: Some("In Progress".to_string()),
+        status_type: Some("custom".to_string()),
+        status_category: Some("in_progress".to_string()),
+        status_color: Some("#112233".to_string()),
+        assignees: vec!["Reef Agent".to_string(), "Second Person".to_string()],
+        tags: vec!["backend".to_string(), "clickup".to_string()],
+        space_id: Some("space-1".to_string()),
+        list_name: Some("Sprint 1".to_string()),
+        updated_at: Some("2026-06-20T12:00:00Z".to_string()),
+    });
+
+    assert_eq!(ticket.ref_.provider, "clickup");
+    assert_eq!(ticket.ref_.id, "task-1");
+    // ClickUp custom id is the human-readable key.
+    assert_eq!(ticket.ref_.key.as_deref(), Some("RX-7"));
+    assert_eq!(ticket.title, "Wire ClickUp dashboard");
+    // State id is name-derived so it aligns with the column id for kanban grouping.
+    assert_eq!(ticket.state.id, state_id("In Progress"));
+    assert_eq!(ticket.state.name, "In Progress");
+    // Category comes from the already-derived status.type mapping.
+    assert_eq!(ticket.state.category, "in_progress");
+    assert_eq!(ticket.state.color.as_deref(), Some("#112233"));
+    // Only the first assignee fills the single assignee slot.
+    assert_eq!(
+        ticket.assignee.as_ref().map(|person| person.name.as_str()),
+        Some("Reef Agent")
+    );
+    // ClickUp tags surface as labels.
+    assert_eq!(
+        ticket.labels,
+        vec!["backend".to_string(), "clickup".to_string()]
+    );
+    assert_eq!(ticket.project.as_deref(), Some("Sprint 1"));
+    assert_eq!(ticket.updated_at, "2026-06-20T12:00:00Z");
+    assert_eq!(ticket.url.as_deref(), Some("https://app.clickup.com/t/task-1"));
+    assert_eq!(ticket.association_count, 0);
+}
+
+#[test]
+fn clickup_summary_derives_state_when_status_fields_missing() {
+    let ticket = clickup_summary_to_ticket(ClickUpTaskSummary {
+        id: "task-2".to_string(),
+        custom_id: None,
+        name: "No status".to_string(),
+        url: None,
+        status_name: None,
+        status_type: None,
+        status_category: None,
+        status_color: None,
+        assignees: Vec::new(),
+        tags: Vec::new(),
+        space_id: None,
+        list_name: None,
+        updated_at: None,
+    });
+
+    assert!(ticket.ref_.key.is_none());
+    assert_eq!(ticket.state.name, "Provider result");
+    assert_eq!(ticket.state.category, state_category("Provider result"));
+    assert_eq!(ticket.state.id, state_id("Provider result"));
+    assert!(ticket.assignee.is_none());
+    assert!(ticket.labels.is_empty());
+    assert!(ticket.project.is_none());
+    assert!(!ticket.updated_at.is_empty());
+}
+
+#[test]
+fn clickup_content_maps_description_comments_and_creator() {
+    let detail = clickup_content_to_detail(ClickUpTaskContent {
+        id: "task-1".to_string(),
+        custom_id: Some("RX-7".to_string()),
+        name: "Wire ClickUp dashboard".to_string(),
+        url: Some("https://app.clickup.com/t/task-1".to_string()),
+        description: "Implement the ClickUp arms.".to_string(),
+        status_name: Some("Done".to_string()),
+        status_type: Some("done".to_string()),
+        status_category: Some("done".to_string()),
+        creator: Some("Reporter Person".to_string()),
+        assignees: vec!["Reef Agent".to_string()],
+        tags: vec!["backend".to_string()],
+        comments: vec![ClickUpComment {
+            id: "comment-1".to_string(),
+            body: "Looks good".to_string(),
+            author_id: Some(7),
+            author_name: Some("Commenter".to_string()),
+            created_at: Some("2026-06-21T09:00:00Z".to_string()),
+        }],
+        updated_at: Some("2026-06-21T10:00:00Z".to_string()),
+        space_id: Some("space-1".to_string()),
+        list_name: Some("Sprint 1".to_string()),
+    });
+
+    assert_eq!(detail.summary.ref_.provider, "clickup");
+    assert_eq!(detail.summary.ref_.id, "task-1");
+    assert_eq!(detail.summary.ref_.key.as_deref(), Some("RX-7"));
+    assert_eq!(detail.summary.state.category, "done");
+    assert_eq!(detail.summary.state.id, state_id("Done"));
+    assert_eq!(
+        detail
+            .summary
+            .reporter
+            .as_ref()
+            .map(|person| person.name.as_str()),
+        Some("Reporter Person")
+    );
+    assert_eq!(
+        detail
+            .summary
+            .assignee
+            .as_ref()
+            .map(|person| person.name.as_str()),
+        Some("Reef Agent")
+    );
+    assert_eq!(detail.summary.labels, vec!["backend".to_string()]);
+    assert_eq!(
+        detail.description_markdown.as_deref(),
+        Some("Implement the ClickUp arms.")
+    );
+    assert_eq!(
+        detail.description_text.as_deref(),
+        Some("Implement the ClickUp arms.")
+    );
+    assert!(detail.acceptance_criteria_markdown.is_none());
+    assert!(detail.attachments.is_empty());
+    assert!(detail.transitions.is_empty());
+    assert_eq!(detail.comments.len(), 1);
+    let comment = &detail.comments[0];
+    assert_eq!(comment.id.as_deref(), Some("comment-1"));
+    assert_eq!(comment.body_markdown, "Looks good");
+    assert_eq!(comment.body_text, "Looks good");
+    assert_eq!(
+        comment.author.as_ref().map(|person| person.name.as_str()),
+        Some("Commenter")
+    );
+    assert_eq!(comment.created_at.as_deref(), Some("2026-06-21T09:00:00Z"));
+    assert!(comment.updated_at.is_none());
+}
+
+#[test]
+fn clickup_ticket_state_id_aligns_with_column_id_for_kanban() {
+    // Kanban groups tickets by `state.id == column.id`. ClickUp tasks carry no
+    // status id, so both sides must derive the id from the same status name.
+    let column = clickup_status_to_column(
+        ClickUpStatus {
+            id: None,
+            status: "In Review".to_string(),
+            status_type: "custom".to_string(),
+            category: "in_progress".to_string(),
+            color: None,
+            orderindex: Some(2),
+        },
+        0,
+    );
+    let ticket = clickup_summary_to_ticket(ClickUpTaskSummary {
+        id: "task-9".to_string(),
+        custom_id: None,
+        name: "Review me".to_string(),
+        url: None,
+        status_name: Some("In Review".to_string()),
+        status_type: Some("custom".to_string()),
+        status_category: Some("in_progress".to_string()),
+        status_color: None,
+        assignees: Vec::new(),
+        tags: Vec::new(),
+        space_id: Some("space-1".to_string()),
+        list_name: None,
+        updated_at: None,
+    });
+
+    assert_eq!(ticket.state.id, column.id);
+    assert_eq!(ticket.state.category, column.category);
+}
+
+#[test]
+fn clickup_batch_associations_resolve_to_empty_without_error() {
+    // ClickUp conversation-linking is deferred, so batched association matching
+    // returns empty rather than hitting the unknown-provider error path.
+    let project_id = ProjectId::from_string("proj-clickup".to_string());
+    let reference = ticket_ref_to_composer_reference(
+        "clickup",
+        &TicketRefInput {
+            provider: "clickup".to_string(),
+            id: "task-1".to_string(),
+            key: None,
+        },
+    );
+
+    let associations =
+        linked_agent_conversation_associations_from_batch("clickup", &project_id, &reference, &[])
+            .expect("clickup batch associations resolve without a provider error");
+
+    assert!(associations.is_empty());
+}
+
+#[tokio::test]
+async fn list_ticketing_providers_includes_clickup() {
+    let state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let app = build_ticketing_start_app(state, execution_state);
+
+    let providers = list_ticketing_providers(None, app.state())
+        .await
+        .expect("providers list resolves");
+
+    let provider_ids: Vec<&str> = providers
+        .iter()
+        .map(|provider| provider.provider.as_str())
+        .collect();
+    assert!(provider_ids.contains(&"clickup"));
+    assert!(provider_ids.contains(&"jira"));
+    assert!(provider_ids.contains(&"linear"));
+}
+
+#[tokio::test]
+async fn clickup_conversation_associations_are_empty_pending_followup() {
+    // ClickUp conversation-linking/start-work is deferred, so ClickUp tickets must
+    // resolve to zero associations (not a fallthrough provider error) so the unified
+    // list can hydrate association counts for ClickUp like the other providers.
+    let state = AppState::new_test();
+    let project_id = seed_ticketing_project(&state, "ticket-clickup-assoc").await;
+
+    let associations = project_ticket_conversation_associations(&state, "clickup", &project_id)
+        .await
+        .expect("clickup associations resolve without a provider error");
+
+    assert!(associations.is_empty());
 }
 
 #[test]
