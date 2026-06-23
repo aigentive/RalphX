@@ -11,6 +11,7 @@ import {
   type AtlassianResourceKind,
   type AtlassianResourceSummary,
 } from "@/api/atlassian";
+import { clickupApi, type ClickUpTaskSummary } from "@/api/clickup";
 import { linearApi, type LinearIssueSummary } from "@/api/linear";
 import type { AgentComposerIntegrationKind } from "@/components/agents/composer/agentComposerCore";
 
@@ -169,13 +170,32 @@ export function useAgentComposerIntegrationResources({
   return useQuery({
     queryKey: agentComposerKeys.integrations(kind, normalizedQuery),
     queryFn: async (): Promise<
-      Array<AtlassianResourceSummary | LinearIssueSummary>
+      Array<AtlassianResourceSummary | LinearIssueSummary | ClickUpTaskSummary>
     > => {
       if (kind === "linear") {
         return linearApi.searchIssues({
           query: normalizedQuery,
           limit: 12,
         });
+      }
+      if (kind === "clickup") {
+        const tasks = await clickupApi.searchTasks();
+        const query = normalizedQuery.toLowerCase();
+        const filteredTasks = query
+          ? tasks.filter((task) =>
+              [
+                task.customId,
+                task.id,
+                task.name,
+                task.statusName,
+                task.listName,
+                ...task.tags,
+              ]
+                .filter(Boolean)
+                .some((value) => value?.toLowerCase().includes(query)),
+            )
+          : tasks;
+        return filteredTasks.slice(0, 12);
       }
       return atlassianApi.searchResources({
         kind: (kind ?? "jira") as AtlassianResourceKind,

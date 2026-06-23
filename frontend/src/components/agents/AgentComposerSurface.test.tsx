@@ -27,39 +27,39 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
   return render(
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-      <AgentComposerSurface
-        project={{
-          value: "project-1",
-          onValueChange: vi.fn(),
-          options: [{ id: "project-1", label: "RalphX" }],
-          placeholder: "Project",
-        }}
-        provider={{
-          value: "codex",
-          onValueChange: vi.fn(),
-          options: [{ id: "codex", label: "Codex" }],
-        }}
-        model={{
-          value: "gpt-5.5",
-          onValueChange: vi.fn(),
-          options: [{ id: "gpt-5.5", label: "gpt-5.5" }],
-        }}
-        effort={{
-          value: "xhigh",
-          onValueChange: vi.fn(),
-          options: [{ id: "xhigh", label: "Extra High" }],
-        }}
-        mode={{
-          value: "edit",
-          onValueChange: vi.fn(),
-          options: [{ id: "edit", label: "Agent" }],
-        }}
-        onSend={vi.fn()}
-        actionTestId="agent-composer-submit"
-        {...overrides}
-      />
+        <AgentComposerSurface
+          project={{
+            value: "project-1",
+            onValueChange: vi.fn(),
+            options: [{ id: "project-1", label: "RalphX" }],
+            placeholder: "Project",
+          }}
+          provider={{
+            value: "codex",
+            onValueChange: vi.fn(),
+            options: [{ id: "codex", label: "Codex" }],
+          }}
+          model={{
+            value: "gpt-5.5",
+            onValueChange: vi.fn(),
+            options: [{ id: "gpt-5.5", label: "gpt-5.5" }],
+          }}
+          effort={{
+            value: "xhigh",
+            onValueChange: vi.fn(),
+            options: [{ id: "xhigh", label: "Extra High" }],
+          }}
+          mode={{
+            value: "edit",
+            onValueChange: vi.fn(),
+            options: [{ id: "edit", label: "Agent" }],
+          }}
+          onSend={vi.fn()}
+          actionTestId="agent-composer-submit"
+          {...overrides}
+        />
       </TooltipProvider>
-    </QueryClientProvider>
+    </QueryClientProvider>,
   );
 }
 
@@ -79,7 +79,9 @@ function makeDropEvent(files: File[]) {
 }
 
 function makeTerminalDragEvent() {
-  const file = new File(["content"], "terminal-drag.txt", { type: "text/plain" });
+  const file = new File(["content"], "terminal-drag.txt", {
+    type: "text/plain",
+  });
   return {
     dataTransfer: {
       files: [file],
@@ -120,9 +122,11 @@ describe("AgentComposerSurface", () => {
     renderComposer();
 
     expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass(
-      "max-w-[34rem]"
+      "max-w-[34rem]",
     );
-    expect(screen.getByTestId("agent-composer-runtime-pill")).not.toHaveClass("flex-1");
+    expect(screen.getByTestId("agent-composer-runtime-pill")).not.toHaveClass(
+      "flex-1",
+    );
     expect(screen.getByTestId("agent-composer-submit")).toHaveClass("ml-auto");
   });
 
@@ -179,10 +183,26 @@ describe("AgentComposerSurface", () => {
         onValueChange: vi.fn(),
         options: [
           { id: "gpt-5.5", label: "gpt-5.5", description: "Frontier model." },
-          { id: "gpt-5.4", label: "gpt-5.4", description: "Strong model for coding." },
-          { id: "gpt-5.4-mini", label: "gpt-5.4-mini", description: "Small and fast." },
-          { id: "gpt-5.3-codex", label: "gpt-5.3-codex", description: "Coding optimized." },
-          { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark", description: "Ultra fast." },
+          {
+            id: "gpt-5.4",
+            label: "gpt-5.4",
+            description: "Strong model for coding.",
+          },
+          {
+            id: "gpt-5.4-mini",
+            label: "gpt-5.4-mini",
+            description: "Small and fast.",
+          },
+          {
+            id: "gpt-5.3-codex",
+            label: "gpt-5.3-codex",
+            description: "Coding optimized.",
+          },
+          {
+            id: "gpt-5.3-codex-spark",
+            label: "gpt-5.3-codex-spark",
+            description: "Ultra fast.",
+          },
         ],
         onOpenModelSettings: vi.fn(),
       },
@@ -193,18 +213,24 @@ describe("AgentComposerSurface", () => {
           { id: "low", label: "Low", description: "Fastest responses." },
           { id: "medium", label: "Medium", description: "Balanced depth." },
           { id: "high", label: "High", description: "Greater depth." },
-          { id: "xhigh", label: "Extra High", description: "Long-horizon work." },
+          {
+            id: "xhigh",
+            label: "Extra High",
+            description: "Long-horizon work.",
+          },
         ],
       },
     });
 
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
 
-    const selectedModel = screen.getByTestId("agent-composer-runtime-model-gpt-5.5");
+    const selectedModel = screen.getByTestId(
+      "agent-composer-runtime-model-gpt-5.5",
+    );
     const runtimePopover = selectedModel.closest("[data-side='top']");
 
     expect(runtimePopover).toHaveClass(
-      "max-h-[var(--radix-popover-content-available-height)]"
+      "max-h-[var(--radix-popover-content-available-height)]",
     );
     expect(runtimePopover).toHaveClass("overflow-y-auto");
     expect(runtimePopover).toHaveClass("overscroll-contain");
@@ -261,7 +287,9 @@ describe("AgentComposerSurface", () => {
     fireEvent.click(chatOption);
 
     expect(chatOption).toBeDisabled();
-    expect(screen.getByText("Plan execution is still active")).toBeInTheDocument();
+    expect(
+      screen.getByText("Plan execution is still active"),
+    ).toBeInTheDocument();
     expect(onValueChange).not.toHaveBeenCalled();
   });
 
@@ -279,7 +307,9 @@ describe("AgentComposerSurface", () => {
       },
     });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "/ch" } });
     textarea.setSelectionRange(3, 3);
@@ -305,7 +335,9 @@ describe("AgentComposerSurface", () => {
       },
     });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "/pl" } });
     textarea.setSelectionRange(3, 3);
@@ -330,7 +362,9 @@ describe("AgentComposerSurface", () => {
       ],
     });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "/fo" } });
     textarea.setSelectionRange(3, 3);
@@ -356,7 +390,9 @@ describe("AgentComposerSurface", () => {
       onSend,
     });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "/ref" } });
     textarea.setSelectionRange(4, 4);
@@ -365,7 +401,9 @@ describe("AgentComposerSurface", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
 
     await waitFor(() => {
-      expect(onSend).toHaveBeenCalledWith("Please verify and refine the current plan.");
+      expect(onSend).toHaveBeenCalledWith(
+        "Please verify and refine the current plan.",
+      );
     });
     expect(textarea.value).toBe("");
   });
@@ -384,7 +422,9 @@ describe("AgentComposerSurface", () => {
       },
     });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "1" } });
     fireEvent.click(screen.getByTestId("agent-composer-submit"));
@@ -424,7 +464,9 @@ describe("AgentComposerSurface", () => {
       },
     });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "/" } });
     textarea.setSelectionRange(1, 1);
@@ -449,7 +491,9 @@ describe("AgentComposerSurface", () => {
     });
     renderComposer();
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "Open @" } });
     textarea.setSelectionRange("Open @".length, "Open @".length);
@@ -483,7 +527,9 @@ describe("AgentComposerSurface", () => {
     });
     renderComposer({ onSend });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "Read @" } });
     textarea.setSelectionRange("Read @".length, "Read @".length);
@@ -500,12 +546,9 @@ describe("AgentComposerSurface", () => {
     ).toHaveTextContent("File");
     fireEvent.click(screen.getByTestId("agent-composer-submit"));
 
-    expect(onSend).toHaveBeenCalledWith(
-      "Read",
-      {
-        projectReferences: [{ path: "src/main.ts", kind: "file" }],
-      },
-    );
+    expect(onSend).toHaveBeenCalledWith("Read", {
+      projectReferences: [{ path: "src/main.ts", kind: "file" }],
+    });
   });
 
   it("removes selected project reference pills before sending", async () => {
@@ -521,7 +564,9 @@ describe("AgentComposerSurface", () => {
     });
     renderComposer({ onSend });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "Read @" } });
     textarea.setSelectionRange("Read @".length, "Read @".length);
@@ -531,11 +576,13 @@ describe("AgentComposerSurface", () => {
     fireEvent.mouseDown(item);
     fireEvent.click(item);
 
-    expect(screen.getByTestId("agent-composer-reference-pill-project:src")).toHaveTextContent(
-      "Folder",
-    );
+    expect(
+      screen.getByTestId("agent-composer-reference-pill-project:src"),
+    ).toHaveTextContent("Folder");
     fireEvent.click(screen.getByLabelText("Remove folder reference src"));
-    expect(screen.queryByTestId("agent-composer-reference-pill-project:src")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-composer-reference-pill-project:src"),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("agent-composer-submit"));
 
@@ -546,7 +593,9 @@ describe("AgentComposerSurface", () => {
     const onSend = vi.fn();
     renderComposer({ onSend });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, {
       target: { value: "Check @invalid-reference and @jira:RX-404" },
@@ -555,13 +604,17 @@ describe("AgentComposerSurface", () => {
     fireEvent.keyUp(textarea);
     fireEvent.click(screen.getByTestId("agent-composer-submit"));
 
-    expect(onSend).toHaveBeenCalledWith("Check @invalid-reference and @jira:RX-404");
+    expect(onSend).toHaveBeenCalledWith(
+      "Check @invalid-reference and @jira:RX-404",
+    );
   });
 
   it("surfaces Atlassian search failures instead of showing an empty result state", async () => {
     vi.mocked(invoke).mockImplementation((cmd) => {
       if (cmd === "search_atlassian_resources") {
-        return Promise.reject(new Error("Atlassian integration is not enabled"));
+        return Promise.reject(
+          new Error("Atlassian integration is not enabled"),
+        );
       }
       if (cmd === "list_agent_composer_skills") {
         return Promise.resolve({ skills: [] });
@@ -573,7 +626,9 @@ describe("AgentComposerSurface", () => {
     });
     renderComposer();
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "Work on @jira:PDM-81" } });
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
@@ -584,7 +639,9 @@ describe("AgentComposerSurface", () => {
         "Jira search failed: Atlassian integration is not enabled",
       ),
     ).toBeInTheDocument();
-    expect(screen.queryByText("No matching integration items")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No matching integration items"),
+    ).not.toBeInTheDocument();
   });
 
   it("sends selected Jira items as structured integration references", async () => {
@@ -611,10 +668,15 @@ describe("AgentComposerSurface", () => {
     });
     renderComposer({ onSend });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "Work on @jira:RX" } });
-    textarea.setSelectionRange("Work on @jira:RX".length, "Work on @jira:RX".length);
+    textarea.setSelectionRange(
+      "Work on @jira:RX".length,
+      "Work on @jira:RX".length,
+    );
     fireEvent.keyUp(textarea);
 
     const item = await screen.findByTestId(
@@ -624,10 +686,14 @@ describe("AgentComposerSurface", () => {
     fireEvent.click(item);
     expect(textarea).toHaveValue("Work on ");
     expect(
-      screen.getByTestId("agent-composer-reference-pill-integration:jira:RX-42"),
+      screen.getByTestId(
+        "agent-composer-reference-pill-integration:jira:RX-42",
+      ),
     ).toHaveTextContent("Jira");
     expect(
-      screen.getByTestId("agent-composer-reference-pill-integration:jira:RX-42"),
+      screen.getByTestId(
+        "agent-composer-reference-pill-integration:jira:RX-42",
+      ),
     ).toHaveTextContent("RX-42");
     fireEvent.click(screen.getByTestId("agent-composer-submit"));
 
@@ -674,10 +740,15 @@ describe("AgentComposerSurface", () => {
     });
     renderComposer({ onSend });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "Use @plan:checkout" } });
-    textarea.setSelectionRange("Use @plan:checkout".length, "Use @plan:checkout".length);
+    textarea.setSelectionRange(
+      "Use @plan:checkout".length,
+      "Use @plan:checkout".length,
+    );
     fireEvent.keyUp(textarea);
 
     const item = await screen.findByTestId(
@@ -687,10 +758,14 @@ describe("AgentComposerSurface", () => {
     fireEvent.click(item);
     expect(textarea).toHaveValue("Use ");
     expect(
-      screen.getByTestId("agent-composer-reference-pill-artifact:plan:artifact-1"),
+      screen.getByTestId(
+        "agent-composer-reference-pill-artifact:plan:artifact-1",
+      ),
     ).toHaveTextContent("Plan");
     expect(
-      screen.getByTestId("agent-composer-reference-pill-artifact:plan:artifact-1"),
+      screen.getByTestId(
+        "agent-composer-reference-pill-artifact:plan:artifact-1",
+      ),
     ).toHaveTextContent("Checkout Plan");
     fireEvent.click(screen.getByTestId("agent-composer-submit"));
 
@@ -712,7 +787,9 @@ describe("AgentComposerSurface", () => {
     const onSend = vi.fn();
     renderComposer({ onSend });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "Use @plan:artifact-2" } });
     fireEvent.click(screen.getByTestId("agent-composer-submit"));
@@ -725,19 +802,43 @@ describe("AgentComposerSurface", () => {
   it.each([
     ["Jira", "@jira:", "jira"],
     ["Confluence", "@confluence:", "confluence"],
-  ])("inserts %s triggers from the plus menu and opens search", async (label, expectedValue, kind) => {
+  ])(
+    "inserts %s triggers from the plus menu and opens search",
+    async (label, expectedValue, kind) => {
+      renderComposer();
+
+      fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+      fireEvent.click(screen.getByText(label));
+
+      const textarea = screen.getByLabelText("Message input");
+      expect(textarea).toHaveValue(expectedValue);
+      await waitFor(() => expect(textarea).toHaveFocus());
+      expect(
+        await screen.findByTestId("agent-composer-command-menu"),
+      ).toBeInTheDocument();
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("search_atlassian_resources", {
+          input: { kind, query: "", limit: 12 },
+        }),
+      );
+    },
+  );
+
+  it("inserts ClickUp triggers from the plus menu and opens task search", async () => {
     renderComposer();
 
     fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-    fireEvent.click(screen.getByText(label));
+    fireEvent.click(screen.getByText("ClickUp"));
 
     const textarea = screen.getByLabelText("Message input");
-    expect(textarea).toHaveValue(expectedValue);
+    expect(textarea).toHaveValue("@clickup:");
     await waitFor(() => expect(textarea).toHaveFocus());
-    expect(await screen.findByTestId("agent-composer-command-menu")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agent-composer-command-menu"),
+    ).toBeInTheDocument();
     await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("search_atlassian_resources", {
-        input: { kind, query: "", limit: 12 },
+      expect(invoke).toHaveBeenCalledWith("search_clickup_tasks", {
+        input: { spaceIds: [] },
       }),
     );
   });
@@ -751,11 +852,16 @@ describe("AgentComposerSurface", () => {
     const textarea = screen.getByLabelText("Message input");
     expect(textarea).toHaveValue("@plan:");
     await waitFor(() => expect(textarea).toHaveFocus());
-    expect(await screen.findByTestId("agent-composer-command-menu")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agent-composer-command-menu"),
+    ).toBeInTheDocument();
     await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("search_agent_composer_plan_references", {
-        input: { projectId: "project-1", query: "", limit: 12 },
-      }),
+      expect(invoke).toHaveBeenCalledWith(
+        "search_agent_composer_plan_references",
+        {
+          input: { projectId: "project-1", query: "", limit: 12 },
+        },
+      ),
     );
   });
 
@@ -795,7 +901,9 @@ describe("AgentComposerSurface", () => {
     });
     renderComposer({ onSend });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "/work" } });
     textarea.setSelectionRange("/work".length, "/work".length);
@@ -844,7 +952,9 @@ describe("AgentComposerSurface", () => {
       },
     });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "Use $rev" } });
     textarea.setSelectionRange("Use $rev".length, "Use $rev".length);
@@ -890,7 +1000,9 @@ describe("AgentComposerSurface", () => {
       },
     });
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "/rev" } });
     textarea.setSelectionRange("/rev".length, "/rev".length);
@@ -929,7 +1041,9 @@ describe("AgentComposerSurface", () => {
     });
     renderComposer();
 
-    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
     fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "/plug" } });
     textarea.setSelectionRange("/plug".length, "/plug".length);
@@ -955,14 +1069,18 @@ describe("AgentComposerSurface", () => {
 
     fireEvent.dragEnter(composer, makeDropEvent([file]));
 
-    expect(screen.getByTestId("chat-composer-drop-overlay")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("chat-composer-drop-overlay"),
+    ).toBeInTheDocument();
 
     fireEvent.drop(composer, makeDropEvent([file]));
 
     await waitFor(() => {
       expect(onFilesSelected).toHaveBeenCalledWith([file]);
     });
-    expect(screen.queryByTestId("chat-composer-drop-overlay")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("chat-composer-drop-overlay"),
+    ).not.toBeInTheDocument();
   });
 
   it("ignores terminal panel drags even when the drag event advertises file types", () => {
@@ -978,13 +1096,17 @@ describe("AgentComposerSurface", () => {
     fireEvent.dragOver(composer, makeTerminalDragEvent());
     fireEvent.drop(composer, makeTerminalDragEvent());
 
-    expect(screen.queryByTestId("chat-composer-drop-overlay")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("chat-composer-drop-overlay"),
+    ).not.toBeInTheDocument();
     expect(onFilesSelected).not.toHaveBeenCalled();
   });
 
   it("ignores active terminal panel drags when WebKit only reports file types", () => {
     const onFilesSelected = vi.fn();
-    const file = new File(["content"], "terminal-drag.txt", { type: "text/plain" });
+    const file = new File(["content"], "terminal-drag.txt", {
+      type: "text/plain",
+    });
     setRalphxTerminalDockDragActive(true);
     renderComposer({
       dataTestId: "agent-composer",
@@ -997,7 +1119,9 @@ describe("AgentComposerSurface", () => {
     fireEvent.dragOver(composer, makeDropEvent([file]));
     fireEvent.drop(composer, makeDropEvent([file]));
 
-    expect(screen.queryByTestId("chat-composer-drop-overlay")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("chat-composer-drop-overlay"),
+    ).not.toBeInTheDocument();
     expect(onFilesSelected).not.toHaveBeenCalled();
   });
 
@@ -1013,7 +1137,9 @@ describe("AgentComposerSurface", () => {
     fireEvent.drop(screen.getByTestId("agent-composer"), makeDropEvent([file]));
 
     expect(onFilesSelected).not.toHaveBeenCalled();
-    expect(screen.queryByTestId("chat-composer-drop-overlay")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("chat-composer-drop-overlay"),
+    ).not.toBeInTheDocument();
   });
 
   it("orders the footer controls mode → model → chat focus", () => {
@@ -1052,35 +1178,41 @@ describe("AgentComposerSurface", () => {
       expect(surface).toHaveAttribute("data-collapsed", "true");
 
       // Helper line is hidden (reveals on focus) so the resting bar is compact.
-      expect(screen.getByTestId("agent-composer-helper-reveal")).toHaveAttribute(
-        "data-visible",
-        "false",
-      );
+      expect(
+        screen.getByTestId("agent-composer-helper-reveal"),
+      ).toHaveAttribute("data-visible", "false");
 
       // Runtime ("GPT") + Mode chips drop to the compact height, and the mode
       // chip sheds its "Mode" eyebrow label (eyebrows show only when expanded).
-      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass("h-8");
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass(
+        "h-8",
+      );
       const modeChip = screen.getByTestId("agent-composer-mode-chip");
       expect(modeChip).toHaveClass("h-8");
       expect(modeChip.textContent).toBe("Agent");
 
-      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+      const textarea = screen.getByLabelText(
+        "Message input",
+      ) as HTMLTextAreaElement;
       expect(textarea.style.height).toBe("38px");
     });
 
     it("expands when text is entered and reveals the helper + full chips", () => {
       renderComposer({ dataTestId: "agent-composer", collapsible: true });
 
-      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+      const textarea = screen.getByLabelText(
+        "Message input",
+      ) as HTMLTextAreaElement;
       fireEvent.change(textarea, { target: { value: "hello" } });
 
       const surface = screen.getByTestId("agent-composer");
       expect(surface).toHaveAttribute("data-collapsed", "false");
-      expect(screen.getByTestId("agent-composer-helper-reveal")).toHaveAttribute(
-        "data-visible",
-        "true",
+      expect(
+        screen.getByTestId("agent-composer-helper-reveal"),
+      ).toHaveAttribute("data-visible", "true");
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass(
+        "h-10",
       );
-      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass("h-10");
       const modeChip = screen.getByTestId("agent-composer-mode-chip");
       expect(modeChip).toHaveClass("h-10");
       expect(modeChip.textContent).toBe("ModeAgent");
@@ -1090,7 +1222,9 @@ describe("AgentComposerSurface", () => {
     it("stays expanded after blur while the prompt has content", () => {
       renderComposer({ dataTestId: "agent-composer", collapsible: true });
 
-      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+      const textarea = screen.getByLabelText(
+        "Message input",
+      ) as HTMLTextAreaElement;
       fireEvent.focus(textarea);
       fireEvent.change(textarea, { target: { value: "draft message" } });
       fireEvent.blur(textarea);
@@ -1104,7 +1238,9 @@ describe("AgentComposerSurface", () => {
     it("expands when the textarea is focused even with no text", () => {
       renderComposer({ dataTestId: "agent-composer", collapsible: true });
       const surface = screen.getByTestId("agent-composer");
-      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+      const textarea = screen.getByLabelText(
+        "Message input",
+      ) as HTMLTextAreaElement;
 
       fireEvent.focus(textarea);
       expect(surface).toHaveAttribute("data-collapsed", "false");
@@ -1140,9 +1276,15 @@ describe("AgentComposerSurface", () => {
 
     it("still sends on Enter from the collapsible composer", () => {
       const onSend = vi.fn();
-      renderComposer({ dataTestId: "agent-composer", collapsible: true, onSend });
+      renderComposer({
+        dataTestId: "agent-composer",
+        collapsible: true,
+        onSend,
+      });
 
-      const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+      const textarea = screen.getByLabelText(
+        "Message input",
+      ) as HTMLTextAreaElement;
       fireEvent.focus(textarea);
       fireEvent.change(textarea, { target: { value: "ship it" } });
       fireEvent.keyDown(textarea, { key: "Enter" });
@@ -1156,11 +1298,12 @@ describe("AgentComposerSurface", () => {
       const surface = screen.getByTestId("agent-composer");
       expect(surface).toHaveAttribute("data-collapsible", "false");
       expect(surface).toHaveAttribute("data-collapsed", "false");
-      expect(screen.getByTestId("agent-composer-helper-reveal")).toHaveAttribute(
-        "data-visible",
-        "true",
+      expect(
+        screen.getByTestId("agent-composer-helper-reveal"),
+      ).toHaveAttribute("data-visible", "true");
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass(
+        "h-10",
       );
-      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass("h-10");
     });
 
     it("loads minimal: does not auto-focus or expand on mount even with autoFocus", () => {
