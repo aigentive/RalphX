@@ -52,23 +52,22 @@ fn test_derive_commit_type_multiple_tasks() {
 // =========================================================================
 
 #[test]
-fn test_build_squash_commit_msg_regular_task() {
+fn test_build_squash_commit_msg_regular_task_uses_title_description_and_uuid() {
     let msg = build_squash_commit_msg(
-        &TaskCategory::Regular,
         "Write tests",
-        "ralphx/ralphx/task-xyz",
+        Some("Add focused coverage for the commit message format."),
+        "c6acdb5c-84e7-43fa-896a-a03716cdf0bd",
     );
-    assert_eq!(msg, "feat: ralphx/ralphx/task-xyz (Write tests)");
+    assert_eq!(
+        msg,
+        "Write tests\n\nAdd focused coverage for the commit message format.\n\nTask UUID: c6acdb5c-84e7-43fa-896a-a03716cdf0bd"
+    );
 }
 
 #[test]
-fn test_build_squash_commit_msg_different_category() {
-    let msg = build_squash_commit_msg(
-        &TaskCategory::PlanMerge,
-        "Fix bug",
-        "ralphx/ralphx/task-123",
-    );
-    assert_eq!(msg, "feat: ralphx/ralphx/task-123 (Fix bug)");
+fn test_build_squash_commit_msg_regular_task_without_description_keeps_uuid_footer() {
+    let msg = build_squash_commit_msg("Fix bug", None, "task-123");
+    assert_eq!(msg, "Fix bug\n\nTask UUID: task-123");
 }
 
 // =========================================================================
