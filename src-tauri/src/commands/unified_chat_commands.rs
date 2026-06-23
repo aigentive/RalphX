@@ -28,9 +28,14 @@ use tauri::{Emitter, Manager, Runtime, State};
 use crate::application::agent_conversation_fork::{
     fork_agent_conversation as fork_agent_conversation_in_state, AgentConversationForkResult,
 };
+use crate::application::agent_conversation_start_service::{
+    AgentConversationStartDeps, AgentConversationStartService,
+};
+pub use crate::application::agent_conversation_start_service::{
+    AgentWorkspaceSourcePullRequestInput, StartAgentConversationInput,
+};
 use crate::application::agent_conversation_workspace::{
-    agent_name_for_workspace_mode, ensure_linked_plan_branch_agent_worktree,
-    is_terminal_agent_conversation_publication_status,
+    ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
     prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
     resolve_agent_conversation_workspace_path_for_send,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
@@ -91,12 +96,11 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ArtifactContent,
-    ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-    ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
-    PlanBranch, PlanBranchStatus, Project, ProjectId, TaskCategory, TaskId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ArtifactContent, ChatAttachmentId,
+    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
+    ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
+    IdeationSession, IdeationSessionFlow, IdeationSessionId, PlanBranch, PlanBranchStatus, Project,
+    ProjectId, TaskCategory, TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
@@ -257,53 +261,6 @@ impl From<SendResult> for SendAgentMessageResponse {
             queued_message_id: result.queued_message_id,
         }
     }
-}
-
-/// Input for creating a project-backed agent conversation with an isolated workspace.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentWorkspaceSourcePullRequestInput {
-    pub number: i64,
-    pub url: Option<String>,
-    pub title: Option<String>,
-    pub head_ref_name: String,
-    pub base_ref_name: Option<String>,
-    pub head_ref_oid: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StartAgentConversationInput {
-    pub project_id: String,
-    pub content: String,
-    /// Optional draft conversation to use after uploading pending attachments.
-    pub conversation_id: Option<String>,
-    /// Optional provider harness selected for the initial conversation send.
-    pub provider_harness: Option<String>,
-    /// Optional explicit model override for the spawned agent.
-    pub model_override: Option<String>,
-    /// Optional provider-neutral reasoning effort override for the spawned agent.
-    pub logical_effort: Option<LogicalEffort>,
-    /// Agent mode: "chat" routes to a read-only explorer in the project root;
-    /// edit/plan/ideation modes create a selected-base workspace for runtime CWD.
-    pub mode: Option<String>,
-    /// Optional base ref kind using ideation naming: project_default, current_branch, local_branch.
-    pub base_ref_kind: Option<String>,
-    /// Optional selected branch/ref name for the base.
-    pub base_ref: Option<String>,
-    /// Optional user-facing base ref label.
-    pub base_display_name: Option<String>,
-    /// Optional source pull request metadata when the selected base came from a PR head branch.
-    pub base_source_pull_request: Option<AgentWorkspaceSourcePullRequestInput>,
-    /// Structured composer project references for runtime-only prompt expansion.
-    #[serde(default)]
-    pub composer_project_references: Vec<ComposerProjectReference>,
-    /// Structured external integration references for runtime-only prompt expansion.
-    #[serde(default)]
-    pub composer_integration_references: Vec<ComposerIntegrationReference>,
-    /// Structured artifact references for runtime-only prompt expansion.
-    #[serde(default)]
-    pub composer_artifact_references: Vec<ComposerArtifactReference>,
 }
 
 /// Response for an agent conversation workspace.
@@ -2854,49 +2811,6 @@ async fn normalize_agent_runtime_selection(
     Ok((None, Some(effort)))
 }
 
-fn log_start_agent_conversation_phase(
-    project_id: &str,
-    conversation_id: Option<&ChatConversationId>,
-    phase: &'static str,
-    started: Instant,
-) {
-    tracing::info!(
-        project_id,
-        conversation_id = ?conversation_id.map(ChatConversationId::as_str),
-        phase,
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        "start_agent_conversation phase completed"
-    );
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct AgentStartupProgressPayload<'a> {
-    conversation_id: String,
-    context_type: &'static str,
-    context_id: &'a str,
-    stage: &'static str,
-    label: &'static str,
-}
-
-fn emit_start_agent_conversation_progress<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    project_id: &str,
-    conversation_id: &ChatConversationId,
-    stage: &'static str,
-    label: &'static str,
-) {
-    let _ = app.emit(
-        "agent:startup_progress",
-        AgentStartupProgressPayload {
-            conversation_id: conversation_id.as_str(),
-            context_type: "project",
-            context_id: project_id,
-            stage,
-            label,
-        },
-    );
-}
-
 // ============================================================================
 // Commands
 // ============================================================================
@@ -2910,344 +2824,27 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
     team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
     app: tauri::AppHandle<R>,
 ) -> Result<StartAgentConversationResponse, String> {
-    let command_started = Instant::now();
-    tracing::info!(
-        project_id = %input.project_id,
-        content_len = input.content.len(),
-        mode = ?input.mode,
-        base_ref_kind = ?input.base_ref_kind,
-        base_ref = ?input.base_ref,
-        "[START_AGENT_CONVERSATION] command invoked"
-    );
-
-    let parse_runtime_started = Instant::now();
-    let harness_override = input
-        .provider_harness
-        .as_deref()
-        .map(str::parse::<AgentHarnessKind>)
-        .transpose()?;
-    log_start_agent_conversation_phase(
-        &input.project_id,
-        None,
-        "parse_runtime_selection",
-        parse_runtime_started,
-    );
-
-    let validate_runtime_started = Instant::now();
-    crate::application::validate_chat_runtime_for_context_with_override(
-        &state,
-        ChatContextType::Project,
-        &input.project_id,
-        "start_agent_conversation",
-        harness_override,
-    )
+    let result = AgentConversationStartService::new(AgentConversationStartDeps {
+        state: state.inner(),
+        execution_state: execution_state.inner(),
+        team_service: Some(team_service.inner().clone()),
+        app_handle: app,
+    })
+    .start(input)
     .await?;
-    log_start_agent_conversation_phase(
-        &input.project_id,
-        None,
-        "validate_chat_runtime",
-        validate_runtime_started,
-    );
 
-    let parse_input_started = Instant::now();
-    let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
-    let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
-    let base_ref = trim_optional_input(input.base_ref);
-    let base_display_name = trim_optional_input(input.base_display_name);
-    let source_pull_request = normalize_agent_workspace_source_pull_request(
-        input.base_source_pull_request,
-        base_ref_kind,
-        base_ref.as_deref(),
-    )?;
-    let should_create_workspace =
-        agent_mode_should_create_workspace(mode, source_pull_request.as_ref());
-    let project_id = ProjectId::from_string(input.project_id.clone());
-    log_start_agent_conversation_phase(&input.project_id, None, "parse_input", parse_input_started);
-
-    let project_lookup_started = Instant::now();
-    let project = state
-        .project_repo
-        .get_by_id(&project_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("Project not found: {}", input.project_id))?;
-    log_start_agent_conversation_phase(
-        &input.project_id,
-        None,
-        "load_project",
-        project_lookup_started,
-    );
-
-    let conversation_resolve_started = Instant::now();
-    let draft_conversation_id = input
-        .conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|conversation_id| !conversation_id.is_empty())
-        .map(ChatConversationId::from_string);
-    let mut conversation = if let Some(conversation_id) = draft_conversation_id {
-        let conversation = state
-            .chat_conversation_repo
-            .get_by_id(&conversation_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("Conversation not found: {}", conversation_id))?;
-        if conversation.context_type != ChatContextType::Project
-            || conversation.context_id != input.project_id
-        {
-            return Err(format!(
-                "Conversation {} does not belong to project {}",
-                conversation.id, input.project_id
-            ));
-        }
-        conversation
-    } else {
-        ChatConversation::new_project(project_id)
-    };
-    conversation.set_agent_mode(Some(mode));
-    log_start_agent_conversation_phase(
-        &input.project_id,
-        Some(&conversation.id),
-        "resolve_conversation",
-        conversation_resolve_started,
-    );
-
-    let should_create_conversation = draft_conversation_id.is_none();
-    let workspace_prepare_started = Instant::now();
-    if should_create_conversation {
-        emit_start_agent_conversation_progress(
-            &app,
-            &input.project_id,
-            &conversation.id,
-            "resolve_conversation",
-            "Creating chat",
-        );
-    }
-    if should_create_workspace {
-        emit_start_agent_conversation_progress(
-            &app,
-            &input.project_id,
-            &conversation.id,
-            "prepare_workspace",
-            "Setup workspace",
-        );
-    }
-    let workspace = if should_create_workspace {
-        let pr_automation_defaults =
-            agent_workspace_pr_automation_defaults_for_project(&state, &project.id).await?;
-        let mut workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
-            &project,
-            &conversation.id,
-            mode,
-            AgentConversationWorkspaceBaseSelection {
-                kind: base_ref_kind,
-                base_ref,
-                display_name: base_display_name,
-                source_pull_request,
-            },
-            AgentConversationWorkspaceSetupMode::Deferred,
-            pr_automation_defaults,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-        ensure_plan_workspace_planning_session_link(&state, &project, &mut workspace).await?;
-        Some(workspace)
-    } else {
-        None
-    };
-    log_start_agent_conversation_phase(
-        &input.project_id,
-        Some(&conversation.id),
-        "prepare_workspace",
-        workspace_prepare_started,
-    );
-
-    let conversation_persist_started = Instant::now();
-    emit_start_agent_conversation_progress(
-        &app,
-        &input.project_id,
-        &conversation.id,
-        "persist_conversation",
-        "Saving chat",
-    );
-    let conversation = if should_create_conversation {
-        state
-            .chat_conversation_repo
-            .create(conversation)
-            .await
-            .map_err(|error| error.to_string())?
-    } else {
-        state
-            .chat_conversation_repo
-            .update_agent_mode(&conversation.id, Some(mode))
-            .await
-            .map_err(|error| error.to_string())?;
-        conversation
-    };
-    log_start_agent_conversation_phase(
-        &input.project_id,
-        Some(&conversation.id),
-        "persist_conversation",
-        conversation_persist_started,
-    );
-
-    let workspace_persist_started = Instant::now();
-    if workspace.is_some() {
-        emit_start_agent_conversation_progress(
-            &app,
-            &input.project_id,
-            &conversation.id,
-            "persist_workspace",
-            "Saving chat",
-        );
-    }
-    let workspace = match workspace {
-        Some(workspace) => match state
-            .agent_conversation_workspace_repo
-            .create_or_update(workspace)
-            .await
-        {
-            Ok(workspace) => Some(workspace),
-            Err(error) => {
-                if should_create_conversation {
-                    let _ = state.chat_conversation_repo.delete(&conversation.id).await;
-                }
-                return Err(error.to_string());
-            }
-        },
-        None => None,
-    };
-    log_start_agent_conversation_phase(
-        &input.project_id,
-        Some(&conversation.id),
-        "persist_workspace",
-        workspace_persist_started,
-    );
-
-    let event_emit_started = Instant::now();
-    if should_create_conversation {
-        let _ = app.emit(
-            "agent:conversation_created",
-            AgentConversationCreatedPayload {
-                conversation_id: conversation.id.as_str(),
-                context_type: ChatContextType::Project.to_string(),
-                context_id: input.project_id.clone(),
-            },
-        );
-    }
-    log_start_agent_conversation_phase(
-        &input.project_id,
-        Some(&conversation.id),
-        "emit_conversation_created",
-        event_emit_started,
-    );
-
-    let service_create_started = Instant::now();
-    let service = create_chat_service(
-        &state,
-        app.clone(),
-        &execution_state,
-        Some(team_service.inner().clone()),
-    );
-    log_start_agent_conversation_phase(
-        &input.project_id,
-        Some(&conversation.id),
-        "create_chat_service",
-        service_create_started,
-    );
-
-    let runtime_override_prepare_started = Instant::now();
-    let model_override = input
-        .model_override
-        .as_deref()
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
-        .map(str::to_string);
-    let working_directory_override = workspace
-        .as_ref()
-        .map(|workspace| PathBuf::from(&workspace.worktree_path));
-    log_start_agent_conversation_phase(
-        &input.project_id,
-        Some(&conversation.id),
-        "prepare_runtime_overrides",
-        runtime_override_prepare_started,
-    );
-
-    let runtime_normalize_started = Instant::now();
-    let (model_override, logical_effort_override) = normalize_agent_runtime_selection(
-        &state,
-        harness_override,
-        model_override,
-        input.logical_effort,
-    )
-    .await?;
-    log_start_agent_conversation_phase(
-        &input.project_id,
-        Some(&conversation.id),
-        "normalize_runtime_selection",
-        runtime_normalize_started,
-    );
-
-    let send_message_started = Instant::now();
-    emit_start_agent_conversation_progress(
-        &app,
-        &input.project_id,
-        &conversation.id,
-        "send_message",
-        "Starting agent",
-    );
-    let send_result = service
-        .send_message(
-            ChatContextType::Project,
-            &input.project_id,
-            &input.content,
-            SendMessageOptions {
-                harness_override,
-                agent_name_override: Some(agent_name_for_workspace_mode(mode).to_string()),
-                model_override,
-                logical_effort_override,
-                conversation_id_override: Some(conversation.id),
-                working_directory_override,
-                composer_project_references: input.composer_project_references.clone(),
-                composer_integration_references: input.composer_integration_references.clone(),
-                composer_artifact_references: input.composer_artifact_references.clone(),
-                ..Default::default()
-            },
-        )
-        .await
-        .map(SendAgentMessageResponse::from)
-        .map_err(|error| error.to_string())?;
-    log_start_agent_conversation_phase(
-        &input.project_id,
-        Some(&conversation.id),
-        "send_message",
-        send_message_started,
-    );
-
-    let workspace_response_started = Instant::now();
-    let workspace_response = match workspace {
+    let workspace_response = match result.workspace {
         Some(workspace) => {
             Some(agent_workspace_response_for_state(state.inner(), workspace).await?)
         }
         None => None,
     };
-    log_start_agent_conversation_phase(
-        &input.project_id,
-        Some(&conversation.id),
-        "build_workspace_response",
-        workspace_response_started,
-    );
-    log_start_agent_conversation_phase(
-        &input.project_id,
-        Some(&conversation.id),
-        "command_total",
-        command_started,
-    );
 
     Ok(StartAgentConversationResponse {
-        conversation: agent_conversation_response_for_state(state.inner(), conversation).await?,
+        conversation: agent_conversation_response_for_state(state.inner(), result.conversation)
+            .await?,
         workspace: workspace_response,
-        send_result,
+        send_result: SendAgentMessageResponse::from(result.send_result),
     })
 }
 
@@ -6882,8 +6479,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .await
         .map_err(|e| e.to_string())?;
 
-    let plan_markdown =
-        resolve_linked_plan_markdown(state, &workspace).await;
+    let plan_markdown = resolve_linked_plan_markdown(state, &workspace).await;
     let mut publisher = AgentWorkspacePrPublisher::new(github);
     if let Some(markdown) = plan_markdown {
         publisher = publisher.with_plan_markdown(markdown);

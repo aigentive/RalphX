@@ -6,7 +6,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement } from "react";
-import { useFeatureFlags, isViewEnabled, FEATURE_FLAGS_QUERY_KEY } from "./useFeatureFlags";
+import {
+  FEATURE_FLAGS_QUERY_KEY,
+  TICKETING_DASHBOARD_OVERRIDE_KEY,
+  applyFeatureFlagOverrides,
+  getTicketingDashboardFeatureFlagOverride,
+  isViewEnabled,
+  setTicketingDashboardFeatureFlagOverride,
+  useFeatureFlags,
+} from "./useFeatureFlags";
 import { invoke } from "@tauri-apps/api/core";
 import type { FeatureFlags } from "@/types/feature-flags";
 
@@ -26,10 +34,10 @@ function createWrapper() {
 // ============================================================================
 
 describe("isViewEnabled", () => {
-  const allEnabled: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false };
-  const activityDisabled: FeatureFlags = { activityPage: false, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false };
-  const extensibilityDisabled: FeatureFlags = { activityPage: true, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false };
-  const allDisabled: FeatureFlags = { activityPage: false, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false };
+  const allEnabled: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: true };
+  const activityDisabled: FeatureFlags = { activityPage: false, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: true };
+  const extensibilityDisabled: FeatureFlags = { activityPage: true, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: true };
+  const allDisabled: FeatureFlags = { activityPage: false, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: false };
 
   it("returns true for kanban regardless of flags", () => {
     expect(isViewEnabled("kanban", allDisabled)).toBe(true);
@@ -57,8 +65,105 @@ describe("isViewEnabled", () => {
     expect(isViewEnabled("extensibility", extensibilityDisabled)).toBe(false);
   });
 
+  it("returns flags.ticketingDashboard for ticketing view", () => {
+    expect(isViewEnabled("ticketing", allEnabled)).toBe(true);
+    expect(isViewEnabled("ticketing", allDisabled)).toBe(false);
+  });
+
   it("returns true for unknown views (safe default)", () => {
     expect(isViewEnabled("unknown-view", allDisabled)).toBe(true);
+  });
+});
+
+// ============================================================================
+// getTicketingDashboardFeatureFlagOverride (localStorage reader)
+// ============================================================================
+
+describe("getTicketingDashboardFeatureFlagOverride", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("returns null when the localStorage key is not set", () => {
+    expect(getTicketingDashboardFeatureFlagOverride()).toBeNull();
+  });
+
+  it("returns true when localStorage value is the string 'true'", () => {
+    localStorage.setItem(TICKETING_DASHBOARD_OVERRIDE_KEY, "true");
+    expect(getTicketingDashboardFeatureFlagOverride()).toBe(true);
+  });
+
+  it("returns false when localStorage value is the string 'false'", () => {
+    localStorage.setItem(TICKETING_DASHBOARD_OVERRIDE_KEY, "false");
+    expect(getTicketingDashboardFeatureFlagOverride()).toBe(false);
+  });
+
+  it("returns null for invalid stored values (non 'true'/'false' strings)", () => {
+    localStorage.setItem(TICKETING_DASHBOARD_OVERRIDE_KEY, "yes");
+    expect(getTicketingDashboardFeatureFlagOverride()).toBeNull();
+
+    localStorage.setItem(TICKETING_DASHBOARD_OVERRIDE_KEY, "1");
+    expect(getTicketingDashboardFeatureFlagOverride()).toBeNull();
+
+    localStorage.setItem(TICKETING_DASHBOARD_OVERRIDE_KEY, "");
+    expect(getTicketingDashboardFeatureFlagOverride()).toBeNull();
+  });
+});
+
+// ============================================================================
+// applyFeatureFlagOverrides (pure overlay)
+// ============================================================================
+
+describe("applyFeatureFlagOverrides", () => {
+  const baseFlags: FeatureFlags = {
+    activityPage: true,
+    extensibilityPage: true,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: true,
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("returns flags unchanged when no override is set (override null)", () => {
+    expect(applyFeatureFlagOverrides(baseFlags)).toEqual(baseFlags);
+  });
+
+  it("sets ticketingDashboard=true when override is true", () => {
+    setTicketingDashboardFeatureFlagOverride(true);
+    expect(
+      applyFeatureFlagOverrides({ ...baseFlags, ticketingDashboard: false }),
+    ).toEqual({ ...baseFlags, ticketingDashboard: true });
+  });
+
+  it("sets ticketingDashboard=false when override is false", () => {
+    setTicketingDashboardFeatureFlagOverride(false);
+    expect(
+      applyFeatureFlagOverrides({ ...baseFlags, ticketingDashboard: true }),
+    ).toEqual({ ...baseFlags, ticketingDashboard: false });
+  });
+});
+
+// ============================================================================
+// setTicketingDashboardFeatureFlagOverride (localStorage writer)
+// ============================================================================
+
+describe("setTicketingDashboardFeatureFlagOverride", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("writes 'true' to localStorage when passed true", () => {
+    setTicketingDashboardFeatureFlagOverride(true);
+    expect(localStorage.getItem(TICKETING_DASHBOARD_OVERRIDE_KEY)).toBe("true");
+  });
+
+  it("writes 'false' to localStorage when passed false", () => {
+    setTicketingDashboardFeatureFlagOverride(false);
+    expect(localStorage.getItem(TICKETING_DASHBOARD_OVERRIDE_KEY)).toBe("false");
   });
 });
 
@@ -69,6 +174,7 @@ describe("isViewEnabled", () => {
 describe("useFeatureFlags", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
   });
 
   it("returns placeholder data (all enabled) before query resolves", () => {
@@ -86,6 +192,7 @@ describe("useFeatureFlags", () => {
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
+      ticketingDashboard: false,
     });
   });
 
@@ -105,12 +212,53 @@ describe("useFeatureFlags", () => {
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
+      ticketingDashboard: false,
     });
     expect(invoke).toHaveBeenCalledWith("get_ui_feature_flags");
   });
 
   it("uses correct query key", () => {
     expect(FEATURE_FLAGS_QUERY_KEY).toEqual(["featureFlags"]);
+  });
+
+  it("overlays the persisted ticketing dashboard override on backend flags", async () => {
+    setTicketingDashboardFeatureFlagOverride(true);
+    vi.mocked(invoke).mockResolvedValueOnce({
+      activityPage: true,
+      extensibilityPage: true,
+      ticketingDashboard: false,
+    });
+
+    const { result } = renderHook(() => useFeatureFlags(), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isPlaceholderData).toBe(false));
+
+    expect(result.current.data.ticketingDashboard).toBe(true);
+    expect(localStorage.getItem(TICKETING_DASHBOARD_OVERRIDE_KEY)).toBe("true");
+  });
+
+  it("applies ticketing dashboard overrides without changing other flags", () => {
+    setTicketingDashboardFeatureFlagOverride(false);
+
+    expect(
+      applyFeatureFlagOverrides({
+        activityPage: false,
+        extensibilityPage: true,
+        battleMode: true,
+        teamMode: false,
+        atlassianOauth: false,
+        ticketingDashboard: true,
+      }),
+    ).toEqual({
+      activityPage: false,
+      extensibilityPage: true,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: false,
+    });
   });
 
   it("shows placeholder data (all enabled) when invoke fails (retry: false)", async () => {
@@ -130,6 +278,7 @@ describe("useFeatureFlags", () => {
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
+      ticketingDashboard: false,
     });
   });
 });

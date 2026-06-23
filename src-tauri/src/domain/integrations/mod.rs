@@ -4,6 +4,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppResult;
 
+mod ticketing;
+pub use ticketing::{
+    ProviderTicketOperation, ProviderTicketOperationKind, ProviderTicketOperationStatus,
+    ProviderTicketOperationUpsert,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IntegrationValidationStatus {
@@ -365,6 +371,33 @@ pub trait ExternalIssueLinkRepository: Send + Sync {
         external_version: Option<&str>,
         error_message: Option<&str>,
     ) -> AppResult<Option<ExternalIssueSyncRecord>>;
+
+    async fn upsert_provider_ticket_operation(
+        &self,
+        input: ProviderTicketOperationUpsert,
+    ) -> AppResult<ProviderTicketOperation>;
+
+    async fn find_provider_ticket_operation_by_client_operation_id(
+        &self,
+        client_operation_id: &str,
+    ) -> AppResult<Option<ProviderTicketOperation>>;
+
+    async fn list_provider_ticket_operations_for_ticket(
+        &self,
+        provider: &str,
+        external_kind: &str,
+        external_id: &str,
+        external_key: Option<&str>,
+        local_project_id: Option<&str>,
+    ) -> AppResult<Vec<ProviderTicketOperation>>;
+
+    async fn update_provider_ticket_operation_status(
+        &self,
+        operation_id: &str,
+        status: ProviderTicketOperationStatus,
+        provider_operation_id: Option<&str>,
+        error_message: Option<&str>,
+    ) -> AppResult<Option<ProviderTicketOperation>>;
 }
 
 #[cfg(test)]
@@ -481,5 +514,65 @@ mod tests {
             assert_eq!(ExternalIssueSyncStatus::from_str(value).unwrap(), status);
         }
         assert!(ExternalIssueSyncStatus::from_str("retrying").is_err());
+    }
+
+    #[test]
+    fn provider_ticket_operation_kind_round_trips_storage_values() {
+        let cases = [
+            (ProviderTicketOperationKind::Transition, "transition"),
+            (ProviderTicketOperationKind::Assign, "assign"),
+            (ProviderTicketOperationKind::Comment, "comment"),
+        ];
+
+        for (kind, value) in cases {
+            assert_eq!(kind.as_str(), value);
+            assert_eq!(ProviderTicketOperationKind::from_str(value).unwrap(), kind);
+        }
+    }
+
+    #[test]
+    fn provider_ticket_operation_kind_from_str_rejects_unknown_variant() {
+        let error = ProviderTicketOperationKind::from_str("archive")
+            .expect_err("unknown operation kind should fail to parse");
+        assert_eq!(error, "Unknown provider ticket operation kind: archive");
+        assert!(ProviderTicketOperationKind::from_str("").is_err());
+        assert!(ProviderTicketOperationKind::from_str("Transition").is_err());
+    }
+
+    #[test]
+    fn provider_ticket_operation_status_round_trips_storage_values() {
+        let cases = [
+            (ProviderTicketOperationStatus::Pending, "pending"),
+            (ProviderTicketOperationStatus::Succeeded, "succeeded"),
+            (ProviderTicketOperationStatus::Failed, "failed"),
+            (ProviderTicketOperationStatus::TimedOut, "timed_out"),
+            (ProviderTicketOperationStatus::Canceled, "canceled"),
+        ];
+
+        for (status, value) in cases {
+            assert_eq!(status.as_str(), value);
+            assert_eq!(
+                ProviderTicketOperationStatus::from_str(value).unwrap(),
+                status
+            );
+        }
+    }
+
+    #[test]
+    fn provider_ticket_operation_status_from_str_rejects_unknown_variant() {
+        let error = ProviderTicketOperationStatus::from_str("retrying")
+            .expect_err("unknown operation status should fail to parse");
+        assert_eq!(error, "Unknown provider ticket operation status: retrying");
+        assert!(ProviderTicketOperationStatus::from_str("").is_err());
+        assert!(ProviderTicketOperationStatus::from_str("Pending").is_err());
+    }
+
+    #[test]
+    fn provider_ticket_operation_status_is_terminal_for_all_but_pending() {
+        assert!(!ProviderTicketOperationStatus::Pending.is_terminal());
+        assert!(ProviderTicketOperationStatus::Succeeded.is_terminal());
+        assert!(ProviderTicketOperationStatus::Failed.is_terminal());
+        assert!(ProviderTicketOperationStatus::TimedOut.is_terminal());
+        assert!(ProviderTicketOperationStatus::Canceled.is_terminal());
     }
 }

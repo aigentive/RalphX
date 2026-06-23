@@ -1057,6 +1057,36 @@ describe("uiStore", () => {
         expect(useUiStore.getState().currentView).toBe("extensibility");
       });
 
+      it("allows ticketing navigation so the dashboard access can open its screen", () => {
+        useUiStore.setState({
+          featureFlags: {
+            activityPage: true,
+            extensibilityPage: true,
+            battleMode: true,
+            ticketingDashboard: false,
+          },
+        });
+
+        useUiStore.getState().setCurrentView("ticketing");
+
+        expect(useUiStore.getState().currentView).toBe("ticketing");
+      });
+
+      it("allows ticketing navigation when the dashboard flag is enabled", () => {
+        useUiStore.setState({
+          featureFlags: {
+            activityPage: true,
+            extensibilityPage: true,
+            battleMode: true,
+            ticketingDashboard: true,
+          },
+        });
+
+        useUiStore.getState().setCurrentView("ticketing");
+
+        expect(useUiStore.getState().currentView).toBe("ticketing");
+      });
+
       it("always allows kanban (not a feature-flagged view)", () => {
         useUiStore.setState({
           featureFlags: { activityPage: false, extensibilityPage: false },

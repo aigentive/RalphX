@@ -12,6 +12,8 @@ import { featureFlagsSchema } from "@/types/feature-flags";
 import type { FeatureFlags } from "@/types/feature-flags";
 
 export const FEATURE_FLAGS_QUERY_KEY = ["featureFlags"] as const;
+export const TICKETING_DASHBOARD_OVERRIDE_KEY =
+  "ralphx-ui-ticketing-dashboard-enabled";
 
 const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   activityPage: true,
@@ -19,14 +21,46 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
+  ticketingDashboard: false,
 };
+
+export function getTicketingDashboardFeatureFlagOverride(): boolean | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const stored = window.localStorage.getItem(TICKETING_DASHBOARD_OVERRIDE_KEY);
+  if (stored === "true") {
+    return true;
+  }
+  if (stored === "false") {
+    return false;
+  }
+  return null;
+}
+
+export function applyFeatureFlagOverrides(flags: FeatureFlags): FeatureFlags {
+  const ticketingDashboardOverride = getTicketingDashboardFeatureFlagOverride();
+  return {
+    ...flags,
+    ...(ticketingDashboardOverride !== null && {
+      ticketingDashboard: ticketingDashboardOverride,
+    }),
+  };
+}
+
+export function setTicketingDashboardFeatureFlagOverride(enabled: boolean): void {
+  window.localStorage.setItem(
+    TICKETING_DASHBOARD_OVERRIDE_KEY,
+    String(enabled),
+  );
+}
 
 export function useFeatureFlags() {
   const query = useQuery<FeatureFlags>({
     queryKey: FEATURE_FLAGS_QUERY_KEY,
     queryFn: async () => {
       const raw = await invoke("get_ui_feature_flags");
-      return featureFlagsSchema.parse(raw);
+      return applyFeatureFlagOverrides(featureFlagsSchema.parse(raw));
     },
     staleTime: Infinity,
     // placeholderData shows defaults immediately (prevents startup flash) while
@@ -39,7 +73,7 @@ export function useFeatureFlags() {
     ...query,
     // Always return a defined FeatureFlags. Falls back to defaults on error
     // (placeholderData is not shown in error state; query.data would be undefined).
-    data: query.data ?? DEFAULT_FEATURE_FLAGS,
+    data: applyFeatureFlagOverrides(query.data ?? DEFAULT_FEATURE_FLAGS),
   };
 }
 
@@ -53,6 +87,8 @@ export function isViewEnabled(view: string, flags: FeatureFlags): boolean {
       return flags.activityPage;
     case "extensibility":
       return flags.extensibilityPage;
+    case "ticketing":
+      return flags.ticketingDashboard;
     default:
       return true;
   }

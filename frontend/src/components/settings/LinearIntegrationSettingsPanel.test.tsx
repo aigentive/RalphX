@@ -1,6 +1,8 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createElement } from "react";
 
 import { LinearIntegrationSettingsPanel } from "./LinearIntegrationSettingsPanel";
 
@@ -30,6 +32,21 @@ const linearHook = vi.hoisted(() => ({
   },
 }));
 
+const featureFlagHook = vi.hoisted(() => ({
+  setTicketingDashboardFeatureFlagOverride: vi.fn(),
+  setFeatureFlags: vi.fn(),
+  state: {
+    flags: {
+      activityPage: true,
+      extensibilityPage: true,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: false,
+    },
+  },
+}));
+
 vi.mock("@/hooks/useLinearIntegration", () => ({
   useLinearIntegration: () => ({
     ...linearHook.state,
@@ -39,9 +56,52 @@ vi.mock("@/hooks/useLinearIntegration", () => ({
   }),
 }));
 
+vi.mock("@/hooks/useFeatureFlags", () => ({
+  FEATURE_FLAGS_QUERY_KEY: ["featureFlags"],
+  setTicketingDashboardFeatureFlagOverride:
+    featureFlagHook.setTicketingDashboardFeatureFlagOverride,
+  useFeatureFlags: () => ({
+    data: featureFlagHook.state.flags,
+  }),
+}));
+
+vi.mock("@/stores/uiStore", () => ({
+  useUiStore: {
+    getState: () => ({
+      setFeatureFlags: featureFlagHook.setFeatureFlags,
+    }),
+  },
+}));
+
+function renderPanel() {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+    },
+  });
+  return {
+    queryClient,
+    ...render(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(LinearIntegrationSettingsPanel),
+      ),
+    ),
+  };
+}
+
 describe("LinearIntegrationSettingsPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    featureFlagHook.state.flags = {
+      activityPage: true,
+      extensibilityPage: true,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: false,
+    };
     linearHook.state.settings = {
       enabled: false,
       hasApiToken: false,
@@ -84,7 +144,7 @@ describe("LinearIntegrationSettingsPanel", () => {
   });
 
   it("shows Linear issue reference configuration status", () => {
-    render(<LinearIntegrationSettingsPanel />);
+    renderPanel();
 
     expect(screen.getByText("Linear")).toBeInTheDocument();
     expect(screen.getByText("Issue references not ready")).toBeInTheDocument();
@@ -94,7 +154,7 @@ describe("LinearIntegrationSettingsPanel", () => {
   it("saves and validates the API token", async () => {
     const user = userEvent.setup();
     linearHook.state.settings.hasApiToken = true;
-    render(<LinearIntegrationSettingsPanel />);
+    renderPanel();
 
     await user.type(screen.getByLabelText("API token"), "lin_api_token");
     await user.click(screen.getByRole("button", { name: /Save API token/ }));
@@ -117,7 +177,7 @@ describe("LinearIntegrationSettingsPanel", () => {
       updatedAt: new Date(0).toISOString(),
     });
 
-    render(<LinearIntegrationSettingsPanel />);
+    renderPanel();
 
     await user.type(screen.getByLabelText("API token"), "lin_api_token");
     await user.click(screen.getByRole("button", { name: /Save API token/ }));
@@ -134,7 +194,7 @@ describe("LinearIntegrationSettingsPanel", () => {
       "Linear API token is missing from secure storage",
     );
 
-    render(<LinearIntegrationSettingsPanel />);
+    renderPanel();
 
     await user.click(screen.getByRole("button", { name: "Validate" }));
 
@@ -146,7 +206,7 @@ describe("LinearIntegrationSettingsPanel", () => {
   });
 
   it("does not offer disconnect when nothing is configured", () => {
-    render(<LinearIntegrationSettingsPanel />);
+    renderPanel();
 
     expect(screen.getByTestId("integration-status-banner")).toHaveAttribute(
       "data-connected",
@@ -168,7 +228,7 @@ describe("LinearIntegrationSettingsPanel", () => {
       updatedAt: new Date(0).toISOString(),
     };
 
-    render(<LinearIntegrationSettingsPanel />);
+    renderPanel();
 
     expect(screen.getByText("Issue references enabled")).toBeInTheDocument();
     expect(screen.getByTestId("integration-status-banner")).toHaveAttribute(
@@ -183,7 +243,7 @@ describe("LinearIntegrationSettingsPanel", () => {
   it("clears the connection after confirming disconnect", async () => {
     const user = userEvent.setup();
     linearHook.state.settings.hasApiToken = true;
-    render(<LinearIntegrationSettingsPanel />);
+    renderPanel();
 
     await user.click(screen.getByRole("button", { name: "Disconnect" }));
     // First click only reveals the confirmation step; nothing cleared yet.
@@ -192,5 +252,141 @@ describe("LinearIntegrationSettingsPanel", () => {
     await user.click(screen.getByRole("button", { name: "Confirm disconnect" }));
 
     expect(linearHook.disconnectAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggles ticketing dashboard access from Linear settings", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByTestId("linear-ticketing-dashboard-toggle"));
+
+    expect(
+      featureFlagHook.setTicketingDashboardFeatureFlagOverride,
+    ).toHaveBeenCalledWith(true);
+    expect(featureFlagHook.setFeatureFlags).toHaveBeenCalledWith({
+      activityPage: true,
+      extensibilityPage: true,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: true,
+    });
+  });
+
+  it("writes the enabled flag into the feature flags query cache", async () => {
+    const user = userEvent.setup();
+    const { queryClient } = renderPanel();
+
+    await user.click(screen.getByTestId("linear-ticketing-dashboard-toggle"));
+
+    expect(queryClient.getQueryData(["featureFlags"])).toEqual({
+      activityPage: true,
+      extensibilityPage: true,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: true,
+    });
+  });
+
+  it("disables ticketing dashboard access when toggled off", async () => {
+    const user = userEvent.setup();
+    featureFlagHook.state.flags = {
+      ...featureFlagHook.state.flags,
+      ticketingDashboard: true,
+    };
+    renderPanel();
+
+    await user.click(screen.getByTestId("linear-ticketing-dashboard-toggle"));
+
+    expect(
+      featureFlagHook.setTicketingDashboardFeatureFlagOverride,
+    ).toHaveBeenCalledWith(false);
+    expect(featureFlagHook.setFeatureFlags).toHaveBeenCalledWith({
+      activityPage: true,
+      extensibilityPage: true,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: false,
+    });
+  });
+
+  it("renders the ticketing dashboard label and sidebar description", () => {
+    renderPanel();
+
+    expect(screen.getByText("Ticketing dashboard")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Show the Ticketing dashboard entry in the mini sidebar/),
+    ).toBeInTheDocument();
+  });
+
+  it("reflects the persisted ticketing dashboard flag in the toggle checked state", () => {
+    featureFlagHook.state.flags = {
+      ...featureFlagHook.state.flags,
+      ticketingDashboard: true,
+    };
+    renderPanel();
+
+    expect(
+      screen.getByTestId("linear-ticketing-dashboard-toggle"),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("shows the toggle unchecked when the dashboard flag is off", () => {
+    renderPanel();
+
+    expect(
+      screen.getByTestId("linear-ticketing-dashboard-toggle"),
+    ).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("handles an enable -> disable -> enable toggle cycle", async () => {
+    const user = userEvent.setup();
+    const { rerender } = renderPanel();
+
+    // Enable
+    await user.click(screen.getByTestId("linear-ticketing-dashboard-toggle"));
+    expect(
+      featureFlagHook.setTicketingDashboardFeatureFlagOverride,
+    ).toHaveBeenLastCalledWith(true);
+
+    // Simulate the persisted flag flipping on, then disable.
+    featureFlagHook.state.flags = {
+      ...featureFlagHook.state.flags,
+      ticketingDashboard: true,
+    };
+    rerender(
+      createElement(
+        QueryClientProvider,
+        { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
+        createElement(LinearIntegrationSettingsPanel),
+      ),
+    );
+    await user.click(screen.getByTestId("linear-ticketing-dashboard-toggle"));
+    expect(
+      featureFlagHook.setTicketingDashboardFeatureFlagOverride,
+    ).toHaveBeenLastCalledWith(false);
+
+    // Simulate the persisted flag flipping off, then enable again.
+    featureFlagHook.state.flags = {
+      ...featureFlagHook.state.flags,
+      ticketingDashboard: false,
+    };
+    rerender(
+      createElement(
+        QueryClientProvider,
+        { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
+        createElement(LinearIntegrationSettingsPanel),
+      ),
+    );
+    await user.click(screen.getByTestId("linear-ticketing-dashboard-toggle"));
+    expect(
+      featureFlagHook.setTicketingDashboardFeatureFlagOverride,
+    ).toHaveBeenLastCalledWith(true);
+
+    expect(
+      featureFlagHook.setTicketingDashboardFeatureFlagOverride,
+    ).toHaveBeenCalledTimes(3);
   });
 });

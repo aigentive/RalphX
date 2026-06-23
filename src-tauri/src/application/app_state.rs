@@ -54,8 +54,8 @@ use crate::domain::repositories::{
     ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
     ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
-    TeamMessageRepository, TeamSessionRepository, WebhookRegistrationRepository,
-    WorkflowRepository,
+    TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
+    WebhookRegistrationRepository, WorkflowRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -84,7 +84,8 @@ use crate::infrastructure::memory::{
     MemoryReviewSettingsRepository, MemorySecretStore, MemorySessionLinkRepository,
     MemoryTaskDependencyRepository, MemoryTaskProposalRepository, MemoryTaskQARepository,
     MemoryTaskRepository, MemoryTaskStepRepository, MemoryTeamMessageRepository,
-    MemoryTeamSessionRepository, MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
+    MemoryTeamSessionRepository, MemoryTicketCanonicalBranchRepository,
+    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
 use crate::infrastructure::sqlite::ReviewIssueRepository;
@@ -113,7 +114,8 @@ use crate::infrastructure::sqlite::{
     SqliteReviewSettingsRepository, SqliteRunningAgentRegistry, SqliteSessionLinkRepository,
     SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
     SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
-    SqliteTeamSessionRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqliteTeamSessionRepository, SqliteTicketCanonicalBranchRepository,
+    SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
 };
 use crate::infrastructure::GhCliGithubService;
 use crate::infrastructure::HyperAtlassianApiClient;
@@ -201,6 +203,8 @@ pub struct AppState {
     pub agent_conversation_jira_issue_repo: Arc<dyn AgentConversationJiraIssueRepository>,
     /// Conversation-owned primary Linear assignment/cache repository
     pub agent_conversation_linear_issue_repo: Arc<dyn AgentConversationLinearIssueRepository>,
+    /// Per-ticket canonical branch that all conversations for a ticket base off of
+    pub ticket_canonical_branch_repo: Arc<dyn TicketCanonicalBranchRepository>,
     /// Startup orphan agent-worktree cleanup backoff markers
     pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     /// In-memory PTY session manager for Agents conversation terminals
@@ -929,6 +933,9 @@ impl AppState {
             agent_conversation_linear_issue_repo: Arc::new(
                 SqliteAgentConversationLinearIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            ticket_canonical_branch_repo: Arc::new(
+                SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 SqliteOrphanWorktreeCleanupMarkerRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1127,6 +1134,9 @@ impl AppState {
             agent_conversation_linear_issue_repo: Arc::new(
                 MemoryAgentConversationLinearIssueRepository::new(),
             ),
+            ticket_canonical_branch_repo: Arc::new(
+                MemoryTicketCanonicalBranchRepository::new(),
+            ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
@@ -1260,6 +1270,9 @@ impl AppState {
             ),
             agent_conversation_linear_issue_repo: Arc::new(
                 MemoryAgentConversationLinearIssueRepository::new(),
+            ),
+            ticket_canonical_branch_repo: Arc::new(
+                MemoryTicketCanonicalBranchRepository::new(),
             ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
@@ -1407,6 +1420,9 @@ impl AppState {
             agent_conversation_linear_issue_repo: Arc::new(
                 SqliteAgentConversationLinearIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            ticket_canonical_branch_repo: Arc::new(
+                SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 SqliteOrphanWorktreeCleanupMarkerRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1534,6 +1550,9 @@ impl AppState {
             ),
             agent_conversation_linear_issue_repo: Arc::new(
                 MemoryAgentConversationLinearIssueRepository::new(),
+            ),
+            ticket_canonical_branch_repo: Arc::new(
+                MemoryTicketCanonicalBranchRepository::new(),
             ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),

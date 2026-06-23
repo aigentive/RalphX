@@ -7,6 +7,8 @@ import {
   Ticket,
 } from "lucide-react";
 
+import { useTicketingStore } from "@/stores/ticketingStore";
+import { useUiStore } from "@/stores/uiStore";
 import type { MessageComposerReferences } from "./MessageReferences.parse";
 
 export function MessageReferences({
@@ -14,6 +16,10 @@ export function MessageReferences({
   integrationReferences,
   artifactReferences,
 }: MessageComposerReferences) {
+  const setTicketProvider = useTicketingStore((s) => s.setProvider);
+  const setSelectedTicketRef = useTicketingStore((s) => s.setSelectedTicketRef);
+  const setCurrentView = useUiStore((s) => s.setCurrentView);
+
   if (
     projectReferences.length === 0 &&
     integrationReferences.length === 0 &&
@@ -42,6 +48,7 @@ export function MessageReferences({
       {integrationReferences.map((reference) => {
         const isJira = reference.kind === "jira";
         const isLinear = reference.kind === "linear";
+        const ticketProvider = isLinear ? "linear" : isJira ? "jira" : null;
         const label =
           isJira || isLinear
             ? (reference.key ?? reference.id)
@@ -57,6 +64,19 @@ export function MessageReferences({
             label={label}
             {...(description && description !== label ? { description } : {})}
             {...(reference.url ? { url: reference.url } : {})}
+            {...(ticketProvider
+              ? {
+                  onOpenTicket: () => {
+                    setTicketProvider(ticketProvider);
+                    setSelectedTicketRef({
+                      provider: ticketProvider,
+                      id: reference.id,
+                      ...(reference.key ? { key: reference.key } : {}),
+                    });
+                    setCurrentView("ticketing");
+                  },
+                }
+              : {})}
           />
         );
       })}
@@ -106,6 +126,7 @@ function ReferenceChip({
   label,
   description,
   url,
+  onOpenTicket,
 }: {
   testId: string;
   icon: typeof FileText;
@@ -113,6 +134,7 @@ function ReferenceChip({
   label: string;
   description?: string;
   url?: string;
+  onOpenTicket?: () => void;
 }) {
   const content = (
     <>
@@ -151,6 +173,21 @@ function ReferenceChip({
     color: "var(--text-primary)",
     textDecoration: "none",
   };
+
+  if (onOpenTicket) {
+    return (
+      <button
+        type="button"
+        data-testid={testId}
+        className={className}
+        style={style}
+        title={label}
+        onClick={onOpenTicket}
+      >
+        {content}
+      </button>
+    );
+  }
 
   if (url) {
     return (

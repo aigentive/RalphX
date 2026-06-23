@@ -10,6 +10,7 @@ import {
   LayoutGrid,
   Lightbulb,
   Puzzle,
+  Ticket,
   TrendingUp,
 } from "lucide-react";
 import type { FeatureFlags } from "@/types/feature-flags";
@@ -51,6 +52,12 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
     icon: LayoutGrid,
     shortcut: "⌘4",
     visible: () => true,
+  },
+  {
+    view: "ticketing",
+    label: "Ticketing",
+    icon: Ticket,
+    visible: (flags) => flags.ticketingDashboard,
   },
   {
     view: "insights",

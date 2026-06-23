@@ -23,6 +23,7 @@ import {
   PanelRightOpen,
   ShieldCheck,
   Terminal as TerminalIcon,
+  Ticket,
 } from "lucide-react";
 
 import type { AgentConversationWorkspace, WorkspaceOpenTarget } from "@/api/chat";
@@ -43,6 +44,7 @@ import {
 import { formatBranchDisplay } from "@/lib/branch-utils";
 import { withAlpha } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
+import { useConversationTicket } from "@/hooks/useTicketing";
 import { useChatStore } from "@/stores/chatStore";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import type { ModelDisplay } from "@/types/chat-conversation";
@@ -360,6 +362,10 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   const isSending = useChatStore((state) =>
     conversationStoreKey ? state.isSending[conversationStoreKey] ?? false : false,
   );
+  const conversationTicketQuery = useConversationTicket(conversation?.id, {
+    enabled: Boolean(conversation),
+  });
+  const linkedTicket = conversationTicketQuery.data ?? null;
   const isAgentActive = isSending || agentStatus === "generating";
   const sidebarVisibility = useAgentsSidebarVisibility();
   const showOpenSidebarButton =
@@ -385,6 +391,15 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     await onRenameConversation(conversation.id, trimmed);
     setIsEditing(false);
   }, [conversation, draftTitle, onRenameConversation, title]);
+
+  const openLinkedTicket = useCallback(() => {
+    if (!linkedTicket) {
+      return;
+    }
+    // Open the linked issue in the right-hand artifact sidebar (Jira/Linear tab)
+    // rather than navigating away to the ticketing dashboard.
+    onSelectArtifact(linkedTicket.ticketRef.provider === "jira" ? "jira" : "linear");
+  }, [linkedTicket, onSelectArtifact]);
 
   return (
     <div
@@ -479,6 +494,27 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
               {...(modelDisplay !== undefined ? { modelDisplay } : {})}
             />
           </div>
+        )}
+
+        {linkedTicket && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0"
+                onClick={openLinkedTicket}
+                aria-label={`Open ticket ${linkedTicket.ticketRef.key ?? linkedTicket.ticketRef.id}`}
+                data-testid="agents-linked-ticket-button"
+              >
+                <Ticket className="w-4 h-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-[280px] text-xs">
+              {linkedTicket.title ?? linkedTicket.ticketRef.key ?? linkedTicket.ticketRef.id}
+            </TooltipContent>
+          </Tooltip>
         )}
 
         <Tooltip>
