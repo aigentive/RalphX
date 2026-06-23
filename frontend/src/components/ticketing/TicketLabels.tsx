@@ -35,7 +35,7 @@ export function TicketLabels({ labels, max = 3, size = "sm", className }: Ticket
       ))}
       {overflow > 0 && (
         <span
-          className={`shrink-0 rounded ${padding} text-[var(--text-muted)]`}
+          className={`shrink-0 rounded ${padding} text-inherit`}
           style={chipStyle}
           title={labels.slice(visible.length).join(", ")}
         >

@@ -30,7 +30,11 @@ vi.mock("@/hooks/useFeatureFlags", () => ({
   useFeatureFlags: vi.fn(() => ({ data: mockFeatureFlags })),
 }));
 
-let mockTicketingProviders: Array<{ provider: string; enabled: boolean }> = [];
+let mockTicketingProviders: Array<{
+  provider: string;
+  enabled: boolean;
+  connectionStatus: "connected" | "disconnected" | "permission_limited" | "error";
+}> = [];
 
 vi.mock("@/hooks/useTicketing", () => ({
   useTicketingProviders: vi.fn(() => ({ data: mockTicketingProviders })),
@@ -54,7 +58,9 @@ describe("LeftNavRail", () => {
     };
     // Default: one connected/enabled ticketing provider so the Ticketing entry is
     // visible for the grouping/warm-up assertions below.
-    mockTicketingProviders = [{ provider: "linear", enabled: true }];
+    mockTicketingProviders = [
+      { provider: "linear", enabled: true, connectionStatus: "connected" },
+    ];
   });
 
   it("separates dashboard access from primary mini-sidebar views", () => {
@@ -77,8 +83,8 @@ describe("LeftNavRail", () => {
 
   it("hides the Ticketing entry when no Linear/Jira provider is enabled", () => {
     mockTicketingProviders = [
-      { provider: "linear", enabled: false },
-      { provider: "jira", enabled: false },
+      { provider: "linear", enabled: false, connectionStatus: "disconnected" },
+      { provider: "jira", enabled: false, connectionStatus: "disconnected" },
     ];
 
     render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
@@ -87,20 +93,32 @@ describe("LeftNavRail", () => {
     expect(screen.queryByTestId("nav-dashboard-separator")).not.toBeInTheDocument();
   });
 
-  it("hides the Ticketing entry when the dashboard feature flag is off", () => {
+  it("shows the Ticketing entry when the old dashboard feature flag is off but a provider is valid", () => {
     mockFeatureFlags = { ...mockFeatureFlags, ticketingDashboard: false };
+
+    render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
+
+    expect(screen.getByTestId("nav-dashboard-separator")).toBeInTheDocument();
+    expect(screen.getByTestId("nav-ticketing")).toBeInTheDocument();
+  });
+
+  it("shows the Ticketing entry when a provider is valid", () => {
+    render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
+
+    expect(screen.getByTestId("nav-dashboard-separator")).toBeInTheDocument();
+    expect(screen.getByTestId("nav-ticketing")).toBeInTheDocument();
+  });
+
+  it("hides the Ticketing entry when providers are enabled but not connected", () => {
+    mockTicketingProviders = [
+      { provider: "linear", enabled: true, connectionStatus: "error" },
+      { provider: "jira", enabled: true, connectionStatus: "permission_limited" },
+    ];
 
     render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
 
     expect(screen.queryByTestId("nav-ticketing")).not.toBeInTheDocument();
     expect(screen.queryByTestId("nav-dashboard-separator")).not.toBeInTheDocument();
-  });
-
-  it("shows the Ticketing entry when the flag is on and a provider is enabled", () => {
-    render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
-
-    expect(screen.getByTestId("nav-dashboard-separator")).toBeInTheDocument();
-    expect(screen.getByTestId("nav-ticketing")).toBeInTheDocument();
   });
 
   it("filters the ticketing item out of the primary nav section", () => {

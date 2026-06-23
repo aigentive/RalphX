@@ -383,10 +383,10 @@ export function TicketListView({
                   <span className="flex min-w-0 items-center gap-2">
                     {isUnread?.(ticket) && <UnreadCommentIndicator />}
                     <span className="truncate font-medium">{ticket.title}</span>
-                    <TicketLabels labels={ticket.labels} max={2} className="shrink-0 text-[var(--text-muted)]" />
+                    <TicketLabels labels={ticket.labels} max={2} className="shrink-0 text-[var(--text-secondary)]" />
                   </span>
                   <span className="min-w-0">
-                    <TicketAssigneeChip person={ticket.assignee} />
+                    <TicketAssigneeChip person={ticket.assignee} unassignedTone="secondary" />
                   </span>
                   {/* RX (suitcase) column, then the PR column placeholder; the
                       interactive PR control is rendered in the aligned overlay below. */}
@@ -394,12 +394,12 @@ export function TicketListView({
                   <span aria-hidden="true" />
                   {/* Project (category) column, just left of the timestamp. */}
                   <span
-                    className="truncate text-[11px] text-[var(--text-muted)]"
+                    className="truncate text-[11px] text-[var(--text-secondary)]"
                     title={ticket.project ?? undefined}
                   >
                     {ticket.project ?? ""}
                   </span>
-                  <span className="text-xs text-[var(--text-muted)]">{formatTicketDate(ticket.updatedAt)}</span>
+                  <span className="text-xs text-[var(--text-secondary)]">{formatTicketDate(ticket.updatedAt)}</span>
                 </button>
                 {ticket.openPrNumber != null && ticket.openPrUrl != null && (
                   <div className={`${TICKET_ROW_GRID} pointer-events-none absolute inset-0 py-1.5`}>

@@ -1133,16 +1133,10 @@ function AppContent() {
                     : null
               )}
               {currentView === "ticketing" && (
-                isViewEnabled("ticketing", featureFlags)
-                  ? (
-                    <TicketingDashboardView
-                      projectId={currentProjectId}
-                      onNavigateToAssociation={handleNavigateFromTicketAssociation}
-                    />
-                  )
-                  : import.meta.env.DEV
-                    ? <FeatureDisabledPlaceholder view="ticketing" settingsPath="Settings -> Integrations -> Linear -> Ticketing dashboard" />
-                    : null
+                <TicketingDashboardView
+                  projectId={currentProjectId}
+                  onNavigateToAssociation={handleNavigateFromTicketAssociation}
+                />
               )}
               {currentView === "insights" && <InsightsView />}
               {currentView === "team" && <TeamSplitView />}

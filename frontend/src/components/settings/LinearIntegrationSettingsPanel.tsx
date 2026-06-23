@@ -1,24 +1,16 @@
 import { useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  FEATURE_FLAGS_QUERY_KEY,
-  setTicketingDashboardFeatureFlagOverride,
-  useFeatureFlags,
-} from "@/hooks/useFeatureFlags";
 import { useLinearIntegration } from "@/hooks/useLinearIntegration";
-import { useUiStore } from "@/stores/uiStore";
 
 import {
   ErrorBanner,
   IntegrationDisconnectButton,
   IntegrationStatusBanner,
   SectionCard,
-  ToggleSettingRow,
 } from "./SettingsView.shared";
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -32,8 +24,6 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 export function LinearIntegrationSettingsPanel() {
-  const queryClient = useQueryClient();
-  const { data: featureFlags } = useFeatureFlags();
   const {
     settings,
     isLoading,
@@ -52,7 +42,6 @@ export function LinearIntegrationSettingsPanel() {
   const [apiToken, setApiToken] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const ticketingDashboardEnabled = featureFlags.ticketingDashboard;
 
   const displayedError =
     localError ??
@@ -135,17 +124,6 @@ export function LinearIntegrationSettingsPanel() {
     }
   };
 
-  const updateTicketingDashboardFlag = (enabled: boolean) => {
-    setTicketingDashboardFeatureFlagOverride(enabled);
-    const nextFlags = {
-      ...featureFlags,
-      ticketingDashboard: enabled,
-    };
-    queryClient.setQueryData(FEATURE_FLAGS_QUERY_KEY, nextFlags);
-    useUiStore.getState().setFeatureFlags(nextFlags);
-    setSaved(true);
-  };
-
   if (isLoading) {
     return (
       <SectionCard
@@ -183,15 +161,6 @@ export function LinearIntegrationSettingsPanel() {
           }
           chips={statusChips}
           lastError={settings?.lastError ?? null}
-        />
-
-        <ToggleSettingRow
-          id="linear-ticketing-dashboard-toggle"
-          label="Ticketing dashboard"
-          description="Show the Ticketing dashboard entry in the mini sidebar for Jira and Linear ticket workflows."
-          checked={ticketingDashboardEnabled}
-          disabled={false}
-          onChange={updateTicketingDashboardFlag}
         />
 
         <div className="space-y-1.5">

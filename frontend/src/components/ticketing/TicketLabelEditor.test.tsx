@@ -75,8 +75,9 @@ describe("TicketLabelEditor (Linear pick-list)", () => {
       ],
     });
     // The applied "bug" option is not offered.
+    fireEvent.click(screen.getByRole("combobox", { name: "Add a label" }));
     expect(screen.queryByRole("option", { name: "bug" })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Add a label"), { target: { value: "feature" } });
+    fireEvent.click(screen.getByRole("option", { name: "feature" }));
     expect(onSetLabels).toHaveBeenCalledWith(["bug", "feature"]);
   });
 

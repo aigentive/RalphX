@@ -2,13 +2,23 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   linearApi,
+  type LinearIntegrationSettings,
   type SaveLinearIntegrationSettingsInput,
 } from "@/api/linear";
+import { invalidateTicketingQueries } from "@/hooks/useTicketing";
 
 export const linearIntegrationKeys = {
   all: ["linear-integration"] as const,
   settings: () => [...linearIntegrationKeys.all, "settings"] as const,
 };
+
+function updateSettingsAndRefreshTicketing(
+  queryClient: ReturnType<typeof useQueryClient>,
+  settings: LinearIntegrationSettings,
+) {
+  queryClient.setQueryData(linearIntegrationKeys.settings(), settings);
+  invalidateTicketingQueries(queryClient);
+}
 
 export function useLinearIntegration() {
   const queryClient = useQueryClient();
@@ -22,21 +32,21 @@ export function useLinearIntegration() {
     mutationFn: (input: SaveLinearIntegrationSettingsInput) =>
       linearApi.saveSettings(input),
     onSuccess: (settings) => {
-      queryClient.setQueryData(linearIntegrationKeys.settings(), settings);
+      updateSettingsAndRefreshTicketing(queryClient, settings);
     },
   });
 
   const validateMutation = useMutation({
     mutationFn: () => linearApi.validate(),
     onSuccess: (settings) => {
-      queryClient.setQueryData(linearIntegrationKeys.settings(), settings);
+      updateSettingsAndRefreshTicketing(queryClient, settings);
     },
   });
 
   const disconnectMutation = useMutation({
     mutationFn: () => linearApi.disconnect(),
     onSuccess: (settings) => {
-      queryClient.setQueryData(linearIntegrationKeys.settings(), settings);
+      updateSettingsAndRefreshTicketing(queryClient, settings);
     },
   });
 

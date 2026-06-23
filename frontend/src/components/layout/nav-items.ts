@@ -57,7 +57,7 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
     view: "ticketing",
     label: "Ticketing",
     icon: Ticket,
-    visible: (flags) => flags.ticketingDashboard,
+    visible: () => true,
   },
   {
     view: "insights",

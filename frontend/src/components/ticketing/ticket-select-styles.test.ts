@@ -31,17 +31,25 @@ describe("ticketSelectClassName", () => {
     }
   });
 
+  it("can omit native caret positioning for custom combobox triggers", () => {
+    const className = ticketSelectClassName("sm", "pr-8", { nativeCaret: false });
+    expect(className).toContain("appearance-none");
+    expect(className).not.toContain("bg-no-repeat");
+    expect(className).not.toContain("bg-[position:");
+    expect(className.endsWith("pr-8")).toBe(true);
+  });
+
   it("includes the app focus-ring fragment for both sizes", () => {
     for (const className of [ticketSelectClassName("sm"), ticketSelectClassName("md")]) {
       expect(className).toContain("focus-visible:[outline:2px_solid_var(--border-focus)]");
     }
   });
 
-  it("keeps the caret SVG stroke literal (WKWebView Rule 7)", () => {
+  it("uses a design-token caret color without raw color literals", () => {
     const className = ticketSelectClassName("sm");
-    // The chevron stroke must be a literal hsl() value, never a var() reference.
-    expect(className).toContain("hsl(220%2010%25%2050%25)");
-    expect(className).not.toContain("stroke=%22var(");
+    expect(className).toContain("var(--text-muted)");
+    expect(className).not.toMatch(/hsla?\(/);
+    expect(className).not.toContain("data:image/svg+xml");
   });
 
   it("appends caller-provided extra classes last", () => {
