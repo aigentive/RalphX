@@ -1276,6 +1276,7 @@ fn ticketing_service_from_state(state: &AppState) -> TicketingService {
     TicketingService::new(
         Arc::clone(&state.atlassian_integration_service),
         Arc::clone(&state.linear_integration_service),
+        Arc::clone(&state.clickup_integration_service),
         Arc::clone(&state.external_issue_link_service),
     )
 }
