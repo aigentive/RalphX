@@ -171,17 +171,17 @@ function StartWorkDialog({
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
       <DialogContent className="sm:max-w-[460px]">
-        <DialogHeader>
-          <DialogTitle>Start Conversation</DialogTitle>
-          <DialogDescription>
+        <DialogHeader className="block space-y-1.5 px-6 py-5 pr-14">
+          <DialogTitle className="text-lg leading-6">Start Conversation</DialogTitle>
+          <DialogDescription className="max-w-[34rem] leading-5">
             Choose a project. The new composer will open with{" "}
             {ticket ? ticketKey(ticket.ref) : "this ticket"} attached as a reference.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-4 py-2">
+        <div className="grid gap-4 px-6 py-5">
           <label className="grid gap-1.5 text-sm">
-            Project
+            <span className="font-medium text-[var(--text-primary)]">Project</span>
             <TicketSearchableSelect
               ariaLabel="Project"
               size="md"
@@ -199,7 +199,7 @@ function StartWorkDialog({
           </label>
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="px-6 py-4">
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
           </Button>

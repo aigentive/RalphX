@@ -1212,6 +1212,11 @@ describe("TicketingDashboardView", () => {
     );
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent("Start Conversation");
+    expect(within(dialog).getByText("Start Conversation").parentElement).toHaveClass(
+      "block",
+      "space-y-1.5",
+      "pr-14",
+    );
     expect(dialog).toHaveTextContent(
       "The new composer will open with RX-1 attached as a reference.",
     );
