@@ -1279,6 +1279,7 @@ fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResp
                 body_text: comment.body_text,
                 created_at: comment.created_at,
                 updated_at: comment.updated_at,
+                attachments: Vec::new(),
                 replies: Vec::new(),
             })
             .collect(),
@@ -1334,7 +1335,17 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
             .into_iter()
             .map(ticket_comment_from_linear_comment)
             .collect(),
-        attachments: Vec::new(),
+        attachments: content
+            .attachments
+            .into_iter()
+            .map(|attachment| TicketAttachmentResponse {
+                id: Some(attachment.id),
+                filename: attachment.title,
+                mime_type: None,
+                size: None,
+                url: Some(attachment.url),
+            })
+            .collect(),
         transitions: Vec::new(),
         fetched_at: Some(now_string()),
     }
@@ -1492,7 +1503,17 @@ fn clickup_content_to_detail(content: ClickUpTaskContent) -> TicketDetailRespons
             .into_iter()
             .map(ticket_comment_from_clickup_comment)
             .collect(),
-        attachments: Vec::new(),
+        attachments: content
+            .attachments
+            .into_iter()
+            .map(|attachment| TicketAttachmentResponse {
+                id: attachment.id,
+                filename: attachment.filename,
+                mime_type: attachment.mime_type,
+                size: attachment.size,
+                url: attachment.url,
+            })
+            .collect(),
         transitions: Vec::new(),
         fetched_at: Some(now_string()),
     }
@@ -1507,6 +1528,17 @@ fn ticket_comment_from_clickup_comment(comment: ClickUpComment) -> TicketComment
         created_at: comment.created_at,
         // ClickUp comment payloads do not carry an updated timestamp.
         updated_at: None,
+        attachments: comment
+            .attachments
+            .into_iter()
+            .map(|attachment| TicketAttachmentResponse {
+                id: attachment.id,
+                filename: attachment.filename,
+                mime_type: attachment.mime_type,
+                size: attachment.size,
+                url: attachment.url,
+            })
+            .collect(),
         replies: comment
             .replies
             .into_iter()
@@ -1692,6 +1724,7 @@ fn ticket_comment_response(comment: TicketingCommentResult) -> TicketCommentResp
         body_text: comment.body_text,
         created_at: comment.created_at,
         updated_at: comment.updated_at,
+        attachments: Vec::new(),
         replies: Vec::new(),
     }
 }
@@ -1704,6 +1737,7 @@ fn ticket_comment_from_linear_comment(comment: LinearComment) -> TicketCommentRe
         body_text: comment.body,
         created_at: comment.created_at,
         updated_at: comment.updated_at,
+        attachments: Vec::new(),
         replies: Vec::new(),
     }
 }

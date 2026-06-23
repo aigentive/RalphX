@@ -134,6 +134,7 @@ pub struct TicketCommentResponse {
     pub body_text: String,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+    pub attachments: Vec<TicketAttachmentResponse>,
     pub replies: Vec<TicketCommentResponse>,
 }
 

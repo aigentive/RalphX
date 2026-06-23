@@ -79,6 +79,7 @@ impl LinearApiClient for RecordingLinearClient {
             creator: None,
             updated_at: None,
             comments: Vec::new(),
+            attachments: Vec::new(),
             labels: Vec::new(),
             project: None,
         })
@@ -410,6 +411,7 @@ impl ClickUpApiClient for RecordingClickUpClient {
             assignees: Vec::new(),
             tags: Vec::new(),
             comments: Vec::new(),
+            attachments: Vec::new(),
             updated_at: None,
             space_id: Some("space-1".to_string()),
             list_name: None,
@@ -503,6 +505,7 @@ impl ClickUpApiClient for RecordingClickUpClient {
             author_id: Some(7),
             author_name: Some("A. User".to_string()),
             created_at: Some("2026-06-20T08:00:00Z".to_string()),
+            attachments: Vec::new(),
             replies: Vec::new(),
         })
     }
@@ -1869,6 +1872,7 @@ fn clickup_comment_result_duplicates_body_and_drops_updated_at() {
         author_id: Some(7),
         author_name: Some("A. User".to_string()),
         created_at: Some("2026-06-20T08:00:00Z".to_string()),
+        attachments: Vec::new(),
         replies: Vec::new(),
     });
     assert_eq!(result.id.as_deref(), Some("c1"));

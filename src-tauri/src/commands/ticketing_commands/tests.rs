@@ -8,6 +8,8 @@ use crate::application::{
     TeamStateTracker, TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
     TicketingTransitionOption,
 };
+use crate::application::clickup_integration_service::ClickUpAttachment;
+use crate::application::linear_integration_service::LinearAttachment;
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
@@ -348,14 +350,29 @@ fn clickup_content_maps_description_comments_and_creator() {
             author_id: Some(7),
             author_name: Some("Commenter".to_string()),
             created_at: Some("2026-06-21T09:00:00Z".to_string()),
+            attachments: vec![ClickUpAttachment {
+                id: Some("comment-att-1".to_string()),
+                filename: "comment-image.jpg".to_string(),
+                mime_type: Some("image/jpeg".to_string()),
+                size: Some(1024),
+                url: Some("https://attachments.clickup.test/comment-image.jpg".to_string()),
+            }],
             replies: vec![ClickUpComment {
                 id: "reply-1".to_string(),
                 body: "Thread reply".to_string(),
                 author_id: Some(8),
                 author_name: Some("Responder".to_string()),
                 created_at: Some("2026-06-21T09:05:00Z".to_string()),
+                attachments: Vec::new(),
                 replies: Vec::new(),
             }],
+        }],
+        attachments: vec![ClickUpAttachment {
+            id: Some("att-1".to_string()),
+            filename: "screenshot.png".to_string(),
+            mime_type: Some("image/png".to_string()),
+            size: Some(4096),
+            url: Some("https://attachments.clickup.test/screenshot.png".to_string()),
         }],
         updated_at: Some("2026-06-21T10:00:00Z".to_string()),
         space_id: Some("space-1".to_string()),
@@ -393,7 +410,14 @@ fn clickup_content_maps_description_comments_and_creator() {
         Some("Implement the ClickUp arms.")
     );
     assert!(detail.acceptance_criteria_markdown.is_none());
-    assert!(detail.attachments.is_empty());
+    assert_eq!(detail.attachments.len(), 1);
+    assert_eq!(detail.attachments[0].filename, "screenshot.png");
+    assert_eq!(detail.attachments[0].mime_type.as_deref(), Some("image/png"));
+    assert_eq!(detail.attachments[0].size, Some(4096));
+    assert_eq!(
+        detail.attachments[0].url.as_deref(),
+        Some("https://attachments.clickup.test/screenshot.png")
+    );
     assert!(detail.transitions.is_empty());
     assert_eq!(detail.comments.len(), 1);
     let comment = &detail.comments[0];
@@ -402,6 +426,8 @@ fn clickup_content_maps_description_comments_and_creator() {
     assert_eq!(comment.body_text, "Looks good");
     assert_eq!(comment.replies.len(), 1);
     assert_eq!(comment.replies[0].body_text, "Thread reply");
+    assert_eq!(comment.attachments.len(), 1);
+    assert_eq!(comment.attachments[0].filename, "comment-image.jpg");
     assert_eq!(
         comment.author.as_ref().map(|person| person.name.as_str()),
         Some("Commenter")
@@ -692,6 +718,12 @@ fn linear_detail_maps_provider_comments() {
             created_at: Some("2026-06-21T08:00:00Z".to_string()),
             updated_at: None,
         }],
+        attachments: vec![LinearAttachment {
+            id: "attachment-1".to_string(),
+            title: "Design mock".to_string(),
+            subtitle: Some("Figma".to_string()),
+            url: "https://uploads.linear.app/design.png".to_string(),
+        }],
         labels: vec!["backend".to_string()],
         project: Some("Platform".to_string()),
     });
@@ -707,6 +739,12 @@ fn linear_detail_maps_provider_comments() {
     );
     assert_eq!(detail.summary.labels, vec!["backend".to_string()]);
     assert_eq!(detail.summary.project.as_deref(), Some("Platform"));
+    assert_eq!(detail.attachments.len(), 1);
+    assert_eq!(detail.attachments[0].filename, "Design mock");
+    assert_eq!(
+        detail.attachments[0].url.as_deref(),
+        Some("https://uploads.linear.app/design.png")
+    );
 }
 
 #[test]
@@ -987,6 +1025,7 @@ fn linear_content_uses_body_for_description_and_creator_for_reporter() {
         creator: Some("Creator".to_string()),
         updated_at: Some("2026-06-20T10:00:00Z".to_string()),
         comments: Vec::new(),
+        attachments: Vec::new(),
         labels: vec!["urgent".to_string()],
         project: Some("Roadmap".to_string()),
     });

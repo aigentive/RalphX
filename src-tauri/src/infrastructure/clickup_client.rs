@@ -14,6 +14,7 @@ use crate::application::{
     ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpSpace, ClickUpStatus,
     ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace,
 };
+use crate::application::clickup_integration_service::ClickUpAttachment;
 
 const CLICKUP_API_BASE: &str = "https://api.clickup.com/api/v2";
 /// Safety cap so a misbehaving `last_page` flag can never spin forever.
@@ -495,6 +496,7 @@ pub(crate) async fn create_task_comment<C: ClickUpJsonRequester + ?Sized>(
         author_id: None,
         author_name: None,
         created_at: value.get("date").and_then(clickup_timestamp_to_rfc3339),
+        attachments: Vec::new(),
         replies: Vec::new(),
     })
 }
@@ -656,6 +658,7 @@ fn task_content_from_value(task: &Value) -> Option<ClickUpTaskContent> {
         assignees: collect_assignee_names(task),
         tags: collect_tag_names(task),
         comments: Vec::new(),
+        attachments: collect_clickup_attachments(task),
         updated_at: task
             .get("date_updated")
             .and_then(clickup_timestamp_to_rfc3339),
@@ -688,6 +691,7 @@ fn clickup_comment_from_value(value: &Value) -> Option<ClickUpComment> {
             .and_then(Value::as_i64),
         author_name: value.get("user").and_then(clickup_user_display_name),
         created_at: value.get("date").and_then(clickup_timestamp_to_rfc3339),
+        attachments: collect_clickup_attachments(value),
         replies: Vec::new(),
     })
 }
@@ -748,6 +752,38 @@ fn collect_assignee_ids(task: &Value) -> Vec<i64> {
         .flatten()
         .filter_map(|assignee| assignee.get("id").and_then(Value::as_i64))
         .collect()
+}
+
+fn collect_clickup_attachments(task: &Value) -> Vec<ClickUpAttachment> {
+    task.get("attachments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(clickup_attachment_from_value)
+        .collect()
+}
+
+fn clickup_attachment_from_value(value: &Value) -> Option<ClickUpAttachment> {
+    let filename = opt_str(value, "filename")
+        .or_else(|| opt_str(value, "title"))
+        .or_else(|| opt_str(value, "name"))?;
+    Some(ClickUpAttachment {
+        id: value
+            .get("id")
+            .and_then(json_scalar_to_string)
+            .or_else(|| opt_str(value, "uuid")),
+        filename,
+        mime_type: opt_str(value, "mime_type")
+            .or_else(|| opt_str(value, "mimeType"))
+            .or_else(|| opt_str(value, "content_type")),
+        size: value
+            .get("size")
+            .and_then(Value::as_i64)
+            .or_else(|| value.get("file_size").and_then(Value::as_i64)),
+        url: opt_str(value, "url")
+            .or_else(|| opt_str(value, "download_url"))
+            .or_else(|| opt_str(value, "downloadUrl")),
+    })
 }
 
 fn collect_tag_names(task: &Value) -> Vec<String> {

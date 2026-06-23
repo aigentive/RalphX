@@ -13,6 +13,7 @@ use crate::application::{
     LinearApiClient, LinearAuthContext, LinearComment, LinearIssueContent, LinearIssueSummary,
     LinearLabel, LinearProject, LinearUser, LinearWorkflowState,
 };
+use crate::application::linear_integration_service::LinearAttachment;
 use crate::domain::services::ComposerIntegrationReference;
 
 const LINEAR_GRAPHQL_ENDPOINT: &str = "https://api.linear.app/graphql";
@@ -171,6 +172,14 @@ impl LinearApiClient for HyperLinearApiClient {
                     }
                     project {
                       name
+                    }
+                    attachments(first: 50) {
+                      nodes {
+                        id
+                        title
+                        subtitle
+                        url
+                      }
                     }
                     comments(first: 50) {
                       nodes {
@@ -888,6 +897,7 @@ fn issue_content_from_node(node: &Value) -> Option<LinearIssueContent> {
             .and_then(|value| value.as_str())
             .map(str::to_string),
         comments: issue_comments_from_node(node),
+        attachments: issue_attachments_from_node(node),
         labels: linear_label_names(node.get("labels")),
         project: linear_project_name(node.get("project")),
     })
@@ -924,6 +934,40 @@ fn issue_comments_from_node(node: &Value) -> Vec<LinearComment> {
         .and_then(|nodes| nodes.as_array())
         .map(|nodes| nodes.iter().filter_map(linear_comment_from_node).collect())
         .unwrap_or_default()
+}
+
+fn issue_attachments_from_node(node: &Value) -> Vec<LinearAttachment> {
+    node.get("attachments")
+        .and_then(|attachments| attachments.get("nodes"))
+        .and_then(Value::as_array)
+        .map(|nodes| nodes.iter().filter_map(linear_attachment_from_node).collect())
+        .unwrap_or_default()
+}
+
+fn linear_attachment_from_node(node: &Value) -> Option<LinearAttachment> {
+    let id = node.get("id")?.as_str()?.to_string();
+    let url = node.get("url")?.as_str()?.trim().to_string();
+    if url.is_empty() {
+        return None;
+    }
+    let title = node
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&url)
+        .to_string();
+    Some(LinearAttachment {
+        id,
+        title,
+        subtitle: node
+            .get("subtitle")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        url,
+    })
 }
 
 fn linear_comment_from_node(node: &Value) -> Option<LinearComment> {
@@ -1299,6 +1343,16 @@ mod tests {
                 "labels": { "nodes": [{ "name": "backend" }, { "name": "urgent" }] },
                 "project": { "name": "Platform" },
                 "updatedAt": "2026-06-18T08:00:00Z",
+                "attachments": {
+                    "nodes": [
+                        {
+                            "id": "attachment-1",
+                            "title": "Design mock",
+                            "subtitle": "Figma",
+                            "url": "https://uploads.linear.app/design.png"
+                        }
+                    ]
+                },
                 "comments": {
                     "nodes": [
                         {
@@ -1326,6 +1380,12 @@ mod tests {
         assert_eq!(content.labels, vec!["backend".to_string(), "urgent".to_string()]);
         assert_eq!(content.project.as_deref(), Some("Platform"));
         assert_eq!(content.updated_at.as_deref(), Some("2026-06-18T08:00:00Z"));
+        assert_eq!(content.attachments.len(), 1);
+        assert_eq!(content.attachments[0].title, "Design mock");
+        assert_eq!(
+            content.attachments[0].url.as_str(),
+            "https://uploads.linear.app/design.png"
+        );
         assert_eq!(content.comments.len(), 1);
         assert_eq!(content.comments[0].id, "comment-1");
         assert_eq!(content.comments[0].body, "Looks good");

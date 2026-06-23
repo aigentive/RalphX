@@ -46,7 +46,7 @@ const writableTransition: TicketTransitionOption = {
 
 function renderSheet(
   overrides: {
-    ticket?: TicketSummary;
+    ticket?: TicketSummary | TicketDetail;
     capabilities?: TicketingCapabilities;
     associations?: TicketAssociations;
     onStartWork?: () => void;
@@ -743,6 +743,69 @@ describe("TicketDetailSheet project chip", () => {
 });
 
 describe("TicketDetailSheet description images", () => {
+  it("renders ticket image attachments in the detail sheet", () => {
+    renderSheet({
+      ticket: {
+        ...baseTicket,
+        descriptionMarkdown: "",
+        descriptionText: "",
+        comments: [],
+        attachments: [
+          {
+            id: "att-1",
+            filename: "mockup.png",
+            mimeType: "image/png",
+            size: 2048,
+            url: "https://provider.example/mockup.png",
+          },
+        ],
+        transitions: [],
+      },
+    });
+
+    expect(screen.getByText("Attachments (1)")).toBeInTheDocument();
+    expect(screen.getByAltText("mockup.png")).toHaveAttribute(
+      "src",
+      "https://provider.example/mockup.png",
+    );
+    expect(screen.getByText("image/png · 2.0 KB")).toBeInTheDocument();
+  });
+
+  it("renders comment image attachments below the comment body", () => {
+    renderSheet({
+      ticket: {
+        ...baseTicket,
+        descriptionMarkdown: "",
+        descriptionText: "",
+        comments: [
+          {
+            id: "comment-1",
+            bodyMarkdown: "See attached",
+            bodyText: "See attached",
+            attachments: [
+              {
+                id: "comment-att-1",
+                filename: "comment-shot.jpg",
+                mimeType: "image/jpeg",
+                size: 1024,
+                url: "https://provider.example/comment-shot.jpg",
+              },
+            ],
+            replies: [],
+          },
+        ],
+        attachments: [],
+        transitions: [],
+      },
+    });
+
+    expect(screen.getByText("See attached")).toBeInTheDocument();
+    expect(screen.getByAltText("comment-shot.jpg")).toHaveAttribute(
+      "src",
+      "https://provider.example/comment-shot.jpg",
+    );
+  });
+
   it("falls back to an open-in-browser button when a description image fails to load", async () => {
     openUrlMock.mockClear();
     render(

@@ -229,6 +229,7 @@ impl ClickUpApiClient for TestClickUpClient {
             assignees: Vec::new(),
             tags: Vec::new(),
             comments: Vec::new(),
+            attachments: Vec::new(),
             updated_at: None,
             space_id: Some("space-1".to_string()),
             list_name: Some("Sprint".to_string()),
@@ -273,6 +274,7 @@ impl ClickUpApiClient for TestClickUpClient {
             author_id: Some(42),
             author_name: Some("dev".to_string()),
             created_at: None,
+            attachments: Vec::new(),
             replies: Vec::new(),
         })
     }

@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import type {
   TicketAssociationItem,
   TicketAssociations,
+  TicketAttachment,
   TicketComment,
   TicketDeepLink,
   TicketDetail,
@@ -528,6 +529,87 @@ function TicketMarkdownImage({ src, alt }: ComponentProps<"img">) {
   );
 }
 
+function isImageAttachment(attachment: TicketAttachment): boolean {
+  const mimeType = attachment.mimeType?.toLowerCase() ?? "";
+  if (mimeType.startsWith("image/")) {
+    return true;
+  }
+  return /\.(avif|gif|jpe?g|png|webp|svg)$/i.test(attachment.filename);
+}
+
+function formatAttachmentSize(size: number | null | undefined): string | null {
+  if (typeof size !== "number" || !Number.isFinite(size) || size <= 0) {
+    return null;
+  }
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function TicketAttachmentPreview({ attachment }: { attachment: TicketAttachment }) {
+  const [failed, setFailed] = useState(false);
+  const isImage = isImageAttachment(attachment);
+  const sizeLabel = formatAttachmentSize(attachment.size);
+  const canOpen = Boolean(attachment.url);
+  const meta = [attachment.mimeType, sizeLabel].filter(Boolean).join(" · ");
+
+  return (
+    <article
+      className="overflow-hidden rounded-md"
+      style={{
+        backgroundColor: "var(--bg-surface)",
+        borderColor: "var(--border-subtle)",
+        borderStyle: "solid",
+        borderWidth: "1px",
+      }}
+    >
+      {isImage && attachment.url && !failed && (
+        <button
+          type="button"
+          className="block w-full bg-[var(--bg-elevated)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
+          onClick={() => void openExternalTicketUrl(attachment.url ?? "")}
+          aria-label={`Open attachment ${attachment.filename}`}
+        >
+          <img
+            src={attachment.url}
+            alt={attachment.filename}
+            loading="lazy"
+            className="max-h-64 w-full object-contain"
+            onError={() => setFailed(true)}
+          />
+        </button>
+      )}
+      <div className="flex items-center justify-between gap-3 p-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <ImageIcon className="h-4 w-4 shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-[var(--text-primary)]">
+              {attachment.filename}
+            </p>
+            {meta && <p className="mt-0.5 text-xs text-[var(--text-muted)]">{meta}</p>}
+          </div>
+        </div>
+        {canOpen && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 shrink-0 gap-1 px-2 text-xs"
+            onClick={() => void openExternalTicketUrl(attachment.url ?? "")}
+          >
+            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+            Open
+          </Button>
+        )}
+      </div>
+    </article>
+  );
+}
+
 function TicketMarkdown({ content }: { content: string }) {
   return (
     <div className="prose prose-sm prose-invert max-w-none text-sm leading-6 text-[var(--text-secondary)] prose-code:before:content-none prose-code:after:content-none">
@@ -693,6 +775,7 @@ export function TicketDetailSheet({
       bodyText: bodyMarkdown,
       createdAt,
       updatedAt: createdAt,
+      attachments: [],
     };
     setLocalComments((current) => [...current, optimisticComment]);
     try {
@@ -929,6 +1012,22 @@ export function TicketDetailSheet({
                   </div>
                 </section>
 
+                {"attachments" in ticket && ticket.attachments.length > 0 && (
+                  <section className="mt-6">
+                    <h3 className="text-xs font-semibold uppercase text-[var(--text-muted)]">
+                      Attachments ({ticket.attachments.length})
+                    </h3>
+                    <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                      {ticket.attachments.map((attachment, index) => (
+                        <TicketAttachmentPreview
+                          key={attachment.id ?? `${attachment.filename}:${index}`}
+                          attachment={attachment}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                )}
+
                 <section ref={commentsSectionRef} className="mt-6">
                   <h3 className="text-xs font-semibold uppercase text-[var(--text-muted)]">
                     Comments ({sortedComments.length})
@@ -945,6 +1044,7 @@ export function TicketDetailSheet({
                         const commentThreadId = comment.id ?? `comment-${index}`;
                         const threadOpen = expandedThreadIds.has(commentThreadId);
                         const replies = comment.replies ?? [];
+                        const commentAttachments = comment.attachments ?? [];
                         return (
                           <article
                             key={commentThreadId}
@@ -988,6 +1088,16 @@ export function TicketDetailSheet({
                             <div className="mt-2">
                               <TicketMarkdown content={comment.bodyMarkdown || comment.bodyText} />
                             </div>
+                            {commentAttachments.length > 0 && (
+                              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                {commentAttachments.map((attachment, attachmentIndex) => (
+                                  <TicketAttachmentPreview
+                                    key={attachment.id ?? `${attachment.filename}:${attachmentIndex}`}
+                                    attachment={attachment}
+                                  />
+                                ))}
+                              </div>
+                            )}
                             {replies.length > 0 && (
                               <div className="mt-3">
                                 <Button
@@ -1005,35 +1115,48 @@ export function TicketDetailSheet({
                                 </Button>
                                 {threadOpen && (
                                   <div className="mt-2 space-y-2 border-l pl-3" style={{ borderLeftColor: "var(--border-subtle)" }}>
-                                    {replies.map((reply, replyIndex) => (
-                                      <article
-                                        key={reply.id ?? `${commentThreadId}-reply-${replyIndex}`}
-                                        className="rounded-md p-3"
-                                        style={{
-                                          backgroundColor: "var(--bg-elevated)",
-                                          borderColor: "var(--border-subtle)",
-                                          borderStyle: "solid",
-                                          borderWidth: "1px",
-                                        }}
-                                      >
-                                        <div className="flex items-center justify-between gap-2">
-                                          <p className="text-xs font-medium text-[var(--text-secondary)]">
-                                            {reply.author?.name ?? "Provider reply"}
-                                          </p>
-                                          {reply.createdAt && (
-                                            <time
-                                              className="text-[11px] text-[var(--text-muted)]"
-                                              dateTime={reply.createdAt}
-                                            >
-                                              {formatTicketDate(reply.createdAt)}
-                                            </time>
+                                    {replies.map((reply, replyIndex) => {
+                                      const replyAttachments = reply.attachments ?? [];
+                                      return (
+                                        <article
+                                          key={reply.id ?? `${commentThreadId}-reply-${replyIndex}`}
+                                          className="rounded-md p-3"
+                                          style={{
+                                            backgroundColor: "var(--bg-elevated)",
+                                            borderColor: "var(--border-subtle)",
+                                            borderStyle: "solid",
+                                            borderWidth: "1px",
+                                          }}
+                                        >
+                                          <div className="flex items-center justify-between gap-2">
+                                            <p className="text-xs font-medium text-[var(--text-secondary)]">
+                                              {reply.author?.name ?? "Provider reply"}
+                                            </p>
+                                            {reply.createdAt && (
+                                              <time
+                                                className="text-[11px] text-[var(--text-muted)]"
+                                                dateTime={reply.createdAt}
+                                              >
+                                                {formatTicketDate(reply.createdAt)}
+                                              </time>
+                                            )}
+                                          </div>
+                                          <div className="mt-2">
+                                            <TicketMarkdown content={reply.bodyMarkdown || reply.bodyText} />
+                                          </div>
+                                          {replyAttachments.length > 0 && (
+                                            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                              {replyAttachments.map((attachment, attachmentIndex) => (
+                                                <TicketAttachmentPreview
+                                                  key={attachment.id ?? `${attachment.filename}:${attachmentIndex}`}
+                                                  attachment={attachment}
+                                                />
+                                              ))}
+                                            </div>
                                           )}
-                                        </div>
-                                        <div className="mt-2">
-                                          <TicketMarkdown content={reply.bodyMarkdown || reply.bodyText} />
-                                        </div>
-                                      </article>
-                                    ))}
+                                        </article>
+                                      );
+                                    })}
                                   </div>
                                 )}
                               </div>

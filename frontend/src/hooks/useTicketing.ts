@@ -249,6 +249,7 @@ function optimisticComment(input: AddTicketCommentMutationInput & { clientOperat
     bodyText: input.bodyMarkdown,
     createdAt,
     updatedAt: createdAt,
+    attachments: [],
   };
 }
 

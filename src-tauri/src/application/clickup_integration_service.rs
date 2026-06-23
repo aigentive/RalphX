@@ -73,7 +73,18 @@ pub struct ClickUpComment {
     pub author_id: Option<i64>,
     pub author_name: Option<String>,
     pub created_at: Option<String>,
+    pub attachments: Vec<ClickUpAttachment>,
     pub replies: Vec<ClickUpComment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpAttachment {
+    pub id: Option<String>,
+    pub filename: String,
+    pub mime_type: Option<String>,
+    pub size: Option<i64>,
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -110,6 +121,7 @@ pub struct ClickUpTaskContent {
     pub assignees: Vec<String>,
     pub tags: Vec<String>,
     pub comments: Vec<ClickUpComment>,
+    pub attachments: Vec<ClickUpAttachment>,
     pub updated_at: Option<String>,
     pub space_id: Option<String>,
     pub list_name: Option<String>,
@@ -272,6 +284,7 @@ impl ClickUpApiClient for EmptyClickUpApiClient {
             assignees: Vec::new(),
             tags: Vec::new(),
             comments: Vec::new(),
+            attachments: Vec::new(),
             updated_at: None,
             space_id: None,
             list_name: None,
@@ -335,6 +348,7 @@ impl ClickUpApiClient for EmptyClickUpApiClient {
             author_id: None,
             author_name: None,
             created_at: None,
+            attachments: Vec::new(),
             replies: Vec::new(),
         })
     }

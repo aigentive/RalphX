@@ -256,6 +256,15 @@ async fn fetch_task_detail_maps_fields() {
     let mut task = sample_task("abc123", "done");
     task["description"] = json!("Detailed body");
     task["creator"] = json!({ "id": 1, "username": "owner" });
+    task["attachments"] = json!([
+        {
+            "id": "att-1",
+            "filename": "mockup.png",
+            "mime_type": "image/png",
+            "size": 2048,
+            "url": "https://files.example/mockup.png"
+        }
+    ]);
     let fake = FakeClickUpRequester::new(vec![
         Ok(task),
         Ok(json!({
@@ -265,7 +274,16 @@ async fn fetch_task_detail_maps_fields() {
                     "comment_text": "Looks loaded",
                     "user": { "id": 7, "username": "Reviewer" },
                     "date": "1700000000000",
-                    "reply_count": 1
+                    "reply_count": 1,
+                    "attachments": [
+                        {
+                            "id": "comment-att-1",
+                            "filename": "comment-shot.jpg",
+                            "mime_type": "image/jpeg",
+                            "size": 1024,
+                            "url": "https://files.example/comment-shot.jpg"
+                        }
+                    ]
                 },
                 {
                     "id": "fragmented",
@@ -293,10 +311,19 @@ async fn fetch_task_detail_maps_fields() {
     assert_eq!(content.status_category.as_deref(), Some("done"));
     assert_eq!(content.creator.as_deref(), Some("owner"));
     assert_eq!(content.assignees, vec!["dev".to_string()]);
+    assert_eq!(content.attachments.len(), 1);
+    assert_eq!(content.attachments[0].filename, "mockup.png");
+    assert_eq!(content.attachments[0].mime_type.as_deref(), Some("image/png"));
+    assert_eq!(
+        content.attachments[0].url.as_deref(),
+        Some("https://files.example/mockup.png")
+    );
     assert_eq!(content.comments.len(), 2);
     assert_eq!(content.comments[0].id, "12345");
     assert_eq!(content.comments[0].body, "Looks loaded");
     assert_eq!(content.comments[0].author_name.as_deref(), Some("Reviewer"));
+    assert_eq!(content.comments[0].attachments.len(), 1);
+    assert_eq!(content.comments[0].attachments[0].filename, "comment-shot.jpg");
     assert_eq!(
         content.comments[0].created_at.as_deref(),
         Some("2023-11-14T22:13:20+00:00"),
