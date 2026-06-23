@@ -5,7 +5,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setRalphxTerminalDockDragActive } from "@/lib/internalDragTypes";
-import { AgentComposerSurface } from "./AgentComposerSurface";
+import {
+  AgentComposerProjectLine,
+  AgentComposerSurface,
+} from "./AgentComposerSurface";
 
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({
@@ -240,6 +243,69 @@ describe("AgentComposerSurface", () => {
     expect(runtimePopover).toHaveClass("overflow-y-auto");
     expect(runtimePopover).toHaveClass("overscroll-contain");
     expect(runtimePopover).not.toHaveClass("overflow-hidden");
+  });
+
+  it("filters and selects projects from the compact project line", () => {
+    const onValueChange = vi.fn();
+    render(
+      <TooltipProvider>
+        <AgentComposerProjectLine
+          value="project-1"
+          onValueChange={onValueChange}
+          placeholder="Project"
+          testId="agent-composer-project-line"
+          options={[
+            {
+              id: "project-1",
+              label: "RalphX",
+              description: "/work/ralphx",
+            },
+            {
+              id: "project-2",
+              label: "PrintSpeak",
+              description: "/work/printspeak",
+            },
+          ]}
+        />
+      </TooltipProvider>,
+    );
+
+    fireEvent.click(screen.getByTestId("agent-composer-project-line"));
+    fireEvent.change(screen.getByPlaceholderText("Search projects..."), {
+      target: { value: "print" },
+    });
+
+    expect(screen.getByText("PrintSpeak")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("PrintSpeak"));
+
+    expect(onValueChange).toHaveBeenCalledWith("project-2");
+  });
+
+  it("shows an empty state when no compact project line results match", () => {
+    render(
+      <TooltipProvider>
+        <AgentComposerProjectLine
+          value=""
+          onValueChange={vi.fn()}
+          placeholder="Choose project"
+          testId="agent-composer-project-line-empty"
+          options={[
+            {
+              id: "project-1",
+              label: "RalphX",
+              description: "/work/ralphx",
+            },
+          ]}
+        />
+      </TooltipProvider>,
+    );
+
+    fireEvent.click(screen.getByTestId("agent-composer-project-line-empty"));
+    fireEvent.change(screen.getByPlaceholderText("Search projects..."), {
+      target: { value: "missing" },
+    });
+
+    expect(screen.getByText("No projects found")).toBeInTheDocument();
   });
 
   it("refreshes mode state when the mode menu opens", () => {

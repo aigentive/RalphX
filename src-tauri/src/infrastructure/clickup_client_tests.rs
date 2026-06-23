@@ -363,6 +363,73 @@ async fn filtered_tasks_matches_key_status_list_and_assignee_metadata() {
 }
 
 #[tokio::test]
+async fn filtered_tasks_matches_status_list_and_assignee_queries() {
+    let fake = FakeClickUpRequester::new(vec![
+        Ok(json!({
+            "tasks": [
+                {
+                    "id": "status-match",
+                    "name": "Unrelated title",
+                    "status": { "status": "Awaiting Staging", "type": "custom" },
+                    "assignees": [],
+                    "tags": [],
+                    "list": { "name": "Backlog" }
+                }
+            ],
+            "last_page": true
+        })),
+        Ok(json!({
+            "tasks": [
+                {
+                    "id": "list-match",
+                    "name": "Unrelated title",
+                    "status": { "status": "to do", "type": "open" },
+                    "assignees": [],
+                    "tags": [],
+                    "list": { "name": "Current Sprint" }
+                }
+            ],
+            "last_page": true
+        })),
+        Ok(json!({
+            "tasks": [
+                {
+                    "id": "assignee-match",
+                    "name": "Unrelated title",
+                    "status": { "status": "to do", "type": "open" },
+                    "assignees": [{ "email": "adrian@example.com" }],
+                    "tags": [],
+                    "list": { "name": "Backlog" }
+                }
+            ],
+            "last_page": true
+        })),
+    ]);
+
+    for (query, expected_id) in [
+        ("awaiting staging", "status-match"),
+        ("current sprint", "list-match"),
+        ("adrian@example.com", "assignee-match"),
+    ] {
+        let tasks = fetch_filtered_tasks(
+            &fake,
+            "tok",
+            "9000",
+            &[],
+            ClickUpTaskListOptions {
+                query: Some(query.to_string()),
+                limit: Some(10),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, expected_id);
+    }
+}
+
+#[tokio::test]
 async fn filtered_tasks_stops_inside_page_when_limit_is_reached() {
     let fake = FakeClickUpRequester::new(vec![Ok(json!({
         "tasks": [

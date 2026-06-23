@@ -384,11 +384,19 @@ describe("agentSessionStore", () => {
       const s1 = useAgentSessionStore.getState();
       expect(s1.runtimeByConversationId.c1.modelId).toBe("opus");
       expect(s1.lastRuntimeByProjectId.p1.modelId).toBe("opus");
+      expect(s1.lastModelEffortByProvider.claude).toEqual({
+        modelId: "opus",
+        effort: "xhigh",
+      });
 
       setLastRuntimeForProject("p2", { provider: "codex", modelId: "gpt-5.4-mini" });
       expect(useAgentSessionStore.getState().lastRuntimeByProjectId.p2.modelId).toBe(
         "gpt-5.4-mini",
       );
+      expect(useAgentSessionStore.getState().lastModelEffortByProvider.codex).toEqual({
+        modelId: "gpt-5.4-mini",
+        effort: "medium",
+      });
     });
 
     it("remembers branch base cache and selected branch per project", () => {
