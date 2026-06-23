@@ -4,6 +4,8 @@ use std::sync::Arc;
 use chrono::Utc;
 use tauri::{AppHandle, Runtime, State};
 
+use crate::application::ticket_canonical_branch::ensure_ticket_canonical_branch;
+use crate::application::ticketing_pr_summary::{ticket_pr_branch_summary, TicketPrBranchSummary};
 use crate::application::{
     agent_conversation_jira_issue, agent_conversation_linear_issue,
     agent_conversation_start_service::{
@@ -11,16 +13,13 @@ use crate::application::{
     },
     AppState, AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
     ClickUpComment, ClickUpSpace, ClickUpStatus, ClickUpTaskContent, ClickUpTaskSummary,
-    JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
-    LinearComment, LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary,
-    LinearLabel, LinearWorkflowState,
-    TauriTicketingEventSink, TeamService, TicketAssignRequest, TicketCommentRequest,
-    TicketSetLabelsRequest, TicketTransitionRequest,
-    TicketingCommentResult, TicketingLabelResult, TicketingMutationResult, TicketingPersonResult,
-    TicketingService, TicketingTicketIdentity, TicketingTransitionOption,
+    ClickUpUser, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary, LinearComment,
+    LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary, LinearLabel,
+    LinearWorkflowState, TauriTicketingEventSink, TeamService, TicketAssignRequest,
+    TicketCommentRequest, TicketSetLabelsRequest, TicketTransitionRequest, TicketingCommentResult,
+    TicketingLabelResult, TicketingMutationResult, TicketingPersonResult, TicketingService,
+    TicketingTicketIdentity, TicketingTransitionOption,
 };
-use crate::application::ticket_canonical_branch::ensure_ticket_canonical_branch;
-use crate::application::ticketing_pr_summary::{ticket_pr_branch_summary, TicketPrBranchSummary};
 use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, agent_workspace_response_for_state,
     SendAgentMessageResponse, StartAgentConversationResponse,
@@ -46,7 +45,6 @@ pub use types::*;
 const PROVIDER_JIRA: &str = "jira";
 const PROVIDER_LINEAR: &str = "linear";
 const PROVIDER_CLICKUP: &str = "clickup";
-
 
 #[derive(Debug, Clone)]
 enum ProjectTicketLink {
@@ -89,7 +87,12 @@ pub async fn list_ticketing_containers(
             .atlassian_integration_service
             .list_jira_projects(100)
             .await
-            .map(|projects| projects.into_iter().map(jira_project_to_container).collect()),
+            .map(|projects| {
+                projects
+                    .into_iter()
+                    .map(jira_project_to_container)
+                    .collect()
+            }),
         PROVIDER_LINEAR => state
             .linear_integration_service
             .list_projects(100)
@@ -238,12 +241,20 @@ pub async fn list_tickets(
             let space_ids = container_selected_key(query.container_id.as_deref())
                 .map(|space_id| vec![space_id.to_string()])
                 .unwrap_or_default();
+            let current_user = state.clickup_integration_service.current_user().await.ok();
             state
                 .clickup_integration_service
                 .list_tasks(space_ids)
                 .await?
                 .into_iter()
-                .map(clickup_summary_to_ticket)
+                .map(|summary| {
+                    let current_user_assigned = current_user
+                        .as_ref()
+                        .is_some_and(|user| clickup_summary_assigned_to_user(&summary, user));
+                    let mut ticket = clickup_summary_to_ticket(summary);
+                    ticket.current_user_assigned = current_user_assigned;
+                    ticket
+                })
                 .collect()
         }
         _ => unreachable!("provider validated above"),
@@ -365,9 +376,10 @@ fn pull_request_association_items(
                 Some(number) => format!("PR #{number}"),
                 None => summary.branch_name.clone(),
             };
-            let status = summary.pr_status.clone().or_else(|| {
-                (!summary.branch_name.trim().is_empty()).then(|| "branch".to_string())
-            });
+            let status = summary
+                .pr_status
+                .clone()
+                .or_else(|| (!summary.branch_name.trim().is_empty()).then(|| "branch".to_string()));
             TicketAssociationItemResponse {
                 id: summary
                     .pr_url
@@ -405,7 +417,10 @@ pub async fn get_conversation_ticket(
         return Ok(Some(ConversationTicketResponse {
             ticket_ref: TicketRefInput {
                 provider: PROVIDER_JIRA.to_string(),
-                id: link.issue_id.clone().unwrap_or_else(|| link.issue_key.clone()),
+                id: link
+                    .issue_id
+                    .clone()
+                    .unwrap_or_else(|| link.issue_key.clone()),
                 key: Some(link.issue_key),
             },
             project_id: link.project_id.as_str().to_string(),
@@ -670,7 +685,12 @@ pub async fn list_ticket_labels(
             .linear_integration_service
             .list_issue_team_labels(&ticket_ref.id)
             .await
-            .map(|labels| labels.into_iter().map(ticket_label_option_response).collect()),
+            .map(|labels| {
+                labels
+                    .into_iter()
+                    .map(ticket_label_option_response)
+                    .collect()
+            }),
         // Jira labels and ClickUp tags are free-text with no fixed selectable list,
         // so neither exposes label options (the pick-list gating stays Linear-only).
         _ => Ok(Vec::new()),
@@ -881,6 +901,7 @@ fn jira_summary_to_ticket(summary: AtlassianResourceSummary) -> TicketSummaryRes
         open_pr_number: None,
         open_pr_url: None,
         open_pr_status: None,
+        current_user_assigned: false,
     }
 }
 
@@ -972,6 +993,7 @@ fn jira_issue_detail_to_ticket(issue: JiraIssueDetail) -> TicketSummaryResponse 
         open_pr_number: None,
         open_pr_url: None,
         open_pr_status: None,
+        current_user_assigned: false,
     }
 }
 
@@ -1007,6 +1029,7 @@ fn linear_summary_to_ticket(summary: LinearIssueSummary) -> TicketSummaryRespons
         open_pr_number: None,
         open_pr_url: None,
         open_pr_status: None,
+        current_user_assigned: false,
     }
 }
 
@@ -1122,7 +1145,12 @@ fn filter_ticket_summaries(
 }
 
 fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFiltersInput) -> bool {
-    if let Some(text) = filters.text.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(text) = filters
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         let needle = text.to_ascii_lowercase();
         let matches_text = ticket.title.to_ascii_lowercase().contains(&needle)
             || ticket
@@ -1138,7 +1166,11 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
         }
     }
 
-    if let Some(state_ids) = filters.state_ids.as_ref().filter(|values| !values.is_empty()) {
+    if let Some(state_ids) = filters
+        .state_ids
+        .as_ref()
+        .filter(|values| !values.is_empty())
+    {
         let ticket_state_id = ticket.state.id.as_str();
         let ticket_state_category = ticket.state.category.as_str();
         if !state_ids
@@ -1159,7 +1191,10 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
             return false;
         };
         let assignee = assignee.to_ascii_lowercase();
-        let matches_assignee = ticket_assignee.name.to_ascii_lowercase().contains(&assignee)
+        let matches_assignee = ticket_assignee
+            .name
+            .to_ascii_lowercase()
+            .contains(&assignee)
             || ticket_assignee
                 .id
                 .as_deref()
@@ -1179,7 +1214,10 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
 
     if let Some(labels) = filters.labels.as_ref().filter(|values| !values.is_empty()) {
         if !labels.iter().all(|required_label| {
-            ticket.labels.iter().any(|label| label.eq_ignore_ascii_case(required_label))
+            ticket
+                .labels
+                .iter()
+                .any(|label| label.eq_ignore_ascii_case(required_label))
         }) {
             return false;
         }
@@ -1209,6 +1247,7 @@ fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResp
         open_pr_number: None,
         open_pr_url: None,
         open_pr_status: None,
+        current_user_assigned: false,
     };
     TicketDetailResponse {
         summary,
@@ -1228,6 +1267,7 @@ fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResp
                 body_text: comment.body_text,
                 created_at: comment.created_at,
                 updated_at: comment.updated_at,
+                replies: Vec::new(),
             })
             .collect(),
         attachments: content
@@ -1267,6 +1307,7 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
         open_pr_number: None,
         open_pr_url: None,
         open_pr_status: None,
+        current_user_assigned: false,
     };
     TicketDetailResponse {
         summary,
@@ -1353,7 +1394,20 @@ fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryRespon
         open_pr_number: None,
         open_pr_url: None,
         open_pr_status: None,
+        current_user_assigned: false,
     }
+}
+
+fn clickup_summary_assigned_to_user(summary: &ClickUpTaskSummary, user: &ClickUpUser) -> bool {
+    summary.assignees.iter().any(|assignee| {
+        user.username
+            .as_deref()
+            .is_some_and(|username| assignee.eq_ignore_ascii_case(username))
+            || user
+                .email
+                .as_deref()
+                .is_some_and(|email| assignee.eq_ignore_ascii_case(email))
+    })
 }
 
 /// Map full ClickUp task content into a ticket detail. Mirrors
@@ -1395,6 +1449,7 @@ fn clickup_content_to_detail(content: ClickUpTaskContent) -> TicketDetailRespons
         open_pr_number: None,
         open_pr_url: None,
         open_pr_status: None,
+        current_user_assigned: false,
     };
     TicketDetailResponse {
         summary,
@@ -1421,6 +1476,11 @@ fn ticket_comment_from_clickup_comment(comment: ClickUpComment) -> TicketComment
         created_at: comment.created_at,
         // ClickUp comment payloads do not carry an updated timestamp.
         updated_at: None,
+        replies: comment
+            .replies
+            .into_iter()
+            .map(ticket_comment_from_clickup_comment)
+            .collect(),
     }
 }
 
@@ -1601,6 +1661,7 @@ fn ticket_comment_response(comment: TicketingCommentResult) -> TicketCommentResp
         body_text: comment.body_text,
         created_at: comment.created_at,
         updated_at: comment.updated_at,
+        replies: Vec::new(),
     }
 }
 
@@ -1612,6 +1673,7 @@ fn ticket_comment_from_linear_comment(comment: LinearComment) -> TicketCommentRe
         body_text: comment.body,
         created_at: comment.created_at,
         updated_at: comment.updated_at,
+        replies: Vec::new(),
     }
 }
 
@@ -1698,8 +1760,14 @@ async fn linked_agent_conversation_associations_for_ticket(
     project_id: &ProjectId,
     reference: &ComposerIntegrationReference,
 ) -> Result<Vec<TicketAssociationItemResponse>, String> {
-    let associations = project_ticket_conversation_associations(state, provider, project_id).await?;
-    linked_agent_conversation_associations_from_batch(provider, project_id, reference, &associations)
+    let associations =
+        project_ticket_conversation_associations(state, provider, project_id).await?;
+    linked_agent_conversation_associations_from_batch(
+        provider,
+        project_id,
+        reference,
+        &associations,
+    )
 }
 
 async fn project_ticket_conversation_associations(

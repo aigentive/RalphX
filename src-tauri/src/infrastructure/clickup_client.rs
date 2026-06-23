@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request};
 use hyper_rustls::HttpsConnector;
@@ -338,7 +339,9 @@ pub(crate) async fn fetch_task_detail<C: ClickUpJsonRequester + ?Sized>(
         "{CLICKUP_API_BASE}/task/{}",
         percent_encode_path_segment(task_id)
     );
-    let value = client.request_json(Method::GET, task_url, token, None).await?;
+    let value = client
+        .request_json(Method::GET, task_url, token, None)
+        .await?;
     let mut content = task_content_from_value(&value)
         .ok_or_else(|| "ClickUp task response was missing task details".to_string())?;
     let comments_url = format!(
@@ -349,7 +352,26 @@ pub(crate) async fn fetch_task_detail<C: ClickUpJsonRequester + ?Sized>(
         .request_json(Method::GET, comments_url, token, None)
         .await?;
     content.comments = clickup_comments_from_value(&comments);
+    for comment in &mut content.comments {
+        if clickup_comment_reply_count(&comments, &comment.id) == 0 {
+            continue;
+        }
+        comment.replies = fetch_clickup_comment_replies(client, token, &comment.id).await?;
+    }
     Ok(content)
+}
+
+async fn fetch_clickup_comment_replies<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    comment_id: &str,
+) -> Result<Vec<ClickUpComment>, String> {
+    let url = format!(
+        "{CLICKUP_API_BASE}/comment/{}/reply",
+        percent_encode_path_segment(comment_id)
+    );
+    let value = client.request_json(Method::GET, url, token, None).await?;
+    Ok(clickup_comments_from_value(&value))
 }
 
 pub(crate) async fn fetch_space_statuses<C: ClickUpJsonRequester + ?Sized>(
@@ -382,7 +404,12 @@ pub(crate) async fn put_task_status<C: ClickUpJsonRequester + ?Sized>(
         percent_encode_path_segment(task_id)
     );
     client
-        .request_json(Method::PUT, url, token, Some(json!({ "status": status_name })))
+        .request_json(
+            Method::PUT,
+            url,
+            token,
+            Some(json!({ "status": status_name })),
+        )
         .await
         .map(|_| ())
 }
@@ -467,7 +494,8 @@ pub(crate) async fn create_task_comment<C: ClickUpJsonRequester + ?Sized>(
         body: body_markdown.to_string(),
         author_id: None,
         author_name: None,
-        created_at: value.get("date").and_then(json_scalar_to_string),
+        created_at: value.get("date").and_then(clickup_timestamp_to_rfc3339),
+        replies: Vec::new(),
     })
 }
 
@@ -484,17 +512,24 @@ pub(crate) async fn apply_task_tags<C: ClickUpJsonRequester + ?Sized>(
         "{CLICKUP_API_BASE}/task/{}",
         percent_encode_path_segment(task_id)
     );
-    let task = client.request_json(Method::GET, task_url, token, None).await?;
+    let task = client
+        .request_json(Method::GET, task_url, token, None)
+        .await?;
     let current = collect_tag_names(&task);
 
     for name in &current {
-        if !desired.iter().any(|wanted| wanted.eq_ignore_ascii_case(name)) {
+        if !desired
+            .iter()
+            .any(|wanted| wanted.eq_ignore_ascii_case(name))
+        {
             let url = format!(
                 "{CLICKUP_API_BASE}/task/{}/tag/{}",
                 percent_encode_path_segment(task_id),
                 percent_encode_path_segment(name)
             );
-            client.request_json(Method::DELETE, url, token, None).await?;
+            client
+                .request_json(Method::DELETE, url, token, None)
+                .await?;
         }
     }
     for name in &desired {
@@ -502,7 +537,10 @@ pub(crate) async fn apply_task_tags<C: ClickUpJsonRequester + ?Sized>(
         if trimmed.is_empty() {
             continue;
         }
-        if !current.iter().any(|existing| existing.eq_ignore_ascii_case(trimmed)) {
+        if !current
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(trimmed))
+        {
             let url = format!(
                 "{CLICKUP_API_BASE}/task/{}/tag/{}",
                 percent_encode_path_segment(task_id),
@@ -582,16 +620,16 @@ fn task_summary_from_value(task: &Value) -> Option<ClickUpTaskSummary> {
         name: opt_str(task, "name").unwrap_or_default(),
         url: opt_str(task, "url"),
         status_name: status.and_then(|value| opt_str(value, "status")),
-        status_category: status_type
-            .as_deref()
-            .map(map_status_type_to_category),
+        status_category: status_type.as_deref().map(map_status_type_to_category),
         status_type,
         status_color: status.and_then(|value| opt_str(value, "color")),
         assignees: collect_assignee_names(task),
         tags: collect_tag_names(task),
         space_id: task.get("space").and_then(|value| opt_str(value, "id")),
         list_name: task.get("list").and_then(|value| opt_str(value, "name")),
-        updated_at: opt_str(task, "date_updated"),
+        updated_at: task
+            .get("date_updated")
+            .and_then(clickup_timestamp_to_rfc3339),
     })
 }
 
@@ -609,9 +647,7 @@ fn task_content_from_value(task: &Value) -> Option<ClickUpTaskContent> {
         url: opt_str(task, "url"),
         description,
         status_name: status.and_then(|value| opt_str(value, "status")),
-        status_category: status_type
-            .as_deref()
-            .map(map_status_type_to_category),
+        status_category: status_type.as_deref().map(map_status_type_to_category),
         status_type,
         creator: task
             .get("creator")
@@ -619,16 +655,20 @@ fn task_content_from_value(task: &Value) -> Option<ClickUpTaskContent> {
         assignees: collect_assignee_names(task),
         tags: collect_tag_names(task),
         comments: Vec::new(),
-        updated_at: opt_str(task, "date_updated"),
+        updated_at: task
+            .get("date_updated")
+            .and_then(clickup_timestamp_to_rfc3339),
         space_id: task.get("space").and_then(|value| opt_str(value, "id")),
         list_name: task.get("list").and_then(|value| opt_str(value, "name")),
     })
 }
 
 fn clickup_comments_from_value(value: &Value) -> Vec<ClickUpComment> {
-    value
+    let comments = value
         .get("comments")
         .and_then(Value::as_array)
+        .or_else(|| value.as_array());
+    comments
         .into_iter()
         .flatten()
         .filter_map(clickup_comment_from_value)
@@ -646,8 +686,23 @@ fn clickup_comment_from_value(value: &Value) -> Option<ClickUpComment> {
             .and_then(|user| user.get("id"))
             .and_then(Value::as_i64),
         author_name: value.get("user").and_then(clickup_user_display_name),
-        created_at: value.get("date").and_then(json_scalar_to_string),
+        created_at: value.get("date").and_then(clickup_timestamp_to_rfc3339),
+        replies: Vec::new(),
     })
+}
+
+fn clickup_comment_reply_count(comments_payload: &Value, comment_id: &str) -> i64 {
+    comments_payload
+        .get("comments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|comment| {
+            comment.get("id").and_then(json_scalar_to_string).as_deref() == Some(comment_id)
+        })
+        .and_then(|comment| comment.get("reply_count"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
 }
 
 fn clickup_comment_body(value: &Value) -> Option<String> {
@@ -681,9 +736,7 @@ fn collect_assignee_names(task: &Value) -> Vec<String> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|assignee| {
-            opt_str(assignee, "username").or_else(|| opt_str(assignee, "email"))
-        })
+        .filter_map(|assignee| opt_str(assignee, "username").or_else(|| opt_str(assignee, "email")))
         .collect()
 }
 
@@ -712,6 +765,15 @@ fn json_scalar_to_string(value: &Value) -> Option<String> {
         Value::Number(number) => Some(number.to_string()),
         _ => None,
     }
+}
+
+fn clickup_timestamp_to_rfc3339(value: &Value) -> Option<String> {
+    let raw = json_scalar_to_string(value)?;
+    if !raw.chars().all(|char| char.is_ascii_digit()) {
+        return Some(raw);
+    }
+    let millis = raw.parse::<i64>().ok()?;
+    DateTime::<Utc>::from_timestamp_millis(millis).map(|date| date.to_rfc3339())
 }
 
 fn percent_encode(value: &str) -> String {

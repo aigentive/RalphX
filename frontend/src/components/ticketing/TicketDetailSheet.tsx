@@ -528,6 +528,7 @@ export function TicketDetailSheet({
 }: TicketDetailSheetProps) {
   const [commentDraft, setCommentDraft] = useState("");
   const [localComments, setLocalComments] = useState<TicketComment[]>([]);
+  const [expandedThreadIds, setExpandedThreadIds] = useState<Set<string>>(() => new Set());
   const commentsSectionRef = useRef<HTMLElement | null>(null);
   const ticketIdentity = ticket ? `${ticket.ref.provider}:${ticket.ref.id}` : null;
   const providerComments = useMemo(
@@ -565,6 +566,7 @@ export function TicketDetailSheet({
 
   useEffect(() => {
     setLocalComments([]);
+    setExpandedThreadIds(new Set());
   }, [ticketIdentity]);
 
   useEffect(() => {
@@ -635,6 +637,18 @@ export function TicketDetailSheet({
       setLocalComments((current) => current.filter((comment) => comment.id !== optimisticComment.id));
       // Rollback and visible errors are owned by the mutation hook; preserve the draft.
     }
+  }
+
+  function toggleThread(commentId: string) {
+    setExpandedThreadIds((current) => {
+      const next = new Set(current);
+      if (next.has(commentId)) {
+        next.delete(commentId);
+      } else {
+        next.add(commentId);
+      }
+      return next;
+    });
   }
 
   return (
@@ -863,9 +877,12 @@ export function TicketDetailSheet({
                     <div className="mt-2 space-y-2">
                       {sortedComments.map((comment, index) => {
                         const isNew = isCommentNewSince(comment, seenUntil ?? null);
+                        const commentThreadId = comment.id ?? `comment-${index}`;
+                        const threadOpen = expandedThreadIds.has(commentThreadId);
+                        const replies = comment.replies ?? [];
                         return (
                           <article
-                            key={comment.id ?? `comment-${index}`}
+                            key={commentThreadId}
                             className="rounded-md p-3"
                             style={{
                               backgroundColor: "var(--bg-surface)",
@@ -906,6 +923,56 @@ export function TicketDetailSheet({
                             <div className="mt-2">
                               <TicketMarkdown content={comment.bodyMarkdown || comment.bodyText} />
                             </div>
+                            {replies.length > 0 && (
+                              <div className="mt-3">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 gap-1.5 px-2 text-xs"
+                                  onClick={() => toggleThread(commentThreadId)}
+                                  aria-expanded={threadOpen}
+                                >
+                                  <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+                                  {threadOpen
+                                    ? `Hide thread (${replies.length})`
+                                    : `View thread (${replies.length})`}
+                                </Button>
+                                {threadOpen && (
+                                  <div className="mt-2 space-y-2 border-l pl-3" style={{ borderLeftColor: "var(--border-subtle)" }}>
+                                    {replies.map((reply, replyIndex) => (
+                                      <article
+                                        key={reply.id ?? `${commentThreadId}-reply-${replyIndex}`}
+                                        className="rounded-md p-3"
+                                        style={{
+                                          backgroundColor: "var(--bg-elevated)",
+                                          borderColor: "var(--border-subtle)",
+                                          borderStyle: "solid",
+                                          borderWidth: "1px",
+                                        }}
+                                      >
+                                        <div className="flex items-center justify-between gap-2">
+                                          <p className="text-xs font-medium text-[var(--text-secondary)]">
+                                            {reply.author?.name ?? "Provider reply"}
+                                          </p>
+                                          {reply.createdAt && (
+                                            <time
+                                              className="text-[11px] text-[var(--text-muted)]"
+                                              dateTime={reply.createdAt}
+                                            >
+                                              {formatTicketDate(reply.createdAt)}
+                                            </time>
+                                          )}
+                                        </div>
+                                        <div className="mt-2">
+                                          <TicketMarkdown content={reply.bodyMarkdown || reply.bodyText} />
+                                        </div>
+                                      </article>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </article>
                         );
                       })}

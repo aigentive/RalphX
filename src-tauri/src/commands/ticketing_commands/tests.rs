@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use crate::application::{
     AppState, AtlassianJiraAttachment, AtlassianJiraComment, ClickUpComment, ClickUpSpace,
-    ClickUpStatus, ClickUpTaskContent, ClickUpTaskSummary, JiraIssueDetail, JiraProjectSummary,
-    JiraStatusSummary, LinearIntegrationSettings, TeamService, TeamStateTracker,
-    TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
+    ClickUpStatus, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail,
+    JiraProjectSummary, JiraStatusSummary, LinearIntegrationSettings, TeamService,
+    TeamStateTracker, TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
     TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
@@ -242,8 +242,44 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
     );
     assert_eq!(ticket.project.as_deref(), Some("Sprint 1"));
     assert_eq!(ticket.updated_at, "2026-06-20T12:00:00Z");
-    assert_eq!(ticket.url.as_deref(), Some("https://app.clickup.com/t/task-1"));
+    assert_eq!(
+        ticket.url.as_deref(),
+        Some("https://app.clickup.com/t/task-1")
+    );
     assert_eq!(ticket.association_count, 0);
+    assert!(!ticket.current_user_assigned);
+}
+
+#[test]
+fn clickup_summary_detects_current_user_assignment_by_username_or_email() {
+    let summary = ClickUpTaskSummary {
+        id: "task-1".to_string(),
+        custom_id: None,
+        name: "Current user task".to_string(),
+        url: None,
+        status_name: None,
+        status_type: None,
+        status_category: None,
+        status_color: None,
+        assignees: vec!["agent@example.com".to_string()],
+        tags: Vec::new(),
+        space_id: None,
+        list_name: Some("Sprint 42".to_string()),
+        updated_at: None,
+    };
+    let user = ClickUpUser {
+        id: 42,
+        username: Some("Agent".to_string()),
+        email: Some("agent@example.com".to_string()),
+    };
+    let other = ClickUpUser {
+        id: 43,
+        username: Some("Someone Else".to_string()),
+        email: Some("else@example.com".to_string()),
+    };
+
+    assert!(clickup_summary_assigned_to_user(&summary, &user));
+    assert!(!clickup_summary_assigned_to_user(&summary, &other));
 }
 
 #[test]
@@ -294,6 +330,14 @@ fn clickup_content_maps_description_comments_and_creator() {
             author_id: Some(7),
             author_name: Some("Commenter".to_string()),
             created_at: Some("2026-06-21T09:00:00Z".to_string()),
+            replies: vec![ClickUpComment {
+                id: "reply-1".to_string(),
+                body: "Thread reply".to_string(),
+                author_id: Some(8),
+                author_name: Some("Responder".to_string()),
+                created_at: Some("2026-06-21T09:05:00Z".to_string()),
+                replies: Vec::new(),
+            }],
         }],
         updated_at: Some("2026-06-21T10:00:00Z".to_string()),
         space_id: Some("space-1".to_string()),
@@ -338,6 +382,8 @@ fn clickup_content_maps_description_comments_and_creator() {
     assert_eq!(comment.id.as_deref(), Some("comment-1"));
     assert_eq!(comment.body_markdown, "Looks good");
     assert_eq!(comment.body_text, "Looks good");
+    assert_eq!(comment.replies.len(), 1);
+    assert_eq!(comment.replies[0].body_text, "Thread reply");
     assert_eq!(
         comment.author.as_ref().map(|person| person.name.as_str()),
         Some("Commenter")
@@ -551,7 +597,10 @@ fn mutation_response_maps_label_result_payload() {
 
     assert_eq!(response.operation.operation, "set_labels");
     let labels = response.labels.expect("labels payload should map through");
-    assert_eq!(labels.labels, vec!["bug".to_string(), "frontend".to_string()]);
+    assert_eq!(
+        labels.labels,
+        vec!["bug".to_string(), "frontend".to_string()]
+    );
 }
 
 #[test]
@@ -630,7 +679,13 @@ fn linear_detail_maps_provider_comments() {
 
     assert_eq!(detail.comments.len(), 1);
     assert_eq!(detail.comments[0].body_markdown, "Provider **comment**");
-    assert_eq!(detail.comments[0].author.as_ref().map(|author| author.name.as_str()), Some("Reviewer"));
+    assert_eq!(
+        detail.comments[0]
+            .author
+            .as_ref()
+            .map(|author| author.name.as_str()),
+        Some("Reviewer")
+    );
     assert_eq!(detail.summary.labels, vec!["backend".to_string()]);
     assert_eq!(detail.summary.project.as_deref(), Some("Platform"));
 }
@@ -650,7 +705,10 @@ fn jira_summary_maps_with_empty_metadata_and_provider_state() {
     assert_eq!(summary.ref_.id, "10001");
     assert_eq!(summary.ref_.key.as_deref(), Some("JRA-1"));
     assert_eq!(summary.title, "Investigate flaky merge");
-    assert_eq!(summary.url.as_deref(), Some("https://jira.test/browse/JRA-1"));
+    assert_eq!(
+        summary.url.as_deref(),
+        Some("https://jira.test/browse/JRA-1")
+    );
     // Jira search summaries carry no assignee/reporter/labels/project metadata.
     assert!(summary.assignee.is_none());
     assert!(summary.reporter.is_none());
@@ -720,7 +778,10 @@ fn linear_summary_prefers_provider_state_fields_when_present() {
         summary.assignee.as_ref().map(|person| person.name.as_str()),
         Some("Reef Agent")
     );
-    assert_eq!(summary.labels, vec!["frontend".to_string(), "linear".to_string()]);
+    assert_eq!(
+        summary.labels,
+        vec!["frontend".to_string(), "linear".to_string()]
+    );
     assert_eq!(summary.project.as_deref(), Some("Platform"));
     assert_eq!(summary.updated_at, "2026-06-20T12:00:00Z");
 }
@@ -826,8 +887,14 @@ fn jira_content_maps_description_comments_and_attachments() {
     );
     assert_eq!(detail.summary.updated_at, "2026-06-20T09:00:00Z");
     // No description_markdown means it falls back to the body.
-    assert_eq!(detail.description_markdown.as_deref(), Some("Body fallback"));
-    assert_eq!(detail.description_text.as_deref(), Some("Plain description"));
+    assert_eq!(
+        detail.description_markdown.as_deref(),
+        Some("Body fallback")
+    );
+    assert_eq!(
+        detail.description_text.as_deref(),
+        Some("Plain description")
+    );
     assert_eq!(
         detail.acceptance_criteria_markdown.as_deref(),
         Some("- criterion")
@@ -841,7 +908,10 @@ fn jira_content_maps_description_comments_and_attachments() {
     );
     assert_eq!(detail.attachments.len(), 1);
     assert_eq!(detail.attachments[0].filename, "diagram.png");
-    assert_eq!(detail.attachments[0].mime_type.as_deref(), Some("image/png"));
+    assert_eq!(
+        detail.attachments[0].mime_type.as_deref(),
+        Some("image/png")
+    );
     assert_eq!(detail.attachments[0].size, Some(2048));
     assert_eq!(
         detail.attachments[0].url.as_deref(),
@@ -873,7 +943,10 @@ fn jira_content_prefers_description_markdown_over_body() {
         attachments: Vec::new(),
     });
 
-    assert_eq!(detail.description_markdown.as_deref(), Some("# Real markdown"));
+    assert_eq!(
+        detail.description_markdown.as_deref(),
+        Some("# Real markdown")
+    );
     // status=None falls back to the synthetic provider-result state.
     assert_eq!(detail.summary.state.name, "Provider result");
     assert!(detail.summary.assignee.is_none());
@@ -899,7 +972,10 @@ fn linear_content_uses_body_for_description_and_creator_for_reporter() {
         project: Some("Roadmap".to_string()),
     });
 
-    assert_eq!(detail.description_markdown.as_deref(), Some("Linear body text"));
+    assert_eq!(
+        detail.description_markdown.as_deref(),
+        Some("Linear body text")
+    );
     assert_eq!(detail.description_text.as_deref(), Some("Linear body text"));
     assert!(detail.acceptance_criteria_markdown.is_none());
     assert_eq!(
@@ -1198,6 +1274,7 @@ fn ticket_summary_fixture(
         open_pr_number: None,
         open_pr_url: None,
         open_pr_status: None,
+        current_user_assigned: false,
     }
 }
 
@@ -1506,6 +1583,7 @@ fn hydrate_input_summary(ticket_ref: TicketRefInput) -> TicketSummaryResponse {
         open_pr_number: None,
         open_pr_url: None,
         open_pr_status: None,
+        current_user_assigned: false,
     }
 }
 

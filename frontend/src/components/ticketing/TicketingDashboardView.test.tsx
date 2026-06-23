@@ -632,12 +632,14 @@ describe("TicketingDashboardView", () => {
       ref: { provider: "clickup" as const, id: "cu-current", key: "CU-42" },
       title: "Current sprint task",
       project: "Sprint 42",
+      currentUserAssigned: true,
     };
     const backlogTicket = {
       ...ticket,
       ref: { provider: "clickup" as const, id: "cu-backlog", key: "CU-7" },
       title: "Backlog task",
       project: "Backlog",
+      currentUserAssigned: false,
     };
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
       data: [
@@ -669,6 +671,7 @@ describe("TicketingDashboardView", () => {
 
     const sprintSelect = await screen.findByRole("combobox", { name: "Sprint" });
     expect(within(sprintSelect).getByRole("option", { name: "Sprint 42" })).toBeInTheDocument();
+    expect(within(sprintSelect).queryByRole("option", { name: "Backlog" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Current sprint task/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Backlog task/ })).toBeInTheDocument();
 

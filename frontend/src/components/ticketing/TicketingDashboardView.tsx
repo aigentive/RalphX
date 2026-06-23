@@ -59,7 +59,7 @@ import { TicketingStatePanel } from "./TicketingStatePanel";
 import { TicketKanbanShell, TicketKanbanView, TicketListView } from "./TicketViews";
 import {
   distinctAssigneeNames,
-  distinctSprintNames,
+  distinctCurrentUserSprintNames,
   filterTicketsByAssignee,
   filterTicketsByProject,
   hasActiveTicketFilters,
@@ -410,7 +410,7 @@ export function TicketingDashboardView({
   const tickets = useMemo(() => flattenTicketPages(ticketsQuery.data), [ticketsQuery.data]);
   const assigneeOptions = useMemo(() => distinctAssigneeNames(tickets), [tickets]);
   const sprintOptions = useMemo(
-    () => (activeProvider === "clickup" ? distinctSprintNames(tickets) : []),
+    () => (activeProvider === "clickup" ? distinctCurrentUserSprintNames(tickets) : []),
     [activeProvider, tickets],
   );
   useEffect(() => {

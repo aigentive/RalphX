@@ -35,6 +35,7 @@ const baseTicket: TicketSummary = {
   url: null,
   associationCount: 0,
   openPrCount: 0,
+  currentUserAssigned: false,
 };
 
 const writableTransition: TicketTransitionOption = {
@@ -178,6 +179,119 @@ describe("TicketDetailSheet new-comment awareness", () => {
 
     expect(screen.queryByText("New")).not.toBeInTheDocument();
     expect(screen.queryByText(/new$/)).not.toBeInTheDocument();
+  });
+
+  it("expands threaded replies when a provider supplies nested comments", () => {
+    render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={{
+            ...detailWithComments,
+            comments: [
+              {
+                id: "thread-root",
+                author: { name: "Reviewer" },
+                bodyMarkdown: "Root comment",
+                bodyText: "Root comment",
+                createdAt: "2026-06-20T13:00:00.000Z",
+                replies: [
+                  {
+                    id: "thread-reply",
+                    author: { name: "Responder" },
+                    bodyMarkdown: "Thread reply",
+                    bodyText: "Thread reply",
+                    createdAt: "2026-06-20T13:05:00.000Z",
+                  },
+                ],
+              },
+            ],
+          }}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getByText("Root comment")).toBeInTheDocument();
+    expect(screen.queryByText("Thread reply")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "View thread (1)" }));
+
+    expect(screen.getByText("Thread reply")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hide thread (1)" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it("renders ClickUp epoch-millisecond comments and replies oldest first", () => {
+    render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={{
+            ...detailWithComments,
+            comments: [
+              {
+                id: "newer-root",
+                author: { name: "Reviewer" },
+                bodyMarkdown: "Newer root",
+                bodyText: "Newer root",
+                createdAt: "1700000002000",
+              },
+              {
+                id: "older-root",
+                author: { name: "Reviewer" },
+                bodyMarkdown: "Older root",
+                bodyText: "Older root",
+                createdAt: "1700000000000",
+                replies: [
+                  {
+                    id: "newer-reply",
+                    author: { name: "Responder" },
+                    bodyMarkdown: "Newer reply",
+                    bodyText: "Newer reply",
+                    createdAt: "1700000003000",
+                  },
+                  {
+                    id: "older-reply",
+                    author: { name: "Responder" },
+                    bodyMarkdown: "Older reply",
+                    bodyText: "Older reply",
+                    createdAt: "1700000001000",
+                  },
+                ],
+              },
+            ],
+          }}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    const bodyText = document.body.textContent ?? "";
+    expect(bodyText.indexOf("Older root")).toBeLessThan(bodyText.indexOf("Newer root"));
+
+    fireEvent.click(screen.getByRole("button", { name: "View thread (2)" }));
+
+    const expandedText = document.body.textContent ?? "";
+    expect(expandedText.indexOf("Older reply")).toBeLessThan(expandedText.indexOf("Newer reply"));
   });
 });
 

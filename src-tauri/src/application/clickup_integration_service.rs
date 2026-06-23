@@ -73,6 +73,7 @@ pub struct ClickUpComment {
     pub author_id: Option<i64>,
     pub author_name: Option<String>,
     pub created_at: Option<String>,
+    pub replies: Vec<ClickUpComment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -333,6 +334,7 @@ impl ClickUpApiClient for EmptyClickUpApiClient {
             author_id: None,
             author_name: None,
             created_at: None,
+            replies: Vec::new(),
         })
     }
 
@@ -610,7 +612,9 @@ impl ClickUpIntegrationService {
         space_ids: Vec<String>,
     ) -> Result<Vec<ClickUpTaskSummary>, String> {
         let (auth, workspace_id) = self.enabled_workspace_context().await?;
-        self.client.list_tasks(&auth, &workspace_id, &space_ids).await
+        self.client
+            .list_tasks(&auth, &workspace_id, &space_ids)
+            .await
     }
 
     pub async fn list_statuses(&self, space_id: &str) -> Result<Vec<ClickUpStatus>, String> {
@@ -628,23 +632,18 @@ impl ClickUpIntegrationService {
         self.client.current_user(&auth).await
     }
 
-    pub async fn update_task_status(
-        &self,
-        task_id: &str,
-        status_name: &str,
-    ) -> Result<(), String> {
+    pub async fn update_task_status(&self, task_id: &str, status_name: &str) -> Result<(), String> {
         let auth = self.enabled_auth_context().await?;
         self.client
             .update_task_status(&auth, task_id, status_name)
             .await
     }
 
-    pub async fn assign_task_to_current_user(
-        &self,
-        task_id: &str,
-    ) -> Result<ClickUpUser, String> {
+    pub async fn assign_task_to_current_user(&self, task_id: &str) -> Result<ClickUpUser, String> {
         let auth = self.enabled_auth_context().await?;
-        self.client.assign_task_to_current_user(&auth, task_id).await
+        self.client
+            .assign_task_to_current_user(&auth, task_id)
+            .await
     }
 
     pub async fn clear_task_assignee(&self, task_id: &str) -> Result<(), String> {
@@ -663,11 +662,7 @@ impl ClickUpIntegrationService {
             .await
     }
 
-    pub async fn set_task_tags(
-        &self,
-        task_id: &str,
-        tags: Vec<String>,
-    ) -> Result<(), String> {
+    pub async fn set_task_tags(&self, task_id: &str, tags: Vec<String>) -> Result<(), String> {
         let auth = self.enabled_auth_context().await?;
         self.client.set_task_tags(&auth, task_id, tags).await
     }
@@ -680,9 +675,7 @@ impl ClickUpIntegrationService {
         self.auth_context(&settings).await
     }
 
-    async fn enabled_workspace_context(
-        &self,
-    ) -> Result<(ClickUpAuthContext, String), String> {
+    async fn enabled_workspace_context(&self) -> Result<(ClickUpAuthContext, String), String> {
         let settings = self.get_settings().await?;
         if !settings.enabled || settings.validation_status != IntegrationValidationStatus::Valid {
             return Err("ClickUp integration is not enabled".to_string());

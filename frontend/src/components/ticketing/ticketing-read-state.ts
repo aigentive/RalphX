@@ -38,10 +38,13 @@ export function distinctAssigneeNames(tickets: TicketSummary[]): string[] {
   return Array.from(names).sort((left, right) => left.localeCompare(right));
 }
 
-/** Distinct, sorted ClickUp list/sprint names present in the loaded tickets. */
-export function distinctSprintNames(tickets: TicketSummary[]): string[] {
+/** Distinct, sorted ClickUp list/sprint names present on current-user tickets. */
+export function distinctCurrentUserSprintNames(tickets: TicketSummary[]): string[] {
   const names = new Set<string>();
   for (const ticket of tickets) {
+    if (!ticket.currentUserAssigned) {
+      continue;
+    }
     const name = ticket.project?.trim();
     if (name) {
       names.add(name);
@@ -127,7 +130,8 @@ function toTime(value: string | null | undefined): number | null {
   if (!value) {
     return null;
   }
-  const time = new Date(value).getTime();
+  const trimmed = value.trim();
+  const time = /^\d+$/.test(trimmed) ? Number(trimmed) : new Date(trimmed).getTime();
   return Number.isNaN(time) ? null : time;
 }
 
@@ -138,7 +142,10 @@ export function isOptimisticCommentId(id: string | null | undefined): boolean {
 
 /** Oldest-first by createdAt; comments without a timestamp sort to the end. */
 export function sortCommentsByCreatedAt(comments: TicketComment[]): TicketComment[] {
-  return [...comments].sort((left, right) => {
+  return [...comments].map((comment) => ({
+    ...comment,
+    replies: sortCommentsByCreatedAt(comment.replies ?? []),
+  })).sort((left, right) => {
     const leftTime = toTime(left.createdAt);
     const rightTime = toTime(right.createdAt);
     if (leftTime === null && rightTime === null) {

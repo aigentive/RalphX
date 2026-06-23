@@ -150,7 +150,10 @@ impl ClickUpApiClient for TestClickUpClient {
         team_id: &str,
     ) -> Result<Vec<ClickUpSpace>, String> {
         self.seen_tokens.lock().await.push(auth.api_token.clone());
-        self.list_spaces_calls.lock().await.push(team_id.to_string());
+        self.list_spaces_calls
+            .lock()
+            .await
+            .push(team_id.to_string());
         Ok(vec![ClickUpSpace {
             id: "space-1".to_string(),
             name: "Engineering".to_string(),
@@ -249,6 +252,7 @@ impl ClickUpApiClient for TestClickUpClient {
             author_id: Some(42),
             author_name: Some("dev".to_string()),
             created_at: None,
+            replies: Vec::new(),
         })
     }
 }
@@ -271,7 +275,10 @@ async fn save_settings_writes_token_to_keychain_and_stores_only_ref() {
     let (service, repo, secret) = build_service(Arc::new(EmptyClickUpApiClient));
 
     let settings = service
-        .save_settings(Some("pk_secret_token".to_string()), Some("9000".to_string()))
+        .save_settings(
+            Some("pk_secret_token".to_string()),
+            Some("9000".to_string()),
+        )
         .await
         .expect("save should succeed");
 
@@ -281,7 +288,10 @@ async fn save_settings_writes_token_to_keychain_and_stores_only_ref() {
         .expect("token ref should be set");
     assert!(secret_ref.starts_with(TOKEN_REF_PREFIX), "ref={secret_ref}");
     assert_eq!(settings.workspace_id.as_deref(), Some("9000"));
-    assert_eq!(settings.validation_status, IntegrationValidationStatus::Pending);
+    assert_eq!(
+        settings.validation_status,
+        IntegrationValidationStatus::Pending
+    );
     assert!(!settings.enabled);
     assert!(!settings.task_search_available);
 
@@ -291,7 +301,10 @@ async fn save_settings_writes_token_to_keychain_and_stores_only_ref() {
         Some("pk_secret_token")
     );
     let persisted = repo.get().await.unwrap();
-    assert_eq!(persisted.token_secret_ref.as_deref(), Some(secret_ref.as_str()));
+    assert_eq!(
+        persisted.token_secret_ref.as_deref(),
+        Some(secret_ref.as_str())
+    );
 }
 
 #[tokio::test]
@@ -313,7 +326,10 @@ async fn save_settings_replacing_token_deletes_previous_ref() {
     assert_ne!(first_ref, second_ref);
     assert!(secret.deleted_keys().await.contains(&first_ref));
     assert_eq!(secret.stored(&first_ref).await, None);
-    assert_eq!(secret.stored(&second_ref).await.as_deref(), Some("second-token"));
+    assert_eq!(
+        secret.stored(&second_ref).await.as_deref(),
+        Some("second-token")
+    );
     assert_eq!(secret.stored_count().await, 1);
 }
 
@@ -328,7 +344,10 @@ async fn save_settings_workspace_only_preserves_valid_connection() {
         .unwrap();
     let validated = service.validate_and_enable().await.unwrap();
     assert!(validated.enabled);
-    assert_eq!(validated.validation_status, IntegrationValidationStatus::Valid);
+    assert_eq!(
+        validated.validation_status,
+        IntegrationValidationStatus::Valid
+    );
     assert!(validated.task_search_available);
 
     let updated = service
@@ -338,7 +357,10 @@ async fn save_settings_workspace_only_preserves_valid_connection() {
 
     assert_eq!(updated.workspace_id.as_deref(), Some("9001"));
     assert!(updated.enabled);
-    assert_eq!(updated.validation_status, IntegrationValidationStatus::Valid);
+    assert_eq!(
+        updated.validation_status,
+        IntegrationValidationStatus::Valid
+    );
     assert!(updated.task_search_available);
     assert!(updated.last_validated_at.is_some());
 }
@@ -347,8 +369,11 @@ async fn save_settings_workspace_only_preserves_valid_connection() {
 async fn save_settings_read_back_mismatch_errors_and_deletes_written_ref() {
     let repo = Arc::new(MemoryClickUpIntegrationSettingsRepository::new());
     let secret = Arc::new(MismatchingSecretStore::default());
-    let service =
-        ClickUpIntegrationService::new(repo.clone(), secret.clone(), Arc::new(EmptyClickUpApiClient));
+    let service = ClickUpIntegrationService::new(
+        repo.clone(),
+        secret.clone(),
+        Arc::new(EmptyClickUpApiClient),
+    );
 
     let result = service
         .save_settings(Some("pk_token".to_string()), None)
@@ -396,7 +421,10 @@ async fn validate_and_enable_marks_valid_when_client_ok() {
     let settings = service.validate_and_enable().await.unwrap();
 
     assert!(settings.enabled);
-    assert_eq!(settings.validation_status, IntegrationValidationStatus::Valid);
+    assert_eq!(
+        settings.validation_status,
+        IntegrationValidationStatus::Valid
+    );
     assert!(settings.task_search_available);
     assert!(settings.last_error.is_none());
     assert!(settings.last_validated_at.is_some());
@@ -510,7 +538,10 @@ async fn list_spaces_and_tasks_succeed_when_enabled_with_workspace() {
     assert_eq!(spaces[0].id, "space-1");
     assert_eq!(client.list_spaces_calls().await, vec!["9000".to_string()]);
 
-    let tasks = service.list_tasks(vec!["space-1".to_string()]).await.unwrap();
+    let tasks = service
+        .list_tasks(vec!["space-1".to_string()])
+        .await
+        .unwrap();
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].id, "abc123");
     assert_eq!(tasks[0].status_category.as_deref(), Some("in_progress"));
@@ -531,13 +562,18 @@ async fn create_comment_passes_through_when_enabled() {
         .unwrap();
     service.validate_and_enable().await.unwrap();
 
-    let comment = service.create_comment("abc123", "looks good").await.unwrap();
+    let comment = service
+        .create_comment("abc123", "looks good")
+        .await
+        .unwrap();
     assert_eq!(comment.body, "looks good");
 }
 
 #[tokio::test]
 async fn unavailable_client_reports_reason() {
-    let client = Arc::new(UnavailableClickUpApiClient::new("ClickUp HTTP client unavailable"));
+    let client = Arc::new(UnavailableClickUpApiClient::new(
+        "ClickUp HTTP client unavailable",
+    ));
     let (service, _repo, _secret) = build_service(client);
 
     service

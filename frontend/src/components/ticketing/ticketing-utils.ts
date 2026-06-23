@@ -12,7 +12,8 @@ export function formatTicketDate(value: string | null | undefined): string {
   if (!value) {
     return "Unknown";
   }
-  const date = new Date(value);
+  const trimmed = value.trim();
+  const date = /^\d+$/.test(trimmed) ? new Date(Number(trimmed)) : new Date(trimmed);
   if (Number.isNaN(date.getTime())) {
     return "Unknown";
   }

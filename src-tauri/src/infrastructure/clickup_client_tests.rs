@@ -48,12 +48,15 @@ impl ClickUpJsonRequester for FakeClickUpRequester {
         token: &str,
         body: Option<Value>,
     ) -> Result<Value, String> {
-        self.requests.lock().expect("requests").push(RecordedRequest {
-            method,
-            url,
-            token: token.to_string(),
-            body,
-        });
+        self.requests
+            .lock()
+            .expect("requests")
+            .push(RecordedRequest {
+                method,
+                url,
+                token: token.to_string(),
+                body,
+            });
         self.responses
             .lock()
             .expect("responses")
@@ -213,7 +216,9 @@ async fn filtered_tasks_stops_on_first_last_page() {
         json!({ "tasks": [sample_task("t1", "open")], "last_page": true }),
     )]);
 
-    let tasks = fetch_filtered_tasks(&fake, "tok", "9000", &[]).await.unwrap();
+    let tasks = fetch_filtered_tasks(&fake, "tok", "9000", &[])
+        .await
+        .unwrap();
 
     assert_eq!(tasks.len(), 1);
     assert_eq!(fake.requests().len(), 1, "must not request a second page");
@@ -239,7 +244,10 @@ async fn task_summary_maps_status_assignees_and_tags() {
     assert_eq!(task.tags, vec!["bug".to_string(), "backend".to_string()]);
     assert_eq!(task.space_id.as_deref(), Some("space-1"));
     assert_eq!(task.list_name.as_deref(), Some("Sprint"));
-    assert_eq!(task.updated_at.as_deref(), Some("1700000000000"));
+    assert_eq!(
+        task.updated_at.as_deref(),
+        Some("2023-11-14T22:13:20+00:00")
+    );
 }
 
 #[tokio::test]
@@ -255,12 +263,23 @@ async fn fetch_task_detail_maps_fields() {
                     "id": 12345,
                     "comment_text": "Looks loaded",
                     "user": { "id": 7, "username": "Reviewer" },
-                    "date": "1700000000000"
+                    "date": "1700000000000",
+                    "reply_count": 1
                 },
                 {
                     "id": "fragmented",
                     "comment": [{ "text": "Fragment " }, { "text": "body" }],
                     "user": { "email": "reviewer@example.com" }
+                }
+            ]
+        })),
+        Ok(json!({
+            "comments": [
+                {
+                    "id": "reply-1",
+                    "comment_text": "Thread reply",
+                    "user": { "username": "Responder" },
+                    "date": "1700000001000"
                 }
             ]
         })),
@@ -277,7 +296,20 @@ async fn fetch_task_detail_maps_fields() {
     assert_eq!(content.comments[0].id, "12345");
     assert_eq!(content.comments[0].body, "Looks loaded");
     assert_eq!(content.comments[0].author_name.as_deref(), Some("Reviewer"));
-    assert_eq!(content.comments[0].created_at.as_deref(), Some("1700000000000"));
+    assert_eq!(
+        content.comments[0].created_at.as_deref(),
+        Some("2023-11-14T22:13:20+00:00"),
+    );
+    assert_eq!(content.comments[0].replies.len(), 1);
+    assert_eq!(content.comments[0].replies[0].body, "Thread reply");
+    assert_eq!(
+        content.comments[0].replies[0].created_at.as_deref(),
+        Some("2023-11-14T22:13:21+00:00"),
+    );
+    assert_eq!(
+        content.comments[0].replies[0].author_name.as_deref(),
+        Some("Responder"),
+    );
     assert_eq!(content.comments[1].body, "Fragment body");
     assert_eq!(
         content.comments[1].author_name.as_deref(),
@@ -285,6 +317,7 @@ async fn fetch_task_detail_maps_fields() {
     );
     assert!(fake.requests()[0].url.ends_with("/task/abc123"));
     assert!(fake.requests()[1].url.ends_with("/task/abc123/comment"));
+    assert!(fake.requests()[2].url.ends_with("/comment/12345/reply"));
 }
 
 #[tokio::test]

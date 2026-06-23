@@ -18,7 +18,8 @@ use crate::domain::integrations::{
 use crate::domain::services::ComposerIntegrationReference;
 use crate::infrastructure::memory::{
     MemoryAtlassianIntegrationSettingsRepository, MemoryClickUpIntegrationSettingsRepository,
-    MemoryExternalIssueLinkRepository, MemoryLinearIntegrationSettingsRepository, MemorySecretStore,
+    MemoryExternalIssueLinkRepository, MemoryLinearIntegrationSettingsRepository,
+    MemorySecretStore,
 };
 
 #[derive(Default)]
@@ -210,10 +211,7 @@ struct RecordingAtlassianClient {
 
 #[async_trait]
 impl AtlassianApiClient for RecordingAtlassianClient {
-    async fn validate(
-        &self,
-        auth: &AtlassianAuthContext,
-    ) -> Result<AtlassianConnectivity, String> {
+    async fn validate(&self, auth: &AtlassianAuthContext) -> Result<AtlassianConnectivity, String> {
         assert_eq!(auth.site_url, "https://jira.test");
         assert!(matches!(
             auth.credential,
@@ -505,6 +503,7 @@ impl ClickUpApiClient for RecordingClickUpClient {
             author_id: Some(7),
             author_name: Some("A. User".to_string()),
             created_at: Some("2026-06-20T08:00:00Z".to_string()),
+            replies: Vec::new(),
         })
     }
 
@@ -705,7 +704,10 @@ async fn transition_records_unlinked_linear_operation_and_idempotent_retry() {
         .await
         .expect("transition should succeed");
 
-    assert_eq!(result.operation.status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(
+        result.operation.status,
+        ProviderTicketOperationStatus::Succeeded
+    );
     assert_eq!(result.operation.link_id, None);
     assert!(!result.idempotent);
     assert_eq!(
@@ -905,7 +907,10 @@ async fn clear_assignee_records_assignment_operation_and_is_idempotent() {
         .await
         .expect("clear assignee should succeed");
 
-    assert_eq!(result.operation.status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(
+        result.operation.status,
+        ProviderTicketOperationStatus::Succeeded
+    );
     assert_eq!(result.assignee, None);
     assert_eq!(
         *linear_client.assignment_clears.lock().await,
@@ -957,8 +962,14 @@ async fn assign_ticket_records_jira_operation_and_returns_current_user() {
         .await
         .expect("jira assign should succeed");
 
-    assert_eq!(result.operation.status, ProviderTicketOperationStatus::Succeeded);
-    assert_eq!(result.operation.operation, ProviderTicketOperationKind::Assign);
+    assert_eq!(
+        result.operation.status,
+        ProviderTicketOperationStatus::Succeeded
+    );
+    assert_eq!(
+        result.operation.operation,
+        ProviderTicketOperationKind::Assign
+    );
     assert!(!result.idempotent);
     assert_eq!(
         *atlassian_client.assignments.lock().await,
@@ -1006,8 +1017,14 @@ async fn add_comment_records_unlinked_linear_operation_and_is_idempotent() {
         .await
         .expect("comment should succeed");
 
-    assert_eq!(result.operation.status, ProviderTicketOperationStatus::Succeeded);
-    assert_eq!(result.operation.operation, ProviderTicketOperationKind::Comment);
+    assert_eq!(
+        result.operation.status,
+        ProviderTicketOperationStatus::Succeeded
+    );
+    assert_eq!(
+        result.operation.operation,
+        ProviderTicketOperationKind::Comment
+    );
     assert_eq!(result.operation.link_id, None);
     assert!(!result.idempotent);
     let comment = result.comment.expect("comment payload should be present");
@@ -1159,7 +1176,10 @@ async fn set_ticket_labels_forwards_full_array_for_jira_and_is_idempotent() {
         .await
         .expect("label set should succeed");
 
-    assert_eq!(result.operation.status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(
+        result.operation.status,
+        ProviderTicketOperationStatus::Succeeded
+    );
     assert_eq!(
         result.operation.operation,
         ProviderTicketOperationKind::SetLabels
@@ -1167,7 +1187,10 @@ async fn set_ticket_labels_forwards_full_array_for_jira_and_is_idempotent() {
     assert!(!result.idempotent);
     let labels = result.labels.expect("labels payload should be present");
     // Normalized: sorted + deduped.
-    assert_eq!(labels.labels, vec!["bug".to_string(), "frontend".to_string()]);
+    assert_eq!(
+        labels.labels,
+        vec!["bug".to_string(), "frontend".to_string()]
+    );
     assert_eq!(
         *atlassian_client.label_writes.lock().await,
         vec![(
@@ -1393,7 +1416,10 @@ async fn clickup_comment_records_operation_and_is_idempotent() {
             ProviderTicketOperationStatus::Succeeded
         ]
     );
-    assert!(sink.events().iter().all(|event| event.provider == "clickup"));
+    assert!(sink
+        .events()
+        .iter()
+        .all(|event| event.provider == "clickup"));
 }
 
 #[tokio::test]
@@ -1666,7 +1692,11 @@ fn normalize_labels_trims_dedupes_case_insensitively_and_sorts() {
     // sorted case-insensitively.
     assert_eq!(
         normalize_labels(&input),
-        vec!["apex".to_string(), "bug".to_string(), "Frontend".to_string()]
+        vec![
+            "apex".to_string(),
+            "bug".to_string(),
+            "Frontend".to_string()
+        ]
     );
 }
 
@@ -1678,7 +1708,10 @@ fn normalize_labels_empty_input_yields_empty() {
 
 // ── find_transition ─────────────────────────────────────────────────────────
 
-fn transition(to_state_id: &str, provider_transition_id: Option<&str>) -> TicketingTransitionOption {
+fn transition(
+    to_state_id: &str,
+    provider_transition_id: Option<&str>,
+) -> TicketingTransitionOption {
     TicketingTransitionOption {
         to_state_id: to_state_id.to_string(),
         provider_transition_id: provider_transition_id.map(str::to_string),
@@ -1836,6 +1869,7 @@ fn clickup_comment_result_duplicates_body_and_drops_updated_at() {
         author_id: Some(7),
         author_name: Some("A. User".to_string()),
         created_at: Some("2026-06-20T08:00:00Z".to_string()),
+        replies: Vec::new(),
     });
     assert_eq!(result.id.as_deref(), Some("c1"));
     assert_eq!(result.body_markdown, "hello");
