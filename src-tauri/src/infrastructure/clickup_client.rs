@@ -127,7 +127,10 @@ impl ClickUpJsonRequester for HyperClickUpApiClient {
 }
 
 #[async_trait]
-impl ClickUpApiClient for HyperClickUpApiClient {
+impl<T> ClickUpApiClient for T
+where
+    T: ClickUpJsonRequester + Send + Sync,
+{
     async fn validate(&self, auth: &ClickUpAuthContext) -> Result<(), String> {
         validate_token(self, &auth.api_token).await
     }

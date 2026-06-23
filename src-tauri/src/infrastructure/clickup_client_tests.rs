@@ -6,6 +6,7 @@ use hyper::Method;
 use serde_json::{json, Value};
 
 use crate::application::clickup_integration_service::ClickUpTaskListOptions;
+use crate::application::{ClickUpApiClient, ClickUpAuthContext};
 
 use super::clickup_client::{
     apply_task_tags, assign_task_to_user, clear_task_assignees, clickup_authorization_header,
@@ -112,6 +113,91 @@ async fn validate_token_succeeds_on_ok_and_fails_on_error() {
 
     let err = FakeClickUpRequester::new(vec![Err("ClickUp returned HTTP 401".to_string())]);
     assert!(validate_token(&err, "tok").await.is_err());
+}
+
+#[tokio::test]
+async fn requester_trait_impl_delegates_clickup_api_client_methods() {
+    let fake = FakeClickUpRequester::new(vec![
+        Ok(json!({ "user": { "id": 42, "username": "dev" } })),
+        Ok(json!({ "teams": [{ "id": "9000", "name": "Workspace" }] })),
+        Ok(json!({ "spaces": [{ "id": "space-1", "name": "Engineering" }] })),
+        Ok(json!({ "tasks": [sample_task("task-1", "custom")], "last_page": true })),
+        Ok(sample_task("task-1", "done")),
+        Ok(json!({ "comments": [] })),
+        Ok(json!({ "statuses": [{ "status": "done", "type": "done" }] })),
+        Ok(json!({ "user": { "id": 42, "username": "dev" } })),
+        Ok(json!({ "user": { "id": 42, "username": "dev" } })),
+        Ok(json!({})),
+        Ok(json!({ "assignees": [{ "id": 42 }] })),
+        Ok(json!({})),
+        Ok(json!({ "id": "comment-1" })),
+        Ok(json!({ "tags": [] })),
+        Ok(json!({})),
+        Ok(json!({})),
+    ]);
+    let auth = ClickUpAuthContext {
+        api_token: "tok".to_string(),
+    };
+    let client: &dyn ClickUpApiClient = &fake;
+
+    client.validate(&auth).await.unwrap();
+    assert_eq!(client.list_workspaces(&auth).await.unwrap()[0].id, "9000");
+    assert_eq!(
+        client
+            .list_spaces(&auth, "9000")
+            .await
+            .unwrap()[0]
+            .id,
+        "space-1"
+    );
+    assert_eq!(
+        client
+            .list_tasks(
+                &auth,
+                "9000",
+                &["space-1".to_string()],
+                ClickUpTaskListOptions::default(),
+            )
+            .await
+            .unwrap()[0]
+            .id,
+        "task-1"
+    );
+    assert_eq!(client.fetch_task(&auth, "task-1").await.unwrap().id, "task-1");
+    assert_eq!(
+        client
+            .list_statuses(&auth, "space-1")
+            .await
+            .unwrap()[0]
+            .category,
+        "done"
+    );
+    assert_eq!(client.current_user(&auth).await.unwrap().id, 42);
+    assert_eq!(
+        client
+            .assign_task_to_current_user(&auth, "task-1")
+            .await
+            .unwrap()
+            .id,
+        42
+    );
+    client.clear_task_assignee(&auth, "task-1").await.unwrap();
+    assert_eq!(
+        client
+            .create_comment(&auth, "task-1", "done")
+            .await
+            .unwrap()
+            .id,
+        "comment-1"
+    );
+    client
+        .set_task_tags(&auth, "task-1", vec!["release".to_string()])
+        .await
+        .unwrap();
+
+    let requests = fake.requests();
+    assert_eq!(requests.len(), 15);
+    assert!(requests.iter().all(|request| request.token == "tok"));
 }
 
 #[tokio::test]
