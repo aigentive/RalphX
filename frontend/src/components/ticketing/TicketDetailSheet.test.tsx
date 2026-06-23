@@ -143,10 +143,10 @@ describe("TicketDetailSheet ticket git metadata", () => {
     expect(screen.getByText("Ticket Git")).toBeInTheDocument();
     expect(screen.getByText("ralphx/ticket/linear-abc-1")).toBeInTheDocument();
     expect(
-      screen.getByText("No RalphX links yet. Start work from ralphx/ticket/linear-abc-1."),
+      screen.getByText("No RalphX links yet. Start a conversation with this ticket attached."),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Start from ticket branch" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start conversation" }));
     expect(onStartWork).toHaveBeenCalledTimes(1);
   });
 

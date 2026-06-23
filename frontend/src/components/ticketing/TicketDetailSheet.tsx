@@ -319,9 +319,7 @@ function RalphxAssociationPanel({
       >
         {isStartWorkPending
           ? "Starting..."
-          : ticketBranchName
-            ? "Start from ticket branch"
-            : "Start RalphX work"}
+          : "Start conversation"}
       </Button>
       {startWorkError && (
         <p className="mt-2 text-xs text-[var(--status-error)]" role="alert">
@@ -394,9 +392,7 @@ function RalphxAssociationPanel({
           )}
           {totalCount === 0 && (
             <p className="text-sm text-[var(--text-muted)]">
-              {ticketBranchName
-                ? `No RalphX links yet. Start work from ${ticketBranchName}.`
-                : "No RalphX links yet."}
+              No RalphX links yet. Start a conversation with this ticket attached.
             </p>
           )}
           {ASSOCIATION_GROUPS.map((group) => {

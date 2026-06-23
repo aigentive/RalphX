@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { atlassianApi } from "@/api/atlassian";
 import { linearApi } from "@/api/linear";
-import type { AgentConversationWorkspaceMode } from "@/api/chat";
+import type { ComposerIntegrationReference } from "@/api/chat";
 import type {
   ListTicketsInput,
   TicketDeepLink,
@@ -18,7 +18,6 @@ import {
   findTicketTransitionForColumn,
   flattenTicketPages,
   useRefreshTickets,
-  useStartWorkFromTicket,
   useTicketAssociations,
   useTicketDetail,
   useTicketingMutations,
@@ -67,7 +66,7 @@ import {
   isTicketUpdatedSince,
   ticketRefKey,
 } from "./ticketing-read-state";
-import { providerLabel, ticketCanonicalBranchName, ticketKey } from "./ticketing-utils";
+import { providerLabel, ticketKey } from "./ticketing-utils";
 import { useAfterPaint } from "./useAfterPaint";
 
 interface TicketingDashboardViewProps {
@@ -148,19 +147,8 @@ function containerLabelsForProvider(provider: string | null): {
   return { containerLabel: "Container", allContainersLabel: "All containers" };
 }
 
-const START_WORK_MODES: Array<{
-  value: AgentConversationWorkspaceMode;
-  label: string;
-}> = [
-  { value: "edit", label: "Agent" },
-  { value: "plan", label: "Plan" },
-  { value: "ideation", label: "Ideation" },
-  { value: "chat", label: "Chat" },
-];
-
 interface StartWorkSelection {
   projectId: string;
-  mode: AgentConversationWorkspaceMode;
 }
 
 function StartWorkDialog({
@@ -168,7 +156,6 @@ function StartWorkDialog({
   ticket,
   projects,
   selected,
-  isPending,
   onSelectionChange,
   onConfirm,
   onClose,
@@ -177,22 +164,18 @@ function StartWorkDialog({
   ticket: TicketSummary | null;
   projects: Project[];
   selected: StartWorkSelection;
-  isPending: boolean;
   onSelectionChange: (selection: StartWorkSelection) => void;
   onConfirm: () => void;
   onClose: () => void;
 }) {
-  const ticketBranchName = ticket ? ticketCanonicalBranchName(ticket.ref) : null;
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
       <DialogContent className="sm:max-w-[460px]">
         <DialogHeader>
-          <DialogTitle>Start RalphX Work</DialogTitle>
+          <DialogTitle>Start Conversation</DialogTitle>
           <DialogDescription>
-            Choose where to start the linked conversation for {ticket ? ticketKey(ticket.ref) : "this ticket"}.
-            {ticketBranchName
-              ? ` Edit and Plan work will start from ${ticketBranchName}.`
-              : ""}
+            Choose a project. The new composer will open with{" "}
+            {ticket ? ticketKey(ticket.ref) : "this ticket"} attached as a reference.
           </DialogDescription>
         </DialogHeader>
 
@@ -214,43 +197,57 @@ function StartWorkDialog({
               }))}
             />
           </label>
-
-          <label className="grid gap-1.5 text-sm">
-            Conversation type
-            <TicketSearchableSelect
-              ariaLabel="Conversation type"
-              size="md"
-              value={selected.mode}
-              onValueChange={(nextMode) =>
-                onSelectionChange({
-                  ...selected,
-                  mode: nextMode as AgentConversationWorkspaceMode,
-                })
-              }
-              searchPlaceholder="Search conversation types..."
-              options={START_WORK_MODES.map((mode) => ({
-                value: mode.value,
-                label: mode.label,
-              }))}
-            />
-          </label>
         </div>
 
         <DialogFooter>
-          <Button type="button" variant="ghost" onClick={onClose} disabled={isPending}>
+          <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
           <Button
             type="button"
             onClick={onConfirm}
-            disabled={isPending || !selected.projectId}
+            disabled={!selected.projectId || projects.length === 0}
           >
-            {isPending ? "Starting" : "Start"}
+            Open composer
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
+}
+
+function ticketComposerReference(ticket: TicketSummary): ComposerIntegrationReference {
+  if (ticket.ref.provider === "jira") {
+    const id = ticket.ref.key ?? ticket.ref.id;
+    return {
+      provider: "atlassian",
+      kind: "jira",
+      id,
+      key: id,
+      title: ticket.title,
+      ...(ticket.url ? { url: ticket.url } : {}),
+    };
+  }
+  if (ticket.ref.provider === "linear") {
+    const id = ticket.ref.key ?? ticket.ref.id;
+    return {
+      provider: "linear",
+      kind: "linear",
+      id,
+      key: id,
+      title: ticket.title,
+      ...(ticket.url ? { url: ticket.url } : {}),
+    };
+  }
+  const id = ticket.ref.key ?? ticket.ref.id;
+  return {
+    provider: "clickup",
+    kind: "clickup",
+    id,
+    key: id,
+    title: ticket.title,
+    ...(ticket.url ? { url: ticket.url } : {}),
+  };
 }
 
 interface TicketingStatusNotice {
@@ -322,13 +319,13 @@ export function TicketingDashboardView({
   } = useTicketingStore();
   const setCurrentView = useUiStore((s) => s.setCurrentView);
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
-  const selectAgentConversation = useAgentSessionStore((s) => s.selectConversation);
+  const clearAgentSelection = useAgentSessionStore((s) => s.clearSelection);
   const setFocusedAgentProject = useAgentSessionStore((s) => s.setFocusedProject);
+  const setStartConversationDraft = useAgentSessionStore((s) => s.setStartConversationDraft);
   const [startWorkDialogOpen, setStartWorkDialogOpen] = useState(false);
   const [seenBaseline, setSeenBaseline] = useState<string | null>(null);
   const [startWorkSelection, setStartWorkSelection] = useState<StartWorkSelection>({
     projectId,
-    mode: "edit",
   });
 
   const queryClient = useQueryClient();
@@ -484,7 +481,6 @@ export function TicketingDashboardView({
   );
   const refreshTickets = useRefreshTickets();
   const ticketingMutations = useTicketingMutations(projectId);
-  const startWorkFromTicket = useStartWorkFromTicket();
   const conversationsQuery = useConversations({ view: "ticketing", projectId });
   const bindableConversations = useMemo(
     () =>
@@ -579,11 +575,6 @@ export function TicketingDashboardView({
   // still provider-neutral and includes the ticket reference in the composer.
   const supportsConversationBinding = activeProvider !== "clickup";
   const statusMessage = selectedProvider?.errorMessage ?? selectedProvider?.permissionMessage ?? undefined;
-  const startWorkError = startWorkFromTicket.error instanceof Error
-    ? startWorkFromTicket.error.message
-    : startWorkFromTicket.error
-      ? "RalphX work could not be started."
-      : null;
   const statusNotices: TicketingStatusNotice[] = [
     ...(selectedProvider?.staleAt
       ? [{
@@ -761,21 +752,17 @@ export function TicketingDashboardView({
       return;
     }
     const targetProjectId = startWorkSelection.projectId;
-    startWorkFromTicket.mutate({
+    setStartConversationDraft({
       projectId: targetProjectId,
-      ticketRef: selectedTicket.ref,
-      mode: startWorkSelection.mode,
-      content: `Start RalphX work for ${ticketKey(selectedTicket.ref)}: ${selectedTicket.title}`,
-    }, {
-      onSuccess: (result) => {
-        const conversationId = result.conversation.id;
-        setStartWorkDialogOpen(false);
-        setFocusedAgentProject(targetProjectId);
-        selectAgentConversation(targetProjectId, conversationId);
-        setActiveConversation(`project:${targetProjectId}`, conversationId);
-        setCurrentView("agents");
-      },
+      content: "",
+      mode: "edit",
+      composerIntegrationReferences: [ticketComposerReference(selectedTicket)],
     });
+    setStartWorkDialogOpen(false);
+    setFocusedAgentProject(targetProjectId);
+    clearAgentSelection();
+    setActiveConversation(`project:${targetProjectId}`, null);
+    setCurrentView("agents");
   }
 
   let content: React.ReactNode;
@@ -1018,8 +1005,8 @@ export function TicketingDashboardView({
         onAddComment={handleAddComment}
         onSetLabels={selectedTicket ? handleSetLabels : undefined}
         seenUntil={seenBaseline}
-        isStartWorkPending={startWorkFromTicket.isPending}
-        startWorkError={startWorkError}
+        isStartWorkPending={false}
+        startWorkError={null}
         showConversationBinding={supportsConversationBinding}
         bindableConversations={bindableConversations}
         onBindConversation={selectedTicket && supportsConversationBinding ? handleBindConversation : undefined}
@@ -1035,7 +1022,6 @@ export function TicketingDashboardView({
         ticket={selectedTicket}
         projects={projectsQuery.data ?? []}
         selected={startWorkSelection}
-        isPending={startWorkFromTicket.isPending}
         onSelectionChange={setStartWorkSelection}
         onConfirm={handleConfirmStartWorkFromTicket}
         onClose={() => setStartWorkDialogOpen(false)}

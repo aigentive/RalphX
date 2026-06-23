@@ -189,17 +189,44 @@ describe("agentSessionStore", () => {
         projectId: "project-1",
         content: "Fix the failing publish flow",
         mode: "edit",
+        composerIntegrationReferences: [
+          {
+            provider: "clickup",
+            kind: "clickup",
+            id: "MBE-2857",
+            key: "MBE-2857",
+            title: "Inbox classifier",
+          },
+        ],
       });
 
       expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
         projectId: "project-1",
         content: "Fix the failing publish flow",
         mode: "edit",
+        composerIntegrationReferences: [
+          {
+            provider: "clickup",
+            kind: "clickup",
+            id: "MBE-2857",
+            key: "MBE-2857",
+            title: "Inbox classifier",
+          },
+        ],
       });
       expect(consumeStartConversationDraft()).toEqual({
         projectId: "project-1",
         content: "Fix the failing publish flow",
         mode: "edit",
+        composerIntegrationReferences: [
+          {
+            provider: "clickup",
+            kind: "clickup",
+            id: "MBE-2857",
+            key: "MBE-2857",
+            title: "Inbox classifier",
+          },
+        ],
       });
       expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
       expect(consumeStartConversationDraft()).toBeNull();

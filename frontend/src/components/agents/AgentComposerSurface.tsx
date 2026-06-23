@@ -271,6 +271,9 @@ export interface AgentComposerSurfaceProps {
   onFilesSelected?: ((files: File[]) => void | Promise<unknown>) | undefined;
   onRemoveAttachment?: ((id: string) => void | Promise<unknown>) | undefined;
   attachmentsUploading?: boolean;
+  initialProjectReferences?: AgentComposerProjectReference[];
+  initialIntegrationReferences?: AgentComposerIntegrationReference[];
+  initialArtifactReferences?: AgentComposerArtifactReference[];
   mode?: ModeFieldConfig;
   chatFocus?: ChatFocusFieldConfig;
   slashCommands?: AgentComposerSlashCommand[];
@@ -295,6 +298,9 @@ const COMPOSER_COLLAPSED_MIN_HEIGHT = 38;
 const COMPOSER_EXPANDED_MIN_HEIGHT = 92;
 /** Textarea growth ceiling (px) before it scrolls internally. */
 const COMPOSER_MAX_HEIGHT = 220;
+const EMPTY_PROJECT_REFERENCES: AgentComposerProjectReference[] = [];
+const EMPTY_INTEGRATION_REFERENCES: AgentComposerIntegrationReference[] = [];
+const EMPTY_ARTIFACT_REFERENCES: AgentComposerArtifactReference[] = [];
 
 export function AgentComposerSurface({
   project,
@@ -321,6 +327,9 @@ export function AgentComposerSurface({
   onFilesSelected,
   onRemoveAttachment,
   attachmentsUploading = false,
+  initialProjectReferences = EMPTY_PROJECT_REFERENCES,
+  initialIntegrationReferences = EMPTY_INTEGRATION_REFERENCES,
+  initialArtifactReferences = EMPTY_ARTIFACT_REFERENCES,
   mode,
   chatFocus,
   slashCommands = [],
@@ -357,6 +366,7 @@ export function AgentComposerSurface({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const restoreTextareaFocusOnActionMenuCloseRef = useRef(false);
   const restoreTextareaFocusCursorRef = useRef<number | null>(null);
+  const hydratedInitialReferencesSignatureRef = useRef<string | null>(null);
   const value = isControlled ? controlledValue : internalValue;
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
@@ -635,6 +645,49 @@ export function AgentComposerSurface({
       ]),
     [selectedArtifactReferences],
   );
+  useEffect(() => {
+    const projectReferences = normalizeComposerProjectReferences(
+      initialProjectReferences,
+    );
+    const integrationReferences = normalizeComposerIntegrationReferences(
+      initialIntegrationReferences,
+    );
+    const artifactReferences = normalizeComposerArtifactReferences(
+      initialArtifactReferences,
+    );
+    const signature = JSON.stringify({
+      projectReferences,
+      integrationReferences,
+      artifactReferences,
+    });
+    if (hydratedInitialReferencesSignatureRef.current === signature) {
+      return;
+    }
+    hydratedInitialReferencesSignatureRef.current = signature;
+    setSelectedProjectReferences(
+      new Map(projectReferences.map((reference) => [reference.path, reference])),
+    );
+    setSelectedIntegrationReferences(
+      new Map(
+        integrationReferences.map((reference) => [
+          `${reference.provider}:${reference.kind}:${reference.id}`,
+          reference,
+        ]),
+      ),
+    );
+    setSelectedArtifactReferences(
+      new Map(
+        artifactReferences.map((reference) => [
+          `${reference.kind}:${reference.artifactId}`,
+          reference,
+        ]),
+      ),
+    );
+  }, [
+    initialArtifactReferences,
+    initialIntegrationReferences,
+    initialProjectReferences,
+  ]);
   const slashCommandByMenuId = useMemo(() => {
     const map = new Map<string, AgentComposerSlashCommand>();
     for (const command of slashCommands) {

@@ -64,7 +64,6 @@ vi.mock("@/hooks/useTicketing", () => ({
   findTicketTransitionForColumn: vi.fn(),
   flattenTicketPages: vi.fn((data) => data?.pages.flatMap((page) => page.items) ?? []),
   useRefreshTickets: vi.fn(),
-  useStartWorkFromTicket: vi.fn(),
   useTicketAssociations: vi.fn(),
   useTicketDetail: vi.fn(),
   useTicketingMutations: vi.fn(),
@@ -256,11 +255,6 @@ function mockConnectedDashboard() {
     addCommentMutation: { isPending: false },
     setLabelsMutation: { isPending: false },
   } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
-  vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
-    mutate: vi.fn(),
-    isPending: false,
-    error: null,
-  } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
 }
 
 describe("TicketingDashboardView", () => {
@@ -268,6 +262,9 @@ describe("TicketingDashboardView", () => {
     vi.clearAllMocks();
     window.HTMLElement.prototype.scrollIntoView = vi.fn();
     useTicketingStore.getState().reset();
+    useAgentSessionStore.getState().clearSelection();
+    useAgentSessionStore.setState({ startConversationDraft: null });
+    useChatStore.setState({ activeConversationIds: {} });
     vi.mocked(projectHooks.useProjects).mockReturnValue({
       data: [
         {
@@ -369,11 +366,6 @@ describe("TicketingDashboardView", () => {
       addCommentMutation: { isPending: false },
       setLabelsMutation: { isPending: false },
     } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
-    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
-      mutate: vi.fn(),
-      isPending: false,
-      error: null,
-    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
     vi.mocked(chatHooks.useConversations).mockReturnValue({
       data: [],
       isLoading: false,
@@ -1064,7 +1056,7 @@ describe("TicketingDashboardView", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /RX-1/ }));
 
-    expect(await screen.findByRole("button", { name: "Start from ticket branch" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Start conversation" })).toBeInTheDocument();
     expect(screen.getByText("When two agents transition the same task.")).toBeInTheDocument();
   });
 
@@ -1209,65 +1201,62 @@ describe("TicketingDashboardView", () => {
     });
   });
 
-  it("starts RalphX work from the ticket detail sheet", async () => {
-    const startWork = vi.fn();
+  it("opens the agent starter with the selected ticket as a composer reference", async () => {
     mockConnectedDashboard();
-    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
-      mutate: startWork,
-      isPending: false,
-      error: null,
-    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
 
     renderDashboard();
 
     fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
     fireEvent.click(
-      await screen.findByRole("button", { name: "Start from ticket branch" }),
+      await screen.findByRole("button", { name: "Start conversation" }),
     );
     const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("Start RalphX Work");
+    expect(dialog).toHaveTextContent("Start Conversation");
     expect(dialog).toHaveTextContent(
-      "Edit and Plan work will start from ralphx/ticket/jira-rx-1.",
+      "The new composer will open with RX-1 attached as a reference.",
     );
 
     // Scope to the dialog: the container filter bar is also labeled "Project"
     // now that Jira containers are projects.
     fireEvent.click(within(dialog).getByRole("combobox", { name: "Project" }));
     fireEvent.click(screen.getByRole("option", { name: /Target Project.*repo\/target/ }));
-    fireEvent.click(within(dialog).getByRole("combobox", { name: "Conversation type" }));
-    fireEvent.click(screen.getByRole("option", { name: "Plan" }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Start" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open composer" }));
 
-    expect(startWork).toHaveBeenCalledWith(
-      {
-        projectId: "project-2",
-        ticketRef: ticket.ref,
-        mode: "plan",
-        content: "Start RalphX work for RX-1: Fix merge race in transition handler",
-      },
-      expect.objectContaining({ onSuccess: expect.any(Function) }),
-    );
+    expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
+      projectId: "project-2",
+      content: "",
+      mode: "edit",
+      composerIntegrationReferences: [
+        {
+          provider: "atlassian",
+          kind: "jira",
+          id: "RX-1",
+          key: "RX-1",
+          title: "Fix merge race in transition handler",
+          url: "https://example.atlassian.net/browse/RX-1",
+        },
+      ],
+    });
+    expect(useAgentSessionStore.getState().focusedProjectId).toBe("project-2");
+    expect(useAgentSessionStore.getState().selectedConversationId).toBeNull();
+    expect(useChatStore.getState().activeConversationIds["project:project-2"]).toBeNull();
   });
 
-  it("applies the unified md select treatment to the Start Work dialog pickers", async () => {
+  it("applies the unified md select treatment to the start conversation project picker", async () => {
     mockConnectedDashboard();
 
     renderDashboard();
 
     fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
     fireEvent.click(
-      await screen.findByRole("button", { name: "Start from ticket branch" }),
+      await screen.findByRole("button", { name: "Start conversation" }),
     );
-    expect(await screen.findByRole("dialog")).toHaveTextContent("Start RalphX Work");
+    expect(await screen.findByRole("dialog")).toHaveTextContent("Start Conversation");
 
     const project = screen.getByRole("combobox", { name: "Project" });
-    const conversationType = screen.getByRole("combobox", { name: "Conversation type" });
-
-    for (const select of [project, conversationType]) {
-      expect(select.className).toContain("h-9");
-      expect(select.className).toContain("appearance-none");
-      expect((select as HTMLElement).style.backgroundColor).toBe("var(--bg-elevated)");
-    }
+    expect(project.className).toContain("h-9");
+    expect(project.className).toContain("appearance-none");
+    expect((project as HTMLElement).style.backgroundColor).toBe("var(--bg-elevated)");
   });
 
   it("binds an existing conversation to the ticket via the provider-correct assign API", async () => {
@@ -1721,53 +1710,30 @@ describe("TicketingDashboardView", () => {
 
     // Starting new RalphX work is provider-neutral; binding an existing
     // conversation stays hidden until ClickUp link persistence exists.
-    fireEvent.click(screen.getByRole("button", { name: "Start from ticket branch" }));
-    expect(await screen.findByRole("dialog", { name: "Start RalphX Work" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Start conversation" }));
+    expect(await screen.findByRole("dialog", { name: "Start Conversation" })).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /bind existing conversation/i }),
     ).not.toBeInTheDocument();
   });
 
-  it("navigates to the agents view when start-work succeeds", async () => {
+  it("navigates to the starter composer without selecting a conversation", async () => {
     mockConnectedDashboard();
-    let capturedOnSuccess: ((result: { conversation: { id: string } }) => void) | undefined;
-    const startWork = vi.fn((_input, options?: { onSuccess?: (r: { conversation: { id: string } }) => void }) => {
-      capturedOnSuccess = options?.onSuccess;
-    });
-    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
-      mutate: startWork,
-      isPending: false,
-      error: null,
-    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
+    useAgentSessionStore.getState().selectConversation("project-1", "conv-old");
+    useChatStore.getState().setActiveConversation("project:project-1", "conv-old");
 
     renderDashboard();
     fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Start from ticket branch" }));
-    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Start" }));
-
-    expect(startWork).toHaveBeenCalled();
-    // Drive the captured onSuccess to exercise the navigation side-effects.
-    capturedOnSuccess?.({ conversation: { id: "conv-new" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Start conversation" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Open composer" }),
+    );
 
     await waitFor(() => {
-      expect(useChatStore.getState().activeConversationIds["project:project-1"]).toBe("conv-new");
+      expect(useChatStore.getState().activeConversationIds["project:project-1"]).toBeNull();
     });
-    expect(useAgentSessionStore.getState().selectedConversationId).toBe("conv-new");
+    expect(useAgentSessionStore.getState().selectedConversationId).toBeNull();
     expect(useAgentSessionStore.getState().focusedProjectId).toBe("project-1");
-  });
-
-  it("surfaces a start-work error in the detail sheet", async () => {
-    mockConnectedDashboard();
-    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
-      mutate: vi.fn(),
-      isPending: false,
-      error: new Error("Worktree creation failed"),
-    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
-
-    renderDashboard();
-    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
-
-    expect(await screen.findByText("Worktree creation failed")).toBeInTheDocument();
   });
 
   it("surfaces a bind error in the detail sheet when the assign API rejects", async () => {
@@ -1811,25 +1777,19 @@ describe("TicketingDashboardView", () => {
     expect(fetchNextPage).toHaveBeenCalled();
   });
 
-  it("closes the start-work dialog without starting when cancelled", async () => {
+  it("closes the start conversation dialog without creating a draft when cancelled", async () => {
     mockConnectedDashboard();
-    const startWork = vi.fn();
-    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
-      mutate: startWork,
-      isPending: false,
-      error: null,
-    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
 
     renderDashboard();
     fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Start from ticket branch" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start conversation" }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
 
     await waitFor(() => {
-      expect(within(dialog).queryByText("Start RalphX Work")).not.toBeInTheDocument();
+      expect(within(dialog).queryByText("Start Conversation")).not.toBeInTheDocument();
     });
-    expect(startWork).not.toHaveBeenCalled();
+    expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
   });
 
   it("dedupes ticket-derived status columns when rows share a state", () => {
