@@ -27,7 +27,11 @@ export function hasActiveTicketFilters(filters: TicketingFilterState): boolean {
 /** Sentinel assignee-filter value selecting tickets with no assignee. */
 export const UNASSIGNED_ASSIGNEE = "__unassigned__";
 
-export function ticketAssignees(ticket: TicketSummary): TicketingPerson[] {
+type TicketSummaryWithAssignees = TicketSummary & {
+  assignees?: TicketingPerson[];
+};
+
+export function ticketAssignees(ticket: TicketSummaryWithAssignees): TicketingPerson[] {
   if (ticket.assignees && ticket.assignees.length > 0) {
     return ticket.assignees;
   }
