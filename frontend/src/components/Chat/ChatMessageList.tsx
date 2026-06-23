@@ -55,11 +55,11 @@ import {
   VISUAL_BOTTOM_EPSILON_PX,
 } from "./ChatMessageList.scroll";
 import {
-  buildStreamingTranscriptWindow,
-  EMPTY_STREAMING_TRANSCRIPT_WINDOW,
-  getNextStreamingTranscriptWindow,
-  type StreamingTranscriptWindow,
-} from "./ChatMessageList.streamingWindow";
+  buildLiveTranscriptRows,
+  liveToolGroupKey,
+  type LiveTranscriptRow,
+  type StreamingToolUseBlock,
+} from "./ChatMessageList.liveRows";
 
 // ============================================================================
 // Constants
@@ -244,17 +244,12 @@ type TimelineMessageItem = {
   toolCallGroup?: ToolCallGroupMarker;
 };
 
-type StreamingToolUseBlock = Extract<StreamingContentBlock, { type: "tool_use" }>;
-type StreamingToolGroupEntry = {
-  block: StreamingToolUseBlock;
-  index: number;
-};
-
 /** Discriminated union for timeline items when hook events are interleaved */
 type TimelineItem =
   | TimelineMessageItem
   | { kind: "hook"; data: HookEvent | HookStartedEvent; sortTime: number }
   | { kind: "team_event"; data: TeamMessage; sortTime: number }
+  | { kind: "streaming_row"; data: LiveTranscriptRow; sortTime: number }
   | { kind: "streaming"; sortTime: number };
 
 function parseMessageMetadata(metadata: string | null | undefined): Record<string, unknown> | null {
@@ -394,17 +389,6 @@ function toolCallGroupKey(messages: ChatMessageData[]): string {
   ].join(":");
 }
 
-function streamingToolGroupKey(entries: StreamingToolGroupEntry[]): string {
-  const first = entries[0];
-  if (!first) {
-    return "streaming-tool-group:empty";
-  }
-  return [
-    "streaming-tool-group",
-    first.block.toolCall.id || first.block.seq || first.index,
-  ].join(":");
-}
-
 function isCollapsedToolCallGroupCoveredItem(
   item: TimelineItem,
   expandedToolGroupKeys: Set<string>,
@@ -498,7 +482,7 @@ function assistantSenderGroupKeyForTimelineItem(
   if (item.kind === "message") {
     return assistantSenderGroupKeyForMessage(item.data);
   }
-  if (item.kind === "streaming") {
+  if (item.kind === "streaming" || item.kind === "streaming_row") {
     return [
       "assistant",
       "",
@@ -515,6 +499,7 @@ const DEFAULT_ASSISTANT_GROUP_STATE = {
   reserveAssistantGutter: false,
   showSenderHeader: true,
 };
+type AssistantSenderGroupState = typeof DEFAULT_ASSISTANT_GROUP_STATE;
 
 function ToolCallGroupToggleRow({
   msg,
@@ -580,6 +565,108 @@ function ToolCallGroupToggleRow({
             isExpanded={isExpanded}
             onToggle={onToggle}
           />
+        </MessageItem>
+      </ContentShell>
+    </div>
+  );
+}
+
+function LiveTranscriptRowItem({
+  row,
+  senderGroupState,
+  isLastVisibleTimelineItem,
+  streamingMessageCreatedAt,
+  streamingTasks,
+  providerHarness,
+  providerSessionId,
+  expandedToolGroupKeys,
+  contentWidthClassName,
+  rowRef,
+  onToggleToolCallGroup,
+  renderStreamingToolCallBlock,
+}: {
+  row: LiveTranscriptRow;
+  senderGroupState: AssistantSenderGroupState;
+  isLastVisibleTimelineItem: boolean;
+  streamingMessageCreatedAt: string;
+  streamingTasks: Map<string, StreamingTask> | undefined;
+  providerHarness: string | null | undefined;
+  providerSessionId: string | null | undefined;
+  expandedToolGroupKeys: Set<string>;
+  contentWidthClassName?: string | undefined;
+  rowRef?: React.Ref<HTMLDivElement> | undefined;
+  onToggleToolCallGroup: (groupKey: string, anchor: HTMLElement | null) => void;
+  renderStreamingToolCallBlock: (block: StreamingToolUseBlock, index: number) => React.ReactNode;
+}) {
+  const children = (() => {
+    if (row.kind === "text") {
+      return (
+        <>
+          <TextBubble
+            text={row.text}
+            isUser={false}
+          />
+          <MessageMeta
+            createdAt={streamingMessageCreatedAt}
+            copyableText={row.text.trim()}
+          />
+        </>
+      );
+    }
+    if (row.kind === "task") {
+      const task = streamingTasks?.get(row.toolUseId);
+      return task ? <TaskSubagentCard task={task} /> : null;
+    }
+    if (row.kind === "tool_call") {
+      return renderStreamingToolCallBlock(row.block, row.index);
+    }
+
+    const groupKey = liveToolGroupKey(row.entries);
+    const isExpanded = expandedToolGroupKeys.has(groupKey);
+    return (
+      <>
+        <div className="mb-2">
+          <ToolCallGroupToggle
+            groupKey={groupKey}
+            count={row.count}
+            isExpanded={isExpanded}
+            onToggle={(event) => onToggleToolCallGroup(groupKey, event.currentTarget)}
+          />
+        </div>
+        {isExpanded
+          ? row.entries.map((entry) => renderStreamingToolCallBlock(entry.block, entry.index))
+          : null}
+      </>
+    );
+  })();
+
+  if (!children) {
+    return null;
+  }
+
+  return (
+    <div
+      ref={rowRef}
+      className="px-3 w-full"
+      data-chat-last-rendered-row={isLastVisibleTimelineItem ? "true" : undefined}
+      style={contentContainerStyle}
+    >
+      <ContentShell className={contentWidthClassName}>
+        <MessageItem
+          role="assistant"
+          content=""
+          createdAt={streamingMessageCreatedAt}
+          isLastInList={isLastVisibleTimelineItem}
+          toolCalls={null}
+          contentBlocks={null}
+          providerHarness={providerHarness}
+          providerSessionId={providerSessionId}
+          showAssistantIcon={senderGroupState.showSenderHeader}
+          reserveAssistantIconSpace={senderGroupState.reserveAssistantGutter}
+          showProviderMeta={senderGroupState.showSenderHeader}
+          hideMeta
+        >
+          {children}
         </MessageItem>
       </ContentShell>
     </div>
@@ -1066,14 +1153,14 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       () => normalizeStreamingVerificationContentBlocks(streamingContentBlocks),
       [streamingContentBlocks],
     );
-    const liveStreamingTranscriptWindow = useMemo(
-      () => buildStreamingTranscriptWindow(normalizedStreamingContentBlocks, streamingTasks),
+    const liveTranscriptRows = useMemo(
+      () => buildLiveTranscriptRows(
+        normalizedStreamingContentBlocks,
+        streamingTasks,
+        shouldHideCompletedProjectOrchestrationToolCall,
+      ),
       [normalizedStreamingContentBlocks, streamingTasks],
     );
-    const [streamingTranscriptWindow, setStreamingTranscriptWindow] =
-      useState<StreamingTranscriptWindow>(EMPTY_STREAMING_TRANSCRIPT_WINDOW);
-
-    const renderedStreamingContentBlocks = streamingTranscriptWindow.contentBlocks;
 
     // Footer content hash — drives the streaming auto-scroll useEffect below.
     // NOTE: Virtuoso's followOutput does NOT react to context/Footer changes,
@@ -1108,43 +1195,20 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     // Recompute cumulative text length whenever streaming blocks change.
     // Resets to 0 when streaming ends (no blocks) so the next stream starts fresh.
     useEffect(() => {
-      if (!renderedStreamingContentBlocks.length) {
+      if (!liveTranscriptRows.length) {
         setCumulativeTextLength(0);
         return;
       }
-      const total = renderedStreamingContentBlocks.reduce(
-        (sum, block) => block.type === "text" ? sum + block.text.length : sum, 0
+      const total = liveTranscriptRows.reduce(
+        (sum, row) => row.kind === "text" ? sum + row.text.length : sum, 0
       );
       setCumulativeTextLength(prev => Math.max(prev, total));
-    }, [renderedStreamingContentBlocks]);
+    }, [liveTranscriptRows]);
 
     const hasRenderableStreamingBlocks = useMemo(
-      () =>
-        renderedStreamingContentBlocks.some((block) => {
-          if (block.type === "text") {
-            return block.text.trim().length > 0;
-          }
-          if (block.type === "task") {
-            return Boolean(streamingTasks?.get(block.toolUseId));
-          }
-          return true;
-        }),
-      [renderedStreamingContentBlocks, streamingTasks],
+      () => liveTranscriptRows.length > 0,
+      [liveTranscriptRows],
     );
-    const hasRenderableStreamingWidgets = useMemo(
-      () =>
-        renderedStreamingContentBlocks.some((block) => {
-          if (block.type === "text") {
-            return false;
-          }
-          if (block.type === "task") {
-            return Boolean(streamingTasks?.get(block.toolUseId));
-          }
-          return !shouldHideCompletedProjectOrchestrationToolCall(block.toolCall);
-        }),
-      [renderedStreamingContentBlocks, streamingTasks],
-    );
-
     const shouldShowActiveTypingIndicator = isSending || isAgentRunning;
     const activeTypingIndicatorLabel =
       typingIndicatorLabel?.trim()
@@ -1153,19 +1217,16 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       normalizedStreamingContentBlocks.length > 0 || Boolean(streamingTasks && streamingTasks.size > 0);
     const shouldShowFooterFallback =
       (isSending || isAgentRunning) && !hasRenderableStreamingBlocks && !hasLiveStreamingBlocks;
-    const hasFooterStreamingContent = hasRenderableStreamingBlocks || shouldShowFooterFallback;
     const hasVisiblePendingToolFallback =
       shouldShowFooterFallback &&
       streamingToolCalls.some((tc) => !shouldHideCompletedProjectOrchestrationToolCall(tc));
-    const hasRenderableStreamingText =
-      renderedStreamingContentBlocks.some(
-        (block) => block.type === "text" && block.text.trim().length > 0
-      );
+    const hasFooterStreamingContent = hasVisiblePendingToolFallback || shouldShowActiveTypingIndicator;
     const shouldRenderStreamingContentGroup =
-      hasRenderableStreamingText || hasRenderableStreamingWidgets || hasVisiblePendingToolFallback;
+      hasVisiblePendingToolFallback;
+    const hasLiveTranscriptContent = hasRenderableStreamingBlocks || hasFooterStreamingContent;
     const streamingMessageCreatedAt = useMemo(
-      () => hasFooterStreamingContent ? new Date().toISOString() : "",
-      [hasFooterStreamingContent],
+      () => hasLiveTranscriptContent ? new Date().toISOString() : "",
+      [hasLiveTranscriptContent],
     );
 
     useEffect(() => {
@@ -1180,7 +1241,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       childResultCount: totalChildToolResults,
       taskCount: streamingTasks?.size ?? 0,
       taskResultSignature: streamingTaskResultSignature,
-      contentBlockCount: renderedStreamingContentBlocks.length,
+      liveRowCount: liveTranscriptRows.length,
       textLengthBucket: Math.floor(cumulativeTextLength / TEXT_LENGTH_BUCKET_SIZE),
     }), [
       streamingToolCalls,
@@ -1188,7 +1249,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       totalChildToolResults,
       streamingTasks?.size,
       streamingTaskResultSignature,
-      renderedStreamingContentBlocks.length,
+      liveTranscriptRows.length,
       cumulativeTextLength,
     ]);
 
@@ -1317,6 +1378,14 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }
       }
 
+      liveTranscriptRows.forEach((row, rowIndex) => {
+        items.push({
+          kind: "streaming_row",
+          data: row,
+          sortTime: Number.MAX_SAFE_INTEGER - liveTranscriptRows.length + rowIndex - 1,
+        });
+      });
+
       if (hasFooterStreamingContent) {
         items.push({
           kind: "streaming",
@@ -1325,12 +1394,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
 
       // Sort if we interleaved any non-message items
-      if (hasHookEvents || teamMessages.length > 0 || hasFooterStreamingContent) {
+      if (hasHookEvents || teamMessages.length > 0 || liveTranscriptRows.length > 0 || hasFooterStreamingContent) {
         items.sort((a, b) => a.sortTime - b.sortTime);
       }
 
       return items;
-    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, teamFilter, teamMessages, hasFooterStreamingContent]);
+    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, teamFilter, teamMessages, liveTranscriptRows, hasFooterStreamingContent]);
 
     const timelineSenderGroups = useMemo(() => {
       let previousGroupKey: string | null = null;
@@ -1359,9 +1428,18 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       return -1;
     }, [expandedToolGroupKeys, timeline]);
 
+    const lastStreamingTimelineIndex = (() => {
+      for (let index = timeline.length - 1; index >= 0; index -= 1) {
+        const item = timeline[index];
+        if (item?.kind === "streaming" || item?.kind === "streaming_row") {
+          return index;
+        }
+      }
+      return -1;
+    })();
     const streamingSenderGroupState =
-      timeline[timeline.length - 1]?.kind === "streaming"
-        ? timelineSenderGroups[timeline.length - 1] ?? DEFAULT_ASSISTANT_GROUP_STATE
+      lastStreamingTimelineIndex >= 0
+        ? timelineSenderGroups[lastStreamingTimelineIndex] ?? DEFAULT_ASSISTANT_GROUP_STATE
         : DEFAULT_ASSISTANT_GROUP_STATE;
 
     const lastItemIndex = firstItemIndex + timeline.length - 1;
@@ -1503,19 +1581,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       },
       [handleFollowOutput, isLastItemActuallyVisible],
     );
-
-    // Window advancement follows the same bottom-range contract as chat auto-scroll.
-    // Exact visual-bottom tracking can drift false during Virtuoso/footer growth even
-    // while the user is still close enough to the tail to be following the live run.
-    useEffect(() => {
-      setStreamingTranscriptWindow((prev) => {
-        return getNextStreamingTranscriptWindow(
-          prev,
-          liveStreamingTranscriptWindow,
-          isAtBottom,
-        );
-      });
-    }, [isAtBottom, liveStreamingTranscriptWindow]);
 
     // Scroll the actual DOM scroll container to its absolute bottom.
     // This goes past Virtuoso's last list item to include any Footer (streaming
@@ -2470,14 +2535,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
     }, [lastItemIndex, scheduleBottomPin, scrollToTimestamp, shouldKeepBottomPinned, timeline.length]);
 
-    const footerContent = useMemo(() => {
-      if (!hasFooterStreamingContent) {
-        return null;
-      }
-      if (!shouldRenderStreamingContentGroup && !shouldShowActiveTypingIndicator) {
-        return null;
-      }
-      const renderStreamingToolCallBlock = (
+    const renderStreamingToolCallBlock = useCallback(
+      (
         block: StreamingToolUseBlock,
         idx: number,
       ) => {
@@ -2499,79 +2558,16 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             className="mb-2"
           />
         );
-      };
-      const streamingContentNodes: React.ReactNode[] = [];
-      for (let idx = 0; idx < renderedStreamingContentBlocks.length; idx += 1) {
-        const block = renderedStreamingContentBlocks[idx];
-        if (!block) {
-          continue;
-        }
-        if (block.type === "text") {
-          // Skip empty/whitespace-only text blocks (e.g. pre-stream flush artifacts)
-          if (!block.text.trim()) {
-            continue;
-          }
-          streamingContentNodes.push(
-            <React.Fragment key={`streaming-text-${idx}`}>
-              <TextBubble
-                text={block.text}
-                isUser={false}
-              />
-              <MessageMeta
-                createdAt={streamingMessageCreatedAt}
-                copyableText={block.text.trim()}
-              />
-            </React.Fragment>,
-          );
-          continue;
-        }
-        if (block.type === "task") {
-          const task = streamingTasks?.get(block.toolUseId);
-          if (task) {
-            streamingContentNodes.push(
-              <TaskSubagentCard key={`streaming-task-${block.toolUseId}`} task={task} />,
-            );
-          }
-          continue;
-        }
+      },
+      [],
+    );
 
-        const entries: StreamingToolGroupEntry[] = [];
-        let endIndex = idx;
-        while (endIndex < renderedStreamingContentBlocks.length) {
-          const nextBlock = renderedStreamingContentBlocks[endIndex];
-          if (!nextBlock || nextBlock.type !== "tool_use") {
-            break;
-          }
-          if (!shouldHideCompletedProjectOrchestrationToolCall(nextBlock.toolCall)) {
-            entries.push({ block: nextBlock, index: endIndex });
-          }
-          endIndex += 1;
-        }
-
-        if (entries.length === 1) {
-          const entry = entries[0]!;
-          streamingContentNodes.push(renderStreamingToolCallBlock(entry.block, entry.index));
-        } else if (entries.length > 1) {
-          const groupKey = streamingToolGroupKey(entries);
-          const isExpanded = expandedToolGroupKeys.has(groupKey);
-          streamingContentNodes.push(
-            <React.Fragment key={groupKey}>
-              <div className="mb-2">
-                <ToolCallGroupToggle
-                  groupKey={groupKey}
-                  count={entries.length}
-                  isExpanded={isExpanded}
-                  onToggle={(event) => toggleToolCallGroup(groupKey, event.currentTarget)}
-                />
-              </div>
-              {isExpanded
-                ? entries.map((entry) => renderStreamingToolCallBlock(entry.block, entry.index))
-                : null}
-            </React.Fragment>,
-          );
-        }
-
-        idx = endIndex - 1;
+    const footerContent = useMemo(() => {
+      if (!hasFooterStreamingContent) {
+        return null;
+      }
+      if (!shouldRenderStreamingContentGroup && !shouldShowActiveTypingIndicator) {
+        return null;
       }
       const visibleFallbackToolCalls = shouldShowFooterFallback
         ? streamingToolCalls
@@ -2605,21 +2601,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               showProviderMeta={streamingSenderGroupState.showSenderHeader}
               hideMeta
             >
-              {streamingTranscriptWindow.hiddenBlockCount > 0 && (
-                <div
-                  data-testid="streaming-transcript-window-notice"
-                  className="mb-2 rounded-md px-2 py-1 text-[11px]"
-                  style={{
-                    backgroundColor: "color-mix(in srgb, var(--bg-elevated) 72%, transparent)",
-                    border: "1px solid var(--border-subtle)",
-                    color: "var(--text-muted)",
-                  }}
-                >
-                  {streamingTranscriptWindow.hiddenBlockCount} earlier live updates hidden
-                </div>
-              )}
-              {streamingContentNodes}
-
               {/* Fallback when agent is running but no content blocks yet:
                   Tool calls pending show immediate visibility into what agent is doing. */}
               {singleFallbackToolCall && (
@@ -2665,7 +2646,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     }, [
       hasFooterStreamingContent,
       shouldRenderStreamingContentGroup,
-      renderedStreamingContentBlocks,
       expandedToolGroupKeys,
       providerHarness,
       providerSessionId,
@@ -2674,8 +2654,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       shouldShowActiveTypingIndicator,
       shouldShowFooterFallback,
       streamingMessageCreatedAt,
-      streamingTranscriptWindow,
-      streamingTasks,
       streamingToolCalls,
       toggleToolCallGroup,
     ]);
@@ -2752,6 +2730,24 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               />
             </ContentShell>
           </div>
+        );
+      }
+      if (item.kind === "streaming_row") {
+        return (
+          <LiveTranscriptRowItem
+            row={item.data}
+            senderGroupState={timelineSenderGroups[timelineIndex] ?? DEFAULT_ASSISTANT_GROUP_STATE}
+            isLastVisibleTimelineItem={isLastVisibleTimelineItem}
+            streamingMessageCreatedAt={streamingMessageCreatedAt}
+            streamingTasks={streamingTasks}
+            providerHarness={providerHarness}
+            providerSessionId={providerSessionId}
+            expandedToolGroupKeys={expandedToolGroupKeys}
+            contentWidthClassName={contentWidthClassName}
+            rowRef={isLastVisibleTimelineItem ? handleLastRenderedRowRef : undefined}
+            onToggleToolCallGroup={toggleToolCallGroup}
+            renderStreamingToolCallBlock={renderStreamingToolCallBlock}
+          />
         );
       }
       if (item.kind === "streaming") {
@@ -2877,6 +2873,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       handleFooterRef,
       handleLastRenderedRowRef,
       lastVisibleTimelineIndex,
+      providerHarness,
+      providerSessionId,
+      renderStreamingToolCallBlock,
+      streamingMessageCreatedAt,
+      streamingTasks,
       timelineSenderGroups,
       toggleToolCallGroup,
     ]);
@@ -2940,6 +2941,25 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                     />
                   </ContentShell>
                 </div>
+              );
+            }
+            if (item.kind === "streaming_row") {
+              return (
+                <LiveTranscriptRowItem
+                  key={item.data.key}
+                  row={item.data}
+                  senderGroupState={timelineSenderGroups[index] ?? DEFAULT_ASSISTANT_GROUP_STATE}
+                  isLastVisibleTimelineItem={index === lastVisibleTimelineIndex}
+                  streamingMessageCreatedAt={streamingMessageCreatedAt}
+                  streamingTasks={streamingTasks}
+                  providerHarness={providerHarness}
+                  providerSessionId={providerSessionId}
+                  expandedToolGroupKeys={expandedToolGroupKeys}
+                  contentWidthClassName={contentWidthClassName}
+                  rowRef={index === lastVisibleTimelineIndex ? handleLastRenderedRowRef : undefined}
+                  onToggleToolCallGroup={toggleToolCallGroup}
+                  renderStreamingToolCallBlock={renderStreamingToolCallBlock}
+                />
               );
             }
             if (item.kind === "streaming") {
