@@ -358,13 +358,12 @@ export function TicketingDashboardView({
   );
   const containers = useMemo(() => containersQuery.data ?? [], [containersQuery.data]);
 
-  // When Linear or ClickUp is the only enabled provider, auto-load its tickets
-  // instead of forcing a container pick. Linear search is provider-wide, and
-  // ClickUp can load workspace-wide tasks from the selected Workspace; Jira keeps
-  // the gate because its statuses/issues are meaningfully project-scoped.
+  // When Linear is the only enabled provider, auto-load its tickets instead of
+  // forcing a container pick. Jira projects and ClickUp Spaces remain explicit
+  // scopes so the dashboard does not fire broad provider-wide fetches.
   const autoLoadsWithoutContainer =
     validProviders.length === 1 &&
-    (activeProvider === "linear" || activeProvider === "clickup");
+    activeProvider === "linear";
   // When a readable provider exposes containers but none is selected, force the
   // user to pick one (no auto-select) and gate the columns/tickets queries so no
   // provider-wide unfiltered fetch fires.

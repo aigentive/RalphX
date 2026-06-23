@@ -32,6 +32,12 @@ describe("TicketingStatePanel", () => {
     ).toBeInTheDocument();
   });
 
+  it("fills the available dashboard content width", () => {
+    render(<TicketingStatePanel state="loading" title="Loading tickets" />);
+
+    expect(screen.getByTestId("ticketing-state-loading").className).toContain("w-full");
+  });
+
   it("omits the action button when only a label is provided", () => {
     render(<TicketingStatePanel state="stale" title="Data is stale" actionLabel="Refresh" />);
     expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();

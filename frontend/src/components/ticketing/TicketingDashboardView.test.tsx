@@ -577,7 +577,7 @@ describe("TicketingDashboardView", () => {
     expect(screen.queryByText("Select a project")).not.toBeInTheDocument();
   });
 
-  it("auto-loads ClickUp tickets without forcing a Space pick when ClickUp is the only enabled provider", async () => {
+  it("forces a Space selection before loading ClickUp tickets when Spaces exist", async () => {
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
       data: [
         {
@@ -616,13 +616,9 @@ describe("TicketingDashboardView", () => {
 
     renderDashboard();
 
-    await waitFor(() => {
-      expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
-        expect.objectContaining({ provider: "clickup" }),
-        { enabled: true },
-      );
-    });
-    expect(screen.queryByText("Select a Space")).not.toBeInTheDocument();
+    expect(screen.getByText("Select a space")).toBeInTheDocument();
+    expect(ticketingHooks.useTicketingColumns).toHaveBeenCalledWith(null, { enabled: false });
+    expect(ticketingHooks.useTickets).toHaveBeenCalledWith(null, { enabled: false });
   });
 
   it("filters ClickUp tickets by the selected sprint list", async () => {
