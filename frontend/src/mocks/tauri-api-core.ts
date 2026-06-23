@@ -141,6 +141,22 @@ const mockLinearIntegrationSettings = {
   updatedAt: new Date(0).toISOString(),
 };
 
+const mockClickUpIntegrationSettings = {
+  enabled: false,
+  hasApiToken: false,
+  workspaceId: null as string | null,
+  validationStatus: "not_configured",
+  taskSearchAvailable: false,
+  lastValidatedAt: null as string | null,
+  lastError: null as string | null,
+  updatedAt: new Date(0).toISOString(),
+};
+
+const mockClickUpWorkspaces = [
+  { id: "team-1", name: "Acme Workspace", color: "#ff6b35" },
+  { id: "team-2", name: "Globex Workspace", color: null as string | null },
+];
+
 function mockLinearIssue(input: {
   conversationId: string;
   projectId?: string | null;
@@ -1014,6 +1030,60 @@ const commandHandlers: Record<
     return mockLinearIntegrationSettings;
   },
   search_linear_issues: async () => ({ issues: [] }),
+  get_clickup_integration_settings: async () => mockClickUpIntegrationSettings,
+  save_clickup_integration_settings: async (args) => {
+    const input = args.input as {
+      apiToken?: string | null;
+      workspaceId?: string | null;
+    };
+    // Tri-state token: only re-gate the connection when the token changes.
+    if (input.apiToken !== undefined) {
+      mockClickUpIntegrationSettings.hasApiToken = Boolean(
+        input.apiToken?.trim(),
+      );
+      mockClickUpIntegrationSettings.enabled = false;
+      mockClickUpIntegrationSettings.validationStatus =
+        mockClickUpIntegrationSettings.hasApiToken
+          ? "pending"
+          : "not_configured";
+      mockClickUpIntegrationSettings.taskSearchAvailable = false;
+    }
+    // Tri-state workspace: undefined leaves it untouched, "" clears it.
+    if (input.workspaceId !== undefined) {
+      mockClickUpIntegrationSettings.workspaceId = input.workspaceId?.trim()
+        ? input.workspaceId
+        : null;
+    }
+    mockClickUpIntegrationSettings.lastError = null;
+    mockClickUpIntegrationSettings.updatedAt = new Date(0).toISOString();
+    return mockClickUpIntegrationSettings;
+  },
+  validate_clickup_integration: async () => {
+    Object.assign(mockClickUpIntegrationSettings, {
+      enabled: true,
+      validationStatus: "valid",
+      taskSearchAvailable: true,
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+    return mockClickUpIntegrationSettings;
+  },
+  disconnect_clickup_integration: async () => {
+    Object.assign(mockClickUpIntegrationSettings, {
+      enabled: false,
+      hasApiToken: false,
+      workspaceId: null,
+      validationStatus: "not_configured",
+      taskSearchAvailable: false,
+      lastValidatedAt: null,
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+    return mockClickUpIntegrationSettings;
+  },
+  list_clickup_workspaces: async () => ({ workspaces: mockClickUpWorkspaces }),
+  search_clickup_tasks: async () => ({ tasks: [] }),
   get_agent_conversation_linear_issue: async (args) => {
     const input = args.input as { conversationId: string };
     return {
