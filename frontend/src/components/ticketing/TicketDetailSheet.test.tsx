@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 const { openUrlMock } = vi.hoisted(() => ({ openUrlMock: vi.fn() }));
@@ -771,6 +772,37 @@ describe("TicketDetailSheet description images", () => {
     expect(screen.getByText("image/png · 2.0 KB")).toBeInTheDocument();
   });
 
+  it("opens image attachments in an in-app preview instead of the external URL", async () => {
+    openUrlMock.mockClear();
+    renderSheet({
+      ticket: {
+        ...baseTicket,
+        descriptionMarkdown: "",
+        descriptionText: "",
+        comments: [],
+        attachments: [
+          {
+            id: "att-1",
+            filename: "mockup.png",
+            mimeType: "image/png",
+            size: 2048,
+            url: "https://provider.example/mockup.png",
+          },
+        ],
+        transitions: [],
+      },
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Preview attachment mockup.png" }));
+
+    expect(openUrlMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "mockup.png" })).toBeInTheDocument();
+    expect(screen.getAllByAltText("mockup.png").at(-1)).toHaveAttribute(
+      "src",
+      "https://provider.example/mockup.png",
+    );
+  });
+
   it("renders comment image attachments below the comment body", () => {
     renderSheet({
       ticket: {
@@ -800,6 +832,9 @@ describe("TicketDetailSheet description images", () => {
     });
 
     expect(screen.getByText("See attached")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Preview attachment comment-shot.jpg" }),
+    ).toBeInTheDocument();
     expect(screen.getByAltText("comment-shot.jpg")).toHaveAttribute(
       "src",
       "https://provider.example/comment-shot.jpg",

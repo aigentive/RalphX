@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
-import { ExternalLink, FolderKanban, GitBranch, GitPullRequestArrow, Image as ImageIcon, MessageSquare, Send, UserCheck, UserX, X } from "lucide-react";
+import { ExternalLink, FolderKanban, GitBranch, GitPullRequestArrow, Image as ImageIcon, MessageSquare, Send, UserCheck, UserX, X, ZoomIn } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -550,63 +550,115 @@ function formatAttachmentSize(size: number | null | undefined): string | null {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function TicketAttachmentPreview({ attachment }: { attachment: TicketAttachment }) {
+function TicketAttachmentPreview({
+  attachment,
+  compact = false,
+}: {
+  attachment: TicketAttachment;
+  compact?: boolean;
+}) {
   const [failed, setFailed] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const isImage = isImageAttachment(attachment);
   const sizeLabel = formatAttachmentSize(attachment.size);
   const canOpen = Boolean(attachment.url);
   const meta = [attachment.mimeType, sizeLabel].filter(Boolean).join(" · ");
+  const canPreview = isImage && Boolean(attachment.url) && !failed;
 
   return (
-    <article
-      className="overflow-hidden rounded-md"
-      style={{
-        backgroundColor: "var(--bg-surface)",
-        borderColor: "var(--border-subtle)",
-        borderStyle: "solid",
-        borderWidth: "1px",
-      }}
-    >
-      {isImage && attachment.url && !failed && (
-        <button
-          type="button"
-          className="block w-full bg-[var(--bg-elevated)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
-          onClick={() => void openExternalTicketUrl(attachment.url ?? "")}
-          aria-label={`Open attachment ${attachment.filename}`}
-        >
-          <img
-            src={attachment.url}
-            alt={attachment.filename}
-            loading="lazy"
-            className="max-h-64 w-full object-contain"
-            onError={() => setFailed(true)}
-          />
-        </button>
-      )}
-      <div className="flex items-center justify-between gap-3 p-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <ImageIcon className="h-4 w-4 shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
-          <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-[var(--text-primary)]">
-              {attachment.filename}
-            </p>
-            {meta && <p className="mt-0.5 text-xs text-[var(--text-muted)]">{meta}</p>}
-          </div>
-        </div>
-        {canOpen && (
-          <Button
+    <>
+      <article
+        className={compact ? "flex overflow-hidden rounded-md" : "overflow-hidden rounded-md"}
+        style={{
+          backgroundColor: "var(--bg-surface)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+        }}
+      >
+        {canPreview && (
+          <button
             type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 shrink-0 gap-1 px-2 text-xs"
-            onClick={() => void openExternalTicketUrl(attachment.url ?? "")}
+            className={[
+              "group relative shrink-0 overflow-hidden bg-[var(--bg-elevated)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]",
+              compact ? "h-16 w-20" : "block w-full",
+            ].join(" ")}
+            onClick={() => setPreviewOpen(true)}
+            aria-label={`Preview attachment ${attachment.filename}`}
           >
-            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-            Open
-          </Button>
+            <img
+              src={attachment.url ?? ""}
+              alt={attachment.filename}
+              loading="lazy"
+              className={compact ? "h-full w-full object-cover" : "max-h-64 w-full object-contain"}
+              onError={() => setFailed(true)}
+            />
+            <span className="absolute inset-0 flex items-center justify-center bg-black/0 text-white opacity-0 transition group-hover:bg-black/35 group-hover:opacity-100 group-focus-visible:bg-black/35 group-focus-visible:opacity-100">
+              <ZoomIn className="h-5 w-5" aria-hidden="true" />
+              <span className="sr-only">Preview image</span>
+            </span>
+          </button>
         )}
-      </div>
-    </article>
+        <div
+          className={[
+            "flex min-w-0 items-center justify-between gap-3",
+            compact ? "flex-1 p-2" : "p-3",
+          ].join(" ")}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            {!canPreview && (
+              <ImageIcon className="h-4 w-4 shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
+            )}
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium text-[var(--text-primary)]">
+                {attachment.filename}
+              </p>
+              {meta && <p className="mt-0.5 text-xs text-[var(--text-muted)]">{meta}</p>}
+            </div>
+          </div>
+          {canOpen && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 gap-1 px-2 text-xs"
+              onClick={() => void openExternalTicketUrl(attachment.url ?? "")}
+            >
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              Open
+            </Button>
+          )}
+        </div>
+      </article>
+      {canPreview && (
+        <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+          <DialogContent
+            className="max-w-5xl"
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-subtle)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{attachment.filename}</DialogTitle>
+              {meta && <DialogDescription>{meta}</DialogDescription>}
+            </DialogHeader>
+            <div
+              className="flex max-h-[75vh] items-center justify-center overflow-auto rounded-md p-2"
+              style={{ backgroundColor: "var(--bg-elevated)" }}
+            >
+              <img
+                src={attachment.url ?? ""}
+                alt={attachment.filename}
+                className="max-h-[72vh] max-w-full object-contain"
+              />
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+    </>
   );
 }
 
@@ -1094,6 +1146,7 @@ export function TicketDetailSheet({
                                   <TicketAttachmentPreview
                                     key={attachment.id ?? `${attachment.filename}:${attachmentIndex}`}
                                     attachment={attachment}
+                                    compact
                                   />
                                 ))}
                               </div>
@@ -1150,6 +1203,7 @@ export function TicketDetailSheet({
                                                 <TicketAttachmentPreview
                                                   key={attachment.id ?? `${attachment.filename}:${attachmentIndex}`}
                                                   attachment={attachment}
+                                                  compact
                                                 />
                                               ))}
                                             </div>
