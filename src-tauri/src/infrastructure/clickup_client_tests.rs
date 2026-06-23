@@ -130,6 +130,15 @@ async fn current_user_maps_user_object() {
 }
 
 #[tokio::test]
+async fn current_user_errors_when_user_payload_is_missing() {
+    let fake = FakeClickUpRequester::new(vec![Ok(json!({ "ok": true }))]);
+
+    let error = fetch_current_user(&fake, "tok").await.unwrap_err();
+
+    assert_eq!(error, "ClickUp user response was missing user details");
+}
+
+#[tokio::test]
 async fn workspaces_map_from_teams() {
     let fake = FakeClickUpRequester::new(vec![Ok(json!({
         "teams": [
@@ -225,6 +234,25 @@ async fn filtered_tasks_stops_on_first_last_page() {
 }
 
 #[tokio::test]
+async fn filtered_tasks_encodes_workspace_and_space_ids() {
+    let fake = FakeClickUpRequester::new(vec![Ok(json!({ "tasks": [], "last_page": true }))]);
+
+    fetch_filtered_tasks(
+        &fake,
+        "tok",
+        "team/with space",
+        &["space/one".to_string(), "space two".to_string()],
+    )
+    .await
+    .unwrap();
+
+    let url = &fake.requests()[0].url;
+    assert!(url.contains("/team/team%2Fwith%20space/task"));
+    assert!(url.contains("space_ids%5B%5D=space%2Fone"));
+    assert!(url.contains("space_ids%5B%5D=space%20two"));
+}
+
+#[tokio::test]
 async fn task_summary_maps_status_assignees_and_tags() {
     let fake = FakeClickUpRequester::new(vec![Ok(
         json!({ "tasks": [sample_task("abc123", "custom")], "last_page": true }),
@@ -313,7 +341,10 @@ async fn fetch_task_detail_maps_fields() {
     assert_eq!(content.assignees, vec!["dev".to_string()]);
     assert_eq!(content.attachments.len(), 1);
     assert_eq!(content.attachments[0].filename, "mockup.png");
-    assert_eq!(content.attachments[0].mime_type.as_deref(), Some("image/png"));
+    assert_eq!(
+        content.attachments[0].mime_type.as_deref(),
+        Some("image/png")
+    );
     assert_eq!(
         content.attachments[0].url.as_deref(),
         Some("https://files.example/mockup.png")
@@ -323,7 +354,10 @@ async fn fetch_task_detail_maps_fields() {
     assert_eq!(content.comments[0].body, "Looks loaded");
     assert_eq!(content.comments[0].author_name.as_deref(), Some("Reviewer"));
     assert_eq!(content.comments[0].attachments.len(), 1);
-    assert_eq!(content.comments[0].attachments[0].filename, "comment-shot.jpg");
+    assert_eq!(
+        content.comments[0].attachments[0].filename,
+        "comment-shot.jpg"
+    );
     assert_eq!(
         content.comments[0].created_at.as_deref(),
         Some("2023-11-14T22:13:20+00:00"),
@@ -346,6 +380,78 @@ async fn fetch_task_detail_maps_fields() {
     assert!(fake.requests()[0].url.ends_with("/task/abc123"));
     assert!(fake.requests()[1].url.ends_with("/task/abc123/comment"));
     assert!(fake.requests()[2].url.ends_with("/comment/12345/reply"));
+}
+
+#[tokio::test]
+async fn fetch_task_detail_maps_clickup_attachment_fallback_fields() {
+    let mut task = sample_task("abc123", "custom");
+    task["date_updated"] = json!("2026-06-23T12:00:00Z");
+    task["attachments"] = json!([
+        {
+            "uuid": "uuid-1",
+            "title": "design-shot.png",
+            "mimeType": "image/png",
+            "file_size": 4096,
+            "downloadUrl": "https://files.example/design-shot.png"
+        },
+        {
+            "name": "brief.txt",
+            "content_type": "text/plain",
+            "download_url": "https://files.example/brief.txt"
+        }
+    ]);
+    let fake = FakeClickUpRequester::new(vec![
+        Ok(task),
+        Ok(json!({
+            "comments": [
+                {
+                    "id": "comment-1",
+                    "body": "Body fallback",
+                    "user": { "name": "Named User" },
+                    "date": "2026-06-23T12:05:00Z"
+                }
+            ]
+        })),
+    ]);
+
+    let content = fetch_task_detail(&fake, "tok", "abc123").await.unwrap();
+
+    assert_eq!(content.updated_at.as_deref(), Some("2026-06-23T12:00:00Z"));
+    assert_eq!(content.attachments.len(), 2);
+    assert_eq!(content.attachments[0].id.as_deref(), Some("uuid-1"));
+    assert_eq!(content.attachments[0].filename, "design-shot.png");
+    assert_eq!(
+        content.attachments[0].mime_type.as_deref(),
+        Some("image/png")
+    );
+    assert_eq!(content.attachments[0].size, Some(4096));
+    assert_eq!(
+        content.attachments[0].url.as_deref(),
+        Some("https://files.example/design-shot.png"),
+    );
+    assert_eq!(content.attachments[1].filename, "brief.txt");
+    assert_eq!(
+        content.attachments[1].mime_type.as_deref(),
+        Some("text/plain")
+    );
+    assert_eq!(
+        content.attachments[1].url.as_deref(),
+        Some("https://files.example/brief.txt"),
+    );
+    assert_eq!(content.comments[0].body, "Body fallback");
+    assert_eq!(
+        content.comments[0].author_name.as_deref(),
+        Some("Named User")
+    );
+    assert_eq!(
+        content.comments[0].created_at.as_deref(),
+        Some("2026-06-23T12:05:00Z"),
+    );
+    assert_eq!(
+        fake.requests().len(),
+        2,
+        "comment had no replies to hydrate"
+    );
 }
 
 #[tokio::test]
