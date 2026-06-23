@@ -78,7 +78,8 @@ use crate::application::git_service::{
 };
 use crate::application::ideation_workspace::prepare_ideation_analysis_state_from_agent_workspace;
 use crate::application::publish_resilience::{
-    classify_publish_failure, count_publish_reviewable_commits, count_unpublished_publish_commits,
+    classify_publish_failure, count_publish_reviewable_commits,
+    count_publishable_commits_with_base_fallback, count_unpublished_publish_commits,
     ensure_plan_publish_branch_fresh, ensure_publish_branch_fresh,
     inspect_publish_branch_freshness_for_source,
     inspect_publish_branch_freshness_for_source_after_fetch, push_publish_branch,
@@ -4834,10 +4835,14 @@ async fn get_agent_conversation_workspace_freshness_for_state(
 
     let (has_uncommitted_changes, unpublished_commit_count) = tokio::join!(
         GitService::has_uncommitted_changes(&worktree_path),
-        count_unpublished_publish_commits(&worktree_path, &workspace.branch_name),
+        count_publishable_commits_with_base_fallback(
+            &worktree_path,
+            &workspace.branch_name,
+            effective_base_ref,
+        ),
     );
     let has_uncommitted_changes = has_uncommitted_changes.map_err(|e| e.to_string())?;
-    let unpublished_commit_count = unpublished_commit_count.map_err(|e| e.to_string())?;
+    let unpublished_commit_count = Some(unpublished_commit_count.map_err(|e| e.to_string())?);
 
     Ok(
         AgentConversationWorkspaceFreshnessResponse::from_target_status(
