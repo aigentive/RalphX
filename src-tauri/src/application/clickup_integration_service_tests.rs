@@ -318,6 +318,32 @@ async fn save_settings_replacing_token_deletes_previous_ref() {
 }
 
 #[tokio::test]
+async fn save_settings_workspace_only_preserves_valid_connection() {
+    let client = Arc::new(TestClickUpClient::default());
+    let (service, _repo, _secret) = build_service(client);
+
+    service
+        .save_settings(Some("pk_valid".to_string()), Some("9000".to_string()))
+        .await
+        .unwrap();
+    let validated = service.validate_and_enable().await.unwrap();
+    assert!(validated.enabled);
+    assert_eq!(validated.validation_status, IntegrationValidationStatus::Valid);
+    assert!(validated.task_search_available);
+
+    let updated = service
+        .save_settings(None, Some("9001".to_string()))
+        .await
+        .unwrap();
+
+    assert_eq!(updated.workspace_id.as_deref(), Some("9001"));
+    assert!(updated.enabled);
+    assert_eq!(updated.validation_status, IntegrationValidationStatus::Valid);
+    assert!(updated.task_search_available);
+    assert!(updated.last_validated_at.is_some());
+}
+
+#[tokio::test]
 async fn save_settings_read_back_mismatch_errors_and_deletes_written_ref() {
     let repo = Arc::new(MemoryClickUpIntegrationSettingsRepository::new());
     let secret = Arc::new(MismatchingSecretStore::default());

@@ -577,6 +577,54 @@ describe("TicketingDashboardView", () => {
     expect(screen.queryByText("Select a project")).not.toBeInTheDocument();
   });
 
+  it("auto-loads ClickUp tickets without forcing a Space pick when ClickUp is the only enabled provider", async () => {
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "jira",
+          label: "Jira",
+          enabled: false,
+          connectionStatus: "disconnected",
+          capabilities,
+        },
+        {
+          provider: "linear",
+          label: "Linear",
+          enabled: false,
+          connectionStatus: "disconnected",
+          capabilities,
+        },
+        {
+          provider: "clickup",
+          label: "ClickUp",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
+      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "project" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
+        expect.objectContaining({ provider: "clickup" }),
+        { enabled: true },
+      );
+    });
+    expect(screen.queryByText("Select a Space")).not.toBeInTheDocument();
+  });
+
   it("surfaces stale provider freshness without hiding ticket content", () => {
     mockConnectedDashboard();
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({

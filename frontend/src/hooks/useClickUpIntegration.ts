@@ -5,6 +5,7 @@ import {
   type ClickUpIntegrationSettings,
   type SaveClickUpIntegrationSettingsInput,
 } from "@/api/clickup";
+import { ticketingKeys } from "@/hooks/useTicketing";
 
 export const clickupIntegrationKeys = {
   all: ["clickup-integration"] as const,
@@ -30,6 +31,9 @@ export function isClickUpConnected(
 
 export function useClickUpIntegration() {
   const queryClient = useQueryClient();
+  const invalidateTicketingProviders = () => {
+    void queryClient.invalidateQueries({ queryKey: ticketingKeys.all });
+  };
   const settingsQuery = useQuery({
     queryKey: clickupIntegrationKeys.settings(),
     queryFn: () => clickupApi.getSettings(),
@@ -51,6 +55,7 @@ export function useClickUpIntegration() {
       clickupApi.saveSettings(input),
     onSuccess: (settings) => {
       queryClient.setQueryData(clickupIntegrationKeys.settings(), settings);
+      invalidateTicketingProviders();
     },
   });
 
@@ -58,6 +63,7 @@ export function useClickUpIntegration() {
     mutationFn: () => clickupApi.validate(),
     onSuccess: (settings) => {
       queryClient.setQueryData(clickupIntegrationKeys.settings(), settings);
+      invalidateTicketingProviders();
       void queryClient.invalidateQueries({
         queryKey: clickupIntegrationKeys.workspaces(),
       });
@@ -68,6 +74,7 @@ export function useClickUpIntegration() {
     mutationFn: () => clickupApi.disconnect(),
     onSuccess: (settings) => {
       queryClient.setQueryData(clickupIntegrationKeys.settings(), settings);
+      invalidateTicketingProviders();
       queryClient.removeQueries({
         queryKey: clickupIntegrationKeys.workspaces(),
       });

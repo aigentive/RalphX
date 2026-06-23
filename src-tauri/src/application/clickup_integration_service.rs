@@ -468,15 +468,18 @@ impl ClickUpIntegrationService {
 
     /// Persists ClickUp settings. Both arguments are tri-state: `None` leaves
     /// the existing value untouched, `Some("")` clears it, and `Some(value)`
-    /// sets it. Saving always returns the integration to a pending,
-    /// not-enabled state so the caller re-validates afterwards.
+    /// sets it. Token changes return the integration to a pending, not-enabled
+    /// state so the caller re-validates afterwards; workspace-only changes keep
+    /// the existing validation result.
     pub async fn save_settings(
         &self,
         api_token: Option<String>,
         workspace_id: Option<String>,
     ) -> Result<ClickUpIntegrationSettings, String> {
         let mut settings = self.get_settings().await?;
+        let mut token_changed = false;
         if let Some(token) = api_token.map(|value| value.trim().to_string()) {
+            token_changed = true;
             if token.is_empty() {
                 if let Some(secret_ref) = settings.token_secret_ref.as_ref() {
                     self.secret_store
@@ -536,11 +539,13 @@ impl ClickUpIntegrationService {
                 Some(workspace)
             };
         }
-        settings.enabled = false;
-        settings.validation_status = pending_status_for_settings(&settings);
-        settings.task_search_available = false;
-        settings.last_validated_at = None;
-        settings.last_error = None;
+        if token_changed {
+            settings.enabled = false;
+            settings.validation_status = pending_status_for_settings(&settings);
+            settings.task_search_available = false;
+            settings.last_validated_at = None;
+            settings.last_error = None;
+        }
         settings.updated_at = chrono::Utc::now();
         self.settings_repo
             .upsert(&settings)

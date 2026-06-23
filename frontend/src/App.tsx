@@ -181,8 +181,14 @@ function AppContent() {
   const { data: featureFlags } = useFeatureFlags();
 
   // Redirect to the default project view in production when the current view is disabled.
+  // Ticketing remains directly reachable when a provider enables the dashboard
+  // entry; provider availability is handled by the dashboard/sidebar surfaces.
   useEffect(() => {
-    if (!import.meta.env.DEV && !isViewEnabled(currentView, featureFlags)) {
+    if (
+      currentView !== "ticketing" &&
+      !import.meta.env.DEV &&
+      !isViewEnabled(currentView, featureFlags)
+    ) {
       setCurrentView(DEFAULT_PROJECT_VIEW);
     }
   }, [currentView, featureFlags, setCurrentView]);
