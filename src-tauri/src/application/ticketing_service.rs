@@ -7,7 +7,8 @@ use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::application::{
     AtlassianIntegrationService, AtlassianJiraComment, AtlassianJiraTransition,
-    LinearComment, LinearIntegrationService, LinearUser, LinearWorkflowState,
+    ClickUpComment, ClickUpIntegrationService, ClickUpStatus, ClickUpUser, LinearComment,
+    LinearIntegrationService, LinearUser, LinearWorkflowState,
 };
 use crate::domain::integrations::{
     ExternalIssueLink, ExternalIssueSyncRecordUpsert, ExternalIssueSyncStatus,
@@ -21,9 +22,12 @@ pub const TICKETING_OPERATION_EVENT: &str = "ticketing:operation_updated";
 
 const PROVIDER_JIRA: &str = "jira";
 const PROVIDER_LINEAR: &str = "linear";
+const PROVIDER_CLICKUP: &str = "clickup";
 const LINK_PROVIDER_JIRA: &str = "atlassian";
+const LINK_PROVIDER_CLICKUP: &str = "clickup";
 const KIND_JIRA: &str = "jira";
 const KIND_LINEAR: &str = "issue";
+const KIND_CLICKUP: &str = "task";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -166,6 +170,7 @@ struct BegunOperation {
 pub struct TicketingService {
     atlassian: Arc<AtlassianIntegrationService>,
     linear: Arc<LinearIntegrationService>,
+    clickup: Arc<ClickUpIntegrationService>,
     external_issues: Arc<ExternalIssueLinkService>,
     event_sink: Option<Arc<dyn TicketingEventSink>>,
 }
@@ -174,11 +179,13 @@ impl TicketingService {
     pub fn new(
         atlassian: Arc<AtlassianIntegrationService>,
         linear: Arc<LinearIntegrationService>,
+        clickup: Arc<ClickUpIntegrationService>,
         external_issues: Arc<ExternalIssueLinkService>,
     ) -> Self {
         Self {
             atlassian,
             linear,
+            clickup,
             external_issues,
             event_sink: None,
         }
@@ -207,6 +214,18 @@ impl TicketingService {
                 .list_workflow_states(None)
                 .await
                 .map(|items| items.into_iter().map(linear_transition_option).collect()),
+            PROVIDER_CLICKUP => {
+                // ClickUp statuses are scoped to a Space, so resolve the task's
+                // space first, then list that space's statuses as transitions.
+                let task = self.clickup.fetch_task(&identity.external_id).await?;
+                let space_id = task.space_id.ok_or_else(|| {
+                    "ClickUp task is missing a space; cannot list statuses".to_string()
+                })?;
+                self.clickup
+                    .list_statuses(&space_id)
+                    .await
+                    .map(|items| items.into_iter().map(clickup_transition_option).collect())
+            }
             _ => unreachable!("ticket provider validated above"),
         }
     }
@@ -279,6 +298,13 @@ impl TicketingService {
                     .update_issue_state(&identity.external_id, &transition.to_state_id)
                     .await
             }
+            PROVIDER_CLICKUP => {
+                // ClickUp identifies statuses by name; `to_state_id` carries the
+                // status name resolved from `list_transitions`.
+                self.clickup
+                    .update_task_status(&identity.external_id, &transition.to_state_id)
+                    .await
+            }
             _ => unreachable!("ticket provider validated above"),
         };
         if let Err(error) = provider_result {
@@ -340,6 +366,13 @@ impl TicketingService {
                     .map(linear_user_to_ticketing_person)
                     .map(Some)
             }
+            PROVIDER_CLICKUP => {
+                self.clickup
+                    .assign_task_to_current_user(&identity.external_id)
+                    .await
+                    .map(clickup_user_to_ticketing_person)
+                    .map(Some)
+            }
             _ => unreachable!("ticket provider validated above"),
         };
         let assignee = match assignee {
@@ -392,6 +425,7 @@ impl TicketingService {
                 .clear_jira_issue_assignee(&identity.external_id)
                 .await,
             PROVIDER_LINEAR => self.linear.clear_issue_assignee(&identity.external_id).await,
+            PROVIDER_CLICKUP => self.clickup.clear_task_assignee(&identity.external_id).await,
             _ => unreachable!("ticket provider validated above"),
         };
         if let Err(error) = provider_result {
@@ -449,6 +483,11 @@ impl TicketingService {
                 .create_comment(&identity.external_id, body_markdown)
                 .await
                 .map(linear_comment_result),
+            PROVIDER_CLICKUP => self
+                .clickup
+                .create_comment(&identity.external_id, body_markdown)
+                .await
+                .map(clickup_comment_result),
             _ => unreachable!("ticket provider validated above"),
         };
         let comment = match comment {
@@ -512,6 +551,12 @@ impl TicketingService {
                     .set_issue_labels(&identity.external_id, normalized.clone())
                     .await
             }
+            PROVIDER_CLICKUP => {
+                // ClickUp labels are free-text tags; forward the normalized set.
+                self.clickup
+                    .set_task_tags(&identity.external_id, normalized.clone())
+                    .await
+            }
             _ => unreachable!("ticket provider validated above"),
         };
         if let Err(error) = write_result {
@@ -564,6 +609,19 @@ impl TicketingService {
                 }
                 if !settings.issue_search_available {
                     return Err("Linear ticket write-back is not available for this connection"
+                        .to_string());
+                }
+            }
+            PROVIDER_CLICKUP => {
+                let settings = self.clickup.get_settings().await?;
+                if !settings.enabled
+                    || settings.validation_status
+                        != crate::domain::integrations::IntegrationValidationStatus::Valid
+                {
+                    return Err("ClickUp integration is not enabled".to_string());
+                }
+                if !settings.task_search_available {
+                    return Err("ClickUp ticket write-back is not available for this connection"
                         .to_string());
                 }
             }
@@ -623,10 +681,10 @@ impl TicketingService {
     }
 
     async fn find_link(&self, identity: &TicketIdentity) -> Result<Option<ExternalIssueLink>, String> {
-        let link_provider = if identity.provider == PROVIDER_JIRA {
-            LINK_PROVIDER_JIRA
-        } else {
-            PROVIDER_LINEAR
+        let link_provider = match identity.provider.as_str() {
+            PROVIDER_JIRA => LINK_PROVIDER_JIRA,
+            PROVIDER_CLICKUP => LINK_PROVIDER_CLICKUP,
+            _ => PROVIDER_LINEAR,
         };
         self.external_issues
             .find_link_by_external_identity(
@@ -769,7 +827,7 @@ impl TicketingService {
 fn normalize_ticket_identity(ticket: &TicketingTicketIdentity) -> Result<TicketIdentity, String> {
     let provider = ticket.provider.trim();
     let provider = match provider {
-        PROVIDER_JIRA | PROVIDER_LINEAR => provider.to_string(),
+        PROVIDER_JIRA | PROVIDER_LINEAR | PROVIDER_CLICKUP => provider.to_string(),
         other => return Err(format!("Unknown ticketing provider: {other}")),
     };
     let raw_id = required_trimmed(&ticket.id, "Ticket id is required")?;
@@ -779,17 +837,20 @@ fn normalize_ticket_identity(ticket: &TicketingTicketIdentity) -> Result<TicketI
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    // Only Jira keys its external object by the human-readable issue key; Linear
+    // and ClickUp address objects by their opaque id.
     let external_id = if provider == PROVIDER_JIRA {
         key.clone().unwrap_or_else(|| raw_id.to_string())
     } else {
         raw_id.to_string()
     };
+    let external_kind = match provider.as_str() {
+        PROVIDER_JIRA => KIND_JIRA,
+        PROVIDER_CLICKUP => KIND_CLICKUP,
+        _ => KIND_LINEAR,
+    };
     Ok(TicketIdentity {
-        external_kind: if provider == PROVIDER_JIRA {
-            KIND_JIRA.to_string()
-        } else {
-            KIND_LINEAR.to_string()
-        },
+        external_kind: external_kind.to_string(),
         provider,
         external_id,
         external_key: key,
@@ -929,6 +990,37 @@ fn linear_user_to_ticketing_person(value: LinearUser) -> TicketingPersonResult {
     TicketingPersonResult {
         id: Some(value.id),
         name: value.name.unwrap_or_else(|| "Me".to_string()),
+    }
+}
+
+fn clickup_transition_option(value: ClickUpStatus) -> TicketingTransitionOption {
+    TicketingTransitionOption {
+        // ClickUp's status update API is keyed by status name, so the name is
+        // also the transition target id. ClickUp has no separate transition id.
+        to_state_id: value.status.clone(),
+        provider_transition_id: None,
+        name: value.status,
+        category: value.category,
+        disabled_reason: None,
+    }
+}
+
+fn clickup_comment_result(value: ClickUpComment) -> TicketingCommentResult {
+    TicketingCommentResult {
+        id: Some(value.id),
+        body_markdown: value.body.clone(),
+        body_text: value.body,
+        author_name: value.author_name,
+        created_at: value.created_at,
+        // ClickUp comment creation does not return an updated timestamp.
+        updated_at: None,
+    }
+}
+
+fn clickup_user_to_ticketing_person(value: ClickUpUser) -> TicketingPersonResult {
+    TicketingPersonResult {
+        id: Some(value.id.to_string()),
+        name: value.username.unwrap_or_else(|| "Me".to_string()),
     }
 }
 

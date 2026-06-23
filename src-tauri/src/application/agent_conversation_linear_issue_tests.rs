@@ -70,6 +70,7 @@ impl LinearApiClient for RichLinearClient {
             creator: Some("C. User".to_string()),
             updated_at: Some("2026-06-18T08:00:00Z".to_string()),
             comments: Vec::new(),
+            attachments: Vec::new(),
             labels: Vec::new(),
             project: None,
         })

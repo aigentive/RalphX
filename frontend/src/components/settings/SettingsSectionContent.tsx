@@ -61,6 +61,11 @@ const LazyLinearIntegrationSettingsPanel = lazy(() =>
     default: module.LinearIntegrationSettingsPanel,
   })),
 );
+const LazyClickUpIntegrationSettingsPanel = lazy(() =>
+  import("./ClickUpIntegrationSettingsPanel").then((module) => ({
+    default: module.ClickUpIntegrationSettingsPanel,
+  })),
+);
 const LazyExternalMcpSettingsPanel = lazy(() =>
   import("./ExternalMcpSettingsPanel").then((module) => ({
     default: module.ExternalMcpSettingsPanel,
@@ -131,6 +136,7 @@ export function SettingsSectionContent({
       {section === "ideation-harnesses" && <LazyIdeationHarnessSection />}
       {section === "integrations" && <LazyAtlassianIntegrationSettingsPanel />}
       {section === "linear" && <LazyLinearIntegrationSettingsPanel />}
+      {section === "clickup" && <LazyClickUpIntegrationSettingsPanel />}
       {section === "api-keys" && <LazyApiKeysSection />}
       {section === "external-mcp" && <LazyExternalMcpSettingsPanel />}
       {section === "accessibility" && <LazyAccessibilitySection />}

@@ -64,7 +64,6 @@ vi.mock("@/hooks/useTicketing", () => ({
   findTicketTransitionForColumn: vi.fn(),
   flattenTicketPages: vi.fn((data) => data?.pages.flatMap((page) => page.items) ?? []),
   useRefreshTickets: vi.fn(),
-  useStartWorkFromTicket: vi.fn(),
   useTicketAssociations: vi.fn(),
   useTicketDetail: vi.fn(),
   useTicketingMutations: vi.fn(),
@@ -256,11 +255,6 @@ function mockConnectedDashboard() {
     addCommentMutation: { isPending: false },
     setLabelsMutation: { isPending: false },
   } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
-  vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
-    mutate: vi.fn(),
-    isPending: false,
-    error: null,
-  } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
 }
 
 describe("TicketingDashboardView", () => {
@@ -268,6 +262,9 @@ describe("TicketingDashboardView", () => {
     vi.clearAllMocks();
     window.HTMLElement.prototype.scrollIntoView = vi.fn();
     useTicketingStore.getState().reset();
+    useAgentSessionStore.getState().clearSelection();
+    useAgentSessionStore.setState({ startConversationDraft: null });
+    useChatStore.setState({ activeConversationIds: {} });
     vi.mocked(projectHooks.useProjects).mockReturnValue({
       data: [
         {
@@ -369,11 +366,6 @@ describe("TicketingDashboardView", () => {
       addCommentMutation: { isPending: false },
       setLabelsMutation: { isPending: false },
     } as unknown as ReturnType<typeof ticketingHooks.useTicketingMutations>);
-    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
-      mutate: vi.fn(),
-      isPending: false,
-      error: null,
-    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
     vi.mocked(chatHooks.useConversations).mockReturnValue({
       data: [],
       isLoading: false,
@@ -577,6 +569,108 @@ describe("TicketingDashboardView", () => {
     expect(screen.queryByText("Select a project")).not.toBeInTheDocument();
   });
 
+  it("forces a Space selection before loading ClickUp tickets when Spaces exist", async () => {
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "jira",
+          label: "Jira",
+          enabled: false,
+          connectionStatus: "disconnected",
+          capabilities,
+        },
+        {
+          provider: "linear",
+          label: "Linear",
+          enabled: false,
+          connectionStatus: "disconnected",
+          capabilities,
+        },
+        {
+          provider: "clickup",
+          label: "ClickUp",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
+      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "project" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+
+    renderDashboard();
+
+    expect(screen.getByText("Select a space")).toBeInTheDocument();
+    expect(ticketingHooks.useTicketingColumns).toHaveBeenCalledWith(null, { enabled: false });
+    expect(ticketingHooks.useTickets).toHaveBeenCalledWith(null, { enabled: false });
+  });
+
+  it("filters ClickUp tickets by the selected sprint list", async () => {
+    useTicketingStore.getState().setProvider("clickup");
+    const sprintTicket = {
+      ...ticket,
+      ref: { provider: "clickup" as const, id: "cu-current", key: "CU-42" },
+      title: "Current sprint task",
+      project: "Sprint 42",
+      currentUserAssigned: true,
+    };
+    const backlogTicket = {
+      ...ticket,
+      ref: { provider: "clickup" as const, id: "cu-backlog", key: "CU-7" },
+      title: "Backlog task",
+      project: "Backlog",
+      currentUserAssigned: false,
+    };
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "clickup",
+          label: "ClickUp",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: { pages: [{ items: [sprintTicket, backlogTicket], nextCursor: null, total: 2 }], pageParams: [null] },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+
+    renderDashboard();
+
+    const sprintSelect = await screen.findByRole("combobox", { name: "Sprint" });
+    fireEvent.click(sprintSelect);
+    const sprintListbox = screen.getByRole("listbox", { name: "Sprint" });
+    expect(within(sprintListbox).getByRole("option", { name: "Sprint 42" })).toBeInTheDocument();
+    expect(within(sprintListbox).queryByRole("option", { name: "Backlog" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Current sprint task/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Backlog task/ })).toBeInTheDocument();
+
+    fireEvent.click(within(sprintListbox).getByRole("option", { name: "Sprint 42" }));
+
+    expect(screen.getByRole("button", { name: /Current sprint task/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Backlog task/ })).not.toBeInTheDocument();
+  });
+
   it("surfaces stale provider freshness without hiding ticket content", () => {
     mockConnectedDashboard();
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
@@ -639,6 +733,53 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Tickets failed to refresh");
     expect(screen.getByText("Provider rate limit exceeded")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /RX-1/ })).toBeInTheDocument();
+  });
+
+  it("shows the visible ticket count beside the dashboard title", () => {
+    mockConnectedDashboard();
+    useTicketingStore.getState().setFilters({
+      text: "",
+      assignee: "Ada",
+      stateIds: [],
+      labels: [],
+      sprint: null,
+    });
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: {
+        pages: [
+          {
+            items: [
+              { ...ticket, assignee: { id: "ada", name: "Ada" } },
+              {
+                ...ticket,
+                ref: { provider: "jira" as const, id: "10002", key: "RX-2" },
+                title: "Unassigned backlog item",
+                assignee: null,
+              },
+            ],
+            nextCursor: null,
+            total: 2,
+          },
+        ],
+        pageParams: [null],
+      },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+
+    renderDashboard();
+
+    expect(screen.getByRole("heading", { name: "Ticketing" })).toBeInTheDocument();
+    expect(screen.getByTestId("ticketing-visible-count")).toHaveTextContent("1");
+    expect(screen.getByTestId("ticketing-visible-count")).toHaveAttribute(
+      "aria-label",
+      "1 visible ticket",
+    );
   });
 
   it("renders list and kanban views, then opens ticket detail with RalphX associations", async () => {
@@ -798,7 +939,8 @@ describe("TicketingDashboardView", () => {
     // Scope to the ticket list so filter-bar options (Unassigned / assignee
     // names) do not collide with row content.
     const list = within(document.querySelector("[data-ticket-list]") as HTMLElement);
-    expect(list.getByText("A. User")).toBeInTheDocument();
+    expect(list.getByLabelText("A. User")).toHaveAttribute("title", "A. User");
+    expect(list.queryByText("A. User")).not.toBeInTheDocument();
     expect(list.getByText("Platform")).toBeInTheDocument();
     expect(list.getByText("linear")).toBeInTheDocument();
     expect(list.getByRole("img", { name: /3 RalphX conversation/i })).toBeInTheDocument();
@@ -808,7 +950,7 @@ describe("TicketingDashboardView", () => {
   it("filters the list client-side by the selected assignee", () => {
     mockConnectedDashboard();
     useTicketingStore.setState({
-      filters: { text: "", assignee: "Someone Else", stateIds: [], labels: [] },
+      filters: { text: "", assignee: "Someone Else", stateIds: [], labels: [], sprint: null },
     });
     renderDashboard();
 
@@ -829,7 +971,7 @@ describe("TicketingDashboardView", () => {
       isFetchingNextPage: false,
     } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
     useTicketingStore.setState({
-      filters: { text: "", assignee: null, stateIds: [], labels: [] },
+      filters: { text: "", assignee: null, stateIds: [], labels: [], sprint: null },
     });
     renderDashboard();
 
@@ -914,7 +1056,7 @@ describe("TicketingDashboardView", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /RX-1/ }));
 
-    expect(await screen.findByRole("button", { name: "Start RalphX work" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Start conversation" })).toBeInTheDocument();
     expect(screen.getByText("When two agents transition the same task.")).toBeInTheDocument();
   });
 
@@ -1047,7 +1189,8 @@ describe("TicketingDashboardView", () => {
 
     // Assignee is shown and "Assign to me" is hidden in the sheet when assigned.
     const sheet = within(screen.getByRole("dialog"));
-    expect(await screen.findByText("A. User")).toBeInTheDocument();
+    expect(await sheet.findByLabelText("A. User")).toHaveAttribute("title", "A. User");
+    expect(sheet.queryByText("A. User")).not.toBeInTheDocument();
     expect(sheet.queryByRole("button", { name: "Assign to me" })).not.toBeInTheDocument();
 
     fireEvent.click(sheet.getByRole("button", { name: "Clear assignee" }));
@@ -1058,62 +1201,67 @@ describe("TicketingDashboardView", () => {
     });
   });
 
-  it("starts RalphX work from the ticket detail sheet", async () => {
-    const startWork = vi.fn();
+  it("opens the agent starter with the selected ticket as a composer reference", async () => {
     mockConnectedDashboard();
-    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
-      mutate: startWork,
-      isPending: false,
-      error: null,
-    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
 
     renderDashboard();
 
     fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
     fireEvent.click(
-      await screen.findByRole("button", { name: "Start RalphX work" }),
+      await screen.findByRole("button", { name: "Start conversation" }),
     );
     const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("Start RalphX Work");
+    expect(dialog).toHaveTextContent("Start Conversation");
+    expect(within(dialog).getByText("Start Conversation").parentElement).toHaveClass(
+      "block",
+      "space-y-1.5",
+      "pr-14",
+    );
+    expect(dialog).toHaveTextContent(
+      "The new composer will open with RX-1 attached as a reference.",
+    );
 
     // Scope to the dialog: the container filter bar is also labeled "Project"
     // now that Jira containers are projects.
     fireEvent.click(within(dialog).getByRole("combobox", { name: "Project" }));
     fireEvent.click(screen.getByRole("option", { name: /Target Project.*repo\/target/ }));
-    fireEvent.click(within(dialog).getByRole("combobox", { name: "Conversation type" }));
-    fireEvent.click(screen.getByRole("option", { name: "Plan" }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Start" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open composer" }));
 
-    expect(startWork).toHaveBeenCalledWith(
-      {
-        projectId: "project-2",
-        ticketRef: ticket.ref,
-        mode: "plan",
-        content: "Start RalphX work for RX-1: Fix merge race in transition handler",
-      },
-      expect.objectContaining({ onSuccess: expect.any(Function) }),
-    );
+    expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
+      projectId: "project-2",
+      content: "",
+      mode: "edit",
+      composerIntegrationReferences: [
+        {
+          provider: "atlassian",
+          kind: "jira",
+          id: "RX-1",
+          key: "RX-1",
+          title: "Fix merge race in transition handler",
+          url: "https://example.atlassian.net/browse/RX-1",
+        },
+      ],
+    });
+    expect(useAgentSessionStore.getState().focusedProjectId).toBe("project-2");
+    expect(useAgentSessionStore.getState().selectedConversationId).toBeNull();
+    expect(useChatStore.getState().activeConversationIds["project:project-2"]).toBeNull();
   });
 
-  it("applies the unified md select treatment to the Start Work dialog pickers", async () => {
+  it("applies the unified md select treatment to the start conversation project picker", async () => {
     mockConnectedDashboard();
 
     renderDashboard();
 
     fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
     fireEvent.click(
-      await screen.findByRole("button", { name: "Start RalphX work" }),
+      await screen.findByRole("button", { name: "Start conversation" }),
     );
-    expect(await screen.findByRole("dialog")).toHaveTextContent("Start RalphX Work");
+    expect(await screen.findByRole("dialog")).toHaveTextContent("Start Conversation");
 
     const project = screen.getByRole("combobox", { name: "Project" });
-    const conversationType = screen.getByRole("combobox", { name: "Conversation type" });
-
-    for (const select of [project, conversationType]) {
-      expect(select.className).toContain("h-9");
-      expect(select.className).toContain("appearance-none");
-      expect((select as HTMLElement).style.backgroundColor).toBe("var(--bg-elevated)");
-    }
+    expect(project.className).toContain("h-9");
+    expect(project.className).toContain("appearance-none");
+    expect((project as HTMLElement).style.backgroundColor).toBe("var(--bg-elevated)");
   });
 
   it("binds an existing conversation to the ticket via the provider-correct assign API", async () => {
@@ -1487,46 +1635,127 @@ describe("TicketingDashboardView", () => {
     expect(atlassianApi.assignAgentConversationJiraIssue).not.toHaveBeenCalled();
   });
 
-  it("navigates to the agents view when start-work succeeds", async () => {
+  it("surfaces ClickUp in the switcher, loads its tasks, and allows starting new RalphX work", async () => {
     mockConnectedDashboard();
-    let capturedOnSuccess: ((result: { conversation: { id: string } }) => void) | undefined;
-    const startWork = vi.fn((_input, options?: { onSuccess?: (r: { conversation: { id: string } }) => void }) => {
-      capturedOnSuccess = options?.onSuccess;
-    });
-    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
-      mutate: startWork,
-      isPending: false,
+    // Make ClickUp the active provider in a 3-provider dashboard so the switcher
+    // renders a ClickUp tab (the switcher only shows when >1 provider is enabled).
+    useTicketingStore.getState().setProvider("clickup");
+    useTicketingStore.getState().setContainerId("space-eng");
+    const clickupTicket = {
+      ...ticket,
+      ref: { provider: "clickup" as const, id: "cu-1001", key: "CU-1001" },
+      title: "Wire ClickUp tasks into the unified dashboard",
+      url: "https://app.clickup.com/t/CU-1001",
+    };
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "jira",
+          label: "Jira",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+        {
+          provider: "linear",
+          label: "Linear",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: { ...writableCapabilities, freshness: "webhook" },
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+        {
+          provider: "clickup",
+          label: "ClickUp",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
       error: null,
-    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    // ClickUp containers are Spaces; one is pre-selected so tasks load (ClickUp is
+    // server-scoped like Jira, so the client container-name filter is skipped).
+    vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
+      data: [{ provider: "clickup", id: "space-eng", key: null, name: "Engineering", kind: "project" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: { pages: [{ items: [clickupTicket], nextCursor: null, total: 1 }], pageParams: [null] },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+    vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
+      data: { ...clickupTicket, descriptionMarkdown: "ClickUp task.", comments: [], attachments: [], transitions: [] },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketDetail>);
 
     renderDashboard();
-    fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Start RalphX work" }));
-    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Start" }));
 
-    expect(startWork).toHaveBeenCalled();
-    // Drive the captured onSuccess to exercise the navigation side-effects.
-    capturedOnSuccess?.({ conversation: { id: "conv-new" } });
+    // ClickUp appears as a provider tab (labelled "ClickUp", not "Linear").
+    expect(screen.getByRole("tab", { name: "ClickUp" })).toBeInTheDocument();
+    // ClickUp tasks load and render their rows.
+    expect(await screen.findByRole("button", { name: /CU-1001/ })).toBeInTheDocument();
 
-    await waitFor(() => {
-      expect(useChatStore.getState().activeConversationIds["project:project-1"]).toBe("conv-new");
+    // Open the ticket detail.
+    fireEvent.click(screen.getByRole("button", { name: /CU-1001/ }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+
+    // Starting new RalphX work is provider-neutral; binding an existing
+    // conversation stays hidden until ClickUp link persistence exists.
+    fireEvent.click(screen.getByRole("button", { name: "Start conversation" }));
+    expect(await screen.findByRole("dialog", { name: "Start Conversation" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open composer" }));
+    expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
+      projectId: "project-1",
+      content: "",
+      mode: "edit",
+      composerIntegrationReferences: [
+        {
+          provider: "clickup",
+          kind: "clickup",
+          id: "CU-1001",
+          key: "CU-1001",
+          title: "Wire ClickUp tasks into the unified dashboard",
+          url: "https://app.clickup.com/t/CU-1001",
+        },
+      ],
     });
-    expect(useAgentSessionStore.getState().selectedConversationId).toBe("conv-new");
-    expect(useAgentSessionStore.getState().focusedProjectId).toBe("project-1");
+    expect(
+      screen.queryByRole("button", { name: /bind existing conversation/i }),
+    ).not.toBeInTheDocument();
   });
 
-  it("surfaces a start-work error in the detail sheet", async () => {
+  it("navigates to the starter composer without selecting a conversation", async () => {
     mockConnectedDashboard();
-    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
-      mutate: vi.fn(),
-      isPending: false,
-      error: new Error("Worktree creation failed"),
-    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
+    useAgentSessionStore.getState().selectConversation("project-1", "conv-old");
+    useChatStore.getState().setActiveConversation("project:project-1", "conv-old");
 
     renderDashboard();
     fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start conversation" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Open composer" }),
+    );
 
-    expect(await screen.findByText("Worktree creation failed")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(useChatStore.getState().activeConversationIds["project:project-1"]).toBeNull();
+    });
+    expect(useAgentSessionStore.getState().selectedConversationId).toBeNull();
+    expect(useAgentSessionStore.getState().focusedProjectId).toBe("project-1");
   });
 
   it("surfaces a bind error in the detail sheet when the assign API rejects", async () => {
@@ -1570,25 +1799,19 @@ describe("TicketingDashboardView", () => {
     expect(fetchNextPage).toHaveBeenCalled();
   });
 
-  it("closes the start-work dialog without starting when cancelled", async () => {
+  it("closes the start conversation dialog without creating a draft when cancelled", async () => {
     mockConnectedDashboard();
-    const startWork = vi.fn();
-    vi.mocked(ticketingHooks.useStartWorkFromTicket).mockReturnValue({
-      mutate: startWork,
-      isPending: false,
-      error: null,
-    } as unknown as ReturnType<typeof ticketingHooks.useStartWorkFromTicket>);
 
     renderDashboard();
     fireEvent.click(screen.getByRole("button", { name: /RX-1/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Start RalphX work" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start conversation" }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
 
     await waitFor(() => {
-      expect(within(dialog).queryByText("Start RalphX Work")).not.toBeInTheDocument();
+      expect(within(dialog).queryByText("Start Conversation")).not.toBeInTheDocument();
     });
-    expect(startWork).not.toHaveBeenCalled();
+    expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
   });
 
   it("dedupes ticket-derived status columns when rows share a state", () => {

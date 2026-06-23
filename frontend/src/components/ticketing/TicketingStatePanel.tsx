@@ -41,7 +41,7 @@ export function TicketingStatePanel({
     <EmptyState
       data-testid={`ticketing-state-${state}`}
       variant={STATE_VARIANT[state]}
-      className="h-full min-h-[320px]"
+      className="h-full min-h-[320px] w-full"
       icon={<Icon className={state === "loading" ? "animate-spin" : undefined} />}
       title={title}
       {...(description !== undefined && { description })}

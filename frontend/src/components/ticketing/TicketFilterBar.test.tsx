@@ -7,7 +7,13 @@ import type { TicketingFilterState } from "@/stores/ticketingStore";
 import { TicketFilterBar } from "./TicketFilterBar";
 import { UNASSIGNED_ASSIGNEE } from "./ticketing-read-state";
 
-const baseFilters: TicketingFilterState = { text: "", assignee: null, stateIds: [], labels: [] };
+const baseFilters: TicketingFilterState = {
+  text: "",
+  assignee: null,
+  stateIds: [],
+  labels: [],
+  sprint: null,
+};
 
 function renderBar(overrides: Partial<Parameters<typeof TicketFilterBar>[0]> = {}) {
   const props = {
@@ -77,7 +83,8 @@ describe("TicketFilterBar", () => {
       containers: [{ provider: "jira", id: "project-1", name: "Reef", kind: "project" }],
       columns: [{ id: "todo", name: "To Do", category: "todo", order: 0 }],
       activeContainerId: "project-1",
-      filters: { ...baseFilters, assignee: "Ada", stateIds: ["todo"] },
+      filters: { ...baseFilters, assignee: "Ada", stateIds: ["todo"], sprint: "Sprint 42" },
+      sprintOptions: ["Sprint 41", "Sprint 42"],
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Clear project filter" }));
@@ -88,6 +95,9 @@ describe("TicketFilterBar", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Clear assignee filter" }));
     expect(props.onFiltersChange).toHaveBeenCalledWith({ assignee: null });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear sprint filter" }));
+    expect(props.onFiltersChange).toHaveBeenCalledWith({ sprint: null });
   });
 
   it("filters select options through search", () => {
@@ -121,6 +131,29 @@ describe("TicketFilterBar", () => {
     fireEvent.scroll(scrollContainer);
 
     expect(within(listbox).getByRole("option", { name: "User 25" })).toBeInTheDocument();
+  });
+
+  it("renders an optional Sprint filter and emits the selected sprint", () => {
+    const props = renderBar({
+      filters: { ...baseFilters, sprint: "Sprint 42" },
+      sprintOptions: ["Sprint 41", "Sprint 42"],
+    });
+    const select = screen.getByRole("combobox", { name: "Sprint" });
+
+    fireEvent.click(select);
+    const listbox = screen.getByRole("listbox", { name: "Sprint" });
+    expect(within(listbox).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "All sprints",
+      "Sprint 41",
+      "Sprint 42",
+    ]);
+
+    fireEvent.click(within(listbox).getByRole("option", { name: "Sprint 41" }));
+    expect(props.onFiltersChange).toHaveBeenCalledWith({ sprint: "Sprint 41" });
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Sprint" }));
+    fireEvent.click(screen.getByRole("option", { name: "All sprints" }));
+    expect(props.onFiltersChange).toHaveBeenCalledWith({ sprint: null });
   });
 
   it("gives every filter select an accessible name and the unified treatment", () => {

@@ -149,6 +149,15 @@ export function AgentsStartComposer({
   const [content, setContent] = useState("");
   const [isComposerActive, setIsComposerActive] = useState(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [draftProjectReferences, setDraftProjectReferences] = useState<
+    ComposerProjectReference[]
+  >([]);
+  const [draftIntegrationReferences, setDraftIntegrationReferences] = useState<
+    ComposerIntegrationReference[]
+  >([]);
+  const [draftArtifactReferences, setDraftArtifactReferences] = useState<
+    ComposerArtifactReference[]
+  >([]);
   const [error, setError] = useState<string | null>(null);
   const startFromRequestRef = useRef(0);
   const pullRequestStartFromRequestRef = useRef(0);
@@ -250,6 +259,9 @@ export function AgentsStartComposer({
     setProjectId(draft.projectId);
     setContent(draft.content);
     setMode(draft.mode);
+    setDraftProjectReferences(draft.composerProjectReferences ?? []);
+    setDraftIntegrationReferences(draft.composerIntegrationReferences ?? []);
+    setDraftArtifactReferences(draft.composerArtifactReferences ?? []);
   }, [consumeStartConversationDraft, startConversationDraft]);
 
   useEffect(() => {
@@ -784,6 +796,9 @@ export function AgentsStartComposer({
             isSubmitting={isSubmitting}
             autoFocus
             attachments={attachments}
+            initialProjectReferences={draftProjectReferences}
+            initialIntegrationReferences={draftIntegrationReferences}
+            initialArtifactReferences={draftArtifactReferences}
             enableAttachments
             onFilesSelected={handleFilesSelected}
             onRemoveAttachment={handleRemoveAttachment}

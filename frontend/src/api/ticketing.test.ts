@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ticketingApi } from "./ticketing";
+import { ticketingApi, TicketingProviderSchema } from "./ticketing";
 
 const capabilities = {
   supportsBoards: true,
@@ -37,6 +37,43 @@ describe("ticketingApi", () => {
     });
     expect(providers).toHaveLength(1);
     expect(providers[0]?.capabilities.supportsKanban).toBe(true);
+  });
+
+  it("parses a ClickUp provider summary through the normalized read command", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([
+      {
+        provider: "clickup",
+        label: "ClickUp",
+        enabled: true,
+        connectionStatus: "connected",
+        capabilities,
+        fetchedAt: "2026-06-19T22:00:00.000Z",
+      },
+    ]);
+
+    const providers = await ticketingApi.listProviders({ projectId: "project-1" });
+
+    expect(providers).toHaveLength(1);
+    expect(providers[0]?.provider).toBe("clickup");
+    expect(providers[0]?.label).toBe("ClickUp");
+  });
+
+  it("loads ClickUp containers (Spaces) scoped to a project", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([
+      { provider: "clickup", id: "space-eng", name: "Engineering", kind: "project" },
+    ]);
+
+    const containers = await ticketingApi.listContainers({
+      provider: "clickup",
+      projectId: "project-1",
+    });
+
+    expect(invoke).toHaveBeenCalledWith("list_ticketing_containers", {
+      provider: "clickup",
+      projectId: "project-1",
+    });
+    expect(containers[0]?.provider).toBe("clickup");
+    expect(containers[0]?.id).toBe("space-eng");
   });
 
   it("passes ticket filters and pagination with camelCase invoke args", async () => {
@@ -616,5 +653,17 @@ describe("ticketingApi", () => {
     expect(invoke).toHaveBeenNthCalledWith(3, "set_ticket_labels", {
       input: { provider: "jira", ticketRef: ref, labels: ["bug"] },
     });
+  });
+});
+
+describe("TicketingProviderSchema", () => {
+  it("accepts all three supported providers", () => {
+    expect(TicketingProviderSchema.parse("jira")).toBe("jira");
+    expect(TicketingProviderSchema.parse("linear")).toBe("linear");
+    expect(TicketingProviderSchema.parse("clickup")).toBe("clickup");
+  });
+
+  it("rejects unknown providers", () => {
+    expect(() => TicketingProviderSchema.parse("github")).toThrow();
   });
 });

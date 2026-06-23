@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
-import { ExternalLink, FolderKanban, GitBranch, GitPullRequestArrow, Image as ImageIcon, MessageSquare, Send, UserCheck, UserX, X } from "lucide-react";
+import { ExternalLink, FolderKanban, GitBranch, GitPullRequestArrow, Image as ImageIcon, MessageSquare, Send, UserCheck, UserX, X, ZoomIn } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import type {
   TicketAssociationItem,
   TicketAssociations,
+  TicketAttachment,
   TicketComment,
   TicketDeepLink,
   TicketDetail,
@@ -25,13 +26,13 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { TicketAssigneeChip } from "./TicketAssigneeChip";
+import { TicketAssigneeChips } from "./TicketAssigneeChip";
 import { TicketLabelEditor } from "./TicketLabelEditor";
 import { TicketLabels } from "./TicketLabels";
 import { TicketSearchableSelect } from "./TicketSearchableSelect";
 import { openExternalTicketUrl } from "./ticketing-open-external";
-import { countNewComments, isCommentNewSince, sortCommentsByCreatedAt } from "./ticketing-read-state";
-import { categoryToken, formatTicketDate, providerLabel, ticketKey } from "./ticketing-utils";
+import { countNewComments, isCommentNewSince, sortCommentsByCreatedAt, ticketAssignees } from "./ticketing-read-state";
+import { categoryToken, formatTicketDate, providerLabel, ticketCanonicalBranchName, ticketKey } from "./ticketing-utils";
 
 interface TicketDetailSheetProps {
   open: boolean;
@@ -64,6 +65,12 @@ interface TicketDetailSheetProps {
   bindError?: string | null | undefined;
   onNavigate?: ((deepLink: TicketDeepLink) => void) | undefined;
   onStartWork?: (() => void) | undefined;
+  /**
+   * Whether the start-work + bind-conversation affordances are shown. Providers
+   * without a conversation-link backend (e.g. ClickUp, deferred) pass `false` so
+   * the non-functional affordance stays hidden. Defaults to `true`.
+   */
+  showConversationBinding?: boolean | undefined;
   onClose: () => void;
 }
 
@@ -240,10 +247,12 @@ function BindConversationControl({
 }
 
 function RalphxAssociationPanel({
+  ticket,
   associations,
   isLoading,
   isStartWorkPending = false,
   startWorkError,
+  showConversationBinding = true,
   bindableConversations,
   onBindConversation,
   isBindPending,
@@ -251,10 +260,12 @@ function RalphxAssociationPanel({
   onNavigate,
   onStartWork,
 }: {
+  ticket: TicketDetail | TicketSummary | null;
   associations: TicketAssociations | undefined;
   isLoading: boolean;
   isStartWorkPending?: boolean | undefined;
   startWorkError?: string | null | undefined;
+  showConversationBinding?: boolean | undefined;
   bindableConversations?: { id: string; title: string | null }[] | undefined;
   onBindConversation?: ((conversationId: string) => void) | undefined;
   isBindPending?: boolean | undefined;
@@ -262,6 +273,9 @@ function RalphxAssociationPanel({
   onNavigate?: ((deepLink: TicketDeepLink) => void) | undefined;
   onStartWork?: (() => void) | undefined;
 }) {
+  const ticketBranchName = ticket ? ticketCanonicalBranchName(ticket.ref) : null;
+  const hasTicketPr = Boolean(ticket?.openPrNumber);
+  const hasTicketGitMetadata = Boolean(ticketBranchName || hasTicketPr);
   const activeCount = ASSOCIATION_GROUPS.reduce((count, group) => {
     return count + (associations?.[group.key].filter((item) => item.active).length ?? 0);
   }, 0);
@@ -303,25 +317,84 @@ function RalphxAssociationPanel({
         disabled={!onStartWork || isStartWorkPending}
         onClick={onStartWork}
       >
-        {isStartWorkPending ? "Starting..." : "Start RalphX work"}
+        {isStartWorkPending
+          ? "Starting..."
+          : "Start conversation"}
       </Button>
       {startWorkError && (
         <p className="mt-2 text-xs text-[var(--status-error)]" role="alert">
           {startWorkError}
         </p>
       )}
-      <BindConversationControl
-        conversations={bindableConversations ?? []}
-        onBindConversation={onBindConversation}
-        isBindPending={isBindPending}
-        bindError={bindError}
-      />
+      {showConversationBinding && (
+        <>
+          <BindConversationControl
+            conversations={bindableConversations ?? []}
+            onBindConversation={onBindConversation}
+            isBindPending={isBindPending}
+            bindError={bindError}
+          />
+        </>
+      )}
       {isLoading ? (
         <p className="mt-4 text-sm text-[var(--text-muted)]">Loading associations</p>
-      ) : totalCount === 0 ? (
-        <p className="mt-4 text-sm text-[var(--text-muted)]">No RalphX links yet.</p>
       ) : (
         <div className="mt-4 min-h-0 space-y-4 overflow-auto">
+          {hasTicketGitMetadata && (
+            <section>
+              <h4 className="mb-2 text-[11px] font-semibold uppercase text-[var(--text-muted)]">
+                Ticket Git
+              </h4>
+              <div
+                className="space-y-2 rounded-md p-3"
+                style={{
+                  backgroundColor: "var(--bg-elevated)",
+                  borderColor: "var(--border-subtle)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
+                }}
+              >
+                {ticketBranchName && (
+                  <div>
+                    <p className="text-[11px] font-medium uppercase text-[var(--text-muted)]">
+                      Branch
+                    </p>
+                    <p className="mt-1 break-all font-mono text-xs text-[var(--text-primary)]">
+                      {ticketBranchName}
+                    </p>
+                  </div>
+                )}
+                {hasTicketPr && (
+                  <div>
+                    <p className="text-[11px] font-medium uppercase text-[var(--text-muted)]">
+                      Pull request
+                    </p>
+                    {ticket?.openPrUrl ? (
+                      <button
+                        type="button"
+                        className="mt-1 inline-flex items-center gap-1.5 rounded text-xs font-medium text-[var(--status-info)] hover:underline focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                        onClick={() => void openExternalTicketUrl(ticket.openPrUrl ?? "")}
+                      >
+                        <GitPullRequestArrow className="h-3.5 w-3.5" aria-hidden="true" />
+                        PR #{ticket.openPrNumber}
+                        {ticket.openPrStatus ? ` (${ticket.openPrStatus})` : ""}
+                      </button>
+                    ) : (
+                      <p className="mt-1 text-xs text-[var(--text-primary)]">
+                        PR #{ticket?.openPrNumber}
+                        {ticket?.openPrStatus ? ` (${ticket.openPrStatus})` : ""}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+          {totalCount === 0 && (
+            <p className="text-sm text-[var(--text-muted)]">
+              No RalphX links yet. Start a conversation with this ticket attached.
+            </p>
+          )}
           {ASSOCIATION_GROUPS.map((group) => {
             const items = associations?.[group.key] ?? [];
             if (items.length === 0) {
@@ -452,6 +525,139 @@ function TicketMarkdownImage({ src, alt }: ComponentProps<"img">) {
   );
 }
 
+function isImageAttachment(attachment: TicketAttachment): boolean {
+  const mimeType = attachment.mimeType?.toLowerCase() ?? "";
+  if (mimeType.startsWith("image/")) {
+    return true;
+  }
+  return /\.(avif|gif|jpe?g|png|webp|svg)$/i.test(attachment.filename);
+}
+
+function formatAttachmentSize(size: number | null | undefined): string | null {
+  if (typeof size !== "number" || !Number.isFinite(size) || size <= 0) {
+    return null;
+  }
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function TicketAttachmentPreview({
+  attachment,
+  compact = false,
+}: {
+  attachment: TicketAttachment;
+  compact?: boolean;
+}) {
+  const [failed, setFailed] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const isImage = isImageAttachment(attachment);
+  const sizeLabel = formatAttachmentSize(attachment.size);
+  const canOpen = Boolean(attachment.url);
+  const meta = [attachment.mimeType, sizeLabel].filter(Boolean).join(" · ");
+  const canPreview = isImage && Boolean(attachment.url) && !failed;
+
+  return (
+    <>
+      <article
+        className={compact ? "flex overflow-hidden rounded-md" : "overflow-hidden rounded-md"}
+        style={{
+          backgroundColor: "var(--bg-surface)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+        }}
+      >
+        {canPreview && (
+          <button
+            type="button"
+            className={[
+              "group relative shrink-0 overflow-hidden bg-[var(--bg-elevated)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]",
+              compact ? "h-16 w-20" : "block w-full",
+            ].join(" ")}
+            onClick={() => setPreviewOpen(true)}
+            aria-label={`Preview attachment ${attachment.filename}`}
+          >
+            <img
+              src={attachment.url ?? ""}
+              alt={attachment.filename}
+              loading="lazy"
+              className={compact ? "h-full w-full object-cover" : "max-h-64 w-full object-contain"}
+              onError={() => setFailed(true)}
+            />
+            <span className="absolute inset-0 flex items-center justify-center bg-black/0 text-white opacity-0 transition group-hover:bg-black/35 group-hover:opacity-100 group-focus-visible:bg-black/35 group-focus-visible:opacity-100">
+              <ZoomIn className="h-5 w-5" aria-hidden="true" />
+              <span className="sr-only">Preview image</span>
+            </span>
+          </button>
+        )}
+        <div
+          className={[
+            "flex min-w-0 items-center justify-between gap-3",
+            compact ? "flex-1 p-2" : "p-3",
+          ].join(" ")}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            {!canPreview && (
+              <ImageIcon className="h-4 w-4 shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
+            )}
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium text-[var(--text-primary)]">
+                {attachment.filename}
+              </p>
+              {meta && <p className="mt-0.5 text-xs text-[var(--text-muted)]">{meta}</p>}
+            </div>
+          </div>
+          {canOpen && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 gap-1 px-2 text-xs"
+              onClick={() => void openExternalTicketUrl(attachment.url ?? "")}
+            >
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              Open
+            </Button>
+          )}
+        </div>
+      </article>
+      {canPreview && (
+        <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+          <DialogContent
+            className="max-w-5xl"
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-subtle)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{attachment.filename}</DialogTitle>
+              {meta && <DialogDescription>{meta}</DialogDescription>}
+            </DialogHeader>
+            <div
+              className="flex max-h-[75vh] items-center justify-center overflow-auto rounded-md p-2"
+              style={{ backgroundColor: "var(--bg-elevated)" }}
+            >
+              <img
+                src={attachment.url ?? ""}
+                alt={attachment.filename}
+                className="max-h-[72vh] max-w-full object-contain"
+              />
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+    </>
+  );
+}
+
 function TicketMarkdown({ content }: { content: string }) {
   return (
     <div className="prose prose-sm prose-invert max-w-none text-sm leading-6 text-[var(--text-secondary)] prose-code:before:content-none prose-code:after:content-none">
@@ -511,10 +717,12 @@ export function TicketDetailSheet({
   bindError,
   onNavigate,
   onStartWork,
+  showConversationBinding = true,
   onClose,
 }: TicketDetailSheetProps) {
   const [commentDraft, setCommentDraft] = useState("");
   const [localComments, setLocalComments] = useState<TicketComment[]>([]);
+  const [expandedThreadIds, setExpandedThreadIds] = useState<Set<string>>(() => new Set());
   const commentsSectionRef = useRef<HTMLElement | null>(null);
   const ticketIdentity = ticket ? `${ticket.ref.provider}:${ticket.ref.id}` : null;
   const providerComments = useMemo(
@@ -552,6 +760,7 @@ export function TicketDetailSheet({
 
   useEffect(() => {
     setLocalComments([]);
+    setExpandedThreadIds(new Set());
   }, [ticketIdentity]);
 
   useEffect(() => {
@@ -576,7 +785,8 @@ export function TicketDetailSheet({
   const assignDisabledReason = !capabilities?.assignmentWrite
     ? "Assign-to-me is not available for this provider."
     : null;
-  const canClearAssignee = !assignDisabledReason && Boolean(ticket?.assignee);
+  const assignees = ticket ? ticketAssignees(ticket) : [];
+  const canClearAssignee = !assignDisabledReason && assignees.length > 0;
   const commentDisabledReason = !capabilities?.commentWrite
     ? "Comment write-back is not available for this provider."
     : null;
@@ -613,6 +823,7 @@ export function TicketDetailSheet({
       bodyText: bodyMarkdown,
       createdAt,
       updatedAt: createdAt,
+      attachments: [],
     };
     setLocalComments((current) => [...current, optimisticComment]);
     try {
@@ -622,6 +833,18 @@ export function TicketDetailSheet({
       setLocalComments((current) => current.filter((comment) => comment.id !== optimisticComment.id));
       // Rollback and visible errors are owned by the mutation hook; preserve the draft.
     }
+  }
+
+  function toggleThread(commentId: string) {
+    setExpandedThreadIds((current) => {
+      const next = new Set(current);
+      if (next.has(commentId)) {
+        next.delete(commentId);
+      } else {
+        next.add(commentId);
+      }
+      return next;
+    });
   }
 
   return (
@@ -784,9 +1007,9 @@ export function TicketDetailSheet({
                     Assignee
                   </span>
                   <div className="flex min-w-0 items-center gap-2">
-                    {ticket.assignee ? (
+                    {assignees.length > 0 ? (
                       <>
-                        <TicketAssigneeChip person={ticket.assignee} size="md" />
+                        <TicketAssigneeChips people={assignees} size="md" />
                         {canClearAssignee && (
                           <ControlTooltip reason={assignDisabledReason}>
                             <Button
@@ -837,6 +1060,22 @@ export function TicketDetailSheet({
                   </div>
                 </section>
 
+                {"attachments" in ticket && ticket.attachments.length > 0 && (
+                  <section className="mt-6">
+                    <h3 className="text-xs font-semibold uppercase text-[var(--text-muted)]">
+                      Attachments ({ticket.attachments.length})
+                    </h3>
+                    <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                      {ticket.attachments.map((attachment, index) => (
+                        <TicketAttachmentPreview
+                          key={attachment.id ?? `${attachment.filename}:${index}`}
+                          attachment={attachment}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                )}
+
                 <section ref={commentsSectionRef} className="mt-6">
                   <h3 className="text-xs font-semibold uppercase text-[var(--text-muted)]">
                     Comments ({sortedComments.length})
@@ -850,9 +1089,13 @@ export function TicketDetailSheet({
                     <div className="mt-2 space-y-2">
                       {sortedComments.map((comment, index) => {
                         const isNew = isCommentNewSince(comment, seenUntil ?? null);
+                        const commentThreadId = comment.id ?? `comment-${index}`;
+                        const threadOpen = expandedThreadIds.has(commentThreadId);
+                        const replies = comment.replies ?? [];
+                        const commentAttachments = comment.attachments ?? [];
                         return (
                           <article
-                            key={comment.id ?? `comment-${index}`}
+                            key={commentThreadId}
                             className="rounded-md p-3"
                             style={{
                               backgroundColor: "var(--bg-surface)",
@@ -893,6 +1136,81 @@ export function TicketDetailSheet({
                             <div className="mt-2">
                               <TicketMarkdown content={comment.bodyMarkdown || comment.bodyText} />
                             </div>
+                            {commentAttachments.length > 0 && (
+                              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                {commentAttachments.map((attachment, attachmentIndex) => (
+                                  <TicketAttachmentPreview
+                                    key={attachment.id ?? `${attachment.filename}:${attachmentIndex}`}
+                                    attachment={attachment}
+                                    compact
+                                  />
+                                ))}
+                              </div>
+                            )}
+                            {replies.length > 0 && (
+                              <div className="mt-3">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 gap-1.5 px-2 text-xs"
+                                  onClick={() => toggleThread(commentThreadId)}
+                                  aria-expanded={threadOpen}
+                                >
+                                  <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+                                  {threadOpen
+                                    ? `Hide thread (${replies.length})`
+                                    : `View thread (${replies.length})`}
+                                </Button>
+                                {threadOpen && (
+                                  <div className="mt-2 space-y-2 border-l pl-3" style={{ borderLeftColor: "var(--border-subtle)" }}>
+                                    {replies.map((reply, replyIndex) => {
+                                      const replyAttachments = reply.attachments ?? [];
+                                      return (
+                                        <article
+                                          key={reply.id ?? `${commentThreadId}-reply-${replyIndex}`}
+                                          className="rounded-md p-3"
+                                          style={{
+                                            backgroundColor: "var(--bg-elevated)",
+                                            borderColor: "var(--border-subtle)",
+                                            borderStyle: "solid",
+                                            borderWidth: "1px",
+                                          }}
+                                        >
+                                          <div className="flex items-center justify-between gap-2">
+                                            <p className="text-xs font-medium text-[var(--text-secondary)]">
+                                              {reply.author?.name ?? "Provider reply"}
+                                            </p>
+                                            {reply.createdAt && (
+                                              <time
+                                                className="text-[11px] text-[var(--text-muted)]"
+                                                dateTime={reply.createdAt}
+                                              >
+                                                {formatTicketDate(reply.createdAt)}
+                                              </time>
+                                            )}
+                                          </div>
+                                          <div className="mt-2">
+                                            <TicketMarkdown content={reply.bodyMarkdown || reply.bodyText} />
+                                          </div>
+                                          {replyAttachments.length > 0 && (
+                                            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                              {replyAttachments.map((attachment, attachmentIndex) => (
+                                                <TicketAttachmentPreview
+                                                  key={attachment.id ?? `${attachment.filename}:${attachmentIndex}`}
+                                                  attachment={attachment}
+                                                  compact
+                                                />
+                                              ))}
+                                            </div>
+                                          )}
+                                        </article>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </article>
                         );
                       })}
@@ -954,10 +1272,12 @@ export function TicketDetailSheet({
               </div>
             </div>
             <RalphxAssociationPanel
+              ticket={ticket}
               associations={associations}
               isLoading={isAssociationsLoading}
               isStartWorkPending={isStartWorkPending}
               startWorkError={startWorkError}
+              showConversationBinding={showConversationBinding}
               bindableConversations={bindableConversations}
               onBindConversation={onBindConversation}
               isBindPending={isBindPending}
