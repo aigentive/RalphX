@@ -114,12 +114,26 @@ pub(super) async fn build_plan_merge_commit_msg(
 
 /// Build a squash commit message for regular (non-plan-merge) tasks.
 ///
-/// Format: `$category_commit_type: {branch} ({title})`
+/// Format: `{task_title}\n\n{task_description}\n\nTask UUID: {task_id}`
 pub(super) fn build_squash_commit_msg(
-    category: &TaskCategory,
     title: &str,
-    source_branch: &str,
+    description: Option<&str>,
+    task_id: &str,
 ) -> String {
-    let commit_type = category_to_commit_type(category);
-    format!("{}: {} ({})", commit_type, source_branch, title)
+    let subject = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let subject = if subject.is_empty() {
+        "Untitled task".to_string()
+    } else {
+        subject
+    };
+
+    let mut message = subject;
+    if let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) {
+        message.push_str("\n\n");
+        message.push_str(description);
+    }
+
+    message.push_str("\n\nTask UUID: ");
+    message.push_str(task_id);
+    message
 }
