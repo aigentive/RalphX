@@ -8,9 +8,11 @@ describe("TicketAssigneeChip", () => {
     render(<TicketAssigneeChip person={{ name: "Adrian Demian" }} />);
 
     expect(screen.getByText("AD")).toBeInTheDocument();
-    expect(screen.getByLabelText("Adrian Demian")).toHaveAttribute("title", "Adrian Demian");
+    expect(screen.getByRole("img", { name: "Adrian Demian" })).toHaveAttribute(
+      "title",
+      "Adrian Demian",
+    );
     expect(screen.queryByText("Adrian Demian")).not.toBeInTheDocument();
-    expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });
 
   it("renders an avatar image when avatarUrl is present", () => {

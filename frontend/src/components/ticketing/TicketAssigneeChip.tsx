@@ -58,6 +58,7 @@ export function TicketAssigneeChip({
 
   return (
     <span
+      role="img"
       className={`${wrapperClass} text-[var(--text-secondary)]`}
       title={tooltip}
       aria-label={tooltip}
