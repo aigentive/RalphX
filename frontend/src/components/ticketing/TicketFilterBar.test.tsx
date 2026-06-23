@@ -156,8 +156,6 @@ describe("TicketFilterBar", () => {
     expect(props.onFiltersChange).toHaveBeenCalledWith({ sprint: null });
   });
 
-  });
-
   it("gives every filter select an accessible name and the unified treatment", () => {
     renderBar();
 

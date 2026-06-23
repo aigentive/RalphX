@@ -670,12 +670,14 @@ describe("TicketingDashboardView", () => {
     renderDashboard();
 
     const sprintSelect = await screen.findByRole("combobox", { name: "Sprint" });
-    expect(within(sprintSelect).getByRole("option", { name: "Sprint 42" })).toBeInTheDocument();
-    expect(within(sprintSelect).queryByRole("option", { name: "Backlog" })).not.toBeInTheDocument();
+    fireEvent.click(sprintSelect);
+    const sprintListbox = screen.getByRole("listbox", { name: "Sprint" });
+    expect(within(sprintListbox).getByRole("option", { name: "Sprint 42" })).toBeInTheDocument();
+    expect(within(sprintListbox).queryByRole("option", { name: "Backlog" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Current sprint task/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Backlog task/ })).toBeInTheDocument();
 
-    fireEvent.change(sprintSelect, { target: { value: "Sprint 42" } });
+    fireEvent.click(within(sprintListbox).getByRole("option", { name: "Sprint 42" }));
 
     expect(screen.getByRole("button", { name: /Current sprint task/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Backlog task/ })).not.toBeInTheDocument();
