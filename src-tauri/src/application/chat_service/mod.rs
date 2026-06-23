@@ -1459,6 +1459,175 @@ impl<R: Runtime> AppChatService<R> {
         Arc::clone(&*self.interactive_process_registry.lock().unwrap())
     }
 
+    fn workspace_repo(&self) -> Option<Arc<dyn AgentConversationWorkspaceRepository>> {
+        self.agent_conversation_workspace_repo
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(Arc::clone)
+    }
+
+    fn should_replace_running_state(
+        current: AgentRunningState,
+        candidate: AgentRunningState,
+    ) -> bool {
+        if !candidate.is_running {
+            return false;
+        }
+
+        if !current.is_running {
+            return true;
+        }
+
+        current.agent_status == AgentRuntimeStatus::WaitingForInput
+            && candidate.agent_status == AgentRuntimeStatus::Generating
+    }
+
+    fn merge_running_state(
+        states: &mut HashMap<String, AgentRunningState>,
+        context_id: &str,
+        candidate: AgentRunningState,
+    ) {
+        let current = states
+            .get(context_id)
+            .copied()
+            .unwrap_or_else(AgentRunningState::idle);
+        if Self::should_replace_running_state(current, candidate) {
+            states.insert(context_id.to_string(), candidate);
+        }
+    }
+
+    async fn overlay_project_linked_ideation_running_states(
+        &self,
+        requested_ids: &HashSet<String>,
+        states: &mut HashMap<String, AgentRunningState>,
+    ) {
+        let Some(workspace_repo) = self.workspace_repo() else {
+            return;
+        };
+
+        let mut conversation_by_ideation_session_id = HashMap::new();
+        for conversation_id in requested_ids {
+            let conversation_id = ChatConversationId::from_string(conversation_id.clone());
+            match workspace_repo.get_by_conversation_id(&conversation_id).await {
+                Ok(Some(workspace)) => {
+                    if let Some(session_id) = workspace.linked_ideation_session_id {
+                        conversation_by_ideation_session_id
+                            .insert(session_id.as_str().to_string(), conversation_id.as_str());
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        error = %error,
+                        "Failed to load workspace while hydrating linked ideation running state"
+                    );
+                }
+            }
+        }
+
+        if conversation_by_ideation_session_id.is_empty() {
+            return;
+        }
+
+        let ideation_context = ChatContextType::Ideation;
+        let entries = match self
+            .running_agent_registry
+            .list_by_context_type(&ideation_context.to_string())
+            .await
+        {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Failed to bulk-list ideation registry entries for linked project running-state hydration"
+                );
+                return;
+            }
+        };
+
+        let mut live_entries = Vec::new();
+        for (key, info) in entries {
+            let Some(conversation_id) =
+                conversation_by_ideation_session_id.get(&key.context_id).cloned()
+            else {
+                continue;
+            };
+
+            let session_id = key.context_id.clone();
+            let cleaned_stale = self
+                .cleanup_stale_registry_block(
+                    &key,
+                    &info,
+                    ideation_context,
+                    &session_id,
+                    "get_agent_running_states:linked_ideation",
+                    RegistryCleanupCaller::ReadOnly,
+                )
+                .await;
+            if cleaned_stale {
+                continue;
+            }
+
+            live_entries.push((key, info, session_id, conversation_id));
+        }
+
+        let run_ids: HashSet<AgentRunId> = live_entries
+            .iter()
+            .filter_map(|(_, info, _, _)| {
+                (!info.agent_run_id.is_empty())
+                    .then(|| AgentRunId::from_string(&info.agent_run_id))
+            })
+            .collect();
+        let run_id_list: Vec<AgentRunId> = run_ids.iter().copied().collect();
+        let run_statuses: HashMap<String, AgentRunStatus> =
+            match self.agent_run_repo.get_by_ids(&run_id_list).await {
+                Ok(runs) => runs
+                    .into_iter()
+                    .map(|run| (run.id.as_str(), run.status))
+                    .collect(),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "Failed to bulk-load linked ideation agent runs for running-state hydration"
+                    );
+                    HashMap::new()
+                }
+            };
+
+        for (key, info, session_id, conversation_id) in live_entries {
+            let run_status = run_statuses.get(&info.agent_run_id).copied();
+            let should_cleanup_inactive = registry_entry_blocks_send_because_run_inactive(
+                &info,
+                run_status,
+                chrono::Utc::now(),
+                RegistryCleanupCaller::ReadOnly,
+            );
+            let cleaned_inactive = should_cleanup_inactive
+                && self
+                    .cleanup_inactive_registry_block(
+                        &key,
+                        &info,
+                        ideation_context,
+                        &session_id,
+                        "get_agent_running_states:linked_ideation",
+                        RegistryCleanupCaller::ReadOnly,
+                    )
+                    .await;
+
+            if cleaned_inactive {
+                continue;
+            }
+
+            let state = match run_status {
+                Some(AgentRunStatus::Running) | None => AgentRunningState::generating(),
+                Some(_) => AgentRunningState::waiting_for_input(),
+            };
+            Self::merge_running_state(states, &conversation_id, state);
+        }
+    }
+
     async fn cleanup_stale_registry_block(
         &self,
         registry_key: &RunningAgentKey,
@@ -5203,6 +5372,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             states.insert(context_id, state);
         }
 
+        if context_type == ChatContextType::Project {
+            self.overlay_project_linked_ideation_running_states(&requested_ids, &mut states)
+                .await;
+        }
+
         states
     }
 
@@ -6288,7 +6462,10 @@ mod bulk_running_state_tests {
     use super::{AgentRuntimeStatus, ChatContextType, ChatService};
     use crate::application::AppState;
     use crate::commands::ExecutionState;
-    use crate::domain::entities::{AgentRun, ChatConversationId};
+    use crate::domain::entities::{
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ChatConversation,
+        ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession, Project,
+    };
     use crate::domain::services::{
         MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry,
     };
@@ -6339,6 +6516,69 @@ mod bulk_running_state_tests {
         assert_eq!(states.get("conv-unrequested"), None);
         assert_eq!(states.get(""), None);
         assert_eq!(states.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn app_service_bulk_project_running_states_include_linked_ideation_session() {
+        let registry = Arc::new(MemoryRunningAgentRegistry::new());
+        let app_state = AppState::new_sqlite_test_with_registry(Arc::clone(&registry));
+        let project = Project::new(
+            "Linked Ideation Project".to_string(),
+            "/tmp/linked-ideation-project".to_string(),
+        );
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should persist");
+        let conversation = ChatConversation::new_project(project.id.clone());
+        let conversation_id = conversation.id;
+        let conversation_id_string = conversation_id.as_str().to_string();
+        app_state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+        let ideation_session = app_state
+            .ideation_session_repo
+            .create(IdeationSession::new(project.id.clone()))
+            .await
+            .expect("ideation session should persist");
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation_id,
+            project.id,
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::LocalBranch,
+            "main".to_string(),
+            Some("main".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/project/agent-linked-ideation".to_string(),
+            "/tmp/agent-linked-ideation".to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(ideation_session.id.clone());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+        registry
+            .set_running(RunningAgentKey::new("ideation", ideation_session.id.as_str()))
+            .await;
+        let service =
+            app_state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+        let states = service
+            .get_agent_running_states(
+                ChatContextType::Project,
+                std::slice::from_ref(&conversation_id_string),
+            )
+            .await;
+
+        let state = states
+            .get(&conversation_id_string)
+            .expect("state for linked parent conversation");
+        assert!(state.is_running);
+        assert_eq!(state.agent_status, AgentRuntimeStatus::Generating);
     }
 
     #[tokio::test]
