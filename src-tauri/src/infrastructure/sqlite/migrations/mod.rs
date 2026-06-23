@@ -347,6 +347,9 @@ mod v20260620075610_provider_ticket_operations_tests;
 mod v20260621201947_ticket_canonical_branches;
 #[cfg(test)]
 mod v20260621201947_ticket_canonical_branches_tests;
+mod v20260623074101_clickup_integration_settings;
+#[cfg(test)]
+mod v20260623074101_clickup_integration_settings_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -437,7 +440,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260621201947;
+pub const SCHEMA_VERSION: i64 = 20260623074101;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1216,6 +1219,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260621201947,
         name: "ticket_canonical_branches",
         migrate: v20260621201947_ticket_canonical_branches::migrate,
+    },
+    Migration {
+        version: 20260623074101,
+        name: "clickup_integration_settings",
+        migrate: v20260623074101_clickup_integration_settings::migrate,
     },
 ];
 
