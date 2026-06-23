@@ -90,7 +90,9 @@ export function Navigation({ currentView, onViewChange, onOpenSettings, hideView
   const taskCount = stats?.taskCount ?? 0;
   const visibleItems = hideViews
     ? []
-    : ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags, taskCount));
+    : ALL_NAV_ITEMS.filter(
+        (item) => item.view !== "ticketing" && item.visible(featureFlags, taskCount),
+      );
 
   return (
     <nav
