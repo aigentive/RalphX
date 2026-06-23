@@ -112,7 +112,11 @@ describe("clickupApi", () => {
     });
 
     await expect(
-      clickupApi.searchTasks({ spaceIds: ["space-1", "space-2"] }),
+      clickupApi.searchTasks({
+        spaceIds: ["space-1", "space-2"],
+        query: "fix bug",
+        limit: 10,
+      }),
     ).resolves.toEqual([
       {
         id: "task-1",
@@ -124,7 +128,13 @@ describe("clickupApi", () => {
 
     expect(typedInvoke).toHaveBeenCalledWith(
       "search_clickup_tasks",
-      { input: { spaceIds: ["space-1", "space-2"] } },
+      {
+        input: {
+          spaceIds: ["space-1", "space-2"],
+          query: "fix bug",
+          limit: 10,
+        },
+      },
       expect.any(Object),
     );
   });
@@ -136,7 +146,7 @@ describe("clickupApi", () => {
 
     expect(typedInvoke).toHaveBeenCalledWith(
       "search_clickup_tasks",
-      { input: { spaceIds: [] } },
+      { input: { spaceIds: [], query: "", limit: 10 } },
       expect.any(Object),
     );
   });

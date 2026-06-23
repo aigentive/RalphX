@@ -6,8 +6,8 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::application::clickup_integration_service::{
     ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpIntegrationService, ClickUpSpace,
-    ClickUpStatus, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace,
-    EmptyClickUpApiClient, UnavailableClickUpApiClient,
+    ClickUpStatus, ClickUpTaskContent, ClickUpTaskListOptions, ClickUpTaskSummary, ClickUpUser,
+    ClickUpWorkspace, EmptyClickUpApiClient, UnavailableClickUpApiClient,
 };
 use crate::domain::integrations::{
     ClickUpIntegrationSettingsRepository, IntegrationValidationStatus,
@@ -186,6 +186,7 @@ impl ClickUpApiClient for TestClickUpClient {
         auth: &ClickUpAuthContext,
         team_id: &str,
         space_ids: &[String],
+        _options: ClickUpTaskListOptions,
     ) -> Result<Vec<ClickUpTaskSummary>, String> {
         self.seen_tokens.lock().await.push(auth.api_token.clone());
         self.list_tasks_calls
@@ -594,7 +595,12 @@ async fn list_tasks_errors_when_not_enabled() {
         .await
         .unwrap();
 
-    let result = service.list_tasks(vec!["space-1".to_string()]).await;
+    let result = service
+        .list_tasks(
+            vec!["space-1".to_string()],
+            ClickUpTaskListOptions::default(),
+        )
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("not enabled"));
 }
@@ -611,7 +617,12 @@ async fn list_tasks_errors_when_workspace_missing() {
         .unwrap();
     service.validate_and_enable().await.unwrap();
 
-    let result = service.list_tasks(vec!["space-1".to_string()]).await;
+    let result = service
+        .list_tasks(
+            vec!["space-1".to_string()],
+            ClickUpTaskListOptions::default(),
+        )
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("workspace is not selected"));
 }
@@ -633,7 +644,10 @@ async fn list_spaces_and_tasks_succeed_when_enabled_with_workspace() {
     assert_eq!(client.list_spaces_calls().await, vec!["9000".to_string()]);
 
     let tasks = service
-        .list_tasks(vec!["space-1".to_string()])
+        .list_tasks(
+            vec!["space-1".to_string()],
+            ClickUpTaskListOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(tasks.len(), 1);
@@ -719,7 +733,12 @@ async fn empty_client_covers_minimal_success_paths() {
     assert!(client.list_workspaces(&auth).await.unwrap().is_empty());
     assert!(client.list_spaces(&auth, "9000").await.unwrap().is_empty());
     assert!(client
-        .list_tasks(&auth, "9000", &["space-1".to_string()])
+        .list_tasks(
+            &auth,
+            "9000",
+            &["space-1".to_string()],
+            ClickUpTaskListOptions::default(),
+        )
         .await
         .unwrap()
         .is_empty());
@@ -779,7 +798,12 @@ async fn unavailable_client_returns_reason_from_all_methods() {
     );
     assert_eq!(
         client
-            .list_tasks(&auth, "9000", &["space-1".to_string()])
+            .list_tasks(
+                &auth,
+                "9000",
+                &["space-1".to_string()],
+                ClickUpTaskListOptions::default(),
+            )
             .await
             .unwrap_err(),
         "not available"
@@ -846,7 +870,7 @@ async fn trait_default_methods_report_unavailable_features() {
         .unwrap_err()
         .contains("spaces are not available"));
     assert!(client
-        .list_tasks(&auth, "9000", &[])
+        .list_tasks(&auth, "9000", &[], ClickUpTaskListOptions::default())
         .await
         .unwrap_err()
         .contains("tasks are not available"));

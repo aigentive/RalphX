@@ -5,6 +5,8 @@ use async_trait::async_trait;
 use hyper::Method;
 use serde_json::{json, Value};
 
+use crate::application::clickup_integration_service::ClickUpTaskListOptions;
+
 use super::clickup_client::{
     apply_task_tags, assign_task_to_user, clear_task_assignees, clickup_authorization_header,
     create_task_comment, fetch_current_user, fetch_filtered_tasks, fetch_space_statuses,
@@ -202,9 +204,15 @@ async fn filtered_tasks_paginate_until_last_page() {
         Ok(json!({ "tasks": [sample_task("t2", "custom")], "last_page": true })),
     ]);
 
-    let tasks = fetch_filtered_tasks(&fake, "tok", "9000", &["space-1".to_string()])
-        .await
-        .unwrap();
+    let tasks = fetch_filtered_tasks(
+        &fake,
+        "tok",
+        "9000",
+        &["space-1".to_string()],
+        ClickUpTaskListOptions::default(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(tasks.len(), 2);
     assert_eq!(tasks[0].id, "t1");
@@ -225,7 +233,7 @@ async fn filtered_tasks_stops_on_first_last_page() {
         json!({ "tasks": [sample_task("t1", "open")], "last_page": true }),
     )]);
 
-    let tasks = fetch_filtered_tasks(&fake, "tok", "9000", &[])
+    let tasks = fetch_filtered_tasks(&fake, "tok", "9000", &[], ClickUpTaskListOptions::default())
         .await
         .unwrap();
 
@@ -245,13 +253,70 @@ async fn filtered_tasks_stops_at_safety_page_cap() {
         .collect();
     let fake = FakeClickUpRequester::new(responses);
 
-    let tasks = fetch_filtered_tasks(&fake, "tok", "9000", &[])
+    let tasks = fetch_filtered_tasks(&fake, "tok", "9000", &[], ClickUpTaskListOptions::default())
         .await
         .unwrap();
 
     assert_eq!(tasks.len(), 50);
     assert_eq!(fake.requests().len(), 50);
     assert!(fake.requests()[49].url.contains("page=49"));
+}
+
+#[tokio::test]
+async fn filtered_tasks_searches_metadata_and_stops_at_limit() {
+    let fake = FakeClickUpRequester::new(vec![
+        Ok(json!({
+            "tasks": [
+                sample_task("skip-1", "open"),
+                {
+                    "id": "match-title",
+                    "name": "Inbox classifier",
+                    "status": { "status": "to do", "type": "open" },
+                    "assignees": [{ "username": "Adrian" }],
+                    "tags": []
+                }
+            ],
+            "last_page": false
+        })),
+        Ok(json!({
+            "tasks": [
+                {
+                    "id": "match-tag",
+                    "name": "Other task",
+                    "status": { "status": "to do", "type": "open" },
+                    "assignees": [],
+                    "tags": [{ "name": "Inbox" }]
+                }
+            ],
+            "last_page": false
+        })),
+    ]);
+
+    let tasks = fetch_filtered_tasks(
+        &fake,
+        "tok",
+        "9000",
+        &[],
+        ClickUpTaskListOptions {
+            query: Some("inbox".to_string()),
+            limit: Some(2),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        tasks
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["match-title", "match-tag"]
+    );
+    assert_eq!(
+        fake.requests().len(),
+        2,
+        "search should stop once enough matching tasks are found"
+    );
 }
 
 #[tokio::test]
@@ -263,6 +328,7 @@ async fn filtered_tasks_encodes_workspace_and_space_ids() {
         "tok",
         "team/with space",
         &["space/one".to_string(), "space two".to_string()],
+        ClickUpTaskListOptions::default(),
     )
     .await
     .unwrap();
@@ -279,9 +345,15 @@ async fn task_summary_maps_status_assignees_and_tags() {
         json!({ "tasks": [sample_task("abc123", "custom")], "last_page": true }),
     )]);
 
-    let tasks = fetch_filtered_tasks(&fake, "tok", "9000", &["space-1".to_string()])
-        .await
-        .unwrap();
+    let tasks = fetch_filtered_tasks(
+        &fake,
+        "tok",
+        "9000",
+        &["space-1".to_string()],
+        ClickUpTaskListOptions::default(),
+    )
+    .await
+    .unwrap();
 
     let task = &tasks[0];
     assert_eq!(task.id, "abc123");

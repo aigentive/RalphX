@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 
 import {
   agentComposerApi,
@@ -14,6 +15,9 @@ import {
 import { clickupApi, type ClickUpTaskSummary } from "@/api/clickup";
 import { linearApi, type LinearIssueSummary } from "@/api/linear";
 import type { AgentComposerIntegrationKind } from "@/components/agents/composer/agentComposerCore";
+
+const CLICKUP_TASK_SEARCH_LIMIT = 10;
+const CLICKUP_TASK_SEARCH_DEBOUNCE_MS = 1_000;
 
 export const agentComposerKeys = {
   all: ["agent-composer"] as const,
@@ -167,45 +171,64 @@ export function useAgentComposerIntegrationResources({
   enabled: boolean;
 }) {
   const normalizedQuery = query.trim();
+  const debouncedClickUpQuery = useDebouncedString(
+    normalizedQuery,
+    kind === "clickup" ? CLICKUP_TASK_SEARCH_DEBOUNCE_MS : 0,
+  );
+  const effectiveQuery =
+    kind === "clickup" ? debouncedClickUpQuery : normalizedQuery;
   return useQuery({
-    queryKey: agentComposerKeys.integrations(kind, normalizedQuery),
+    queryKey: agentComposerKeys.integrations(kind, effectiveQuery),
     queryFn: async (): Promise<
       Array<AtlassianResourceSummary | LinearIssueSummary | ClickUpTaskSummary>
     > => {
       if (kind === "linear") {
         return linearApi.searchIssues({
-          query: normalizedQuery,
+          query: effectiveQuery,
           limit: 12,
         });
       }
       if (kind === "clickup") {
-        const tasks = await clickupApi.searchTasks();
-        const query = normalizedQuery.toLowerCase();
-        const filteredTasks = query
-          ? tasks.filter((task) =>
-              [
-                task.customId,
-                task.id,
-                task.name,
-                task.statusName,
-                task.listName,
-                ...task.tags,
-              ]
-                .filter(Boolean)
-                .some((value) => value?.toLowerCase().includes(query)),
-            )
-          : tasks;
-        return filteredTasks.slice(0, 12);
+        return clickupApi.searchTasks({
+          query: effectiveQuery,
+          limit: CLICKUP_TASK_SEARCH_LIMIT,
+        });
       }
       return atlassianApi.searchResources({
         kind: (kind ?? "jira") as AtlassianResourceKind,
-        query: normalizedQuery,
+        query: effectiveQuery,
         limit: 12,
       });
     },
-    enabled: enabled && kind !== null && kind !== undefined,
+    enabled:
+      enabled &&
+      kind !== null &&
+      kind !== undefined &&
+      (kind !== "clickup" || effectiveQuery === normalizedQuery),
     staleTime: 10_000,
     gcTime: 60_000,
     placeholderData: [] satisfies AtlassianResourceSummary[],
   });
+}
+
+function useDebouncedString(value: string, delayMs: number): string {
+  const [debouncedValue, setDebouncedValue] = useState(() =>
+    delayMs > 0 && value.length > 0 ? "" : value,
+  );
+
+  useEffect(() => {
+    if (delayMs <= 0) {
+      setDebouncedValue(value);
+      return;
+    }
+    if (value.length === 0) {
+      setDebouncedValue("");
+      return;
+    }
+
+    const timer = window.setTimeout(() => setDebouncedValue(value), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [delayMs, value]);
+
+  return debouncedValue;
 }

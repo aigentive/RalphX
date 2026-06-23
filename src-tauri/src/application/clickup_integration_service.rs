@@ -127,6 +127,12 @@ pub struct ClickUpTaskContent {
     pub list_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClickUpTaskListOptions {
+    pub query: Option<String>,
+    pub limit: Option<usize>,
+}
+
 #[async_trait]
 pub trait ClickUpApiClient: Send + Sync {
     async fn validate(&self, auth: &ClickUpAuthContext) -> Result<(), String>;
@@ -149,6 +155,7 @@ pub trait ClickUpApiClient: Send + Sync {
         _auth: &ClickUpAuthContext,
         _team_id: &str,
         _space_ids: &[String],
+        _options: ClickUpTaskListOptions,
     ) -> Result<Vec<ClickUpTaskSummary>, String> {
         Err("ClickUp tasks are not available for this client".to_string())
     }
@@ -262,6 +269,7 @@ impl ClickUpApiClient for EmptyClickUpApiClient {
         _auth: &ClickUpAuthContext,
         _team_id: &str,
         _space_ids: &[String],
+        _options: ClickUpTaskListOptions,
     ) -> Result<Vec<ClickUpTaskSummary>, String> {
         Ok(Vec::new())
     }
@@ -389,6 +397,7 @@ impl ClickUpApiClient for UnavailableClickUpApiClient {
         _auth: &ClickUpAuthContext,
         _team_id: &str,
         _space_ids: &[String],
+        _options: ClickUpTaskListOptions,
     ) -> Result<Vec<ClickUpTaskSummary>, String> {
         Err(self.reason.clone())
     }
@@ -625,10 +634,11 @@ impl ClickUpIntegrationService {
     pub async fn list_tasks(
         &self,
         space_ids: Vec<String>,
+        options: ClickUpTaskListOptions,
     ) -> Result<Vec<ClickUpTaskSummary>, String> {
         let (auth, workspace_id) = self.enabled_workspace_context().await?;
         self.client
-            .list_tasks(&auth, &workspace_id, &space_ids)
+            .list_tasks(&auth, &workspace_id, &space_ids, options)
             .await
     }
 

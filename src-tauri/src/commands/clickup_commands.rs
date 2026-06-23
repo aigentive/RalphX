@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::application::clickup_integration_service::ClickUpTaskListOptions;
 use crate::application::{AppState, ClickUpTaskSummary, ClickUpWorkspace};
 use crate::domain::integrations::ClickUpIntegrationSettings;
 
@@ -57,6 +58,12 @@ pub struct SearchClickUpTasksInput {
     /// workspace. Empty = let the workspace-scoped endpoint decide.
     #[serde(default)]
     pub space_ids: Vec<String>,
+    /// Optional client text query. ClickUp's filtered task endpoint has no
+    /// native free-text task-title search, so the client scans provider pages
+    /// and stops once enough local matches are found.
+    pub query: Option<String>,
+    /// Maximum number of matching tasks to return.
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -132,9 +139,16 @@ pub async fn search_clickup_tasks(
     input: SearchClickUpTasksInput,
     state: State<'_, AppState>,
 ) -> Result<SearchClickUpTasksResponse, String> {
+    let limit = input.limit.unwrap_or(10).clamp(1, 25);
     let tasks = state
         .clickup_integration_service
-        .list_tasks(input.space_ids)
+        .list_tasks(
+            input.space_ids,
+            ClickUpTaskListOptions {
+                query: input.query,
+                limit: Some(limit),
+            },
+        )
         .await?;
     Ok(SearchClickUpTasksResponse { tasks })
 }

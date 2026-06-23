@@ -2,8 +2,9 @@ use tauri::Manager;
 
 use super::clickup_commands::{
     disconnect_clickup_integration, get_clickup_integration_settings, list_clickup_workspaces,
-    save_clickup_integration_settings, search_clickup_tasks, ClickUpIntegrationSettingsResponse,
-    SaveClickUpIntegrationSettingsInput, SearchClickUpTasksInput, validate_clickup_integration,
+    save_clickup_integration_settings, search_clickup_tasks, validate_clickup_integration,
+    ClickUpIntegrationSettingsResponse, SaveClickUpIntegrationSettingsInput,
+    SearchClickUpTasksInput,
 };
 use crate::application::AppState;
 use crate::domain::integrations::{ClickUpIntegrationSettings, IntegrationValidationStatus};
@@ -42,7 +43,10 @@ fn integration_settings_response_reports_presence_without_leaking_token_ref() {
         !json.contains("integrations/clickup/default/api-token"),
         "response leaked the secret ref: {json}"
     );
-    assert!(!json.contains("tokenSecretRef"), "response leaked the ref field: {json}");
+    assert!(
+        !json.contains("tokenSecretRef"),
+        "response leaked the ref field: {json}"
+    );
 }
 
 #[test]
@@ -86,14 +90,20 @@ async fn save_clickup_integration_settings_persists_workspace_and_hides_token() 
     .expect("save should succeed");
 
     assert!(saved.has_api_token);
-    assert!(!saved.enabled, "saving returns to a pending, not-enabled state");
+    assert!(
+        !saved.enabled,
+        "saving returns to a pending, not-enabled state"
+    );
     assert_eq!(saved.workspace_id.as_deref(), Some("9000"));
     assert_eq!(saved.validation_status, "pending");
     assert!(!saved.task_search_available);
 
     // The raw token must never appear in the command response.
     let json = serde_json::to_string(&saved).expect("response serializes");
-    assert!(!json.contains("pk_secret_token"), "save response leaked the token: {json}");
+    assert!(
+        !json.contains("pk_secret_token"),
+        "save response leaked the token: {json}"
+    );
 }
 
 #[tokio::test]
@@ -179,6 +189,8 @@ async fn search_clickup_tasks_requires_enabled_then_succeeds_with_workspace() {
     let error = search_clickup_tasks(
         SearchClickUpTasksInput {
             space_ids: vec!["space-1".to_string()],
+            query: None,
+            limit: None,
         },
         app.state::<AppState>(),
     )
@@ -202,6 +214,8 @@ async fn search_clickup_tasks_requires_enabled_then_succeeds_with_workspace() {
     let response = search_clickup_tasks(
         SearchClickUpTasksInput {
             space_ids: vec!["space-1".to_string()],
+            query: Some("fix".to_string()),
+            limit: Some(10),
         },
         app.state::<AppState>(),
     )

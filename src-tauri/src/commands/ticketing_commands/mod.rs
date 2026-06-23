@@ -4,6 +4,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use tauri::{AppHandle, Runtime, State};
 
+use crate::application::clickup_integration_service::ClickUpTaskListOptions;
 use crate::application::ticket_canonical_branch::ensure_ticket_canonical_branch;
 use crate::application::ticketing_pr_summary::{ticket_pr_branch_summary, TicketPrBranchSummary};
 use crate::application::{
@@ -244,7 +245,13 @@ pub async fn list_tickets(
             let current_user = state.clickup_integration_service.current_user().await.ok();
             state
                 .clickup_integration_service
-                .list_tasks(space_ids)
+                .list_tasks(
+                    space_ids,
+                    ClickUpTaskListOptions {
+                        query: Some(text.clone()),
+                        limit: Some(limit),
+                    },
+                )
                 .await?
                 .into_iter()
                 .map(|summary| {
@@ -1194,28 +1201,29 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
         .filter(|value| !value.is_empty())
     {
         let assignee = assignee.to_ascii_lowercase();
-        let matches_assignee = ticket
-            .assignees
-            .iter()
-            .chain(ticket.assignee.iter())
-            .any(|ticket_assignee| {
-                ticket_assignee
-                    .name
-                    .to_ascii_lowercase()
-                    .contains(&assignee)
-                    || ticket_assignee
-                        .id
-                        .as_deref()
-                        .unwrap_or("")
+        let matches_assignee =
+            ticket
+                .assignees
+                .iter()
+                .chain(ticket.assignee.iter())
+                .any(|ticket_assignee| {
+                    ticket_assignee
+                        .name
                         .to_ascii_lowercase()
                         .contains(&assignee)
-                    || ticket_assignee
-                        .email
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_ascii_lowercase()
-                        .contains(&assignee)
-            });
+                        || ticket_assignee
+                            .id
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_ascii_lowercase()
+                            .contains(&assignee)
+                        || ticket_assignee
+                            .email
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_ascii_lowercase()
+                            .contains(&assignee)
+                });
         if !matches_assignee {
             return false;
         }

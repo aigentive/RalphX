@@ -10,11 +10,11 @@ use serde_json::{json, Value};
 use tokio::time::Duration;
 use tokio_util::bytes::Bytes;
 
+use crate::application::clickup_integration_service::{ClickUpAttachment, ClickUpTaskListOptions};
 use crate::application::{
     ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpSpace, ClickUpStatus,
     ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace,
 };
-use crate::application::clickup_integration_service::ClickUpAttachment;
 
 const CLICKUP_API_BASE: &str = "https://api.clickup.com/api/v2";
 /// Safety cap so a misbehaving `last_page` flag can never spin forever.
@@ -152,8 +152,9 @@ impl ClickUpApiClient for HyperClickUpApiClient {
         auth: &ClickUpAuthContext,
         team_id: &str,
         space_ids: &[String],
+        options: ClickUpTaskListOptions,
     ) -> Result<Vec<ClickUpTaskSummary>, String> {
-        fetch_filtered_tasks(self, &auth.api_token, team_id, space_ids).await
+        fetch_filtered_tasks(self, &auth.api_token, team_id, space_ids, options).await
     }
 
     async fn fetch_task(
@@ -304,7 +305,15 @@ pub(crate) async fn fetch_filtered_tasks<C: ClickUpJsonRequester + ?Sized>(
     token: &str,
     team_id: &str,
     space_ids: &[String],
+    options: ClickUpTaskListOptions,
 ) -> Result<Vec<ClickUpTaskSummary>, String> {
+    let query = options
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    let limit = options.limit.unwrap_or(100).max(1);
     let mut tasks = Vec::new();
     let mut page = 0usize;
     loop {
@@ -315,7 +324,16 @@ pub(crate) async fn fetch_filtered_tasks<C: ClickUpJsonRequester + ?Sized>(
         if let Some(page_tasks) = page_tasks {
             for task in page_tasks {
                 if let Some(summary) = task_summary_from_value(task) {
+                    if query
+                        .as_deref()
+                        .is_some_and(|query| !task_summary_matches_query(&summary, query))
+                    {
+                        continue;
+                    }
                     tasks.push(summary);
+                    if tasks.len() >= limit {
+                        break;
+                    }
                 }
             }
         }
@@ -324,7 +342,7 @@ pub(crate) async fn fetch_filtered_tasks<C: ClickUpJsonRequester + ?Sized>(
             .and_then(Value::as_bool)
             .unwrap_or(true);
         page += 1;
-        if last_page || count == 0 || page >= MAX_TASK_PAGES {
+        if tasks.len() >= limit || last_page || count == 0 || page >= MAX_TASK_PAGES {
             break;
         }
     }
@@ -634,6 +652,25 @@ fn task_summary_from_value(task: &Value) -> Option<ClickUpTaskSummary> {
             .get("date_updated")
             .and_then(clickup_timestamp_to_rfc3339),
     })
+}
+
+fn task_summary_matches_query(summary: &ClickUpTaskSummary, query: &str) -> bool {
+    let scalar_fields = [
+        Some(summary.id.as_str()),
+        summary.custom_id.as_deref(),
+        Some(summary.name.as_str()),
+        summary.status_name.as_deref(),
+        summary.list_name.as_deref(),
+    ];
+    scalar_fields
+        .into_iter()
+        .flatten()
+        .any(|value| value.to_ascii_lowercase().contains(query))
+        || summary
+            .tags
+            .iter()
+            .chain(summary.assignees.iter())
+            .any(|value| value.to_ascii_lowercase().contains(query))
 }
 
 fn task_content_from_value(task: &Value) -> Option<ClickUpTaskContent> {

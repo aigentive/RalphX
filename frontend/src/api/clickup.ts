@@ -86,6 +86,10 @@ export interface SaveClickUpIntegrationSettingsInput {
 export interface SearchClickUpTasksInput {
   /** ClickUp Space ids to scope the search to within the selected workspace. */
   spaceIds?: string[];
+  /** Text query matched against task key/id/title/status/list/tags/assignees. */
+  query?: string;
+  /** Maximum number of tasks to return. */
+  limit?: number;
 }
 
 export const clickupApi = {
@@ -137,7 +141,13 @@ export const clickupApi = {
   ): Promise<ClickUpTaskSummary[]> {
     const response = await typedInvoke(
       "search_clickup_tasks",
-      { input: { spaceIds: input.spaceIds ?? [] } },
+      {
+        input: {
+          spaceIds: input.spaceIds ?? [],
+          query: input.query ?? "",
+          limit: input.limit ?? 10,
+        },
+      },
       SearchClickUpTasksResponseSchema,
     );
     return response.tasks;

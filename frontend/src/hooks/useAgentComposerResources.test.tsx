@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { clickupApi } from "@/api/clickup";
 import { linearApi } from "@/api/linear";
@@ -71,9 +71,14 @@ describe("agentComposerKeys", () => {
 describe("useAgentComposerIntegrationResources", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
-  it("loads ClickUp tasks and filters across task metadata", async () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("debounces ClickUp task searches and sends title text to the backend", async () => {
     vi.mocked(clickupApi.searchTasks).mockResolvedValue([
       {
         id: "task-1",
@@ -90,22 +95,23 @@ describe("useAgentComposerIntegrationResources", () => {
         listName: "Current Sprint",
         updatedAt: "2026-06-23T00:00:00Z",
       },
-      {
-        id: "task-2",
-        name: "Backlog importer",
-        statusName: "In Progress",
-        tags: ["backend"],
-        listName: "Backlog",
-        assignees: [],
-      },
     ]);
 
     const { result } = renderIntegrationHook({
       kind: "clickup",
-      query: "current sprint",
+      query: "inbox classifier",
     });
 
-    await waitFor(() => expect(clickupApi.searchTasks).toHaveBeenCalledWith());
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(clickupApi.searchTasks).not.toHaveBeenCalled();
+
+    await waitFor(() =>
+      expect(clickupApi.searchTasks).toHaveBeenCalledWith({
+        query: "inbox classifier",
+        limit: 10,
+      }),
+      { timeout: 2_000 },
+    );
     await waitFor(() =>
       expect(result.current.data).toEqual([
         expect.objectContaining({ id: "task-1", customId: "MBE-2857" }),
@@ -113,9 +119,9 @@ describe("useAgentComposerIntegrationResources", () => {
     );
   });
 
-  it("limits ClickUp task suggestions to twelve items", async () => {
+  it("limits ClickUp task suggestions to ten items", async () => {
     vi.mocked(clickupApi.searchTasks).mockResolvedValue(
-      Array.from({ length: 14 }, (_, index) => ({
+      Array.from({ length: 10 }, (_, index) => ({
         id: `task-${index}`,
         name: `Task ${index}`,
         assignees: [],
@@ -128,7 +134,13 @@ describe("useAgentComposerIntegrationResources", () => {
       query: "current",
     });
 
-    await waitFor(() => expect(result.current.data).toHaveLength(12));
+    await waitFor(() => expect(result.current.data).toHaveLength(10), {
+      timeout: 2_000,
+    });
+    expect(clickupApi.searchTasks).toHaveBeenCalledWith({
+      query: "current",
+      limit: 10,
+    });
     expect(result.current.data?.[0]).toMatchObject({ id: "task-0" });
   });
 

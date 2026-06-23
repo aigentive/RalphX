@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { invoke } from "@tauri-apps/api/core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setRalphxTerminalDockDragActive } from "@/lib/internalDragTypes";
 import { AgentComposerSurface } from "./AgentComposerSurface";
@@ -100,6 +100,7 @@ function makeTerminalDragEvent() {
 
 describe("AgentComposerSurface", () => {
   beforeEach(() => {
+    vi.useRealTimers();
     setRalphxTerminalDockDragActive(false);
     vi.mocked(invoke).mockImplementation((cmd) => {
       if (cmd === "list_agent_composer_skills") {
@@ -116,6 +117,10 @@ describe("AgentComposerSurface", () => {
       }
       return Promise.resolve(undefined);
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("keeps the runtime selector content-sized instead of filling the footer row", () => {
@@ -911,7 +916,7 @@ describe("AgentComposerSurface", () => {
     ).toBeInTheDocument();
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("search_clickup_tasks", {
-        input: { spaceIds: [] },
+        input: { spaceIds: [], query: "", limit: 10 },
       }),
     );
   });
