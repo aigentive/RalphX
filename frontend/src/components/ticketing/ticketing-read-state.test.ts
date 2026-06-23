@@ -192,17 +192,18 @@ describe("groupTicketsByStatus", () => {
 });
 
 describe("hasActiveTicketFilters", () => {
-  const empty = { text: "", stateIds: [], labels: [], assignee: null };
+  const empty = { text: "", stateIds: [], labels: [], assignee: null, sprint: null };
 
   it("is false when no filter is set (whitespace-only text counts as empty)", () => {
     expect(hasActiveTicketFilters(empty)).toBe(false);
     expect(hasActiveTicketFilters({ ...empty, text: "   " })).toBe(false);
   });
 
-  it("is true when any of text, status, labels, or assignee is set", () => {
+  it("is true when any of text, status, labels, assignee, or sprint is set", () => {
     expect(hasActiveTicketFilters({ ...empty, text: "bug" })).toBe(true);
     expect(hasActiveTicketFilters({ ...empty, stateIds: ["todo"] })).toBe(true);
     expect(hasActiveTicketFilters({ ...empty, labels: ["backend"] })).toBe(true);
     expect(hasActiveTicketFilters({ ...empty, assignee: "Me" })).toBe(true);
+    expect(hasActiveTicketFilters({ ...empty, sprint: "Sprint 42" })).toBe(true);
   });
 });

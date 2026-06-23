@@ -15,6 +15,7 @@ interface TicketFilterBarProps {
   containers: TicketingContainer[];
   columns: TicketingColumn[];
   assigneeOptions: string[];
+  sprintOptions?: string[];
   containerLabel: string;
   allContainersLabel: string;
   activeContainerId: string | null;
@@ -69,6 +70,7 @@ export function TicketFilterBar({
   containers,
   columns,
   assigneeOptions,
+  sprintOptions = [],
   containerLabel,
   allContainersLabel,
   activeContainerId,
@@ -164,6 +166,26 @@ export function TicketFilterBar({
           ]}
         />
       </label>
+
+      {sprintOptions.length > 0 && (
+        <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+          Sprint
+          <TicketSearchableSelect
+            ariaLabel="Sprint"
+            className="min-w-[150px] max-w-[220px]"
+            value={filters.sprint ?? ""}
+            onValueChange={(nextValue) => onFiltersChange({ sprint: nextValue || null })}
+            placeholder="All sprints"
+            searchPlaceholder="Search sprints..."
+            clearable
+            clearLabel="Clear sprint filter"
+            options={[
+              { value: "", label: "All sprints" },
+              ...sprintOptions.map((name) => ({ value: name, label: name })),
+            ]}
+          />
+        </label>
+      )}
 
       <div className="relative min-w-[220px] flex-1">
         <Search

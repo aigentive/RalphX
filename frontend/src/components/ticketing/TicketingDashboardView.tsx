@@ -59,6 +59,7 @@ import { TicketingStatePanel } from "./TicketingStatePanel";
 import { TicketKanbanShell, TicketKanbanView, TicketListView } from "./TicketViews";
 import {
   distinctAssigneeNames,
+  distinctSprintNames,
   filterTicketsByAssignee,
   filterTicketsByProject,
   hasActiveTicketFilters,
@@ -408,6 +409,18 @@ export function TicketingDashboardView({
   const ticketsQuery = useTickets(ticketQuery, { enabled: Boolean(ticketQuery) });
   const tickets = useMemo(() => flattenTicketPages(ticketsQuery.data), [ticketsQuery.data]);
   const assigneeOptions = useMemo(() => distinctAssigneeNames(tickets), [tickets]);
+  const sprintOptions = useMemo(
+    () => (activeProvider === "clickup" ? distinctSprintNames(tickets) : []),
+    [activeProvider, tickets],
+  );
+  useEffect(() => {
+    if (!filters.sprint) {
+      return;
+    }
+    if (activeProvider !== "clickup" || !sprintOptions.includes(filters.sprint)) {
+      setFilters({ sprint: null });
+    }
+  }, [activeProvider, filters.sprint, setFilters, sprintOptions]);
   const activeContainerName = useMemo(
     () => containers.find((container) => container.id === activeContainerId)?.name ?? null,
     [containers, activeContainerId],
@@ -421,10 +434,13 @@ export function TicketingDashboardView({
   const displayedTickets = useMemo(
     () =>
       filterTicketsByProject(
-        filterTicketsByAssignee(tickets, filters.assignee),
+        filterTicketsByProject(
+          filterTicketsByAssignee(tickets, filters.assignee),
+          activeProvider === "clickup" ? filters.sprint : null,
+        ),
         clientContainerFilter,
       ),
-    [tickets, filters.assignee, clientContainerFilter],
+    [tickets, filters.assignee, filters.sprint, activeProvider, clientContainerFilter],
   );
   const ticketColumns = useMemo(() => columnsFromTickets(tickets), [tickets]);
   // Remember the last non-empty columns so the kanban board does not collapse
@@ -933,6 +949,7 @@ export function TicketingDashboardView({
         containers={containers}
         columns={filterColumns}
         assigneeOptions={assigneeOptions}
+        sprintOptions={sprintOptions}
         containerLabel={containerLabels.containerLabel}
         allContainersLabel={containerLabels.allContainersLabel}
         activeContainerId={activeContainerId}

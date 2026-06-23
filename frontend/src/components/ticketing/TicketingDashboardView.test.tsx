@@ -625,6 +625,59 @@ describe("TicketingDashboardView", () => {
     expect(screen.queryByText("Select a Space")).not.toBeInTheDocument();
   });
 
+  it("filters ClickUp tickets by the selected sprint list", async () => {
+    useTicketingStore.getState().setProvider("clickup");
+    const sprintTicket = {
+      ...ticket,
+      ref: { provider: "clickup" as const, id: "cu-current", key: "CU-42" },
+      title: "Current sprint task",
+      project: "Sprint 42",
+    };
+    const backlogTicket = {
+      ...ticket,
+      ref: { provider: "clickup" as const, id: "cu-backlog", key: "CU-7" },
+      title: "Backlog task",
+      project: "Backlog",
+    };
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "clickup",
+          label: "ClickUp",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: { pages: [{ items: [sprintTicket, backlogTicket], nextCursor: null, total: 2 }], pageParams: [null] },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+
+    renderDashboard();
+
+    const sprintSelect = await screen.findByRole("combobox", { name: "Sprint" });
+    expect(within(sprintSelect).getByRole("option", { name: "Sprint 42" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Current sprint task/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Backlog task/ })).toBeInTheDocument();
+
+    fireEvent.change(sprintSelect, { target: { value: "Sprint 42" } });
+
+    expect(screen.getByRole("button", { name: /Current sprint task/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Backlog task/ })).not.toBeInTheDocument();
+  });
+
   it("surfaces stale provider freshness without hiding ticket content", () => {
     mockConnectedDashboard();
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
@@ -856,7 +909,7 @@ describe("TicketingDashboardView", () => {
   it("filters the list client-side by the selected assignee", () => {
     mockConnectedDashboard();
     useTicketingStore.setState({
-      filters: { text: "", assignee: "Someone Else", stateIds: [], labels: [] },
+      filters: { text: "", assignee: "Someone Else", stateIds: [], labels: [], sprint: null },
     });
     renderDashboard();
 
@@ -877,7 +930,7 @@ describe("TicketingDashboardView", () => {
       isFetchingNextPage: false,
     } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
     useTicketingStore.setState({
-      filters: { text: "", assignee: null, stateIds: [], labels: [] },
+      filters: { text: "", assignee: null, stateIds: [], labels: [], sprint: null },
     });
     renderDashboard();
 

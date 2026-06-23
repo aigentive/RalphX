@@ -51,6 +51,7 @@ describe("useTicketingStore", () => {
       assignee: "me",
       stateIds: ["started"],
       labels: [],
+      sprint: null,
     });
 
     useTicketingStore.getState().resetFilters();
@@ -60,6 +61,7 @@ describe("useTicketingStore", () => {
       assignee: null,
       stateIds: [],
       labels: [],
+      sprint: null,
     });
   });
 

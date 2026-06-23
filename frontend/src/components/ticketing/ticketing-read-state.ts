@@ -12,13 +12,14 @@ export function ticketRefKey(ref: TicketRef): string {
   return `${ref.provider}:${ref.id}`;
 }
 
-/** Whether any ticket filter (text, status, labels, assignee) is currently active. */
+/** Whether any ticket filter (text, status, labels, assignee, sprint) is currently active. */
 export function hasActiveTicketFilters(filters: TicketingFilterState): boolean {
   return (
     filters.text.trim() !== ""
     || filters.stateIds.length > 0
     || filters.labels.length > 0
     || filters.assignee !== null
+    || filters.sprint !== null
   );
 }
 
@@ -30,6 +31,18 @@ export function distinctAssigneeNames(tickets: TicketSummary[]): string[] {
   const names = new Set<string>();
   for (const ticket of tickets) {
     const name = ticket.assignee?.name?.trim();
+    if (name) {
+      names.add(name);
+    }
+  }
+  return Array.from(names).sort((left, right) => left.localeCompare(right));
+}
+
+/** Distinct, sorted ClickUp list/sprint names present in the loaded tickets. */
+export function distinctSprintNames(tickets: TicketSummary[]): string[] {
+  const names = new Set<string>();
+  for (const ticket of tickets) {
+    const name = ticket.project?.trim();
     if (name) {
       names.add(name);
     }

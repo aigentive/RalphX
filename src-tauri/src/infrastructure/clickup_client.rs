@@ -334,13 +334,22 @@ pub(crate) async fn fetch_task_detail<C: ClickUpJsonRequester + ?Sized>(
     token: &str,
     task_id: &str,
 ) -> Result<ClickUpTaskContent, String> {
-    let url = format!(
+    let task_url = format!(
         "{CLICKUP_API_BASE}/task/{}",
         percent_encode_path_segment(task_id)
     );
-    let value = client.request_json(Method::GET, url, token, None).await?;
-    task_content_from_value(&value)
-        .ok_or_else(|| "ClickUp task response was missing task details".to_string())
+    let value = client.request_json(Method::GET, task_url, token, None).await?;
+    let mut content = task_content_from_value(&value)
+        .ok_or_else(|| "ClickUp task response was missing task details".to_string())?;
+    let comments_url = format!(
+        "{CLICKUP_API_BASE}/task/{}/comment",
+        percent_encode_path_segment(task_id)
+    );
+    let comments = client
+        .request_json(Method::GET, comments_url, token, None)
+        .await?;
+    content.comments = clickup_comments_from_value(&comments);
+    Ok(content)
 }
 
 pub(crate) async fn fetch_space_statuses<C: ClickUpJsonRequester + ?Sized>(
@@ -614,6 +623,57 @@ fn task_content_from_value(task: &Value) -> Option<ClickUpTaskContent> {
         space_id: task.get("space").and_then(|value| opt_str(value, "id")),
         list_name: task.get("list").and_then(|value| opt_str(value, "name")),
     })
+}
+
+fn clickup_comments_from_value(value: &Value) -> Vec<ClickUpComment> {
+    value
+        .get("comments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(clickup_comment_from_value)
+        .collect()
+}
+
+fn clickup_comment_from_value(value: &Value) -> Option<ClickUpComment> {
+    let id = value.get("id").and_then(json_scalar_to_string)?;
+    let body = clickup_comment_body(value)?;
+    Some(ClickUpComment {
+        id,
+        body,
+        author_id: value
+            .get("user")
+            .and_then(|user| user.get("id"))
+            .and_then(Value::as_i64),
+        author_name: value.get("user").and_then(clickup_user_display_name),
+        created_at: value.get("date").and_then(json_scalar_to_string),
+    })
+}
+
+fn clickup_comment_body(value: &Value) -> Option<String> {
+    opt_str(value, "comment_text")
+        .or_else(|| opt_str(value, "text_content"))
+        .or_else(|| opt_str(value, "body"))
+        .or_else(|| opt_str(value, "comment"))
+        .or_else(|| {
+            value
+                .get("comment")
+                .and_then(Value::as_array)
+                .map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(|part| opt_str(part, "text"))
+                        .collect::<Vec<_>>()
+                        .join("")
+                })
+                .filter(|text| !text.trim().is_empty())
+        })
+}
+
+fn clickup_user_display_name(value: &Value) -> Option<String> {
+    opt_str(value, "username")
+        .or_else(|| opt_str(value, "email"))
+        .or_else(|| opt_str(value, "name"))
 }
 
 fn collect_assignee_names(task: &Value) -> Vec<String> {

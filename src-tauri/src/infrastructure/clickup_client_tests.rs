@@ -247,7 +247,24 @@ async fn fetch_task_detail_maps_fields() {
     let mut task = sample_task("abc123", "done");
     task["description"] = json!("Detailed body");
     task["creator"] = json!({ "id": 1, "username": "owner" });
-    let fake = FakeClickUpRequester::new(vec![Ok(task)]);
+    let fake = FakeClickUpRequester::new(vec![
+        Ok(task),
+        Ok(json!({
+            "comments": [
+                {
+                    "id": 12345,
+                    "comment_text": "Looks loaded",
+                    "user": { "id": 7, "username": "Reviewer" },
+                    "date": "1700000000000"
+                },
+                {
+                    "id": "fragmented",
+                    "comment": [{ "text": "Fragment " }, { "text": "body" }],
+                    "user": { "email": "reviewer@example.com" }
+                }
+            ]
+        })),
+    ]);
 
     let content = fetch_task_detail(&fake, "tok", "abc123").await.unwrap();
 
@@ -256,7 +273,18 @@ async fn fetch_task_detail_maps_fields() {
     assert_eq!(content.status_category.as_deref(), Some("done"));
     assert_eq!(content.creator.as_deref(), Some("owner"));
     assert_eq!(content.assignees, vec!["dev".to_string()]);
+    assert_eq!(content.comments.len(), 2);
+    assert_eq!(content.comments[0].id, "12345");
+    assert_eq!(content.comments[0].body, "Looks loaded");
+    assert_eq!(content.comments[0].author_name.as_deref(), Some("Reviewer"));
+    assert_eq!(content.comments[0].created_at.as_deref(), Some("1700000000000"));
+    assert_eq!(content.comments[1].body, "Fragment body");
+    assert_eq!(
+        content.comments[1].author_name.as_deref(),
+        Some("reviewer@example.com"),
+    );
     assert!(fake.requests()[0].url.ends_with("/task/abc123"));
+    assert!(fake.requests()[1].url.ends_with("/task/abc123/comment"));
 }
 
 #[tokio::test]
