@@ -1641,7 +1641,7 @@ describe("TicketingDashboardView", () => {
     expect(atlassianApi.assignAgentConversationJiraIssue).not.toHaveBeenCalled();
   });
 
-  it("surfaces ClickUp in the switcher, loads its tasks, and hides the deferred start-work/bind affordance", async () => {
+  it("surfaces ClickUp in the switcher, loads its tasks, and allows starting new RalphX work", async () => {
     mockConnectedDashboard();
     // Make ClickUp the active provider in a 3-provider dashboard so the switcher
     // renders a ClickUp tab (the switcher only shows when >1 provider is enabled).
@@ -1719,9 +1719,10 @@ describe("TicketingDashboardView", () => {
     fireEvent.click(screen.getByRole("button", { name: /CU-1001/ }));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
 
-    // Deferral preserved: the start-work + bind-conversation affordance is hidden
-    // for ClickUp (capability-gated), so no clickup conversation API is invoked.
-    expect(screen.queryByRole("button", { name: "Start from ticket branch" })).not.toBeInTheDocument();
+    // Starting new RalphX work is provider-neutral; binding an existing
+    // conversation stays hidden until ClickUp link persistence exists.
+    fireEvent.click(screen.getByRole("button", { name: "Start from ticket branch" }));
+    expect(await screen.findByRole("dialog", { name: "Start RalphX Work" })).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /bind existing conversation/i }),
     ).not.toBeInTheDocument();

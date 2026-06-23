@@ -241,6 +241,7 @@ async fn task_summary_maps_status_assignees_and_tags() {
     assert_eq!(task.status_type.as_deref(), Some("custom"));
     assert_eq!(task.status_category.as_deref(), Some("in_progress"));
     assert_eq!(task.assignees, vec!["dev".to_string()]);
+    assert_eq!(task.assignee_ids, vec![42]);
     assert_eq!(task.tags, vec!["bug".to_string(), "backend".to_string()]);
     assert_eq!(task.space_id.as_deref(), Some("space-1"));
     assert_eq!(task.list_name.as_deref(), Some("Sprint"));

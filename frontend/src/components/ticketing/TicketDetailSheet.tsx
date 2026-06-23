@@ -308,27 +308,27 @@ function RalphxAssociationPanel({
           </span>
         )}
       </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="mt-3 w-full justify-center"
+        disabled={!onStartWork || isStartWorkPending}
+        onClick={onStartWork}
+      >
+        {isStartWorkPending
+          ? "Starting..."
+          : ticketBranchName
+            ? "Start from ticket branch"
+            : "Start RalphX work"}
+      </Button>
+      {startWorkError && (
+        <p className="mt-2 text-xs text-[var(--status-error)]" role="alert">
+          {startWorkError}
+        </p>
+      )}
       {showConversationBinding && (
         <>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="mt-3 w-full justify-center"
-            disabled={!onStartWork || isStartWorkPending}
-            onClick={onStartWork}
-          >
-            {isStartWorkPending
-              ? "Starting..."
-              : ticketBranchName
-                ? "Start from ticket branch"
-                : "Start RalphX work"}
-          </Button>
-          {startWorkError && (
-            <p className="mt-2 text-xs text-[var(--status-error)]" role="alert">
-              {startWorkError}
-            </p>
-          )}
           <BindConversationControl
             conversations={bindableConversations ?? []}
             onBindConversation={onBindConversation}

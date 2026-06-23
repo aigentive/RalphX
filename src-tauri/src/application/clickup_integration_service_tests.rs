@@ -202,6 +202,7 @@ impl ClickUpApiClient for TestClickUpClient {
             status_category: Some("in_progress".to_string()),
             status_color: Some("#abc".to_string()),
             assignees: vec!["dev".to_string()],
+            assignee_ids: vec![42],
             tags: vec!["bug".to_string()],
             space_id: Some("space-1".to_string()),
             list_name: Some("Sprint".to_string()),

@@ -213,6 +213,7 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
         status_category: Some("in_progress".to_string()),
         status_color: Some("#112233".to_string()),
         assignees: vec!["Reef Agent".to_string(), "Second Person".to_string()],
+        assignee_ids: vec![42, 7],
         tags: vec!["backend".to_string(), "clickup".to_string()],
         space_id: Some("space-1".to_string()),
         list_name: Some("Sprint 1".to_string()),
@@ -270,6 +271,7 @@ fn clickup_summary_detects_current_user_assignment_by_username_or_email() {
         status_category: None,
         status_color: None,
         assignees: vec!["agent@example.com".to_string()],
+        assignee_ids: Vec::new(),
         tags: Vec::new(),
         space_id: None,
         list_name: Some("Sprint 42".to_string()),
@@ -288,6 +290,13 @@ fn clickup_summary_detects_current_user_assignment_by_username_or_email() {
 
     assert!(clickup_summary_assigned_to_user(&summary, &user));
     assert!(!clickup_summary_assigned_to_user(&summary, &other));
+
+    let id_only_summary = ClickUpTaskSummary {
+        assignees: vec!["A".to_string()],
+        assignee_ids: vec![42],
+        ..summary
+    };
+    assert!(clickup_summary_assigned_to_user(&id_only_summary, &user));
 }
 
 #[test]
@@ -302,6 +311,7 @@ fn clickup_summary_derives_state_when_status_fields_missing() {
         status_category: None,
         status_color: None,
         assignees: Vec::new(),
+        assignee_ids: Vec::new(),
         tags: Vec::new(),
         space_id: None,
         list_name: None,
@@ -425,6 +435,7 @@ fn clickup_ticket_state_id_aligns_with_column_id_for_kanban() {
         status_category: Some("in_progress".to_string()),
         status_color: None,
         assignees: Vec::new(),
+        assignee_ids: Vec::new(),
         tags: Vec::new(),
         space_id: Some("space-1".to_string()),
         list_name: None,
@@ -477,9 +488,9 @@ async fn list_ticketing_providers_includes_clickup() {
 
 #[tokio::test]
 async fn clickup_conversation_associations_are_empty_pending_followup() {
-    // ClickUp conversation-linking/start-work is deferred, so ClickUp tickets must
-    // resolve to zero associations (not a fallthrough provider error) so the unified
-    // list can hydrate association counts for ClickUp like the other providers.
+    // ClickUp conversation-linking is deferred, so ClickUp tickets must resolve
+    // to zero associations (not a fallthrough provider error) so the unified list
+    // can hydrate association counts for ClickUp like the other providers.
     let state = AppState::new_test();
     let project_id = seed_ticketing_project(&state, "ticket-clickup-assoc").await;
 
@@ -1424,6 +1435,54 @@ async fn start_work_from_ticket_queues_message_and_links_jira_after_successful_s
     assert_eq!(linked.issue_key, "RAL-42");
     assert_eq!(linked.issue_id.as_deref(), Some("10001"));
     assert!(linked.manually_assigned);
+}
+
+#[tokio::test]
+async fn start_work_from_ticket_queues_message_for_clickup_without_link_table() {
+    // Seed harness availability so the start runtime check passes on sandboxed CI
+    // runners that have no real agent CLI on PATH (the probe is otherwise ambient).
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
+    let state = AppState::new_test();
+    let project_id = seed_ticketing_project(&state, "ticket-start-clickup").await;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_ticketing_start_app(state, Arc::clone(&execution_state));
+
+    let response = start_ralphx_work_from_ticket(
+        ticket_start_input(
+            &project_id,
+            TicketRefInput {
+                provider: "clickup".to_string(),
+                id: "8689abc".to_string(),
+                key: Some("CU-42".to_string()),
+            },
+        ),
+        app.state(),
+        app.state(),
+        app.state(),
+        app.handle().clone(),
+    )
+    .await
+    .expect("clickup ticket start should succeed without a link table");
+
+    assert_eq!(response.conversation.context_id, project_id.as_str());
+    assert_eq!(response.conversation.title.as_deref(), Some("CU-42"));
+    assert!(response.send_result.was_queued);
+    let queued = app
+        .state::<AppState>()
+        .message_queue
+        .get_queued(ChatContextType::Project, response.conversation.id.as_str());
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].composer_integration_references.len(), 1);
+    assert_eq!(
+        queued[0].composer_integration_references[0].provider,
+        "clickup"
+    );
+    assert_eq!(queued[0].composer_integration_references[0].kind, "clickup");
+    assert_eq!(
+        queued[0].composer_integration_references[0].key.as_deref(),
+        Some("CU-42")
+    );
 }
 
 #[tokio::test]

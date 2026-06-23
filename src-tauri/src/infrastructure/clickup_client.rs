@@ -624,6 +624,7 @@ fn task_summary_from_value(task: &Value) -> Option<ClickUpTaskSummary> {
         status_type,
         status_color: status.and_then(|value| opt_str(value, "color")),
         assignees: collect_assignee_names(task),
+        assignee_ids: collect_assignee_ids(task),
         tags: collect_tag_names(task),
         space_id: task.get("space").and_then(|value| opt_str(value, "id")),
         list_name: task.get("list").and_then(|value| opt_str(value, "name")),
@@ -737,6 +738,15 @@ fn collect_assignee_names(task: &Value) -> Vec<String> {
         .into_iter()
         .flatten()
         .filter_map(|assignee| opt_str(assignee, "username").or_else(|| opt_str(assignee, "email")))
+        .collect()
+}
+
+fn collect_assignee_ids(task: &Value) -> Vec<i64> {
+    task.get("assignees")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|assignee| assignee.get("id").and_then(Value::as_i64))
         .collect()
 }
 

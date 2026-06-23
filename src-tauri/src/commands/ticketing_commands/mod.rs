@@ -1422,15 +1422,16 @@ fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryRespon
 }
 
 fn clickup_summary_assigned_to_user(summary: &ClickUpTaskSummary, user: &ClickUpUser) -> bool {
-    summary.assignees.iter().any(|assignee| {
-        user.username
-            .as_deref()
-            .is_some_and(|username| assignee.eq_ignore_ascii_case(username))
-            || user
-                .email
+    summary.assignee_ids.contains(&user.id)
+        || summary.assignees.iter().any(|assignee| {
+            user.username
                 .as_deref()
-                .is_some_and(|email| assignee.eq_ignore_ascii_case(email))
-    })
+                .is_some_and(|username| assignee.eq_ignore_ascii_case(username))
+                || user
+                    .email
+                    .as_deref()
+                    .is_some_and(|email| assignee.eq_ignore_ascii_case(email))
+        })
 }
 
 /// Map full ClickUp task content into a ticket detail. Mirrors
@@ -1780,6 +1781,10 @@ async fn link_started_ticket_to_conversation(
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         }
+        // ClickUp start-work is supported through the provider-neutral composer
+        // reference. A first-class ClickUp conversation link table is deferred,
+        // so there is nothing to persist here yet.
+        PROVIDER_CLICKUP => Ok(()),
         _ => Err(format!("Unknown ticketing provider: {provider}")),
     }
 }

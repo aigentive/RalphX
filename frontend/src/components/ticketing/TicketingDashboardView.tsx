@@ -574,10 +574,9 @@ export function TicketingDashboardView({
     : mergeProviderAndTicketColumns(statusColumns, transitionColumns);
   const providerName = selectedProvider?.label ?? (activeProvider ? providerLabel(activeProvider) : "Provider");
   const containerLabels = containerLabelsForProvider(activeProvider);
-  // ClickUp's conversation-link/start-work backend is deferred (no clickup
-  // conversation API exists yet), so the start-work + bind-conversation
-  // affordances are gated off entirely for ClickUp — the dashboard never invokes
-  // a clickup conversation API and hides the non-functional affordance.
+  // ClickUp conversation-linking is deferred (no ClickUp link table yet), so
+  // binding an existing conversation stays hidden. Starting new RalphX work is
+  // still provider-neutral and includes the ticket reference in the composer.
   const supportsConversationBinding = activeProvider !== "clickup";
   const statusMessage = selectedProvider?.errorMessage ?? selectedProvider?.permissionMessage ?? undefined;
   const startWorkError = startWorkFromTicket.error instanceof Error
@@ -1027,7 +1026,7 @@ export function TicketingDashboardView({
         isBindPending={bindConversation.isPending}
         bindError={bindError}
         onNavigate={onNavigateToAssociation}
-        onStartWork={selectedTicket && supportsConversationBinding ? handleStartWorkFromTicket : undefined}
+        onStartWork={selectedTicket ? handleStartWorkFromTicket : undefined}
         onClose={() => setSelectedTicketRef(null)}
       />
 

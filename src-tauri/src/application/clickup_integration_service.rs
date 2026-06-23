@@ -88,6 +88,7 @@ pub struct ClickUpTaskSummary {
     pub status_category: Option<String>,
     pub status_color: Option<String>,
     pub assignees: Vec<String>,
+    pub assignee_ids: Vec<i64>,
     pub tags: Vec<String>,
     pub space_id: Option<String>,
     pub list_name: Option<String>,
