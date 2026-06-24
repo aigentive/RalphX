@@ -22,6 +22,8 @@ use crate::application::AtlassianIntegrationService;
 use crate::application::ClickUpIntegrationService;
 use crate::application::EmptyAtlassianApiClient;
 use crate::application::EmptyClickUpApiClient;
+use crate::application::EmptyGranolaApiClient;
+use crate::application::GranolaIntegrationService;
 use crate::application::EmptyLinearApiClient;
 use crate::application::ExternalIssueLinkService;
 use crate::application::LinearIntegrationService;
@@ -32,6 +34,7 @@ use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
 use crate::application::UnavailableAtlassianApiClient;
 use crate::application::UnavailableClickUpApiClient;
+use crate::application::UnavailableGranolaApiClient;
 use crate::application::UnavailableLinearApiClient;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
@@ -81,6 +84,7 @@ use crate::infrastructure::memory::{
     MemoryIdeationEffortSettingsRepository, MemoryIdeationModelSettingsRepository,
     MemoryIdeationSessionRepository, MemoryIdeationSettingsRepository,
     MemoryClickUpIntegrationSettingsRepository,
+    MemoryGranolaIntegrationSettingsRepository,
     MemoryLinearIntegrationSettingsRepository, MemoryMethodologyRepository,
     MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
     MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
@@ -111,6 +115,7 @@ use crate::infrastructure::sqlite::{
     SqliteIdeationEffortSettingsRepository, SqliteIdeationModelSettingsRepository,
     SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
     SqliteClickUpIntegrationSettingsRepository,
+    SqliteGranolaIntegrationSettingsRepository,
     SqliteLinearIntegrationSettingsRepository, SqliteMemoryArchiveRepository,
     SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
     SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
@@ -167,6 +172,8 @@ pub struct AppState {
     pub linear_integration_service: Arc<LinearIntegrationService>,
     /// Native ClickUp integration service.
     pub clickup_integration_service: Arc<ClickUpIntegrationService>,
+    /// Native Granola integration service.
+    pub granola_integration_service: Arc<GranolaIntegrationService>,
     /// Provider-neutral external issue link and sync service.
     pub external_issue_link_service: Arc<ExternalIssueLinkService>,
     /// Agent profile repository (SQLite in production)
@@ -418,6 +425,33 @@ impl AppState {
             Arc::new(MemoryClickUpIntegrationSettingsRepository::new()),
             Arc::new(MemorySecretStore::new()),
             Arc::new(EmptyClickUpApiClient),
+        ))
+    }
+
+    fn production_granola_integration_service(
+        shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+    ) -> Arc<GranolaIntegrationService> {
+        // The Granola HTTP client lands in the follow-up Granola API-client task.
+        // Until then production wires the unavailable client so settings persist
+        // and validation reports a clear error instead of panicking.
+        let client: Arc<dyn crate::application::GranolaApiClient> =
+            Arc::new(UnavailableGranolaApiClient::new(
+                "Granola HTTP client is not available yet; integration validation will fail until the Granola API client lands",
+            ));
+        Arc::new(GranolaIntegrationService::new(
+            Arc::new(SqliteGranolaIntegrationSettingsRepository::from_shared(
+                Arc::clone(shared_conn),
+            )),
+            Arc::new(MacosKeychainSecretStore::new()),
+            client,
+        ))
+    }
+
+    fn memory_granola_integration_service() -> Arc<GranolaIntegrationService> {
+        Arc::new(GranolaIntegrationService::new(
+            Arc::new(MemoryGranolaIntegrationSettingsRepository::new()),
+            Arc::new(MemorySecretStore::new()),
+            Arc::new(EmptyGranolaApiClient),
         ))
     }
 
@@ -955,6 +989,7 @@ impl AppState {
             ),
             linear_integration_service: Self::production_linear_integration_service(&shared_conn),
             clickup_integration_service: Self::production_clickup_integration_service(&shared_conn),
+            granola_integration_service: Self::production_granola_integration_service(&shared_conn),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(SqliteAgentProfileRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -1190,6 +1225,7 @@ impl AppState {
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
+            granola_integration_service: Self::memory_granola_integration_service(),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
@@ -1331,6 +1367,7 @@ impl AppState {
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
+            granola_integration_service: Self::memory_granola_integration_service(),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
@@ -1482,6 +1519,7 @@ impl AppState {
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
+            granola_integration_service: Self::memory_granola_integration_service(),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
@@ -1627,6 +1665,7 @@ impl AppState {
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
+            granola_integration_service: Self::memory_granola_integration_service(),
             external_issue_link_service: Self::memory_external_issue_link_service(),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),

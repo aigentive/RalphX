@@ -38,6 +38,7 @@ pub mod chat_attachment_service;
 pub mod chat_resumption;
 pub mod chat_service;
 pub mod clickup_integration_service;
+pub mod granola_integration_service;
 pub mod dependency_service;
 pub mod event_cleanup_service;
 pub mod execution_settings_bootstrap;
@@ -145,6 +146,10 @@ pub use clickup_integration_service::{
     ClickUpStatus, ClickUpTag, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser,
     ClickUpWorkspace, EmptyClickUpApiClient, UnavailableClickUpApiClient,
 };
+pub use granola_integration_service::{
+    EmptyGranolaApiClient, GranolaApiClient, GranolaAuthContext, GranolaIntegrationService,
+    UnavailableGranolaApiClient,
+};
 pub use chat_attachment_service::ChatAttachmentService;
 pub use agent_terminal::AgentTerminalService;
 pub use agent_task_service::AgentTaskService;
@@ -251,6 +256,8 @@ mod agent_terminal_tests;
 mod chat_service_output_tests;
 #[cfg(test)]
 mod clickup_integration_service_tests;
+#[cfg(test)]
+mod granola_integration_service_tests;
 #[cfg(test)]
 mod git_artifact_cleanup_tests;
 #[cfg(test)]

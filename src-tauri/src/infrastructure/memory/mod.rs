@@ -29,6 +29,7 @@ pub mod memory_execution_plan_repo;
 pub mod memory_execution_settings_repo;
 pub mod memory_external_events_repo;
 pub mod memory_external_issue_link_repo;
+pub mod memory_granola_integration_settings_repo;
 pub mod memory_ideation_effort_settings_repo;
 pub mod memory_ideation_model_settings_repo;
 pub mod memory_ideation_session_repo;
@@ -94,6 +95,7 @@ pub use memory_execution_settings_repo::{
 };
 pub use memory_external_events_repo::MemoryExternalEventsRepository;
 pub use memory_external_issue_link_repo::MemoryExternalIssueLinkRepository;
+pub use memory_granola_integration_settings_repo::MemoryGranolaIntegrationSettingsRepository;
 pub use memory_ideation_effort_settings_repo::MemoryIdeationEffortSettingsRepository;
 pub use memory_ideation_model_settings_repo::MemoryIdeationModelSettingsRepository;
 pub use memory_ideation_session_repo::MemoryIdeationSessionRepository;

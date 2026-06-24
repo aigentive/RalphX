@@ -20,6 +20,9 @@ pub mod sqlite_atlassian_integration_settings_repo;
 pub mod sqlite_clickup_integration_settings_repo;
 #[cfg(test)]
 mod sqlite_clickup_integration_settings_repo_tests;
+pub mod sqlite_granola_integration_settings_repo;
+#[cfg(test)]
+mod sqlite_granola_integration_settings_repo_tests;
 #[cfg(test)]
 mod sqlite_agent_task_repo_tests;
 pub mod sqlite_agent_run_repo;
@@ -115,6 +118,7 @@ pub use sqlite_agent_provider_settings_repo::SqliteAgentProviderSettingsReposito
 pub use sqlite_agent_task_repo::SqliteAgentTaskRepository;
 pub use sqlite_atlassian_integration_settings_repo::SqliteAtlassianIntegrationSettingsRepository;
 pub use sqlite_clickup_integration_settings_repo::SqliteClickUpIntegrationSettingsRepository;
+pub use sqlite_granola_integration_settings_repo::SqliteGranolaIntegrationSettingsRepository;
 pub use sqlite_agent_run_repo::SqliteAgentRunRepository;
 pub use sqlite_app_state_repo::SqliteAppStateRepository;
 pub use sqlite_artifact_bucket_repo::SqliteArtifactBucketRepository;

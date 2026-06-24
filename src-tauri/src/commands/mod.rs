@@ -21,6 +21,9 @@ pub mod chat_responses;
 pub mod clickup_commands;
 #[cfg(test)]
 mod clickup_commands_tests;
+pub mod granola_commands;
+#[cfg(test)]
+mod granola_commands_tests;
 pub mod diagnostic_commands;
 pub mod diff_commands;
 pub mod execution_commands;
@@ -137,6 +140,11 @@ pub use clickup_commands::{
     save_clickup_integration_settings, search_clickup_tasks, validate_clickup_integration,
     ClickUpIntegrationSettingsResponse, ListClickUpWorkspacesResponse,
     SaveClickUpIntegrationSettingsInput, SearchClickUpTasksInput, SearchClickUpTasksResponse,
+};
+pub use granola_commands::{
+    get_granola_integration_settings, save_granola_integration_settings,
+    validate_granola_integration_settings, GranolaIntegrationSettingsResponse,
+    SaveGranolaIntegrationSettingsInput,
 };
 pub use diagnostic_commands::{
     get_agent_health, get_codex_cli_diagnostics, AgentHealthReport,

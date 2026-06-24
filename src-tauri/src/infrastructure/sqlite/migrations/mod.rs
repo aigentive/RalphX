@@ -359,6 +359,9 @@ mod v20260622162352_agent_workspace_followup_provenance_tests;
 mod v20260623074101_clickup_integration_settings;
 #[cfg(test)]
 mod v20260623074101_clickup_integration_settings_tests;
+mod v20260624114053_granola_integration_settings;
+#[cfg(test)]
+mod v20260624114053_granola_integration_settings_tests;
 mod v20260625115000_custom_provider_binary;
 #[cfg(test)]
 mod v20260625115000_custom_provider_binary_tests;
@@ -1257,6 +1260,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260623074101,
         name: "clickup_integration_settings",
         migrate: v20260623074101_clickup_integration_settings::migrate,
+    },
+    Migration {
+        version: 20260624114053,
+        name: "granola_integration_settings",
+        migrate: v20260624114053_granola_integration_settings::migrate,
     },
     Migration {
         version: 20260625115000,
