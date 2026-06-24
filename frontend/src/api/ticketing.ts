@@ -214,6 +214,10 @@ export const TicketAssociationItemSchema = z.object({
   status: z.string().nullable().optional(),
   active: z.boolean().default(false),
   deepLink: TicketDeepLinkSchema,
+  branchName: z.string().nullable().optional(),
+  baseRef: z.string().nullable().optional(),
+  prNumber: z.number().nullable().optional(),
+  prUrl: z.string().nullable().optional(),
 });
 export type TicketAssociationItem = z.infer<typeof TicketAssociationItemSchema>;
 

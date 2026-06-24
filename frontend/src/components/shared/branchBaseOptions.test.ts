@@ -4,6 +4,8 @@ import {
   loadBranchBaseOptions,
   loadPullRequestBaseOptions,
   normalizeGitBranchName,
+  ticketAssociationBranchBaseOption,
+  ticketCanonicalBranchBaseOption,
 } from "./branchBaseOptions";
 
 const {
@@ -281,5 +283,133 @@ describe("branchBaseOptions", () => {
         },
       },
     ]);
+  });
+
+  it("maps ticket pull request associations to PR base selections", () => {
+    const option = ticketAssociationBranchBaseOption({
+      id: "https://github.com/owner/repo/pull/42",
+      title: "PR #42",
+      subtitle: "feature/ticket-pr",
+      status: "open",
+      active: true,
+      deepLink: { view: "agents", id: "conversation-1", projectId: "project-1" },
+      branchName: "feature/ticket-pr",
+      baseRef: "main",
+      prNumber: 42,
+      prUrl: "https://github.com/owner/repo/pull/42",
+    });
+
+    expect(option).toEqual({
+      key: "pull_request:42:feature/ticket-pr",
+      label: "PR #42",
+      detail: "feature/ticket-pr -> main",
+      source: "pull_request",
+      selection: {
+        kind: "local_branch",
+        ref: "feature/ticket-pr",
+        displayName: "PR #42",
+        sourcePullRequest: {
+          number: 42,
+          url: "https://github.com/owner/repo/pull/42",
+          title: "PR #42",
+          headRefName: "feature/ticket-pr",
+          baseRefName: "main",
+          headRefOid: null,
+        },
+      },
+    });
+  });
+
+  it("maps ticket branch associations without PR metadata to local branch selections", () => {
+    const option = ticketAssociationBranchBaseOption({
+      id: "conversation-branch",
+      title: "Ticket branch",
+      subtitle: "+ ralphx/ticket/jira-rx-24",
+      status: "branch",
+      active: false,
+      deepLink: { view: "agents", id: "conversation-branch", projectId: "project-1" },
+      branchName: null,
+      baseRef: "main",
+      prNumber: null,
+      prUrl: null,
+    });
+
+    expect(option).toEqual({
+      key: "ticket_branch:ralphx/ticket/jira-rx-24",
+      label: "Ticket branch",
+      detail: "ralphx/ticket/jira-rx-24",
+      source: "local",
+      selection: {
+        kind: "local_branch",
+        ref: "ralphx/ticket/jira-rx-24",
+        displayName: "Ticket branch",
+      },
+    });
+  });
+
+  it("returns null for ticket associations and references without usable branch data", () => {
+    expect(
+      ticketAssociationBranchBaseOption({
+        id: "conversation-empty",
+        title: "Empty branch",
+        subtitle: "   ",
+        status: null,
+        active: false,
+        deepLink: { view: "agents", id: "conversation-empty", projectId: "project-1" },
+        branchName: null,
+        baseRef: null,
+        prNumber: null,
+        prUrl: null,
+      })
+    ).toBeNull();
+
+    expect(
+      ticketCanonicalBranchBaseOption({
+        provider: "atlassian",
+        kind: "confluence",
+        id: "SPACE",
+      })
+    ).toBeNull();
+  });
+
+  it("builds deterministic ticket branch base options from composer references", () => {
+    const option = ticketCanonicalBranchBaseOption({
+      provider: "atlassian",
+      kind: "jira",
+      id: "10001",
+      key: "RX 24/Follow-up",
+      title: "Ticket title",
+    });
+
+    expect(option).toEqual({
+      key: "ticket_branch:ralphx/ticket/jira-rx-24-follow-up",
+      label: "Ticket RX 24/Follow-up",
+      detail: "ralphx/ticket/jira-rx-24-follow-up",
+      source: "local",
+      selection: {
+        kind: "local_branch",
+        ref: "ralphx/ticket/jira-rx-24-follow-up",
+        displayName: "Ticket RX 24/Follow-up (ralphx/ticket/jira-rx-24-follow-up)",
+      },
+    });
+  });
+
+  it("builds ticket branch options for linear and clickup references", () => {
+    expect(
+      ticketCanonicalBranchBaseOption({
+        provider: "linear",
+        kind: "linear",
+        id: "lin-id",
+        key: "ENG-12",
+      })?.selection.ref
+    ).toBe("ralphx/ticket/linear-eng-12");
+
+    expect(
+      ticketCanonicalBranchBaseOption({
+        provider: "clickup",
+        kind: "clickup",
+        id: "CU/42 ++",
+      })?.selection.ref
+    ).toBe("ralphx/ticket/clickup-cu-42");
   });
 });

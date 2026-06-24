@@ -17,6 +17,7 @@ use crate::domain::entities::{
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, Project,
     ProjectId,
 };
+use crate::domain::services::ComposerIntegrationReference;
 
 pub(crate) fn parse_agent_workspace_mode(
     mode: Option<&str>,
@@ -78,6 +79,70 @@ pub(crate) fn normalize_agent_workspace_source_pull_request(
         base_ref_name: trim_optional_input(input.base_ref_name),
         head_ref_oid: trim_optional_input(input.head_ref_oid),
     }))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TicketStartBaseReference {
+    pub provider: String,
+    pub issue_key: String,
+}
+
+pub(crate) fn first_ticket_start_base_reference(
+    references: &[ComposerIntegrationReference],
+) -> Option<TicketStartBaseReference> {
+    references
+        .iter()
+        .find_map(ticket_start_base_reference_from_composer_reference)
+}
+
+fn ticket_start_base_reference_from_composer_reference(
+    reference: &ComposerIntegrationReference,
+) -> Option<TicketStartBaseReference> {
+    let provider = match (
+        reference.provider.trim().to_ascii_lowercase().as_str(),
+        reference.kind.trim().to_ascii_lowercase().as_str(),
+    ) {
+        ("atlassian", "jira") | ("jira", "jira") => "jira",
+        ("linear", "linear") => "linear",
+        ("clickup", "clickup") => "clickup",
+        _ => return None,
+    };
+    let issue_key = reference
+        .key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| reference.id.trim());
+    if issue_key.is_empty() {
+        return None;
+    }
+    Some(TicketStartBaseReference {
+        provider: provider.to_string(),
+        issue_key: issue_key.to_string(),
+    })
+}
+
+pub(crate) fn base_selection_allows_ticket_canonical_branch(
+    base_ref_kind: Option<IdeationAnalysisBaseRefKind>,
+    source_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
+) -> bool {
+    source_pull_request.is_none()
+        && matches!(
+            base_ref_kind,
+            None | Some(IdeationAnalysisBaseRefKind::ProjectDefault)
+        )
+}
+
+pub(crate) fn apply_ticket_canonical_branch_base_selection(
+    base_ref_kind: &mut Option<IdeationAnalysisBaseRefKind>,
+    base_ref: &mut Option<String>,
+    base_display_name: &mut Option<String>,
+    issue_key: &str,
+    canonical_branch_name: &str,
+) {
+    *base_ref_kind = Some(IdeationAnalysisBaseRefKind::LocalBranch);
+    *base_ref = Some(canonical_branch_name.to_string());
+    *base_display_name = Some(format!("Ticket {issue_key} ({canonical_branch_name})"));
 }
 
 pub(crate) fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {

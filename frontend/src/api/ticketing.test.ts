@@ -449,6 +449,10 @@ describe("ticketingApi", () => {
           title: "Fix race",
           status: "open",
           deepLink: { view: "kanban", id: "pr-42" },
+          branchName: "feature/race",
+          baseRef: "main",
+          prNumber: 42,
+          prUrl: "https://github.com/owner/repo/pull/42",
         },
       ],
       fetchedAt: "2026-06-19T22:00:00.000Z",
@@ -471,6 +475,14 @@ describe("ticketingApi", () => {
     expect(associations.specs).toEqual([]);
     // projectId defaults to undefined when the backend omits it.
     expect(associations.pullRequests[0]?.deepLink.projectId ?? null).toBeNull();
+    expect(associations.pullRequests[0]).toEqual(
+      expect.objectContaining({
+        branchName: "feature/race",
+        baseRef: "main",
+        prNumber: 42,
+        prUrl: "https://github.com/owner/repo/pull/42",
+      })
+    );
   });
 
   it("reads the conversation ticket and tolerates a null response", async () => {
