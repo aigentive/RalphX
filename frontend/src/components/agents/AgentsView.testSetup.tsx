@@ -53,6 +53,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getAgentRunningStatesMock: vi.fn(),
   getAgentConversationRuntimeStatusesMock: vi.fn(),
   getPlanBranchesMock: vi.fn(),
+  getTicketAssociationsMock: vi.fn(),
   loadBranchBaseOptionsMock: vi.fn(),
   loadPullRequestBaseOptionsMock: vi.fn(),
   listIdeationSessionsMock: vi.fn(),
@@ -166,6 +167,7 @@ const {
   getAgentRunningStatesMock,
   getAgentConversationRuntimeStatusesMock,
   getPlanBranchesMock,
+  getTicketAssociationsMock,
   loadBranchBaseOptionsMock,
   loadPullRequestBaseOptionsMock,
   listIdeationSessionsMock,
@@ -773,6 +775,20 @@ vi.mock("@/api/plan-branch", () => ({
   },
 }));
 
+vi.mock("@/api/ticketing", async () => {
+  const actual = await vi.importActual<typeof import("@/api/ticketing")>(
+    "@/api/ticketing"
+  );
+  return {
+    ...actual,
+    ticketingApi: {
+      ...actual.ticketingApi,
+      getTicketAssociations: (...args: unknown[]) =>
+        getTicketAssociationsMock(...args),
+    },
+  };
+});
+
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   IntegratedChatPanel: ({
     headerContent,
@@ -1232,6 +1248,7 @@ export function setupAgentsViewTest() {
   getAgentRunningStatesMock.mockReset();
   getAgentConversationRuntimeStatusesMock.mockReset();
   getPlanBranchesMock.mockReset();
+  getTicketAssociationsMock.mockReset();
   loadBranchBaseOptionsMock.mockReset();
   loadPullRequestBaseOptionsMock.mockReset();
   listIdeationSessionsMock.mockReset();
@@ -1296,6 +1313,16 @@ export function setupAgentsViewTest() {
   openAgentConversationWorkspacePathMock.mockResolvedValue(undefined);
   listConversationsMock.mockResolvedValue([]);
   getPlanBranchesMock.mockResolvedValue([]);
+  getTicketAssociationsMock.mockResolvedValue({
+    tasks: [],
+    proposals: [],
+    sessions: [],
+    conversations: [],
+    pullRequests: [],
+    checks: [],
+    qa: [],
+    specs: [],
+  });
   loadBranchBaseOptionsMock.mockResolvedValue({
     options: [
       {

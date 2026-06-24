@@ -9,6 +9,7 @@ use crate::application::agent_conversation_workspace::{
     AgentConversationWorkspaceBaseSelection, AgentConversationWorkspaceSetupMode,
 };
 use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
+use crate::application::ticket_canonical_branch::ensure_ticket_canonical_branch;
 use crate::application::{AppState, ChatService, SendResult, TeamService};
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
@@ -23,10 +24,11 @@ mod helpers;
 
 use self::helpers::{
     agent_mode_should_create_workspace, agent_workspace_pr_automation_defaults_for_project,
+    apply_ticket_canonical_branch_base_selection, base_selection_allows_ticket_canonical_branch,
     emit_start_agent_conversation_progress, ensure_plan_workspace_planning_session_link,
-    log_start_agent_conversation_phase, normalize_agent_runtime_selection,
-    normalize_agent_workspace_source_pull_request, parse_agent_workspace_base_kind,
-    parse_agent_workspace_mode, trim_optional_input,
+    first_ticket_start_base_reference, log_start_agent_conversation_phase,
+    normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
+    parse_agent_workspace_base_kind, parse_agent_workspace_mode, trim_optional_input,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -143,9 +145,11 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
 
         let parse_input_started = Instant::now();
         let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
-        let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
-        let base_ref = trim_optional_input(input.base_ref);
-        let base_display_name = trim_optional_input(input.base_display_name);
+        let mut base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
+        let mut base_ref = trim_optional_input(input.base_ref);
+        let mut base_display_name = trim_optional_input(input.base_display_name);
+        let ticket_start_base_reference =
+            first_ticket_start_base_reference(&input.composer_integration_references);
         let source_pull_request = normalize_agent_workspace_source_pull_request(
             input.base_source_pull_request,
             base_ref_kind,
@@ -176,6 +180,38 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             "load_project",
             project_lookup_started,
         );
+
+        if should_create_workspace
+            && base_selection_allows_ticket_canonical_branch(
+                base_ref_kind,
+                source_pull_request.as_ref(),
+            )
+        {
+            if let Some(ticket_reference) = ticket_start_base_reference.as_ref() {
+                let ticket_base_started = Instant::now();
+                let canonical = ensure_ticket_canonical_branch(
+                    self.deps.state,
+                    &project_id,
+                    &ticket_reference.provider,
+                    &ticket_reference.issue_key,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                apply_ticket_canonical_branch_base_selection(
+                    &mut base_ref_kind,
+                    &mut base_ref,
+                    &mut base_display_name,
+                    &ticket_reference.issue_key,
+                    &canonical.branch_name,
+                );
+                log_start_agent_conversation_phase(
+                    &input.project_id,
+                    None,
+                    "resolve_ticket_base",
+                    ticket_base_started,
+                );
+            }
+        }
 
         let conversation_resolve_started = Instant::now();
         let draft_conversation_id = input
