@@ -110,6 +110,7 @@ import {
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
+  prReviewContextForConversation,
 } from "./agentWorkspaceQueries";
 import { getAgentWorkspaceTerminalPublicationStatus } from "./agentWorkspacePublishState";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
@@ -1017,8 +1018,17 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ),
     staleTime: 5_000,
     refetchInterval: (query) =>
-      query.state.data?.pendingAction ? false : 5_000,
+      prReviewContextForConversation(
+        query.state.data,
+        activeWorkspace?.conversationId,
+      )?.pendingAction
+        ? false
+        : 5_000,
   });
+  const reviewPrContext = prReviewContextForConversation(
+    reviewPrContextQuery.data,
+    activeWorkspace?.conversationId,
+  );
   const planApprovalQuery = useQuery({
     queryKey: ["agents", "plan-approval", planApprovalSessionId],
     queryFn: () => artifactApi.getSessionPlan(planApprovalSessionId!),
@@ -1825,7 +1835,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     activeWorkspace.conversationId && (
                       <AgentWorkspacePrReviewCard
                         conversationId={activeWorkspace.conversationId}
-                        context={reviewPrContextQuery.data}
+                        context={reviewPrContext}
                         isLoading={reviewPrContextQuery.isLoading}
                         isFetching={reviewPrContextQuery.isFetching}
                         error={reviewPrContextQuery.error}
