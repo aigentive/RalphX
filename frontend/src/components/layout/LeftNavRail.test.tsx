@@ -81,10 +81,11 @@ describe("LeftNavRail", () => {
     expect(onViewChange).toHaveBeenCalledWith("ticketing");
   });
 
-  it("hides the Ticketing entry when no Linear/Jira provider is enabled", () => {
+  it("hides the Ticketing entry when no ticketing provider is enabled", () => {
     mockTicketingProviders = [
       { provider: "linear", enabled: false, connectionStatus: "disconnected" },
       { provider: "jira", enabled: false, connectionStatus: "disconnected" },
+      { provider: "clickup", enabled: false, connectionStatus: "disconnected" },
     ];
 
     render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
@@ -95,6 +96,11 @@ describe("LeftNavRail", () => {
 
   it("shows the Ticketing entry when the old dashboard feature flag is off but a provider is valid", () => {
     mockFeatureFlags = { ...mockFeatureFlags, ticketingDashboard: false };
+    mockTicketingProviders = [
+      { provider: "jira", enabled: false, connectionStatus: "disconnected" },
+      { provider: "linear", enabled: false, connectionStatus: "disconnected" },
+      { provider: "clickup", enabled: true, connectionStatus: "connected" },
+    ];
 
     render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
 

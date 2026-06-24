@@ -150,6 +150,15 @@ describe("AgentsView start conversation", () => {
       projectId: "project-1",
       content: "replace ideation command with agent composer",
       mode: "edit",
+      composerIntegrationReferences: [
+        {
+          provider: "clickup",
+          kind: "clickup",
+          id: "MBE-2857",
+          key: "MBE-2857",
+          title: "Inbox classifier",
+        },
+      ],
     });
 
     renderAgentsView();
@@ -160,6 +169,9 @@ describe("AgentsView start conversation", () => {
       )
     );
     expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Agent");
+    expect(
+      screen.getByTestId("agent-composer-reference-pill-integration:clickup:MBE-2857")
+    ).toHaveTextContent("Inbox classifier");
     expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
   });
 

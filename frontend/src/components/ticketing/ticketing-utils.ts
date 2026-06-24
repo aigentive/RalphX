@@ -8,11 +8,29 @@ export function ticketButtonLabel(ticket: TicketSummary): string {
   return `${ticketKey(ticket.ref)} ${ticket.title}`;
 }
 
+function branchSlug(value: string): string | null {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug.length > 0 ? slug : null;
+}
+
+export function ticketCanonicalBranchName(ref: TicketRef): string | null {
+  const providerSlug = branchSlug(ref.provider);
+  const ticketSlug = branchSlug(ticketKey(ref));
+  if (!providerSlug || !ticketSlug) {
+    return null;
+  }
+  return `ralphx/ticket/${providerSlug}-${ticketSlug}`;
+}
+
 export function formatTicketDate(value: string | null | undefined): string {
   if (!value) {
     return "Unknown";
   }
-  const date = new Date(value);
+  const trimmed = value.trim();
+  const date = /^\d+$/.test(trimmed) ? new Date(Number(trimmed)) : new Date(trimmed);
   if (Number.isNaN(date.getTime())) {
     return "Unknown";
   }
@@ -41,6 +59,14 @@ export function categoryToken(category: TicketStateCategory): string {
   }
 }
 
+const PROVIDER_LABELS: Record<string, string> = {
+  jira: "Jira",
+  linear: "Linear",
+  clickup: "ClickUp",
+};
+
 export function providerLabel(provider: string): string {
-  return provider === "jira" ? "Jira" : "Linear";
+  // 3-way map: a binary ternary would silently render ClickUp tickets as
+  // "Linear". Unknown providers get a neutral, non-misleading fallback.
+  return PROVIDER_LABELS[provider] ?? "Provider";
 }

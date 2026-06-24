@@ -8,7 +8,12 @@ import {
   type AgentProvider,
   type AgentRuntimeSelection,
 } from "@/lib/agent-models";
-import type { AgentConversationWorkspaceMode } from "@/api/chat";
+import type {
+  AgentConversationWorkspaceMode,
+  ComposerArtifactReference,
+  ComposerIntegrationReference,
+  ComposerProjectReference,
+} from "@/api/chat";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 
 export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/agent-models";
@@ -49,6 +54,9 @@ export interface AgentStartConversationDraft {
   projectId: string;
   content: string;
   mode: AgentConversationWorkspaceMode;
+  composerArtifactReferences?: ComposerArtifactReference[];
+  composerProjectReferences?: ComposerProjectReference[];
+  composerIntegrationReferences?: ComposerIntegrationReference[];
 }
 
 interface AgentSessionState {
@@ -201,6 +209,37 @@ function expandOnlyProject(state: AgentSessionState, projectId: string) {
   state.expandedProjectIds[projectId] = true;
 }
 
+function cloneStartConversationDraft(
+  draft: AgentStartConversationDraft,
+): AgentStartConversationDraft {
+  return {
+    projectId: draft.projectId,
+    content: draft.content,
+    mode: draft.mode,
+    ...(draft.composerProjectReferences
+      ? {
+          composerProjectReferences: draft.composerProjectReferences.map(
+            (reference) => ({ ...reference }),
+          ),
+        }
+      : {}),
+    ...(draft.composerIntegrationReferences
+      ? {
+          composerIntegrationReferences: draft.composerIntegrationReferences.map(
+            (reference) => ({ ...reference }),
+          ),
+        }
+      : {}),
+    ...(draft.composerArtifactReferences
+      ? {
+          composerArtifactReferences: draft.composerArtifactReferences.map(
+            (reference) => ({ ...reference }),
+          ),
+        }
+      : {}),
+  };
+}
+
 export const useAgentSessionStore = create<AgentSessionState & AgentSessionActions>()(
   persist(
     immer((set) => ({
@@ -256,7 +295,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         let consumedDraft: AgentStartConversationDraft | null = null;
         set((state) => {
           consumedDraft = state.startConversationDraft
-            ? { ...state.startConversationDraft }
+            ? cloneStartConversationDraft(state.startConversationDraft)
             : null;
           state.startConversationDraft = null;
         });

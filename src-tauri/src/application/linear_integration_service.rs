@@ -75,8 +75,18 @@ pub struct LinearIssueContent {
     pub creator: Option<String>,
     pub updated_at: Option<String>,
     pub comments: Vec<LinearComment>,
+    pub attachments: Vec<LinearAttachment>,
     pub labels: Vec<String>,
     pub project: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearAttachment {
+    pub id: String,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -267,6 +277,7 @@ impl LinearApiClient for EmptyLinearApiClient {
             creator: None,
             updated_at: None,
             comments: Vec::new(),
+            attachments: Vec::new(),
             labels: Vec::new(),
             project: None,
         })

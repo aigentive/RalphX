@@ -10,7 +10,7 @@ import {
 import { typedInvoke, TauriVoidSchema } from "@/lib/tauri";
 import { ViewTypeSchema } from "@/types/chat";
 
-export const TicketingProviderSchema = z.enum(["jira", "linear"]);
+export const TicketingProviderSchema = z.enum(["jira", "linear", "clickup"]);
 export type TicketingProvider = z.infer<typeof TicketingProviderSchema>;
 
 export const TicketingConnectionStatusSchema = z.enum([
@@ -108,6 +108,7 @@ export const TicketSummarySchema = z.object({
   title: z.string(),
   state: TicketingStateSchema,
   assignee: TicketingPersonSchema.nullable().optional(),
+  assignees: z.array(TicketingPersonSchema).default([]),
   reporter: TicketingPersonSchema.nullable().optional(),
   labels: z.array(z.string()).default([]),
   project: z.string().nullable().optional(),
@@ -119,18 +120,13 @@ export const TicketSummarySchema = z.object({
   openPrNumber: z.number().nullable().optional(),
   openPrUrl: z.string().nullable().optional(),
   openPrStatus: z.string().nullable().optional(),
+  currentUserAssigned: z.boolean().default(false),
 });
-export type TicketSummary = z.infer<typeof TicketSummarySchema>;
-
-export const TicketCommentSchema = z.object({
-  id: z.string().nullable().optional(),
-  author: TicketingPersonSchema.nullable().optional(),
-  bodyMarkdown: z.string().default(""),
-  bodyText: z.string().default(""),
-  createdAt: z.string().nullable().optional(),
-  updatedAt: z.string().nullable().optional(),
-});
-export type TicketComment = z.infer<typeof TicketCommentSchema>;
+type ParsedTicketSummary = z.infer<typeof TicketSummarySchema>;
+export type TicketSummary = Omit<ParsedTicketSummary, "currentUserAssigned" | "assignees"> & {
+  currentUserAssigned?: boolean;
+  assignees?: TicketingPerson[];
+};
 
 export const TicketAttachmentSchema = z.object({
   id: z.string().nullable().optional(),
@@ -140,6 +136,23 @@ export const TicketAttachmentSchema = z.object({
   url: z.string().nullable().optional(),
 });
 export type TicketAttachment = z.infer<typeof TicketAttachmentSchema>;
+
+const TicketCommentBaseSchema = z.object({
+  id: z.string().nullable().optional(),
+  author: TicketingPersonSchema.nullable().optional(),
+  bodyMarkdown: z.string().default(""),
+  bodyText: z.string().default(""),
+  createdAt: z.string().nullable().optional(),
+  updatedAt: z.string().nullable().optional(),
+  attachments: z.array(TicketAttachmentSchema).default([]),
+});
+export type TicketComment = z.infer<typeof TicketCommentBaseSchema> & {
+  replies?: TicketComment[];
+};
+export const TicketCommentSchema: z.ZodType<TicketComment> =
+  TicketCommentBaseSchema.extend({
+    replies: z.lazy(() => z.array(TicketCommentSchema)).default([]),
+  });
 
 export const TicketTransitionOptionSchema = z.object({
   toStateId: z.string(),
@@ -170,7 +183,11 @@ export const TicketDetailSchema = TicketSummarySchema.extend({
   transitions: z.array(TicketTransitionOptionSchema).default([]),
   fetchedAt: z.string().nullable().optional(),
 });
-export type TicketDetail = z.infer<typeof TicketDetailSchema>;
+type ParsedTicketDetail = z.infer<typeof TicketDetailSchema>;
+export type TicketDetail = Omit<ParsedTicketDetail, "currentUserAssigned" | "assignees"> & {
+  currentUserAssigned?: boolean;
+  assignees?: TicketingPerson[];
+};
 
 export const TicketPageSchema = z.object({
   items: z.array(TicketSummarySchema),
@@ -178,7 +195,10 @@ export const TicketPageSchema = z.object({
   total: z.number().nullable().optional(),
   fetchedAt: z.string().nullable().optional(),
 });
-export type TicketPage = z.infer<typeof TicketPageSchema>;
+type ParsedTicketPage = z.infer<typeof TicketPageSchema>;
+export type TicketPage = Omit<ParsedTicketPage, "items"> & {
+  items: TicketSummary[];
+};
 
 export const TicketDeepLinkSchema = z.object({
   view: ViewTypeSchema,

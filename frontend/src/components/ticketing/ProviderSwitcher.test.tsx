@@ -83,4 +83,25 @@ describe("ProviderSwitcher", () => {
     expect(onProviderChange).toHaveBeenCalledTimes(1);
     expect(onProviderChange).toHaveBeenCalledWith("linear");
   });
+
+  it("renders a ClickUp tab alongside Jira and Linear and switches to it", () => {
+    const onProviderChange = vi.fn();
+    render(
+      <ProviderSwitcher
+        providers={[
+          makeProvider("jira", "Jira"),
+          makeProvider("linear", "Linear"),
+          makeProvider("clickup", "ClickUp"),
+        ]}
+        activeProvider="jira"
+        onProviderChange={onProviderChange}
+      />,
+    );
+    expect(screen.getAllByRole("tab")).toHaveLength(3);
+    const clickupTab = screen.getByRole("tab", { name: "ClickUp" });
+    expect(clickupTab).toHaveAttribute("aria-selected", "false");
+
+    fireEvent.click(clickupTab);
+    expect(onProviderChange).toHaveBeenCalledWith("clickup");
+  });
 });

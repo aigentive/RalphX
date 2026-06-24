@@ -9,14 +9,13 @@ interface TicketAssigneeChipProps {
   person: TicketingPerson | null | undefined;
   size?: "sm" | "md";
   unassignedLabel?: string;
-  className?: string;
-  unassignedTone?: "muted" | "secondary";
+  className?: string | undefined;
+  unassignedTone?: "muted" | "secondary" | undefined;
 }
 
 /**
- * Presentational assignee chip: avatar (image or initials fallback) plus name.
- * Renders a muted placeholder when the ticket is unassigned. The visible name
- * is the accessible name; email (when present) is surfaced via the title tooltip.
+ * Presentational assignee chip: avatar (image or initials fallback) with the
+ * assignee surfaced through native hover/accessibility text.
  */
 export function TicketAssigneeChip({
   person,
@@ -58,7 +57,12 @@ export function TicketAssigneeChip({
   const tooltip = person.email ? `${name} · ${person.email}` : name;
 
   return (
-    <span className={`${wrapperClass} text-[var(--text-secondary)]`} title={tooltip}>
+    <span
+      role="img"
+      className={`${wrapperClass} text-[var(--text-secondary)]`}
+      title={tooltip}
+      aria-label={tooltip}
+    >
       {person.avatarUrl && person.avatarUrl !== failedAvatarUrl ? (
         <img
           src={person.avatarUrl}
@@ -88,7 +92,63 @@ export function TicketAssigneeChip({
           {assigneeInitials(name)}
         </span>
       )}
-      <span className="truncate">{name}</span>
+    </span>
+  );
+}
+
+export function TicketAssigneeChips({
+  people,
+  size = "sm",
+  maxVisible = 3,
+  unassignedLabel = "Unassigned",
+  className,
+  unassignedTone,
+}: {
+  people: TicketingPerson[];
+  size?: "sm" | "md";
+  maxVisible?: number;
+  unassignedLabel?: string;
+  className?: string | undefined;
+  unassignedTone?: "muted" | "secondary" | undefined;
+}) {
+  if (people.length === 0) {
+    return (
+      <TicketAssigneeChip
+        person={null}
+        size={size}
+        unassignedLabel={unassignedLabel}
+        className={className}
+        unassignedTone={unassignedTone}
+      />
+    );
+  }
+  const visible = people.slice(0, maxVisible);
+  const overflow = people.length - visible.length;
+  return (
+    <span className={`inline-flex min-w-0 items-center gap-1 ${className ?? ""}`.trim()}>
+      {visible.map((person, index) => (
+        <TicketAssigneeChip
+          key={`${person.id ?? person.email ?? person.name}:${index}`}
+          person={person}
+          size={size}
+          className="min-w-0"
+          unassignedTone={unassignedTone}
+        />
+      ))}
+      {overflow > 0 && (
+        <span
+          className="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-secondary)]"
+          title={people.slice(visible.length).map((person) => person.name).join(", ")}
+          style={{
+            backgroundColor: "var(--bg-surface)",
+            borderColor: "var(--border-subtle)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+          }}
+        >
+          +{overflow}
+        </span>
+      )}
     </span>
   );
 }

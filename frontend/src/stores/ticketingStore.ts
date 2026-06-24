@@ -11,6 +11,7 @@ export interface TicketingFilterState {
   assignee: string | null;
   stateIds: string[];
   labels: string[];
+  sprint: string | null;
 }
 
 interface TicketingState {
@@ -39,6 +40,7 @@ const DEFAULT_FILTERS: TicketingFilterState = {
   assignee: null,
   stateIds: [],
   labels: [],
+  sprint: null,
 };
 
 const INITIAL_STATE: TicketingState = {
@@ -56,6 +58,7 @@ function cloneFilters(filters: TicketingFilterState): TicketingFilterState {
     assignee: filters.assignee,
     stateIds: [...filters.stateIds],
     labels: [...filters.labels],
+    sprint: filters.sprint,
   };
 }
 

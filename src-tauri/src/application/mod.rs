@@ -35,6 +35,7 @@ pub mod atlassian_integration_service;
 pub mod chat_attachment_service;
 pub mod chat_resumption;
 pub mod chat_service;
+pub mod clickup_integration_service;
 pub mod dependency_service;
 pub mod event_cleanup_service;
 pub mod execution_settings_bootstrap;
@@ -134,6 +135,11 @@ pub use atlassian_integration_service::{
     AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
     EmptyAtlassianApiClient, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
     UnavailableAtlassianApiClient,
+};
+pub use clickup_integration_service::{
+    ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpIntegrationService, ClickUpSpace,
+    ClickUpStatus, ClickUpTag, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser,
+    ClickUpWorkspace, EmptyClickUpApiClient, UnavailableClickUpApiClient,
 };
 pub use chat_attachment_service::ChatAttachmentService;
 pub use agent_terminal::AgentTerminalService;
@@ -239,6 +245,8 @@ mod agent_lane_resolution_tests;
 mod agent_terminal_tests;
 #[cfg(test)]
 mod chat_service_output_tests;
+#[cfg(test)]
+mod clickup_integration_service_tests;
 #[cfg(test)]
 mod git_artifact_cleanup_tests;
 #[cfg(test)]

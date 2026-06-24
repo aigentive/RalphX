@@ -19,7 +19,9 @@ use crate::application::startup_git_auth_preflight::StartupGitAuthRecoveryState;
 use crate::application::AgentClientBundle;
 use crate::application::AgentTerminalService;
 use crate::application::AtlassianIntegrationService;
+use crate::application::ClickUpIntegrationService;
 use crate::application::EmptyAtlassianApiClient;
+use crate::application::EmptyClickUpApiClient;
 use crate::application::EmptyLinearApiClient;
 use crate::application::ExternalIssueLinkService;
 use crate::application::LinearIntegrationService;
@@ -29,6 +31,7 @@ use crate::application::ResumeValidator;
 use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
 use crate::application::UnavailableAtlassianApiClient;
+use crate::application::UnavailableClickUpApiClient;
 use crate::application::UnavailableLinearApiClient;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
@@ -76,6 +79,7 @@ use crate::infrastructure::memory::{
     MemoryExternalIssueLinkRepository, MemoryGlobalExecutionSettingsRepository,
     MemoryIdeationEffortSettingsRepository, MemoryIdeationModelSettingsRepository,
     MemoryIdeationSessionRepository, MemoryIdeationSettingsRepository,
+    MemoryClickUpIntegrationSettingsRepository,
     MemoryLinearIntegrationSettingsRepository, MemoryMethodologyRepository,
     MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
     MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
@@ -105,6 +109,7 @@ use crate::infrastructure::sqlite::{
     SqliteExternalIssueLinkRepository, SqliteGlobalExecutionSettingsRepository,
     SqliteIdeationEffortSettingsRepository, SqliteIdeationModelSettingsRepository,
     SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
+    SqliteClickUpIntegrationSettingsRepository,
     SqliteLinearIntegrationSettingsRepository, SqliteMemoryArchiveRepository,
     SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
     SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
@@ -119,6 +124,7 @@ use crate::infrastructure::sqlite::{
 };
 use crate::infrastructure::GhCliGithubService;
 use crate::infrastructure::HyperAtlassianApiClient;
+use crate::infrastructure::HyperClickUpApiClient;
 use crate::infrastructure::HyperLinearApiClient;
 
 pub(crate) struct ResolvedBackgroundAgentRuntime {
@@ -146,6 +152,8 @@ pub struct AppState {
     pub atlassian_integration_service: Arc<AtlassianIntegrationService>,
     /// Native Linear integration service.
     pub linear_integration_service: Arc<LinearIntegrationService>,
+    /// Native ClickUp integration service.
+    pub clickup_integration_service: Arc<ClickUpIntegrationService>,
     /// Provider-neutral external issue link and sync service.
     pub external_issue_link_service: Arc<ExternalIssueLinkService>,
     /// Agent profile repository (SQLite in production)
@@ -364,6 +372,37 @@ impl AppState {
             Arc::new(MemoryLinearIntegrationSettingsRepository::new()),
             Arc::new(MemorySecretStore::new()),
             Arc::new(EmptyLinearApiClient),
+        ))
+    }
+
+    fn production_clickup_integration_service(
+        shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+    ) -> Arc<ClickUpIntegrationService> {
+        let client: Arc<dyn crate::application::ClickUpApiClient> =
+            match HyperClickUpApiClient::new() {
+                Ok(client) => Arc::new(client),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "ClickUp HTTP client unavailable; integration validation will fail until TLS roots are available"
+                    );
+                    Arc::new(UnavailableClickUpApiClient::new(error))
+                }
+            };
+        Arc::new(ClickUpIntegrationService::new(
+            Arc::new(SqliteClickUpIntegrationSettingsRepository::from_shared(
+                Arc::clone(shared_conn),
+            )),
+            Arc::new(MacosKeychainSecretStore::new()),
+            client,
+        ))
+    }
+
+    fn memory_clickup_integration_service() -> Arc<ClickUpIntegrationService> {
+        Arc::new(ClickUpIntegrationService::new(
+            Arc::new(MemoryClickUpIntegrationSettingsRepository::new()),
+            Arc::new(MemorySecretStore::new()),
+            Arc::new(EmptyClickUpApiClient),
         ))
     }
 
@@ -857,6 +896,7 @@ impl AppState {
                 &shared_conn,
             ),
             linear_integration_service: Self::production_linear_integration_service(&shared_conn),
+            clickup_integration_service: Self::production_clickup_integration_service(&shared_conn),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(SqliteAgentProfileRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -1088,6 +1128,7 @@ impl AppState {
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
+            clickup_integration_service: Self::memory_clickup_integration_service(),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
@@ -1225,6 +1266,7 @@ impl AppState {
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
+            clickup_integration_service: Self::memory_clickup_integration_service(),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
@@ -1372,6 +1414,7 @@ impl AppState {
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
+            clickup_integration_service: Self::memory_clickup_integration_service(),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
@@ -1513,6 +1556,7 @@ impl AppState {
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
+            clickup_integration_service: Self::memory_clickup_integration_service(),
             external_issue_link_service: Self::memory_external_issue_link_service(),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
