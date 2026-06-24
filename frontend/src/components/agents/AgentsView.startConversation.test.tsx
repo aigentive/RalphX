@@ -485,6 +485,55 @@ describe("AgentsView start conversation", () => {
     );
   });
 
+  it("falls back to the ticket branch when ticket association lookup fails", async () => {
+    mockAgentViewData();
+    getTicketAssociationsMock.mockRejectedValue(new Error("associations unavailable"));
+    useAgentSessionStore.getState().setStartConversationDraft({
+      projectId: "project-1",
+      content: "continue without a linked PR",
+      mode: "plan",
+      composerIntegrationReferences: [
+        {
+          provider: "linear",
+          kind: "linear",
+          id: "lin-99",
+          key: "ENG-99",
+          title: "Ticket without PR",
+        },
+      ],
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(getTicketAssociationsMock).toHaveBeenCalledWith({
+        provider: "linear",
+        ticketRef: { provider: "linear", id: "lin-99", key: "ENG-99" },
+        projectId: "project-1",
+      })
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("Ticket ENG-99")
+    );
+
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          content: "continue without a linked PR",
+          mode: "plan",
+          base: expect.objectContaining({
+            kind: "local_branch",
+            ref: "ralphx/ticket/linear-eng-99",
+            displayName: "Ticket ENG-99 (ralphx/ticket/linear-eng-99)",
+          }),
+        })
+      )
+    );
+  });
+
   it("keeps a selected pull request visible across later start-from searches", async () => {
     const user = userEvent.setup();
     let pullRequestSearches = 0;

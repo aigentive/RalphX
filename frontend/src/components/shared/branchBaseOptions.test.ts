@@ -320,6 +320,58 @@ describe("branchBaseOptions", () => {
     });
   });
 
+  it("maps ticket branch associations without PR metadata to local branch selections", () => {
+    const option = ticketAssociationBranchBaseOption({
+      id: "conversation-branch",
+      title: "Ticket branch",
+      subtitle: "+ ralphx/ticket/jira-rx-24",
+      status: "branch",
+      active: false,
+      deepLink: { view: "agents", id: "conversation-branch", projectId: "project-1" },
+      branchName: null,
+      baseRef: "main",
+      prNumber: null,
+      prUrl: null,
+    });
+
+    expect(option).toEqual({
+      key: "ticket_branch:ralphx/ticket/jira-rx-24",
+      label: "Ticket branch",
+      detail: "ralphx/ticket/jira-rx-24",
+      source: "local",
+      selection: {
+        kind: "local_branch",
+        ref: "ralphx/ticket/jira-rx-24",
+        displayName: "Ticket branch",
+      },
+    });
+  });
+
+  it("returns null for ticket associations and references without usable branch data", () => {
+    expect(
+      ticketAssociationBranchBaseOption({
+        id: "conversation-empty",
+        title: "Empty branch",
+        subtitle: "   ",
+        status: null,
+        active: false,
+        deepLink: { view: "agents", id: "conversation-empty", projectId: "project-1" },
+        branchName: null,
+        baseRef: null,
+        prNumber: null,
+        prUrl: null,
+      })
+    ).toBeNull();
+
+    expect(
+      ticketCanonicalBranchBaseOption({
+        provider: "atlassian",
+        kind: "confluence",
+        id: "SPACE",
+      })
+    ).toBeNull();
+  });
+
   it("builds deterministic ticket branch base options from composer references", () => {
     const option = ticketCanonicalBranchBaseOption({
       provider: "atlassian",
@@ -340,5 +392,24 @@ describe("branchBaseOptions", () => {
         displayName: "Ticket RX 24/Follow-up (ralphx/ticket/jira-rx-24-follow-up)",
       },
     });
+  });
+
+  it("builds ticket branch options for linear and clickup references", () => {
+    expect(
+      ticketCanonicalBranchBaseOption({
+        provider: "linear",
+        kind: "linear",
+        id: "lin-id",
+        key: "ENG-12",
+      })?.selection.ref
+    ).toBe("ralphx/ticket/linear-eng-12");
+
+    expect(
+      ticketCanonicalBranchBaseOption({
+        provider: "clickup",
+        kind: "clickup",
+        id: "CU/42 ++",
+      })?.selection.ref
+    ).toBe("ralphx/ticket/clickup-cu-42");
   });
 });

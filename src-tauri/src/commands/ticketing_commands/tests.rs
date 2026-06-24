@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::Arc;
+use std::{path::Path, process::Command, sync::Arc};
 
 use crate::application::clickup_integration_service::ClickUpAttachment;
 use crate::application::linear_integration_service::LinearAttachment;
@@ -20,6 +20,7 @@ use crate::domain::integrations::{
     AtlassianIntegrationSettings, ClickUpIntegrationSettings, IntegrationValidationStatus,
     ProviderTicketOperation, ProviderTicketOperationKind, ProviderTicketOperationStatus,
 };
+use crate::tests::mock_github_service::MockGithubService;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
@@ -1477,6 +1478,49 @@ fn build_ticketing_start_app(
         .expect("mock app should build")
 }
 
+fn git(repo: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn init_ticket_start_repo() -> (tempfile::TempDir, std::path::PathBuf) {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let origin = temp.path().join("origin.git");
+    let repo = temp.path().join("repo");
+
+    let output = Command::new("git")
+        .args(["init", "--bare", origin.to_str().expect("origin path")])
+        .output()
+        .expect("git init bare should run");
+    assert!(output.status.success());
+    let output = Command::new("git")
+        .args(["init", "-b", "main", repo.to_str().expect("repo path")])
+        .output()
+        .expect("git init should run");
+    assert!(output.status.success());
+
+    git(&repo, &["config", "user.email", "test@example.com"]);
+    git(&repo, &["config", "user.name", "Test User"]);
+    std::fs::write(repo.join("README.md"), "main\n").expect("write readme");
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-m", "initial"]);
+    git(
+        &repo,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+
+    (temp, repo)
+}
+
 async fn seed_ticketing_project(state: &AppState, id: &str) -> ProjectId {
     let project_id = ProjectId::from_string(id.to_string());
     let mut project = Project::new(
@@ -1484,6 +1528,23 @@ async fn seed_ticketing_project(state: &AppState, id: &str) -> ProjectId {
         format!("/tmp/{id}-project-worktree"),
     );
     project.id = project_id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should be created");
+    project_id
+}
+
+async fn seed_ticketing_project_with_working_directory(
+    state: &AppState,
+    id: &str,
+    working_directory: String,
+) -> ProjectId {
+    let project_id = ProjectId::from_string(id.to_string());
+    let mut project = Project::new(format!("{id} project"), working_directory);
+    project.id = project_id.clone();
+    project.base_branch = Some("main".to_string());
     state
         .project_repo
         .create(project)
@@ -1624,6 +1685,73 @@ async fn start_work_from_ticket_queues_message_for_clickup_without_link_table() 
         queued[0].composer_integration_references[0].key.as_deref(),
         Some("CU-42")
     );
+}
+
+#[tokio::test]
+async fn start_agent_conversation_with_ticket_default_base_uses_canonical_branch() {
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
+    let (_temp, repo) = init_ticket_start_repo();
+    let mut state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    state.github_service = Some(github.clone());
+    let project_id = seed_ticketing_project_with_working_directory(
+        &state,
+        "ticket-start-service",
+        repo.to_string_lossy().into_owned(),
+    )
+    .await;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_ticketing_start_app(state, Arc::clone(&execution_state));
+
+    let result = AgentConversationStartService::new(AgentConversationStartDeps {
+        state: app.state::<AppState>().inner(),
+        execution_state: app.state::<Arc<ExecutionState>>().inner(),
+        team_service: Some(app.state::<Arc<TeamService>>().inner().clone()),
+        app_handle: app.handle().clone(),
+    })
+    .start(StartAgentConversationInput {
+        project_id: project_id.as_str().to_string(),
+        content: "Start from attached ticket".to_string(),
+        conversation_id: None,
+        provider_harness: None,
+        model_override: None,
+        logical_effort: None,
+        mode: Some("edit".to_string()),
+        base_ref_kind: Some("project_default".to_string()),
+        base_ref: Some("main".to_string()),
+        base_display_name: Some("Project default (main)".to_string()),
+        base_source_pull_request: None,
+        composer_project_references: Vec::new(),
+        composer_integration_references: vec![ComposerIntegrationReference {
+            provider: "atlassian".to_string(),
+            kind: "jira".to_string(),
+            id: "10077".to_string(),
+            key: Some("RX-77".to_string()),
+            title: Some("Ticket with default base".to_string()),
+            url: None,
+        }],
+        composer_artifact_references: Vec::new(),
+    })
+    .await
+    .expect("start should succeed by queueing while paused");
+
+    let workspace = result.workspace.expect("edit mode creates a workspace");
+    assert_eq!(
+        workspace.base_ref_kind,
+        IdeationAnalysisBaseRefKind::LocalBranch
+    );
+    assert_eq!(workspace.base_ref, "ralphx/ticket/jira-rx-77");
+    assert_eq!(
+        workspace.base_display_name.as_deref(),
+        Some("Ticket RX-77 (ralphx/ticket/jira-rx-77)")
+    );
+    assert_eq!(github.state().push_branch_calls, 1);
+    assert_eq!(
+        github.state().last_push_branch_name.as_deref(),
+        Some("ralphx/ticket/jira-rx-77")
+    );
+    assert!(result.send_result.was_queued);
 }
 
 #[tokio::test]
@@ -2059,6 +2187,10 @@ fn ticket_start_applies_canonical_branch_only_for_default_base() {
     local.base_ref_kind = Some("local_branch".to_string());
     local.base_ref = Some("feature/existing".to_string());
     assert!(!ticket_start_should_apply_canonical_branch(&local));
+
+    let mut invalid = base_test_start_input();
+    invalid.base_ref_kind = Some("not-a-base-kind".to_string());
+    assert!(!ticket_start_should_apply_canonical_branch(&invalid));
 
     let mut pr = base_test_start_input();
     pr.base_ref_kind = Some("local_branch".to_string());

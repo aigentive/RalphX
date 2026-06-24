@@ -295,6 +295,25 @@ fn first_ticket_start_base_reference_supports_linear_clickup_and_id_fallback() {
 }
 
 #[test]
+fn first_ticket_start_base_reference_ignores_unsupported_and_blank_ticket_refs() {
+    assert!(first_ticket_start_base_reference(&[integration_ref(
+        "atlassian",
+        "confluence",
+        "SPACE",
+        None,
+    )])
+    .is_none());
+
+    assert!(first_ticket_start_base_reference(&[integration_ref(
+        "linear",
+        "linear",
+        "   ",
+        Some("   "),
+    )])
+    .is_none());
+}
+
+#[test]
 fn base_selection_allows_ticket_canonical_branch_only_for_default_without_pr() {
     assert!(base_selection_allows_ticket_canonical_branch(None, None));
     assert!(base_selection_allows_ticket_canonical_branch(
