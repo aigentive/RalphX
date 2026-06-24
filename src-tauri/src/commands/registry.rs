@@ -256,6 +256,10 @@ macro_rules! register_tauri_commands {
             commands::clickup_commands::disconnect_clickup_integration,
             commands::clickup_commands::list_clickup_workspaces,
             commands::clickup_commands::search_clickup_tasks,
+            // Granola integration commands
+            commands::granola_commands::get_granola_integration_settings,
+            commands::granola_commands::save_granola_integration_settings,
+            commands::granola_commands::validate_granola_integration_settings,
             // Artifact commands
             commands::artifact_commands::get_artifacts,
             commands::artifact_commands::get_artifact,
