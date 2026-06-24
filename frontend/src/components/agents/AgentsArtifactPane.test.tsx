@@ -1600,7 +1600,7 @@ describe("AgentsArtifactPane", () => {
         status: "approved",
         approvedArtifactId: "artifact-1",
         approvedVersion: 1,
-        approvedAt: "2026-04-23T09:30:00Z",
+        approvedAt: "2020-01-01T00:00:00Z",
       },
     });
 
@@ -1615,8 +1615,15 @@ describe("AgentsArtifactPane", () => {
       conversation(),
     );
 
+    const planContent = await screen.findByTestId("agents-artifact-content-plan");
+    const createProposalsButton = await within(planContent).findByRole("button", {
+      name: /Create Proposals/i,
+    });
+    switchAgentConversationModeMock.mockClear();
+    sendAgentMessageMock.mockClear();
+
     await userEvent.click(
-      await screen.findByRole("button", { name: /Create Proposals/i }),
+      createProposalsButton,
     );
 
     await waitFor(() =>
@@ -1975,6 +1982,96 @@ describe("AgentsArtifactPane", () => {
       "do not create task proposals",
     );
     expect(toastSuccessMock).toHaveBeenCalledWith("Implementation started");
+  });
+
+  it("shows and disables Plan tab CTAs while the recommendation check is running", async () => {
+    const assessment = deferred<null>();
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Planning session",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: null,
+      },
+      proposals: [],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: new Date().toISOString(),
+      },
+    });
+    getPlanComplexityAssessmentMock.mockReturnValue(assessment.promise);
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(
+      await screen.findByText(/Checking recommended next action/i),
+    ).toBeInTheDocument();
+
+    const implementButton = screen.getByRole("button", {
+      name: /Implement Directly/i,
+    });
+    const createButton = screen.getByRole("button", {
+      name: /Create Proposals/i,
+    });
+    const verifyButton = screen.getByRole("button", { name: /Verify Plan/i });
+
+    expect(implementButton).toBeDisabled();
+    expect(createButton).toBeDisabled();
+    expect(verifyButton).toBeDisabled();
+
+    await userEvent.click(implementButton);
+    await userEvent.click(createButton);
+    await userEvent.click(verifyButton);
+
+    expect(sendAgentMessageMock).not.toHaveBeenCalled();
+    expect(confirmVerificationMock).not.toHaveBeenCalled();
+
+    assessment.resolve(null);
   });
 
   it("approves a draft Plan-mode artifact without requesting proposals", async () => {
