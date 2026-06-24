@@ -29,7 +29,7 @@ use crate::commands::ExecutionState;
 use crate::domain::entities::{
     is_open_pr, AgentConversationJiraIssueLink, AgentConversationLinearIssueLink,
     AgentConversationWorkspaceMode, ChatContextType, ChatConversation, ChatConversationId,
-    ProjectId,
+    IdeationAnalysisBaseRefKind, ProjectId,
 };
 use crate::domain::integrations::{
     AtlassianIntegrationSettings, ClickUpIntegrationSettings, IntegrationValidationStatus,
@@ -401,6 +401,10 @@ fn pull_request_association_items(
                     id: summary.conversation_id.clone(),
                     project_id: Some(project_id.to_string()),
                 },
+                branch_name: Some(summary.branch_name.clone()),
+                base_ref: (!summary.base_ref.trim().is_empty()).then(|| summary.base_ref.clone()),
+                pr_number: summary.pr_number,
+                pr_url: summary.pr_url.clone(),
             }
         })
         .collect()
@@ -474,12 +478,11 @@ pub async fn start_ralphx_work_from_ticket<R: Runtime + 'static>(
         ticket_reference,
     );
 
-    // For workspace-creating ticket starts, base the new conversation off the
-    // ticket's single canonical branch so all work for the ticket converges on
-    // one branch (each conversation still forges its own per-conversation branch
-    // off it; the canonical branch is never worktree-checked-out). The base is
-    // overwritten server-side — the client-provided base is not trusted here.
-    if ticket_start_inherits_canonical_branch(input.start.mode.as_deref()) {
+    // For workspace-creating ticket starts with no explicit branch/PR base,
+    // base the new conversation off the ticket's single canonical branch so all
+    // work for the ticket converges on one branch. Explicit user-selected PRs
+    // and branches are preserved.
+    if ticket_start_should_apply_canonical_branch(&input.start) {
         let issue_key = ticket_ref_issue_key(&input.ticket_ref);
         let canonical =
             ensure_ticket_canonical_branch(state.inner(), &project_id, &provider, &issue_key)
@@ -579,6 +582,30 @@ fn ticket_start_inherits_canonical_branch(mode: Option<&str>) -> bool {
     matches!(
         parsed,
         Ok(AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Plan)
+    )
+}
+
+fn ticket_start_should_apply_canonical_branch(start: &StartAgentConversationInput) -> bool {
+    if !ticket_start_inherits_canonical_branch(start.mode.as_deref()) {
+        return false;
+    }
+    if start.base_source_pull_request.is_some() {
+        return false;
+    }
+    let base_ref_kind = match start
+        .base_ref_kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<IdeationAnalysisBaseRefKind>)
+        .transpose()
+    {
+        Ok(kind) => kind,
+        Err(_) => return false,
+    };
+    matches!(
+        base_ref_kind,
+        None | Some(IdeationAnalysisBaseRefKind::ProjectDefault)
     )
 }
 
@@ -2000,6 +2027,10 @@ fn agent_conversation_association_item(
             id,
             project_id: Some(project_id.to_string()),
         },
+        branch_name: None,
+        base_ref: None,
+        pr_number: None,
+        pr_url: None,
     }
 }
 
