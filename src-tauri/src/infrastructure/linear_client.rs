@@ -1212,6 +1212,52 @@ mod tests {
     }
 
     #[test]
+    fn page_info_from_connection_reads_cursor_state() {
+        let data = serde_json::json!({
+            "projects": {
+                "pageInfo": {
+                    "hasNextPage": true,
+                    "endCursor": "cursor-2"
+                }
+            }
+        });
+
+        let page_info = page_info_from_connection(&data, "projects");
+
+        assert!(page_info.has_next_page);
+        assert_eq!(page_info.end_cursor.as_deref(), Some("cursor-2"));
+    }
+
+    #[test]
+    fn page_info_from_connection_defaults_when_missing() {
+        let page_info = page_info_from_connection(&serde_json::json!({}), "projects");
+
+        assert!(!page_info.has_next_page);
+        assert!(page_info.end_cursor.is_none());
+    }
+
+    #[test]
+    fn issue_team_labels_page_info_reads_nested_labels_connection() {
+        let data = serde_json::json!({
+            "issue": {
+                "team": {
+                    "labels": {
+                        "pageInfo": {
+                            "hasNextPage": true,
+                            "endCursor": "label-cursor"
+                        }
+                    }
+                }
+            }
+        });
+
+        let page_info = issue_team_labels_page_info_from_data(&data);
+
+        assert!(page_info.has_next_page);
+        assert_eq!(page_info.end_cursor.as_deref(), Some("label-cursor"));
+    }
+
+    #[test]
     fn projects_from_data_parses_ids_and_names() {
         let data = serde_json::json!({
             "projects": {

@@ -1318,6 +1318,164 @@ fn filter_ticket_summaries_returns_all_when_no_filters() {
 }
 
 #[test]
+fn ticket_page_from_loaded_summaries_applies_filters_offset_and_next_cursor() {
+    let items = vec![
+        ticket_summary_fixture("LIN-1", "First", "Todo", None, &["backend"]),
+        ticket_summary_fixture("LIN-2", "Second", "Done", None, &["frontend"]),
+        ticket_summary_fixture("LIN-3", "Third", "Todo", None, &["backend"]),
+    ];
+    let filters = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        state_ids: None,
+        labels: Some(vec!["backend".to_string()]),
+    };
+
+    let (page_items, next_cursor, total_loaded) =
+        ticket_page_from_loaded_summaries(items, Some(&filters), 0, 1);
+
+    assert_eq!(total_loaded, 2);
+    assert_eq!(page_items.len(), 1);
+    assert_eq!(page_items[0].ref_.key.as_deref(), Some("LIN-1"));
+    assert_eq!(next_cursor.as_deref(), Some("offset:1"));
+}
+
+#[test]
+fn ticket_page_from_loaded_summaries_omits_next_cursor_at_end() {
+    let items = vec![
+        ticket_summary_fixture("LIN-1", "First", "Todo", None, &[]),
+        ticket_summary_fixture("LIN-2", "Second", "Done", None, &[]),
+    ];
+
+    let (page_items, next_cursor, total_loaded) =
+        ticket_page_from_loaded_summaries(items, None, 1, 40);
+
+    assert_eq!(total_loaded, 2);
+    assert_eq!(page_items.len(), 1);
+    assert_eq!(page_items[0].ref_.key.as_deref(), Some("LIN-2"));
+    assert!(next_cursor.is_none());
+}
+
+#[test]
+fn ticket_offset_cursor_round_trips_and_rejects_invalid_values() {
+    let encoded = encode_ticket_offset_cursor(42);
+
+    assert_eq!(encoded, "offset:42");
+    assert_eq!(decode_ticket_offset_cursor(Some(&encoded)).unwrap(), 42);
+    assert_eq!(decode_ticket_offset_cursor(Some("   ")).unwrap(), 0);
+    assert_eq!(
+        decode_ticket_offset_cursor(Some("cursor:42")).unwrap_err(),
+        "Unsupported ticket cursor"
+    );
+    assert_eq!(
+        decode_ticket_offset_cursor(Some("offset:not-a-number")).unwrap_err(),
+        "Invalid ticket cursor"
+    );
+}
+
+#[test]
+fn ticket_filter_options_collects_assignees_and_clickup_current_user_sprints() {
+    let mut current_sprint =
+        ticket_summary_fixture("CU-1", "Current sprint", "Todo", Some("Zed"), &["backend"]);
+    current_sprint.ref_.provider = "clickup".to_string();
+    current_sprint.assignees = vec![named_person("Ada"), named_person("Zed")];
+    current_sprint.project = Some("Sprint 42".to_string());
+    current_sprint.current_user_assigned = true;
+
+    let mut other_assignee =
+        ticket_summary_fixture("CU-2", "Backlog", "Todo", Some("Grace"), &["backend"]);
+    other_assignee.ref_.provider = "clickup".to_string();
+    other_assignee.project = Some("Backlog".to_string());
+    other_assignee.current_user_assigned = false;
+
+    let mut filtered_out =
+        ticket_summary_fixture("CU-3", "Unrelated", "Todo", Some("Hidden"), &["frontend"]);
+    filtered_out.ref_.provider = "clickup".to_string();
+    filtered_out.project = Some("Sprint Hidden".to_string());
+    filtered_out.current_user_assigned = true;
+
+    let filters = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        state_ids: None,
+        labels: Some(vec!["backend".to_string()]),
+    };
+
+    let options = ticket_filter_options_from_loaded_summaries(
+        PROVIDER_CLICKUP,
+        vec![current_sprint, other_assignee, filtered_out],
+        Some(&filters),
+        10,
+        false,
+    );
+
+    assert_eq!(options.assignees, vec!["Ada", "Grace", "Zed"]);
+    assert_eq!(options.sprints, vec!["Sprint 42"]);
+    assert!(options.complete);
+    assert!(!options.truncated);
+}
+
+#[test]
+fn ticket_filter_options_marks_truncation_from_provider_or_limit() {
+    let items = vec![
+        ticket_summary_fixture("LIN-1", "First", "Todo", Some("A"), &[]),
+        ticket_summary_fixture("LIN-2", "Second", "Todo", Some("B"), &[]),
+    ];
+
+    let options =
+        ticket_filter_options_from_loaded_summaries(PROVIDER_LINEAR, items, None, 1, true);
+
+    assert_eq!(options.assignees, vec!["A"]);
+    assert!(options.sprints.is_empty());
+    assert!(!options.complete);
+    assert!(options.truncated);
+}
+
+#[tokio::test]
+async fn load_ticket_summaries_routes_jira_project_scope_before_disabled_error() {
+    let state = AppState::new_test();
+
+    let error = load_ticket_summaries(&state, PROVIDER_JIRA, Some("RX"), "ignored", 10)
+        .await
+        .expect_err("disabled Jira integration should fail");
+
+    assert!(!error.trim().is_empty());
+}
+
+#[tokio::test]
+async fn load_ticket_summaries_routes_jira_global_search_before_disabled_error() {
+    let state = AppState::new_test();
+
+    let error = load_ticket_summaries(&state, PROVIDER_JIRA, None, "merge", 10)
+        .await
+        .expect_err("disabled Jira integration should fail");
+
+    assert!(!error.trim().is_empty());
+}
+
+#[tokio::test]
+async fn load_ticket_summaries_routes_linear_before_disabled_error() {
+    let state = AppState::new_test();
+
+    let error = load_ticket_summaries(&state, PROVIDER_LINEAR, None, "merge", 10)
+        .await
+        .expect_err("disabled Linear integration should fail");
+
+    assert!(!error.trim().is_empty());
+}
+
+#[tokio::test]
+async fn load_ticket_summaries_routes_clickup_space_scope_before_disabled_error() {
+    let state = AppState::new_test();
+
+    let error = load_ticket_summaries(&state, PROVIDER_CLICKUP, Some("space-1"), "merge", 10)
+        .await
+        .expect_err("disabled ClickUp integration should fail");
+
+    assert!(!error.trim().is_empty());
+}
+
+#[test]
 fn ticket_matches_filters_with_empty_filter_input_keeps_all() {
     let ticket = ticket_summary_fixture("LIN-1", "First", "Todo", None, &[]);
     let empty = TicketFiltersInput {

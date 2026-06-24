@@ -220,15 +220,8 @@ pub async fn list_tickets(
         requested,
     )
     .await?;
-    let items = filter_ticket_summaries(items, query.filters.as_ref());
-    let total_loaded = items.len();
-    let page_items: Vec<TicketSummaryResponse> =
-        items.into_iter().skip(offset).take(limit).collect();
-    let next_cursor = if total_loaded > offset.saturating_add(page_items.len()) {
-        Some(encode_ticket_offset_cursor(offset.saturating_add(page_items.len())))
-    } else {
-        None
-    };
+    let (page_items, next_cursor, total_loaded) =
+        ticket_page_from_loaded_summaries(items, query.filters.as_ref(), offset, limit);
     let items = hydrate_ticket_association_counts(
         state.inner(),
         &query.provider,
@@ -272,7 +265,41 @@ pub async fn list_ticket_filter_options(
     )
     .await?;
     let provider_truncated = items.len() > limit;
-    let items = filter_ticket_summaries(items, query.filters.as_ref());
+    Ok(ticket_filter_options_from_loaded_summaries(
+        &query.provider,
+        items,
+        query.filters.as_ref(),
+        limit,
+        provider_truncated,
+    ))
+}
+
+fn ticket_page_from_loaded_summaries(
+    items: Vec<TicketSummaryResponse>,
+    filters: Option<&TicketFiltersInput>,
+    offset: usize,
+    limit: usize,
+) -> (Vec<TicketSummaryResponse>, Option<String>, usize) {
+    let items = filter_ticket_summaries(items, filters);
+    let total_loaded = items.len();
+    let page_items: Vec<TicketSummaryResponse> =
+        items.into_iter().skip(offset).take(limit).collect();
+    let next_cursor = if total_loaded > offset.saturating_add(page_items.len()) {
+        Some(encode_ticket_offset_cursor(offset.saturating_add(page_items.len())))
+    } else {
+        None
+    };
+    (page_items, next_cursor, total_loaded)
+}
+
+fn ticket_filter_options_from_loaded_summaries(
+    provider: &str,
+    items: Vec<TicketSummaryResponse>,
+    filters: Option<&TicketFiltersInput>,
+    limit: usize,
+    provider_truncated: bool,
+) -> TicketFilterOptionsResponse {
+    let items = filter_ticket_summaries(items, filters);
     let truncated = provider_truncated || items.len() > limit;
     let mut assignees = BTreeSet::new();
     let mut sprints = BTreeSet::new();
@@ -284,7 +311,7 @@ pub async fn list_ticket_filter_options(
                 assignees.insert(name.to_string());
             }
         }
-        if query.provider == PROVIDER_CLICKUP && ticket.current_user_assigned {
+        if provider == PROVIDER_CLICKUP && ticket.current_user_assigned {
             if let Some(project) = ticket
                 .project
                 .as_deref()
@@ -296,12 +323,12 @@ pub async fn list_ticket_filter_options(
         }
     }
 
-    Ok(TicketFilterOptionsResponse {
+    TicketFilterOptionsResponse {
         assignees: assignees.into_iter().collect(),
         sprints: sprints.into_iter().collect(),
         complete: !truncated,
         truncated,
-    })
+    }
 }
 
 async fn load_ticket_summaries(
