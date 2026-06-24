@@ -280,7 +280,7 @@ pub use agent_sidebar_commands::{
 pub use unified_chat_commands::{
     archive_agent_conversation, create_agent_conversation,
     delete_queued_agent_message, fork_agent_conversation, get_agent_conversation,
-    get_agent_conversation_messages_page,
+    get_agent_conversation_messages_page, get_agent_conversation_runtime_statuses,
     get_agent_conversation_summary, get_agent_conversation_timeline_page,
     get_agent_conversation_workspace, get_agent_conversation_workspace_freshness,
     get_agent_message_tool_call_detail, get_agent_run_status_unified, get_agent_running_states,

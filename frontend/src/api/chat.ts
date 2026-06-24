@@ -10,6 +10,7 @@ import type {
 } from "../types/chat-conversation";
 import {
   AgentConversationModeSchema,
+  ContextTypeSchema,
   normalizeConversationProviderMetadata,
 } from "../types/chat-conversation";
 import type { ToolCall } from "../components/Chat/ToolCallIndicator";
@@ -19,6 +20,18 @@ import type { MessageAttachment } from "../components/Chat/MessageAttachments";
 import { isWebMode } from "@/lib/tauri-detection";
 import { backendApiUrl } from "@/api/backend";
 import { FileDiffSchema, transformFileDiff, type FileDiff } from "./diff";
+import {
+  RunningIdeationSessionSchema,
+  RunningProcessSchema,
+} from "./running-processes.schemas";
+import {
+  transformRunningIdeationSession,
+  transformRunningProcess,
+} from "./running-processes.transforms";
+import type {
+  RunningIdeationSession,
+  RunningProcess,
+} from "./running-processes.types";
 
 // ============================================================================
 // Typed Invoke Helper
@@ -1604,6 +1617,7 @@ export const chatApi = {
   skipAgentWorkspacePrReviewAction,
   getAgentRunStatus,
   getAgentRunningStates,
+  getAgentConversationRuntimeStatuses,
   getBulkWorkspacePublicationStates,
   // Message sending & queue
   startAgentConversation,
@@ -3158,6 +3172,112 @@ export async function getAgentRunningStates(
     "get_agent_running_states",
     { contextType, contextIds },
     z.record(z.string(), AgentRunningStateSchema),
+  );
+}
+
+const AgentConversationRuntimeSourceSchema = z.enum([
+  "workspace",
+  "ideation",
+  "verification",
+  "task_execution",
+  "review",
+  "merge",
+]);
+
+export type AgentConversationRuntimeSource = z.infer<
+  typeof AgentConversationRuntimeSourceSchema
+>;
+
+export interface AgentConversationRuntimeItem {
+  source: AgentConversationRuntimeSource;
+  contextType: ContextType;
+  contextId: string;
+  label: string;
+  title: string;
+  agentStatus: AgentRuntimeStatus;
+  taskId: string | null;
+  internalStatus: string | null;
+  runningProcess: RunningProcess | null;
+  ideationSession: RunningIdeationSession | null;
+  parentSessionId: string | null;
+  childSessionId: string | null;
+  conversationId: string | null;
+}
+
+export interface AgentConversationRuntimeStatus {
+  conversationId: string;
+  isRunning: boolean;
+  agentStatus: AgentRuntimeStatus;
+  primarySource: AgentConversationRuntimeSource | null;
+  summaryLabel: string | null;
+  items: AgentConversationRuntimeItem[];
+}
+
+const AgentConversationRuntimeItemSchema = z
+  .object({
+    source: AgentConversationRuntimeSourceSchema,
+    contextType: ContextTypeSchema,
+    contextId: z.string(),
+    label: z.string(),
+    title: z.string(),
+    agentStatus: AgentRuntimeStatusSchema,
+    taskId: z.string().nullable(),
+    internalStatus: z.string().nullable(),
+    runningProcess: RunningProcessSchema.nullable(),
+    ideationSession: RunningIdeationSessionSchema.nullable(),
+    parentSessionId: z.string().nullable(),
+    childSessionId: z.string().nullable(),
+    conversationId: z.string().nullable(),
+  })
+  .transform(
+    (item): AgentConversationRuntimeItem => ({
+      source: item.source,
+      contextType: item.contextType,
+      contextId: item.contextId,
+      label: item.label,
+      title: item.title,
+      agentStatus: item.agentStatus,
+      taskId: item.taskId,
+      internalStatus: item.internalStatus,
+      runningProcess: item.runningProcess
+        ? transformRunningProcess(item.runningProcess)
+        : null,
+      ideationSession: item.ideationSession
+        ? transformRunningIdeationSession(item.ideationSession)
+        : null,
+      parentSessionId: item.parentSessionId,
+      childSessionId: item.childSessionId,
+      conversationId: item.conversationId,
+    }),
+  );
+
+const AgentConversationRuntimeStatusSchema = z
+  .object({
+    conversationId: z.string(),
+    isRunning: z.boolean(),
+    agentStatus: AgentRuntimeStatusSchema,
+    primarySource: AgentConversationRuntimeSourceSchema.nullable(),
+    summaryLabel: z.string().nullable(),
+    items: z.array(AgentConversationRuntimeItemSchema),
+  })
+  .transform(
+    (status): AgentConversationRuntimeStatus => ({
+      conversationId: status.conversationId,
+      isRunning: status.isRunning,
+      agentStatus: status.agentStatus,
+      primarySource: status.primarySource,
+      summaryLabel: status.summaryLabel,
+      items: status.items,
+    }),
+  );
+
+export async function getAgentConversationRuntimeStatuses(
+  conversationIds: string[],
+): Promise<Record<string, AgentConversationRuntimeStatus>> {
+  return typedInvoke(
+    "get_agent_conversation_runtime_statuses",
+    { conversationIds },
+    z.record(z.string(), AgentConversationRuntimeStatusSchema),
   );
 }
 

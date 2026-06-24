@@ -22,9 +22,9 @@ import {
   renderWithAgentProviders as renderWithProviders,
 } from "./agentsTestFixtures";
 const {
+  getAgentConversationRuntimeStatusesMock,
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
-  getAgentRunningStatesMock,
   getLatestChildSessionIdMock,
   loadBranchBaseOptionsMock,
   loadPullRequestBaseOptionsMock,
@@ -217,8 +217,15 @@ describe("AgentsView", () => {
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({ mode: "edit" }),
     );
-    getAgentRunningStatesMock.mockResolvedValue({
-      [activeConversation.id]: { isRunning: true, agentStatus: "generating" },
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      [activeConversation.id]: {
+        conversationId: activeConversation.id,
+        isRunning: true,
+        agentStatus: "generating",
+        primarySource: "workspace",
+        summaryLabel: "Agent running",
+        items: [],
+      },
     });
 
     renderAgentsView();
@@ -241,10 +248,14 @@ describe("AgentsView", () => {
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({ mode: "edit" }),
     );
-    getAgentRunningStatesMock.mockResolvedValue({
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
       [activeConversation.id]: {
+        conversationId: activeConversation.id,
         isRunning: true,
         agentStatus: "waiting_for_input",
+        primarySource: "workspace",
+        summaryLabel: "Agent running",
+        items: [],
       },
     });
 
