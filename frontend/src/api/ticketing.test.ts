@@ -92,6 +92,7 @@ describe("ticketingApi", () => {
       limit: 30,
       filters: {
         text: "merge",
+        watcherMe: true,
         stateIds: ["started"],
         labels: ["backend"],
       },
@@ -107,6 +108,7 @@ describe("ticketingApi", () => {
         limit: 30,
         filters: {
           text: "merge",
+          watcherMe: true,
           stateIds: ["started"],
           labels: ["backend"],
         },

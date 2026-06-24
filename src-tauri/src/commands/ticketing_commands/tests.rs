@@ -232,6 +232,11 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
         status_color: Some("#112233".to_string()),
         assignees: vec!["Reef Agent".to_string(), "Second Person".to_string()],
         assignee_ids: vec![42, 7],
+        watchers: vec![ClickUpUser {
+            id: 99,
+            username: Some("Watcher Person".to_string()),
+            email: Some("watcher@example.com".to_string()),
+        }],
         tags: vec!["backend".to_string(), "clickup".to_string()],
         space_id: Some("space-1".to_string()),
         list_name: Some("Sprint 1".to_string()),
@@ -262,6 +267,18 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
             .collect::<Vec<_>>(),
         vec!["Reef Agent", "Second Person"]
     );
+    assert_eq!(
+        ticket
+            .watchers
+            .iter()
+            .map(|person| (
+                person.id.as_deref(),
+                person.name.as_str(),
+                person.email.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(Some("99"), "Watcher Person", Some("watcher@example.com"))]
+    );
     // ClickUp tags surface as labels.
     assert_eq!(
         ticket.labels,
@@ -275,6 +292,7 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
     );
     assert_eq!(ticket.association_count, 0);
     assert!(!ticket.current_user_assigned);
+    assert!(!ticket.current_user_watching);
 }
 
 #[test]
@@ -290,6 +308,7 @@ fn clickup_summary_detects_current_user_assignment_by_username_or_email() {
         status_color: None,
         assignees: vec!["agent@example.com".to_string()],
         assignee_ids: Vec::new(),
+        watchers: Vec::new(),
         tags: Vec::new(),
         space_id: None,
         list_name: Some("Sprint 42".to_string()),
@@ -325,6 +344,47 @@ fn clickup_summary_detects_current_user_assignment_by_username_or_email() {
 }
 
 #[test]
+fn clickup_summary_detects_current_user_watching_by_id_username_or_email() {
+    let user = ClickUpUser {
+        id: 42,
+        username: Some("Agent".to_string()),
+        email: Some("agent@example.com".to_string()),
+    };
+    let summary = ClickUpTaskSummary {
+        id: "task-1".to_string(),
+        custom_id: None,
+        name: "Current watcher task".to_string(),
+        url: None,
+        status_name: None,
+        status_type: None,
+        status_category: None,
+        status_color: None,
+        assignees: Vec::new(),
+        assignee_ids: Vec::new(),
+        watchers: vec![ClickUpUser {
+            id: 7,
+            username: Some("AGENT".to_string()),
+            email: None,
+        }],
+        tags: Vec::new(),
+        space_id: None,
+        list_name: None,
+        updated_at: None,
+    };
+    assert!(clickup_summary_watched_by_user(&summary, &user));
+
+    let id_summary = ClickUpTaskSummary {
+        watchers: vec![ClickUpUser {
+            id: 42,
+            username: None,
+            email: None,
+        }],
+        ..summary
+    };
+    assert!(clickup_summary_watched_by_user(&id_summary, &user));
+}
+
+#[test]
 fn clickup_summary_derives_state_when_status_fields_missing() {
     let ticket = clickup_summary_to_ticket(ClickUpTaskSummary {
         id: "task-2".to_string(),
@@ -337,6 +397,7 @@ fn clickup_summary_derives_state_when_status_fields_missing() {
         status_color: None,
         assignees: Vec::new(),
         assignee_ids: Vec::new(),
+        watchers: Vec::new(),
         tags: Vec::new(),
         space_id: None,
         list_name: None,
@@ -366,6 +427,11 @@ fn clickup_content_maps_description_comments_and_creator() {
         status_category: Some("done".to_string()),
         creator: Some("Reporter Person".to_string()),
         assignees: vec!["Reef Agent".to_string()],
+        watchers: vec![ClickUpUser {
+            id: 99,
+            username: Some("Watcher Person".to_string()),
+            email: Some("watcher@example.com".to_string()),
+        }],
         tags: vec!["backend".to_string()],
         comments: vec![ClickUpComment {
             id: "comment-1".to_string(),
@@ -425,6 +491,14 @@ fn clickup_content_maps_description_comments_and_creator() {
     );
     assert_eq!(detail.summary.labels, vec!["backend".to_string()]);
     assert_eq!(
+        detail
+            .summary
+            .watchers
+            .first()
+            .map(|person| person.name.as_str()),
+        Some("Watcher Person")
+    );
+    assert_eq!(
         detail.description_markdown.as_deref(),
         Some("Implement the ClickUp arms.")
     );
@@ -475,6 +549,7 @@ fn clickup_content_maps_empty_provider_payload_with_fallbacks() {
         status_category: None,
         creator: None,
         assignees: Vec::new(),
+        watchers: Vec::new(),
         tags: Vec::new(),
         comments: Vec::new(),
         attachments: Vec::new(),
@@ -580,6 +655,7 @@ fn clickup_ticket_state_id_aligns_with_column_id_for_kanban() {
         status_color: None,
         assignees: Vec::new(),
         assignee_ids: Vec::new(),
+        watchers: Vec::new(),
         tags: Vec::new(),
         space_id: Some("space-1".to_string()),
         list_name: None,
@@ -953,6 +1029,7 @@ async fn list_tickets_builds_paged_response_from_provider_summaries() {
                 assignee: None,
                 state_ids: None,
                 labels: Some(vec!["backend".to_string()]),
+                watcher_me: None,
             }),
             sort: Some("updated".to_string()),
         },
@@ -990,6 +1067,7 @@ async fn list_ticket_filter_options_builds_truncated_provider_response() {
                 assignee: None,
                 state_ids: None,
                 labels: None,
+                watcher_me: None,
             }),
         },
         app.state(),
@@ -1143,6 +1221,7 @@ fn ticket_summary_filters_match_text_status_assignee_and_labels() {
         Some(&TicketFiltersInput {
             text: Some("filter".to_string()),
             assignee: Some("reef".to_string()),
+            watcher_me: None,
             state_ids: Some(vec!["in_progress".to_string()]),
             labels: Some(vec!["linear".to_string()]),
         }),
@@ -1167,6 +1246,7 @@ fn ticket_summary_filters_remove_rows_without_requested_metadata() {
         Some(&TicketFiltersInput {
             text: None,
             assignee: Some("me".to_string()),
+            watcher_me: None,
             state_ids: None,
             labels: Some(vec!["backend".to_string()]),
         }),
@@ -1704,6 +1784,7 @@ fn ticket_page_from_loaded_summaries_applies_filters_offset_and_next_cursor() {
         assignee: None,
         state_ids: None,
         labels: Some(vec!["backend".to_string()]),
+        watcher_me: None,
     };
 
     let (page_items, next_cursor, total_loaded) =
@@ -1774,6 +1855,7 @@ fn ticket_filter_options_collects_assignees_and_clickup_current_user_sprints() {
         assignee: None,
         state_ids: None,
         labels: Some(vec!["backend".to_string()]),
+        watcher_me: None,
     };
 
     let options = ticket_filter_options_from_loaded_summaries(
@@ -1856,6 +1938,7 @@ fn ticket_matches_filters_with_empty_filter_input_keeps_all() {
     let empty = TicketFiltersInput {
         text: None,
         assignee: None,
+        watcher_me: None,
         state_ids: None,
         labels: None,
     };
@@ -1868,6 +1951,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
     let by_id = TicketFiltersInput {
         text: Some("lin-99".to_string()),
         assignee: None,
+        watcher_me: None,
         state_ids: None,
         labels: None,
     };
@@ -1876,6 +1960,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
     let by_title = TicketFiltersInput {
         text: Some("SOME".to_string()),
         assignee: None,
+        watcher_me: None,
         state_ids: None,
         labels: None,
     };
@@ -1884,6 +1969,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
     let miss = TicketFiltersInput {
         text: Some("absent".to_string()),
         assignee: None,
+        watcher_me: None,
         state_ids: None,
         labels: None,
     };
@@ -1897,6 +1983,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
     let by_category = TicketFiltersInput {
         text: None,
         assignee: None,
+        watcher_me: None,
         state_ids: Some(vec!["in_progress".to_string()]),
         labels: None,
     };
@@ -1905,6 +1992,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
     let by_state_id = TicketFiltersInput {
         text: None,
         assignee: None,
+        watcher_me: None,
         state_ids: Some(vec!["in_progress".to_string(), "other".to_string()]),
         labels: None,
     };
@@ -1913,6 +2001,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
     let miss = TicketFiltersInput {
         text: None,
         assignee: None,
+        watcher_me: None,
         state_ids: Some(vec!["done".to_string()]),
         labels: None,
     };
@@ -1927,6 +2016,7 @@ fn ticket_matches_filters_assignee_matches_any_assignee() {
     let by_second_assignee = TicketFiltersInput {
         text: None,
         assignee: Some("Grace".to_string()),
+        watcher_me: None,
         state_ids: None,
         labels: None,
     };
@@ -1935,10 +2025,29 @@ fn ticket_matches_filters_assignee_matches_any_assignee() {
     let miss = TicketFiltersInput {
         text: None,
         assignee: Some("Katherine".to_string()),
+        watcher_me: None,
         state_ids: None,
         labels: None,
     };
     assert!(!ticket_matches_filters(&ticket, &miss));
+}
+
+#[test]
+fn ticket_matches_filters_watcher_me_requires_current_user_watching() {
+    let mut watched = ticket_summary_fixture("CU-1", "Watched task", "Todo", None, &[]);
+    watched.current_user_watching = true;
+    watched.watchers = vec![named_person("Reef Agent")];
+    let unwatched = ticket_summary_fixture("CU-2", "Unwatched task", "Todo", None, &[]);
+    let filter = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        watcher_me: Some(true),
+        state_ids: None,
+        labels: None,
+    };
+
+    assert!(ticket_matches_filters(&watched, &filter));
+    assert!(!ticket_matches_filters(&unwatched, &filter));
 }
 
 #[test]
@@ -1947,6 +2056,7 @@ fn ticket_matches_filters_requires_all_labels_present() {
     let all_present = TicketFiltersInput {
         text: None,
         assignee: None,
+        watcher_me: None,
         state_ids: None,
         labels: Some(vec!["Backend".to_string(), "LINEAR".to_string()]),
     };
@@ -1956,6 +2066,7 @@ fn ticket_matches_filters_requires_all_labels_present() {
     let missing_one = TicketFiltersInput {
         text: None,
         assignee: None,
+        watcher_me: None,
         state_ids: None,
         labels: Some(vec!["backend".to_string(), "frontend".to_string()]),
     };
@@ -1981,6 +2092,7 @@ fn ticket_summary_fixture(
         state: ticket_state(state_name),
         assignee,
         assignees,
+        watchers: Vec::new(),
         reporter: None,
         labels: labels.iter().map(|label| label.to_string()).collect(),
         project: None,
@@ -1993,6 +2105,7 @@ fn ticket_summary_fixture(
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     }
 }
 
@@ -2466,6 +2579,7 @@ fn hydrate_input_summary(ticket_ref: TicketRefInput) -> TicketSummaryResponse {
         state: ticket_state("To Do"),
         assignee: None,
         assignees: Vec::new(),
+        watchers: Vec::new(),
         reporter: None,
         labels: Vec::new(),
         project: None,
@@ -2478,6 +2592,7 @@ fn hydrate_input_summary(ticket_ref: TicketRefInput) -> TicketSummaryResponse {
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     }
 }
 

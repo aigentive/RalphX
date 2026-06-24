@@ -109,6 +109,7 @@ export const TicketSummarySchema = z.object({
   state: TicketingStateSchema,
   assignee: TicketingPersonSchema.nullable().optional(),
   assignees: z.array(TicketingPersonSchema).default([]),
+  watchers: z.array(TicketingPersonSchema).default([]),
   reporter: TicketingPersonSchema.nullable().optional(),
   labels: z.array(z.string()).default([]),
   project: z.string().nullable().optional(),
@@ -121,11 +122,17 @@ export const TicketSummarySchema = z.object({
   openPrUrl: z.string().nullable().optional(),
   openPrStatus: z.string().nullable().optional(),
   currentUserAssigned: z.boolean().default(false),
+  currentUserWatching: z.boolean().default(false),
 });
 type ParsedTicketSummary = z.infer<typeof TicketSummarySchema>;
-export type TicketSummary = Omit<ParsedTicketSummary, "currentUserAssigned" | "assignees"> & {
+export type TicketSummary = Omit<
+  ParsedTicketSummary,
+  "currentUserAssigned" | "currentUserWatching" | "assignees" | "watchers"
+> & {
   currentUserAssigned?: boolean;
+  currentUserWatching?: boolean;
   assignees?: TicketingPerson[];
+  watchers?: TicketingPerson[];
 };
 
 export const TicketAttachmentSchema = z.object({
@@ -300,6 +307,7 @@ export interface ListTicketingColumnsInput {
 export interface TicketFiltersInput {
   text?: string | undefined;
   assignee?: string | null | undefined;
+  watcherMe?: boolean | undefined;
   stateIds?: string[] | undefined;
   labels?: string[] | undefined;
 }
