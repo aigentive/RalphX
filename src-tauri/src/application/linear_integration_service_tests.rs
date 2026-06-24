@@ -322,7 +322,7 @@ async fn save_validate_and_search_issues_with_api_token() {
     assert_eq!(results[0].key.as_deref(), Some("LIN-123"));
     assert_eq!(
         client.searches.lock().await.as_slice(),
-        &[("bug".to_string(), 25)]
+        &[("bug".to_string(), 50)]
     );
 }
 
@@ -344,7 +344,7 @@ async fn blank_search_uses_enabled_provider_for_default_ticket_list() {
     assert_eq!(results[0].key.as_deref(), Some("LIN-123"));
     assert_eq!(
         client.searches.lock().await.as_slice(),
-        &[("  ".to_string(), 25)]
+        &[("  ".to_string(), 50)]
     );
 }
 
@@ -670,17 +670,17 @@ async fn enabled_service(
 }
 
 #[tokio::test]
-async fn list_projects_clamps_first_into_one_to_hundred_range() {
+async fn list_projects_clamps_first_into_one_to_thousand_range() {
     let client = Arc::new(TestLinearClient::default());
     let service = enabled_service(client.clone()).await;
 
     service.list_projects(0).await.unwrap();
-    service.list_projects(500).await.unwrap();
+    service.list_projects(1500).await.unwrap();
     service.list_projects(50).await.unwrap();
 
     assert_eq!(
         client.list_projects_first.lock().await.as_slice(),
-        &[1, 100, 50]
+        &[1, 1000, 50]
     );
 }
 

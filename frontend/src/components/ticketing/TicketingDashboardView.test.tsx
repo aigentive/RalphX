@@ -70,6 +70,7 @@ vi.mock("@/hooks/useTicketing", () => ({
   useTicketingColumns: vi.fn(),
   useTicketingContainers: vi.fn(),
   useTicketingProviders: vi.fn(),
+  useTicketFilterOptions: vi.fn(),
   useTicketLabelOptions: vi.fn(),
   useTicketTransitions: vi.fn(),
   useTickets: vi.fn(),
@@ -178,6 +179,17 @@ function mockConnectedDashboard() {
     fetchNextPage: vi.fn(),
     isFetchingNextPage: false,
   } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+  vi.mocked(ticketingHooks.useTicketFilterOptions).mockReturnValue({
+    data: {
+      assignees: ["A. Dev"],
+      sprints: [],
+      complete: true,
+      truncated: false,
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as ReturnType<typeof ticketingHooks.useTicketFilterOptions>);
   vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
     data: {
       ...ticket,
@@ -326,6 +338,17 @@ describe("TicketingDashboardView", () => {
       fetchNextPage: vi.fn(),
       isFetchingNextPage: false,
     } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+    vi.mocked(ticketingHooks.useTicketFilterOptions).mockReturnValue({
+      data: {
+        assignees: [],
+        sprints: [],
+        complete: true,
+        truncated: false,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketFilterOptions>);
     vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
       data: undefined,
       isLoading: false,
@@ -654,6 +677,17 @@ describe("TicketingDashboardView", () => {
       fetchNextPage: vi.fn(),
       isFetchingNextPage: false,
     } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+    vi.mocked(ticketingHooks.useTicketFilterOptions).mockReturnValue({
+      data: {
+        assignees: [],
+        sprints: ["Sprint 42"],
+        complete: true,
+        truncated: false,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketFilterOptions>);
 
     renderDashboard();
 

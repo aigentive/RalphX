@@ -1107,7 +1107,7 @@ describe("TicketDetailSheet comment optimistic flow", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getAllByText("Pushed a fix.")).toHaveLength(1);
+      expect(screen.getAllByText("Pushed a fix.", { selector: "p" })).toHaveLength(1);
     });
   });
 

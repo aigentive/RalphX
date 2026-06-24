@@ -50,6 +50,7 @@ html[data-theme="light"] body {
   --text-subtle:    #93939B;
   --text-inverse:   #1A0E07;
   --text-on-accent: #1A0E07;
+  --text-on-scrim:  #FFFFFF;
 
   /* Accent — darker orange that meets 4.5:1 on white */
   --accent-primary:   #FF6A35;
@@ -548,4 +549,3 @@ html[data-theme="light"] body {
 [data-theme="light"] [data-testid="git-auth-repair-panel"] .settings-btn-ghost svg {
   color: #18181D !important;
 }
-

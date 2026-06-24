@@ -427,6 +427,7 @@ macro_rules! register_tauri_commands {
             commands::ticketing_commands::list_ticketing_containers,
             commands::ticketing_commands::list_ticketing_columns,
             commands::ticketing_commands::list_tickets,
+            commands::ticketing_commands::list_ticket_filter_options,
             commands::ticketing_commands::get_ticket_detail,
             commands::ticketing_commands::list_ticket_transitions,
             commands::ticketing_commands::get_ticket_associations,
