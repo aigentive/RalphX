@@ -363,6 +363,170 @@ fn supervised_agent_workspace_pr_health_routes_dirty_but_ignores_generic_blocked
     );
 }
 
+#[tokio::test]
+async fn agent_workspace_pr_conflict_marks_supervision_blocked_without_autofix() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "conflicting-pr-conversation",
+        "project-conflicting-pr",
+        worktree.path(),
+    );
+    workspace.pr_autofix_enabled = false;
+    workspace.pr_auto_merge_desired = false;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let mut health = open_pr_health("conflict-head");
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Dirty);
+    health.sync_state.mergeable = Some(PrMergeableState::Conflicting);
+
+    let marked = super::mark_agent_workspace_pr_merge_conflict_if_needed(
+        101,
+        &health,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+    )
+    .await
+    .expect("conflict marker should succeed");
+
+    assert!(marked);
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("blocked"));
+    assert!(updated
+        .pr_supervision_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("PR #101 has merge conflicts"));
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].step, "pr_conflict");
+    assert_eq!(events[0].status, "blocked");
+    assert!(events[0]
+        .classification
+        .as_deref()
+        .unwrap_or_default()
+        .starts_with("github_pr_conflict:101:conflicthead"));
+}
+
+#[tokio::test]
+async fn agent_workspace_pr_conflict_auto_publish_routes_update_only_repair_once() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "conflicting-auto-repair-conversation",
+        "project-conflicting-auto-repair",
+        worktree.path(),
+    );
+    workspace.pr_autofix_enabled = false;
+    workspace.pr_auto_merge_desired = false;
+    workspace.auto_publish_enabled = true;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let mut health = open_pr_health("auto-conflict-head");
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Dirty);
+    health.sync_state.mergeable = Some(PrMergeableState::Conflicting);
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_pr_conflict_repair_if_needed(
+        101,
+        &health,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("conflict repair routing should succeed");
+
+    assert!(routed);
+    let messages = chat.get_sent_messages().await;
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].contains("Update from base failed for this agent workspace."));
+    assert!(messages[0].contains("Please fix the workspace so the base update can be completed."));
+    assert!(messages[0].contains("PR #101 has merge conflicts"));
+    let options = chat.get_sent_options().await;
+    assert_eq!(
+        options[0].agent_name_override.as_deref(),
+        Some(crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR)
+    );
+    assert_eq!(
+        options[0].working_directory_override.as_deref(),
+        Some(worktree.path())
+    );
+    assert!(options[0].force_new_provider_session);
+    assert!(options[0].preserve_conversation_provider_session_ref);
+
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(
+        updated.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("fixing"));
+    assert!(updated
+        .pr_supervision_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("workspace repair"));
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list");
+    assert!(events.iter().any(|event| {
+        event.step == "pr_conflict_repair"
+            && event.status == "needs_agent"
+            && event
+                .classification
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("github_pr_conflict_repair:101:autoconflict")
+    }));
+    assert!(events.iter().any(|event| {
+        event.step == "repair_requested"
+            && event.status == "started"
+            && event.classification.as_deref() == Some("agent_fixable:update_only")
+    }));
+    assert!(events.iter().any(|event| {
+        event.step == "repair_sent"
+            && event.status == "succeeded"
+            && event.classification.as_deref() == Some("agent_fixable")
+    }));
+
+    let duplicate = super::route_agent_workspace_pr_conflict_repair_if_needed(
+        101,
+        &health,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("duplicate conflict repair routing should succeed");
+    assert!(!duplicate);
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+}
+
 #[test]
 fn supervised_agent_workspace_pr_feedback_text_truncates_compactly() {
     let body = "This      feedback\ncontains enough words to exceed the tiny limit";

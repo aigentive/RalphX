@@ -1073,6 +1073,46 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeDisabled();
   });
 
+  it("surfaces PR conflicts and routes Resolve Conflicts through base update", async () => {
+    const user = userEvent.setup();
+    const conflictingWorkspace = workspace({
+      mode: "edit",
+      publicationPrNumber: 2857,
+      publicationPrUrl: "https://github.com/mock/project/pull/2857",
+      publicationPrStatus: "open",
+      publicationPushStatus: "pushed",
+      autoPublishEnabled: true,
+      prSupervisionStatus: "blocked",
+      prSupervisionSummary:
+        "PR #2857 has merge conflicts. GitHub reports the pull request is conflicting.",
+    });
+    updateWorkspaceFromBaseMock.mockResolvedValue({
+      workspace: conflictingWorkspace,
+      updated: true,
+      targetRef: "origin/main",
+      baseCommit: "base-sha",
+    });
+
+    renderPane("publish", conflictingWorkspace);
+
+    expect(await screen.findByTestId("agents-pr-conflict")).toHaveTextContent(
+      "PR #2857 has merge conflicts",
+    );
+    expect(screen.getByText(/Auto Publish is waiting/i)).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Resolve conflicts" }),
+    );
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Resolve conflicts",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1"),
+    );
+  });
+
   it("surfaces git auth repair actions in the publish pane", () => {
     useGitAuthDiagnosticsMock.mockReturnValue({
       data: {
