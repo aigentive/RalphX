@@ -59,6 +59,7 @@ import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
+  prReviewContextForConversation,
 } from "./agentWorkspaceQueries";
 import {
   buildPlanActionHint,
@@ -287,24 +288,31 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     inProgress: boolean;
   } | null>(null);
   const conversationId = conversation?.id ?? null;
-  const shouldLoadPrReviewContext = Boolean(
-    conversationId && workspace?.mode === "review_pr",
-  );
+  const prReviewConversationId =
+    workspace?.mode === "review_pr" ? workspace.conversationId : null;
+  const shouldLoadPrReviewContext = Boolean(prReviewConversationId);
   const prReviewContextQuery = useQuery({
-    queryKey: agentWorkspaceKeys.prReview(conversationId ?? ""),
-    queryFn: () => chatApi.getAgentWorkspacePrReviewContext(conversationId!),
+    queryKey: agentWorkspaceKeys.prReview(prReviewConversationId ?? ""),
+    queryFn: () => chatApi.getAgentWorkspacePrReviewContext(prReviewConversationId!),
     enabled: shouldLoadPrReviewContext,
     staleTime: 5_000,
   });
+  const prReviewContext = prReviewContextForConversation(
+    prReviewContextQuery.data,
+    prReviewConversationId,
+  );
   const reviewArtifactId =
-    prReviewContextQuery.data?.monitor?.reviewArtifactId ?? null;
+    prReviewContext?.monitor?.reviewArtifactId ?? null;
   const reviewArtifactQuery = useQuery({
     queryKey: ["agents", "artifact", reviewArtifactId],
     queryFn: () => artifactApi.get(reviewArtifactId!),
     enabled: Boolean(reviewArtifactId),
     staleTime: 5_000,
   });
-  const reviewArtifact = reviewArtifactQuery.data ?? null;
+  const reviewArtifact =
+    reviewArtifactId && reviewArtifactQuery.data?.id === reviewArtifactId
+      ? reviewArtifactQuery.data
+      : null;
   const [taskArtifactSelectedId, setTaskArtifactSelectedIdState] =
     useState<string | null>(() => readSelectedTaskForConversation(conversationId));
   useEffect(() => {
