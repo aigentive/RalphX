@@ -35,6 +35,20 @@ function runtimeStatus(
 }
 
 describe("AgentRuntimeStatusWidget", () => {
+  it("does not render when the conversation has no active runtime", () => {
+    const { container } = render(
+      <AgentRuntimeStatusWidget
+        status={runtimeStatus({ isRunning: false, items: [] })}
+        onViewWorkspace={vi.fn()}
+        onViewIdeation={vi.fn()}
+        onViewVerification={vi.fn()}
+        onViewTaskRuntime={vi.fn()}
+      />,
+    );
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it("renders active runtime status and routes task CTA", () => {
     const onViewTaskRuntime = vi.fn();
 
@@ -95,5 +109,98 @@ describe("AgentRuntimeStatusWidget", () => {
       "parent-session",
       "child-session",
     );
+  });
+
+  it("routes ideation, review, merge, and workspace CTA variants", () => {
+    const onViewWorkspace = vi.fn();
+    const onViewIdeation = vi.fn();
+    const onViewTaskRuntime = vi.fn();
+
+    render(
+      <AgentRuntimeStatusWidget
+        status={runtimeStatus({
+          primarySource: "merge",
+          summaryLabel: "Merging tasks",
+          items: [
+            {
+              source: "ideation",
+              contextType: "ideation",
+              contextId: "session-1",
+              label: "Ideation running",
+              title: "Plan chat",
+              agentStatus: "generating",
+              taskId: null,
+              internalStatus: null,
+              runningProcess: null,
+              ideationSession: null,
+              parentSessionId: null,
+              childSessionId: null,
+              conversationId: null,
+            },
+            {
+              source: "review",
+              contextType: "review",
+              contextId: "task-2",
+              label: "Reviewing",
+              title: "Review task",
+              agentStatus: "generating",
+              taskId: "task-2",
+              internalStatus: "reviewing",
+              runningProcess: null,
+              ideationSession: null,
+              parentSessionId: null,
+              childSessionId: null,
+              conversationId: null,
+            },
+            {
+              source: "merge",
+              contextType: "merge",
+              contextId: "task-3",
+              label: "Merging",
+              title: "Merge task",
+              agentStatus: "generating",
+              taskId: "task-3",
+              internalStatus: "pending_merge",
+              runningProcess: null,
+              ideationSession: null,
+              parentSessionId: null,
+              childSessionId: null,
+              conversationId: null,
+            },
+            {
+              source: "workspace",
+              contextType: "project",
+              contextId: "conversation-1",
+              label: "Agent running",
+              title: "Workspace chat",
+              agentStatus: "waiting_for_input",
+              taskId: null,
+              internalStatus: null,
+              runningProcess: null,
+              ideationSession: null,
+              parentSessionId: null,
+              childSessionId: null,
+              conversationId: "conversation-1",
+            },
+          ],
+        })}
+        onViewWorkspace={onViewWorkspace}
+        onViewIdeation={onViewIdeation}
+        onViewVerification={vi.fn()}
+        onViewTaskRuntime={onViewTaskRuntime}
+      />,
+    );
+
+    expect(screen.getByText("4 active runtimes")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "View Ideation" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "View Task" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "View Task" })[1]);
+    fireEvent.click(screen.getByRole("button", { name: "View Workspace" }));
+
+    expect(onViewIdeation).toHaveBeenCalledWith("session-1");
+    expect(onViewTaskRuntime).toHaveBeenNthCalledWith(1, "task-2", "review");
+    expect(onViewTaskRuntime).toHaveBeenNthCalledWith(2, "task-3", "merge");
+    expect(onViewWorkspace).toHaveBeenCalledTimes(1);
   });
 });
