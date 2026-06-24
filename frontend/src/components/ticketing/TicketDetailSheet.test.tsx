@@ -1072,7 +1072,9 @@ describe("TicketDetailSheet comment optimistic flow", () => {
 
     await waitFor(() => expect(onAddComment).toHaveBeenCalledWith("Pushed a fix."));
     // Optimistic local comment is shown immediately.
-    expect(screen.getByText("Pushed a fix.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Pushed a fix.", { selector: "p" }),
+    ).toBeInTheDocument();
 
     // The provider now returns the confirmed comment with the same body; the
     // local optimistic copy must be pruned so only one row remains.

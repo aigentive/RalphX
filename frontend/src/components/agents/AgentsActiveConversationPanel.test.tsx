@@ -21,6 +21,7 @@ const {
   approvePlanArtifactMock,
   sendAgentMessageMock,
   switchAgentConversationModeMock,
+  getAgentConversationRuntimeStatusesMock,
   useVerificationStatusMock,
   getVerificationSpecialistsMock,
   confirmVerificationMock,
@@ -33,6 +34,7 @@ const {
   approvePlanArtifactMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
+  getAgentConversationRuntimeStatusesMock: vi.fn(),
   useVerificationStatusMock: vi.fn(),
   getVerificationSpecialistsMock: vi.fn(),
   confirmVerificationMock: vi.fn(),
@@ -225,6 +227,7 @@ vi.mock("@/api/chat", async (importOriginal) => {
       ...actual.chatApi,
       listWorkspaceOpenTargets: vi.fn().mockResolvedValue([]),
       openAgentConversationWorkspacePath: vi.fn().mockResolvedValue(undefined),
+      getAgentConversationRuntimeStatuses: getAgentConversationRuntimeStatusesMock,
       sendAgentMessage: sendAgentMessageMock,
       switchAgentConversationMode: switchAgentConversationModeMock,
     },
@@ -642,6 +645,8 @@ function renderPanel(
     onAgentUserMessageSent: vi.fn(),
     onConversationModeSwitched: vi.fn(),
     onFocusIdeationSession: vi.fn(),
+    onFocusVerificationSession: vi.fn(),
+    onFocusTaskRuntime: vi.fn(),
     onForkConversation: vi.fn().mockResolvedValue(forkResult()),
     onOpenPublishPane: vi.fn(),
     onOpenPublishFile: vi.fn(),
@@ -688,6 +693,7 @@ describe("AgentsActiveConversationPanel", () => {
     switchAgentConversationModeMock.mockResolvedValue({
       workspace: { ...workspace(), mode: "ideation" },
     });
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({});
     useVerificationStatusMock.mockReturnValue({
       data: {
         sessionId: "planning-session-1",
