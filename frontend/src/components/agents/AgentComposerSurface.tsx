@@ -274,6 +274,7 @@ export interface AgentComposerSurfaceProps {
   initialProjectReferences?: AgentComposerProjectReference[];
   initialIntegrationReferences?: AgentComposerIntegrationReference[];
   initialArtifactReferences?: AgentComposerArtifactReference[];
+  onIntegrationReferencesChange?: (references: AgentComposerIntegrationReference[]) => void;
   mode?: ModeFieldConfig;
   chatFocus?: ChatFocusFieldConfig;
   slashCommands?: AgentComposerSlashCommand[];
@@ -330,6 +331,7 @@ export function AgentComposerSurface({
   initialProjectReferences = EMPTY_PROJECT_REFERENCES,
   initialIntegrationReferences = EMPTY_INTEGRATION_REFERENCES,
   initialArtifactReferences = EMPTY_ARTIFACT_REFERENCES,
+  onIntegrationReferencesChange,
   mode,
   chatFocus,
   slashCommands = [],
@@ -645,6 +647,9 @@ export function AgentComposerSurface({
       ]),
     [selectedArtifactReferences],
   );
+  useEffect(() => {
+    onIntegrationReferencesChange?.(selectedIntegrationReferenceList);
+  }, [onIntegrationReferencesChange, selectedIntegrationReferenceList]);
   useEffect(() => {
     const projectReferences = normalizeComposerProjectReferences(
       initialProjectReferences,

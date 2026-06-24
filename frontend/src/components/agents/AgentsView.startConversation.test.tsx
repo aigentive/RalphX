@@ -30,6 +30,7 @@ import { useStartAgentConversation } from "./useStartAgentConversation";
 const {
   archiveConversationMock,
   createConversationMock,
+  getTicketAssociationsMock,
   integratedChatPanelRenderMock,
   loadBranchBaseOptionsMock,
   loadPullRequestBaseOptionsMock,
@@ -391,6 +392,94 @@ describe("AgentsView start conversation", () => {
               headRefOid: "abc123",
             }),
           }),
+        })
+      )
+    );
+  });
+
+  it("auto-selects a ticket's linked pull request as the start base", async () => {
+    mockAgentViewData();
+    getTicketAssociationsMock.mockResolvedValue({
+      tasks: [],
+      proposals: [],
+      sessions: [],
+      conversations: [],
+      pullRequests: [
+        {
+          id: "https://github.com/owner/repo/pull/88",
+          title: "PR #88",
+          subtitle: "feature/ticket-pr",
+          status: "open",
+          active: true,
+          deepLink: {
+            view: "agents",
+            id: "conversation-ticket",
+            projectId: "project-1",
+          },
+          branchName: "feature/ticket-pr",
+          baseRef: "main",
+          prNumber: 88,
+          prUrl: "https://github.com/owner/repo/pull/88",
+        },
+      ],
+      checks: [],
+      qa: [],
+      specs: [],
+    });
+    useAgentSessionStore.getState().setStartConversationDraft({
+      projectId: "project-1",
+      content: "continue the ticket work",
+      mode: "edit",
+      composerIntegrationReferences: [
+        {
+          provider: "atlassian",
+          kind: "jira",
+          id: "10088",
+          key: "RX-88",
+          title: "Ticket with PR",
+        },
+      ],
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(getTicketAssociationsMock).toHaveBeenCalledWith({
+        provider: "jira",
+        ticketRef: { provider: "jira", id: "10088", key: "RX-88" },
+        projectId: "project-1",
+      })
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("PR #88")
+    );
+
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          content: "continue the ticket work",
+          base: expect.objectContaining({
+            kind: "local_branch",
+            ref: "feature/ticket-pr",
+            displayName: "PR #88",
+            sourcePullRequest: expect.objectContaining({
+              number: 88,
+              url: "https://github.com/owner/repo/pull/88",
+              headRefName: "feature/ticket-pr",
+              baseRefName: "main",
+            }),
+          }),
+          composerIntegrationReferences: [
+            expect.objectContaining({
+              provider: "atlassian",
+              kind: "jira",
+              id: "10088",
+              key: "RX-88",
+            }),
+          ],
         })
       )
     );

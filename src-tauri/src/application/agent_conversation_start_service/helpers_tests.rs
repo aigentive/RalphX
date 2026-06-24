@@ -51,7 +51,10 @@ fn parse_mode_trims_and_parses_known_modes() {
 #[test]
 fn parse_mode_rejects_unknown_value() {
     let error = parse_agent_workspace_mode(Some("nonsense")).unwrap_err();
-    assert!(error.contains("nonsense"), "error should name the bad value: {error}");
+    assert!(
+        error.contains("nonsense"),
+        "error should name the bad value: {error}"
+    );
 }
 
 // ── parse_agent_workspace_base_kind ──────────────────────────────────────────
@@ -78,7 +81,10 @@ fn parse_base_kind_trims_and_parses_known_kinds() {
 #[test]
 fn parse_base_kind_rejects_unknown_value() {
     let error = parse_agent_workspace_base_kind(Some("weird")).unwrap_err();
-    assert!(error.contains("weird"), "error should name the bad value: {error}");
+    assert!(
+        error.contains("weird"),
+        "error should name the bad value: {error}"
+    );
 }
 
 // ── trim_optional_input ──────────────────────────────────────────────────────
@@ -143,16 +149,19 @@ fn normalize_source_pr_requires_local_branch_base_kind() {
         None,
     )
     .unwrap_err();
-    assert!(error.contains("requires a local_branch base ref"), "got: {error}");
+    assert!(
+        error.contains("requires a local_branch base ref"),
+        "got: {error}"
+    );
 
     // None base kind is also rejected.
-    let error = normalize_agent_workspace_source_pull_request(
-        Some(pr_input(7, "feature")),
-        None,
-        None,
-    )
-    .unwrap_err();
-    assert!(error.contains("requires a local_branch base ref"), "got: {error}");
+    let error =
+        normalize_agent_workspace_source_pull_request(Some(pr_input(7, "feature")), None, None)
+            .unwrap_err();
+    assert!(
+        error.contains("requires a local_branch base ref"),
+        "got: {error}"
+    );
 }
 
 #[test]
@@ -174,7 +183,10 @@ fn normalize_source_pr_rejects_base_ref_mismatch() {
         Some("  other-branch  "),
     )
     .unwrap_err();
-    assert!(error.contains("must match the selected base ref"), "got: {error}");
+    assert!(
+        error.contains("must match the selected base ref"),
+        "got: {error}"
+    );
 }
 
 #[test]
@@ -231,6 +243,105 @@ fn normalize_source_pr_drops_blank_optional_fields() {
     assert!(pr.head_ref_oid.is_none());
 }
 
+// ── ticket start base fallback helpers ───────────────────────────────────────
+
+fn integration_ref(
+    provider: &str,
+    kind: &str,
+    id: &str,
+    key: Option<&str>,
+) -> ComposerIntegrationReference {
+    ComposerIntegrationReference {
+        provider: provider.to_string(),
+        kind: kind.to_string(),
+        id: id.to_string(),
+        key: key.map(str::to_string),
+        title: None,
+        url: None,
+    }
+}
+
+#[test]
+fn first_ticket_start_base_reference_prefers_ticket_integrations() {
+    let references = vec![
+        integration_ref("atlassian", "confluence", "space-1", None),
+        integration_ref("atlassian", "jira", "10001", Some("RX-24")),
+        integration_ref("linear", "linear", "lin-1", Some("ENG-5")),
+    ];
+
+    let ticket = first_ticket_start_base_reference(&references).expect("jira reference");
+
+    assert_eq!(ticket.provider, "jira");
+    assert_eq!(ticket.issue_key, "RX-24");
+}
+
+#[test]
+fn first_ticket_start_base_reference_supports_linear_clickup_and_id_fallback() {
+    let linear =
+        first_ticket_start_base_reference(&[integration_ref("linear", "linear", "lin-1", None)])
+            .expect("linear reference");
+    assert_eq!(linear.provider, "linear");
+    assert_eq!(linear.issue_key, "lin-1");
+
+    let clickup = first_ticket_start_base_reference(&[integration_ref(
+        "clickup",
+        "clickup",
+        "task-1",
+        Some("CU-1"),
+    )])
+    .expect("clickup reference");
+    assert_eq!(clickup.provider, "clickup");
+    assert_eq!(clickup.issue_key, "CU-1");
+}
+
+#[test]
+fn base_selection_allows_ticket_canonical_branch_only_for_default_without_pr() {
+    assert!(base_selection_allows_ticket_canonical_branch(None, None));
+    assert!(base_selection_allows_ticket_canonical_branch(
+        Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+        None,
+    ));
+
+    let source = AgentWorkspaceSourcePullRequest {
+        number: 42,
+        url: None,
+        title: None,
+        head_ref_name: "feature/pr-head".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: None,
+    };
+    assert!(!base_selection_allows_ticket_canonical_branch(
+        Some(IdeationAnalysisBaseRefKind::LocalBranch),
+        None,
+    ));
+    assert!(!base_selection_allows_ticket_canonical_branch(
+        Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+        Some(&source),
+    ));
+}
+
+#[test]
+fn apply_ticket_canonical_branch_base_selection_sets_local_branch_base() {
+    let mut kind = Some(IdeationAnalysisBaseRefKind::ProjectDefault);
+    let mut base_ref = Some("main".to_string());
+    let mut display_name = Some("Project default (main)".to_string());
+
+    apply_ticket_canonical_branch_base_selection(
+        &mut kind,
+        &mut base_ref,
+        &mut display_name,
+        "RX-24",
+        "ralphx/ticket/jira-rx-24",
+    );
+
+    assert_eq!(kind, Some(IdeationAnalysisBaseRefKind::LocalBranch));
+    assert_eq!(base_ref.as_deref(), Some("ralphx/ticket/jira-rx-24"));
+    assert_eq!(
+        display_name.as_deref(),
+        Some("Ticket RX-24 (ralphx/ticket/jira-rx-24)")
+    );
+}
+
 // ── agent_mode_requires_workspace / agent_mode_should_create_workspace ────────
 
 #[test]
@@ -270,11 +381,7 @@ fn should_create_workspace_covers_chat_with_source_pr() {
 fn normalized_effort_keeps_supported_request() {
     let supported = [LogicalEffort::Low, LogicalEffort::High];
     assert_eq!(
-        normalized_effort_for_supported(
-            Some(LogicalEffort::High),
-            &supported,
-            LogicalEffort::Low
-        ),
+        normalized_effort_for_supported(Some(LogicalEffort::High), &supported, LogicalEffort::Low),
         LogicalEffort::High
     );
 }
@@ -404,14 +511,10 @@ async fn runtime_selection_no_model_uses_default_model_supported_effort() {
 async fn runtime_selection_no_model_no_effort_uses_default_model_default_effort() {
     let state = AppState::new_test();
     // No model and no effort → default model's default effort (sonnet → Medium).
-    let (model, effort) = normalize_agent_runtime_selection(
-        &state,
-        Some(AgentHarnessKind::Claude),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    let (model, effort) =
+        normalize_agent_runtime_selection(&state, Some(AgentHarnessKind::Claude), None, None)
+            .await
+            .unwrap();
     assert_eq!(model, None);
     assert_eq!(effort, Some(LogicalEffort::Medium));
 }
@@ -526,7 +629,10 @@ async fn ensure_plan_link_surfaces_error_when_analysis_preparation_fails() {
 
     // The missing linked session is not a planning session, so the helper
     // proceeds to prepare analysis state, which fails against the bogus path.
-    assert!(result.is_err(), "expected an error from analysis preparation");
+    assert!(
+        result.is_err(),
+        "expected an error from analysis preparation"
+    );
     // The workspace link is left untouched on failure.
     assert!(workspace.linked_plan_branch_id.is_none());
 }

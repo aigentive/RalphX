@@ -1981,12 +1981,20 @@ fn pull_request_items_map_pr_and_branch_only_workspaces() {
     assert_eq!(pr.deep_link.view, "agents");
     assert_eq!(pr.deep_link.id, "conv-1");
     assert_eq!(pr.deep_link.project_id.as_deref(), Some("project-1"));
+    assert_eq!(pr.branch_name.as_deref(), Some("ralphx/p/agent-1"));
+    assert_eq!(pr.base_ref.as_deref(), Some("main"));
+    assert_eq!(pr.pr_number, Some(42));
+    assert_eq!(pr.pr_url.as_deref(), Some("https://github.com/x/y/pull/42"));
 
     let branch_only = &items[1];
     assert_eq!(branch_only.title, "ralphx/p/agent-2");
     assert_eq!(branch_only.status.as_deref(), Some("branch"));
     assert!(!branch_only.active);
     assert_eq!(branch_only.id, "conv-2");
+    assert_eq!(branch_only.branch_name.as_deref(), Some("ralphx/p/agent-2"));
+    assert_eq!(branch_only.base_ref.as_deref(), Some("main"));
+    assert_eq!(branch_only.pr_number, None);
+    assert_eq!(branch_only.pr_url, None);
 }
 
 fn base_test_start_input() -> StartAgentConversationInput {
@@ -2040,6 +2048,31 @@ fn workspace_modes_inherit_canonical_branch_chat_does_not() {
     assert!(ticket_start_inherits_canonical_branch(None));
     // Chat-only ticket starts create no workspace, so they skip base injection.
     assert!(!ticket_start_inherits_canonical_branch(Some("chat")));
+}
+
+#[test]
+fn ticket_start_applies_canonical_branch_only_for_default_base() {
+    let start = base_test_start_input();
+    assert!(ticket_start_should_apply_canonical_branch(&start));
+
+    let mut local = base_test_start_input();
+    local.base_ref_kind = Some("local_branch".to_string());
+    local.base_ref = Some("feature/existing".to_string());
+    assert!(!ticket_start_should_apply_canonical_branch(&local));
+
+    let mut pr = base_test_start_input();
+    pr.base_ref_kind = Some("local_branch".to_string());
+    pr.base_ref = Some("feature/pr-head".to_string());
+    pr.base_source_pull_request =
+        Some(crate::application::agent_conversation_start_service::AgentWorkspaceSourcePullRequestInput {
+        number: 42,
+        url: Some("https://github.com/x/y/pull/42".to_string()),
+        title: Some("PR #42".to_string()),
+        head_ref_name: "feature/pr-head".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: None,
+    });
+    assert!(!ticket_start_should_apply_canonical_branch(&pr));
 }
 
 #[test]
