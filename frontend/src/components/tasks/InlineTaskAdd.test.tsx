@@ -158,6 +158,44 @@ describe("InlineTaskAdd", () => {
       expect(screen.getByTestId("inline-task-add-collapsed")).toBeInTheDocument();
     });
 
+    it("creates task with execution plan scope when provided", async () => {
+      const mockTask: Task = {
+        id: "task-1",
+        projectId: "project-1",
+        title: "Plan task",
+        category: "feature",
+        priority: 3,
+        internalStatus: "backlog",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        archivedAt: null,
+      };
+
+      mockCreateTask.mockResolvedValueOnce(mockTask);
+
+      renderComponent({
+        ideationSessionId: "session-1",
+        executionPlanId: "exec-plan-1",
+      });
+
+      fireEvent.click(screen.getByTestId("inline-task-add-collapsed"));
+      const input = screen.getByTestId("inline-task-add-input");
+
+      fireEvent.change(input, { target: { value: "Plan task" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      await waitFor(() => {
+        expect(mockCreateTask).toHaveBeenCalledWith(
+          expect.objectContaining({
+            projectId: "project-1",
+            title: "Plan task",
+            executionPlanId: "exec-plan-1",
+          })
+        );
+      });
+      expect(mockCreateTask.mock.calls[0]?.[0]).not.toHaveProperty("ideationSessionId");
+    });
+
     it("trims whitespace from title before creating", async () => {
       const mockTask: Task = {
         id: "task-1",
@@ -239,7 +277,24 @@ describe("InlineTaskAdd", () => {
       fireEvent.change(input, { target: { value: "My task" } });
       fireEvent.click(screen.getByTestId("inline-task-add-more-options"));
 
-      expect(mockOpenTaskCreation).toHaveBeenCalledWith("project-1", "My task");
+      expect(mockOpenTaskCreation).toHaveBeenCalledWith("project-1", "My task", {});
+
+      // Should collapse after opening overlay
+      expect(screen.queryByTestId("inline-task-add-expanded")).not.toBeInTheDocument();
+    });
+
+    it("opens task creation overlay with execution plan scope", () => {
+      renderComponent({ executionPlanId: "exec-plan-1" });
+
+      fireEvent.click(screen.getByTestId("inline-task-add-collapsed"));
+      const input = screen.getByTestId("inline-task-add-input");
+
+      fireEvent.change(input, { target: { value: "Scoped task" } });
+      fireEvent.click(screen.getByTestId("inline-task-add-more-options"));
+
+      expect(mockOpenTaskCreation).toHaveBeenCalledWith("project-1", "Scoped task", {
+        executionPlanId: "exec-plan-1",
+      });
 
       // Should collapse after opening overlay
       expect(screen.queryByTestId("inline-task-add-expanded")).not.toBeInTheDocument();
