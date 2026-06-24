@@ -75,6 +75,7 @@ import { formatPullRequestUrlLabel } from "./agentPublishFormatting";
 import {
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
+  getAgentWorkspacePrConflictSummary,
   getAgentWorkspaceTerminalPublicationLabel,
   getAgentWorkspaceTerminalPublicationStatus,
   getAgentWorkspaceEffectiveBaseLabel,
@@ -525,6 +526,8 @@ export function AgentPublishPanel({
     pendingPrSupervision?.autoMergeDesired ?? workspace.prAutoMergeDesired ?? false;
   const prAutoMergeCurrent = workspace.prAutoMergeCurrent ?? null;
   const prSupervisionStatus = workspace.prSupervisionStatus ?? null;
+  const prConflictSummary = getAgentWorkspacePrConflictSummary(workspace);
+  const hasPrConflict = prConflictSummary !== null;
   const autoMergeArgs = {
     autoMergeDesired: prAutoMergeDesired,
     autoMergeCurrent: prAutoMergeCurrent,
@@ -548,6 +551,7 @@ export function AgentPublishPanel({
     effectivePublishing ||
     isAutomationPreferenceSaving ||
     baseBlocked ||
+    hasPrConflict ||
     (isRepairPending && !isPipelineOwnedWorkspace) ||
     isPublishCurrent ||
     Boolean(terminalPublicationStatus) ||
@@ -576,6 +580,7 @@ export function AgentPublishPanel({
     if (isAutoPublishSaving) return "Saving Auto Publish";
     if (isPrSupervisionSaving) return "Saving PR supervision";
     if (!hasPublishedPr && autoPublishEnabled) return "Auto Publish armed";
+    if (hasPrConflict) return "PR conflicts";
     if (!autoPublishEnabled && hasPublishedPr) return "Auto Publish paused";
     if (prSupervisionStatus === "fixing") return "Fixing PR";
     if (prSupervisionStatus === "waiting_for_checks") return "Waiting for checks";
@@ -605,29 +610,33 @@ export function AgentPublishPanel({
       ? `${terminalPrLabel} has been merged. By continuing this conversation, a new workspace branch will be created automatically.`
       : terminalPublicationStatus === "closed"
         ? `${terminalPrLabel} is closed. By continuing this conversation, a new workspace branch will be created automatically.`
-        : baseBlocked
-          ? "Publishing is blocked until the workspace base branch is resolved."
-        : isPipelineOwnedWorkspace
-          ? workspace.publicationPrNumber || workspace.publicationPrUrl
-            ? `${terminalPrLabel} is managed by this ideation plan's task pipeline.`
-            : "Publishing is managed by this ideation plan's task pipeline."
-        : isDescriptionFailed
-          ? "RalphX could not draft a PR description. No pull request was opened; retry Commit & Publish after reviewing the latest publish event."
-        : hasPublishedPr && !autoPublishEnabled
-          ? "Automatic publishing is paused. Manual Commit & Publish remains available."
-        : !hasPublishedPr && autoPublishEnabled
-          ? "Auto Publish will run Commit & Publish when the agent finishes."
-        : isChangesLoading
-          ? "Loading changed files..."
-          : isPublishCurrent
-            ? reviewQuery.isSuccess && changes.length > 0
-              ? `${changes.length} changed file${changes.length === 1 ? "" : "s"} published for review.`
-              : "Workspace is published and current."
-            : reviewQuery.isSuccess && changes.length > 0
-              ? `${changes.length} changed file${changes.length === 1 ? "" : "s"} ready for review.`
-              : reviewQuery.isSuccess
-                ? "No changed files detected yet."
-                : "Review changes before publishing.";
+        : hasPrConflict
+          ? autoPublishEnabled
+            ? "Auto Publish is waiting for PR conflicts to be resolved. Resolve conflicts to update the branch from base."
+            : "This pull request has conflicts. Resolve conflicts to update the branch from base before publishing can continue."
+          : baseBlocked
+            ? "Publishing is blocked until the workspace base branch is resolved."
+            : isPipelineOwnedWorkspace
+              ? workspace.publicationPrNumber || workspace.publicationPrUrl
+                ? `${terminalPrLabel} is managed by this ideation plan's task pipeline.`
+                : "Publishing is managed by this ideation plan's task pipeline."
+              : isDescriptionFailed
+                ? "RalphX could not draft a PR description. No pull request was opened; retry Commit & Publish after reviewing the latest publish event."
+                : hasPublishedPr && !autoPublishEnabled
+                  ? "Automatic publishing is paused. Manual Commit & Publish remains available."
+                  : !hasPublishedPr && autoPublishEnabled
+                    ? "Auto Publish will run Commit & Publish when the agent finishes."
+                    : isChangesLoading
+                      ? "Loading changed files..."
+                      : isPublishCurrent
+                        ? reviewQuery.isSuccess && changes.length > 0
+                          ? `${changes.length} changed file${changes.length === 1 ? "" : "s"} published for review.`
+                          : "Workspace is published and current."
+                        : reviewQuery.isSuccess && changes.length > 0
+                          ? `${changes.length} changed file${changes.length === 1 ? "" : "s"} ready for review.`
+                          : reviewQuery.isSuccess
+                            ? "No changed files detected yet."
+                            : "Review changes before publishing.";
   const confirmUpdateFromBase = () => {
     void confirm({
       title: "Update from base branch?",
@@ -645,6 +654,24 @@ export function AgentPublishPanel({
         detail: `From ${baseActionLabel}`,
         kind: "update-from-base",
         title: "Updating branch",
+        workspace,
+      });
+    });
+  };
+  const confirmResolvePrConflicts = () => {
+    void confirm({
+      title: "Resolve PR conflicts?",
+      description: `${terminalPrLabel} is conflicting on GitHub. RalphX will update ${branch} from ${baseActionLabel}; if conflicts are found locally, this workspace will route through repair before publishing can continue.`,
+      confirmText: "Resolve conflicts",
+    }).then((confirmed) => {
+      if (!confirmed || !conversationId) {
+        return;
+      }
+      runUpdateFromBase({
+        conversationId,
+        detail: `Resolve ${terminalPrLabel} against ${baseActionLabel}`,
+        kind: "update-from-base",
+        title: "Resolving PR conflicts",
         workspace,
       });
     });
@@ -792,7 +819,26 @@ export function AgentPublishPanel({
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {isBranchUpdateNeeded ? (
+              {hasPrConflict ? (
+                <Button
+                  type="button"
+                  className={primaryActionClassName}
+                  onClick={confirmResolvePrConflicts}
+                  disabled={
+                    effectivePublishing ||
+                    isAutomationPreferenceSaving ||
+                    workspace.status === "missing"
+                  }
+                  data-testid="agents-resolve-pr-conflicts"
+                >
+                  {isUpdatingFromBase ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <GitBranch className="h-3.5 w-3.5" />
+                  )}
+                  Resolve conflicts
+                </Button>
+              ) : isBranchUpdateNeeded ? (
                 <Button
                   type="button"
                   className={primaryActionClassName}
@@ -978,6 +1024,26 @@ export function AgentPublishPanel({
               )}
             </div>
           )}
+          {hasPrConflict && (
+            <div
+              className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
+              style={{
+                backgroundColor: "var(--bg-subtle)",
+                borderColor: "var(--status-warning-border)",
+                borderStyle: "solid",
+                borderWidth: "1px",
+                color: "var(--text-secondary)",
+              }}
+              data-testid="agents-pr-conflict"
+            >
+              <AlertTriangle
+                aria-hidden="true"
+                className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                style={{ color: "var(--status-warning)" }}
+              />
+              <span>{prConflictSummary}</span>
+            </div>
+          )}
           {isBranchUpdateNeeded && (
             <div
               className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
@@ -1104,10 +1170,11 @@ export function AgentPublishPanel({
               }}
             >
               {terminalPublicationLabel ??
-                (isBranchUpdateNeeded
-                  ? "Behind base"
-                  : workspace.publicationPushStatus ??
-                    workspace.status)}
+                (hasPrConflict
+                  ? "Conflicting"
+                  : isBranchUpdateNeeded
+                    ? "Behind base"
+                    : workspace.publicationPushStatus ?? workspace.status)}
             </span>
           </div>
 
