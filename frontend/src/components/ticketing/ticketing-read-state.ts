@@ -13,7 +13,7 @@ export function ticketRefKey(ref: TicketRef): string {
   return `${ref.provider}:${ref.id}`;
 }
 
-/** Whether any ticket filter (text, status, labels, assignee, sprint) is currently active. */
+/** Whether any ticket filter (text, status, labels, assignee, sprint, watcher) is active. */
 export function hasActiveTicketFilters(filters: TicketingFilterState): boolean {
   return (
     filters.text.trim() !== ""
@@ -21,6 +21,7 @@ export function hasActiveTicketFilters(filters: TicketingFilterState): boolean {
     || filters.labels.length > 0
     || filters.assignee !== null
     || filters.sprint !== null
+    || filters.watcherMe
   );
 }
 

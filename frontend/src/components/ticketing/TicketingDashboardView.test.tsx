@@ -743,6 +743,7 @@ describe("TicketingDashboardView", () => {
       stateIds: [],
       labels: [],
       sprint: null,
+      watcherMe: false,
     });
     vi.mocked(ticketingHooks.useTickets).mockReturnValue({
       data: {
@@ -950,7 +951,7 @@ describe("TicketingDashboardView", () => {
   it("filters the list client-side by the selected assignee", () => {
     mockConnectedDashboard();
     useTicketingStore.setState({
-      filters: { text: "", assignee: "Someone Else", stateIds: [], labels: [], sprint: null },
+      filters: { text: "", assignee: "Someone Else", stateIds: [], labels: [], sprint: null, watcherMe: false },
     });
     renderDashboard();
 
@@ -971,7 +972,7 @@ describe("TicketingDashboardView", () => {
       isFetchingNextPage: false,
     } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
     useTicketingStore.setState({
-      filters: { text: "", assignee: null, stateIds: [], labels: [], sprint: null },
+      filters: { text: "", assignee: null, stateIds: [], labels: [], sprint: null, watcherMe: false },
     });
     renderDashboard();
 

@@ -249,7 +249,7 @@ pub async fn list_tickets(
                     space_ids,
                     ClickUpTaskListOptions {
                         query: Some(text.clone()),
-                        limit: Some(limit),
+                        limit: None,
                     },
                 )
                 .await?
@@ -258,8 +258,12 @@ pub async fn list_tickets(
                     let current_user_assigned = current_user
                         .as_ref()
                         .is_some_and(|user| clickup_summary_assigned_to_user(&summary, user));
+                    let current_user_watching = current_user
+                        .as_ref()
+                        .is_some_and(|user| clickup_summary_watched_by_user(&summary, user));
                     let mut ticket = clickup_summary_to_ticket(summary);
                     ticket.current_user_assigned = current_user_assigned;
+                    ticket.current_user_watching = current_user_watching;
                     ticket
                 })
                 .collect()
@@ -925,6 +929,7 @@ fn jira_summary_to_ticket(summary: AtlassianResourceSummary) -> TicketSummaryRes
         state,
         assignee: None,
         assignees: Vec::new(),
+        watchers: Vec::new(),
         reporter: None,
         labels: Vec::new(),
         project: None,
@@ -937,6 +942,7 @@ fn jira_summary_to_ticket(summary: AtlassianResourceSummary) -> TicketSummaryRes
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     }
 }
 
@@ -1019,6 +1025,7 @@ fn jira_issue_detail_to_ticket(issue: JiraIssueDetail) -> TicketSummaryResponse 
         state,
         assignee,
         assignees,
+        watchers: Vec::new(),
         reporter: None,
         labels: issue.labels,
         project: None,
@@ -1031,6 +1038,7 @@ fn jira_issue_detail_to_ticket(issue: JiraIssueDetail) -> TicketSummaryResponse 
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     }
 }
 
@@ -1058,6 +1066,7 @@ fn linear_summary_to_ticket(summary: LinearIssueSummary) -> TicketSummaryRespons
         state,
         assignee,
         assignees,
+        watchers: Vec::new(),
         reporter: None,
         labels: summary.labels,
         project: summary.project,
@@ -1070,6 +1079,7 @@ fn linear_summary_to_ticket(summary: LinearIssueSummary) -> TicketSummaryRespons
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     }
 }
 
@@ -1256,6 +1266,10 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
         }
     }
 
+    if filters.watcher_me.unwrap_or(false) && !ticket.current_user_watching {
+        return false;
+    }
+
     if let Some(labels) = filters.labels.as_ref().filter(|values| !values.is_empty()) {
         if !labels.iter().all(|required_label| {
             ticket
@@ -1283,6 +1297,7 @@ fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResp
         state: ticket_state(content.status.as_deref().unwrap_or("Provider result")),
         assignee,
         assignees,
+        watchers: Vec::new(),
         reporter: content.reporter.as_deref().map(named_person),
         labels: Vec::new(),
         project: None,
@@ -1295,6 +1310,7 @@ fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResp
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     };
     TicketDetailResponse {
         summary,
@@ -1347,6 +1363,7 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
         state: ticket_state(content.state_name.as_deref().unwrap_or("Provider result")),
         assignee,
         assignees,
+        watchers: Vec::new(),
         reporter: content.creator.as_deref().map(named_person),
         labels: content.labels.clone(),
         project: content.project.clone(),
@@ -1359,6 +1376,7 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     };
     TicketDetailResponse {
         summary,
@@ -1441,6 +1459,11 @@ fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryRespon
         .iter()
         .map(|name| named_person(name))
         .collect();
+    let watchers: Vec<TicketingPersonResponse> = summary
+        .watchers
+        .iter()
+        .map(clickup_user_to_person_response)
+        .collect();
     let assignee = assignees.first().cloned();
     TicketSummaryResponse {
         ref_: TicketRefInput {
@@ -1452,6 +1475,7 @@ fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryRespon
         state,
         assignee,
         assignees,
+        watchers,
         reporter: None,
         labels: summary.tags,
         project: summary.list_name,
@@ -1464,6 +1488,7 @@ fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryRespon
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     }
 }
 
@@ -1478,6 +1503,24 @@ fn clickup_summary_assigned_to_user(summary: &ClickUpTaskSummary, user: &ClickUp
                     .as_deref()
                     .is_some_and(|email| assignee.eq_ignore_ascii_case(email))
         })
+}
+
+fn clickup_summary_watched_by_user(summary: &ClickUpTaskSummary, user: &ClickUpUser) -> bool {
+    summary.watchers.iter().any(|watcher| clickup_users_match(watcher, user))
+}
+
+fn clickup_users_match(left: &ClickUpUser, right: &ClickUpUser) -> bool {
+    left.id == right.id
+        || left
+            .username
+            .as_deref()
+            .zip(right.username.as_deref())
+            .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
+        || left
+            .email
+            .as_deref()
+            .zip(right.email.as_deref())
+            .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
 }
 
 /// Map full ClickUp task content into a ticket detail. Mirrors
@@ -1504,6 +1547,11 @@ fn clickup_content_to_detail(content: ClickUpTaskContent) -> TicketDetailRespons
         .iter()
         .map(|name| named_person(name))
         .collect();
+    let watchers: Vec<TicketingPersonResponse> = content
+        .watchers
+        .iter()
+        .map(clickup_user_to_person_response)
+        .collect();
     let assignee = assignees.first().cloned();
     let summary = TicketSummaryResponse {
         ref_: TicketRefInput {
@@ -1515,6 +1563,7 @@ fn clickup_content_to_detail(content: ClickUpTaskContent) -> TicketDetailRespons
         state,
         assignee,
         assignees,
+        watchers,
         reporter: content.creator.as_deref().map(named_person),
         labels: content.tags.clone(),
         project: content.list_name.clone(),
@@ -1527,6 +1576,7 @@ fn clickup_content_to_detail(content: ClickUpTaskContent) -> TicketDetailRespons
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     };
     TicketDetailResponse {
         summary,
@@ -1587,6 +1637,19 @@ fn named_person(name: &str) -> TicketingPersonResponse {
         id: None,
         name: name.to_string(),
         email: None,
+        avatar_url: None,
+    }
+}
+
+fn clickup_user_to_person_response(user: &ClickUpUser) -> TicketingPersonResponse {
+    TicketingPersonResponse {
+        id: Some(user.id.to_string()),
+        name: user
+            .username
+            .clone()
+            .or_else(|| user.email.clone())
+            .unwrap_or_else(|| user.id.to_string()),
+        email: user.email.clone(),
         avatar_url: None,
     }
 }
