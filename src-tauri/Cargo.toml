@@ -56,7 +56,7 @@ dashmap = "6"
 scopeguard = "1"
 dotenvy = "0.15.7"
 dirs = "6"
-rand = "0.8"
+rand = "0.10"
 nix = { version = "0.29", features = ["signal", "process"] }
 tempfile = "3"
 regex = { version = "1", default-features = false, features = ["std", "perf"] }
