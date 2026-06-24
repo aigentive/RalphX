@@ -5,8 +5,9 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::application::chat_service::{AppChatService, StreamingStateCache};
 use crate::application::{
-    AgentClientBundle, AppState, AtlassianIntegrationService, InteractiveProcessRegistry,
-    LinearIntegrationService, PrPollerRegistry, TaskSchedulerService, TaskTransitionService,
+    AgentClientBundle, AppState, AtlassianIntegrationService, GranolaIntegrationService,
+    InteractiveProcessRegistry, LinearIntegrationService, PrPollerRegistry, TaskSchedulerService,
+    TaskTransitionService,
 };
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
@@ -212,6 +213,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub streaming_state_cache: Option<StreamingStateCache>,
     pub atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
     pub linear_integration_service: Option<Arc<LinearIntegrationService>>,
+    pub granola_integration_service: Option<Arc<GranolaIntegrationService>>,
 }
 
 impl ChatRuntimeFactoryDeps {
@@ -264,6 +266,7 @@ impl ChatRuntimeFactoryDeps {
             streaming_state_cache: None,
             atlassian_integration_service: None,
             linear_integration_service: None,
+            granola_integration_service: None,
         }
     }
 
@@ -401,6 +404,14 @@ impl ChatRuntimeFactoryDeps {
         self
     }
 
+    pub(crate) fn with_granola_integration_service(
+        mut self,
+        service: Arc<GranolaIntegrationService>,
+    ) -> Self {
+        self.granola_integration_service = Some(service);
+        self
+    }
+
     pub(crate) fn with_runtime_support(
         mut self,
         execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
@@ -510,6 +521,7 @@ impl ChatRuntimeFactoryDeps {
         )
         .with_atlassian_integration_service(Arc::clone(&state.atlassian_integration_service))
         .with_linear_integration_service(Arc::clone(&state.linear_integration_service))
+        .with_granola_integration_service(Arc::clone(&state.granola_integration_service))
     }
 }
 
@@ -597,6 +609,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     }
     if let Some(linear) = deps.linear_integration_service.as_ref() {
         service = service.with_linear_integration_service(Arc::clone(linear));
+    }
+    if let Some(granola) = deps.granola_integration_service.as_ref() {
+        service = service.with_granola_integration_service(Arc::clone(granola));
     }
 
     service

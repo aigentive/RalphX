@@ -7,6 +7,8 @@ use crate::domain::integrations::{
 };
 use crate::domain::services::SecretStore;
 
+mod prompt_expansion;
+
 /// Fixed keychain reference for the single Granola Personal API token.
 ///
 /// Granola is a singleton integration, so the reference is stable (no per-save
@@ -23,16 +25,58 @@ pub struct GranolaAuthContext {
     pub api_token: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GranolaNoteDetail {
+    pub id: String,
+    pub title: Option<String>,
+    pub url: Option<String>,
+    pub summary: Option<String>,
+    pub transcript: Option<Vec<GranolaTranscriptEntry>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GranolaTranscriptEntry {
+    pub speaker: Option<String>,
+    pub text: String,
+    pub start_ms: Option<u64>,
+    pub end_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GranolaApiError {
+    NotFound,
+    RateLimited,
+    ApiError(String),
+}
+
 /// Boundary to the Granola public API.
-///
-/// This task only needs credential validation; note/folder listing, detail
-/// fetches, pagination, and rate limiting are added by the follow-up Granola
-/// API-client task, which extends this trait and supplies `HyperGranolaApiClient`.
 #[async_trait]
 pub trait GranolaApiClient: Send + Sync {
     /// Low-cost credential check. The production client issues a minimal request
     /// (for example `GET /v1/notes?page_size=1`) and never fetches transcripts.
     async fn validate(&self, auth: &GranolaAuthContext) -> Result<(), String>;
+
+    #[cfg(test)]
+    fn is_unavailable_for_tests(&self) -> bool {
+        false
+    }
+
+    async fn fetch_note_detail(
+        &self,
+        _auth: &GranolaAuthContext,
+        _note_id: &str,
+        _include_transcript: bool,
+    ) -> Result<GranolaNoteDetail, GranolaApiError> {
+        Err(GranolaApiError::ApiError(
+            "Granola note detail fetch is unavailable".to_string(),
+        ))
+    }
+}
+
+pub(crate) fn is_valid_granola_note_id(note_id: &str) -> bool {
+    note_id.strip_prefix("not_").is_some_and(|suffix| {
+        suffix.len() == 14 && suffix.chars().all(|ch| ch.is_ascii_alphanumeric())
+    })
 }
 
 /// No-op client used in tests and when the integration is disabled. Validation
@@ -65,6 +109,20 @@ impl GranolaApiClient for EmptyGranolaApiClient {
 impl GranolaApiClient for UnavailableGranolaApiClient {
     async fn validate(&self, _auth: &GranolaAuthContext) -> Result<(), String> {
         Err(self.reason.clone())
+    }
+
+    #[cfg(test)]
+    fn is_unavailable_for_tests(&self) -> bool {
+        true
+    }
+
+    async fn fetch_note_detail(
+        &self,
+        _auth: &GranolaAuthContext,
+        _note_id: &str,
+        _include_transcript: bool,
+    ) -> Result<GranolaNoteDetail, GranolaApiError> {
+        Err(GranolaApiError::ApiError(self.reason.clone()))
     }
 }
 

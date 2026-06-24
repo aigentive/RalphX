@@ -122,7 +122,7 @@ impl LinearApiClient for HyperLinearApiClient {
         limit: usize,
     ) -> Result<Vec<LinearIssueSummary>, String> {
         let limit = limit.max(1);
-        let page_size = limit.min(LINEAR_CONNECTION_PAGE_SIZE).max(1);
+        let page_size = limit.clamp(1, LINEAR_CONNECTION_PAGE_SIZE);
         let search_term = query.trim();
         let connection_key = if search_term.is_empty() {
             "issues"
@@ -371,7 +371,7 @@ impl LinearApiClient for HyperLinearApiClient {
         first: usize,
     ) -> Result<Vec<LinearProject>, String> {
         let limit = first.max(1);
-        let page_size = limit.min(LINEAR_CONNECTION_PAGE_SIZE).max(1);
+        let page_size = limit.clamp(1, LINEAR_CONNECTION_PAGE_SIZE);
         let mut after: Option<String> = None;
         let mut projects = Vec::new();
         while projects.len() < limit {
