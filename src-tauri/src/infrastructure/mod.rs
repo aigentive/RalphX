@@ -3,6 +3,7 @@
 
 pub mod agents;
 pub mod atlassian_client;
+pub mod clickup_client;
 pub(crate) mod git_auth;
 pub mod linear_client;
 pub mod login_shell_env;
@@ -21,6 +22,7 @@ pub use agents::{
     AgenticClientSpawner, ClaudeCodeClient, MockAgenticClient, MockCall, MockCallType,
 };
 pub use atlassian_client::HyperAtlassianApiClient;
+pub use clickup_client::HyperClickUpApiClient;
 pub use linear_client::HyperLinearApiClient;
 pub use services::GhCliGithubService;
 pub use sqlite::{get_default_db_path, open_connection, open_memory_connection, run_migrations};
@@ -34,6 +36,8 @@ pub use webhook_publisher::WebhookPublisher as ConcreteWebhookPublisher;
 
 #[cfg(test)]
 mod atlassian_client_tests;
+#[cfg(test)]
+mod clickup_client_tests;
 #[cfg(test)]
 mod external_mcp_supervisor_tests;
 #[cfg(test)]

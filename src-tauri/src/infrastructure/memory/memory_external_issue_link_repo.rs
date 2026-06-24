@@ -8,7 +8,8 @@ use uuid::Uuid;
 use crate::domain::integrations::{
     ExternalIssueLink, ExternalIssueLinkRepository, ExternalIssueLinkUpsert,
     ExternalIssueLocalObject, ExternalIssueSyncRecord, ExternalIssueSyncRecordUpsert,
-    ExternalIssueSyncStatus,
+    ExternalIssueSyncStatus, ProviderTicketOperation, ProviderTicketOperationStatus,
+    ProviderTicketOperationUpsert,
 };
 use crate::error::AppResult;
 
@@ -16,6 +17,7 @@ use crate::error::AppResult;
 pub struct MemoryExternalIssueLinkRepository {
     links: Arc<RwLock<Vec<ExternalIssueLink>>>,
     sync_records: Arc<RwLock<Vec<ExternalIssueSyncRecord>>>,
+    ticket_operations: Arc<RwLock<Vec<ProviderTicketOperation>>>,
 }
 
 impl MemoryExternalIssueLinkRepository {
@@ -109,6 +111,73 @@ fn terminal_completed_at(status: ExternalIssueSyncStatus) -> Option<chrono::Date
         | ExternalIssueSyncStatus::Skipped => Some(Utc::now()),
         ExternalIssueSyncStatus::Pending => None,
     }
+}
+
+fn ticket_operation_completed_at(
+    status: ProviderTicketOperationStatus,
+) -> Option<chrono::DateTime<Utc>> {
+    status.is_terminal().then(Utc::now)
+}
+
+fn apply_ticket_operation_update(
+    operation: &mut ProviderTicketOperation,
+    input: ProviderTicketOperationUpsert,
+) {
+    operation.provider = input.provider;
+    operation.external_kind = input.external_kind;
+    operation.external_id = input.external_id;
+    operation.external_key = input.external_key;
+    operation.link_id = input.link_id;
+    operation.local_project_id = input.local_project_id;
+    operation.operation = input.operation;
+    operation.client_operation_id = input.client_operation_id;
+    operation.status = input.status;
+    operation.provider_operation_id = input.provider_operation_id;
+    operation.error_message = input.error_message;
+    operation.metadata_json = input.metadata_json;
+    operation.last_attempt_at = Some(Utc::now());
+    operation.completed_at = ticket_operation_completed_at(operation.status);
+    operation.updated_at = Utc::now();
+}
+
+fn new_ticket_operation(input: ProviderTicketOperationUpsert) -> ProviderTicketOperation {
+    let now = Utc::now();
+    ProviderTicketOperation {
+        id: Uuid::new_v4().to_string(),
+        provider: input.provider,
+        external_kind: input.external_kind,
+        external_id: input.external_id,
+        external_key: input.external_key,
+        link_id: input.link_id,
+        local_project_id: input.local_project_id,
+        operation: input.operation,
+        client_operation_id: input.client_operation_id,
+        status: input.status,
+        provider_operation_id: input.provider_operation_id,
+        error_message: input.error_message,
+        metadata_json: input.metadata_json,
+        last_attempt_at: Some(now),
+        completed_at: ticket_operation_completed_at(input.status),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn matches_ticket_operation(
+    operation: &ProviderTicketOperation,
+    provider: &str,
+    external_kind: &str,
+    external_id: &str,
+    external_key: Option<&str>,
+    local_project_id: Option<&str>,
+) -> bool {
+    operation.provider == provider
+        && operation.external_kind == external_kind
+        && operation.external_id == external_id
+        && external_key.is_none_or(|key| operation.external_key.as_deref() == Some(key))
+        && local_project_id.is_none_or(|project_id| {
+            operation.local_project_id.as_deref() == Some(project_id)
+        })
 }
 
 #[async_trait]
@@ -250,4 +319,88 @@ impl ExternalIssueLinkRepository for MemoryExternalIssueLinkRepository {
         record.updated_at = Utc::now();
         Ok(Some(record.clone()))
     }
+
+    async fn upsert_provider_ticket_operation(
+        &self,
+        input: ProviderTicketOperationUpsert,
+    ) -> AppResult<ProviderTicketOperation> {
+        let mut operations = self.ticket_operations.write().await;
+        if let Some(operation) = operations
+            .iter_mut()
+            .find(|operation| operation.client_operation_id == input.client_operation_id)
+        {
+            apply_ticket_operation_update(operation, input);
+            return Ok(operation.clone());
+        }
+
+        let operation = new_ticket_operation(input);
+        operations.push(operation.clone());
+        Ok(operation)
+    }
+
+    async fn find_provider_ticket_operation_by_client_operation_id(
+        &self,
+        client_operation_id: &str,
+    ) -> AppResult<Option<ProviderTicketOperation>> {
+        Ok(self
+            .ticket_operations
+            .read()
+            .await
+            .iter()
+            .find(|operation| operation.client_operation_id == client_operation_id)
+            .cloned())
+    }
+
+    async fn list_provider_ticket_operations_for_ticket(
+        &self,
+        provider: &str,
+        external_kind: &str,
+        external_id: &str,
+        external_key: Option<&str>,
+        local_project_id: Option<&str>,
+    ) -> AppResult<Vec<ProviderTicketOperation>> {
+        Ok(self
+            .ticket_operations
+            .read()
+            .await
+            .iter()
+            .filter(|operation| {
+                matches_ticket_operation(
+                    operation,
+                    provider,
+                    external_kind,
+                    external_id,
+                    external_key,
+                    local_project_id,
+                )
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn update_provider_ticket_operation_status(
+        &self,
+        operation_id: &str,
+        status: ProviderTicketOperationStatus,
+        provider_operation_id: Option<&str>,
+        error_message: Option<&str>,
+    ) -> AppResult<Option<ProviderTicketOperation>> {
+        let mut operations = self.ticket_operations.write().await;
+        let Some(operation) = operations
+            .iter_mut()
+            .find(|operation| operation.id == operation_id)
+        else {
+            return Ok(None);
+        };
+        operation.status = status;
+        operation.provider_operation_id = provider_operation_id.map(str::to_string);
+        operation.error_message = error_message.map(str::to_string);
+        operation.completed_at = ticket_operation_completed_at(status);
+        operation.updated_at = Utc::now();
+        Ok(Some(operation.clone()))
+    }
 }
+
+#[cfg(test)]
+#[path = "memory_external_issue_link_repo_tests.rs"]
+mod tests;

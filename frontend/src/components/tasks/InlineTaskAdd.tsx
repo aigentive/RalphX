@@ -24,6 +24,10 @@ interface InlineTaskAddProps {
   columnId: string;
   /** Optional callback when task is created */
   onCreated?: (task: Task) => void;
+  /** Optional ideation session ID for plan-scoped task creation */
+  ideationSessionId?: string | null | undefined;
+  /** Optional execution plan ID for implementation-flow task creation */
+  executionPlanId?: string | null | undefined;
   /** Callback to notify parent when expanded state changes */
   onExpandedChange?: (expanded: boolean) => void;
   /** Incrementing signal used by collapsed columns to open the full add control after expansion. */
@@ -32,7 +36,7 @@ interface InlineTaskAddProps {
   onAutoExpandConsumed?: () => void;
 }
 
-export function InlineTaskAdd({ projectId, columnId: _columnId, onCreated, onExpandedChange, autoExpandKey, onAutoExpandConsumed }: InlineTaskAddProps) {
+export function InlineTaskAdd({ projectId, columnId: _columnId, onCreated, ideationSessionId, executionPlanId, onExpandedChange, autoExpandKey, onAutoExpandConsumed }: InlineTaskAddProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -90,6 +94,8 @@ export function InlineTaskAdd({ projectId, columnId: _columnId, onCreated, onExp
         category: "feature",
         priority: 3,
         ...(description.trim() && { description: description.trim() }),
+        ...(executionPlanId ? { executionPlanId } : {}),
+        ...(!executionPlanId && ideationSessionId ? { ideationSessionId } : {}),
       },
       {
         onSuccess: (createdTask) => {
@@ -127,7 +133,10 @@ export function InlineTaskAdd({ projectId, columnId: _columnId, onCreated, onExp
   };
 
   const handleMoreOptions = () => {
-    openTaskCreation(projectId, title);
+    openTaskCreation(projectId, title, {
+      ...(executionPlanId ? { executionPlanId } : {}),
+      ...(!executionPlanId && ideationSessionId ? { ideationSessionId } : {}),
+    });
     handleCollapse();
   };
 

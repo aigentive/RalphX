@@ -18,6 +18,9 @@ pub mod artifact_commands;
 pub mod chat_attachment_commands;
 pub mod conversation_stats_commands;
 pub mod chat_responses;
+pub mod clickup_commands;
+#[cfg(test)]
+mod clickup_commands_tests;
 pub mod diagnostic_commands;
 pub mod diff_commands;
 pub mod execution_commands;
@@ -56,6 +59,7 @@ pub mod task_step_commands;
 pub mod task_step_commands_types;
 pub mod team_commands;
 pub mod test_data_commands;
+pub mod ticketing_commands;
 pub mod unified_chat_commands;
 pub mod ui_commands;
 pub mod workspace_open_commands;
@@ -128,6 +132,12 @@ pub use conversation_stats_commands::{
     UsageTotalsResponse,
 };
 pub use chat_responses::ChatMessageResponse;
+pub use clickup_commands::{
+    disconnect_clickup_integration, get_clickup_integration_settings, list_clickup_workspaces,
+    save_clickup_integration_settings, search_clickup_tasks, validate_clickup_integration,
+    ClickUpIntegrationSettingsResponse, ListClickUpWorkspacesResponse,
+    SaveClickUpIntegrationSettingsInput, SearchClickUpTasksInput, SearchClickUpTasksResponse,
+};
 pub use diagnostic_commands::{
     get_agent_health, get_codex_cli_diagnostics, AgentHealthReport,
     CodexCliDiagnosticsResponse, IprEntryResponse, RunningAgentResponse,
@@ -250,6 +260,18 @@ pub use team_commands::{
     get_teammate_cost, send_team_message, send_teammate_message, stop_team, stop_teammate,
     CreateTeamInput, GetTeamHistoryInput, SendTeamMessageInput, SendTeammateMessageInput,
     TeamHistoryResponse, TeamMessageRecordResponse, TeamSessionResponse, TeammateSnapshotResponse,
+};
+pub use ticketing_commands::{
+    add_ticket_comment, assign_ticket, clear_ticket_assignee, get_conversation_ticket,
+    get_ticket_associations, get_ticket_detail, list_ticket_labels, list_ticket_transitions,
+    list_ticketing_columns, list_ticketing_containers, list_ticketing_providers, list_tickets,
+    refresh_tickets, set_ticket_labels, start_ralphx_work_from_ticket, transition_ticket_status,
+    AddTicketCommentInput, AssignTicketInput, ConversationTicketResponse, ListTicketsQuery,
+    RefreshTicketsResponse, SetTicketLabelsInput, StartRalphxWorkFromTicketInput,
+    TicketAssociationsResponse, TicketDetailResponse, TicketLabelOptionResponse,
+    TicketLabelsResponse, TicketMutationResponse, TicketOperationResponse, TicketPageResponse,
+    TicketRefInput, TicketSummaryResponse, TicketingCapabilitiesResponse, TicketingColumnResponse,
+    TicketingContainerResponse, TicketingProviderSummaryResponse, TransitionTicketStatusInput,
 };
 // Unified chat commands (consolidates context_chat + execution_chat)
 pub use agent_sidebar_commands::{

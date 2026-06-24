@@ -532,6 +532,7 @@ async fn update_settings_saves_default_and_applies_lanes_with_ready_probe() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn update_settings_reprobes_managed_cli_after_mode_switch() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
