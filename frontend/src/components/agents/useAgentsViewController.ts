@@ -13,6 +13,7 @@ import { chatKeys } from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useProjects } from "@/hooks/useProjects";
 import { useEventBus } from "@/providers/EventProvider";
+import { PlanArtifactEventSchema } from "@/types/events";
 import { useAgentArtifactController } from "./useAgentArtifactController";
 import { useAgentConversationTitleEvents } from "./useAgentConversationTitleEvents";
 import { useAgentArtifactResize } from "./useAgentArtifactResize";
@@ -30,6 +31,7 @@ import { useAgentConversationInvalidation } from "./useAgentConversationInvalida
 import { useAgentUserMessageAutoTitle } from "./useAgentUserMessageAutoTitle";
 import { useAgentUserMessageJiraInvalidation } from "./useAgentUserMessageJiraInvalidation";
 import { hasJiraIntegrationReference } from "./agentJiraIssueQueries";
+import { hasLinearIntegrationReference } from "./agentLinearIssueQueries";
 import { useAgentsSessionBindings } from "./useAgentsSessionBindings";
 import { useSyncedAgentProjectFocus } from "./useSyncedAgentProjectFocus";
 import { useAgentsOptimisticState } from "./useAgentsOptimisticState";
@@ -41,7 +43,9 @@ import { runtimeFromConversation } from "./agentConversationRuntime";
 import {
   agentWorkspaceKeys,
   preflightAgentWorkspaceFreshness,
+  prReviewContextForConversation,
 } from "./agentWorkspaceQueries";
+import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import {
   getAgentConversationStoreKey,
   toProjectAgentConversation,
@@ -70,6 +74,14 @@ type AgentConversationListPage = Omit<
   "conversations"
 > & {
   conversations: AgentConversation[];
+};
+
+type PrReviewArtifactEventPayload = {
+  conversationId?: string;
+  conversation_id?: string;
+  artifact?: {
+    id?: string;
+  } | null;
 };
 
 export function useAgentsViewController({
@@ -330,6 +342,33 @@ export function useAgentsViewController({
     invalidateProjectConversations,
     selectedConversationMessages,
   });
+  const prReviewConversationId =
+    activeConversation?.contextType === "project" &&
+    activeConversationMode === "review_pr" &&
+    activeWorkspace?.mode === "review_pr"
+      ? activeWorkspace.conversationId
+      : null;
+  const shouldLoadPrReviewContext = Boolean(prReviewConversationId);
+  const prReviewContextQuery = useQuery({
+    queryKey: agentWorkspaceKeys.prReview(prReviewConversationId ?? ""),
+    queryFn: () => chatApi.getAgentWorkspacePrReviewContext(prReviewConversationId!),
+    enabled: shouldLoadPrReviewContext,
+    staleTime: 5_000,
+  });
+  const prReviewContext = prReviewContextForConversation(
+    prReviewContextQuery.data,
+    prReviewConversationId,
+  );
+  const reviewArtifactId =
+    prReviewContext?.monitor?.reviewArtifactId ?? null;
+  const availableArtifactTabsWithReview = useMemo<IdeationArtifactTab[]>(() => {
+    if (!reviewArtifactId || availableArtifactTabs.includes("review")) {
+      return availableArtifactTabs;
+    }
+    return ["review", ...availableArtifactTabs];
+  }, [availableArtifactTabs, reviewArtifactId]);
+  const hasAutoOpenArtifactsWithReview =
+    hasAutoOpenArtifacts || Boolean(reviewArtifactId);
   const knownFocusIdeationSessionId =
     focusedArtifactIdeationSessionId ?? attachedIdeationSessionId ?? null;
   const latestVerificationChildQuery = useQuery({
@@ -439,7 +478,7 @@ export function useAgentsViewController({
     setArtifactTaskMode,
     toggleArtifactPaneVisibility,
   } = useAgentArtifactController({
-    hasAutoOpenArtifacts,
+    hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
     selectedConversationId,
   });
 
@@ -453,6 +492,81 @@ export function useAgentsViewController({
     },
     [openArtifactTab],
   );
+  const openLinearTabForConversation = useCallback(
+    (conversationId: string) => {
+      openArtifactTab(conversationId, "linear");
+    },
+    [openArtifactTab],
+  );
+  useEffect(() => {
+    const invalidateReviewArtifact = (payload: PrReviewArtifactEventPayload) => {
+      const conversationId = payload.conversationId ?? payload.conversation_id;
+      if (!conversationId) {
+        return;
+      }
+      void queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.prReview(conversationId),
+      });
+      const artifactId = payload.artifact?.id;
+      if (artifactId) {
+        void queryClient.invalidateQueries({
+          queryKey: ["agents", "artifact", artifactId],
+        });
+      }
+    };
+
+    const unsubscribeCreated = eventBus.subscribe<PrReviewArtifactEventPayload>(
+      "pr_review_artifact:created",
+      (payload) => {
+        invalidateReviewArtifact(payload);
+        const conversationId = payload.conversationId ?? payload.conversation_id;
+        if (conversationId && conversationId === selectedConversationId) {
+          openArtifactTab(conversationId, "review");
+        }
+      },
+    );
+    const unsubscribeUpdated = eventBus.subscribe<PrReviewArtifactEventPayload>(
+      "pr_review_artifact:updated",
+      invalidateReviewArtifact,
+    );
+
+    return () => {
+      unsubscribeCreated();
+      unsubscribeUpdated();
+    };
+  }, [eventBus, openArtifactTab, queryClient, selectedConversationId]);
+
+  useEffect(() => {
+    const unsubscribeCreated = eventBus.subscribe<unknown>(
+      "plan_artifact:created",
+      (payload) => {
+        const parsed = PlanArtifactEventSchema.safeParse({
+          type: "created",
+          ...(payload as Record<string, unknown>),
+        });
+        if (!parsed.success || parsed.data.type !== "created") {
+          return;
+        }
+        if (
+          !selectedConversationId ||
+          activeConversationMode !== "plan" ||
+          parsed.data.sessionId !== attachedIdeationSessionId
+        ) {
+          return;
+        }
+
+        openArtifactTab(selectedConversationId, "plan");
+      },
+    );
+
+    return unsubscribeCreated;
+  }, [
+    activeConversationMode,
+    attachedIdeationSessionId,
+    eventBus,
+    openArtifactTab,
+    selectedConversationId,
+  ]);
 
   const handleStartAgentConversation = useStartAgentConversation({
     handleAutoManagedTitle,
@@ -466,6 +580,7 @@ export function useAgentsViewController({
     setOptimisticWorkspacesByConversationId,
     setRuntimeForConversation,
     onJiraLinked: openJiraTabForConversation,
+    onLinearLinked: openLinearTabForConversation,
   });
 
   const {
@@ -512,7 +627,7 @@ export function useAgentsViewController({
     handlePreloadArtifacts,
     handleSelectArtifact,
   } = useAgentArtifactActions({
-    hasAutoOpenArtifacts,
+    hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
     openArtifactTab,
     scheduleArtifactPanePreload,
     selectedConversationId,
@@ -621,12 +736,15 @@ export function useAgentsViewController({
       invalidateAgentUserMessageJira(event);
       if (hasJiraIntegrationReference(event.composerIntegrationReferences)) {
         openJiraTabForConversation(event.result.conversationId);
+      } else if (hasLinearIntegrationReference(event.composerIntegrationReferences)) {
+        openLinearTabForConversation(event.result.conversationId);
       }
     },
     [
       handleAgentUserMessageAutoTitle,
       invalidateAgentUserMessageJira,
       openJiraTabForConversation,
+      openLinearTabForConversation,
     ],
   );
   const handleStartRuntimePreferenceChange = useCallback(
@@ -704,12 +822,12 @@ export function useAgentsViewController({
       activeWorkspace,
       activeWorkspaceFreshness,
       attachedIdeationSessionId,
-      availableArtifactTabs,
+      availableArtifactTabs: availableArtifactTabsWithReview,
       chatFocus,
       chatFocusOptions,
       defaultProjectId,
       defaultRuntime,
-      hasAutoOpenArtifacts,
+      hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
       isLoadingProjects,
       modelRegistry,
       normalizedActiveRuntime,
@@ -759,7 +877,7 @@ export function useAgentsViewController({
       artifactWidthCss,
       chatDockElement: terminalChatDockElement,
       focusedIdeationSessionId: focusedArtifactIdeationSessionId,
-      hasAutoOpenArtifacts,
+      hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
       isArtifactResizing,
       openArtifactTab,
       panelDockElement: terminalPanelDockElement,

@@ -306,7 +306,7 @@ In the chat panel, you can @-mention specific agents in a multi-agent context (e
 
 ### Queued Messages
 
-If you send a message while an agent is between turns (thinking, tool calls in progress), the message is queued and delivered as soon as the agent is ready. You'll see a "pending" indicator until the message is delivered.
+If you send a message while an agent is between turns (thinking, tool calls in progress), the backend queues it and delivers it as soon as the agent is ready. You can leave the screen or reopen the app; the pending message is restored from backend state until it is sent or deleted.
 
 ### Message Timing
 
@@ -516,7 +516,7 @@ Reviewers are read-only — they examine the worktree but don't commit changes.
 
 **What it means:** The agent may be between turns or processing a long tool call.
 
-**What to do:** Messages are queued and delivered at the agent's next turn. If you see a "pending" indicator on your message, wait for the agent to complete its current operation. If the agent appears stuck and not progressing, use Stop + Restart to get a fresh spawn that will pick up the message from history.
+**What to do:** Messages are queued and delivered at the agent's next turn. If you see a "pending" indicator on your message, wait for the agent to complete its current operation. If the agent appears stuck and not progressing, use Stop + Restart; pending queued messages remain backend-owned until they are sent or removed.
 
 ---
 

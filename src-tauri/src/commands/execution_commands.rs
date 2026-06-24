@@ -25,7 +25,6 @@ use crate::domain::execution::{
     elapsed_seconds_for_status, ExecutionStatusInput,
 };
 use crate::domain::execution::{count_execution_status, ScopedExecutionSubject};
-use crate::domain::services::QueueKey;
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
 
@@ -81,9 +80,9 @@ pub use settings::{
     __cmd__get_active_project, __cmd__get_execution_settings, __cmd__get_global_execution_settings,
     __cmd__set_active_project, __cmd__set_max_concurrent, __cmd__update_execution_settings,
     __cmd__update_global_execution_settings, __tauri_command_name_get_active_project,
-    __tauri_command_name_get_execution_settings, __tauri_command_name_get_global_execution_settings,
-    __tauri_command_name_set_active_project, __tauri_command_name_set_max_concurrent,
-    __tauri_command_name_update_execution_settings,
+    __tauri_command_name_get_execution_settings,
+    __tauri_command_name_get_global_execution_settings, __tauri_command_name_set_active_project,
+    __tauri_command_name_set_max_concurrent, __tauri_command_name_update_execution_settings,
     __tauri_command_name_update_global_execution_settings, get_active_project,
     get_execution_settings, get_global_execution_settings, set_active_project, set_max_concurrent,
     update_execution_settings, update_global_execution_settings,

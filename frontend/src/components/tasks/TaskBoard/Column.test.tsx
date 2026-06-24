@@ -12,6 +12,26 @@ import type { WorkflowColumnResponse } from "@/lib/api/workflows";
 import type { InfiniteData } from "@tanstack/react-query";
 import type { TaskListResponse } from "@/types/task";
 
+const inlineTaskAddMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../InlineTaskAdd", () => ({
+  InlineTaskAdd: (props: {
+    projectId: string;
+    columnId: string;
+    ideationSessionId?: string | null;
+    executionPlanId?: string | null;
+  }) => {
+    inlineTaskAddMock(props);
+    return (
+      <div
+        data-testid="inline-task-add"
+        data-ideation-session-id={props.ideationSessionId ?? ""}
+        data-execution-plan-id={props.executionPlanId ?? ""}
+      />
+    );
+  },
+}));
+
 // Mock IntersectionObserver
 class MockIntersectionObserver {
   observe = vi.fn();
@@ -162,6 +182,32 @@ describe("Column", () => {
         fontSize: "12px",
         fontWeight: "500",
       });
+    });
+
+    it("passes active flow ids to inline task add", () => {
+      const column = createMockColumn({ id: "draft", name: "Draft" });
+      render(
+        <Column
+          column={column}
+          projectId="p1"
+          showArchived={false}
+          ideationSessionId="session-1"
+          executionPlanId="exec-plan-1"
+        />,
+        { wrapper: DndWrapper },
+      );
+
+      const inlineAdd = screen.getByTestId("inline-task-add");
+      expect(inlineAdd).toHaveAttribute("data-ideation-session-id", "session-1");
+      expect(inlineAdd).toHaveAttribute("data-execution-plan-id", "exec-plan-1");
+      expect(inlineTaskAddMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "p1",
+          columnId: "draft",
+          ideationSessionId: "session-1",
+          executionPlanId: "exec-plan-1",
+        })
+      );
     });
   });
 

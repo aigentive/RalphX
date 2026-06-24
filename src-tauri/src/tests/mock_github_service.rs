@@ -8,8 +8,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::domain::services::github_service::{
-    GithubServiceTrait, PrBranchMatch, PrDiffAnnotations, PrHealth, PrReviewFeedback, PrStatus,
-    PrSearchResult, PrSyncState,
+    GithubServiceTrait, PrBranchMatch, PrDiffAnnotations, PrHealth, PrReviewFeedback,
+    PrReviewSubmissionEvent, PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
 };
 use crate::error::AppError;
 use crate::AppResult;
@@ -18,6 +18,7 @@ use crate::AppResult;
 #[derive(Debug, Default)]
 pub struct MockGithubState {
     // --- Configurable responses ---
+    pub create_issue_result: Option<AppResult<String>>,
     pub create_draft_pr_result: Option<AppResult<(i64, String)>>,
     pub mark_pr_ready_result: Option<AppResult<()>>,
     pub update_pr_details_result: Option<AppResult<()>>,
@@ -39,8 +40,10 @@ pub struct MockGithubState {
     pub find_pr_by_head_branch_result: Option<AppResult<Option<(i64, String)>>>,
     pub search_pull_requests_result: Option<AppResult<Vec<PrSearchResult>>>,
     pub find_latest_pr_by_head_branch_result: Option<AppResult<Option<PrBranchMatch>>>,
+    pub submit_pr_review_result: Option<AppResult<PrSubmittedReview>>,
 
     // --- Call tracking ---
+    pub create_issue_calls: u32,
     pub create_draft_pr_calls: u32,
     pub mark_pr_ready_calls: u32,
     pub update_pr_details_calls: u32,
@@ -62,8 +65,11 @@ pub struct MockGithubState {
     pub find_pr_by_head_branch_calls: u32,
     pub search_pull_requests_calls: u32,
     pub find_latest_pr_by_head_branch_calls: u32,
+    pub submit_pr_review_calls: u32,
 
     // --- Last arguments recorded ---
+    pub last_create_issue_args: Option<(String, String, String)>,
+    pub last_create_issue_body: Option<String>,
     pub last_create_draft_pr_args: Option<(String, String, String, String)>,
     pub last_create_draft_pr_body: Option<String>,
     pub last_mark_pr_ready_number: Option<i64>,
@@ -88,6 +94,7 @@ pub struct MockGithubState {
     pub last_find_pr_by_head_branch_name: Option<String>,
     pub last_search_pull_requests_args: Option<(Option<String>, usize)>,
     pub last_find_latest_pr_by_head_branch_name: Option<String>,
+    pub last_submit_pr_review_args: Option<(i64, PrReviewSubmissionEvent, String)>,
 }
 
 /// Mock implementation of GithubServiceTrait for unit tests.
@@ -118,6 +125,11 @@ impl MockGithubService {
     /// Shorthand: configure create_draft_pr to succeed with the given values.
     pub fn will_create_pr(&self, number: i64, url: impl Into<String>) {
         self.state().create_draft_pr_result = Some(Ok((number, url.into())));
+    }
+
+    /// Shorthand: configure create_issue to succeed with the given URL.
+    pub fn will_create_issue(&self, url: impl Into<String>) {
+        self.state().create_issue_result = Some(Ok(url.into()));
     }
 
     /// Shorthand: configure check_pr_status to return the given status.
@@ -179,6 +191,19 @@ impl MockGithubService {
     pub fn set_find_latest_pr_by_head_branch(&self, result: AppResult<Option<PrBranchMatch>>) {
         self.state().find_latest_pr_by_head_branch_result = Some(result);
     }
+
+    /// Shorthand: configure submit_pr_review to succeed with the given review id/url.
+    #[allow(dead_code)]
+    pub fn will_submit_pr_review(&self, id: impl Into<String>, url: Option<String>) {
+        self.state().submit_pr_review_result = Some(Ok(PrSubmittedReview { id: id.into(), url }));
+    }
+
+    /// Shorthand: configure submit_pr_review to fail with the given message.
+    #[allow(dead_code)]
+    pub fn will_fail_submit_pr_review(&self, msg: impl Into<String>) {
+        self.state().submit_pr_review_result =
+            Some(Err(AppError::Infrastructure(msg.into())));
+    }
 }
 
 impl Default for MockGithubService {
@@ -189,6 +214,26 @@ impl Default for MockGithubService {
 
 #[async_trait]
 impl GithubServiceTrait for MockGithubService {
+    async fn create_issue(
+        &self,
+        _working_dir: &Path,
+        repository: &str,
+        title: &str,
+        body_file: &Path,
+    ) -> AppResult<String> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.create_issue_calls += 1;
+        s.last_create_issue_args = Some((
+            repository.to_string(),
+            title.to_string(),
+            body_file.to_string_lossy().into_owned(),
+        ));
+        s.last_create_issue_body = std::fs::read_to_string(body_file).ok();
+        s.create_issue_result
+            .take()
+            .unwrap_or(Ok("https://github.com/owner/repo/issues/1".to_string()))
+    }
+
     async fn create_draft_pr(
         &self,
         _working_dir: &Path,
@@ -449,5 +494,22 @@ impl GithubServiceTrait for MockGithubService {
         s.find_latest_pr_by_head_branch_result
             .take()
             .unwrap_or(Ok(None))
+    }
+
+    async fn submit_pr_review(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+        event: PrReviewSubmissionEvent,
+        body: &str,
+    ) -> AppResult<PrSubmittedReview> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.submit_pr_review_calls += 1;
+        s.last_submit_pr_review_args = Some((pr_number, event, body.to_string()));
+        s.submit_pr_review_result.take().unwrap_or_else(|| {
+            Err(AppError::Infrastructure(
+                "GitHub review submission is unavailable for this runtime".to_string(),
+            ))
+        })
     }
 }

@@ -4,6 +4,7 @@
 pub mod active_plan_repository;
 pub mod activity_event_repository;
 pub mod agent_conversation_jira_issue_repository;
+pub mod agent_conversation_linear_issue_repository;
 pub mod agent_conversation_workspace_repository;
 pub mod agent_lane_settings_repository;
 pub mod agent_model_registry_repository;
@@ -49,6 +50,7 @@ pub mod task_repository;
 pub mod task_step_repository;
 pub mod team_message_repository;
 pub mod team_session_repository;
+pub mod ticket_canonical_branch_repository;
 pub mod webhook_registration_repository;
 pub mod workflow_repository;
 
@@ -57,6 +59,7 @@ pub use activity_event_repository::{
     ActivityEventFilter, ActivityEventPage, ActivityEventRepository,
 };
 pub use agent_conversation_jira_issue_repository::AgentConversationJiraIssueRepository;
+pub use agent_conversation_linear_issue_repository::AgentConversationLinearIssueRepository;
 pub use agent_conversation_workspace_repository::AgentConversationWorkspaceRepository;
 pub use agent_lane_settings_repository::AgentLaneSettingsRepository;
 pub use agent_model_registry_repository::AgentModelRegistryRepository;
@@ -106,5 +109,6 @@ pub use task_repository::{StateHistoryMetadata, TaskRepository};
 pub use task_step_repository::TaskStepRepository;
 pub use team_message_repository::TeamMessageRepository;
 pub use team_session_repository::TeamSessionRepository;
+pub use ticket_canonical_branch_repository::TicketCanonicalBranchRepository;
 pub use webhook_registration_repository::{WebhookRegistration, WebhookRegistrationRepository};
 pub use workflow_repository::WorkflowRepository;

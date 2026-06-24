@@ -45,6 +45,7 @@ export interface TeamMetadata {
 
 export interface PlanDisplayProps {
   plan: Artifact;
+  artifactLabel?: string;
   showApprove?: boolean;
   linkedProposalsCount?: number;
   onEdit?: () => void;
@@ -76,6 +77,7 @@ export interface PlanDisplayProps {
   implementDirectlyLabel?: string;
   isImplementingDirectly?: boolean;
   primaryPlanAction?: "implement_directly" | "create_proposals";
+  isPlanActionRecommendationPending?: boolean;
   planActionHint?: string | null;
   /** Show the overflow action cluster (version picker / copy / export / edit) */
   showOverflowActions?: boolean;
@@ -335,6 +337,7 @@ const markdownComponents = {
 
 export function PlanDisplay({
   plan,
+  artifactLabel = "Plan",
   showApprove = false,
   linkedProposalsCount = 0,
   onEdit,
@@ -357,6 +360,7 @@ export function PlanDisplay({
   implementDirectlyLabel = "Implement Directly",
   isImplementingDirectly = false,
   primaryPlanAction,
+  isPlanActionRecommendationPending = false,
   planActionHint = null,
   showOverflowActions = true,
   chromeless = false,
@@ -370,11 +374,13 @@ export function PlanDisplay({
     (linkedProposalsCount === undefined || linkedProposalsCount === 0);
   const showImplementDirectly = Boolean(onImplementDirectly);
   const isCreateProposalsPrimary =
-    primaryPlanAction === "create_proposals" ||
-    (!showImplementDirectly && Boolean(showCreateProposals));
+    !isPlanActionRecommendationPending &&
+    (primaryPlanAction === "create_proposals" ||
+      (!showImplementDirectly && Boolean(showCreateProposals)));
   const isImplementDirectlyPrimary =
-    primaryPlanAction === "implement_directly" ||
-    (showImplementDirectly && !showCreateProposals);
+    !isPlanActionRecommendationPending &&
+    (primaryPlanAction === "implement_directly" ||
+      (showImplementDirectly && !showCreateProposals));
   const isOpen = isExpanded !== undefined ? isExpanded : internalIsOpen;
   const setIsOpen = onExpandedChange ?? setInternalIsOpen;
   const actionButtonStyle = (isPrimary: boolean) => ({
@@ -610,7 +616,7 @@ export function PlanDisplay({
                       size="sm"
                       className="h-7 w-7 p-0 rounded-lg transition-colors duration-150"
                       style={{ color: "var(--text-muted)" }}
-                      aria-label="Plan actions"
+                      aria-label={`${artifactLabel} actions`}
                     >
                       <MoreHorizontal className="w-3.5 h-3.5" />
                     </Button>
@@ -710,7 +716,9 @@ export function PlanDisplay({
                   variant="ghost"
                   size="sm"
                   onClick={onVerifyPlan}
-                  disabled={isVerifyingPlan}
+                  disabled={
+                    isVerifyingPlan || isPlanActionRecommendationPending
+                  }
                   data-testid="plan-verify-button"
                   className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
                   style={{
@@ -734,13 +742,15 @@ export function PlanDisplay({
                 </Button>
               )}
 
-              {primaryPlanAction === "create_proposals" ? (
+              {isPlanActionRecommendationPending ||
+              primaryPlanAction === "create_proposals" ? (
                 <>
                   {showCreateProposals && (
                     <Button
                       variant="ghost"
                       size="sm"
                       onClick={onCreateProposals}
+                      disabled={isPlanActionRecommendationPending}
                       className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
                       style={actionButtonStyle(isCreateProposalsPrimary)}
                       onMouseEnter={(e) => actionButtonHover(e, isCreateProposalsPrimary)}
@@ -755,7 +765,10 @@ export function PlanDisplay({
                       variant="ghost"
                       size="sm"
                       onClick={onImplementDirectly}
-                      disabled={isImplementingDirectly}
+                      disabled={
+                        isImplementingDirectly ||
+                        isPlanActionRecommendationPending
+                      }
                       className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
                       style={actionButtonStyle(isImplementDirectlyPrimary)}
                       onMouseEnter={(e) => actionButtonHover(e, isImplementDirectlyPrimary)}
@@ -777,7 +790,10 @@ export function PlanDisplay({
                       variant="ghost"
                       size="sm"
                       onClick={onImplementDirectly}
-                      disabled={isImplementingDirectly}
+                      disabled={
+                        isImplementingDirectly ||
+                        isPlanActionRecommendationPending
+                      }
                       className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
                       style={actionButtonStyle(isImplementDirectlyPrimary)}
                       onMouseEnter={(e) =>
@@ -800,6 +816,7 @@ export function PlanDisplay({
                       variant="ghost"
                       size="sm"
                       onClick={onCreateProposals}
+                      disabled={isPlanActionRecommendationPending}
                       className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
                       style={actionButtonStyle(isCreateProposalsPrimary)}
                       onMouseEnter={(e) =>
@@ -1104,6 +1121,7 @@ export function PlanDisplay({
                         e.currentTarget.style.background = "transparent";
                         e.currentTarget.style.color = "var(--text-muted)";
                       }}
+                      aria-label={`${artifactLabel} actions`}
                     >
                       <History className="w-3 h-3" />
                       v{selectedVersion}

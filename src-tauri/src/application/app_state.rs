@@ -19,13 +19,20 @@ use crate::application::startup_git_auth_preflight::StartupGitAuthRecoveryState;
 use crate::application::AgentClientBundle;
 use crate::application::AgentTerminalService;
 use crate::application::AtlassianIntegrationService;
+use crate::application::ClickUpIntegrationService;
 use crate::application::EmptyAtlassianApiClient;
+use crate::application::EmptyClickUpApiClient;
+use crate::application::EmptyLinearApiClient;
+use crate::application::ExternalIssueLinkService;
+use crate::application::LinearIntegrationService;
 use crate::application::PermissionState;
 use crate::application::QuestionState;
 use crate::application::ResumeValidator;
 use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
 use crate::application::UnavailableAtlassianApiClient;
+use crate::application::UnavailableClickUpApiClient;
+use crate::application::UnavailableLinearApiClient;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
     default_approval_policy_for_harness, default_sandbox_mode_for_harness,
@@ -36,21 +43,22 @@ use crate::domain::entities::{ChatContextType, ChatConversation, IdeationSession
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
     ActivePlanRepository, ActivityEventRepository, AgentConversationJiraIssueRepository,
-    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
-    AgentModelRegistryRepository, AgentProfileRepository, AgentProviderSettingsRepository,
-    AgentRunRepository, AgentTaskRepository, ApiKeyRepository, AppStateRepository,
-    ArtifactBucketRepository, ArtifactFlowRepository, ArtifactRepository, ChatAttachmentRepository,
-    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
-    DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
-    ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
-    IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
-    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
-    OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository, PlanSelectionStatsRepository,
-    ProcessRepository, ProjectRepository, ProposalDependencyRepository, ReviewRepository,
+    AgentConversationLinearIssueRepository, AgentConversationWorkspaceRepository,
+    AgentLaneSettingsRepository, AgentModelRegistryRepository, AgentProfileRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, AgentTaskRepository, ApiKeyRepository,
+    AppStateRepository, ArtifactBucketRepository, ArtifactFlowRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ChatTimelineRepository, DelegatedSessionRepository, ExecutionPlanRepository,
+    ExecutionSettingsRepository, ExternalEventsRepository, GlobalExecutionSettingsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    IdeationSettingsRepository, MemoryArchiveRepository, MemoryEntryRepository,
+    MemoryEventRepository, MethodologyRepository, OrphanWorktreeCleanupMarkerRepository,
+    PlanBranchRepository, PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
+    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
     ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
-    TeamMessageRepository, TeamSessionRepository, WebhookRegistrationRepository,
-    WorkflowRepository,
+    TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
+    WebhookRegistrationRepository, WorkflowRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -59,25 +67,28 @@ use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     InMemoryMemoryEntryRepository, InMemoryMemoryEventRepository, MemoryActivePlanRepository,
     MemoryActivityEventRepository, MemoryAgentConversationJiraIssueRepository,
-    MemoryAgentConversationWorkspaceRepository, MemoryAgentLaneSettingsRepository,
-    MemoryAgentModelRegistryRepository, MemoryAgentProfileRepository,
-    MemoryAgentProviderSettingsRepository, MemoryAgentRunRepository, MemoryAgentTaskRepository,
-    MemoryApiKeyRepository, MemoryAppStateRepository, MemoryArtifactBucketRepository,
-    MemoryArtifactFlowRepository, MemoryArtifactRepository,
+    MemoryAgentConversationLinearIssueRepository, MemoryAgentConversationWorkspaceRepository,
+    MemoryAgentLaneSettingsRepository, MemoryAgentModelRegistryRepository,
+    MemoryAgentProfileRepository, MemoryAgentProviderSettingsRepository, MemoryAgentRunRepository,
+    MemoryAgentTaskRepository, MemoryApiKeyRepository, MemoryAppStateRepository,
+    MemoryArtifactBucketRepository, MemoryArtifactFlowRepository, MemoryArtifactRepository,
     MemoryAtlassianIntegrationSettingsRepository, MemoryChatAttachmentRepository,
     MemoryChatConversationRepository, MemoryChatMessageRepository, MemoryChatTimelineRepository,
     MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
     MemoryExecutionSettingsRepository, MemoryExternalEventsRepository,
-    MemoryGlobalExecutionSettingsRepository, MemoryIdeationEffortSettingsRepository,
-    MemoryIdeationModelSettingsRepository, MemoryIdeationSessionRepository,
-    MemoryIdeationSettingsRepository, MemoryMethodologyRepository,
+    MemoryExternalIssueLinkRepository, MemoryGlobalExecutionSettingsRepository,
+    MemoryIdeationEffortSettingsRepository, MemoryIdeationModelSettingsRepository,
+    MemoryIdeationSessionRepository, MemoryIdeationSettingsRepository,
+    MemoryClickUpIntegrationSettingsRepository,
+    MemoryLinearIntegrationSettingsRepository, MemoryMethodologyRepository,
     MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
     MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
     MemoryProjectRepository, MemoryProposalDependencyRepository, MemoryQuestionRepository,
-    MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
-    MemorySecretStore, MemorySessionLinkRepository, MemoryTaskDependencyRepository,
-    MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
-    MemoryTaskStepRepository, MemoryTeamMessageRepository, MemoryTeamSessionRepository,
+    MemoryQueuedMessageRepository, MemoryReviewIssueRepository, MemoryReviewRepository,
+    MemoryReviewSettingsRepository, MemorySecretStore, MemorySessionLinkRepository,
+    MemoryTaskDependencyRepository, MemoryTaskProposalRepository, MemoryTaskQARepository,
+    MemoryTaskRepository, MemoryTaskStepRepository, MemoryTeamMessageRepository,
+    MemoryTeamSessionRepository, MemoryTicketCanonicalBranchRepository,
     MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
@@ -85,30 +96,36 @@ use crate::infrastructure::sqlite::ReviewIssueRepository;
 use crate::infrastructure::sqlite::{
     get_app_data_db_path, get_default_db_path, open_connection, run_migrations,
     SqliteActivePlanRepository, SqliteActivityEventRepository,
-    SqliteAgentConversationJiraIssueRepository, SqliteAgentConversationWorkspaceRepository,
-    SqliteAgentLaneSettingsRepository, SqliteAgentModelRegistryRepository,
-    SqliteAgentProfileRepository, SqliteAgentProviderSettingsRepository, SqliteAgentRunRepository,
-    SqliteAgentTaskRepository, SqliteApiKeyRepository, SqliteAppStateRepository,
-    SqliteArtifactBucketRepository, SqliteArtifactFlowRepository, SqliteArtifactRepository,
+    SqliteAgentConversationJiraIssueRepository, SqliteAgentConversationLinearIssueRepository,
+    SqliteAgentConversationWorkspaceRepository, SqliteAgentLaneSettingsRepository,
+    SqliteAgentModelRegistryRepository, SqliteAgentProfileRepository,
+    SqliteAgentProviderSettingsRepository, SqliteAgentRunRepository, SqliteAgentTaskRepository,
+    SqliteApiKeyRepository, SqliteAppStateRepository, SqliteArtifactBucketRepository,
+    SqliteArtifactFlowRepository, SqliteArtifactRepository,
     SqliteAtlassianIntegrationSettingsRepository, SqliteChatAttachmentRepository,
     SqliteChatConversationRepository, SqliteChatMessageRepository, SqliteChatTimelineRepository,
     SqliteDelegatedSessionRepository, SqliteExecutionPlanRepository,
     SqliteExecutionSettingsRepository, SqliteExternalEventsRepository,
-    SqliteGlobalExecutionSettingsRepository, SqliteIdeationEffortSettingsRepository,
-    SqliteIdeationModelSettingsRepository, SqliteIdeationSessionRepository,
-    SqliteIdeationSettingsRepository, SqliteMemoryArchiveRepository, SqliteMemoryEntryRepository,
-    SqliteMemoryEventRepository, SqliteMethodologyRepository,
+    SqliteExternalIssueLinkRepository, SqliteGlobalExecutionSettingsRepository,
+    SqliteIdeationEffortSettingsRepository, SqliteIdeationModelSettingsRepository,
+    SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
+    SqliteClickUpIntegrationSettingsRepository,
+    SqliteLinearIntegrationSettingsRepository, SqliteMemoryArchiveRepository,
+    SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
     SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
     SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
     SqliteProjectRepository, SqliteProposalDependencyRepository, SqliteQuestionRepository,
-    SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
-    SqliteRunningAgentRegistry, SqliteSessionLinkRepository, SqliteTaskDependencyRepository,
-    SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
-    SqliteTaskStepRepository, SqliteTeamMessageRepository, SqliteTeamSessionRepository,
+    SqliteQueuedMessageRepository, SqliteReviewIssueRepository, SqliteReviewRepository,
+    SqliteReviewSettingsRepository, SqliteRunningAgentRegistry, SqliteSessionLinkRepository,
+    SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
+    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
+    SqliteTeamSessionRepository, SqliteTicketCanonicalBranchRepository,
     SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
 };
 use crate::infrastructure::GhCliGithubService;
 use crate::infrastructure::HyperAtlassianApiClient;
+use crate::infrastructure::HyperClickUpApiClient;
+use crate::infrastructure::HyperLinearApiClient;
 
 pub(crate) struct ResolvedBackgroundAgentRuntime {
     pub client: Arc<dyn AgenticClient>,
@@ -133,6 +150,12 @@ pub struct AppState {
     pub api_key_repo: Arc<dyn ApiKeyRepository>,
     /// Native Atlassian/Jira/Confluence integration service.
     pub atlassian_integration_service: Arc<AtlassianIntegrationService>,
+    /// Native Linear integration service.
+    pub linear_integration_service: Arc<LinearIntegrationService>,
+    /// Native ClickUp integration service.
+    pub clickup_integration_service: Arc<ClickUpIntegrationService>,
+    /// Provider-neutral external issue link and sync service.
+    pub external_issue_link_service: Arc<ExternalIssueLinkService>,
     /// Agent profile repository (SQLite in production)
     pub agent_profile_repo: Arc<dyn AgentProfileRepository>,
     /// TaskQA repository for QA artifacts
@@ -186,6 +209,10 @@ pub struct AppState {
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     /// Conversation-owned primary Jira assignment/cache repository
     pub agent_conversation_jira_issue_repo: Arc<dyn AgentConversationJiraIssueRepository>,
+    /// Conversation-owned primary Linear assignment/cache repository
+    pub agent_conversation_linear_issue_repo: Arc<dyn AgentConversationLinearIssueRepository>,
+    /// Per-ticket canonical branch that all conversations for a ticket base off of
+    pub ticket_canonical_branch_repo: Arc<dyn TicketCanonicalBranchRepository>,
     /// Startup orphan agent-worktree cleanup backoff markers
     pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     /// In-memory PTY session manager for Agents conversation terminals
@@ -215,6 +242,8 @@ pub struct AppState {
     pub question_state: Arc<QuestionState>,
     /// Unified message queue for all chat contexts
     pub message_queue: Arc<MessageQueue>,
+    /// Durable queued message storage used to hydrate pending queue rows after restart
+    pub queued_message_repo: Arc<dyn QueuedMessageRepository>,
     /// Registry for tracking running agent processes
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
     /// Plan branch repository for feature branch tracking
@@ -313,6 +342,82 @@ impl AppState {
             Arc::new(MemorySecretStore::new()),
             Arc::new(EmptyAtlassianApiClient),
         ))
+    }
+
+    fn production_linear_integration_service(
+        shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+    ) -> Arc<LinearIntegrationService> {
+        let client: Arc<dyn crate::application::LinearApiClient> = match HyperLinearApiClient::new()
+        {
+            Ok(client) => Arc::new(client),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Linear HTTP client unavailable; integration validation will fail until TLS roots are available"
+                );
+                Arc::new(UnavailableLinearApiClient::new(error))
+            }
+        };
+        Arc::new(LinearIntegrationService::new(
+            Arc::new(SqliteLinearIntegrationSettingsRepository::from_shared(
+                Arc::clone(shared_conn),
+            )),
+            Arc::new(MacosKeychainSecretStore::new()),
+            client,
+        ))
+    }
+
+    fn memory_linear_integration_service() -> Arc<LinearIntegrationService> {
+        Arc::new(LinearIntegrationService::new(
+            Arc::new(MemoryLinearIntegrationSettingsRepository::new()),
+            Arc::new(MemorySecretStore::new()),
+            Arc::new(EmptyLinearApiClient),
+        ))
+    }
+
+    fn production_clickup_integration_service(
+        shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+    ) -> Arc<ClickUpIntegrationService> {
+        let client: Arc<dyn crate::application::ClickUpApiClient> =
+            match HyperClickUpApiClient::new() {
+                Ok(client) => Arc::new(client),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "ClickUp HTTP client unavailable; integration validation will fail until TLS roots are available"
+                    );
+                    Arc::new(UnavailableClickUpApiClient::new(error))
+                }
+            };
+        Arc::new(ClickUpIntegrationService::new(
+            Arc::new(SqliteClickUpIntegrationSettingsRepository::from_shared(
+                Arc::clone(shared_conn),
+            )),
+            Arc::new(MacosKeychainSecretStore::new()),
+            client,
+        ))
+    }
+
+    fn memory_clickup_integration_service() -> Arc<ClickUpIntegrationService> {
+        Arc::new(ClickUpIntegrationService::new(
+            Arc::new(MemoryClickUpIntegrationSettingsRepository::new()),
+            Arc::new(MemorySecretStore::new()),
+            Arc::new(EmptyClickUpApiClient),
+        ))
+    }
+
+    fn production_external_issue_link_service(
+        shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+    ) -> Arc<ExternalIssueLinkService> {
+        Arc::new(ExternalIssueLinkService::new(Arc::new(
+            SqliteExternalIssueLinkRepository::from_shared(Arc::clone(shared_conn)),
+        )))
+    }
+
+    fn memory_external_issue_link_service() -> Arc<ExternalIssueLinkService> {
+        Arc::new(ExternalIssueLinkService::new(Arc::new(
+            MemoryExternalIssueLinkRepository::new(),
+        )))
     }
 
     fn enable_claude_test_mode() {
@@ -790,6 +895,9 @@ impl AppState {
             atlassian_integration_service: Self::production_atlassian_integration_service(
                 &shared_conn,
             ),
+            linear_integration_service: Self::production_linear_integration_service(&shared_conn),
+            clickup_integration_service: Self::production_clickup_integration_service(&shared_conn),
+            external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(SqliteAgentProfileRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -862,6 +970,12 @@ impl AppState {
             agent_conversation_jira_issue_repo: Arc::new(
                 SqliteAgentConversationJiraIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            agent_conversation_linear_issue_repo: Arc::new(
+                SqliteAgentConversationLinearIssueRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            ticket_canonical_branch_repo: Arc::new(
+                SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 SqliteOrphanWorktreeCleanupMarkerRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -931,6 +1045,9 @@ impl AppState {
                 SqliteQuestionRepository::from_shared(Arc::clone(&shared_conn)),
             ))),
             message_queue: Arc::new(MessageQueue::new()),
+            queued_message_repo: Arc::new(SqliteQueuedMessageRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             db: crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
             external_events_repo: Arc::new(SqliteExternalEventsRepository::from_shared(
                 Arc::clone(&shared_conn),
@@ -1010,6 +1127,9 @@ impl AppState {
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
+            linear_integration_service: Self::memory_linear_integration_service(),
+            clickup_integration_service: Self::memory_clickup_integration_service(),
+            external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1052,6 +1172,12 @@ impl AppState {
             agent_conversation_jira_issue_repo: Arc::new(
                 MemoryAgentConversationJiraIssueRepository::new(),
             ),
+            agent_conversation_linear_issue_repo: Arc::new(
+                MemoryAgentConversationLinearIssueRepository::new(),
+            ),
+            ticket_canonical_branch_repo: Arc::new(
+                MemoryTicketCanonicalBranchRepository::new(),
+            ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
@@ -1089,6 +1215,9 @@ impl AppState {
                 MemoryQuestionRepository::new(),
             ))),
             message_queue: Arc::new(MessageQueue::new()),
+            queued_message_repo: Arc::new(SqliteQueuedMessageRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             db: crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
             external_events_repo: Arc::new(MemoryExternalEventsRepository::new()),
             running_agent_registry: Arc::new(MemoryRunningAgentRegistry::new()),
@@ -1136,6 +1265,9 @@ impl AppState {
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
+            linear_integration_service: Self::memory_linear_integration_service(),
+            clickup_integration_service: Self::memory_clickup_integration_service(),
+            external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1178,6 +1310,12 @@ impl AppState {
             agent_conversation_jira_issue_repo: Arc::new(
                 MemoryAgentConversationJiraIssueRepository::new(),
             ),
+            agent_conversation_linear_issue_repo: Arc::new(
+                MemoryAgentConversationLinearIssueRepository::new(),
+            ),
+            ticket_canonical_branch_repo: Arc::new(
+                MemoryTicketCanonicalBranchRepository::new(),
+            ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
@@ -1215,6 +1353,9 @@ impl AppState {
                 MemoryQuestionRepository::new(),
             ))),
             message_queue: Arc::new(MessageQueue::new()),
+            queued_message_repo: Arc::new(SqliteQueuedMessageRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             db: crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
             external_events_repo: Arc::new(MemoryExternalEventsRepository::new()),
             running_agent_registry: registry,
@@ -1272,6 +1413,9 @@ impl AppState {
             ))),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
+            linear_integration_service: Self::memory_linear_integration_service(),
+            clickup_integration_service: Self::memory_clickup_integration_service(),
+            external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1316,6 +1460,12 @@ impl AppState {
             agent_conversation_jira_issue_repo: Arc::new(
                 SqliteAgentConversationJiraIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            agent_conversation_linear_issue_repo: Arc::new(
+                SqliteAgentConversationLinearIssueRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            ticket_canonical_branch_repo: Arc::new(
+                SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 SqliteOrphanWorktreeCleanupMarkerRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1359,6 +1509,9 @@ impl AppState {
                 MemoryQuestionRepository::new(),
             ))),
             message_queue: Arc::new(MessageQueue::new()),
+            queued_message_repo: Arc::new(SqliteQueuedMessageRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             db: crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
             external_events_repo: Arc::new(MemoryExternalEventsRepository::new()),
             running_agent_registry: Arc::new(MemoryRunningAgentRegistry::new()),
@@ -1402,6 +1555,9 @@ impl AppState {
             project_repo,
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
+            linear_integration_service: Self::memory_linear_integration_service(),
+            clickup_integration_service: Self::memory_clickup_integration_service(),
+            external_issue_link_service: Self::memory_external_issue_link_service(),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1435,6 +1591,12 @@ impl AppState {
             ),
             agent_conversation_jira_issue_repo: Arc::new(
                 MemoryAgentConversationJiraIssueRepository::new(),
+            ),
+            agent_conversation_linear_issue_repo: Arc::new(
+                MemoryAgentConversationLinearIssueRepository::new(),
+            ),
+            ticket_canonical_branch_repo: Arc::new(
+                MemoryTicketCanonicalBranchRepository::new(),
             ),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
@@ -1472,6 +1634,7 @@ impl AppState {
                 MemoryQuestionRepository::new(),
             ))),
             message_queue: Arc::new(MessageQueue::new()),
+            queued_message_repo: Arc::new(MemoryQueuedMessageRepository::new()),
             db: crate::infrastructure::sqlite::DbConnection::new(
                 open_connection(&std::path::PathBuf::from(":memory:"))
                     .expect("Failed to create in-memory connection for db field"),

@@ -68,6 +68,8 @@ import {
   type ChatFocusFieldConfig,
 } from "./AgentComposerSurface";
 import { AgentConversationBaseLine } from "./AgentConversationBaseLine";
+import { AgentConversationWorkspaceLine } from "./AgentConversationWorkspaceLine";
+import { AgentWorkspacePrReviewCard } from "./AgentWorkspacePrReviewCard";
 import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceChangesCard";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import { AgentWorkspaceFileLinkProvider } from "./AgentWorkspaceFileLinkProvider";
@@ -101,12 +103,14 @@ import {
 } from "./agentChatFocus";
 import {
   buildPlanActionHint,
+  isPlanRecommendationCheckPending,
   PLAN_IMPLEMENT_DIRECTLY_REQUEST,
   PLAN_TO_PROPOSALS_REQUEST,
 } from "./agentPlanModeActions";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
+  prReviewContextForConversation,
 } from "./agentWorkspaceQueries";
 import { getAgentWorkspaceTerminalPublicationStatus } from "./agentWorkspacePublishState";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
@@ -220,6 +224,9 @@ function getPlanComposerCompactHint(
   if (trimmedHint.startsWith("Assessing plan complexity")) {
     return "Assessing plan complexity";
   }
+  if (trimmedHint.startsWith("Checking recommended next action")) {
+    return "Checking recommended next action";
+  }
 
   const primaryAction = actions.find((action) => action.isPrimary) ?? actions[0];
   if (primaryAction?.id === "approve") {
@@ -259,6 +266,9 @@ function PlanComposerCtaRow({
   const compactHint = getPlanComposerCompactHint(hint, actions);
   const hintDetails = getPlanComposerHintDetails(hint, compactHint);
   const isRecommendation = compactHint.startsWith("Recommended:");
+  const isRecommendationCheckPending = compactHint.startsWith(
+    "Checking recommended next action",
+  );
   const detailsButton = hintDetails ? (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -308,9 +318,11 @@ function PlanComposerCtaRow({
     );
   };
 
+  const isSingleAction = actions.length === 1;
+
   return (
     <div
-      className="mx-2 mb-2 rounded-md border px-3 py-2.5"
+      className="mx-2 mb-2 rounded-md border px-3 py-2"
       style={{
         backgroundColor: "var(--bg-surface)",
         borderColor: "var(--border-subtle)",
@@ -319,48 +331,99 @@ function PlanComposerCtaRow({
       }}
       data-testid="agents-plan-composer-cta-row"
     >
-      <div
-        className="flex flex-wrap items-center gap-2 border-b pb-2"
-        style={{
-          borderColor: "var(--border-subtle)",
-          borderStyle: "solid",
-          borderWidth: "0 0 1px",
-        }}
-      >
-        <div
-          className="flex min-w-0 items-center gap-2 pr-1"
-          data-testid="agents-plan-composer-cta-copy"
-        >
-          {isRecommendation && (
-            <Lightbulb
-              className="h-4 w-4 shrink-0"
-              style={{ color: "var(--accent-primary)" }}
-              aria-hidden="true"
-            />
-          )}
-          <p
-            className={
-              isRecommendation
-                ? "min-w-0 text-[0.6875rem] font-semibold uppercase leading-5 tracking-[0.12em]"
-                : "min-w-0 truncate text-[0.8125rem] font-medium leading-5"
-            }
-            style={{ color: "var(--text-primary)" }}
-            data-testid="agents-plan-composer-cta-hint"
+      {isSingleAction ? (
+        <div className="flex items-center gap-2">
+          <div
+            className="flex min-w-0 flex-1 items-center gap-2"
+            data-testid="agents-plan-composer-cta-copy"
           >
-            {compactHint}
-          </p>
-          {detailsButton}
+            {isRecommendation && (
+              <Lightbulb
+                className="h-4 w-4 shrink-0"
+                style={{ color: "var(--accent-primary)" }}
+                aria-hidden="true"
+              />
+            )}
+            {isRecommendationCheckPending && (
+              <Loader2
+                className="h-4 w-4 shrink-0 animate-spin"
+                style={{ color: "var(--accent-primary)" }}
+                aria-hidden="true"
+              />
+            )}
+            <p
+              className={
+                isRecommendation
+                  ? "min-w-0 text-[0.6875rem] font-semibold uppercase leading-5 tracking-[0.12em]"
+                  : "min-w-0 truncate text-[0.8125rem] font-medium leading-5"
+              }
+              style={{ color: "var(--text-primary)" }}
+              data-testid="agents-plan-composer-cta-hint"
+            >
+              {compactHint}
+            </p>
+            {detailsButton}
+          </div>
+          <div
+            className="flex shrink-0 items-center"
+            role="group"
+            aria-label="Plan actions"
+            data-testid="agents-plan-composer-cta-actions"
+          >
+            {renderActionButton(actions[0]!)}
+          </div>
         </div>
-      </div>
-      {actions.length > 0 && (
-        <div
-          className="mt-2 flex flex-wrap items-center gap-2"
-          role="group"
-          aria-label="Plan actions"
-          data-testid="agents-plan-composer-cta-actions"
-        >
-          {actions.map(renderActionButton)}
-        </div>
+      ) : (
+        <>
+          <div
+            className="flex flex-wrap items-center gap-2 border-b pb-2"
+            style={{
+              borderColor: "var(--border-subtle)",
+              borderStyle: "solid",
+              borderWidth: "0 0 1px",
+            }}
+          >
+            <div
+              className="flex min-w-0 items-center gap-2 pr-1"
+              data-testid="agents-plan-composer-cta-copy"
+            >
+              {isRecommendation && (
+                <Lightbulb
+                  className="h-4 w-4 shrink-0"
+                  style={{ color: "var(--accent-primary)" }}
+                  aria-hidden="true"
+                />
+              )}
+              {isRecommendationCheckPending && (
+                <Loader2
+                  className="h-4 w-4 shrink-0 animate-spin"
+                  style={{ color: "var(--accent-primary)" }}
+                  aria-hidden="true"
+                />
+              )}
+              <p
+                className={
+                  isRecommendation
+                    ? "min-w-0 text-[0.6875rem] font-semibold uppercase leading-5 tracking-[0.12em]"
+                    : "min-w-0 truncate text-[0.8125rem] font-medium leading-5"
+                }
+                style={{ color: "var(--text-primary)" }}
+                data-testid="agents-plan-composer-cta-hint"
+              >
+                {compactHint}
+              </p>
+              {detailsButton}
+            </div>
+          </div>
+          <div
+            className="mt-2 flex flex-wrap items-center gap-2"
+            role="group"
+            aria-label="Plan actions"
+            data-testid="agents-plan-composer-cta-actions"
+          >
+            {actions.map(renderActionButton)}
+          </div>
+        </>
       )}
     </div>
   );
@@ -588,12 +651,28 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     focusedChatSessionId ??
     (activeConversation.contextType === "ideation" ? activeConversation.contextId : undefined);
   const isFocusedChildChat = chatFocus.type !== "workspace";
+  const activeConversationStoreKey = useMemo(
+    () => getAgentConversationStoreKey(activeConversation),
+    [activeConversation],
+  );
+  const activeConversationAgentStatus = useChatStore(
+    (state) => state.agentStatus[activeConversationStoreKey] ?? "idle",
+  );
+  const activeConversationIsSending = useChatStore(
+    (state) => state.isSending[activeConversationStoreKey] ?? false,
+  );
   const workspaceBaseSelectorAvailable =
     !isFocusedChildChat &&
     activeConversation.contextType === "project" &&
     Boolean(activeWorkspace?.conversationId) &&
     activeWorkspace?.status !== "missing" &&
     !getAgentWorkspaceTerminalPublicationStatus(activeWorkspace);
+  const workspaceBaseEditable =
+    workspaceBaseSelectorAvailable &&
+    activeConversationAgentStatus !== "generating" &&
+    !activeConversationIsSending &&
+    !isForkingConversation &&
+    !isUpdatingComposerWorkspaceBase;
   const fallbackWorkspaceBaseOptions = useMemo(
     () =>
       fallbackBranchBaseOptions(
@@ -756,6 +835,30 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       workspaceBaseSelectorAvailable,
     ],
   );
+  const workspaceBaseControl = !isFocusedChildChat ? (
+    <AgentConversationBaseLine
+      className="justify-start"
+      workspace={activeWorkspace}
+      editable={workspaceBaseSelectorAvailable}
+      disabled={!workspaceBaseEditable}
+      isLoading={
+        workspaceBaseOptionsQuery.isFetching || isUpdatingComposerWorkspaceBase
+      }
+      options={workspaceBaseOptions}
+      pullRequestOptions={workspaceBasePullRequestOptions}
+      isLoadingPullRequests={isLoadingWorkspaceBasePullRequests}
+      pullRequestMessage={workspaceBasePullRequestMessage}
+      prefixLabel="BASE:"
+      value={workspaceBasePickerValue}
+      onValueChange={handleWorkspaceBaseChange}
+      onIntent={handleWorkspaceBasePickerIntent}
+      onOpenChange={handleWorkspaceBasePickerOpenChange}
+      onPullRequestSearch={searchWorkspaceBasePullRequestOptions}
+      {...(activeWorkspaceFreshness
+        ? { freshness: activeWorkspaceFreshness }
+        : {})}
+    />
+  ) : null;
   const panelStoreKeyOverride = useMemo(() => {
     if (focusedChatSessionId) {
       return buildStoreKey("ideation", focusedChatSessionId);
@@ -903,6 +1006,29 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     isFocusedChildChat,
     selectedConversationId,
   ]);
+  const reviewPrContextQuery = useQuery({
+    queryKey: agentWorkspaceKeys.prReview(activeWorkspace?.conversationId),
+    queryFn: () =>
+      chatApi.getAgentWorkspacePrReviewContext(activeWorkspace!.conversationId),
+    enabled: Boolean(
+      !isFocusedChildChat &&
+        activeConversation.contextType === "project" &&
+        activeWorkspace?.conversationId &&
+        activeWorkspace.mode === "review_pr",
+    ),
+    staleTime: 5_000,
+    refetchInterval: (query) =>
+      prReviewContextForConversation(
+        query.state.data,
+        activeWorkspace?.conversationId,
+      )?.pendingAction
+        ? false
+        : 5_000,
+  });
+  const reviewPrContext = prReviewContextForConversation(
+    reviewPrContextQuery.data,
+    activeWorkspace?.conversationId,
+  );
   const planApprovalQuery = useQuery({
     queryKey: ["agents", "plan-approval", planApprovalSessionId],
     queryFn: () => artifactApi.getSessionPlan(planApprovalSessionId!),
@@ -941,6 +1067,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ),
     staleTime: 5_000,
     refetchInterval: (query) => (query.state.data ? false : 4_000),
+  });
+  const isPlanRecommendationPending = isPlanRecommendationCheckPending({
+    assessment: planComplexityQuery.data,
+    isFetching:
+      (planComplexityQuery.isFetching || planComplexityQuery.isLoading) &&
+      !planComplexityQuery.data,
+    approvedAt: planApprovalArtifact?.planApproval?.approvedAt,
   });
   const planVerificationQuery = useVerificationStatus(
     planApprovalSessionId && isPlanApproved ? planApprovalSessionId : undefined,
@@ -1179,16 +1312,15 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
     return buildPlanActionHint({
       assessment: planComplexityQuery.data,
-      isAssessing:
-        planComplexityQuery.isFetching && !planComplexityQuery.data,
+      isAssessing: isPlanRecommendationPending,
       canChoose: canCreatePlanProposals && canImplementPlanDirectly,
     });
   }, [
     canApproveComposerPlan,
     canCreatePlanProposals,
     canImplementPlanDirectly,
+    isPlanRecommendationPending,
     planComplexityQuery.data,
-    planComplexityQuery.isFetching,
   ]);
   const planComposerCtaActions = useMemo<PlanComposerCtaAction[]>(() => {
     if (!planApprovalSessionId || !planApprovalArtifact) {
@@ -1230,10 +1362,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             label: "Implement Directly",
             icon: Play,
             isPrimary:
+              !isPlanRecommendationPending &&
               planComplexityQuery.data?.recommendedAction !==
               "create_proposals",
             isPending: isImplementingPlanDirectly,
-            disabled: false,
+            disabled: isPlanRecommendationPending,
             onClick: () => {
               void handleImplementPlanDirectly();
             },
@@ -1245,10 +1378,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           label: "Create Proposals",
           icon: GitPullRequestArrow,
           isPrimary:
+            !isPlanRecommendationPending &&
             planComplexityQuery.data?.recommendedAction ===
             "create_proposals",
           isPending: isCreatingPlanProposals,
-          disabled: false,
+          disabled: isPlanRecommendationPending,
           onClick: () => {
             void handleCreatePlanProposals();
           },
@@ -1262,7 +1396,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           isPrimary: false,
           isPending:
             isStartingPlanVerification || planVerificationInProgress,
-          disabled: false,
+          disabled: isPlanRecommendationPending,
           onClick: () => {
             void handleVerifyPlanFromComposer();
           },
@@ -1270,6 +1404,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       : null;
 
     const mainActions =
+      isPlanRecommendationPending ||
       planComplexityQuery.data?.recommendedAction === "create_proposals"
         ? [proposalsAction, implementationAction]
         : [implementationAction, proposalsAction];
@@ -1290,6 +1425,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     isCreatingPlanProposals,
     isImplementingPlanDirectly,
     isPlanApproved,
+    isPlanRecommendationPending,
     isStartingPlanVerification,
     planApprovalArtifact,
     planApprovalSessionId,
@@ -1692,15 +1828,19 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
               };
               const shouldShowPlanComposerCta =
                 !!planComposerHint && composerProps.questionMode === undefined;
-              const workspaceBaseEditable =
-                workspaceBaseSelectorAvailable &&
-                composerProps.agentStatus !== "generating" &&
-                !composerProps.isSending &&
-                !isForkingConversation &&
-                !isUpdatingComposerWorkspaceBase;
-
               return (
                 <>
+                  {!isFocusedChildChat &&
+                    activeWorkspace?.mode === "review_pr" &&
+                    activeWorkspace.conversationId && (
+                      <AgentWorkspacePrReviewCard
+                        conversationId={activeWorkspace.conversationId}
+                        context={reviewPrContext}
+                        isLoading={reviewPrContextQuery.isLoading}
+                        isFetching={reviewPrContextQuery.isFetching}
+                        error={reviewPrContextQuery.error}
+                      />
+                    )}
                   <AgentsComposerWorkspaceChangesCard
                     conversationId={selectedConversationId}
                     projectId={activeProjectId}
@@ -1936,23 +2076,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       placeholder="Current project"
                       disabled
                     />
-                    <AgentConversationBaseLine
+                    <AgentConversationWorkspaceLine
                       workspace={activeWorkspace}
-                      editable={workspaceBaseSelectorAvailable}
-                      disabled={!workspaceBaseEditable}
-                      isLoading={
-                        workspaceBaseOptionsQuery.isFetching ||
-                        isUpdatingComposerWorkspaceBase
-                      }
-                      options={workspaceBaseOptions}
-                      pullRequestOptions={workspaceBasePullRequestOptions}
-                      isLoadingPullRequests={isLoadingWorkspaceBasePullRequests}
-                      pullRequestMessage={workspaceBasePullRequestMessage}
-                      value={workspaceBasePickerValue}
-                      onValueChange={handleWorkspaceBaseChange}
-                      onIntent={handleWorkspaceBasePickerIntent}
-                      onOpenChange={handleWorkspaceBasePickerOpenChange}
-                      onPullRequestSearch={searchWorkspaceBasePullRequestOptions}
                       {...(activeWorkspaceFreshness
                         ? { freshness: activeWorkspaceFreshness }
                         : {})}
@@ -1986,6 +2111,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                 isPublishingWorkspace={publishingConversationId === selectedConversationId}
                 onToggleArtifacts={onToggleArtifacts}
                 onSelectArtifact={onSelectArtifact}
+                workspaceControl={workspaceBaseControl}
                 showTitle={false}
               />
             }

@@ -6,7 +6,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::entities::{
-    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId,
+    ProjectId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,6 +17,7 @@ pub enum AgentConversationWorkspaceMode {
     Edit,
     Plan,
     Ideation,
+    ReviewPr,
 }
 
 impl std::fmt::Display for AgentConversationWorkspaceMode {
@@ -25,6 +27,7 @@ impl std::fmt::Display for AgentConversationWorkspaceMode {
             AgentConversationWorkspaceMode::Edit => write!(f, "edit"),
             AgentConversationWorkspaceMode::Plan => write!(f, "plan"),
             AgentConversationWorkspaceMode::Ideation => write!(f, "ideation"),
+            AgentConversationWorkspaceMode::ReviewPr => write!(f, "review_pr"),
         }
     }
 }
@@ -38,6 +41,7 @@ impl FromStr for AgentConversationWorkspaceMode {
             "edit" => Ok(Self::Edit),
             "plan" => Ok(Self::Plan),
             "ideation" => Ok(Self::Ideation),
+            "review_pr" => Ok(Self::ReviewPr),
             _ => Err(format!(
                 "unknown agent conversation workspace mode: '{value}'"
             )),
@@ -78,6 +82,120 @@ impl FromStr for AgentConversationWorkspaceStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspacePrReviewMonitorStatus {
+    Idle,
+    Reviewing,
+    AwaitingUser,
+    Watching,
+    Submitting,
+    Blocked,
+    Terminal,
+}
+
+impl std::fmt::Display for AgentWorkspacePrReviewMonitorStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Idle => write!(f, "idle"),
+            Self::Reviewing => write!(f, "reviewing"),
+            Self::AwaitingUser => write!(f, "awaiting_user"),
+            Self::Watching => write!(f, "watching"),
+            Self::Submitting => write!(f, "submitting"),
+            Self::Blocked => write!(f, "blocked"),
+            Self::Terminal => write!(f, "terminal"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspacePrReviewMonitorStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "idle" => Ok(Self::Idle),
+            "reviewing" => Ok(Self::Reviewing),
+            "awaiting_user" => Ok(Self::AwaitingUser),
+            "watching" => Ok(Self::Watching),
+            "submitting" => Ok(Self::Submitting),
+            "blocked" => Ok(Self::Blocked),
+            "terminal" => Ok(Self::Terminal),
+            _ => Err(format!("unknown PR review monitor status: '{value}'")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspacePrReviewActionKind {
+    RequestChanges,
+    Approve,
+    Comment,
+}
+
+impl std::fmt::Display for AgentWorkspacePrReviewActionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RequestChanges => write!(f, "request_changes"),
+            Self::Approve => write!(f, "approve"),
+            Self::Comment => write!(f, "comment"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspacePrReviewActionKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "request_changes" => Ok(Self::RequestChanges),
+            "approve" => Ok(Self::Approve),
+            "comment" => Ok(Self::Comment),
+            _ => Err(format!("unknown PR review action: '{value}'")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspacePrReviewActionStatus {
+    Pending,
+    Approved,
+    Skipped,
+    Submitting,
+    Submitted,
+    Failed,
+}
+
+impl std::fmt::Display for AgentWorkspacePrReviewActionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending => write!(f, "pending"),
+            Self::Approved => write!(f, "approved"),
+            Self::Skipped => write!(f, "skipped"),
+            Self::Submitting => write!(f, "submitting"),
+            Self::Submitted => write!(f, "submitted"),
+            Self::Failed => write!(f, "failed"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspacePrReviewActionStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "approved" => Ok(Self::Approved),
+            "skipped" => Ok(Self::Skipped),
+            "submitting" => Ok(Self::Submitting),
+            "submitted" => Ok(Self::Submitted),
+            "failed" => Ok(Self::Failed),
+            _ => Err(format!("unknown PR review action status: '{value}'")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWorkspaceSourcePullRequest {
     pub number: i64,
@@ -86,6 +204,108 @@ pub struct AgentWorkspaceSourcePullRequest {
     pub head_ref_name: String,
     pub base_ref_name: Option<String>,
     pub head_ref_oid: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspacePrReviewMonitor {
+    pub conversation_id: ChatConversationId,
+    pub project_id: ProjectId,
+    pub pr_number: i64,
+    pub status: AgentWorkspacePrReviewMonitorStatus,
+    pub monitor_enabled: bool,
+    pub first_review_completed: bool,
+    pub last_seen_head_sha: Option<String>,
+    pub last_reviewed_head_sha: Option<String>,
+    pub last_review_run_id: Option<String>,
+    pub last_review_outcome: Option<String>,
+    pub last_submitted_review_id: Option<String>,
+    pub review_artifact_id: Option<ArtifactId>,
+    pub review_artifact_head_sha: Option<String>,
+    pub review_artifact_version: Option<u32>,
+    pub review_artifact_updated_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl AgentWorkspacePrReviewMonitor {
+    pub fn new(
+        conversation_id: ChatConversationId,
+        project_id: ProjectId,
+        pr_number: i64,
+        head_sha: Option<String>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            conversation_id,
+            project_id,
+            pr_number,
+            status: AgentWorkspacePrReviewMonitorStatus::Idle,
+            monitor_enabled: false,
+            first_review_completed: false,
+            last_seen_head_sha: head_sha,
+            last_reviewed_head_sha: None,
+            last_review_run_id: None,
+            last_review_outcome: None,
+            last_submitted_review_id: None,
+            review_artifact_id: None,
+            review_artifact_head_sha: None,
+            review_artifact_version: None,
+            review_artifact_updated_at: None,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspacePrReviewAction {
+    pub id: String,
+    pub conversation_id: ChatConversationId,
+    pub pr_number: i64,
+    pub head_sha: String,
+    pub proposed_action: AgentWorkspacePrReviewActionKind,
+    pub summary: String,
+    pub review_body: String,
+    pub findings_json: Option<String>,
+    pub status: AgentWorkspacePrReviewActionStatus,
+    pub submitted_review_id: Option<String>,
+    pub created_by_run_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+impl AgentWorkspacePrReviewAction {
+    pub fn new(
+        conversation_id: ChatConversationId,
+        pr_number: i64,
+        head_sha: String,
+        proposed_action: AgentWorkspacePrReviewActionKind,
+        summary: String,
+        review_body: String,
+        findings_json: Option<String>,
+        created_by_run_id: Option<String>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            conversation_id,
+            pr_number,
+            head_sha,
+            proposed_action,
+            summary,
+            review_body,
+            findings_json,
+            status: AgentWorkspacePrReviewActionStatus::Pending,
+            submitted_review_id: None,
+            created_by_run_id,
+            created_at: now,
+            updated_at: now,
+            resolved_at: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,10 +400,22 @@ impl AgentConversationWorkspace {
     pub fn has_pr_status_pollable_push_status(&self) -> bool {
         is_pr_status_pollable_push_status(self.publication_push_status.as_deref())
     }
+
+    /// Whether this workspace currently has an open (non-terminal) publication PR.
+    pub fn has_open_pr(&self) -> bool {
+        is_open_pr(self.publication_pr_number, self.publication_pr_status.as_deref())
+    }
 }
 
 pub fn is_terminal_publication_pr_status(status: Option<&str>) -> bool {
     matches!(status, Some("merged" | "closed"))
+}
+
+/// A workspace has an OPEN pull request when a PR number exists and its status is
+/// not terminal (merged/closed). Draft PRs count as open. Single source of truth
+/// for the "has an open PR" rule across ticketing, sidebar, and chat header.
+pub fn is_open_pr(publication_pr_number: Option<i64>, publication_pr_status: Option<&str>) -> bool {
+    publication_pr_number.is_some() && !is_terminal_publication_pr_status(publication_pr_status)
 }
 
 pub fn is_pr_status_pollable_push_status(status: Option<&str>) -> bool {
@@ -331,6 +563,311 @@ mod pr_comment_evidence_tests {
             pr_comment_body_sha256("coverage"),
             pr_comment_body_sha256("different")
         );
+    }
+}
+
+#[cfg(test)]
+mod publication_status_helpers_tests {
+    use super::{
+        is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
+        IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId,
+    };
+
+    fn workspace() -> AgentConversationWorkspace {
+        AgentConversationWorkspace::new(
+            ChatConversationId::new(),
+            ProjectId("project-1".to_string()),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            None,
+            None,
+            "feature/branch".to_string(),
+            "/tmp/worktree".to_string(),
+        )
+    }
+
+    #[test]
+    fn terminal_publication_pr_status_matches_merged_and_closed_only() {
+        assert!(is_terminal_publication_pr_status(Some("merged")));
+        assert!(is_terminal_publication_pr_status(Some("closed")));
+        assert!(!is_terminal_publication_pr_status(Some("open")));
+        assert!(!is_terminal_publication_pr_status(Some("draft")));
+        assert!(!is_terminal_publication_pr_status(None));
+    }
+
+    #[test]
+    fn pr_status_pollable_push_status_matches_none_pushed_and_refreshed() {
+        assert!(is_pr_status_pollable_push_status(None));
+        assert!(is_pr_status_pollable_push_status(Some("pushed")));
+        assert!(is_pr_status_pollable_push_status(Some("refreshed")));
+        assert!(!is_pr_status_pollable_push_status(Some("pending")));
+        assert!(!is_pr_status_pollable_push_status(Some("failed")));
+    }
+
+    #[test]
+    fn has_terminal_publication_pr_status_delegates() {
+        let mut ws = workspace();
+        ws.publication_pr_status = Some("merged".to_string());
+        assert!(ws.has_terminal_publication_pr_status());
+        ws.publication_pr_status = Some("open".to_string());
+        assert!(!ws.has_terminal_publication_pr_status());
+        ws.publication_pr_status = None;
+        assert!(!ws.has_terminal_publication_pr_status());
+    }
+
+    #[test]
+    fn has_pr_status_pollable_push_status_delegates() {
+        let mut ws = workspace();
+        ws.publication_push_status = None;
+        assert!(ws.has_pr_status_pollable_push_status());
+        ws.publication_push_status = Some("pushed".to_string());
+        assert!(ws.has_pr_status_pollable_push_status());
+        ws.publication_push_status = Some("failed".to_string());
+        assert!(!ws.has_pr_status_pollable_push_status());
+    }
+
+    #[test]
+    fn is_execution_owned_tracks_linked_plan_branch() {
+        let mut ws = workspace();
+        assert!(!ws.is_execution_owned());
+        ws.linked_plan_branch_id = Some(PlanBranchId::new());
+        assert!(ws.is_execution_owned());
+    }
+
+    #[test]
+    fn new_workspace_uses_default_auto_merge_method_and_active_status() {
+        let ws = workspace();
+        assert_eq!(
+            ws.pr_auto_merge_method,
+            super::super::DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
+        );
+        assert_eq!(ws.status, super::super::AgentConversationWorkspaceStatus::Active);
+        assert!(ws.auto_publish_enabled);
+        assert!(!ws.auto_publish_initial_pr_enabled);
+    }
+}
+
+#[cfg(test)]
+mod pr_description_tests {
+    use super::AgentWorkspacePrDescription;
+
+    #[test]
+    fn new_trims_title_and_drops_blank() {
+        let desc = AgentWorkspacePrDescription::new(
+            Some("  My PR title  ".to_string()),
+            "body".to_string(),
+        );
+        assert_eq!(desc.title.as_deref(), Some("My PR title"));
+        assert_eq!(desc.body_markdown, "body");
+    }
+
+    #[test]
+    fn new_drops_blank_or_absent_title() {
+        assert!(AgentWorkspacePrDescription::new(Some("   ".to_string()), "b".to_string())
+            .title
+            .is_none());
+        assert!(AgentWorkspacePrDescription::new(None, "b".to_string())
+            .title
+            .is_none());
+    }
+}
+
+#[cfg(test)]
+mod monitor_and_action_constructor_tests {
+    use super::{
+        AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+        AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
+        AgentWorkspacePrReviewMonitorStatus, ChatConversationId, ProjectId,
+    };
+
+    #[test]
+    fn monitor_new_starts_idle_and_disabled() {
+        let monitor = AgentWorkspacePrReviewMonitor::new(
+            ChatConversationId::new(),
+            ProjectId("p".to_string()),
+            42,
+            Some("abc".to_string()),
+        );
+        assert_eq!(monitor.status, AgentWorkspacePrReviewMonitorStatus::Idle);
+        assert!(!monitor.monitor_enabled);
+        assert!(!monitor.first_review_completed);
+        assert_eq!(monitor.pr_number, 42);
+        assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("abc"));
+        assert!(monitor.last_reviewed_head_sha.is_none());
+    }
+
+    #[test]
+    fn action_new_starts_pending_with_generated_id() {
+        let action = AgentWorkspacePrReviewAction::new(
+            ChatConversationId::new(),
+            7,
+            "head-sha".to_string(),
+            AgentWorkspacePrReviewActionKind::Approve,
+            "summary".to_string(),
+            "review body".to_string(),
+            Some("{}".to_string()),
+            Some("run-1".to_string()),
+        );
+        assert_eq!(action.status, AgentWorkspacePrReviewActionStatus::Pending);
+        assert!(!action.id.is_empty());
+        assert_eq!(action.proposed_action, AgentWorkspacePrReviewActionKind::Approve);
+        assert_eq!(action.head_sha, "head-sha");
+        assert_eq!(action.created_by_run_id.as_deref(), Some("run-1"));
+        assert!(action.submitted_review_id.is_none());
+        assert!(action.resolved_at.is_none());
+    }
+}
+
+#[cfg(test)]
+mod enum_roundtrip_tests {
+    use super::{
+        AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+        AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
+        AgentWorkspacePrReviewMonitorStatus,
+    };
+    use std::str::FromStr;
+
+    #[test]
+    fn workspace_mode_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentConversationWorkspaceMode::Chat, "chat"),
+            (AgentConversationWorkspaceMode::Edit, "edit"),
+            (AgentConversationWorkspaceMode::Plan, "plan"),
+            (AgentConversationWorkspaceMode::Ideation, "ideation"),
+            (AgentConversationWorkspaceMode::ReviewPr, "review_pr"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(AgentConversationWorkspaceMode::from_str(text).unwrap(), variant);
+        }
+        assert!(AgentConversationWorkspaceMode::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn workspace_status_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentConversationWorkspaceStatus::Active, "active"),
+            (AgentConversationWorkspaceStatus::Archived, "archived"),
+            (AgentConversationWorkspaceStatus::Missing, "missing"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(AgentConversationWorkspaceStatus::from_str(text).unwrap(), variant);
+        }
+        assert!(AgentConversationWorkspaceStatus::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn monitor_status_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentWorkspacePrReviewMonitorStatus::Idle, "idle"),
+            (AgentWorkspacePrReviewMonitorStatus::Reviewing, "reviewing"),
+            (AgentWorkspacePrReviewMonitorStatus::AwaitingUser, "awaiting_user"),
+            (AgentWorkspacePrReviewMonitorStatus::Watching, "watching"),
+            (AgentWorkspacePrReviewMonitorStatus::Submitting, "submitting"),
+            (AgentWorkspacePrReviewMonitorStatus::Blocked, "blocked"),
+            (AgentWorkspacePrReviewMonitorStatus::Terminal, "terminal"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(
+                AgentWorkspacePrReviewMonitorStatus::from_str(text).unwrap(),
+                variant
+            );
+        }
+        assert!(AgentWorkspacePrReviewMonitorStatus::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn action_kind_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentWorkspacePrReviewActionKind::RequestChanges, "request_changes"),
+            (AgentWorkspacePrReviewActionKind::Approve, "approve"),
+            (AgentWorkspacePrReviewActionKind::Comment, "comment"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(AgentWorkspacePrReviewActionKind::from_str(text).unwrap(), variant);
+        }
+        assert!(AgentWorkspacePrReviewActionKind::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn action_status_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentWorkspacePrReviewActionStatus::Pending, "pending"),
+            (AgentWorkspacePrReviewActionStatus::Approved, "approved"),
+            (AgentWorkspacePrReviewActionStatus::Skipped, "skipped"),
+            (AgentWorkspacePrReviewActionStatus::Submitting, "submitting"),
+            (AgentWorkspacePrReviewActionStatus::Submitted, "submitted"),
+            (AgentWorkspacePrReviewActionStatus::Failed, "failed"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(
+                AgentWorkspacePrReviewActionStatus::from_str(text).unwrap(),
+                variant
+            );
+        }
+        assert!(AgentWorkspacePrReviewActionStatus::from_str("bogus").is_err());
+    }
+}
+
+#[cfg(test)]
+mod is_open_pr_tests {
+    use super::{
+        is_open_pr, AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
+        IdeationAnalysisBaseRefKind, ProjectId,
+    };
+
+    #[test]
+    fn no_pr_number_is_not_open() {
+        // No PR number → never open, regardless of status.
+        assert!(!is_open_pr(None, None));
+        assert!(!is_open_pr(None, Some("open")));
+        assert!(!is_open_pr(None, Some("draft")));
+    }
+
+    #[test]
+    fn terminal_status_is_not_open() {
+        assert!(!is_open_pr(Some(42), Some("merged")));
+        assert!(!is_open_pr(Some(42), Some("closed")));
+    }
+
+    #[test]
+    fn non_terminal_status_with_number_is_open() {
+        assert!(is_open_pr(Some(42), Some("draft")));
+        assert!(is_open_pr(Some(42), Some("open")));
+        // An unknown / not-yet-known status with a PR number is treated as open.
+        assert!(is_open_pr(Some(42), None));
+        assert!(is_open_pr(Some(42), Some("queued")));
+    }
+
+    fn workspace_with_pr(
+        publication_pr_number: Option<i64>,
+        publication_pr_status: Option<&str>,
+    ) -> AgentConversationWorkspace {
+        let mut workspace = AgentConversationWorkspace::new(
+            ChatConversationId::new(),
+            ProjectId("project-1".to_string()),
+            AgentConversationWorkspaceMode::Chat,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            None,
+            None,
+            "feature/branch".to_string(),
+            "/tmp/worktree".to_string(),
+        );
+        workspace.publication_pr_number = publication_pr_number;
+        workspace.publication_pr_status = publication_pr_status.map(str::to_string);
+        workspace
+    }
+
+    #[test]
+    fn has_open_pr_delegates_to_is_open_pr() {
+        assert!(!workspace_with_pr(None, None).has_open_pr());
+        assert!(!workspace_with_pr(Some(7), Some("merged")).has_open_pr());
+        assert!(!workspace_with_pr(Some(7), Some("closed")).has_open_pr());
+        assert!(workspace_with_pr(Some(7), Some("open")).has_open_pr());
+        assert!(workspace_with_pr(Some(7), Some("draft")).has_open_pr());
+        assert!(workspace_with_pr(Some(7), None).has_open_pr());
     }
 }
 

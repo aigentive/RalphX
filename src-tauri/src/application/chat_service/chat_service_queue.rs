@@ -28,9 +28,11 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatMessageRepository,
-    ChatTimelineRepository, IdeationSessionRepository, TaskRepository,
+    ChatTimelineRepository, IdeationSessionRepository, QueuedMessageRepository, TaskRepository,
 };
-use crate::domain::services::{MessageQueue, QueuedMessage, RunningAgentKey, RunningAgentRegistry};
+use crate::domain::services::{
+    MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
+};
 use crate::utils::secret_redactor::redact;
 use tokio_util::sync::CancellationToken;
 
@@ -45,6 +47,133 @@ impl QueueProcessingOutcome {
         self.last_run_id
             .clone()
             .unwrap_or_else(|| fallback_run_id.to_string())
+    }
+}
+
+async fn durable_queue_len(
+    queued_message_repo: Option<&Arc<dyn QueuedMessageRepository>>,
+    key: &QueueKey,
+) -> usize {
+    match queued_message_repo {
+        Some(repo) => repo
+            .list(key)
+            .await
+            .map(|messages| messages.len())
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    error = %error,
+                    context_type = %key.context_type,
+                    context_id = %key.context_id,
+                    "[QUEUE] Failed to list durable queued messages"
+                );
+                0
+            }),
+        None => 0,
+    }
+}
+
+async fn queue_count(
+    queued_message_repo: Option<&Arc<dyn QueuedMessageRepository>>,
+    message_queue: &MessageQueue,
+    key: &QueueKey,
+) -> usize {
+    let memory = message_queue.get_queued_with_key(key).len();
+    if memory > 0 {
+        memory
+    } else {
+        durable_queue_len(queued_message_repo, key).await
+    }
+}
+
+async fn delete_durable_queued_message(
+    queued_message_repo: Option<&Arc<dyn QueuedMessageRepository>>,
+    key: &QueueKey,
+    message_id: &str,
+) -> bool {
+    match queued_message_repo {
+        Some(repo) => match repo.delete(key, message_id).await {
+            Ok(deleted) => deleted,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    context_type = %key.context_type,
+                    context_id = %key.context_id,
+                    queued_message_id = %message_id,
+                    "[QUEUE] Failed to delete durable queued message"
+                );
+                false
+            }
+        },
+        None => false,
+    }
+}
+
+async fn persist_durable_front(
+    queued_message_repo: Option<&Arc<dyn QueuedMessageRepository>>,
+    key: &QueueKey,
+    message: &QueuedMessage,
+) {
+    if let Some(repo) = queued_message_repo {
+        if let Err(error) = repo.enqueue_front(key, message).await {
+            tracing::warn!(
+                error = %error,
+                context_type = %key.context_type,
+                context_id = %key.context_id,
+                queued_message_id = %message.id,
+                "[QUEUE] Failed to restore durable queued message"
+            );
+        }
+    }
+}
+
+async fn restore_queue_front(
+    queued_message_repo: Option<&Arc<dyn QueuedMessageRepository>>,
+    message_queue: &MessageQueue,
+    key: &QueueKey,
+    message: QueuedMessage,
+) {
+    message_queue.queue_front_existing(key.context_type, key.context_id.clone(), message.clone());
+    persist_durable_front(queued_message_repo, key, &message).await;
+}
+
+async fn clear_durable_queue(
+    queued_message_repo: Option<&Arc<dyn QueuedMessageRepository>>,
+    key: &QueueKey,
+) {
+    if let Some(repo) = queued_message_repo {
+        if let Err(error) = repo.clear(key).await {
+            tracing::warn!(
+                error = %error,
+                context_type = %key.context_type,
+                context_id = %key.context_id,
+                "[QUEUE] Failed to clear durable queued messages"
+            );
+        }
+    }
+}
+
+async fn pop_next_queued_message(
+    queued_message_repo: Option<&Arc<dyn QueuedMessageRepository>>,
+    message_queue: &MessageQueue,
+    key: &QueueKey,
+) -> Option<QueuedMessage> {
+    if let Some(message) = message_queue.pop_with_key(key) {
+        let _ = delete_durable_queued_message(queued_message_repo, key, &message.id).await;
+        return Some(message);
+    }
+
+    let repo = queued_message_repo?;
+    match repo.pop_front(key).await {
+        Ok(message) => message,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                context_type = %key.context_type,
+                context_id = %key.context_id,
+                "[QUEUE] Failed to pop durable queued message"
+            );
+            None
+        }
     }
 }
 
@@ -343,6 +472,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     conversation_id: ChatConversationId,
     session_id: &str,
     message_queue: &Arc<MessageQueue>,
+    queued_message_repo: Option<Arc<dyn QueuedMessageRepository>>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
     agent_run_repo: &Arc<dyn AgentRunRepository>,
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
@@ -368,15 +498,18 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     let mut total_processed = 0u32;
     let mut last_run_id: Option<String> = None;
     let mut fresh_provider_harness: Option<AgentHarnessKind> = None;
+    let queue_key = QueueKey::new(context_type, queue_context_id);
 
     // Outer loop: keep processing until queue is stable-empty
     loop {
         if queue_processing_blocked_by_pause(context_type, execution_state.as_ref()) {
+            let pending =
+                queue_count(queued_message_repo.as_ref(), message_queue, &queue_key).await;
             tracing::info!(
                 %context_type,
                 context_id,
                 queue_context_id,
-                pending = message_queue.get_queued(context_type, queue_context_id).len(),
+                pending,
                 "[QUEUE] Execution paused, leaving queued messages pending"
             );
             break;
@@ -391,18 +524,16 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             break;
         }
 
-        let queue_count = message_queue
-            .get_queued(context_type, queue_context_id)
-            .len();
+        let pending_count =
+            queue_count(queued_message_repo.as_ref(), message_queue, &queue_key).await;
 
-        if queue_count == 0 {
+        if pending_count == 0 {
             // Queue is empty, wait briefly then check once more for race condition
             if total_processed > 0 {
                 // We processed messages, give a small window for late arrivals
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                let final_count = message_queue
-                    .get_queued(context_type, queue_context_id)
-                    .len();
+                let final_count =
+                    queue_count(queued_message_repo.as_ref(), message_queue, &queue_key).await;
                 if final_count == 0 {
                     tracing::info!(
                         "[QUEUE] Queue processing complete: {} total messages processed",
@@ -426,13 +557,21 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             context_type,
             context_id,
             queue_context_id,
-            queue_count
+            pending_count
         );
 
         // Inner loop: process all currently queued messages
-        while let Some(queued_msg) = message_queue.pop(context_type, queue_context_id) {
+        while let Some(queued_msg) =
+            pop_next_queued_message(queued_message_repo.as_ref(), message_queue, &queue_key).await
+        {
             if queue_processing_blocked_by_pause(context_type, execution_state.as_ref()) {
-                message_queue.queue_front_existing(context_type, queue_context_id, queued_msg);
+                restore_queue_front(
+                    queued_message_repo.as_ref(),
+                    message_queue,
+                    &queue_key,
+                    queued_msg,
+                )
+                .await;
                 tracing::info!(
                     %context_type,
                     context_id,
@@ -443,6 +582,13 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             }
 
             if cancellation_token.is_cancelled() {
+                restore_queue_front(
+                    queued_message_repo.as_ref(),
+                    message_queue,
+                    &queue_key,
+                    queued_msg,
+                )
+                .await;
                 tracing::info!("[QUEUE] Cancellation requested mid-queue, stopping");
                 break;
             }
@@ -463,11 +609,12 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 tokio::select! {
                     _ = tokio::time::sleep(backoff) => {}
                     _ = cancellation_token.cancelled() => {
-                        message_queue.queue_front_existing(
-                            context_type,
-                            queue_context_id,
+                        restore_queue_front(
+                            queued_message_repo.as_ref(),
+                            message_queue,
+                            &queue_key,
                             queued_msg,
-                        );
+                        ).await;
                         tracing::info!(
                             %context_type,
                             context_id,
@@ -487,16 +634,20 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         if task.internal_status != InternalStatus::Executing
                             && task.internal_status != InternalStatus::ReExecuting
                         {
-                            let remaining = message_queue
-                                .get_queued(context_type, queue_context_id)
-                                .len();
+                            let remaining = queue_count(
+                                queued_message_repo.as_ref(),
+                                message_queue,
+                                &queue_key,
+                            )
+                            .await;
                             tracing::info!(
                                 "[QUEUE] Task {} has transitioned to {:?}, draining {} queued messages without spawning",
                                 context_id,
                                 task.internal_status,
                                 remaining + 1,
                             );
-                            while message_queue.pop(context_type, queue_context_id).is_some() {}
+                            while message_queue.pop_with_key(&queue_key).is_some() {}
+                            clear_durable_queue(queued_message_repo.as_ref(), &queue_key).await;
                             break;
                         }
                     }
@@ -505,7 +656,8 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             "[QUEUE] Task {} not found, draining queued messages",
                             context_id
                         );
-                        while message_queue.pop(context_type, queue_context_id).is_some() {}
+                        while message_queue.pop_with_key(&queue_key).is_some() {}
+                        clear_durable_queue(queued_message_repo.as_ref(), &queue_key).await;
                         break;
                     }
                     Err(e) => {
@@ -545,7 +697,13 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
 
             if queued_message_requires_fresh_provider_session(&queued_msg, harness) {
                 let Some(ref handle) = app_handle else {
-                    message_queue.queue_front_existing(context_type, queue_context_id, queued_msg);
+                    restore_queue_front(
+                        queued_message_repo.as_ref(),
+                        message_queue,
+                        &queue_key,
+                        queued_msg,
+                    )
+                    .await;
                     tracing::warn!(
                         %context_type,
                         context_id,
@@ -833,6 +991,26 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                 "[QUEUE] failed to auto-assign primary Jira issue from composer references"
                             );
                         }
+                        let repo = Arc::clone(&app_state.agent_conversation_linear_issue_repo);
+                        let linear_integration_service =
+                            Arc::clone(&app_state.linear_integration_service);
+                        let assignment_result = crate::application::agent_conversation_linear_issue::assign_primary_linear_issue_if_absent_and_refresh(
+                            &repo,
+                            Some(linear_integration_service.as_ref()),
+                            &conversation_id,
+                            &project_id,
+                            &queued_msg.composer_integration_references,
+                            Some(ChatMessageId::from_string(user_msg_id.clone())),
+                            user_msg.created_at,
+                        )
+                        .await;
+                        if let Err(error) = assignment_result {
+                            tracing::warn!(
+                                conversation_id = %conversation_id.as_str(),
+                                error = %error,
+                                "[QUEUE] failed to auto-assign primary Linear issue from composer references"
+                            );
+                        }
                     }
                 }
 
@@ -903,9 +1081,17 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.atlassian_integration_service)
             });
+            let linear_integration_service = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<AppState>();
+                Arc::clone(&app_state.linear_integration_service)
+            });
             let agent_conversation_jira_issue_repo = app_handle.as_ref().map(|handle| {
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.agent_conversation_jira_issue_repo)
+            });
+            let agent_conversation_linear_issue_repo = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<AppState>();
+                Arc::clone(&app_state.agent_conversation_linear_issue_repo)
             });
             let assigned_jira_issue =
                 if let Some(repo) = agent_conversation_jira_issue_repo.as_ref() {
@@ -924,10 +1110,32 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 } else {
                     None
                 };
-            let merged_integration_references =
+            let assigned_linear_issue =
+                if let Some(repo) = agent_conversation_linear_issue_repo.as_ref() {
+                    repo.get_by_conversation_id(&conversation_id)
+                        .await
+                        .map_err(|error| {
+                            tracing::warn!(
+                                conversation_id = %conversation_id.as_str(),
+                                error = %error,
+                                "[QUEUE] failed to load agent conversation Linear assignment"
+                            );
+                            error
+                        })
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
+            let merged_jira_references =
                 crate::application::agent_conversation_jira_issue::merge_assigned_jira_reference(
                     assigned_jira_issue.as_ref(),
                     &queued_msg.composer_integration_references,
+                );
+            let merged_integration_references =
+                crate::application::agent_conversation_linear_issue::merge_assigned_linear_reference(
+                    assigned_linear_issue.as_ref(),
+                    &merged_jira_references,
                 );
 
             let runtime_content =
@@ -939,6 +1147,15 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             let runtime_content = if merged_integration_references.is_empty() {
                 runtime_content
             } else if let Some(service) = atlassian_integration_service.as_ref() {
+                service
+                    .expand_references_for_prompt(&runtime_content, &merged_integration_references)
+                    .await
+            } else {
+                runtime_content
+            };
+            let runtime_content = if merged_integration_references.is_empty() {
+                runtime_content
+            } else if let Some(service) = linear_integration_service.as_ref() {
                 service
                     .expand_references_for_prompt(&runtime_content, &merged_integration_references)
                     .await
@@ -1166,6 +1383,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             let recovery_enqueue =
                                 super::chat_service_send_background::enqueue_silent_completion_recovery(
                                     message_queue.as_ref(),
+                                    queued_message_repo.as_ref(),
                                     context_type,
                                     queue_context_id,
                                     &response,
@@ -1176,7 +1394,8 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                     cancellation_token.is_cancelled(),
                                     true,
                                     queued_msg.metadata_override.as_deref(),
-                                );
+                                )
+                                .await;
                             let recovery_exhausted = matches!(
                                 recovery_enqueue,
                                 super::chat_service_send_background::SilentCompletionRecoveryEnqueue::Exhausted { .. }
@@ -1249,11 +1468,13 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                 resumed_msg.metadata_override = with_resume_in_place_metadata(
                                     resumed_msg.metadata_override.clone(),
                                 );
-                                message_queue.queue_front_existing(
-                                    context_type,
-                                    queue_context_id,
+                                restore_queue_front(
+                                    queued_message_repo.as_ref(),
+                                    message_queue,
+                                    &queue_key,
                                     resumed_msg,
-                                );
+                                )
+                                .await;
                                 super::chat_service_handlers::apply_system_wide_provider_pause(
                                     &app_handle,
                                     category,
@@ -1576,6 +1797,7 @@ mod tests {
             ChatConversationId::new(),
             "claude-session-old",
             &message_queue,
+            None,
             &running_agent_registry,
             &agent_run_repo,
             &chat_message_repo,

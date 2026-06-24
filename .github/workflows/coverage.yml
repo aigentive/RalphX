@@ -130,11 +130,21 @@ jobs:
             artifact_suffix: "2"
     env:
       CARGO_TERM_COLOR: never
+      CARGO_BUILD_JOBS: "2"
       RALPHX_TEST_MODE: "1"
       RUST_LIB_COVERAGE_ARTIFACT: coverage-rust-lib-${{ matrix.artifact_suffix }}
       RUST_LIB_COVERAGE_ROOT: coverage/coverage-rust-lib-${{ matrix.artifact_suffix }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Free runner disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          sudo docker system prune -af || true
+          df -h /
 
       - name: Install Linux system dependencies
         shell: bash
@@ -349,6 +359,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Free runner disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          sudo docker system prune -af || true
+          df -h /
+
       - name: Install Linux system dependencies
         shell: bash
         run: bash scripts/ci-install-linux-deps.sh
@@ -389,6 +408,14 @@ jobs:
             --remap-path-prefix \
             ipc_contract \
             | tee ../coverage/rust-ipc/summary.txt
+          cargo llvm-cov nextest \
+            --profile ci \
+            --test metrics_commands \
+            --test metrics_delivery_trends \
+            --test metrics_integration \
+            --test metrics_pr_insights \
+            --remap-path-prefix \
+            | tee -a ../coverage/rust-ipc/summary.txt
           cargo llvm-cov report --lcov --output-path ../coverage/rust-ipc/lcov.info
           cargo llvm-cov report --json --output-path ../coverage/rust-ipc/coverage.json
           cargo llvm-cov report --html --output-dir ../coverage/rust-ipc/html

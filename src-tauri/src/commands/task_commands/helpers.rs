@@ -1,8 +1,12 @@
 // Helper functions for task_commands module
 
-use crate::application::AppState;
+use std::collections::HashSet;
+
 use crate::application::chat_service::uses_execution_slot;
-use crate::domain::entities::{ChatContextType, IdeationSessionId, InternalStatus, ProjectId, TaskId};
+use crate::application::AppState;
+use crate::domain::entities::{
+    ChatContextType, IdeationSessionId, InternalStatus, ProjectId, TaskId,
+};
 use tauri::{Emitter, State};
 
 /// Default target for inject_task command
@@ -35,21 +39,17 @@ pub async fn emit_queue_changed(
         }
     };
 
-    let queued_message_count = match count_slot_consuming_queued_messages_for_project(
-        state.inner(),
-        project_id,
-    )
-    .await
-    {
-        Ok(count) => count,
-        Err(e) => {
-            tracing::warn!(
-                "Failed to count queued agent messages for queue_changed event: {}",
-                e
-            );
-            0
-        }
-    };
+    let queued_message_count =
+        match count_slot_consuming_queued_messages_for_project(state.inner(), project_id).await {
+            Ok(count) => count,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to count queued agent messages for queue_changed event: {}",
+                    e
+                );
+                0
+            }
+        };
 
     // Phase 82: Include projectId in queue_changed event for per-project scoping
     let _ = app.emit(
@@ -74,7 +74,20 @@ pub async fn count_slot_consuming_queued_messages_for_project(
     project_id: &ProjectId,
 ) -> Result<u32, String> {
     let mut count = 0u32;
-    for key in app_state.message_queue.list_keys() {
+    let mut keys = app_state.message_queue.list_keys();
+    let mut seen_keys: HashSet<_> = keys.iter().cloned().collect();
+    for key in app_state
+        .queued_message_repo
+        .list_keys()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        if seen_keys.insert(key.clone()) {
+            keys.push(key);
+        }
+    }
+
+    for key in keys {
         if !uses_execution_slot(key.context_type) {
             continue;
         }
@@ -111,7 +124,21 @@ pub async fn count_slot_consuming_queued_messages_for_project(
             continue;
         }
 
-        count += app_state.message_queue.get_queued_with_key(&key).len() as u32;
+        let mut ids: HashSet<String> = app_state
+            .message_queue
+            .get_queued_with_key(&key)
+            .into_iter()
+            .map(|message| message.id)
+            .collect();
+        for message in app_state
+            .queued_message_repo
+            .list(&key)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            ids.insert(message.id);
+        }
+        count += ids.len() as u32;
     }
 
     Ok(count)
@@ -170,13 +197,23 @@ pub fn status_to_label(status: InternalStatus) -> String {
 mod tests {
     use super::count_slot_consuming_queued_messages_for_project;
     use crate::application::AppState;
-    use crate::domain::entities::{ChatContextType, IdeationSession, InternalStatus, Project, Task};
+    use crate::domain::entities::{
+        ChatContextType, IdeationSession, InternalStatus, Project, Task,
+    };
+    use crate::domain::services::{QueueKey, QueuedMessage};
 
     #[tokio::test]
     async fn test_count_slot_consuming_queued_messages_for_project_counts_all_slot_contexts() {
         let app_state = AppState::new_test();
-        let project = Project::new("Queue Count Project".to_string(), "/test/queue-count".to_string());
-        app_state.project_repo.create(project.clone()).await.unwrap();
+        let project = Project::new(
+            "Queue Count Project".to_string(),
+            "/test/queue-count".to_string(),
+        );
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .unwrap();
 
         let review_task = app_state
             .task_repo
@@ -221,5 +258,53 @@ mod tests {
             .expect("count queued messages");
 
         assert_eq!(count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_count_slot_consuming_queued_messages_merges_durable_rows_by_id() {
+        let app_state = AppState::new_test();
+        let project = Project::new(
+            "Durable Queue Count Project".to_string(),
+            "/test/durable-queue-count".to_string(),
+        );
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .unwrap();
+        let task = app_state
+            .task_repo
+            .create(Task {
+                internal_status: InternalStatus::Reviewing,
+                ..Task::new(project.id.clone(), "Review queued".to_string())
+            })
+            .await
+            .unwrap();
+        let key = QueueKey::new(ChatContextType::Review, task.id.as_str());
+        let shared = QueuedMessage::with_id("shared".to_string(), "Shared".to_string());
+        let durable_only =
+            QueuedMessage::with_id("durable-only".to_string(), "Durable only".to_string());
+
+        app_state.message_queue.queue_front_existing(
+            ChatContextType::Review,
+            task.id.as_str(),
+            shared.clone(),
+        );
+        app_state
+            .queued_message_repo
+            .enqueue_back(&key, &shared)
+            .await
+            .unwrap();
+        app_state
+            .queued_message_repo
+            .enqueue_back(&key, &durable_only)
+            .await
+            .unwrap();
+
+        let count = count_slot_consuming_queued_messages_for_project(&app_state, &project.id)
+            .await
+            .expect("count durable queued messages");
+
+        assert_eq!(count, 2);
     }
 }

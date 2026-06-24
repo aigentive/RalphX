@@ -12,6 +12,9 @@ import {
   getAgentMessageToolCallDetail,
   getAgentTimelineItemToolCallDetail,
   getConversationStats,
+  getAgentWorkspacePrReviewContext,
+  submitAgentWorkspacePrReviewAction,
+  skipAgentWorkspacePrReviewAction,
   createConversation,
   updateConversationTitle,
   spawnConversationSessionNamer,
@@ -29,6 +32,9 @@ import {
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
   startAgentConversation,
+  startAgentConversationInvokeInput,
+  transformStartAgentConversationResponse,
+  StartAgentConversationResponseSchema,
   forkAgentConversation,
   switchAgentConversationMode,
   sendAgentMessage,
@@ -2437,6 +2443,15 @@ describe("chat api", () => {
     expect(chatApi.setAgentConversationWorkspaceAutoPublish).toBe(
       setAgentConversationWorkspaceAutoPublish
     );
+    expect(chatApi.getAgentWorkspacePrReviewContext).toBe(
+      getAgentWorkspacePrReviewContext
+    );
+    expect(chatApi.submitAgentWorkspacePrReviewAction).toBe(
+      submitAgentWorkspacePrReviewAction
+    );
+    expect(chatApi.skipAgentWorkspacePrReviewAction).toBe(
+      skipAgentWorkspacePrReviewAction
+    );
     expect(chatApi.switchAgentConversationMode).toBe(switchAgentConversationMode);
     expect(chatApi.forkAgentConversation).toBe(forkAgentConversation);
     expect(chatApi.archiveConversation).toBe(archiveConversation);
@@ -2448,6 +2463,76 @@ describe("chat api", () => {
 
 describe("getConversationActiveState", () => {
   let mockFetch: ReturnType<typeof vi.fn>;
+  const rawWorkspace = () => ({
+    conversation_id: "conversation-1",
+    project_id: "project-1",
+    mode: "edit",
+    base_ref_kind: "project_default",
+    base_ref: "main",
+    base_display_name: "Project default (main)",
+    base_commit: "base-sha",
+    branch_name: "ralphx/ralphx/agent-conversation-1",
+    worktree_path: "/tmp/ralphx/conversation-1",
+    linked_ideation_session_id: null,
+    linked_plan_branch_id: null,
+    source_pull_request: null,
+    publication_pr_number: 411,
+    publication_pr_url: "https://github.com/aigentive/ralphx.app/pull/411",
+    publication_pr_status: "open",
+    publication_push_status: "pushed",
+    auto_publish_enabled: true,
+    auto_publish_initial_pr_enabled: false,
+    auto_publish_paused_pr_autofix_enabled: null,
+    auto_publish_paused_pr_auto_merge_desired: null,
+    pr_autofix_enabled: true,
+    pr_auto_merge_desired: true,
+    pr_auto_merge_method: "squash",
+    pr_auto_merge_current: true,
+    pr_supervision_status: "monitoring",
+    pr_supervision_summary: "Watching PR",
+    pr_supervision_updated_at: "2026-06-18T12:00:00Z",
+    status: "active",
+    created_at: "2026-06-18T12:00:00Z",
+    updated_at: "2026-06-18T12:00:00Z",
+  });
+  const rawMonitor = (overrides: Record<string, unknown> = {}) => ({
+    conversation_id: "conversation-1",
+    project_id: "project-1",
+    pr_number: 411,
+    status: "awaiting_user",
+    monitor_enabled: true,
+    first_review_completed: false,
+    last_seen_head_sha: "abcdef1234567890",
+    last_reviewed_head_sha: null,
+    last_review_run_id: "run-1",
+    last_review_outcome: null,
+    last_submitted_review_id: null,
+    review_artifact_id: "review-artifact-1",
+    review_artifact_head_sha: "abcdef1234567890",
+    review_artifact_version: 1,
+    review_artifact_updated_at: "2026-06-18T12:00:00Z",
+    last_error: null,
+    created_at: "2026-06-18T12:00:00Z",
+    updated_at: "2026-06-18T12:00:00Z",
+    ...overrides,
+  });
+  const rawAction = (overrides: Record<string, unknown> = {}) => ({
+    id: "action-1",
+    conversation_id: "conversation-1",
+    pr_number: 411,
+    head_sha: "abcdef1234567890",
+    proposed_action: "request_changes",
+    summary: "Found a regression",
+    review_body: "Please fix the regression before merge.",
+    findings_json: '[{"path":"src/lib.rs"}]',
+    status: "pending",
+    submitted_review_id: null,
+    created_by_run_id: "run-1",
+    created_at: "2026-06-18T12:00:00Z",
+    updated_at: "2026-06-18T12:00:00Z",
+    resolved_at: null,
+    ...overrides,
+  });
 
   beforeEach(() => {
     mockFetch = vi.fn();
@@ -2556,5 +2641,360 @@ describe("getConversationActiveState", () => {
     await expect(getConversationActiveState("conv-missing")).rejects.toThrow(
       "Failed to get conversation active state: 404"
     );
+  });
+
+  it("fetches and transforms agent workspace PR review context", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          workspace: rawWorkspace(),
+          events: [
+            {
+              id: "event-1",
+              conversation_id: "conversation-1",
+              step: "published",
+              status: "succeeded",
+              summary: "Draft pull request is ready",
+              classification: null,
+              created_at: "2026-06-18T12:01:00Z",
+            },
+          ],
+          pr_number: 411,
+          pr_url: "https://github.com/aigentive/ralphx.app/pull/411",
+          current_head_sha: "abcdef1234567890",
+          health: { merge_state_status: "Blocked" },
+          review_feedback: null,
+          monitor: rawMonitor(),
+          pending_action: rawAction(),
+          recent_actions: [
+            rawAction({
+              id: "action-0",
+              status: "skipped",
+              resolved_at: "2026-06-18T12:02:00Z",
+            }),
+          ],
+          issue_comment_evidence: [{ comment_id: "comment-1" }],
+        }),
+    });
+
+    const result = await getAgentWorkspacePrReviewContext("conversation-1");
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:3847/api/agent-workspaces/conversation-1/pr-review-context",
+      undefined
+    );
+    expect(result.workspace.conversationId).toBe("conversation-1");
+    expect(result.events[0]?.conversationId).toBe("conversation-1");
+    expect(result.monitor?.lastReviewRunId).toBe("run-1");
+    expect(result.monitor?.reviewArtifactHeadSha).toBe("abcdef1234567890");
+    expect(result.pendingAction?.proposedAction).toBe("request_changes");
+    expect(result.recentActions[0]?.status).toBe("skipped");
+    expect(result.issueCommentEvidence).toEqual([{ comment_id: "comment-1" }]);
+  });
+
+  it("submits and skips agent workspace PR review actions through encoded REST endpoints", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            success: true,
+            monitor: rawMonitor(),
+            action: rawAction({
+              status: "submitted",
+              submitted_review_id: "review-1",
+              resolved_at: "2026-06-18T12:03:00Z",
+            }),
+            submitted_review_id: "review-1",
+            submitted_review_url:
+              "https://github.com/aigentive/ralphx.app/pull/411#pullrequestreview-1",
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            success: true,
+            monitor: rawMonitor({ status: "watching" }),
+            action: rawAction({
+              status: "skipped",
+              resolved_at: "2026-06-18T12:04:00Z",
+            }),
+          }),
+      });
+
+    const submitted = await submitAgentWorkspacePrReviewAction(
+      "conversation/1",
+      "action/1",
+      "approve"
+    );
+    const skipped = await skipAgentWorkspacePrReviewAction(
+      "conversation/1",
+      "action/1",
+      null
+    );
+
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:3847/api/agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/submit",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action_kind: "approve" }),
+      }
+    );
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost:3847/api/agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/skip",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: null }),
+      }
+    );
+    expect(submitted.submittedReviewId).toBe("review-1");
+    expect(submitted.action.status).toBe("submitted");
+    expect(skipped.action.status).toBe("skipped");
+  });
+
+  it("surfaces backend error detail for agent workspace PR review requests", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      json: () => Promise.resolve({ detail: "No linked pull request" }),
+    });
+
+    await expect(
+      getAgentWorkspacePrReviewContext("conversation-1")
+    ).rejects.toThrow("409 Conflict: No linked pull request");
+  });
+});
+
+describe("startAgentConversationInvokeInput", () => {
+  it("includes only projectId and content when all optional fields are absent", () => {
+    const out = startAgentConversationInvokeInput({
+      projectId: "project-1",
+      content: "hello",
+    });
+
+    expect(out).toEqual({ projectId: "project-1", content: "hello" });
+  });
+
+  it("omits null/undefined optional scalar fields", () => {
+    const out = startAgentConversationInvokeInput({
+      projectId: "project-1",
+      content: "hello",
+      conversationId: null,
+      providerHarness: null,
+      modelId: null,
+      logicalEffort: null,
+      base: null,
+    });
+
+    expect(out).toEqual({ projectId: "project-1", content: "hello" });
+    expect(out).not.toHaveProperty("conversationId");
+    expect(out).not.toHaveProperty("providerHarness");
+    expect(out).not.toHaveProperty("modelOverride");
+    expect(out).not.toHaveProperty("logicalEffort");
+    expect(out).not.toHaveProperty("baseRefKind");
+  });
+
+  it("maps all populated optional fields, renaming modelId to modelOverride", () => {
+    const out = startAgentConversationInvokeInput({
+      projectId: "project-1",
+      content: "do the thing",
+      conversationId: "conversation-9",
+      providerHarness: "codex",
+      modelId: "gpt-5.5",
+      logicalEffort: "xhigh",
+      mode: "chat",
+      composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
+      composerIntegrationReferences: [
+        { provider: "linear", kind: "linear", id: "ISS-1" },
+      ],
+      composerArtifactReferences: [{ artifactId: "artifact-1", kind: "plan" }],
+      base: {
+        kind: "local_branch",
+        ref: "feature/x",
+        displayName: "PR #7",
+        sourcePullRequest: {
+          number: 7,
+          url: "https://github.com/owner/repo/pull/7",
+          title: "Add x",
+          headRefName: "feature/x",
+          baseRefName: "main",
+          headRefOid: "deadbeef",
+        },
+      },
+    });
+
+    expect(out).toEqual({
+      projectId: "project-1",
+      content: "do the thing",
+      conversationId: "conversation-9",
+      providerHarness: "codex",
+      modelOverride: "gpt-5.5",
+      logicalEffort: "xhigh",
+      mode: "chat",
+      composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
+      composerIntegrationReferences: [
+        { provider: "linear", kind: "linear", id: "ISS-1" },
+      ],
+      composerArtifactReferences: [{ artifactId: "artifact-1", kind: "plan" }],
+      baseRefKind: "local_branch",
+      baseRef: "feature/x",
+      baseDisplayName: "PR #7",
+      baseSourcePullRequest: {
+        number: 7,
+        url: "https://github.com/owner/repo/pull/7",
+        title: "Add x",
+        headRefName: "feature/x",
+        baseRefName: "main",
+        headRefOid: "deadbeef",
+      },
+    });
+  });
+
+  it("sets base ref fields but omits baseSourcePullRequest when base has no sourcePullRequest", () => {
+    const out = startAgentConversationInvokeInput({
+      projectId: "project-1",
+      content: "hello",
+      base: {
+        kind: "project_default",
+        ref: "main",
+        displayName: "main",
+      },
+    });
+
+    expect(out).toMatchObject({
+      baseRefKind: "project_default",
+      baseRef: "main",
+      baseDisplayName: "main",
+    });
+    expect(out).not.toHaveProperty("baseSourcePullRequest");
+  });
+
+  it("filters out empty composer reference arrays", () => {
+    const out = startAgentConversationInvokeInput({
+      projectId: "project-1",
+      content: "hello",
+      composerProjectReferences: [],
+      composerIntegrationReferences: [],
+      composerArtifactReferences: [],
+    });
+
+    expect(out).toEqual({ projectId: "project-1", content: "hello" });
+    expect(out).not.toHaveProperty("composerProjectReferences");
+    expect(out).not.toHaveProperty("composerIntegrationReferences");
+    expect(out).not.toHaveProperty("composerArtifactReferences");
+  });
+});
+
+describe("transformStartAgentConversationResponse", () => {
+  it("transforms a full raw response into a StartAgentConversationResult", () => {
+    const raw = StartAgentConversationResponseSchema.parse({
+      conversation: {
+        id: "conversation-chat",
+        context_type: "project",
+        context_id: "project-1",
+        claude_session_id: null,
+        provider_session_id: null,
+        provider_harness: "codex",
+        agent_mode: "chat",
+        title: "Chat",
+        message_count: 1,
+        last_message_at: null,
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:00:00Z",
+        archived_at: null,
+      },
+      workspace: {
+        conversation_id: "conversation-chat",
+        project_id: "project-1",
+        mode: "chat",
+        base_ref_kind: "local_branch",
+        base_ref: "feature/agent-screen",
+        base_display_name: "PR #42",
+        base_commit: null,
+        branch_name: "ralphx/demo/agent-conversation-chat",
+        worktree_path: "/tmp/ralphx/conversation-chat",
+        linked_ideation_session_id: null,
+        linked_plan_branch_id: null,
+        source_pull_request: {
+          number: 42,
+          url: "https://github.com/owner/repo/pull/42",
+          title: "Add PR picker",
+          head_ref_name: "feature/agent-screen",
+          base_ref_name: "main",
+          head_ref_oid: "abc123",
+        },
+        publication_pr_number: null,
+        publication_pr_url: null,
+        publication_pr_status: null,
+        publication_push_status: null,
+        status: "active",
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:00:00Z",
+      },
+      send_result: {
+        conversation_id: "conversation-chat",
+        agent_run_id: "run-chat",
+        is_new_conversation: true,
+      },
+    });
+
+    const result = transformStartAgentConversationResponse(raw);
+
+    expect(result.conversation.id).toBe("conversation-chat");
+    expect(result.conversation.agentMode).toBe("chat");
+    expect(result.workspace).toMatchObject({
+      conversationId: "conversation-chat",
+      mode: "chat",
+      baseRef: "feature/agent-screen",
+      sourcePullRequest: expect.objectContaining({
+        number: 42,
+        headRefName: "feature/agent-screen",
+        baseRefName: "main",
+      }),
+    });
+    expect(result.sendResult).toMatchObject({
+      conversationId: "conversation-chat",
+      agentRunId: "run-chat",
+      isNewConversation: true,
+    });
+  });
+
+  it("maps a null workspace to null", () => {
+    const raw = StartAgentConversationResponseSchema.parse({
+      conversation: {
+        id: "conversation-2",
+        context_type: "project",
+        context_id: "project-1",
+        claude_session_id: null,
+        provider_session_id: null,
+        provider_harness: null,
+        agent_mode: "chat",
+        title: "Chat",
+        message_count: 0,
+        last_message_at: null,
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:00:00Z",
+        archived_at: null,
+      },
+      workspace: null,
+      send_result: {
+        conversation_id: "conversation-2",
+        agent_run_id: "run-2",
+        is_new_conversation: true,
+      },
+    });
+
+    const result = transformStartAgentConversationResponse(raw);
+
+    expect(result.workspace).toBeNull();
+    expect(result.conversation.id).toBe("conversation-2");
   });
 });

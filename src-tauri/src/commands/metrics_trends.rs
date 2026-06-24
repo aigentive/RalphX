@@ -1,9 +1,12 @@
 // Private SQL query helpers for weekly trend data.
 // Called by compute_project_trends in metrics_commands.rs.
 
-use rusqlite::params;
+use rusqlite::params_from_iter;
 
-use crate::commands::metrics_types::{ProjectTrends, WeeklyDataPoint};
+use crate::commands::metrics_scope::MetricsScope;
+use crate::commands::metrics_types::{
+    DeliveryWeeklyThroughputPoint, ProjectTrends, WeeklyDataPoint,
+};
 use crate::error::{AppError, AppResult};
 
 // ─── Week start helpers ───────────────────────────────────────────────────────
@@ -33,13 +36,14 @@ fn validate_week_start_day(week_start_day: u8) -> AppResult<()> {
 /// `tz_offset_minutes`: minutes east of UTC (e.g., AEST=+660, EST=-300).
 pub(crate) fn query_weekly_throughput(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
     week_start_day: u8,
     tz_offset_minutes: i32,
 ) -> AppResult<Vec<WeeklyDataPoint>> {
     validate_week_start_day(week_start_day)?;
     let wt = weekday_target(week_start_day);
     let tz_off = format!("{:+} minutes", tz_offset_minutes);
+    let task_filter = scope.project_filter("t");
 
     let sql = format!(
         "WITH RECURSIVE weeks(week_start) AS (
@@ -56,7 +60,7 @@ pub(crate) fn query_weekly_throughput(
           SELECT h.task_id, h.created_at
           FROM task_state_history h
           JOIN tasks t ON t.id = h.task_id
-          WHERE t.project_id = ?1
+          WHERE {task_filter}
             AND h.to_status = 'merged'
         ) merged ON
           date(merged.created_at, '{tz_off}') >= w.week_start
@@ -66,9 +70,11 @@ pub(crate) fn query_weekly_throughput(
         ORDER BY w.week_start"
     );
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| AppError::Database(e.to_string()))?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| AppError::Database(e.to_string()))?;
     let rows = stmt
-        .query_map(params![project_id], |row| {
+        .query_map(params_from_iter(scope.project_params()), |row| {
             let week_start: String = row.get(0)?;
             let completed_count: i64 = row.get(1)?;
             Ok(WeeklyDataPoint {
@@ -93,24 +99,190 @@ pub(crate) fn query_weekly_throughput(
     Ok(points)
 }
 
+/// Weekly unified delivery throughput, split by task pipeline and direct agent workspaces.
+///
+/// Task deliveries are merged tasks, plus merged task-pipeline PRs when no task merge
+/// transition exists to count. Workspace deliveries are direct agent workspaces that
+/// produced a PR; execution-owned workspaces linked to plan branches are excluded here so
+/// task-pipeline PR mode is not double-counted.
+pub(crate) fn query_weekly_delivery_throughput(
+    conn: &rusqlite::Connection,
+    scope: MetricsScope<'_>,
+    week_start_day: u8,
+    tz_offset_minutes: i32,
+) -> AppResult<Vec<DeliveryWeeklyThroughputPoint>> {
+    validate_week_start_day(week_start_day)?;
+    let wt = weekday_target(week_start_day);
+    let tz_off = format!("{:+} minutes", tz_offset_minutes);
+    let task_filter = scope.project_filter("t");
+    let plan_filter = scope.project_filter("pb");
+    let workspace_filter = scope.project_filter("w");
+
+    let sql = format!(
+        "WITH RECURSIVE weeks(week_start) AS (
+          SELECT date('now', '{tz_off}', 'weekday {wt}', '-6 days', '-77 days')
+          UNION ALL
+          SELECT date(week_start, '+7 days')
+          FROM weeks WHERE week_start < date('now', '{tz_off}', 'weekday {wt}', '-6 days')
+        ),
+        workspace_event_bounds AS (
+          SELECT
+            conversation_id,
+            MIN(CASE
+              WHEN step IN ('pushed', 'published', 'external_pr_linked')
+                OR (step = 'publish' AND status = 'succeeded')
+              THEN created_at
+            END) AS first_published_at,
+            MIN(CASE WHEN step IN ('pr_merged', 'external_pr_merged') THEN created_at END) AS pr_merged_at
+          FROM agent_conversation_workspace_publication_events
+          GROUP BY conversation_id
+        ),
+        delivery_events AS (
+          SELECT
+            date(h.created_at, '{tz_off}', 'weekday {wt}', '-6 days') AS week_start,
+            1 AS task_deliveries,
+            0 AS workspace_deliveries,
+            0 AS merged_prs
+          FROM task_state_history h
+          JOIN tasks t ON t.id = h.task_id
+          WHERE {task_filter}
+            AND h.to_status = 'merged'
+
+          UNION ALL
+
+          SELECT
+            date(COALESCE(pb.merged_at, pb.last_polled_at), '{tz_off}', 'weekday {wt}', '-6 days') AS week_start,
+            1 AS task_deliveries,
+            0 AS workspace_deliveries,
+            0 AS merged_prs
+          FROM plan_branches pb
+          WHERE {plan_filter}
+            AND pb.pr_number IS NOT NULL
+            AND lower(COALESCE(pb.pr_status, '')) = 'merged'
+            AND COALESCE(pb.merged_at, pb.last_polled_at) IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1
+              FROM task_state_history h
+              WHERE h.task_id = pb.merge_task_id
+                AND h.to_status = 'merged'
+            )
+
+          UNION ALL
+
+          SELECT
+            date(COALESCE(b.first_published_at, w.created_at), '{tz_off}', 'weekday {wt}', '-6 days') AS week_start,
+            0 AS task_deliveries,
+            1 AS workspace_deliveries,
+            0 AS merged_prs
+          FROM agent_conversation_workspaces w
+          LEFT JOIN workspace_event_bounds b ON b.conversation_id = w.conversation_id
+          WHERE {workspace_filter}
+            AND w.linked_plan_branch_id IS NULL
+            AND w.publication_pr_number IS NOT NULL
+
+          UNION ALL
+
+          SELECT
+            date(COALESCE(pb.merged_at, pb.last_polled_at), '{tz_off}', 'weekday {wt}', '-6 days') AS week_start,
+            0 AS task_deliveries,
+            0 AS workspace_deliveries,
+            1 AS merged_prs
+          FROM plan_branches pb
+          WHERE {plan_filter}
+            AND pb.pr_number IS NOT NULL
+            AND lower(COALESCE(pb.pr_status, '')) = 'merged'
+            AND COALESCE(pb.merged_at, pb.last_polled_at) IS NOT NULL
+
+          UNION ALL
+
+          SELECT
+            date(COALESCE(b.pr_merged_at, w.updated_at), '{tz_off}', 'weekday {wt}', '-6 days') AS week_start,
+            0 AS task_deliveries,
+            0 AS workspace_deliveries,
+            1 AS merged_prs
+          FROM agent_conversation_workspaces w
+          LEFT JOIN workspace_event_bounds b ON b.conversation_id = w.conversation_id
+          WHERE {workspace_filter}
+            AND w.linked_plan_branch_id IS NULL
+            AND w.publication_pr_number IS NOT NULL
+            AND lower(COALESCE(w.publication_pr_status, '')) = 'merged'
+        ),
+        grouped AS (
+          SELECT
+            week_start,
+            SUM(task_deliveries) AS task_deliveries,
+            SUM(workspace_deliveries) AS workspace_deliveries,
+            SUM(merged_prs) AS merged_prs
+          FROM delivery_events
+          WHERE week_start IS NOT NULL
+          GROUP BY week_start
+        )
+        SELECT
+          w.week_start,
+          COALESCE(g.task_deliveries, 0) AS task_deliveries,
+          COALESCE(g.workspace_deliveries, 0) AS workspace_deliveries,
+          COALESCE(g.merged_prs, 0) AS merged_prs
+        FROM weeks w
+        LEFT JOIN grouped g ON g.week_start = w.week_start
+        WHERE w.week_start <= date('now', '{tz_off}')
+        ORDER BY w.week_start"
+    );
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    let rows = stmt
+        .query_map(params_from_iter(scope.project_params()), |row| {
+            let week_start: String = row.get(0)?;
+            let task_deliveries: i64 = row.get(1)?;
+            let workspace_deliveries: i64 = row.get(2)?;
+            let merged_prs: i64 = row.get(3)?;
+            let unified_deliveries = task_deliveries + workspace_deliveries;
+            Ok(DeliveryWeeklyThroughputPoint {
+                week_start,
+                unified_deliveries,
+                task_deliveries,
+                workspace_deliveries,
+                merged_prs,
+                sample_size: unified_deliveries + merged_prs,
+            })
+        })
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let mut points = Vec::new();
+    for row in rows {
+        points.push(row.map_err(|e| AppError::Database(e.to_string()))?);
+    }
+    let first_nonzero = points
+        .iter()
+        .position(|point| point.unified_deliveries > 0 || point.merged_prs > 0);
+    if let Some(idx) = first_nonzero {
+        points = points.split_off(idx);
+    } else {
+        points.clear();
+    }
+    Ok(points)
+}
+
 /// Weekly average cycle time in hours for merged tasks, last 12 weeks.
 /// `tz_offset_minutes`: minutes east of UTC (e.g., AEST=+660, EST=-300).
 pub(crate) fn query_weekly_cycle_time(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
     week_start_day: u8,
     tz_offset_minutes: i32,
 ) -> AppResult<Vec<WeeklyDataPoint>> {
     validate_week_start_day(week_start_day)?;
     let wt = weekday_target(week_start_day);
     let tz_off = format!("{:+} minutes", tz_offset_minutes);
+    let task_filter = scope.project_filter("t");
 
     let sql = format!(
         "WITH merged_tasks AS (
             SELECT t.id, h.created_at as merged_at
             FROM tasks t
             JOIN task_state_history h ON h.task_id = t.id AND h.to_status = 'merged'
-            WHERE t.project_id = ?1
+            WHERE {task_filter}
               AND t.internal_status = 'merged'
               AND datetime(h.created_at) >= datetime('now', '-365 days')
         ),
@@ -144,9 +316,11 @@ pub(crate) fn query_weekly_cycle_time(
         ORDER BY week_start"
     );
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| AppError::Database(e.to_string()))?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| AppError::Database(e.to_string()))?;
     let rows = stmt
-        .query_map(params![project_id], |row| {
+        .query_map(params_from_iter(scope.project_params()), |row| {
             let week_start: String = row.get(0)?;
             let avg_hours: Option<f64> = row.get(1)?;
             let sample_size: i64 = row.get(2)?;
@@ -171,20 +345,21 @@ pub(crate) fn query_weekly_cycle_time(
 /// `tz_offset_minutes`: minutes east of UTC (e.g., AEST=+660, EST=-300).
 pub(crate) fn query_weekly_pipeline_cycle_time(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
     week_start_day: u8,
     tz_offset_minutes: i32,
 ) -> AppResult<Vec<WeeklyDataPoint>> {
     validate_week_start_day(week_start_day)?;
     let wt = weekday_target(week_start_day);
     let tz_off = format!("{:+} minutes", tz_offset_minutes);
+    let task_filter = scope.project_filter("t");
 
     let sql = format!(
         "WITH merged_tasks AS (
             SELECT t.id, h.created_at as merged_at
             FROM tasks t
             JOIN task_state_history h ON h.task_id = t.id AND h.to_status = 'merged'
-            WHERE t.project_id = ?1
+            WHERE {task_filter}
               AND t.internal_status = 'merged'
               AND datetime(h.created_at) >= datetime('now', '-365 days')
         ),
@@ -218,9 +393,11 @@ pub(crate) fn query_weekly_pipeline_cycle_time(
         ORDER BY week_start"
     );
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| AppError::Database(e.to_string()))?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| AppError::Database(e.to_string()))?;
     let rows = stmt
-        .query_map(params![project_id], |row| {
+        .query_map(params_from_iter(scope.project_params()), |row| {
             let week_start: String = row.get(0)?;
             let avg_hours: Option<f64> = row.get(1)?;
             let sample_size: i64 = row.get(2)?;
@@ -243,13 +420,14 @@ pub(crate) fn query_weekly_pipeline_cycle_time(
 /// `tz_offset_minutes`: minutes east of UTC (e.g., AEST=+660, EST=-300).
 pub(crate) fn query_weekly_success_rate(
     conn: &rusqlite::Connection,
-    project_id: &str,
+    scope: MetricsScope<'_>,
     week_start_day: u8,
     tz_offset_minutes: i32,
 ) -> AppResult<Vec<WeeklyDataPoint>> {
     validate_week_start_day(week_start_day)?;
     let wt = weekday_target(week_start_day);
     let tz_off = format!("{:+} minutes", tz_offset_minutes);
+    let task_filter = scope.project_filter("t");
 
     let sql = format!(
         "WITH terminal_tasks AS (
@@ -257,7 +435,7 @@ pub(crate) fn query_weekly_success_rate(
             FROM tasks t
             JOIN task_state_history h ON h.task_id = t.id
               AND h.to_status = t.internal_status
-            WHERE t.project_id = ?1
+            WHERE {task_filter}
               AND t.internal_status IN ('merged', 'failed', 'cancelled', 'stopped')
               AND datetime(h.created_at) >= datetime('now', '-365 days')
         )
@@ -272,9 +450,11 @@ pub(crate) fn query_weekly_success_rate(
         ORDER BY week_start"
     );
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| AppError::Database(e.to_string()))?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| AppError::Database(e.to_string()))?;
     let rows = stmt
-        .query_map(params![project_id], |row| {
+        .query_map(params_from_iter(scope.project_params()), |row| {
             let week_start: String = row.get(0)?;
             let success_rate: Option<f64> = row.get(1)?;
             let sample_size: i64 = row.get(2)?;
@@ -304,13 +484,47 @@ pub fn compute_project_trends(
     week_start_day: u8,
     tz_offset_minutes: i32,
 ) -> AppResult<ProjectTrends> {
-    let weekly_throughput = query_weekly_throughput(conn, project_id, week_start_day, tz_offset_minutes)?;
-    let weekly_cycle_time = query_weekly_cycle_time(conn, project_id, week_start_day, tz_offset_minutes)?;
-    let weekly_pipeline_cycle_time = query_weekly_pipeline_cycle_time(conn, project_id, week_start_day, tz_offset_minutes)?;
-    let weekly_success_rate = query_weekly_success_rate(conn, project_id, week_start_day, tz_offset_minutes)?;
+    compute_trends_for_scope(
+        conn,
+        MetricsScope::Project(project_id),
+        week_start_day,
+        tz_offset_minutes,
+    )
+}
+
+pub fn compute_insights_trends(
+    conn: &rusqlite::Connection,
+    week_start_day: u8,
+    tz_offset_minutes: i32,
+) -> AppResult<ProjectTrends> {
+    compute_trends_for_scope(
+        conn,
+        MetricsScope::AllProjects,
+        week_start_day,
+        tz_offset_minutes,
+    )
+}
+
+fn compute_trends_for_scope(
+    conn: &rusqlite::Connection,
+    scope: MetricsScope<'_>,
+    week_start_day: u8,
+    tz_offset_minutes: i32,
+) -> AppResult<ProjectTrends> {
+    let weekly_throughput =
+        query_weekly_throughput(conn, scope, week_start_day, tz_offset_minutes)?;
+    let weekly_delivery_throughput =
+        query_weekly_delivery_throughput(conn, scope, week_start_day, tz_offset_minutes)?;
+    let weekly_cycle_time =
+        query_weekly_cycle_time(conn, scope, week_start_day, tz_offset_minutes)?;
+    let weekly_pipeline_cycle_time =
+        query_weekly_pipeline_cycle_time(conn, scope, week_start_day, tz_offset_minutes)?;
+    let weekly_success_rate =
+        query_weekly_success_rate(conn, scope, week_start_day, tz_offset_minutes)?;
 
     Ok(ProjectTrends {
         weekly_throughput,
+        weekly_delivery_throughput,
         weekly_cycle_time,
         weekly_pipeline_cycle_time,
         weekly_success_rate,

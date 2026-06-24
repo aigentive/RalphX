@@ -4,9 +4,9 @@
 // project_id IS NULL = global row; project_id = 'proj-xyz' = per-project override.
 // Valid effort values: 'low', 'medium', 'high', 'max', 'inherit'
 
-use rusqlite::Connection;
-use crate::error::AppResult;
 use super::helpers;
+use crate::error::AppResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> AppResult<()> {
     if !helpers::table_exists(conn, "ideation_effort_settings") {

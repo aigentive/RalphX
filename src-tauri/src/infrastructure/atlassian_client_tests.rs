@@ -9,9 +9,10 @@ use crate::application::{AtlassianApiClient, AtlassianAuthContext, AtlassianCred
 use crate::domain::services::ComposerIntegrationReference;
 
 use super::atlassian_client::{
-    assign_jira_issue_to_current_user, build_confluence_search_cql, build_jira_search_jql,
-    confluence_page_id_query, fetch_confluence, fetch_jira, search_confluence, search_jira,
-    AtlassianJsonRequester, HyperAtlassianApiClient, RequestAuth,
+    add_jira_comment, assign_jira_issue_to_current_user, build_confluence_search_cql,
+    build_jira_search_jql, clear_jira_issue_assignee, confluence_page_id_query, fetch_confluence,
+    fetch_jira, list_jira_issue_transitions, search_confluence, search_jira,
+    transition_jira_issue, AtlassianJsonRequester, HyperAtlassianApiClient, RequestAuth,
 };
 
 #[derive(Clone, Debug)]
@@ -261,6 +262,116 @@ async fn jira_assign_to_current_user_puts_my_account_id_on_issue() {
     assert_eq!(
         requests[1].body.as_ref(),
         Some(&json!({ "accountId": "abc-123" }))
+    );
+}
+
+#[tokio::test]
+async fn jira_clear_assignee_puts_null_account_id_on_issue() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(Value::Null)]);
+
+    clear_jira_issue_assignee(&requester, &auth_context(), " rx-42 ")
+        .await
+        .expect("clear Jira assignee");
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, Method::PUT);
+    assert_eq!(
+        requests[0].url,
+        "https://example.atlassian.net/rest/api/3/issue/rx-42/assignee"
+    );
+    assert_eq!(
+        requests[0].body.as_ref(),
+        Some(&json!({ "accountId": Value::Null }))
+    );
+}
+
+#[tokio::test]
+async fn jira_lists_workflow_transitions_for_issue() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!({
+        "transitions": [
+            {
+                "id": "31",
+                "name": "Start Progress",
+                "to": {
+                    "id": "3",
+                    "name": "In Progress",
+                    "statusCategory": { "key": "indeterminate" }
+                }
+            }
+        ]
+    }))]);
+
+    let transitions = list_jira_issue_transitions(&requester, &auth_context(), " RX-42 ")
+        .await
+        .expect("list transitions");
+
+    assert_eq!(transitions.len(), 1);
+    assert_eq!(transitions[0].provider_transition_id, "31");
+    assert_eq!(transitions[0].to_state_id, "3");
+    assert_eq!(transitions[0].name, "Start Progress");
+    assert_eq!(transitions[0].category, "in_progress");
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, Method::GET);
+    assert_eq!(
+        requests[0].url,
+        "https://example.atlassian.net/rest/api/3/issue/RX-42/transitions"
+    );
+}
+
+#[tokio::test]
+async fn jira_transition_posts_workflow_transition_id() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(Value::Null)]);
+
+    transition_jira_issue(&requester, &auth_context(), "RX-42", "31")
+        .await
+        .expect("transition issue");
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, Method::POST);
+    assert_eq!(
+        requests[0].url,
+        "https://example.atlassian.net/rest/api/3/issue/RX-42/transitions"
+    );
+    assert_eq!(
+        requests[0].body.as_ref(),
+        Some(&json!({ "transition": { "id": "31" } }))
+    );
+}
+
+#[tokio::test]
+async fn jira_add_comment_posts_adf_and_returns_created_comment() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!({
+        "id": "10001",
+        "author": { "displayName": "A. User" },
+        "body": "Ready for review",
+        "created": "2026-06-20T08:00:00.000+0000",
+        "updated": "2026-06-20T08:00:00.000+0000"
+    }))]);
+
+    let comment = add_jira_comment(&requester, &auth_context(), "RX-42", "Ready for review")
+        .await
+        .expect("add comment");
+
+    assert_eq!(comment.id.as_deref(), Some("10001"));
+    assert_eq!(comment.body_markdown, "Ready for review");
+    assert_eq!(comment.author.as_deref(), Some("A. User"));
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, Method::POST);
+    assert_eq!(
+        requests[0].url,
+        "https://example.atlassian.net/rest/api/3/issue/RX-42/comment"
+    );
+    let body = requests[0].body.as_ref().expect("comment body");
+    assert_eq!(
+        body.pointer("/body/content/0/content/0/text")
+            .and_then(Value::as_str),
+        Some("Ready for review")
     );
 }
 

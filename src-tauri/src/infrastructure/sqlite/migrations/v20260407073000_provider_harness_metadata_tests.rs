@@ -141,7 +141,16 @@ fn test_provider_harness_metadata_is_queryable() {
         .unwrap();
     assert_eq!(conversation_id, "conv-1");
 
-    let run_fields: (String, String, String, String, String, String, String, String) = conn
+    let run_fields: (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) = conn
         .query_row(
             "SELECT harness, provider_session_id, logical_model, effective_model_id,
                     logical_effort, effective_effort, approval_policy, sandbox_mode

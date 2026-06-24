@@ -15,7 +15,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { usePlanStore } from "@/stores/planStore";
-import { useIdeationQuickAction } from "./useIdeationQuickAction";
+import { useAgentConversationQuickAction } from "./useAgentConversationQuickAction";
 import { useQuickActionFlow } from "./useQuickActionFlow";
 import { usePlanCandidateSort } from "./usePlanCandidateSort";
 import type { PlanCandidate } from "@/stores/planStore";
@@ -76,6 +76,7 @@ export interface UsePlanQuickSwitcherReturn {
   handleKeyDown: (e: React.KeyboardEvent) => void;
   handleSelect: (sessionId: string) => Promise<void>;
   handleClear: () => Promise<void>;
+  handleQuickActionSelect: () => void;
   handleRetry: () => void;
 }
 
@@ -123,7 +124,7 @@ export function usePlanQuickSwitcher({
   // Quick Action Integration
   // ============================================================================
 
-  const quickAction = useIdeationQuickAction(projectId);
+  const quickAction = useAgentConversationQuickAction(projectId, { onClose });
   const quickActionFlow = useQuickActionFlow(quickAction);
 
   // ============================================================================
@@ -222,6 +223,14 @@ export function usePlanQuickSwitcher({
     loadCandidates(projectId);
   }, [projectId, loadCandidates]);
 
+  const handleQuickActionSelect = useCallback(() => {
+    if (quickAction.requiresConfirmation === false) {
+      void quickActionFlow.confirm(searchQuery);
+      return;
+    }
+    quickActionFlow.startConfirmation();
+  }, [quickAction.requiresConfirmation, quickActionFlow, searchQuery]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       // When quick action flow is blocking, only Escape works
@@ -275,7 +284,7 @@ export function usePlanQuickSwitcher({
 
           switch (item.type) {
             case "quick-action":
-              quickActionFlow.startConfirmation();
+              handleQuickActionSelect();
               break;
 
             case "clear":
@@ -301,6 +310,7 @@ export function usePlanQuickSwitcher({
       getItemAtIndex,
       highlightedIndex,
       handleClear,
+      handleQuickActionSelect,
       handleSelect,
       onClose,
     ]
@@ -444,6 +454,7 @@ export function usePlanQuickSwitcher({
     handleKeyDown,
     handleSelect,
     handleClear,
+    handleQuickActionSelect,
     handleRetry,
   };
 }

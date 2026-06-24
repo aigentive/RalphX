@@ -12,7 +12,7 @@ import { enableMapSet } from "immer";
 import { invoke } from "@tauri-apps/api/core";
 import { featureFlagsSchema } from "@/types/feature-flags";
 import type { FeatureFlags } from "@/types/feature-flags";
-import { isViewEnabled } from "@/hooks/useFeatureFlags";
+import { applyFeatureFlagOverrides, isViewEnabled } from "@/hooks/useFeatureFlags";
 import type { AskUserQuestionPayload } from "@/types/ask-user-question";
 import type { ExecutionStatusResponse } from "@/lib/tauri";
 import type { RecoveryPromptEvent } from "@/types/events";
@@ -81,6 +81,13 @@ export type GraphSelection =
   | { kind: "planGroup"; id: string }
   | { kind: "tierGroup"; id: string }
   | { kind: "customGroup"; id: string };
+
+export interface TaskCreationContext {
+  projectId: string;
+  defaultTitle?: string;
+  ideationSessionId?: string;
+  executionPlanId?: string;
+}
 
 function applyTaskSelection(
   state: { selectedTaskId: string | null; taskHistoryState: UiState["taskHistoryState"] },
@@ -162,6 +169,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
+  ticketingDashboard: false,
 };
 
 // ============================================================================
@@ -267,7 +275,7 @@ interface UiState {
     agentRunId?: string | undefined;
   } | null;
   /** Task creation overlay context, or null if closed */
-  taskCreationContext: { projectId: string; defaultTitle?: string } | null;
+  taskCreationContext: TaskCreationContext | null;
   /** Whether the welcome screen is manually shown (vs. empty state) */
   showWelcomeOverlay: boolean;
   /** View to return to when closing manually-opened welcome screen */
@@ -389,7 +397,11 @@ interface UiActions {
     agentRunId?: string | undefined;
   } | null) => void;
   /** Open task creation overlay */
-  openTaskCreation: (projectId: string, defaultTitle?: string) => void;
+  openTaskCreation: (
+    projectId: string,
+    defaultTitle?: string,
+    context?: Pick<TaskCreationContext, "ideationSessionId" | "executionPlanId">
+  ) => void;
   /** Close task creation overlay */
   closeTaskCreation: () => void;
   /** Open welcome screen overlay, saving current view */
@@ -529,7 +541,10 @@ export const useUiStore = create<UiState & UiActions>()(
 
     setCurrentView: (view) =>
       set((state) => {
-        const safeView = isViewEnabled(view, state.featureFlags) ? view : DEFAULT_PROJECT_VIEW;
+        const safeView =
+          view === "ticketing" || isViewEnabled(view, state.featureFlags)
+            ? view
+            : DEFAULT_PROJECT_VIEW;
         const projectId = useProjectStore.getState().activeProjectId;
         state.currentView = safeView;
         if (projectId) {
@@ -747,11 +762,13 @@ export const useUiStore = create<UiState & UiActions>()(
         state.taskHistoryState = historyState;
       }),
 
-    openTaskCreation: (projectId, defaultTitle) =>
+    openTaskCreation: (projectId, defaultTitle, context) =>
       set((state) => {
         state.taskCreationContext = {
           projectId,
           ...(defaultTitle !== undefined && { defaultTitle }),
+          ...(context?.ideationSessionId && { ideationSessionId: context.ideationSessionId }),
+          ...(context?.executionPlanId && { executionPlanId: context.executionPlanId }),
         };
       }),
 
@@ -987,7 +1004,7 @@ void invoke<unknown>("get_ui_feature_flags")
   .then((raw) => {
     const result = featureFlagsSchema.safeParse(raw);
     if (result.success) {
-      useUiStore.getState().setFeatureFlags(result.data);
+      useUiStore.getState().setFeatureFlags(applyFeatureFlagOverrides(result.data));
     }
   })
   .catch(() => {

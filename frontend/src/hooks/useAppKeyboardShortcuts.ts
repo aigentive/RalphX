@@ -13,6 +13,7 @@ const ALL_ENABLED_FLAGS: FeatureFlags = {
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
+  ticketingDashboard: false,
 };
 
 interface UseAppKeyboardShortcutsProps {

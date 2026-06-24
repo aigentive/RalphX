@@ -183,14 +183,22 @@ export function usePlanArtifactEvents() {
             derivedFrom: [],
           };
 
-          // Tier 1: sessionId match — most reliable, use when backend provides it
-          if (sessionId && currentActiveSessionId === sessionId) {
-            const currentSeq = currentSessions[sessionId]?.planUpdateSeq ?? 0;
-            setPlanArtifactRef.current(planArtifact);
-            updateSessionRef.current(sessionId, {
-              planArtifactId: artifact.id,
-              planUpdateSeq: currentSeq + 1,
-            });
+          // Tier 1: sessionId from the backend is authoritative. Agents plan-mode
+          // sessions may not be the global active Ideation session or present in
+          // the ideation store, but their agent-specific plan queries still need
+          // to refetch immediately.
+          if (sessionId) {
+            const session = currentSessions[sessionId];
+            if (currentActiveSessionId === sessionId) {
+              setPlanArtifactRef.current(planArtifact);
+            }
+            if (session) {
+              const currentSeq = session.planUpdateSeq ?? 0;
+              updateSessionRef.current(sessionId, {
+                planArtifactId: artifact.id,
+                planUpdateSeq: currentSeq + 1,
+              });
+            }
             queryClientRef.current.invalidateQueries({
               queryKey: ideationKeys.sessionDetail(sessionId),
             });

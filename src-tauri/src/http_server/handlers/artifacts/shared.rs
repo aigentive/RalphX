@@ -32,10 +32,7 @@ impl PlanApprovalView {
     }
 }
 
-pub(super) fn attach_plan_approval(
-    response: &mut ArtifactResponse,
-    approval: PlanApprovalView,
-) {
+pub(super) fn attach_plan_approval(response: &mut ArtifactResponse, approval: PlanApprovalView) {
     response.plan_approval_status = Some(approval.status.to_string());
     response.plan_approved_artifact_id = approval.approved_artifact_id;
     response.plan_approved_version = approval.approved_version;

@@ -4,6 +4,9 @@
 pub mod activity_commands;
 pub mod agent_model_commands;
 pub mod agent_composer_commands;
+pub mod agent_issue_report_commands;
+#[cfg(test)]
+mod agent_issue_report_commands_tests;
 pub mod agent_sidebar_commands;
 pub mod agent_terminal_commands;
 pub mod branch_helpers;
@@ -15,6 +18,9 @@ pub mod artifact_commands;
 pub mod chat_attachment_commands;
 pub mod conversation_stats_commands;
 pub mod chat_responses;
+pub mod clickup_commands;
+#[cfg(test)]
+mod clickup_commands_tests;
 pub mod diagnostic_commands;
 pub mod diff_commands;
 pub mod execution_commands;
@@ -23,9 +29,12 @@ pub mod git_commands;
 pub mod harness_provider_commands;
 pub mod health;
 pub mod ideation_commands;
+pub mod linear_commands;
 pub mod merge_pipeline_commands;
 pub mod metrics_commands;
+pub(crate) mod metrics_pr_insights;
 pub(crate) mod metrics_queries;
+pub(crate) mod metrics_scope;
 pub(crate) mod metrics_trends;
 pub mod metrics_types;
 pub mod methodology_commands;
@@ -50,6 +59,7 @@ pub mod task_step_commands;
 pub mod task_step_commands_types;
 pub mod team_commands;
 pub mod test_data_commands;
+pub mod ticketing_commands;
 pub mod unified_chat_commands;
 pub mod ui_commands;
 pub mod workspace_open_commands;
@@ -72,6 +82,9 @@ pub use agent_composer_commands::{
     ListAgentComposerSkillsResponse, SearchAgentComposerEntriesInput,
     SearchAgentComposerEntriesResponse, SearchAgentComposerPlanReferencesInput,
     SearchAgentComposerPlanReferencesResponse,
+};
+pub use agent_issue_report_commands::{
+    build_agent_issue_report, submit_agent_issue_report,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,
@@ -113,11 +126,18 @@ pub use chat_attachment_commands::{
 };
 pub use conversation_stats_commands::{
     build_conversation_stats_response, build_scope_stats_response, get_agent_conversation_stats,
-    get_project_chat_usage_stats, get_task_chat_usage_stats, ConversationAttributionCoverageResponse,
-    ConversationStatsResponse, ConversationUsageCoverageResponse, ScopeStatsResponse,
-    UsageBucketResponse, UsageTotalsResponse,
+    get_insights_chat_usage_stats, get_project_chat_usage_stats, get_task_chat_usage_stats,
+    ConversationAttributionCoverageResponse, ConversationStatsResponse,
+    ConversationUsageCoverageResponse, ScopeStatsResponse, UsageBucketResponse,
+    UsageTotalsResponse,
 };
 pub use chat_responses::ChatMessageResponse;
+pub use clickup_commands::{
+    disconnect_clickup_integration, get_clickup_integration_settings, list_clickup_workspaces,
+    save_clickup_integration_settings, search_clickup_tasks, validate_clickup_integration,
+    ClickUpIntegrationSettingsResponse, ListClickUpWorkspacesResponse,
+    SaveClickUpIntegrationSettingsInput, SearchClickUpTasksInput, SearchClickUpTasksResponse,
+};
 pub use diagnostic_commands::{
     get_agent_health, get_codex_cli_diagnostics, AgentHealthReport,
     CodexCliDiagnosticsResponse, IprEntryResponse, RunningAgentResponse,
@@ -159,12 +179,25 @@ pub use ideation_commands::{
     PriorityAssessmentResponse, SessionWithDataResponse, TaskProposalResponse,
     ToolCallResultResponse,
 };
+pub use linear_commands::{
+    assign_agent_conversation_linear_issue, clear_agent_conversation_linear_issue,
+    get_agent_conversation_linear_issue, get_linear_integration_settings,
+    get_linear_webhook_config, refresh_agent_conversation_linear_issue,
+    save_linear_integration_settings, save_linear_webhook_signing_secret, search_linear_issues,
+    validate_linear_integration, AgentConversationLinearIssueLinkResponse,
+    AgentConversationLinearIssueResponse, AssignAgentConversationLinearIssueInput,
+    ClearAgentConversationLinearIssueInput, GetAgentConversationLinearIssueInput,
+    LinearIntegrationSettingsResponse, LinearWebhookConfigResponse,
+    RefreshAgentConversationLinearIssueInput, SaveLinearIntegrationSettingsInput,
+    SaveLinearWebhookSigningSecretInput, SearchLinearIssuesInput, SearchLinearIssuesResponse,
+};
 pub use merge_pipeline_commands::{
     get_merge_phase_list, get_merge_pipeline, get_merge_progress, MergePipelineResponse,
 };
 pub use metrics_commands::{
-    compute_project_stats, get_column_metrics, get_metrics_config, get_project_stats,
-    get_project_trends, get_task_metrics, save_metrics_config, MetricsConfig,
+    compute_insights_stats, compute_project_stats, get_column_metrics, get_insights_pr_insights,
+    get_insights_stats, get_insights_trends, get_metrics_config, get_project_pr_insights,
+    get_project_stats, get_project_trends, get_task_metrics, save_metrics_config, MetricsConfig,
 };
 pub use methodology_commands::{
     activate_methodology, deactivate_methodology, get_active_methodology, get_methodologies,
@@ -227,6 +260,18 @@ pub use team_commands::{
     get_teammate_cost, send_team_message, send_teammate_message, stop_team, stop_teammate,
     CreateTeamInput, GetTeamHistoryInput, SendTeamMessageInput, SendTeammateMessageInput,
     TeamHistoryResponse, TeamMessageRecordResponse, TeamSessionResponse, TeammateSnapshotResponse,
+};
+pub use ticketing_commands::{
+    add_ticket_comment, assign_ticket, clear_ticket_assignee, get_conversation_ticket,
+    get_ticket_associations, get_ticket_detail, list_ticket_labels, list_ticket_transitions,
+    list_ticketing_columns, list_ticketing_containers, list_ticketing_providers, list_tickets,
+    refresh_tickets, set_ticket_labels, start_ralphx_work_from_ticket, transition_ticket_status,
+    AddTicketCommentInput, AssignTicketInput, ConversationTicketResponse, ListTicketsQuery,
+    RefreshTicketsResponse, SetTicketLabelsInput, StartRalphxWorkFromTicketInput,
+    TicketAssociationsResponse, TicketDetailResponse, TicketLabelOptionResponse,
+    TicketLabelsResponse, TicketMutationResponse, TicketOperationResponse, TicketPageResponse,
+    TicketRefInput, TicketSummaryResponse, TicketingCapabilitiesResponse, TicketingColumnResponse,
+    TicketingContainerResponse, TicketingProviderSummaryResponse, TransitionTicketStatusInput,
 };
 // Unified chat commands (consolidates context_chat + execution_chat)
 pub use agent_sidebar_commands::{

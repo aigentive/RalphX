@@ -119,8 +119,49 @@ vi.mock("@/components/activity", () => ({
   ),
 }));
 
+// Capture the props the App passes to the TicketingDashboardView so we can
+// drive its onNavigateToAssociation callback from tests without a real backend.
+const ticketingViewProps = vi.hoisted(() => ({
+  current: null as null | {
+    projectId: string | null;
+    onNavigateToAssociation: (deepLink: {
+      view: string;
+      id: string;
+      projectId?: string | null;
+    }) => void;
+  },
+}));
+
+// Mock the ticketing dashboard surface (and its data hooks) so navigating to
+// the ticketing view does not require live Tauri ticketing endpoints.
+vi.mock("@/components/ticketing", () => ({
+  TicketingDashboardView: (props: {
+    projectId: string | null;
+    onNavigateToAssociation: (deepLink: {
+      view: string;
+      id: string;
+      projectId?: string | null;
+    }) => void;
+  }) => {
+    ticketingViewProps.current = props;
+    return (
+      <div
+        data-testid="ticketing-dashboard-view-mock"
+        data-project-id={props.projectId ?? ""}
+      >
+        Ticketing Dashboard View
+      </div>
+    );
+  },
+}));
+
+vi.mock("@/hooks/useTicketingEvents", () => ({
+  useTicketingCacheEvents: vi.fn(),
+}));
+
 // Mock AgentsView
 vi.mock("@/components/agents", () => ({
+  AgentIssueReportDialog: () => null,
   AgentsView: ({
     footer,
     onCreateProject,
@@ -490,6 +531,11 @@ describe("App", () => {
           left: "16px",
         },
         position: "bottom-left",
+      }),
+    );
+    expect(toasterProps?.style).toEqual(
+      expect.objectContaining({
+        zIndex: 40,
       }),
     );
   });
@@ -1286,6 +1332,92 @@ describe("App", () => {
       });
       expect(useUiStore.getState().selectedTaskId).toBe("task-42");
       expect(screen.getByTestId("task-graph-view-mock")).toBeInTheDocument();
+    });
+  });
+
+  describe("Ticketing view", () => {
+    beforeEach(() => {
+      ticketingViewProps.current = null;
+      getQueryClient().clear();
+    });
+
+    it("renders the ticketing dashboard without a manual feature override", async () => {
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+
+      expect(
+        await screen.findByTestId("ticketing-dashboard-view-mock"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("ticketing-dashboard-view-mock"),
+      ).toHaveAttribute("data-project-id", "demo-project-1");
+    });
+
+    it("does not show a disabled placeholder for the old dashboard flag", async () => {
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+
+      expect(
+        await screen.findByTestId("ticketing-dashboard-view-mock"),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId("feature-disabled-ticketing")).not.toBeInTheDocument();
+    });
+
+    it("routes a kanban deep link to the kanban view and selects the task", async () => {
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+      await screen.findByTestId("ticketing-dashboard-view-mock");
+
+      expect(ticketingViewProps.current).not.toBeNull();
+      ticketingViewProps.current?.onNavigateToAssociation({
+        view: "kanban",
+        id: "task-99",
+      });
+
+      await waitFor(() => {
+        expect(useUiStore.getState().currentView).toBe("kanban");
+      });
+      expect(useUiStore.getState().selectedTaskId).toBe("task-99");
+    });
+
+    it("routes an agents deep link by focusing the project and selecting the conversation", async () => {
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+      await screen.findByTestId("ticketing-dashboard-view-mock");
+
+      ticketingViewProps.current?.onNavigateToAssociation({
+        view: "agents",
+        id: "conversation-77",
+        projectId: "project-x",
+      });
+
+      await waitFor(() => {
+        expect(useUiStore.getState().currentView).toBe("agents");
+      });
+      expect(useAgentSessionStore.getState().focusedProjectId).toBe("project-x");
+      expect(
+        useChatStore.getState().activeConversationIds["project:project-x"],
+      ).toBe("conversation-77");
+    });
+
+    it("routes other deep-link views by switching the current view directly", async () => {
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+      await screen.findByTestId("ticketing-dashboard-view-mock");
+
+      ticketingViewProps.current?.onNavigateToAssociation({
+        view: "ideation",
+        id: "irrelevant",
+      });
+
+      await waitFor(() => {
+        expect(useUiStore.getState().currentView).toBe("ideation");
+      });
     });
   });
 

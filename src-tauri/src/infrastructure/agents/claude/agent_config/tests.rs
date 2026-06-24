@@ -4,19 +4,19 @@ use crate::infrastructure::agents::claude::agent_names::{
     SHORT_AGENT_WORKSPACE_PR_FIXER, SHORT_AGENT_WORKSPACE_REPAIR, SHORT_CHAT_PROJECT,
     SHORT_CHAT_TASK, SHORT_CODER, SHORT_DEEP_RESEARCHER, SHORT_GENERAL_EXPLORER,
     SHORT_GENERAL_WORKER, SHORT_IDEATION_ADVOCATE, SHORT_IDEATION_CRITIC,
-    SHORT_IDEATION_SPECIALIST_BACKEND,
-    SHORT_IDEATION_SPECIALIST_CODE_QUALITY, SHORT_IDEATION_SPECIALIST_FRONTEND,
-    SHORT_IDEATION_SPECIALIST_INFRA, SHORT_IDEATION_SPECIALIST_UX, SHORT_IDEATION_TEAM_LEAD,
-    SHORT_IDEATION_TEAM_MEMBER, SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER,
-    SHORT_ORCHESTRATOR, SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY,
+    SHORT_IDEATION_SPECIALIST_BACKEND, SHORT_IDEATION_SPECIALIST_CODE_QUALITY,
+    SHORT_IDEATION_SPECIALIST_FRONTEND, SHORT_IDEATION_SPECIALIST_INFRA,
+    SHORT_IDEATION_SPECIALIST_UX, SHORT_IDEATION_TEAM_LEAD, SHORT_IDEATION_TEAM_MEMBER,
+    SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER, SHORT_ORCHESTRATOR,
+    SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY,
     SHORT_PLAN_CRITIC_COMPLETENESS, SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
-    SHORT_PLAN_VERIFIER, SHORT_PR_DESCRIBER, SHORT_PROJECT_ANALYZER, SHORT_QA_EXECUTOR,
-    SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY,
+    SHORT_PLAN_VERIFIER, SHORT_PROJECT_ANALYZER, SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER,
+    SHORT_QA_EXECUTOR, SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY,
     SHORT_SESSION_NAMER, SHORT_WORKER, SHORT_WORKER_TEAM,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
-    has_canonical_agent_definition, list_canonical_prompt_backed_agents,
-    load_harness_agent_prompt, AgentPromptHarness,
+    has_canonical_agent_definition, list_canonical_prompt_backed_agents, load_harness_agent_prompt,
+    AgentPromptHarness,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -40,7 +40,8 @@ fn test_canonical_agent_project_root_resolves_live_claude_agents() {
 
     assert_eq!(project_root, expected_root);
 
-    let live_agents = list_canonical_prompt_backed_agents(&project_root, AgentPromptHarness::Claude);
+    let live_agents =
+        list_canonical_prompt_backed_agents(&project_root, AgentPromptHarness::Claude);
     assert!(
         live_agents.contains(&SHORT_ORCHESTRATOR_IDEATION.to_string()),
         "canonical project root should expose live Claude agents for runtime config synthesis"
@@ -65,7 +66,11 @@ fn test_canonical_agent_project_root_falls_back_to_runtime_plugin_dir() {
     )
     .expect("agent definition");
 
-    let missing_config_path = temp_dir.path().join("missing").join("config").join("ralphx.yaml");
+    let missing_config_path = temp_dir
+        .path()
+        .join("missing")
+        .join("config")
+        .join("ralphx.yaml");
 
     assert_eq!(
         canonical_agent_project_root_from_config_path(&missing_config_path, Some(&plugin_dir)),
@@ -76,10 +81,18 @@ fn test_canonical_agent_project_root_falls_back_to_runtime_plugin_dir() {
 #[test]
 fn test_canonical_agent_project_root_ignores_runtime_plugin_dir_without_agents() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir");
-    let plugin_dir = temp_dir.path().join("runtime-root").join("plugins").join("app");
+    let plugin_dir = temp_dir
+        .path()
+        .join("runtime-root")
+        .join("plugins")
+        .join("app");
     std::fs::create_dir_all(&plugin_dir).expect("plugin dir");
 
-    let missing_config_path = temp_dir.path().join("missing").join("config").join("ralphx.yaml");
+    let missing_config_path = temp_dir
+        .path()
+        .join("missing")
+        .join("config")
+        .join("ralphx.yaml");
 
     assert_eq!(
         canonical_agent_project_root_from_config_path(&missing_config_path, Some(&plugin_dir)),
@@ -204,8 +217,7 @@ fn test_resolve_permission_prompt_tool_is_profile_aware_and_matches_surface() {
             profile,
             "mcp__ralphx__permission_request",
         );
-        let preapproved =
-            get_preapproved_tools_for_profile("ralphx-ideation", profile).unwrap();
+        let preapproved = get_preapproved_tools_for_profile("ralphx-ideation", profile).unwrap();
         let tool_list: HashSet<_> = preapproved.split(',').collect();
         assert!(
             tool_list.contains(resolved.as_str()),
@@ -264,6 +276,7 @@ fn test_all_agent_names_are_known() {
         SHORT_GENERAL_WORKER,
         SHORT_AGENT_WORKSPACE_REPAIR,
         SHORT_AGENT_WORKSPACE_PR_FIXER,
+        SHORT_PR_REVIEWER,
         SHORT_WORKER,
         SHORT_CODER,
         SHORT_REVIEWER,
@@ -337,8 +350,7 @@ fn test_all_live_runtime_agents_have_canonical_claude_prompts() {
 
 #[test]
 fn test_default_config_paths_use_config_directory_layout() {
-    let expected_config =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/ralphx.yaml");
+    let expected_config = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/ralphx.yaml");
     let expected_processes =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/processes.yaml");
     let expected_claude =
@@ -528,12 +540,9 @@ fn test_plan_verifier_prompt_uses_backend_owned_verification_helpers() {
 #[test]
 fn test_ideation_claude_prompt_prioritizes_explicit_reverify_requests() {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let prompt = load_harness_agent_prompt(
-        &project_root,
-        "ralphx-ideation",
-        AgentPromptHarness::Claude,
-    )
-    .expect("failed to load canonical ralphx-ideation prompt");
+    let prompt =
+        load_harness_agent_prompt(&project_root, "ralphx-ideation", AgentPromptHarness::Claude)
+            .expect("failed to load canonical ralphx-ideation prompt");
 
     assert!(
         prompt.contains(
@@ -552,12 +561,9 @@ fn test_ideation_claude_prompt_prioritizes_explicit_reverify_requests() {
 #[test]
 fn test_ideation_claude_prompt_keeps_provider_resume_silent_by_default() {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let prompt = load_harness_agent_prompt(
-        &project_root,
-        "ralphx-ideation",
-        AgentPromptHarness::Claude,
-    )
-    .expect("failed to load canonical ralphx-ideation prompt");
+    let prompt =
+        load_harness_agent_prompt(&project_root, "ralphx-ideation", AgentPromptHarness::Claude)
+            .expect("failed to load canonical ralphx-ideation prompt");
 
     assert!(
         prompt.contains("Do not behave like recovery mode on normal follow-up turns"),
@@ -699,14 +705,18 @@ execution_defaults:
     assert_eq!(parsed.execution_defaults.project.project_ideation_max, 3);
     assert!(!parsed.execution_defaults.project.auto_commit);
     assert!(!parsed.execution_defaults.project.pause_on_failure);
-    assert!(parsed
-        .execution_defaults
-        .project
-        .agent_workspace_pr_autofix_default);
-    assert!(parsed
-        .execution_defaults
-        .project
-        .agent_workspace_pr_auto_merge_default);
+    assert!(
+        parsed
+            .execution_defaults
+            .project
+            .agent_workspace_pr_autofix_default
+    );
+    assert!(
+        parsed
+            .execution_defaults
+            .project
+            .agent_workspace_pr_auto_merge_default
+    );
     assert_eq!(parsed.execution_defaults.global.global_max_concurrent, 28);
     assert_eq!(parsed.execution_defaults.global.global_ideation_max, 5);
     assert!(
@@ -835,17 +845,15 @@ fn test_embedded_config_omits_live_agent_runtime_mirrors_and_uses_canonical_meta
     assert_eq!(ideation.model.as_deref(), Some("opus"));
     assert_eq!(ideation.effort.as_deref(), Some("max"));
     assert!(ideation.resolved_cli_tools.contains(&"Task".to_string()));
-    assert!(ideation.allowed_mcp_tools.contains(&"create_task_proposal".to_string()));
-    assert!(
-        ideation
-            .preapproved_cli_tools
-            .contains(&"Task(Plan)".to_string())
-    );
-    assert!(
-        !ideation
-            .preapproved_cli_tools
-            .contains(&"Task(Explore)".to_string())
-    );
+    assert!(ideation
+        .allowed_mcp_tools
+        .contains(&"create_task_proposal".to_string()));
+    assert!(ideation
+        .preapproved_cli_tools
+        .contains(&"Task(Plan)".to_string()));
+    assert!(!ideation
+        .preapproved_cli_tools
+        .contains(&"Task(Explore)".to_string()));
 
     let worker = parsed
         .agents
@@ -867,7 +875,9 @@ fn test_embedded_config_omits_live_agent_runtime_mirrors_and_uses_canonical_meta
         .expect("qa executor should exist");
     assert_eq!(qa_executor.model.as_deref(), Some("sonnet"));
     assert_eq!(qa_executor.permission_mode.as_deref(), Some("acceptEdits"));
-    assert!(qa_executor.resolved_cli_tools.contains(&"Write".to_string()));
+    assert!(qa_executor
+        .resolved_cli_tools
+        .contains(&"Write".to_string()));
     assert_eq!(
         qa_executor.allowed_mcp_tools,
         vec!["delegate_start", "delegate_wait", "delegate_cancel"]
@@ -1035,8 +1045,10 @@ fn test_config_harnesses_codex_file_agent_harness_defaults_align_for_codex_lanes
         agent_harness_defaults: AgentHarnessDefaultsConfigRaw,
     }
 
-    let yaml_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/harnesses/codex.yaml");
-    let contents = std::fs::read_to_string(&yaml_path).expect("should read config/harnesses/codex.yaml");
+    let yaml_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/harnesses/codex.yaml");
+    let contents =
+        std::fs::read_to_string(&yaml_path).expect("should read config/harnesses/codex.yaml");
     let parsed: CodexHarnessConfigMirror =
         serde_yaml::from_str(&contents).expect("should parse config/harnesses/codex.yaml");
 
@@ -1057,7 +1069,10 @@ fn test_config_harnesses_codex_file_agent_harness_defaults_align_for_codex_lanes
             .cloned()
             .map(AgentLaneSettings::from)
             .expect("config/harnesses/codex.yaml should contain codex lane");
-        assert_eq!(actual, expected, "codex harness config should stay aligned for {lane:?}");
+        assert_eq!(
+            actual, expected,
+            "codex harness config should stay aligned for {lane:?}"
+        );
     }
 }
 
@@ -2001,10 +2016,7 @@ agents:
         .find(|a| a.name == "ralphx-qa-prep")
         .expect("qa-prep should exist");
 
-    assert_eq!(
-        qa_prep.preapproved_cli_tools,
-        vec!["Task(Plan)"]
-    );
+    assert_eq!(qa_prep.preapproved_cli_tools, vec!["Task(Plan)"]);
 }
 
 #[test]
@@ -2200,8 +2212,10 @@ fn test_config_harnesses_claude_file_tool_sets_match_embedded_canonical_registry
         tool_sets: std::collections::HashMap<String, Vec<String>>,
     }
 
-    let yaml_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/harnesses/claude.yaml");
-    let contents = std::fs::read_to_string(&yaml_path).expect("should read config/harnesses/claude.yaml");
+    let yaml_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/harnesses/claude.yaml");
+    let contents =
+        std::fs::read_to_string(&yaml_path).expect("should read config/harnesses/claude.yaml");
     let parsed: ClaudeHarnessConfigMirror =
         serde_yaml::from_str(&contents).expect("should parse config/harnesses/claude.yaml");
 
@@ -2221,17 +2235,22 @@ fn test_config_harnesses_claude_file_contains_expected_runtime_defaults() {
         claude: ClaudeRuntimeConfigRaw,
     }
 
-    let yaml_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/harnesses/claude.yaml");
-    let contents = std::fs::read_to_string(&yaml_path).expect("should read config/harnesses/claude.yaml");
+    let yaml_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/harnesses/claude.yaml");
+    let contents =
+        std::fs::read_to_string(&yaml_path).expect("should read config/harnesses/claude.yaml");
     let parsed: ClaudeHarnessConfigMirror =
         serde_yaml::from_str(&contents).expect("should parse config/harnesses/claude.yaml");
 
     assert_eq!(parsed.claude.mcp_server_name, "ralphx");
-    assert_eq!(parsed.claude.setting_sources, Some(vec![
-        "user".to_string(),
-        "project".to_string(),
-        "local".to_string()
-    ]));
+    assert_eq!(
+        parsed.claude.setting_sources,
+        Some(vec![
+            "user".to_string(),
+            "project".to_string(),
+            "local".to_string()
+        ])
+    );
     assert_eq!(parsed.claude.permission_mode, "bypassPermissions");
     assert!(parsed.claude.dangerously_skip_permissions);
     assert!(!parsed.claude.allow_dangerously_skip_permissions);
@@ -2245,7 +2264,8 @@ fn test_config_harnesses_claude_file_contains_expected_runtime_defaults() {
 #[test]
 fn test_embedded_config_omits_claude_globals_and_overlay_restores_expected_defaults() {
     let mut parsed = parse_raw_config(EMBEDDED_CONFIG).expect("embedded config should parse");
-    let overlay_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/harnesses/claude.yaml");
+    let overlay_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/harnesses/claude.yaml");
     let overlay_contents =
         std::fs::read_to_string(&overlay_path).expect("should read config/harnesses/claude.yaml");
     let overlay =
@@ -2266,7 +2286,10 @@ fn test_embedded_config_omits_claude_globals_and_overlay_restores_expected_defau
     assert_eq!(parsed.claude.permission_mode, "bypassPermissions");
     assert!(parsed.claude.dangerously_skip_permissions);
     assert!(!parsed.claude.allow_dangerously_skip_permissions);
-    assert_eq!(parsed.claude.permission_prompt_tool, "mcp__ralphx__permission_request");
+    assert_eq!(
+        parsed.claude.permission_prompt_tool,
+        "mcp__ralphx__permission_request"
+    );
     assert_eq!(parsed.claude.default_effort, "medium");
 
     let qa_prep = parsed
@@ -2303,7 +2326,8 @@ fn test_config_external_mcp_file_contains_expected_runtime_defaults() {
 #[test]
 fn test_embedded_config_omits_external_mcp_and_overlay_restores_expected_defaults() {
     let mut parsed = parse_raw_config(EMBEDDED_CONFIG).expect("embedded config should parse");
-    let overlay_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/external-mcp.yaml");
+    let overlay_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/external-mcp.yaml");
     let overlay_contents =
         std::fs::read_to_string(&overlay_path).expect("should read config/external-mcp.yaml");
     let overlay = parse_external_mcp_config_overlay(&overlay_contents)
@@ -2644,7 +2668,10 @@ agents:
     let exec = &parsed.team_constraints.processes["execution"];
     assert_eq!(exec.max_teammates, 5);
     assert_eq!(exec.timeout_minutes, 30);
-    assert_eq!(parsed.team_constraints.processes["custom_process"].model_cap, "haiku");
+    assert_eq!(
+        parsed.team_constraints.processes["custom_process"].model_cap,
+        "haiku"
+    );
 }
 
 #[test]
@@ -2775,8 +2802,14 @@ team_constraints:
         parsed.process_mapping.slots["custom_process"].default,
         "overlay-agent"
     );
-    assert_eq!(parsed.team_constraints.processes["custom_process"].max_teammates, 4);
-    assert_eq!(parsed.team_constraints.processes["custom_process"].model_cap, "opus");
+    assert_eq!(
+        parsed.team_constraints.processes["custom_process"].max_teammates,
+        4
+    );
+    assert_eq!(
+        parsed.team_constraints.processes["custom_process"].model_cap,
+        "opus"
+    );
 }
 
 #[test]
@@ -2814,7 +2847,10 @@ process_mapping:
         parsed.process_mapping.slots["custom_process"].default,
         "overlay-agent"
     );
-    assert_eq!(parsed.team_constraints.processes["custom_process"].model_cap, "haiku");
+    assert_eq!(
+        parsed.team_constraints.processes["custom_process"].model_cap,
+        "haiku"
+    );
 }
 
 // ==================== Effort Field Tests ====================
@@ -3219,7 +3255,14 @@ fn test_ui_feature_flags_default_all_enabled() {
     );
     assert!(flags.battle_mode, "battle_mode should default to true");
     assert!(!flags.team_mode, "team_mode should default to false");
-    assert!(!flags.atlassian_oauth, "atlassian_oauth should default to false");
+    assert!(
+        !flags.atlassian_oauth,
+        "atlassian_oauth should default to false"
+    );
+    assert!(
+        !flags.ticketing_dashboard,
+        "ticketing_dashboard should default to false"
+    );
 }
 
 #[test]
@@ -3238,6 +3281,7 @@ ui:
   feature_flags:
     activity_page: false
     extensibility_page: true
+    ticketing_dashboard: true
 "#;
     let cfg = parse_config_no_env_overrides(yaml).expect("should parse yaml with ui section");
     assert!(
@@ -3247,6 +3291,10 @@ ui:
     assert!(
         cfg.runtime.ui_feature_flags.extensibility_page,
         "extensibility_page should be true"
+    );
+    assert!(
+        cfg.runtime.ui_feature_flags.ticketing_dashboard,
+        "ticketing_dashboard should be true from yaml"
     );
 }
 
@@ -3280,6 +3328,10 @@ agents: []
     assert!(
         !cfg.runtime.ui_feature_flags.atlassian_oauth,
         "atlassian_oauth should default to false when ui section absent"
+    );
+    assert!(
+        !cfg.runtime.ui_feature_flags.ticketing_dashboard,
+        "ticketing_dashboard should default to false when ui section absent"
     );
 }
 
@@ -3330,6 +3382,7 @@ fn test_env_override_true_value_enables_flag() {
             battle_mode: false,
             team_mode: false,
             atlassian_oauth: false,
+            ticketing_dashboard: false,
         },
     };
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
@@ -3346,7 +3399,14 @@ fn test_env_override_true_value_enables_flag() {
         "env '1' should enable extensibility_page"
     );
     assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
-    assert!(!cfg.ui_feature_flags.atlassian_oauth, "atlassian_oauth untouched");
+    assert!(
+        !cfg.ui_feature_flags.atlassian_oauth,
+        "atlassian_oauth untouched"
+    );
+    assert!(
+        !cfg.ui_feature_flags.ticketing_dashboard,
+        "ticketing_dashboard untouched"
+    );
 }
 
 #[test]
@@ -3381,7 +3441,14 @@ fn test_env_override_battle_mode() {
         "extensibility_page untouched"
     );
     assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
-    assert!(!cfg.ui_feature_flags.atlassian_oauth, "atlassian_oauth untouched");
+    assert!(
+        !cfg.ui_feature_flags.atlassian_oauth,
+        "atlassian_oauth untouched"
+    );
+    assert!(
+        !cfg.ui_feature_flags.ticketing_dashboard,
+        "ticketing_dashboard untouched"
+    );
 
     // Override battle_mode to true via "1"
     cfg.ui_feature_flags.battle_mode = false;
@@ -3414,13 +3481,19 @@ fn test_env_override_team_mode() {
         "RALPHX_UI_TEAM_MODE" => Some("true".to_string()),
         _ => None,
     });
-    assert!(cfg.ui_feature_flags.team_mode, "env 'true' should enable team_mode");
+    assert!(
+        cfg.ui_feature_flags.team_mode,
+        "env 'true' should enable team_mode"
+    );
 
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
         "RALPHX_UI_TEAM_MODE" => Some("false".to_string()),
         _ => None,
     });
-    assert!(!cfg.ui_feature_flags.team_mode, "env 'false' should disable team_mode");
+    assert!(
+        !cfg.ui_feature_flags.team_mode,
+        "env 'false' should disable team_mode"
+    );
 }
 
 #[test]
@@ -3442,13 +3515,53 @@ fn test_env_override_atlassian_oauth() {
         "RALPHX_UI_ATLASSIAN_OAUTH" => Some("true".to_string()),
         _ => None,
     });
-    assert!(cfg.ui_feature_flags.atlassian_oauth, "env 'true' should enable atlassian_oauth");
+    assert!(
+        cfg.ui_feature_flags.atlassian_oauth,
+        "env 'true' should enable atlassian_oauth"
+    );
 
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
         "RALPHX_UI_ATLASSIAN_OAUTH" => Some("false".to_string()),
         _ => None,
     });
-    assert!(!cfg.ui_feature_flags.atlassian_oauth, "env 'false' should disable atlassian_oauth");
+    assert!(
+        !cfg.ui_feature_flags.atlassian_oauth,
+        "env 'false' should disable atlassian_oauth"
+    );
+}
+
+#[test]
+fn test_env_override_ticketing_dashboard() {
+    let mut cfg = runtime_config::AllRuntimeConfig {
+        stream: runtime_config::StreamTimeoutsConfig::default(),
+        reconciliation: runtime_config::ReconciliationConfig::default(),
+        git: runtime_config::GitRuntimeConfig::default(),
+        scheduler: runtime_config::SchedulerConfig::default(),
+        supervisor: runtime_config::SupervisorRuntimeConfig::default(),
+        limits: runtime_config::LimitsConfig::default(),
+        verification: runtime_config::VerificationConfig::default(),
+        external_mcp: runtime_config::ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+    };
+
+    runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
+        "RALPHX_UI_TICKETING_DASHBOARD" => Some("true".to_string()),
+        _ => None,
+    });
+    assert!(
+        cfg.ui_feature_flags.ticketing_dashboard,
+        "env 'true' should enable ticketing_dashboard"
+    );
+
+    runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
+        "RALPHX_UI_TICKETING_DASHBOARD" => Some("false".to_string()),
+        _ => None,
+    });
+    assert!(
+        !cfg.ui_feature_flags.ticketing_dashboard,
+        "env 'false' should disable ticketing_dashboard"
+    );
 }
 
 #[test]
@@ -3461,4 +3574,5 @@ fn test_ui_feature_flags_config_accessor_returns_defaults() {
     let _ = flags.battle_mode;
     let _ = flags.team_mode;
     let _ = flags.atlassian_oauth;
+    let _ = flags.ticketing_dashboard;
 }

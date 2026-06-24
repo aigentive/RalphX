@@ -1,4 +1,5 @@
 use super::{
+    attribution_from_message, build_assistant_transcript_segments,
     enqueue_silent_completion_recovery, session_changed_after_resume, should_process_stream_queue,
     should_recover_silent_completion, should_warn_missing_agent_task_ledger,
     silent_completion_recovery_backoff, SilentCompletionRecoveryEnqueue,
@@ -10,9 +11,10 @@ use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentRunId, AgentRunStatus, ChatAttachment, ChatContextType,
-    ChatConversation, ChatConversationId, ChatTimelineItemStatus, ProjectId,
+    ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus, ProjectId,
 };
-use crate::domain::services::RunningAgentKey;
+use crate::domain::repositories::QueuedMessageRepository;
+use crate::domain::services::{QueueKey, RunningAgentKey};
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 use std::path::Path;
 use std::sync::Arc;
@@ -245,8 +247,8 @@ fn silent_completion_recovery_ignores_question_and_permission_tools() {
     }
 }
 
-#[test]
-fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
+#[tokio::test]
+async fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
     let queue = crate::domain::services::MessageQueue::new();
     queue.queue(
         ChatContextType::Project,
@@ -265,6 +267,7 @@ fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
 
     let result = enqueue_silent_completion_recovery(
         &queue,
+        None,
         ChatContextType::Project,
         "conversation-1",
         "",
@@ -275,7 +278,8 @@ fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
         false,
         true,
         None,
-    );
+    )
+    .await;
 
     assert_eq!(
         result,
@@ -301,8 +305,104 @@ fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
     );
 }
 
-#[test]
-fn silent_completion_recovery_enqueues_second_attempt_with_backoff() {
+#[tokio::test]
+async fn silent_completion_recovery_keeps_memory_queue_when_durable_persist_fails() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let repo: Arc<dyn QueuedMessageRepository> = Arc::new(
+        crate::infrastructure::sqlite::SqliteQueuedMessageRepository::new(
+            rusqlite::Connection::open_in_memory().expect("create in-memory db"),
+        ),
+    );
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        Some(&repo),
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Queued {
+            attempt: 1,
+            backoff_ms: 1_000,
+        }
+    );
+    let queued = queue.get_queued(ChatContextType::Project, "conversation-1");
+    assert_eq!(queued.len(), 1);
+    assert!(queued[0].content.contains("ended after tool activity"));
+}
+
+#[tokio::test]
+async fn silent_completion_recovery_persists_hidden_retry_to_durable_queue() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let repo: Arc<dyn QueuedMessageRepository> =
+        Arc::new(crate::infrastructure::memory::MemoryQueuedMessageRepository::new());
+    let tool_calls = vec![test_tool_call("apply_patch")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("patch-1".to_string()),
+        name: "apply_patch".to_string(),
+        arguments: serde_json::json!({ "file": "src/lib.rs" }),
+        result: Some(serde_json::json!({ "ok": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        Some(&repo),
+        ChatContextType::Project,
+        "conversation-1",
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Queued {
+            attempt: 1,
+            backoff_ms: 1_000,
+        }
+    );
+    let key = QueueKey::new(ChatContextType::Project, "conversation-1");
+    let durable = repo
+        .list(&key)
+        .await
+        .expect("durable recovery queue lookup should not fail");
+    assert_eq!(durable.len(), 1);
+    assert_eq!(
+        durable[0].metadata_override,
+        queue.get_queued_with_key(&key)[0].metadata_override
+    );
+}
+
+#[tokio::test]
+async fn silent_completion_recovery_enqueues_second_attempt_with_backoff() {
     let queue = crate::domain::services::MessageQueue::new();
     let metadata = serde_json::json!({
         "recovery_reason": "silent_completion_after_tool_activity",
@@ -321,6 +421,7 @@ fn silent_completion_recovery_enqueues_second_attempt_with_backoff() {
 
     let result = enqueue_silent_completion_recovery(
         &queue,
+        None,
         ChatContextType::Project,
         "conversation-1",
         "",
@@ -331,7 +432,8 @@ fn silent_completion_recovery_enqueues_second_attempt_with_backoff() {
         false,
         true,
         Some(&metadata),
-    );
+    )
+    .await;
 
     assert_eq!(
         result,
@@ -348,8 +450,8 @@ fn silent_completion_recovery_enqueues_second_attempt_with_backoff() {
     assert_eq!(metadata["recovery_backoff_ms"], 2_000);
 }
 
-#[test]
-fn silent_completion_recovery_enqueues_first_attempt_for_unrelated_prior_metadata() {
+#[tokio::test]
+async fn silent_completion_recovery_enqueues_first_attempt_for_unrelated_prior_metadata() {
     let queue = crate::domain::services::MessageQueue::new();
     let metadata = serde_json::json!({
         "recovery_reason": "other_recovery_path",
@@ -368,6 +470,7 @@ fn silent_completion_recovery_enqueues_first_attempt_for_unrelated_prior_metadat
 
     let result = enqueue_silent_completion_recovery(
         &queue,
+        None,
         ChatContextType::Project,
         "conversation-1",
         "",
@@ -378,7 +481,8 @@ fn silent_completion_recovery_enqueues_first_attempt_for_unrelated_prior_metadat
         false,
         true,
         Some(&metadata),
-    );
+    )
+    .await;
 
     assert_eq!(
         result,
@@ -394,8 +498,8 @@ fn silent_completion_recovery_enqueues_first_attempt_for_unrelated_prior_metadat
     assert_eq!(queued_metadata["recovery_attempt"], 1);
 }
 
-#[test]
-fn silent_completion_recovery_stops_at_max_attempts() {
+#[tokio::test]
+async fn silent_completion_recovery_stops_at_max_attempts() {
     let queue = crate::domain::services::MessageQueue::new();
     let metadata = serde_json::json!({
         "resume_in_place": true,
@@ -415,6 +519,7 @@ fn silent_completion_recovery_stops_at_max_attempts() {
 
     let result = enqueue_silent_completion_recovery(
         &queue,
+        None,
         ChatContextType::Project,
         "conversation-1",
         "",
@@ -425,7 +530,8 @@ fn silent_completion_recovery_stops_at_max_attempts() {
         false,
         true,
         Some(&metadata),
-    );
+    )
+    .await;
 
     assert_eq!(
         result,
@@ -436,8 +542,8 @@ fn silent_completion_recovery_stops_at_max_attempts() {
         .is_empty());
 }
 
-#[test]
-fn silent_completion_recovery_enqueue_skips_without_resumable_session() {
+#[tokio::test]
+async fn silent_completion_recovery_enqueue_skips_without_resumable_session() {
     let queue = crate::domain::services::MessageQueue::new();
     let tool_calls = vec![test_tool_call("apply_patch")];
     let content_blocks = vec![ContentBlockItem::ToolUse {
@@ -451,6 +557,7 @@ fn silent_completion_recovery_enqueue_skips_without_resumable_session() {
 
     let result = enqueue_silent_completion_recovery(
         &queue,
+        None,
         ChatContextType::Project,
         "conversation-1",
         "",
@@ -461,7 +568,8 @@ fn silent_completion_recovery_enqueue_skips_without_resumable_session() {
         false,
         false,
         None,
-    );
+    )
+    .await;
 
     assert_eq!(result, SilentCompletionRecoveryEnqueue::NotNeeded);
     assert!(queue
@@ -519,6 +627,27 @@ fn agent_task_ledger_warning_is_suppressed_after_ledger_tool_use() {
 }
 
 #[test]
+fn agent_task_ledger_warning_recognizes_codex_mutating_tools_and_namespaced_ledger_tools() {
+    let conversation = agent_mode_conversation();
+
+    assert!(should_warn_missing_agent_task_ledger(
+        Some(&conversation),
+        &[test_tool_call("exec_command")]
+    ));
+    assert!(!should_warn_missing_agent_task_ledger(
+        Some(&conversation),
+        &[
+            test_tool_call("apply_patch"),
+            test_tool_call("mcp::complete_agent_task"),
+        ],
+    ));
+    assert!(!should_warn_missing_agent_task_ledger(
+        Some(&conversation),
+        &[test_tool_call("mcp__ralphx__update_agent_task")]
+    ));
+}
+
+#[test]
 fn agent_task_ledger_warning_is_suppressed_for_non_agent_mode_conversation() {
     let conversation = ChatConversation::new_project(ProjectId::new());
 
@@ -530,6 +659,78 @@ fn agent_task_ledger_warning_is_suppressed_for_non_agent_mode_conversation() {
             test_tool_call("Edit"),
         ],
     ));
+}
+
+#[test]
+fn assistant_transcript_segments_split_text_after_tool_and_build_missing_tool_call() {
+    let content_blocks = vec![
+        ContentBlockItem::Text {
+            text: "before tool".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("tool-1".to_string()),
+            name: "exec_command".to_string(),
+            arguments: serde_json::json!({"cmd":"date"}),
+            result: Some(serde_json::json!({"ok":true})),
+            parent_tool_use_id: Some("parent-tool".to_string()),
+            diff_context: None,
+        },
+        ContentBlockItem::Text {
+            text: "after tool".to_string(),
+        },
+    ];
+
+    let segments = build_assistant_transcript_segments(&[], &content_blocks);
+
+    assert_eq!(segments.len(), 2);
+    assert_eq!(segments[0].content, "before tool");
+    assert_eq!(segments[0].tool_calls.len(), 1);
+    assert_eq!(segments[0].tool_calls[0].id.as_deref(), Some("tool-1"));
+    assert_eq!(segments[0].tool_calls[0].name, "exec_command");
+    assert_eq!(
+        segments[0].tool_calls[0].parent_tool_use_id.as_deref(),
+        Some("parent-tool")
+    );
+    assert_eq!(segments[1].content, "after tool");
+    assert!(segments[1].tool_calls.is_empty());
+}
+
+#[test]
+fn message_attribution_preserves_provider_metadata() {
+    use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
+
+    let mut message = ChatMessage::user_in_project(ProjectId::new(), "assistant response");
+    message.conversation_id = Some(ChatConversationId::new());
+    message.attribution_source = Some("native_runtime".to_string());
+    message.provider_harness = Some(AgentHarnessKind::Codex);
+    message.provider_session_id = Some("codex-session".to_string());
+    message.upstream_provider = Some("openai".to_string());
+    message.provider_profile = Some("ideation".to_string());
+    message.logical_model = Some("gpt-5.5".to_string());
+    message.effective_model_id = Some("gpt-5.5-2026-06-01".to_string());
+    message.logical_effort = Some(LogicalEffort::High);
+    message.effective_effort = Some("high".to_string());
+
+    let attribution = attribution_from_message(&message);
+
+    assert_eq!(
+        attribution.attribution_source.as_deref(),
+        Some("native_runtime")
+    );
+    assert_eq!(attribution.provider_harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(
+        attribution.provider_session_id.as_deref(),
+        Some("codex-session")
+    );
+    assert_eq!(attribution.upstream_provider.as_deref(), Some("openai"));
+    assert_eq!(attribution.provider_profile.as_deref(), Some("ideation"));
+    assert_eq!(attribution.logical_model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(
+        attribution.effective_model_id.as_deref(),
+        Some("gpt-5.5-2026-06-01")
+    );
+    assert_eq!(attribution.logical_effort, Some(LogicalEffort::High));
+    assert_eq!(attribution.effective_effort.as_deref(), Some("high"));
 }
 
 /// Verifies the warning condition for zero-processed queue scenarios.
@@ -626,6 +827,7 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
         conversation_id,
         "session-cli",
         &app_state.message_queue,
+        None,
         &app_state.running_agent_registry,
         &app_state.agent_run_repo,
         &app_state.chat_message_repo,
@@ -702,6 +904,7 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
             conversation_id,
             "session-cli",
             &message_queue,
+            None,
             &running_agent_registry,
             &agent_run_repo,
             &chat_message_repo,
@@ -804,6 +1007,7 @@ EOF
             conversation_id,
             "session-cli",
             &message_queue,
+            None,
             &running_agent_registry,
             &agent_run_repo,
             &chat_message_repo,
@@ -898,7 +1102,7 @@ async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
         .await
         .expect("queued message should send through mock service");
 
-    assert_eq!(result.was_queued, false);
+    assert!(!result.was_queued);
     assert_eq!(
         service.get_sent_messages().await,
         vec!["queued content".to_string()]
@@ -993,6 +1197,7 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
             conversation_id,
             "session-cli",
             &message_queue,
+            None,
             &running_agent_registry,
             &agent_run_repo,
             &chat_message_repo,
@@ -1107,6 +1312,9 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         )),
         agent_conversation_jira_issue_repo: Some(Arc::clone(
             &state.agent_conversation_jira_issue_repo,
+        )),
+        agent_conversation_linear_issue_repo: Some(Arc::clone(
+            &state.agent_conversation_linear_issue_repo,
         )),
         task_proposal_repo: Some(Arc::clone(&state.task_proposal_repo)),
         activity_event_repo: Arc::clone(&state.activity_event_repo),

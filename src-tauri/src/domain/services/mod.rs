@@ -78,7 +78,7 @@ pub use work_item_title::{
     jira_reference_from_composer_reference, normalize_title_with_jira_key,
     primary_jira_key_from_composer_metadata, primary_jira_key_from_title,
     primary_jira_reference_from_composer_metadata, primary_jira_reference_from_composer_references,
-    ComposerJiraReferenceMetadata,
+    primary_linear_issue_from_composer_metadata, ComposerJiraReferenceMetadata,
 };
 pub use workflow_service::{
     AppliedColumn, AppliedWorkflow, ColumnMappingError, ValidationResult, WorkflowService,

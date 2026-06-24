@@ -77,12 +77,7 @@ pub async fn get_session_plan(
             .app_state
             .db
             .run(move |conn| {
-                plan_approval_view_sync(
-                    conn,
-                    &session_id_str,
-                    &artifact_id_str,
-                    artifact_version,
-                )
+                plan_approval_view_sync(conn, &session_id_str, &artifact_id_str, artifact_version)
             })
             .await
             .map_err(|e| {

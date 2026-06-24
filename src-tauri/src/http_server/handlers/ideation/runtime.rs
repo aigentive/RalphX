@@ -12,6 +12,7 @@ use crate::application::InteractiveProcessKey;
 use crate::domain::entities::ideation::IdeationSessionStatus;
 use crate::domain::entities::{ChatContextType, IdeationSessionId};
 use crate::domain::services::running_agent_registry::RunningAgentKey;
+use crate::domain::services::QueueKey;
 use crate::http_server::types::{
     ChildSessionStatusParams, ChildSessionStatusResponse, GetSessionMessagesRequest,
     GetSessionMessagesResponse, HttpServerState, SendSessionMessageRequest,
@@ -386,11 +387,20 @@ pub async fn send_ideation_session_message_handler(
             .is_running(&agent_key)
             .await
         {
-            state.app_state.message_queue.queue(
+            let queued = state.app_state.message_queue.queue(
                 ChatContextType::Ideation,
                 &session_id,
                 req.message.clone(),
             );
+            let key = QueueKey::new(ChatContextType::Ideation, &session_id);
+            state
+                .app_state
+                .queued_message_repo
+                .enqueue_back(&key, &queued)
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                })?;
             return Ok(Json(SendSessionMessageResponse {
                 delivery_status: "queued".to_string(),
                 conversation_id: None,

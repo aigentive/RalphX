@@ -12,16 +12,9 @@ use crate::error::AppResult;
 use super::helpers;
 
 pub fn migrate(conn: &Connection) -> AppResult<()> {
-    helpers::add_column_if_not_exists(
-        conn,
-        "ideation_sessions",
-        "pending_initial_prompt",
-        "TEXT",
-    )?;
+    helpers::add_column_if_not_exists(conn, "ideation_sessions", "pending_initial_prompt", "TEXT")?;
 
-    tracing::info!(
-        "v20260327233752: added pending_initial_prompt column to ideation_sessions"
-    );
+    tracing::info!("v20260327233752: added pending_initial_prompt column to ideation_sessions");
 
     Ok(())
 }

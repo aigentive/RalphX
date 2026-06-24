@@ -31,6 +31,7 @@ pub(crate) mod tool_result_preview;
 pub(crate) mod verification_child_process_registry;
 
 use crate::application::agent_conversation_workspace::{
+    ensure_linked_plan_branch_agent_worktree,
     is_terminal_agent_conversation_publication_status,
     resolve_agent_conversation_workspace_path_for_send,
     rollover_agent_conversation_workspace_with_setup_mode, AgentConversationWorkspaceSetupMode,
@@ -45,33 +46,35 @@ use crate::application::interactive_process_registry::{
 };
 use crate::application::question_state::QuestionState;
 use crate::application::AtlassianIntegrationService;
+use crate::application::LinearIntegrationService;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
-    AgentConversationJiraIssueLink, AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus, Artifact,
-    ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
-    ChatMessage, ChatMessageAttribution, ChatMessageId, IdeationSessionId, InternalStatus,
-    MessageRole, ProjectId, TaskId,
+    AgentConversationJiraIssueLink, AgentConversationLinearIssueLink, AgentConversationWorkspace,
+    AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus, AgentRun, AgentRunId,
+    AgentRunStatus, Artifact, ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation,
+    ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId, IdeationSessionId,
+    InternalStatus, MessageRole, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationJiraIssueRepository,
-    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
-    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
-    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
-    StateHistoryMetadata, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository,
+    AgentConversationLinearIssueRepository, AgentConversationWorkspaceRepository,
+    AgentLaneSettingsRepository, AgentProviderSettingsRepository, AgentRunRepository,
+    ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
+    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    QueuedMessageRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
-    ComposerProjectReference, MessageQueue, QueuedMessage, RunningAgentInfo, RunningAgentKey,
-    RunningAgentRegistry,
+    ComposerProjectReference, MessageQueue, QueueKey, QueuedMessage, RunningAgentInfo,
+    RunningAgentKey, RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER, AGENT_ORCHESTRATOR_IDEATION,
+    AGENT_PR_REVIEWER,
 };
 use async_trait::async_trait;
 use serde::Serialize;
@@ -137,10 +140,9 @@ pub use chat_service_types::{
     AgentMessageRenderReadyPayload, AgentQueueSentPayload, AgentRunCompletedPayload,
     AgentRunStartedPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
     AgentToolCallPayload, AgentToolCallPreviewFields, ChatConversationWithMessages,
-    ChatServiceError, SendCallerContext, SendResult,
-    TeamArtifactCreatedPayload, TeamCostUpdatePayload, TeamCreatedPayload, TeamDisbandedPayload,
-    TeamMessagePayload, TeamTeammateIdlePayload, TeamTeammateShutdownPayload,
-    TeamTeammateSpawnedPayload,
+    ChatServiceError, SendCallerContext, SendResult, TeamArtifactCreatedPayload,
+    TeamCostUpdatePayload, TeamCreatedPayload, TeamDisbandedPayload, TeamMessagePayload,
+    TeamTeammateIdlePayload, TeamTeammateShutdownPayload, TeamTeammateSpawnedPayload,
 };
 pub use streaming_state_cache::{
     CachedStreamingTask, CachedToolCall, ConversationStreamingState, StreamingStateCache,
@@ -467,10 +469,13 @@ fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> &'s
         AgentConversationWorkspaceMode::Edit => AGENT_GENERAL_WORKER,
         AgentConversationWorkspaceMode::Plan => AGENT_ORCHESTRATOR_IDEATION,
         AgentConversationWorkspaceMode::Ideation => AGENT_CHAT_PROJECT,
+        AgentConversationWorkspaceMode::ReviewPr => AGENT_PR_REVIEWER,
     }
 }
 
-fn agent_profile_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> Option<&'static str> {
+fn agent_profile_for_conversation_mode(
+    mode: AgentConversationWorkspaceMode,
+) -> Option<&'static str> {
     match mode {
         AgentConversationWorkspaceMode::Plan => Some("plan"),
         _ => None,
@@ -493,6 +498,33 @@ fn resolve_agent_name_for_send<'a>(
                 team_mode,
             )
         })
+}
+
+/// Resolve the effective agent-conversation mode used for agent selection on a
+/// `send_message` spawn.
+///
+/// A linked agent-conversation workspace's display mode governs the *workspace
+/// conversation itself* (a `Project` context in the Agents view). It must never
+/// hijack a genuine ideation **session** (`ChatContextType::Ideation`): a
+/// child/linked ideation session always resolves to the ideation orchestrator
+/// via its context type. The single exception is `Plan` mode, whose linked
+/// planning session keeps its constrained plan profile.
+///
+/// Without this guard, an ideation session linked to a workspace in `Ideation`
+/// mode resolved to `ralphx-chat-project`, which lacks the proposal/plan/finalize
+/// tools, so the session produced no durable ideation outputs.
+fn agent_conversation_mode_for_send(
+    context_type: ChatContextType,
+    conversation_agent_mode: Option<AgentConversationWorkspaceMode>,
+    workspace_mode: Option<AgentConversationWorkspaceMode>,
+) -> Option<AgentConversationWorkspaceMode> {
+    let resolved = conversation_agent_mode.or(workspace_mode);
+    match context_type {
+        ChatContextType::Ideation => {
+            resolved.filter(|mode| matches!(mode, AgentConversationWorkspaceMode::Plan))
+        }
+        _ => resolved,
+    }
 }
 
 fn plan_mode_runtime_message(
@@ -886,11 +918,13 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
+    linear_integration_service: Option<Arc<LinearIntegrationService>>,
     ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     activity_event_repo: Arc<dyn ActivityEventRepository>,
     message_queue: Arc<MessageQueue>,
+    queued_message_repo: Option<Arc<dyn QueuedMessageRepository>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
     app_handle: Option<AppHandle<R>>,
@@ -901,6 +935,8 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
         std::sync::Mutex<Option<Arc<dyn AgentConversationWorkspaceRepository>>>,
     agent_conversation_jira_issue_repo:
         std::sync::Mutex<Option<Arc<dyn AgentConversationJiraIssueRepository>>>,
+    agent_conversation_linear_issue_repo:
+        std::sync::Mutex<Option<Arc<dyn AgentConversationLinearIssueRepository>>>,
     task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     task_step_repo: Option<Arc<dyn TaskStepRepository>>,
     review_repo: Option<Arc<dyn ReviewRepository>>,
@@ -963,11 +999,13 @@ impl<R: Runtime> AppChatService<R> {
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
             atlassian_integration_service: None,
+            linear_integration_service: None,
             ideation_effort_settings_repo: None,
             ideation_model_settings_repo: None,
             ideation_session_repo,
             activity_event_repo,
             message_queue,
+            queued_message_repo: None,
             running_agent_registry,
             memory_event_repo,
             app_handle: None,
@@ -976,6 +1014,7 @@ impl<R: Runtime> AppChatService<R> {
             plan_branch_repo: std::sync::Mutex::new(None),
             agent_conversation_workspace_repo: std::sync::Mutex::new(None),
             agent_conversation_jira_issue_repo: std::sync::Mutex::new(None),
+            agent_conversation_linear_issue_repo: std::sync::Mutex::new(None),
             task_proposal_repo: None,
             task_step_repo: None,
             review_repo: None,
@@ -1000,6 +1039,142 @@ impl<R: Runtime> AppChatService<R> {
     pub fn with_chat_timeline_repo(mut self, repo: Arc<dyn ChatTimelineRepository>) -> Self {
         self.chat_timeline_repo = Some(repo);
         self
+    }
+
+    pub fn with_queued_message_repo(mut self, repo: Arc<dyn QueuedMessageRepository>) -> Self {
+        self.queued_message_repo = Some(repo);
+        self
+    }
+
+    fn queued_key(context_type: ChatContextType, context_id: &str) -> QueueKey {
+        QueueKey::new(context_type, context_id)
+    }
+
+    fn merge_queued_messages(
+        durable: Vec<QueuedMessage>,
+        memory: Vec<QueuedMessage>,
+    ) -> Vec<QueuedMessage> {
+        let mut seen: HashSet<String> = durable.iter().map(|message| message.id.clone()).collect();
+        let mut merged = durable;
+        for message in memory {
+            if seen.insert(message.id.clone()) {
+                merged.push(message);
+            }
+        }
+        merged
+    }
+
+    async fn persist_queued_back(
+        &self,
+        key: &QueueKey,
+        message: &QueuedMessage,
+    ) -> Result<(), ChatServiceError> {
+        if let Some(repo) = self.queued_message_repo.as_ref() {
+            repo.enqueue_back(key, message)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn persist_queued_front(
+        &self,
+        key: &QueueKey,
+        message: &QueuedMessage,
+    ) -> Result<(), ChatServiceError> {
+        if let Some(repo) = self.queued_message_repo.as_ref() {
+            repo.enqueue_front(key, message)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn delete_durable_queued(
+        &self,
+        key: &QueueKey,
+        message_id: &str,
+    ) -> Result<bool, ChatServiceError> {
+        match self.queued_message_repo.as_ref() {
+            Some(repo) => repo
+                .delete(key, message_id)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string())),
+            None => Ok(false),
+        }
+    }
+
+    async fn list_durable_queued(
+        &self,
+        key: &QueueKey,
+    ) -> Result<Vec<QueuedMessage>, ChatServiceError> {
+        match self.queued_message_repo.as_ref() {
+            Some(repo) => repo
+                .list(key)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string())),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    async fn list_queued_keys(&self) -> Result<Vec<QueueKey>, ChatServiceError> {
+        let mut keys = self.message_queue.list_keys();
+        let mut seen: HashSet<QueueKey> = keys.iter().cloned().collect();
+        if let Some(repo) = self.queued_message_repo.as_ref() {
+            let durable_keys = repo
+                .list_keys()
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+            for key in durable_keys {
+                if seen.insert(key.clone()) {
+                    keys.push(key);
+                }
+            }
+        }
+        Ok(keys)
+    }
+
+    async fn take_queued_message(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message_id: &str,
+    ) -> Result<QueuedMessage, ChatServiceError> {
+        let key = Self::queued_key(context_type, context_id);
+        if let Some(message) = self.message_queue.take(context_type, context_id, message_id) {
+            self.delete_durable_queued(&key, message_id).await?;
+            return Ok(message);
+        }
+
+        let durable = self.list_durable_queued(&key).await?;
+        let Some(message) = durable.into_iter().find(|message| message.id == message_id) else {
+            return Err(ChatServiceError::ContextNotFound(format!(
+                "Queued message not found for {}/{}: {}",
+                context_type, context_id, message_id
+            )));
+        };
+        self.delete_durable_queued(&key, message_id).await?;
+        Ok(message)
+    }
+
+    async fn restore_queued_front(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message: QueuedMessage,
+    ) {
+        let key = Self::queued_key(context_type, context_id);
+        self.message_queue
+            .queue_front_existing(context_type, context_id, message.clone());
+        if let Err(error) = self.persist_queued_front(&key, &message).await {
+            tracing::warn!(
+                %context_type,
+                context_id,
+                queued_message_id = %message.id,
+                error = %error,
+                "failed to restore durable queued message"
+            );
+        }
     }
 
     pub fn with_execution_settings_repo(
@@ -1034,6 +1209,14 @@ impl<R: Runtime> AppChatService<R> {
         self
     }
 
+    pub fn with_linear_integration_service(
+        mut self,
+        service: Arc<LinearIntegrationService>,
+    ) -> Self {
+        self.linear_integration_service = Some(service);
+        self
+    }
+
     pub fn with_ideation_effort_settings_repo(
         mut self,
         repo: Arc<dyn IdeationEffortSettingsRepository>,
@@ -1050,14 +1233,14 @@ impl<R: Runtime> AppChatService<R> {
         self
     }
 
-    fn enqueue_pending_send(
+    async fn enqueue_pending_send(
         &self,
         context_type: ChatContextType,
         context_id: &str,
         message: &str,
         options: &SendMessageOptions,
         conversation_id: Option<String>,
-    ) -> QueuedMessage {
+    ) -> Result<QueuedMessage, ChatServiceError> {
         let queued = self
             .message_queue
             .queue_with_runtime_overrides_and_project_references(
@@ -1075,6 +1258,11 @@ impl<R: Runtime> AppChatService<R> {
                 options.composer_artifact_references.clone(),
                 options.attachment_ids.clone(),
             );
+        let key = Self::queued_key(context_type, context_id);
+        if let Err(error) = self.persist_queued_back(&key, &queued).await {
+            self.message_queue.delete(context_type, context_id, &queued.id);
+            return Err(error);
+        }
         if !message_metadata_hidden_from_ui(queued.metadata_override.as_deref()) {
             self.emit_event(
                 "agent:message_queued",
@@ -1093,7 +1281,7 @@ impl<R: Runtime> AppChatService<R> {
                 },
             );
         }
-        queued
+        Ok(queued)
     }
 
     async fn load_turn_attachments(
@@ -1198,6 +1386,14 @@ impl<R: Runtime> AppChatService<R> {
         self
     }
 
+    pub fn with_agent_conversation_linear_issue_repo(
+        self,
+        repo: Arc<dyn AgentConversationLinearIssueRepository>,
+    ) -> Self {
+        *self.agent_conversation_linear_issue_repo.lock().unwrap() = Some(repo);
+        self
+    }
+
     pub fn with_task_proposal_repo(mut self, repo: Arc<dyn TaskProposalRepository>) -> Self {
         self.task_proposal_repo = Some(repo);
         self
@@ -1262,6 +1458,175 @@ impl<R: Runtime> AppChatService<R> {
     /// Returns a clone of the current InteractiveProcessRegistry Arc.
     fn ipr(&self) -> Arc<InteractiveProcessRegistry> {
         Arc::clone(&*self.interactive_process_registry.lock().unwrap())
+    }
+
+    fn workspace_repo(&self) -> Option<Arc<dyn AgentConversationWorkspaceRepository>> {
+        self.agent_conversation_workspace_repo
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(Arc::clone)
+    }
+
+    fn should_replace_running_state(
+        current: AgentRunningState,
+        candidate: AgentRunningState,
+    ) -> bool {
+        if !candidate.is_running {
+            return false;
+        }
+
+        if !current.is_running {
+            return true;
+        }
+
+        current.agent_status == AgentRuntimeStatus::WaitingForInput
+            && candidate.agent_status == AgentRuntimeStatus::Generating
+    }
+
+    fn merge_running_state(
+        states: &mut HashMap<String, AgentRunningState>,
+        context_id: &str,
+        candidate: AgentRunningState,
+    ) {
+        let current = states
+            .get(context_id)
+            .copied()
+            .unwrap_or_else(AgentRunningState::idle);
+        if Self::should_replace_running_state(current, candidate) {
+            states.insert(context_id.to_string(), candidate);
+        }
+    }
+
+    async fn overlay_project_linked_ideation_running_states(
+        &self,
+        requested_ids: &HashSet<String>,
+        states: &mut HashMap<String, AgentRunningState>,
+    ) {
+        let Some(workspace_repo) = self.workspace_repo() else {
+            return;
+        };
+
+        let mut conversation_by_ideation_session_id = HashMap::new();
+        for conversation_id in requested_ids {
+            let conversation_id = ChatConversationId::from_string(conversation_id.clone());
+            match workspace_repo.get_by_conversation_id(&conversation_id).await {
+                Ok(Some(workspace)) => {
+                    if let Some(session_id) = workspace.linked_ideation_session_id {
+                        conversation_by_ideation_session_id
+                            .insert(session_id.as_str().to_string(), conversation_id.as_str());
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        error = %error,
+                        "Failed to load workspace while hydrating linked ideation running state"
+                    );
+                }
+            }
+        }
+
+        if conversation_by_ideation_session_id.is_empty() {
+            return;
+        }
+
+        let ideation_context = ChatContextType::Ideation;
+        let entries = match self
+            .running_agent_registry
+            .list_by_context_type(&ideation_context.to_string())
+            .await
+        {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Failed to bulk-list ideation registry entries for linked project running-state hydration"
+                );
+                return;
+            }
+        };
+
+        let mut live_entries = Vec::new();
+        for (key, info) in entries {
+            let Some(conversation_id) =
+                conversation_by_ideation_session_id.get(&key.context_id).cloned()
+            else {
+                continue;
+            };
+
+            let session_id = key.context_id.clone();
+            let cleaned_stale = self
+                .cleanup_stale_registry_block(
+                    &key,
+                    &info,
+                    ideation_context,
+                    &session_id,
+                    "get_agent_running_states:linked_ideation",
+                    RegistryCleanupCaller::ReadOnly,
+                )
+                .await;
+            if cleaned_stale {
+                continue;
+            }
+
+            live_entries.push((key, info, session_id, conversation_id));
+        }
+
+        let run_ids: HashSet<AgentRunId> = live_entries
+            .iter()
+            .filter_map(|(_, info, _, _)| {
+                (!info.agent_run_id.is_empty())
+                    .then(|| AgentRunId::from_string(&info.agent_run_id))
+            })
+            .collect();
+        let run_id_list: Vec<AgentRunId> = run_ids.iter().copied().collect();
+        let run_statuses: HashMap<String, AgentRunStatus> =
+            match self.agent_run_repo.get_by_ids(&run_id_list).await {
+                Ok(runs) => runs
+                    .into_iter()
+                    .map(|run| (run.id.as_str(), run.status))
+                    .collect(),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "Failed to bulk-load linked ideation agent runs for running-state hydration"
+                    );
+                    HashMap::new()
+                }
+            };
+
+        for (key, info, session_id, conversation_id) in live_entries {
+            let run_status = run_statuses.get(&info.agent_run_id).copied();
+            let should_cleanup_inactive = registry_entry_blocks_send_because_run_inactive(
+                &info,
+                run_status,
+                chrono::Utc::now(),
+                RegistryCleanupCaller::ReadOnly,
+            );
+            let cleaned_inactive = should_cleanup_inactive
+                && self
+                    .cleanup_inactive_registry_block(
+                        &key,
+                        &info,
+                        ideation_context,
+                        &session_id,
+                        "get_agent_running_states:linked_ideation",
+                        RegistryCleanupCaller::ReadOnly,
+                    )
+                    .await;
+
+            if cleaned_inactive {
+                continue;
+            }
+
+            let state = match run_status {
+                Some(AgentRunStatus::Running) | None => AgentRunningState::generating(),
+                Some(_) => AgentRunningState::waiting_for_input(),
+            };
+            Self::merge_running_state(states, &conversation_id, state);
+        }
     }
 
     async fn cleanup_stale_registry_block(
@@ -1616,7 +1981,7 @@ impl<R: Runtime> AppChatService<R> {
             }
         }
 
-        for key in self.message_queue.list_keys() {
+        for key in self.list_queued_keys().await? {
             if !matches!(
                 key.context_type,
                 ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge
@@ -1834,6 +2199,29 @@ impl<R: Runtime> AppChatService<R> {
             .flatten()
     }
 
+    async fn load_agent_conversation_linear_issue(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> Option<AgentConversationLinearIssueLink> {
+        let repo = self
+            .agent_conversation_linear_issue_repo
+            .lock()
+            .unwrap()
+            .clone()?;
+        repo.get_by_conversation_id(conversation_id)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    conversation_id = %conversation_id.as_str(),
+                    error = %error,
+                    "failed to load agent conversation Linear assignment"
+                );
+                error
+            })
+            .ok()
+            .flatten()
+    }
+
     async fn auto_assign_primary_jira_issue_from_turn(
         &self,
         context_type: ChatContextType,
@@ -1889,6 +2277,61 @@ impl<R: Runtime> AppChatService<R> {
         }
     }
 
+    async fn auto_assign_primary_linear_issue_from_turn(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        conversation_id: &ChatConversationId,
+        agent_workspace: Option<&AgentConversationWorkspace>,
+        integration_references: &[ComposerIntegrationReference],
+        message_id: &str,
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        if integration_references.is_empty() {
+            return;
+        }
+        let repo = self
+            .agent_conversation_linear_issue_repo
+            .lock()
+            .unwrap()
+            .clone();
+        let Some(repo) = repo else {
+            return;
+        };
+        let project_id = if let Some(workspace) = agent_workspace {
+            Some(workspace.project_id.clone())
+        } else if context_type == ChatContextType::Project {
+            Some(ProjectId::from_string(context_id.to_string()))
+        } else {
+            self.load_agent_conversation_workspace(context_type, context_id, Some(conversation_id))
+                .await
+                .ok()
+                .flatten()
+                .map(|workspace| workspace.project_id)
+        };
+        let Some(project_id) = project_id else {
+            return;
+        };
+        let assignment_result =
+            crate::application::agent_conversation_linear_issue::assign_primary_linear_issue_if_absent_and_refresh(
+                &repo,
+                self.linear_integration_service.as_deref(),
+                conversation_id,
+                &project_id,
+                integration_references,
+                Some(ChatMessageId::from_string(message_id.to_string())),
+                created_at,
+            )
+            .await;
+        if let Err(error) = assignment_result {
+            tracing::warn!(
+                conversation_id = %conversation_id.as_str(),
+                error = %error,
+                "failed to auto-assign primary Linear issue from composer references"
+            );
+        }
+    }
+
     async fn agent_workspace_prompt_context_for_send(
         &self,
         context_type: ChatContextType,
@@ -1905,9 +2348,11 @@ impl<R: Runtime> AppChatService<R> {
             return Ok(None);
         };
 
-        Ok(chat_service_context::format_agent_workspace_source_pull_request_prompt_context(
-            &workspace,
-        ))
+        Ok(
+            chat_service_context::format_agent_workspace_source_pull_request_prompt_context(
+                &workspace,
+            ),
+        )
     }
 
     async fn resolve_agent_workspace_working_directory(
@@ -1926,6 +2371,15 @@ impl<R: Runtime> AppChatService<R> {
                 ))
             })?;
 
+        if workspace.mode == AgentConversationWorkspaceMode::Ideation {
+            if let Some(path) = self
+                .resolve_linked_plan_branch_working_directory(&project, workspace)
+                .await?
+            {
+                return Ok(path);
+            }
+        }
+
         match resolve_agent_conversation_workspace_path_for_send(&project, workspace) {
             Ok(path) => Ok(path),
             Err(error) => {
@@ -1939,6 +2393,44 @@ impl<R: Runtime> AppChatService<R> {
                 Err(ChatServiceError::SpawnFailed(error.to_string()))
             }
         }
+    }
+
+    async fn resolve_linked_plan_branch_working_directory(
+        &self,
+        project: &crate::domain::entities::Project,
+        workspace: &AgentConversationWorkspace,
+    ) -> Result<Option<PathBuf>, ChatServiceError> {
+        let Some(plan_branch_id) = workspace.linked_plan_branch_id.as_ref() else {
+            return Ok(None);
+        };
+
+        let repo = self.plan_branch_repo.lock().unwrap().clone();
+        let Some(repo) = repo else {
+            return Err(ChatServiceError::SpawnFailed(
+                "Plan branch repository unavailable for linked agent workspace".to_string(),
+            ));
+        };
+
+        let Some(plan_branch) = repo
+            .get_by_id(plan_branch_id)
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+        else {
+            return Err(ChatServiceError::SpawnFailed(format!(
+                "Plan branch not found for linked agent workspace: {}",
+                plan_branch_id
+            )));
+        };
+
+        let path = ensure_linked_plan_branch_agent_worktree(project, &plan_branch)
+            .await
+            .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?;
+
+        if workspace.status == AgentConversationWorkspaceStatus::Missing {
+            self.mark_agent_conversation_workspace_active(workspace).await;
+        }
+
+        Ok(Some(path))
     }
 
     async fn mark_agent_conversation_workspace_missing(
@@ -1965,6 +2457,34 @@ impl<R: Runtime> AppChatService<R> {
                 conversation_id = workspace.conversation_id.as_str(),
                 error = %error,
                 "Failed to mark missing agent conversation workspace"
+            );
+        }
+    }
+
+    async fn mark_agent_conversation_workspace_active(
+        &self,
+        workspace: &AgentConversationWorkspace,
+    ) {
+        let repo = self
+            .agent_conversation_workspace_repo
+            .lock()
+            .unwrap()
+            .clone();
+        let Some(repo) = repo else {
+            return;
+        };
+
+        if let Err(error) = repo
+            .update_status(
+                &workspace.conversation_id,
+                AgentConversationWorkspaceStatus::Active,
+            )
+            .await
+        {
+            tracing::warn!(
+                conversation_id = workspace.conversation_id.as_str(),
+                error = %error,
+                "Failed to mark linked agent conversation workspace active"
             );
         }
     }
@@ -2432,14 +2952,26 @@ impl<R: Runtime> AppChatService<R> {
             .ok()
             .flatten();
         let assigned_jira_issue = if let Some(conversation_id) = conversation_id_override {
-            self.load_agent_conversation_jira_issue(conversation_id).await
+            self.load_agent_conversation_jira_issue(conversation_id)
+                .await
         } else {
             None
         };
-        let merged_integration_references =
+        let assigned_linear_issue = if let Some(conversation_id) = conversation_id_override {
+            self.load_agent_conversation_linear_issue(conversation_id)
+                .await
+        } else {
+            None
+        };
+        let merged_jira_references =
             crate::application::agent_conversation_jira_issue::merge_assigned_jira_reference(
                 assigned_jira_issue.as_ref(),
                 integration_references,
+            );
+        let merged_integration_references =
+            crate::application::agent_conversation_linear_issue::merge_assigned_linear_reference(
+                assigned_linear_issue.as_ref(),
+                &merged_jira_references,
             );
         let edit_plan_handoff_artifact = self
             .load_edit_mode_plan_handoff_artifact(agent_workspace.as_ref())
@@ -2478,7 +3010,7 @@ impl<R: Runtime> AppChatService<R> {
                 Err(_) => message.to_string(),
             }
         };
-        let with_integration_references = if merged_integration_references.is_empty() {
+        let with_atlassian_references = if merged_integration_references.is_empty() {
             with_project_references
         } else {
             match self.atlassian_integration_service.as_ref() {
@@ -2491,6 +3023,21 @@ impl<R: Runtime> AppChatService<R> {
                         .await
                 }
                 None => with_project_references,
+            }
+        };
+        let with_integration_references = if merged_integration_references.is_empty() {
+            with_atlassian_references
+        } else {
+            match self.linear_integration_service.as_ref() {
+                Some(service) => {
+                    service
+                        .expand_references_for_prompt(
+                            &with_atlassian_references,
+                            &merged_integration_references,
+                        )
+                        .await
+                }
+                None => with_atlassian_references,
             }
         };
         let with_artifact_references =
@@ -2532,7 +3079,11 @@ impl<R: Runtime> AppChatService<R> {
             .await
             .unwrap_or(plan_artifact_id);
 
-        self.artifact_repo.get_by_id(&latest_id).await.ok().flatten()
+        self.artifact_repo
+            .get_by_id(&latest_id)
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Fetch entity status for context types that support it
@@ -2771,7 +3322,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 message,
                 &options,
                 Some(conversation.id.as_str()),
-            );
+            )
+            .await?;
             tracing::info!(
                 %context_type,
                 context_id,
@@ -2847,12 +3399,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     .await
                     .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
             };
-            provider_switch_requires_fresh_session =
-                provider_harness_switch_requires_fresh_session(
-                    options.harness_override,
-                    existing_conv.as_ref(),
-                    None,
-                );
+            provider_switch_requires_fresh_session = provider_harness_switch_requires_fresh_session(
+                options.harness_override,
+                existing_conv.as_ref(),
+                None,
+            );
         }
         let force_new_provider_session =
             options.force_new_provider_session || provider_switch_requires_fresh_session;
@@ -2888,7 +3439,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     message,
                     &queued_options,
                     Some(existing.conversation_id.clone()),
-                );
+                )
+                .await?;
                 tracing::info!(
                     %context_type,
                     context_id,
@@ -3059,6 +3611,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             user_msg.created_at,
                         )
                         .await;
+                        self.auto_assign_primary_linear_issue_from_turn(
+                            context_type,
+                            context_id,
+                            &conversation.id,
+                            None,
+                            &options.composer_integration_references,
+                            &user_msg_id,
+                            user_msg.created_at,
+                        )
+                        .await;
 
                         // Emit message_created event for frontend
                         self.emit_event(
@@ -3193,9 +3755,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             .await?;
         let entity_status = self.get_entity_status(context_type, context_id).await;
         let team_mode_val = self.team_mode.load(Ordering::Relaxed);
-        let agent_conversation_mode = conversation
-            .agent_mode
-            .or_else(|| agent_workspace.as_ref().map(|workspace| workspace.mode));
+        let agent_conversation_mode = agent_conversation_mode_for_send(
+            context_type,
+            conversation.agent_mode,
+            agent_workspace.as_ref().map(|workspace| workspace.mode),
+        );
         let agent_name = resolve_agent_name_for_send(
             &context_type,
             entity_status.as_deref(),
@@ -3209,7 +3773,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             Some(
                 AgentConversationWorkspaceMode::Edit
                     | AgentConversationWorkspaceMode::Plan
-                    | AgentConversationWorkspaceMode::Ideation,
+                    | AgentConversationWorkspaceMode::Ideation
+                    | AgentConversationWorkspaceMode::ReviewPr,
             )
         ) && agent_workspace.is_none()
         {
@@ -3326,7 +3891,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 message,
                 &options,
                 Some(existing.conversation_id.clone()),
-            );
+            )
+            .await?;
             return Ok(SendResult {
                 conversation_id: existing.conversation_id.clone(),
                 agent_run_id: existing.agent_run_id.clone(),
@@ -3708,6 +4274,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 );
             }
             self.auto_assign_primary_jira_issue_from_turn(
+                context_type,
+                context_id,
+                &conversation_id,
+                agent_workspace.as_ref(),
+                &options.composer_integration_references,
+                &user_msg_id,
+                user_msg.created_at,
+            )
+            .await;
+            self.auto_assign_primary_linear_issue_from_turn(
                 context_type,
                 context_id,
                 &conversation_id,
@@ -4240,6 +4816,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     .lock()
                     .unwrap()
                     .clone(),
+                agent_conversation_linear_issue_repo: self
+                    .agent_conversation_linear_issue_repo
+                    .lock()
+                    .unwrap()
+                    .clone(),
                 activity_event_repo: Arc::clone(&self.activity_event_repo),
                 memory_event_repo: Arc::clone(&self.memory_event_repo),
                 message_queue: Arc::clone(&self.message_queue),
@@ -4443,7 +5024,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         }
 
         // Normal queue path (no interactive process or stdin write failed)
-        Ok(match client_id {
+        let queued = match client_id {
             Some(id) => self.message_queue.queue_with_client_id(
                 context_type,
                 context_id,
@@ -4453,7 +5034,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             None => self
                 .message_queue
                 .queue(context_type, context_id, content.to_string()),
-        })
+        };
+        let key = Self::queued_key(context_type, context_id);
+        if let Err(error) = self.persist_queued_back(&key, &queued).await {
+            self.message_queue.delete(context_type, context_id, &queued.id);
+            return Err(error);
+        }
+        Ok(queued)
     }
 
     async fn get_queued_messages(
@@ -4461,7 +5048,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         context_type: ChatContextType,
         context_id: &str,
     ) -> Result<Vec<QueuedMessage>, ChatServiceError> {
-        Ok(self.message_queue.get_queued(context_type, context_id))
+        let key = Self::queued_key(context_type, context_id);
+        let durable = self.list_durable_queued(&key).await?;
+        let memory = self.message_queue.get_queued(context_type, context_id);
+        Ok(Self::merge_queued_messages(durable, memory))
     }
 
     async fn delete_queued_message(
@@ -4470,9 +5060,12 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         context_id: &str,
         message_id: &str,
     ) -> Result<bool, ChatServiceError> {
-        Ok(self
+        let key = Self::queued_key(context_type, context_id);
+        let memory_deleted = self
             .message_queue
-            .delete(context_type, context_id, message_id))
+            .delete(context_type, context_id, message_id);
+        let durable_deleted = self.delete_durable_queued(&key, message_id).await?;
+        Ok(memory_deleted || durable_deleted)
     }
 
     async fn send_queued_message_now(
@@ -4482,20 +5075,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         message_id: &str,
     ) -> Result<SendResult, ChatServiceError> {
         let queued_msg = self
-            .message_queue
-            .take(context_type, context_id, message_id)
-            .ok_or_else(|| {
-                ChatServiceError::ContextNotFound(format!(
-                    "Queued message not found for {}/{}: {}",
-                    context_type, context_id, message_id
-                ))
-            })?;
+            .take_queued_message(context_type, context_id, message_id)
+            .await?;
 
-        let restore_queued = |message_queue: &MessageQueue, queued_msg: QueuedMessage| {
-            message_queue.queue_front_existing(context_type, context_id, queued_msg);
-        };
-
-        let (send_context_id, conversation_id_override) = if context_type == ChatContextType::Project
+        let (send_context_id, conversation_id_override) = if context_type
+            == ChatContextType::Project
             && uuid::Uuid::parse_str(context_id).is_ok()
         {
             let conversation_id = ChatConversationId::from_string(context_id.to_string());
@@ -4507,7 +5091,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             {
                 Ok(Some(conversation)) => {
                     if conversation.context_type != context_type {
-                        restore_queued(&self.message_queue, queued_msg);
+                        self.restore_queued_front(context_type, context_id, queued_msg)
+                            .await;
                         return Err(ChatServiceError::ContextNotFound(format!(
                             "Conversation {} belongs to {} not {}",
                             conversation_id, conversation.context_type, context_type
@@ -4517,7 +5102,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 }
                 Ok(None) => (context_id.to_string(), None),
                 Err(error) => {
-                    restore_queued(&self.message_queue, queued_msg);
+                    self.restore_queued_front(context_type, context_id, queued_msg)
+                        .await;
                     return Err(error);
                 }
             }
@@ -4532,7 +5118,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 
         if has_running_process {
             if let Err(error) = self.stop_agent(context_type, context_id).await {
-                restore_queued(&self.message_queue, queued_msg);
+                self.restore_queued_front(context_type, context_id, queued_msg)
+                    .await;
                 return Err(error);
             }
         }
@@ -4568,7 +5155,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         {
             Ok(result) => result,
             Err(error) => {
-                restore_queued(&self.message_queue, queued_msg);
+                self.restore_queued_front(context_type, context_id, queued_msg)
+                    .await;
                 return Err(error);
             }
         };
@@ -4812,24 +5400,21 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             })
             .collect();
         let run_id_list: Vec<AgentRunId> = run_ids.iter().copied().collect();
-        let run_statuses: HashMap<String, AgentRunStatus> = match self
-            .agent_run_repo
-            .get_by_ids(&run_id_list)
-            .await
-        {
-            Ok(runs) => runs
-                .into_iter()
-                .map(|run| (run.id.as_str(), run.status))
-                .collect(),
-            Err(error) => {
-                tracing::warn!(
-                    %context_type,
-                    error = %error,
-                    "Failed to bulk-load agent runs for running-state hydration"
-                );
-                HashMap::new()
-            }
-        };
+        let run_statuses: HashMap<String, AgentRunStatus> =
+            match self.agent_run_repo.get_by_ids(&run_id_list).await {
+                Ok(runs) => runs
+                    .into_iter()
+                    .map(|run| (run.id.as_str(), run.status))
+                    .collect(),
+                Err(error) => {
+                    tracing::warn!(
+                        %context_type,
+                        error = %error,
+                        "Failed to bulk-load agent runs for running-state hydration"
+                    );
+                    HashMap::new()
+                }
+            };
 
         for (key, info, context_id) in live_entries {
             let run_status = run_statuses.get(&info.agent_run_id).copied();
@@ -4861,6 +5446,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             };
 
             states.insert(context_id, state);
+        }
+
+        if context_type == ChatContextType::Project {
+            self.overlay_project_linked_ideation_running_states(&requested_ids, &mut states)
+                .await;
         }
 
         states
@@ -5171,6 +5761,7 @@ mod managed_provider_launch_path_tests {
     use std::path::Path;
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn rx_managed_codex_provider_overrides_chat_launch_cli_path() {
         let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
             .lock()
@@ -5202,6 +5793,7 @@ mod managed_provider_launch_path_tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn rx_managed_codex_provider_rejects_missing_chat_launch_cli_path() {
         let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
             .lock()
@@ -5272,10 +5864,10 @@ mod agent_workspace_send_tests {
     use crate::commands::ExecutionState;
     use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode,
-        AgentWorkspaceSourcePullRequest, AgentRun, AgentRunStatus, ChatAttachment,
-        ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
-        IdeationAnalysisBaseRefKind, IdeationSession, MessageRole, Project, ProjectId, TaskId,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
+        AgentWorkspaceSourcePullRequest, ChatAttachment, ChatAttachmentId, ChatContextType,
+        ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession,
+        MessageRole, Project, ProjectId, TaskId,
     };
     use crate::domain::services::{
         ComposerProjectReference, ComposerProjectReferenceKind, RunningAgentKey,
@@ -5468,9 +6060,8 @@ mod agent_workspace_send_tests {
     async fn provider_switch_queues_active_old_provider_interactive_process() {
         let state = AppState::new_test();
         let context_id = "task-provider-switch-active";
-        let mut conversation = ChatConversation::new_task(TaskId::from_string(
-            context_id.to_string(),
-        ));
+        let mut conversation =
+            ChatConversation::new_task(TaskId::from_string(context_id.to_string()));
         conversation.set_provider_session_ref(ProviderSessionRef {
             harness: AgentHarnessKind::Claude,
             provider_session_id: "claude-session-active".to_string(),
@@ -5777,10 +6368,13 @@ mod agent_workspace_send_tests {
             .await
             .expect("pending attachment should persist");
 
-        let all_pending =
-            super::load_turn_attachments_from_repo(&state.chat_attachment_repo, &conversation_id, &[])
-                .await
-                .expect("empty selection should load all pending attachments");
+        let all_pending = super::load_turn_attachments_from_repo(
+            &state.chat_attachment_repo,
+            &conversation_id,
+            &[],
+        )
+        .await
+        .expect("empty selection should load all pending attachments");
         assert_eq!(all_pending.len(), 2);
 
         let selected = super::load_turn_attachments_from_repo(
@@ -5929,7 +6523,10 @@ mod agent_workspace_send_tests {
             .message_queue
             .get_queued(ChatContextType::Project, &conversation_id.as_str());
         assert_eq!(
-            queued.iter().map(|message| message.id.as_str()).collect::<Vec<_>>(),
+            queued
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
             vec![selected.id.as_str(), first.id.as_str(), third.id.as_str()],
             "failed immediate launch should restore the selected prompt at the front"
         );
@@ -5941,7 +6538,10 @@ mod bulk_running_state_tests {
     use super::{AgentRuntimeStatus, ChatContextType, ChatService};
     use crate::application::AppState;
     use crate::commands::ExecutionState;
-    use crate::domain::entities::{AgentRun, ChatConversationId};
+    use crate::domain::entities::{
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ChatConversation,
+        ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession, Project,
+    };
     use crate::domain::services::{
         MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry,
     };
@@ -5992,6 +6592,69 @@ mod bulk_running_state_tests {
         assert_eq!(states.get("conv-unrequested"), None);
         assert_eq!(states.get(""), None);
         assert_eq!(states.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn app_service_bulk_project_running_states_include_linked_ideation_session() {
+        let registry = Arc::new(MemoryRunningAgentRegistry::new());
+        let app_state = AppState::new_sqlite_test_with_registry(Arc::clone(&registry));
+        let project = Project::new(
+            "Linked Ideation Project".to_string(),
+            "/tmp/linked-ideation-project".to_string(),
+        );
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should persist");
+        let conversation = ChatConversation::new_project(project.id.clone());
+        let conversation_id = conversation.id;
+        let conversation_id_string = conversation_id.as_str().to_string();
+        app_state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+        let ideation_session = app_state
+            .ideation_session_repo
+            .create(IdeationSession::new(project.id.clone()))
+            .await
+            .expect("ideation session should persist");
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation_id,
+            project.id,
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::LocalBranch,
+            "main".to_string(),
+            Some("main".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/project/agent-linked-ideation".to_string(),
+            "/tmp/agent-linked-ideation".to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(ideation_session.id.clone());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+        registry
+            .set_running(RunningAgentKey::new("ideation", ideation_session.id.as_str()))
+            .await;
+        let service =
+            app_state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+        let states = service
+            .get_agent_running_states(
+                ChatContextType::Project,
+                std::slice::from_ref(&conversation_id_string),
+            )
+            .await;
+
+        let state = states
+            .get(&conversation_id_string)
+            .expect("state for linked parent conversation");
+        assert!(state.is_running);
+        assert_eq!(state.agent_status, AgentRuntimeStatus::Generating);
     }
 
     #[tokio::test]

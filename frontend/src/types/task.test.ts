@@ -6,6 +6,7 @@ import {
   UpdateTaskSchema,
   TaskListSchema,
   TASK_CATEGORIES,
+  transformTask,
 } from "./task";
 import { INTERNAL_STATUS_VALUES } from "./status";
 
@@ -47,6 +48,39 @@ describe("TaskSchema", () => {
       description: null,
     };
     expect(() => TaskSchema.parse(taskWithNullDescription)).not.toThrow();
+  });
+
+  // Regression: a Kanban-created task has no plan, so the backend's
+  // Option<String> ideation_session_id serializes to JSON null (not absent).
+  // The schema must accept null, or create_task response validation throws
+  // "Invalid input: expected string, received null".
+  it("should parse a task with null ideation_session_id (Kanban task, no plan)", () => {
+    const taskWithNullSession = {
+      ...validTask,
+      ideation_session_id: null,
+    };
+    expect(() => TaskSchema.parse(taskWithNullSession)).not.toThrow();
+  });
+
+  it("should transform null ideation_session_id to undefined", () => {
+    const parsed = TaskSchema.parse({ ...validTask, ideation_session_id: null });
+    expect(transformTask(parsed).ideationSessionId).toBeUndefined();
+  });
+
+  it("should preserve a string ideation_session_id through transform", () => {
+    const parsed = TaskSchema.parse({
+      ...validTask,
+      ideation_session_id: "session-123",
+    });
+    expect(transformTask(parsed).ideationSessionId).toBe("session-123");
+  });
+
+  it("should preserve a string execution_plan_id through transform", () => {
+    const parsed = TaskSchema.parse({
+      ...validTask,
+      execution_plan_id: "exec-plan-123",
+    });
+    expect(transformTask(parsed).executionPlanId).toBe("exec-plan-123");
   });
 
   it("should parse all valid internal statuses", () => {
@@ -217,6 +251,18 @@ describe("CreateTaskSchema", () => {
     };
     const result = CreateTaskSchema.parse(createData);
     expect(result.needsQa).toBeUndefined();
+  });
+
+  it("should allow active flow ids", () => {
+    const createData = {
+      projectId: "project-123",
+      title: "New Task",
+      ideationSessionId: "session-123",
+      executionPlanId: "exec-plan-123",
+    };
+    const result = CreateTaskSchema.parse(createData);
+    expect(result.ideationSessionId).toBe("session-123");
+    expect(result.executionPlanId).toBe("exec-plan-123");
   });
 });
 

@@ -344,6 +344,30 @@ pub async fn start_http_server(
             get(get_agent_workspace_pr_fix_context),
         )
         .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-context",
+            get(get_agent_workspace_pr_review_context),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-artifact",
+            post(write_agent_workspace_pr_review_artifact),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-actions",
+            post(propose_agent_workspace_pr_review_action),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/complete-pr-review-run",
+            post(complete_agent_workspace_pr_review_run),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-actions/:action_id/submit",
+            post(submit_agent_workspace_pr_review_action),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-actions/:action_id/skip",
+            post(skip_agent_workspace_pr_review_action),
+        )
+        .route(
             "/api/agent-workspaces/:conversation_id/pr-comments/:comment_id",
             get(read_agent_workspace_pr_comment),
         )
@@ -521,6 +545,10 @@ pub async fn start_http_server(
         .route(
             "/api/external/webhooks/health",
             get(get_webhook_health_http),
+        )
+        .route(
+            "/api/integrations/linear/webhook",
+            post(receive_linear_webhook_http),
         )
         .route("/api/external/task-note", post(create_task_note_http))
         // Team endpoints (agent teams) — two-phase plan flow

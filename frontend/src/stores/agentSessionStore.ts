@@ -8,16 +8,24 @@ import {
   type AgentProvider,
   type AgentRuntimeSelection,
 } from "@/lib/agent-models";
+import type {
+  AgentConversationWorkspaceMode,
+  ComposerArtifactReference,
+  ComposerIntegrationReference,
+  ComposerProjectReference,
+} from "@/api/chat";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 
 export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/agent-models";
 
 export type AgentArtifactTab =
+  | "review"
   | "plan"
   | "verification"
   | "proposal"
   | "tasks"
   | "jira"
+  | "linear"
   | "publish";
 export type AgentTaskArtifactMode = "graph" | "kanban";
 export type AgentProjectSort = "latest" | "az" | "za";
@@ -42,10 +50,20 @@ export interface AgentBranchBaseCacheEntry {
   loadedAt: string;
 }
 
+export interface AgentStartConversationDraft {
+  projectId: string;
+  content: string;
+  mode: AgentConversationWorkspaceMode;
+  composerArtifactReferences?: ComposerArtifactReference[];
+  composerProjectReferences?: ComposerProjectReference[];
+  composerIntegrationReferences?: ComposerIntegrationReference[];
+}
+
 interface AgentSessionState {
   focusedProjectId: string | null;
   selectedProjectId: string | null;
   selectedConversationId: string | null;
+  startConversationDraft: AgentStartConversationDraft | null;
   lastSelectedConversationByProjectId: Record<string, string>;
   expandedProjectIds: Record<string, boolean>;
   showAllProjects: boolean;
@@ -66,6 +84,8 @@ interface AgentSessionActions {
   setFocusedProject: (projectId: string | null) => void;
   selectConversation: (projectId: string, conversationId: string) => void;
   clearSelection: () => void;
+  setStartConversationDraft: (draft: AgentStartConversationDraft) => void;
+  consumeStartConversationDraft: () => AgentStartConversationDraft | null;
   setProjectExpanded: (projectId: string, expanded: boolean) => void;
   toggleProjectExpanded: (projectId: string) => void;
   setShowAllProjects: (showAllProjects: boolean) => void;
@@ -189,12 +209,44 @@ function expandOnlyProject(state: AgentSessionState, projectId: string) {
   state.expandedProjectIds[projectId] = true;
 }
 
+function cloneStartConversationDraft(
+  draft: AgentStartConversationDraft,
+): AgentStartConversationDraft {
+  return {
+    projectId: draft.projectId,
+    content: draft.content,
+    mode: draft.mode,
+    ...(draft.composerProjectReferences
+      ? {
+          composerProjectReferences: draft.composerProjectReferences.map(
+            (reference) => ({ ...reference }),
+          ),
+        }
+      : {}),
+    ...(draft.composerIntegrationReferences
+      ? {
+          composerIntegrationReferences: draft.composerIntegrationReferences.map(
+            (reference) => ({ ...reference }),
+          ),
+        }
+      : {}),
+    ...(draft.composerArtifactReferences
+      ? {
+          composerArtifactReferences: draft.composerArtifactReferences.map(
+            (reference) => ({ ...reference }),
+          ),
+        }
+      : {}),
+  };
+}
+
 export const useAgentSessionStore = create<AgentSessionState & AgentSessionActions>()(
   persist(
     immer((set) => ({
       focusedProjectId: null,
       selectedProjectId: null,
       selectedConversationId: null,
+      startConversationDraft: null,
       lastSelectedConversationByProjectId: {},
       expandedProjectIds: {},
       showAllProjects: DEFAULT_SHOW_ALL_PROJECTS,
@@ -233,6 +285,22 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           state.selectedProjectId = null;
           state.selectedConversationId = null;
         }),
+
+      setStartConversationDraft: (draft) =>
+        set((state) => {
+          state.startConversationDraft = draft;
+        }),
+
+      consumeStartConversationDraft: () => {
+        let consumedDraft: AgentStartConversationDraft | null = null;
+        set((state) => {
+          consumedDraft = state.startConversationDraft
+            ? cloneStartConversationDraft(state.startConversationDraft)
+            : null;
+          state.startConversationDraft = null;
+        });
+        return consumedDraft;
+      },
 
       setProjectExpanded: (projectId, expanded) =>
         set((state) => {

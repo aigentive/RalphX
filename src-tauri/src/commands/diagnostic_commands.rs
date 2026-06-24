@@ -154,7 +154,10 @@ pub fn build_codex_cli_diagnostics_response(
 #[tauri::command]
 pub fn get_codex_cli_diagnostics() -> Result<CodexCliDiagnosticsResponse, String> {
     let (probe, capabilities) = probe_codex_harness_with_capabilities();
-    Ok(build_codex_cli_diagnostics_response(probe.into(), capabilities))
+    Ok(build_codex_cli_diagnostics_response(
+        probe.into(),
+        capabilities,
+    ))
 }
 
 #[cfg(test)]

@@ -187,6 +187,14 @@ export const atlassianApi = {
     );
   },
 
+  disconnect(): Promise<AtlassianIntegrationSettings> {
+    return typedInvoke(
+      "disconnect_atlassian_integration",
+      {},
+      AtlassianIntegrationSettingsSchema,
+    );
+  },
+
   buildOAuthAuthorization(): Promise<AtlassianOAuthAuthorization> {
     return typedInvoke(
       "build_atlassian_oauth_authorization_url",

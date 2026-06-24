@@ -4,6 +4,7 @@
 pub mod orphan_worktree_cleanup_marker_repository;
 pub mod permission_repository;
 pub mod question_repository;
+pub mod queued_message_repository;
 
 pub use ralphx_domain::repositories::*;
 pub use ralphx_domain::repositories::{
@@ -26,3 +27,4 @@ pub use orphan_worktree_cleanup_marker_repository::{
 };
 pub use permission_repository::PermissionRepository;
 pub use question_repository::QuestionRepository;
+pub use queued_message_repository::QueuedMessageRepository;

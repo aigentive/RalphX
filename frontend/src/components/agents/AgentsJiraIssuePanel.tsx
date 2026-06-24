@@ -38,7 +38,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { useAgentComposerIntegrationResources } from "@/hooks/useAgentComposerResources";
 
 import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
 
@@ -191,6 +190,7 @@ export function AgentsJiraIssuePanel({
   const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
   const [isReassigning, setIsReassigning] = useState(false);
+  const normalizedSearchQuery = query.trim();
   const issueQuery = useQuery({
     queryKey: agentJiraIssueKeys.issue(conversationId),
     queryFn: () =>
@@ -202,10 +202,18 @@ export function AgentsJiraIssuePanel({
   });
   const issue = issueQuery.data ?? null;
   const showSearch = !issue || isReassigning;
-  const searchQuery = useAgentComposerIntegrationResources({
-    kind: "jira",
-    query,
-    enabled: showSearch && query.trim().length >= 2,
+  const searchQuery = useQuery({
+    queryKey: ["agent-conversation-jira-issue", "search", normalizedSearchQuery],
+    queryFn: () =>
+      atlassianApi.searchResources({
+        kind: "jira",
+        query: normalizedSearchQuery,
+        limit: 12,
+      }),
+    enabled: showSearch && normalizedSearchQuery.length >= 2,
+    staleTime: 10_000,
+    gcTime: 60_000,
+    placeholderData: [] satisfies AtlassianResourceSummary[],
   });
   const assignMutation = useMutation({
     mutationFn: (resource: AtlassianResourceSummary) =>

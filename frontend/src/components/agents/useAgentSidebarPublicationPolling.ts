@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { chatApi } from "@/api/chat";
 
 import type { AgentConversation } from "./agentConversations";
+import { invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
 import { agentSidebarConversationKeys } from "./useAgentSidebarPublicationGroup";
 
 const PUBLICATION_POLL_MS = 5_000;
@@ -45,20 +46,22 @@ export function useAgentSidebarPublicationPolling(
         .then((states) => {
           if (cancelled) return;
 
-          let changed = false;
+          const changedConversationIds: string[] = [];
           const cached = currentStatesRef.current;
           for (const [id, entry] of Object.entries(states)) {
             const cachedState = cached.get(id);
             if (cachedState !== undefined && cachedState !== entry.publication_state) {
-              changed = true;
-              break;
+              changedConversationIds.push(id);
             }
           }
 
-          if (changed) {
+          if (changedConversationIds.length > 0) {
             queryClient.invalidateQueries({
               queryKey: agentSidebarConversationKeys.all,
             });
+            for (const conversationId of changedConversationIds) {
+              void invalidateWorkspaceQueries(queryClient, conversationId);
+            }
           }
         })
         .catch(() => {})

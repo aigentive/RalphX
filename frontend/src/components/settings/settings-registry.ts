@@ -11,6 +11,8 @@ export type SettingsSectionId =
   | "ideation-harnesses"
   | "api-keys"
   | "integrations"
+  | "linear"
+  | "clickup"
   | "external-mcp"
   | "accessibility";
 
@@ -53,6 +55,8 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "ideation-workflow", groupId: "ideation", label: "Planning & Verification" },
   { id: "ideation-harnesses", groupId: "ideation", label: "Ideation Agents" },
   { id: "integrations", groupId: "integrations", label: "Atlassian" },
+  { id: "linear", groupId: "integrations", label: "Linear" },
+  { id: "clickup", groupId: "integrations", label: "ClickUp" },
   { id: "api-keys", groupId: "access", label: "API Keys" },
   { id: "external-mcp", groupId: "access", label: "External MCP" },
   { id: "accessibility", groupId: "preferences", label: "Accessibility" },

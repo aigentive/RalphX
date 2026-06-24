@@ -15,6 +15,7 @@ import { toast } from "sonner";
 
 import { artifactApi } from "@/api/artifact";
 import { atlassianApi } from "@/api/atlassian";
+import { linearApi } from "@/api/linear";
 import { ideationApi, toTaskProposal } from "@/api/ideation";
 import { verificationApi } from "@/api/verification";
 import {
@@ -49,7 +50,6 @@ import {
   getVisibleIdeationArtifactTabs,
   type IdeationArtifactTab,
 } from "./agentArtifactTabs";
-import { getLatestIdeationChildId } from "./agentIdeationChildren";
 import { resolveAttachedIdeationSessionId } from "./attachedIdeationSession";
 import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDetailSheet";
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
@@ -59,9 +59,11 @@ import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
+  prReviewContextForConversation,
 } from "./agentWorkspaceQueries";
 import {
   buildPlanActionHint,
+  isPlanRecommendationCheckPending,
   PLAN_IMPLEMENT_DIRECTLY_REQUEST,
   PLAN_TO_PROPOSALS_REQUEST,
 } from "./agentPlanModeActions";
@@ -117,12 +119,18 @@ const LazyAgentsJiraIssuePanel = lazy(() =>
     default: module.AgentsJiraIssuePanel,
   })),
 );
+const LazyAgentsLinearIssuePanel = lazy(() =>
+  import("@/components/agents/AgentsLinearIssuePanel").then((module) => ({
+    default: module.AgentsLinearIssuePanel,
+  })),
+);
 
 const ARTIFACT_TABS: Array<{
   id: IdeationArtifactTab;
   label: string;
   icon: ElementType;
 }> = [
+  { id: "review", label: "Review", icon: FileText },
   { id: "plan", label: "Plan", icon: FileText },
   { id: "verification", label: "Verification", icon: CheckCircle2 },
   { id: "proposal", label: "Proposals", icon: GitPullRequestArrow },
@@ -138,6 +146,12 @@ const PUBLISH_TAB = {
 const JIRA_TAB = {
   id: "jira" as const,
   label: "Jira",
+  icon: Ticket,
+};
+
+const LINEAR_TAB = {
+  id: "linear" as const,
+  label: "Linear",
   icon: Ticket,
 };
 
@@ -210,7 +224,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
   const canHydrateIdeationArtifacts = Boolean(
-    focusedIdeationSessionId ||
+    conversation?.contextType === "ideation" ||
+      focusedIdeationSessionId ||
       workspace?.mode === "ideation" ||
       workspace?.mode === "plan" ||
       workspace?.linkedIdeationSessionId ||
@@ -259,11 +274,45 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     atlassianSettingsQuery.data?.enabled &&
       atlassianSettingsQuery.data?.jiraAvailable,
   );
+  const linearSettingsQuery = useQuery({
+    queryKey: ["linear", "settings"],
+    queryFn: () => linearApi.getSettings(),
+    staleTime: 30_000,
+  });
+  const showLinearTab = Boolean(
+    linearSettingsQuery.data?.enabled &&
+      linearSettingsQuery.data?.issueSearchAvailable,
+  );
   const [displayedVerificationStatus, setDisplayedVerificationStatus] = useState<{
     status: VerificationStatus;
     inProgress: boolean;
   } | null>(null);
   const conversationId = conversation?.id ?? null;
+  const prReviewConversationId =
+    workspace?.mode === "review_pr" ? workspace.conversationId : null;
+  const shouldLoadPrReviewContext = Boolean(prReviewConversationId);
+  const prReviewContextQuery = useQuery({
+    queryKey: agentWorkspaceKeys.prReview(prReviewConversationId ?? ""),
+    queryFn: () => chatApi.getAgentWorkspacePrReviewContext(prReviewConversationId!),
+    enabled: shouldLoadPrReviewContext,
+    staleTime: 5_000,
+  });
+  const prReviewContext = prReviewContextForConversation(
+    prReviewContextQuery.data,
+    prReviewConversationId,
+  );
+  const reviewArtifactId =
+    prReviewContext?.monitor?.reviewArtifactId ?? null;
+  const reviewArtifactQuery = useQuery({
+    queryKey: ["agents", "artifact", reviewArtifactId],
+    queryFn: () => artifactApi.get(reviewArtifactId!),
+    enabled: Boolean(reviewArtifactId),
+    staleTime: 5_000,
+  });
+  const reviewArtifact =
+    reviewArtifactId && reviewArtifactQuery.data?.id === reviewArtifactId
+      ? reviewArtifactQuery.data
+      : null;
   const [taskArtifactSelectedId, setTaskArtifactSelectedIdState] =
     useState<string | null>(() => readSelectedTaskForConversation(conversationId));
   useEffect(() => {
@@ -314,41 +363,59 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           (displayedVerificationStatus.inProgress ||
             displayedVerificationStatus.status !== "unverified"))),
   );
+  const proposalCount = proposals.length;
+  const artifactMode =
+    workspace?.mode ??
+    conversation?.agentMode ??
+    (conversation?.contextType === "ideation" ? "ideation" : null);
   const availableIdeationTabIds = useMemo(
     () =>
       getVisibleIdeationArtifactTabs({
         hasAttachedIdeationSession: Boolean(sessionData),
         hasPlanArtifact: Boolean(planArtifactId),
+        hasProposals: proposalCount > 0,
         hasVerificationEvidence,
         hasExecutionTasks: Boolean(
           workspace?.linkedPlanBranchId ||
             sessionData?.session.acceptanceStatus === "accepted" ||
             sessionData?.session.convertedAt,
         ),
+        artifactMode,
       }),
     [
+      artifactMode,
       hasVerificationEvidence,
       planArtifactId,
+      proposalCount,
       sessionData,
       workspace?.linkedPlanBranchId,
     ],
   );
+  const availableArtifactTabIds = useMemo<IdeationArtifactTab[]>(() => {
+    if (!reviewArtifactId || availableIdeationTabIds.includes("review")) {
+      return availableIdeationTabIds;
+    }
+    return ["review", ...availableIdeationTabIds];
+  }, [availableIdeationTabIds, reviewArtifactId]);
   const visibleTabs = useMemo(
     () => [
-      ...ARTIFACT_TABS.filter((tab) => availableIdeationTabIds.includes(tab.id)),
+      ...ARTIFACT_TABS.filter((tab) => availableArtifactTabIds.includes(tab.id)),
       ...(showJiraTab ? [JIRA_TAB] : []),
+      ...(showLinearTab ? [LINEAR_TAB] : []),
       ...(showPublishTab ? [PUBLISH_TAB] : []),
     ],
-    [availableIdeationTabIds, showJiraTab, showPublishTab],
+    [availableArtifactTabIds, showJiraTab, showLinearTab, showPublishTab],
   );
   const effectiveActiveTab =
     visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
-      : showPublishTab
-        ? "publish"
+      : reviewArtifactId
+        ? "review"
         : showJiraTab
           ? "jira"
-          : "plan";
+          : showLinearTab
+            ? "linear"
+            : "plan";
   const shouldLoadVerificationData =
     shouldLoadIdeationData && effectiveActiveTab === "verification";
   const shouldLoadDependencyGraph =
@@ -382,12 +449,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const verificationQuery = useVerificationStatus(
     shouldLoadVerificationData ? attachedSessionId ?? undefined : undefined,
   );
-  const verificationChildrenQuery = useQuery({
-    queryKey: ["childSessions", attachedSessionId, "verification"],
-    queryFn: () => ideationApi.sessions.getChildren(attachedSessionId!, "verification"),
-    enabled: shouldLoadVerificationData && !!attachedSessionId,
-    staleTime: 4_000,
-  });
   const dependencyQuery = useDependencyGraph(
     shouldLoadDependencyGraph ? attachedSessionId ?? "" : "",
   );
@@ -396,7 +457,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ? verificationQuery.data
       : null;
   const dependencyGraph = attachedSessionId && sessionData ? dependencyQuery.data ?? null : null;
-  const proposalCount = proposals.length;
   const verificationState =
     displayedVerificationStatus?.status ??
     verificationData?.status ??
@@ -407,25 +467,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     verificationData?.inProgress ??
     sessionData?.session.verificationInProgress ??
     false;
-  const latestVerificationChildId = useMemo(
-    () => getLatestIdeationChildId(verificationChildrenQuery.data),
-    [verificationChildrenQuery.data],
-  );
-  useEffect(() => {
-    if (
-      effectiveActiveTab !== "verification" ||
-      !attachedSessionId ||
-      !latestVerificationChildId
-    ) {
-      return;
-    }
-    onFocusVerificationSession?.(attachedSessionId, latestVerificationChildId);
-  }, [
-    attachedSessionId,
-    effectiveActiveTab,
-    latestVerificationChildId,
-    onFocusVerificationSession,
-  ]);
   const handlePlanUpdated = useCallback(
     (updatedPlan: Artifact) => {
       queryClient.setQueryData(["agents", "artifact", updatedPlan.id], updatedPlan);
@@ -632,6 +673,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           session={session}
           sessionTitle={sessionData?.session.title ?? null}
           taskMode={taskMode}
+          reviewArtifact={reviewArtifact}
+          isReviewLoading={
+            Boolean(reviewArtifactId) &&
+            !reviewArtifact &&
+            reviewArtifactQuery.isFetching
+          }
           planArtifact={planArtifact}
           isPlanLoading={isPlanHydrating}
           onPlanUpdated={handlePlanUpdated}
@@ -666,6 +713,8 @@ type ArtifactContentProps = {
   session: IdeationSession | null;
   sessionTitle: string | null;
   taskMode: AgentTaskArtifactMode;
+  reviewArtifact: Artifact | null;
+  isReviewLoading: boolean;
   planArtifact: Artifact | null;
   isPlanLoading: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
@@ -699,6 +748,8 @@ function ArtifactContent({
   session,
   sessionTitle,
   taskMode,
+  reviewArtifact,
+  isReviewLoading,
   planArtifact,
   isPlanLoading,
   onPlanUpdated,
@@ -772,6 +823,26 @@ function ArtifactContent({
           projectId={projectId}
         />
       </Suspense>
+    );
+  }
+
+  if (activeTab === "linear") {
+    return (
+      <Suspense fallback={<EmptyArtifactState title="Loading Linear..." />}>
+        <LazyAgentsLinearIssuePanel
+          conversationId={conversationId}
+          projectId={projectId}
+        />
+      </Suspense>
+    );
+  }
+
+  if (activeTab === "review") {
+    return (
+      <AgentReviewPanel
+        reviewArtifact={reviewArtifact}
+        isReviewLoading={isReviewLoading}
+      />
     );
   }
 
@@ -873,6 +944,48 @@ function ArtifactContent({
       selectedTaskId={taskArtifactSelectedId}
       onSelectedTaskIdChange={onTaskArtifactSelectedIdChange}
     />
+  );
+}
+
+function AgentReviewPanel({
+  reviewArtifact,
+  isReviewLoading,
+}: {
+  reviewArtifact: Artifact | null;
+  isReviewLoading: boolean;
+}) {
+  const [isReviewExpanded, setIsReviewExpanded] = useState(true);
+
+  useEffect(() => {
+    setIsReviewExpanded(true);
+  }, [reviewArtifact?.id, reviewArtifact?.metadata.version]);
+
+  if (isReviewLoading) {
+    return <EmptyArtifactState title="Loading review..." />;
+  }
+
+  if (!reviewArtifact) {
+    return (
+      <EmptyArtifactState
+        title="No review yet"
+        detail="Run Review PR mode to create a versioned markdown review for this pull request."
+      />
+    );
+  }
+
+  return (
+    <div className="min-h-full px-4 pb-4 pt-4">
+      <Suspense fallback={<EmptyArtifactState title="Loading review..." />}>
+        <LazyPlanDisplay
+          plan={reviewArtifact}
+          artifactLabel="Review"
+          linkedProposalsCount={0}
+          isExpanded={isReviewExpanded}
+          onExpandedChange={setIsReviewExpanded}
+          chromeless
+        />
+      </Suspense>
+    </div>
   );
 }
 
@@ -1009,9 +1122,16 @@ function AgentPlanPanel({
     staleTime: 5_000,
     refetchInterval: (query) => (query.state.data ? false : 4_000),
   });
+  const isPlanRecommendationPending = isPlanRecommendationCheckPending({
+    assessment: planComplexityQuery.data,
+    isFetching:
+      (planComplexityQuery.isFetching || planComplexityQuery.isLoading) &&
+      !planComplexityQuery.data,
+    approvedAt: planArtifact?.planApproval?.approvedAt,
+  });
   const planActionHint = buildPlanActionHint({
     assessment: planComplexityQuery.data,
-    isAssessing: planComplexityQuery.isFetching && !planComplexityQuery.data,
+    isAssessing: isPlanRecommendationPending,
     canChoose: canImplementDirectly && canCreateProposals,
   });
 
@@ -1166,6 +1286,9 @@ function AgentPlanPanel({
               })}
               {...(planComplexityQuery.data && {
                 primaryPlanAction: planComplexityQuery.data.recommendedAction,
+              })}
+              {...(isPlanRecommendationPending && {
+                isPlanActionRecommendationPending: true,
               })}
               {...(planActionHint && { planActionHint })}
               {...(canCreateProposals && { onCreateProposals: handleCreateProposals })}
