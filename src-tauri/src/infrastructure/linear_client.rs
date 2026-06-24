@@ -17,6 +17,8 @@ use crate::application::linear_integration_service::LinearAttachment;
 use crate::domain::services::ComposerIntegrationReference;
 
 const LINEAR_GRAPHQL_ENDPOINT: &str = "https://api.linear.app/graphql";
+const LINEAR_CONNECTION_PAGE_SIZE: usize = 100;
+const LINEAR_LABEL_PAGE_SIZE: usize = 250;
 
 pub struct HyperLinearApiClient {
     client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
@@ -119,24 +121,60 @@ impl LinearApiClient for HyperLinearApiClient {
         query: &str,
         limit: usize,
     ) -> Result<Vec<LinearIssueSummary>, String> {
-        let (query_document, variables) = if query.trim().is_empty() {
-            (
-                linear_recent_issues_query(),
-                serde_json::json!({
-                    "first": limit as i64,
-                }),
-            )
+        let limit = limit.max(1);
+        let page_size = limit.min(LINEAR_CONNECTION_PAGE_SIZE).max(1);
+        let search_term = query.trim();
+        let connection_key = if search_term.is_empty() {
+            "issues"
         } else {
-            (
-                linear_issue_search_query(),
-                serde_json::json!({
-                    "term": query,
-                    "first": limit as i64,
-                }),
-            )
+            "searchIssues"
         };
-        let data = self.graphql(&auth.api_token, query_document, variables).await?;
-        search_issue_summaries_from_data(&data)
+        let mut after: Option<String> = None;
+        let mut issues = Vec::new();
+
+        while issues.len() < limit {
+            let (query_document, variables) = if search_term.is_empty() {
+                (
+                    linear_recent_issues_query(),
+                    serde_json::json!({
+                        "first": page_size as i64,
+                        "after": after,
+                    }),
+                )
+            } else {
+                (
+                    linear_issue_search_query(),
+                    serde_json::json!({
+                        "term": search_term,
+                        "first": page_size as i64,
+                        "after": after,
+                    }),
+                )
+            };
+            let data = self
+                .graphql(&auth.api_token, query_document, variables)
+                .await?;
+            let page = search_issue_summaries_from_data(&data)?;
+            let count = page.len();
+            issues.extend(page);
+            if issues.len() >= limit {
+                issues.truncate(limit);
+                break;
+            }
+            if count == 0 {
+                break;
+            }
+            let page_info = page_info_from_connection(&data, connection_key);
+            if !page_info.has_next_page {
+                break;
+            }
+            after = page_info.end_cursor;
+            if after.is_none() {
+                break;
+            }
+        }
+
+        Ok(issues)
     }
 
     async fn fetch_issue(
@@ -209,9 +247,27 @@ impl LinearApiClient for HyperLinearApiClient {
         auth: &LinearAuthContext,
         team_id: Option<&str>,
     ) -> Result<Vec<LinearWorkflowState>, String> {
-        let (query, variables) = linear_workflow_states_query(team_id);
-        let data = self.graphql(&auth.api_token, query, variables).await?;
-        workflow_states_from_data(&data)
+        let mut after: Option<String> = None;
+        let mut states = Vec::new();
+        loop {
+            let (query, variables) = linear_workflow_states_query(team_id, after.as_deref());
+            let data = self.graphql(&auth.api_token, query, variables).await?;
+            let page = workflow_states_from_data(&data)?;
+            let count = page.len();
+            states.extend(page);
+            if count == 0 {
+                break;
+            }
+            let page_info = page_info_from_connection(&data, "workflowStates");
+            if !page_info.has_next_page {
+                break;
+            }
+            after = page_info.end_cursor;
+            if after.is_none() {
+                break;
+            }
+        }
+        Ok(states)
     }
 
     async fn current_user(&self, auth: &LinearAuthContext) -> Result<LinearUser, String> {
@@ -314,14 +370,41 @@ impl LinearApiClient for HyperLinearApiClient {
         auth: &LinearAuthContext,
         first: usize,
     ) -> Result<Vec<LinearProject>, String> {
-        let data = self
-            .graphql(
-                &auth.api_token,
-                linear_projects_query(),
-                serde_json::json!({ "first": first as i64 }),
-            )
-            .await?;
-        projects_from_data(&data)
+        let limit = first.max(1);
+        let page_size = limit.min(LINEAR_CONNECTION_PAGE_SIZE).max(1);
+        let mut after: Option<String> = None;
+        let mut projects = Vec::new();
+        while projects.len() < limit {
+            let data = self
+                .graphql(
+                    &auth.api_token,
+                    linear_projects_query(),
+                    serde_json::json!({
+                        "first": page_size as i64,
+                        "after": after,
+                    }),
+                )
+                .await?;
+            let page = projects_from_data(&data)?;
+            let count = page.len();
+            projects.extend(page);
+            if projects.len() >= limit {
+                projects.truncate(limit);
+                break;
+            }
+            if count == 0 {
+                break;
+            }
+            let page_info = page_info_from_connection(&data, "projects");
+            if !page_info.has_next_page {
+                break;
+            }
+            after = page_info.end_cursor;
+            if after.is_none() {
+                break;
+            }
+        }
+        Ok(projects)
     }
 
     async fn list_issue_team_labels(
@@ -330,14 +413,36 @@ impl LinearApiClient for HyperLinearApiClient {
         issue_id: &str,
     ) -> Result<Vec<LinearLabel>, String> {
         let issue_id = required_trimmed(issue_id, "Linear issue id is required")?;
-        let data = self
-            .graphql(
-                &auth.api_token,
-                linear_issue_team_labels_query(),
-                serde_json::json!({ "id": issue_id }),
-            )
-            .await?;
-        issue_team_labels_from_data(&data)
+        let mut after: Option<String> = None;
+        let mut labels = Vec::new();
+        loop {
+            let data = self
+                .graphql(
+                    &auth.api_token,
+                    linear_issue_team_labels_query(),
+                    serde_json::json!({
+                        "id": issue_id,
+                        "first": LINEAR_LABEL_PAGE_SIZE as i64,
+                        "after": after,
+                    }),
+                )
+                .await?;
+            let page = issue_team_labels_from_data(&data)?;
+            let count = page.len();
+            labels.extend(page);
+            if count == 0 {
+                break;
+            }
+            let page_info = issue_team_labels_page_info_from_data(&data);
+            if !page_info.has_next_page {
+                break;
+            }
+            after = page_info.end_cursor;
+            if after.is_none() {
+                break;
+            }
+        }
+        Ok(labels)
     }
 
     async fn update_issue_labels(
@@ -363,14 +468,18 @@ impl LinearApiClient for HyperLinearApiClient {
 
 fn linear_issue_team_labels_query() -> &'static str {
     r#"
-    query RalphXLinearIssueTeamLabels($id: String!) {
+    query RalphXLinearIssueTeamLabels($id: String!, $first: Int!, $after: String) {
       issue(id: $id) {
         team {
           id
-          labels(first: 250) {
+          labels(first: $first, after: $after) {
             nodes {
               id
               name
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
             }
           }
         }
@@ -394,6 +503,14 @@ fn issue_team_labels_from_data(data: &Value) -> Result<Vec<LinearLabel>, String>
     Ok(nodes.iter().filter_map(label_from_node).collect())
 }
 
+fn issue_team_labels_page_info_from_data(data: &Value) -> LinearPageInfo {
+    data.get("issue")
+        .and_then(|issue| issue.get("team"))
+        .and_then(|team| team.get("labels"))
+        .map(page_info_from_value)
+        .unwrap_or_default()
+}
+
 fn label_from_node(node: &Value) -> Option<LinearLabel> {
     let id = node
         .get("id")
@@ -413,11 +530,15 @@ fn label_from_node(node: &Value) -> Option<LinearLabel> {
 
 fn linear_projects_query() -> &'static str {
     r#"
-    query RalphXLinearProjects($first: Int!) {
-      projects(first: $first) {
+    query RalphXLinearProjects($first: Int!, $after: String) {
+      projects(first: $first, after: $after) {
         nodes {
           id
           name
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
         }
       }
     }
@@ -452,8 +573,8 @@ fn project_from_node(node: &Value) -> Option<LinearProject> {
 
 fn linear_issue_search_query() -> &'static str {
     r#"
-    query RalphXLinearIssueSearch($term: String!, $first: Int!) {
-      searchIssues(term: $term, first: $first) {
+    query RalphXLinearIssueSearch($term: String!, $first: Int!, $after: String) {
+      searchIssues(term: $term, first: $first, after: $after) {
         nodes {
           id
           identifier
@@ -478,6 +599,10 @@ fn linear_issue_search_query() -> &'static str {
             name
           }
           updatedAt
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
         }
       }
     }
@@ -486,8 +611,8 @@ fn linear_issue_search_query() -> &'static str {
 
 fn linear_recent_issues_query() -> &'static str {
     r#"
-    query RalphXLinearRecentIssues($first: Int!) {
-      issues(first: $first, orderBy: updatedAt) {
+    query RalphXLinearRecentIssues($first: Int!, $after: String) {
+      issues(first: $first, after: $after, orderBy: updatedAt) {
         nodes {
           id
           identifier
@@ -513,17 +638,24 @@ fn linear_recent_issues_query() -> &'static str {
           }
           updatedAt
         }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
       }
     }
     "#
 }
 
-fn linear_workflow_states_query(team_id: Option<&str>) -> (&'static str, Value) {
+fn linear_workflow_states_query(
+    team_id: Option<&str>,
+    after: Option<&str>,
+) -> (&'static str, Value) {
     match team_id.map(str::trim).filter(|value| !value.is_empty()) {
         Some(team_id) => (
             r#"
-            query RalphXLinearWorkflowStates($teamId: String!) {
-              workflowStates(filter: { team: { id: { eq: $teamId } } }, first: 100) {
+            query RalphXLinearWorkflowStates($teamId: String!, $after: String) {
+              workflowStates(filter: { team: { id: { eq: $teamId } } }, first: 100, after: $after) {
                 nodes {
                   id
                   name
@@ -531,15 +663,19 @@ fn linear_workflow_states_query(team_id: Option<&str>) -> (&'static str, Value) 
                   color
                   position
                 }
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
               }
             }
             "#,
-            serde_json::json!({ "teamId": team_id }),
+            serde_json::json!({ "teamId": team_id, "after": after }),
         ),
         None => (
             r#"
-            query RalphXLinearWorkflowStates {
-              workflowStates(first: 100) {
+            query RalphXLinearWorkflowStates($after: String) {
+              workflowStates(first: 100, after: $after) {
                 nodes {
                   id
                   name
@@ -547,10 +683,14 @@ fn linear_workflow_states_query(team_id: Option<&str>) -> (&'static str, Value) 
                   color
                   position
                 }
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
               }
             }
             "#,
-            Value::Object(Default::default()),
+            serde_json::json!({ "after": after }),
         ),
     }
 }
@@ -799,6 +939,32 @@ fn required_trimmed<'a>(value: &'a str, message: &str) -> Result<&'a str, String
     }
 }
 
+#[derive(Default)]
+struct LinearPageInfo {
+    has_next_page: bool,
+    end_cursor: Option<String>,
+}
+
+fn page_info_from_connection(data: &Value, connection_key: &str) -> LinearPageInfo {
+    data.get(connection_key)
+        .map(page_info_from_value)
+        .unwrap_or_default()
+}
+
+fn page_info_from_value(connection: &Value) -> LinearPageInfo {
+    let page_info = connection.get("pageInfo").unwrap_or(&Value::Null);
+    LinearPageInfo {
+        has_next_page: page_info
+            .get("hasNextPage")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        end_cursor: page_info
+            .get("endCursor")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    }
+}
+
 fn search_issue_summaries_from_data(data: &Value) -> Result<Vec<LinearIssueSummary>, String> {
     let nodes = data
         .get("searchIssues")
@@ -1020,7 +1186,8 @@ mod tests {
     fn issue_search_query_uses_current_linear_search_field() {
         let query = linear_issue_search_query();
 
-        assert!(query.contains("searchIssues(term: $term, first: $first)"));
+        assert!(query.contains("searchIssues(term: $term, first: $first, after: $after)"));
+        assert!(query.contains("pageInfo"));
         assert!(!query.contains("issues(search:"));
         assert!(!query.contains("issueSearch"));
     }
@@ -1029,7 +1196,8 @@ mod tests {
     fn recent_issues_query_orders_by_updated_at() {
         let query = linear_recent_issues_query();
 
-        assert!(query.contains("issues(first: $first, orderBy: updatedAt)"));
+        assert!(query.contains("issues(first: $first, after: $after, orderBy: updatedAt)"));
+        assert!(query.contains("pageInfo"));
         assert!(!query.contains("searchIssues"));
         assert!(!query.contains("term:"));
     }
@@ -1038,8 +1206,9 @@ mod tests {
     fn projects_query_uses_projects_connection() {
         let query = linear_projects_query();
 
-        assert!(query.contains("projects(first: $first)"));
+        assert!(query.contains("projects(first: $first, after: $after)"));
         assert!(query.contains("nodes"));
+        assert!(query.contains("pageInfo"));
     }
 
     #[test]
@@ -1566,7 +1735,8 @@ mod tests {
         let query = linear_issue_team_labels_query();
         assert!(query.contains("issue(id: $id)"));
         assert!(query.contains("team {"));
-        assert!(query.contains("labels(first: 250)"));
+        assert!(query.contains("labels(first: $first, after: $after)"));
+        assert!(query.contains("pageInfo"));
     }
 
     #[test]
@@ -1919,24 +2089,27 @@ mod tests {
 
     #[test]
     fn workflow_states_query_without_team_omits_filter() {
-        let (query, variables) = linear_workflow_states_query(None);
-        assert!(query.contains("workflowStates(first: 100)"));
+        let (query, variables) = linear_workflow_states_query(None, None);
+        assert!(query.contains("workflowStates(first: 100, after: $after)"));
         assert!(!query.contains("filter"));
-        assert_eq!(variables, serde_json::json!({}));
+        assert_eq!(variables, serde_json::json!({ "after": null }));
     }
 
     #[test]
     fn workflow_states_query_with_team_scopes_filter_and_variables() {
-        let (query, variables) = linear_workflow_states_query(Some("  team-1  "));
+        let (query, variables) = linear_workflow_states_query(Some("  team-1  "), Some("cursor-1"));
         assert!(query.contains("filter: { team: { id: { eq: $teamId } } }"));
         // Team id is trimmed before being placed in the variables payload.
-        assert_eq!(variables, serde_json::json!({ "teamId": "team-1" }));
+        assert_eq!(
+            variables,
+            serde_json::json!({ "teamId": "team-1", "after": "cursor-1" })
+        );
     }
 
     #[test]
     fn workflow_states_query_treats_blank_team_as_none() {
-        let (query, variables) = linear_workflow_states_query(Some("   "));
-        assert!(query.contains("workflowStates(first: 100)"));
-        assert_eq!(variables, serde_json::json!({}));
+        let (query, variables) = linear_workflow_states_query(Some("   "), None);
+        assert!(query.contains("workflowStates(first: 100, after: $after)"));
+        assert_eq!(variables, serde_json::json!({ "after": null }));
     }
 }
