@@ -8,7 +8,19 @@ import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useProviderCliManagement } from "@/hooks/useProviderCliManagement";
 
+import { providerCliUpdateToastId } from "@/lib/provider-cli-update-toast";
 import { HarnessProvidersSection } from "./HarnessProvidersSection";
+
+const toastMocks = vi.hoisted(() => ({
+  dismiss: vi.fn(),
+  error: vi.fn(),
+  loading: vi.fn(),
+  success: vi.fn(),
+}));
+
+vi.mock("sonner", () => ({
+  toast: toastMocks,
+}));
 
 vi.mock("@/hooks/useAgentModels", () => ({
   useAgentModels: vi.fn(),
@@ -385,6 +397,73 @@ describe("HarnessProvidersSection", () => {
       expect(refetchStatus).toHaveBeenCalled();
       expect(refetchProviders).toHaveBeenCalled();
     });
+  });
+
+  it("dismisses the provider update toast when Settings installs the advertised version", async () => {
+    const user = userEvent.setup();
+    const advertisedStatus = managedCliStatuses.providers[0]!;
+    installOrUpdateProviderAsync.mockResolvedValueOnce({
+      provider: "codex",
+      success: true,
+      status: {
+        ...advertisedStatus,
+        currentVersion: advertisedStatus.latestVersion,
+        updateAvailable: false,
+        action: "none",
+        status: "ready",
+      },
+      stdout: null,
+      stderr: null,
+    });
+
+    render(<HarnessProvidersSection />);
+
+    await user.click(
+      within(screen.getByTestId("provider-card-codex")).getByRole("button", {
+        name: "Update Codex",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(toastMocks.dismiss).toHaveBeenCalledWith(
+        providerCliUpdateToastId("codex"),
+      );
+    });
+  });
+
+  it("keeps the provider update toast when Settings installs a different version", async () => {
+    const user = userEvent.setup();
+    const advertisedStatus = managedCliStatuses.providers[0]!;
+    installOrUpdateProviderAsync.mockResolvedValueOnce({
+      provider: "codex",
+      success: true,
+      status: {
+        ...advertisedStatus,
+        currentVersion: "0.136.5",
+        updateAvailable: true,
+        action: "update",
+        status: "still updating",
+      },
+      stdout: null,
+      stderr: null,
+    });
+
+    render(<HarnessProvidersSection />);
+
+    await user.click(
+      within(screen.getByTestId("provider-card-codex")).getByRole("button", {
+        name: "Update Codex",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(installOrUpdateProviderAsync).toHaveBeenCalledWith({
+        provider: "codex",
+      });
+    });
+    expect(toastMocks.dismiss).not.toHaveBeenCalledWith(
+      providerCliUpdateToastId("codex"),
+    );
   });
 
   it("shows managed Claude install status with an action", () => {
