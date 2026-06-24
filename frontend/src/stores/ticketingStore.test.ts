@@ -23,6 +23,22 @@ describe("useTicketingStore", () => {
     expect(useTicketingStore.getState().selectedTicketRef).toBeNull();
   });
 
+  it("clears container and selected ticket when switching to ClickUp", () => {
+    useTicketingStore.getState().setProvider("linear");
+    useTicketingStore.getState().setContainerId("team-1");
+    useTicketingStore.getState().setSelectedTicketRef({
+      provider: "linear",
+      id: "LIN-1",
+      key: "ENG-1",
+    });
+
+    useTicketingStore.getState().setProvider("clickup");
+
+    expect(useTicketingStore.getState().activeProvider).toBe("clickup");
+    expect(useTicketingStore.getState().activeContainerId).toBeNull();
+    expect(useTicketingStore.getState().selectedTicketRef).toBeNull();
+  });
+
   it("merges filter updates and resets them independently", () => {
     useTicketingStore.getState().setFilters({
       text: "race",
@@ -35,6 +51,7 @@ describe("useTicketingStore", () => {
       assignee: "me",
       stateIds: ["started"],
       labels: [],
+      sprint: null,
     });
 
     useTicketingStore.getState().resetFilters();
@@ -44,6 +61,7 @@ describe("useTicketingStore", () => {
       assignee: null,
       stateIds: [],
       labels: [],
+      sprint: null,
     });
   });
 

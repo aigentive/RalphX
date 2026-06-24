@@ -102,6 +102,7 @@ pub struct TicketSummaryResponse {
     pub title: String,
     pub state: TicketStateResponse,
     pub assignee: Option<TicketingPersonResponse>,
+    pub assignees: Vec<TicketingPersonResponse>,
     pub reporter: Option<TicketingPersonResponse>,
     pub labels: Vec<String>,
     pub project: Option<String>,
@@ -120,6 +121,8 @@ pub struct TicketSummaryResponse {
     /// Status of the representative PR (e.g. "open", "draft", "merged",
     /// "closed") so the list can color the PR icon by status.
     pub open_pr_status: Option<String>,
+    /// Whether the authenticated provider user is assigned to this ticket.
+    pub current_user_assigned: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -131,6 +134,8 @@ pub struct TicketCommentResponse {
     pub body_text: String,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+    pub attachments: Vec<TicketAttachmentResponse>,
+    pub replies: Vec<TicketCommentResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]

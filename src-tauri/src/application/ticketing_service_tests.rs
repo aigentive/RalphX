@@ -6,7 +6,9 @@ use super::*;
 use crate::application::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
     AtlassianIntegrationService, AtlassianResourceContent, AtlassianResourceKind,
-    AtlassianResourceSummary, LinearApiClient, LinearAuthContext, LinearIntegrationService,
+    AtlassianResourceSummary, ClickUpApiClient, ClickUpAuthContext, ClickUpComment,
+    ClickUpIntegrationService, ClickUpStatus, ClickUpTaskContent, ClickUpUser, ClickUpWorkspace,
+    EmptyClickUpApiClient, LinearApiClient, LinearAuthContext, LinearIntegrationService,
     LinearIssueContent, LinearIssueSummary, LinearLabel, LinearUser,
 };
 use crate::domain::integrations::{
@@ -15,8 +17,9 @@ use crate::domain::integrations::{
 };
 use crate::domain::services::ComposerIntegrationReference;
 use crate::infrastructure::memory::{
-    MemoryAtlassianIntegrationSettingsRepository, MemoryExternalIssueLinkRepository,
-    MemoryLinearIntegrationSettingsRepository, MemorySecretStore,
+    MemoryAtlassianIntegrationSettingsRepository, MemoryClickUpIntegrationSettingsRepository,
+    MemoryExternalIssueLinkRepository, MemoryLinearIntegrationSettingsRepository,
+    MemorySecretStore,
 };
 
 #[derive(Default)]
@@ -76,6 +79,7 @@ impl LinearApiClient for RecordingLinearClient {
             creator: None,
             updated_at: None,
             comments: Vec::new(),
+            attachments: Vec::new(),
             labels: Vec::new(),
             project: None,
         })
@@ -208,10 +212,7 @@ struct RecordingAtlassianClient {
 
 #[async_trait]
 impl AtlassianApiClient for RecordingAtlassianClient {
-    async fn validate(
-        &self,
-        auth: &AtlassianAuthContext,
-    ) -> Result<AtlassianConnectivity, String> {
+    async fn validate(&self, auth: &AtlassianAuthContext) -> Result<AtlassianConnectivity, String> {
         assert_eq!(auth.site_url, "https://jira.test");
         assert!(matches!(
             auth.credential,
@@ -366,6 +367,163 @@ impl AtlassianApiClient for RecordingAtlassianClient {
     }
 }
 
+#[derive(Default)]
+struct RecordingClickUpClient {
+    status_updates: tokio::sync::Mutex<Vec<(String, String)>>,
+    assignments: tokio::sync::Mutex<Vec<String>>,
+    assignment_clears: tokio::sync::Mutex<Vec<String>>,
+    comments: tokio::sync::Mutex<Vec<(String, String)>>,
+    tag_writes: tokio::sync::Mutex<Vec<(String, Vec<String>)>>,
+}
+
+#[async_trait]
+impl ClickUpApiClient for RecordingClickUpClient {
+    async fn validate(&self, _auth: &ClickUpAuthContext) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn list_workspaces(
+        &self,
+        _auth: &ClickUpAuthContext,
+    ) -> Result<Vec<ClickUpWorkspace>, String> {
+        Ok(vec![ClickUpWorkspace {
+            id: "team-1".to_string(),
+            name: "Team One".to_string(),
+            color: None,
+        }])
+    }
+
+    async fn fetch_task(
+        &self,
+        _auth: &ClickUpAuthContext,
+        task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        Ok(ClickUpTaskContent {
+            id: task_id.to_string(),
+            custom_id: None,
+            name: task_id.to_string(),
+            url: None,
+            description: String::new(),
+            status_name: Some("to do".to_string()),
+            status_type: Some("open".to_string()),
+            status_category: Some("todo".to_string()),
+            creator: None,
+            assignees: Vec::new(),
+            tags: Vec::new(),
+            comments: Vec::new(),
+            attachments: Vec::new(),
+            updated_at: None,
+            space_id: Some("space-1".to_string()),
+            list_name: None,
+        })
+    }
+
+    async fn list_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _space_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        Ok(vec![
+            ClickUpStatus {
+                id: None,
+                status: "to do".to_string(),
+                status_type: "open".to_string(),
+                category: "todo".to_string(),
+                color: None,
+                orderindex: Some(0),
+            },
+            ClickUpStatus {
+                id: None,
+                status: "complete".to_string(),
+                status_type: "done".to_string(),
+                category: "done".to_string(),
+                color: None,
+                orderindex: Some(1),
+            },
+        ])
+    }
+
+    async fn current_user(&self, _auth: &ClickUpAuthContext) -> Result<ClickUpUser, String> {
+        Ok(ClickUpUser {
+            id: 7,
+            username: Some("A. User".to_string()),
+            email: None,
+        })
+    }
+
+    async fn update_task_status(
+        &self,
+        _auth: &ClickUpAuthContext,
+        task_id: &str,
+        status_name: &str,
+    ) -> Result<(), String> {
+        self.status_updates
+            .lock()
+            .await
+            .push((task_id.to_string(), status_name.to_string()));
+        Ok(())
+    }
+
+    async fn assign_task_to_current_user(
+        &self,
+        _auth: &ClickUpAuthContext,
+        task_id: &str,
+    ) -> Result<ClickUpUser, String> {
+        self.assignments.lock().await.push(task_id.to_string());
+        Ok(ClickUpUser {
+            id: 7,
+            username: Some("A. User".to_string()),
+            email: None,
+        })
+    }
+
+    async fn clear_task_assignee(
+        &self,
+        _auth: &ClickUpAuthContext,
+        task_id: &str,
+    ) -> Result<(), String> {
+        self.assignment_clears
+            .lock()
+            .await
+            .push(task_id.to_string());
+        Ok(())
+    }
+
+    async fn create_comment(
+        &self,
+        _auth: &ClickUpAuthContext,
+        task_id: &str,
+        body_markdown: &str,
+    ) -> Result<ClickUpComment, String> {
+        self.comments
+            .lock()
+            .await
+            .push((task_id.to_string(), body_markdown.to_string()));
+        Ok(ClickUpComment {
+            id: "clk-comment-1".to_string(),
+            body: body_markdown.to_string(),
+            author_id: Some(7),
+            author_name: Some("A. User".to_string()),
+            created_at: Some("2026-06-20T08:00:00Z".to_string()),
+            attachments: Vec::new(),
+            replies: Vec::new(),
+        })
+    }
+
+    async fn set_task_tags(
+        &self,
+        _auth: &ClickUpAuthContext,
+        task_id: &str,
+        tags: Vec<String>,
+    ) -> Result<(), String> {
+        self.tag_writes
+            .lock()
+            .await
+            .push((task_id.to_string(), tags));
+        Ok(())
+    }
+}
+
 async fn enabled_linear_service(
     client: Arc<RecordingLinearClient>,
 ) -> Arc<LinearIntegrationService> {
@@ -430,6 +588,33 @@ fn disabled_atlassian_service(
     ))
 }
 
+async fn enabled_clickup_service(
+    client: Arc<dyn ClickUpApiClient>,
+) -> Arc<ClickUpIntegrationService> {
+    let service = Arc::new(ClickUpIntegrationService::new(
+        Arc::new(MemoryClickUpIntegrationSettingsRepository::new()),
+        Arc::new(MemorySecretStore::new()),
+        client,
+    ));
+    service
+        .save_settings(Some("clk-token".to_string()), Some("team-1".to_string()))
+        .await
+        .expect("clickup settings should save");
+    service
+        .validate_and_enable()
+        .await
+        .expect("clickup should validate");
+    service
+}
+
+fn disabled_clickup_service(client: Arc<dyn ClickUpApiClient>) -> Arc<ClickUpIntegrationService> {
+    Arc::new(ClickUpIntegrationService::new(
+        Arc::new(MemoryClickUpIntegrationSettingsRepository::new()),
+        Arc::new(MemorySecretStore::new()),
+        client,
+    ))
+}
+
 fn external_issue_service() -> Arc<ExternalIssueLinkService> {
     Arc::new(ExternalIssueLinkService::new(Arc::new(
         MemoryExternalIssueLinkRepository::new(),
@@ -444,7 +629,31 @@ fn service_with_sink(
     let sink = Arc::new(RecordingEventSink::default());
     let sink_trait: Arc<dyn TicketingEventSink> = sink.clone();
     (
-        TicketingService::new(atlassian, linear, external_issues).with_event_sink(sink_trait),
+        TicketingService::new(
+            atlassian,
+            linear,
+            disabled_clickup_service(Arc::new(EmptyClickUpApiClient)),
+            external_issues,
+        )
+        .with_event_sink(sink_trait),
+        sink,
+    )
+}
+
+fn clickup_service_with_sink(
+    clickup: Arc<ClickUpIntegrationService>,
+    external_issues: Arc<ExternalIssueLinkService>,
+) -> (TicketingService, Arc<RecordingEventSink>) {
+    let sink = Arc::new(RecordingEventSink::default());
+    let sink_trait: Arc<dyn TicketingEventSink> = sink.clone();
+    (
+        TicketingService::new(
+            disabled_atlassian_service(Arc::new(RecordingAtlassianClient::default())),
+            disabled_linear_service(Arc::new(RecordingLinearClient::default())),
+            clickup,
+            external_issues,
+        )
+        .with_event_sink(sink_trait),
         sink,
     )
 }
@@ -463,6 +672,15 @@ fn jira_ticket() -> TicketingTicketIdentity {
         provider: "jira".to_string(),
         id: "10001".to_string(),
         key: Some("JRA-1".to_string()),
+        local_project_id: Some("project-1".to_string()),
+    }
+}
+
+fn clickup_ticket() -> TicketingTicketIdentity {
+    TicketingTicketIdentity {
+        provider: "clickup".to_string(),
+        id: "task-abc".to_string(),
+        key: None,
         local_project_id: Some("project-1".to_string()),
     }
 }
@@ -489,7 +707,10 @@ async fn transition_records_unlinked_linear_operation_and_idempotent_retry() {
         .await
         .expect("transition should succeed");
 
-    assert_eq!(result.operation.status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(
+        result.operation.status,
+        ProviderTicketOperationStatus::Succeeded
+    );
     assert_eq!(result.operation.link_id, None);
     assert!(!result.idempotent);
     assert_eq!(
@@ -689,7 +910,10 @@ async fn clear_assignee_records_assignment_operation_and_is_idempotent() {
         .await
         .expect("clear assignee should succeed");
 
-    assert_eq!(result.operation.status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(
+        result.operation.status,
+        ProviderTicketOperationStatus::Succeeded
+    );
     assert_eq!(result.assignee, None);
     assert_eq!(
         *linear_client.assignment_clears.lock().await,
@@ -741,8 +965,14 @@ async fn assign_ticket_records_jira_operation_and_returns_current_user() {
         .await
         .expect("jira assign should succeed");
 
-    assert_eq!(result.operation.status, ProviderTicketOperationStatus::Succeeded);
-    assert_eq!(result.operation.operation, ProviderTicketOperationKind::Assign);
+    assert_eq!(
+        result.operation.status,
+        ProviderTicketOperationStatus::Succeeded
+    );
+    assert_eq!(
+        result.operation.operation,
+        ProviderTicketOperationKind::Assign
+    );
     assert!(!result.idempotent);
     assert_eq!(
         *atlassian_client.assignments.lock().await,
@@ -790,8 +1020,14 @@ async fn add_comment_records_unlinked_linear_operation_and_is_idempotent() {
         .await
         .expect("comment should succeed");
 
-    assert_eq!(result.operation.status, ProviderTicketOperationStatus::Succeeded);
-    assert_eq!(result.operation.operation, ProviderTicketOperationKind::Comment);
+    assert_eq!(
+        result.operation.status,
+        ProviderTicketOperationStatus::Succeeded
+    );
+    assert_eq!(
+        result.operation.operation,
+        ProviderTicketOperationKind::Comment
+    );
     assert_eq!(result.operation.link_id, None);
     assert!(!result.idempotent);
     let comment = result.comment.expect("comment payload should be present");
@@ -943,7 +1179,10 @@ async fn set_ticket_labels_forwards_full_array_for_jira_and_is_idempotent() {
         .await
         .expect("label set should succeed");
 
-    assert_eq!(result.operation.status, ProviderTicketOperationStatus::Succeeded);
+    assert_eq!(
+        result.operation.status,
+        ProviderTicketOperationStatus::Succeeded
+    );
     assert_eq!(
         result.operation.operation,
         ProviderTicketOperationKind::SetLabels
@@ -951,7 +1190,10 @@ async fn set_ticket_labels_forwards_full_array_for_jira_and_is_idempotent() {
     assert!(!result.idempotent);
     let labels = result.labels.expect("labels payload should be present");
     // Normalized: sorted + deduped.
-    assert_eq!(labels.labels, vec!["bug".to_string(), "frontend".to_string()]);
+    assert_eq!(
+        labels.labels,
+        vec!["bug".to_string(), "frontend".to_string()]
+    );
     assert_eq!(
         *atlassian_client.label_writes.lock().await,
         vec![(
@@ -1104,6 +1346,189 @@ async fn set_ticket_labels_on_disabled_provider_records_failed_operation() {
     );
 }
 
+// ── clickup write-backs ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn clickup_comment_records_operation_and_is_idempotent() {
+    let clickup_client = Arc::new(RecordingClickUpClient::default());
+    let clickup = enabled_clickup_service(clickup_client.clone()).await;
+    let external_issues = external_issue_service();
+    let (service, sink) = clickup_service_with_sink(clickup, Arc::clone(&external_issues));
+
+    let request = TicketCommentRequest {
+        ticket: clickup_ticket(),
+        body_markdown: "ClickUp note".to_string(),
+        client_operation_id: Some("op-clickup-comment".to_string()),
+    };
+    let result = service
+        .add_ticket_comment(request.clone())
+        .await
+        .expect("clickup comment should succeed");
+
+    assert_eq!(
+        result.operation.status,
+        ProviderTicketOperationStatus::Succeeded
+    );
+    assert_eq!(
+        result.operation.operation,
+        ProviderTicketOperationKind::Comment
+    );
+    assert!(!result.idempotent);
+    let comment = result.comment.expect("comment payload should be present");
+    assert_eq!(comment.body_markdown, "ClickUp note");
+    assert_eq!(comment.id.as_deref(), Some("clk-comment-1"));
+    assert_eq!(comment.author_name.as_deref(), Some("A. User"));
+    assert_eq!(
+        *clickup_client.comments.lock().await,
+        vec![("task-abc".to_string(), "ClickUp note".to_string())]
+    );
+
+    let retry = service
+        .add_ticket_comment(request)
+        .await
+        .expect("idempotent clickup comment retry should succeed");
+    assert!(retry.idempotent);
+    // Idempotent retry must not call the provider a second time.
+    assert_eq!(clickup_client.comments.lock().await.len(), 1);
+
+    // Operations are recorded under the clickup provider/task pair (no key).
+    let records = external_issues
+        .list_provider_ticket_operations_for_ticket(
+            "clickup",
+            "task",
+            "task-abc",
+            None,
+            Some("project-1"),
+        )
+        .await
+        .expect("operation history should load");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].operation, ProviderTicketOperationKind::Comment);
+    assert_eq!(records[0].status, ProviderTicketOperationStatus::Succeeded);
+
+    // Write-backs emit the same Pending→Succeeded operation events as Linear/Jira
+    // (tagged with the clickup provider), which is what drives ticketing cache
+    // invalidation in the UI.
+    assert_eq!(
+        sink.events()
+            .iter()
+            .map(|event| event.status)
+            .collect::<Vec<_>>(),
+        vec![
+            ProviderTicketOperationStatus::Pending,
+            ProviderTicketOperationStatus::Succeeded
+        ]
+    );
+    assert!(sink
+        .events()
+        .iter()
+        .all(|event| event.provider == "clickup"));
+}
+
+#[tokio::test]
+async fn clickup_transition_routes_through_status_update() {
+    let clickup_client = Arc::new(RecordingClickUpClient::default());
+    let clickup = enabled_clickup_service(clickup_client.clone()).await;
+    let external_issues = external_issue_service();
+    let (service, _sink) = clickup_service_with_sink(clickup, Arc::clone(&external_issues));
+
+    // ClickUp transitions are listed from the task's space statuses and applied
+    // by status name.
+    let options = service
+        .list_transitions(&clickup_ticket())
+        .await
+        .expect("clickup transitions should load");
+    let names: Vec<&str> = options.iter().map(|o| o.to_state_id.as_str()).collect();
+    assert_eq!(names, vec!["to do", "complete"]);
+    assert!(options.iter().all(|o| o.provider_transition_id.is_none()));
+
+    let result = service
+        .transition_ticket_status(TicketTransitionRequest {
+            ticket: clickup_ticket(),
+            to_state_id: "complete".to_string(),
+            provider_transition_id: None,
+            client_operation_id: Some("op-clickup-transition".to_string()),
+        })
+        .await
+        .expect("clickup transition should succeed");
+
+    assert_eq!(
+        result.operation.status,
+        ProviderTicketOperationStatus::Succeeded
+    );
+    let transition = result.transition.expect("transition payload should exist");
+    assert_eq!(transition.category, "done");
+    assert_eq!(
+        *clickup_client.status_updates.lock().await,
+        vec![("task-abc".to_string(), "complete".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn clickup_assign_records_operation_and_returns_current_user() {
+    let clickup_client = Arc::new(RecordingClickUpClient::default());
+    let clickup = enabled_clickup_service(clickup_client.clone()).await;
+    let external_issues = external_issue_service();
+    let (service, _sink) = clickup_service_with_sink(clickup, Arc::clone(&external_issues));
+
+    let result = service
+        .assign_ticket(TicketAssignRequest {
+            ticket: clickup_ticket(),
+            client_operation_id: Some("op-clickup-assign".to_string()),
+        })
+        .await
+        .expect("clickup assign should succeed");
+
+    assert_eq!(
+        result.operation.operation,
+        ProviderTicketOperationKind::Assign
+    );
+    assert_eq!(
+        result.operation.status,
+        ProviderTicketOperationStatus::Succeeded
+    );
+    let assignee = result.assignee.expect("assignee payload should exist");
+    assert_eq!(assignee.name, "A. User");
+    assert_eq!(assignee.id.as_deref(), Some("7"));
+    assert_eq!(
+        *clickup_client.assignments.lock().await,
+        vec!["task-abc".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn clickup_comment_on_disabled_provider_records_failed_operation() {
+    let clickup_client = Arc::new(RecordingClickUpClient::default());
+    let clickup = disabled_clickup_service(clickup_client.clone());
+    let external_issues = external_issue_service();
+    let (service, _sink) = clickup_service_with_sink(clickup, Arc::clone(&external_issues));
+
+    let error = service
+        .add_ticket_comment(TicketCommentRequest {
+            ticket: clickup_ticket(),
+            body_markdown: "blocked".to_string(),
+            client_operation_id: Some("op-clickup-comment-disabled".to_string()),
+        })
+        .await
+        .expect_err("disabled clickup provider should fail to comment");
+
+    assert_eq!(error, "ClickUp integration is not enabled");
+    assert!(clickup_client.comments.lock().await.is_empty());
+    let records = external_issues
+        .list_provider_ticket_operations_for_ticket(
+            "clickup",
+            "task",
+            "task-abc",
+            None,
+            Some("project-1"),
+        )
+        .await
+        .expect("operation history should load");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].operation, ProviderTicketOperationKind::Comment);
+    assert_eq!(records[0].status, ProviderTicketOperationStatus::Failed);
+}
+
 #[test]
 fn tauri_event_sink_emits_operation_updated_event_to_listeners() {
     use std::sync::mpsc;
@@ -1214,6 +1639,22 @@ fn normalize_ticket_identity_linear_uses_id_not_key() {
 }
 
 #[test]
+fn normalize_ticket_identity_clickup_uses_id_and_task_kind() {
+    let ticket = TicketingTicketIdentity {
+        provider: " clickup ".to_string(),
+        id: " task-abc ".to_string(),
+        key: None,
+        local_project_id: Some(" proj-1 ".to_string()),
+    };
+    let identity = normalize_ticket_identity(&ticket).unwrap();
+    assert_eq!(identity.provider, "clickup");
+    assert_eq!(identity.external_kind, "task");
+    assert_eq!(identity.external_id, "task-abc");
+    assert_eq!(identity.external_key, None);
+    assert_eq!(identity.local_project_id.as_deref(), Some("proj-1"));
+}
+
+#[test]
 fn normalize_ticket_identity_drops_blank_key_and_project() {
     let ticket = TicketingTicketIdentity {
         provider: "linear".to_string(),
@@ -1254,7 +1695,11 @@ fn normalize_labels_trims_dedupes_case_insensitively_and_sorts() {
     // sorted case-insensitively.
     assert_eq!(
         normalize_labels(&input),
-        vec!["apex".to_string(), "bug".to_string(), "Frontend".to_string()]
+        vec![
+            "apex".to_string(),
+            "bug".to_string(),
+            "Frontend".to_string()
+        ]
     );
 }
 
@@ -1266,7 +1711,10 @@ fn normalize_labels_empty_input_yields_empty() {
 
 // ── find_transition ─────────────────────────────────────────────────────────
 
-fn transition(to_state_id: &str, provider_transition_id: Option<&str>) -> TicketingTransitionOption {
+fn transition(
+    to_state_id: &str,
+    provider_transition_id: Option<&str>,
+) -> TicketingTransitionOption {
     TicketingTransitionOption {
         to_state_id: to_state_id.to_string(),
         provider_transition_id: provider_transition_id.map(str::to_string),
@@ -1394,6 +1842,61 @@ fn linear_user_to_person_defaults_name_to_me() {
     let named = linear_user_to_ticketing_person(LinearUser {
         id: "u2".to_string(),
         name: Some("Ada".to_string()),
+    });
+    assert_eq!(named.name, "Ada");
+}
+
+#[test]
+fn clickup_transition_option_maps_status_name_as_state_id() {
+    let option = clickup_transition_option(ClickUpStatus {
+        id: Some("status-1".to_string()),
+        status: "in progress".to_string(),
+        status_type: "custom".to_string(),
+        category: "in_progress".to_string(),
+        color: None,
+        orderindex: Some(1),
+    });
+    // ClickUp has no separate transition id; the status name is the target id.
+    assert_eq!(option.to_state_id, "in progress");
+    assert_eq!(option.name, "in progress");
+    assert_eq!(option.category, "in_progress");
+    assert_eq!(option.provider_transition_id, None);
+    assert_eq!(option.disabled_reason, None);
+}
+
+#[test]
+fn clickup_comment_result_duplicates_body_and_drops_updated_at() {
+    let result = clickup_comment_result(ClickUpComment {
+        id: "c1".to_string(),
+        body: "hello".to_string(),
+        author_id: Some(7),
+        author_name: Some("A. User".to_string()),
+        created_at: Some("2026-06-20T08:00:00Z".to_string()),
+        attachments: Vec::new(),
+        replies: Vec::new(),
+    });
+    assert_eq!(result.id.as_deref(), Some("c1"));
+    assert_eq!(result.body_markdown, "hello");
+    assert_eq!(result.body_text, "hello");
+    assert_eq!(result.author_name.as_deref(), Some("A. User"));
+    assert_eq!(result.created_at.as_deref(), Some("2026-06-20T08:00:00Z"));
+    assert_eq!(result.updated_at, None);
+}
+
+#[test]
+fn clickup_user_to_person_defaults_name_to_me() {
+    let person = clickup_user_to_ticketing_person(ClickUpUser {
+        id: 42,
+        username: None,
+        email: None,
+    });
+    assert_eq!(person.id.as_deref(), Some("42"));
+    assert_eq!(person.name, "Me");
+
+    let named = clickup_user_to_ticketing_person(ClickUpUser {
+        id: 7,
+        username: Some("Ada".to_string()),
+        email: None,
     });
     assert_eq!(named.name, "Ada");
 }
@@ -1577,6 +2080,7 @@ async fn operations_succeed_without_an_event_sink() {
     let service = TicketingService::new(
         disabled_atlassian_service(Arc::new(RecordingAtlassianClient::default())),
         linear,
+        disabled_clickup_service(Arc::new(EmptyClickUpApiClient)),
         external_issue_service(),
     );
 

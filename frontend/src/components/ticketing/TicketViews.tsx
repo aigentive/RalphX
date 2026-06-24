@@ -32,10 +32,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { TicketAssigneeChip } from "./TicketAssigneeChip";
+import { TicketAssigneeChips } from "./TicketAssigneeChip";
 import { TicketLabels } from "./TicketLabels";
 import { openExternalTicketUrl } from "./ticketing-open-external";
-import { groupTicketsByStatus } from "./ticketing-read-state";
+import { groupTicketsByStatus, ticketAssignees } from "./ticketing-read-state";
 import { resolveTicketKanbanMove, ticketDragId } from "./ticketing-kanban-utils";
 import { categoryToken, formatTicketDate, ticketButtonLabel, ticketKey } from "./ticketing-utils";
 
@@ -321,8 +321,8 @@ export function TicketListView({
       return next;
     });
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="min-h-0 flex-1 overflow-auto" data-ticket-list>
+    <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-auto overscroll-contain" data-ticket-list>
         {groups.map((group) => (
           <section key={group.id}>
             <button
@@ -386,7 +386,7 @@ export function TicketListView({
                     <TicketLabels labels={ticket.labels} max={2} className="shrink-0 text-[var(--text-secondary)]" />
                   </span>
                   <span className="min-w-0">
-                    <TicketAssigneeChip person={ticket.assignee} unassignedTone="secondary" />
+                    <TicketAssigneeChips people={ticketAssignees(ticket)} unassignedTone="secondary" />
                   </span>
                   {/* RX (suitcase) column, then the PR column placeholder; the
                       interactive PR control is rendered in the aligned overlay below. */}
@@ -440,7 +440,7 @@ export function TicketListView({
                     <span aria-hidden="true" />
                   </div>
                 )}
-                {canQuickAssign && onQuickAssign && !ticket.assignee && (
+                {canQuickAssign && onQuickAssign && ticketAssignees(ticket).length === 0 && (
                   <QuickAssignButton onClick={() => onQuickAssign(ticket)} />
                 )}
               </div>
@@ -483,7 +483,7 @@ function TicketColumn({
     <section
       ref={setNodeRef}
       data-testid={`ticket-column-${column.id}`}
-      className="flex h-full min-h-0 w-[280px] shrink-0 flex-col rounded-lg"
+      className="flex h-full min-h-0 w-[280px] shrink-0 flex-col overflow-hidden rounded-lg"
       style={{
         backgroundColor: isOver ? "var(--bg-hover)" : "var(--bg-surface)",
         borderColor: "var(--border-subtle)",
@@ -563,11 +563,11 @@ function TicketKanbanCard({
         <TicketLabels labels={ticket.labels} max={2} className="mt-2 text-[var(--text-muted)]" />
       )}
       <div className="mt-3 flex items-center justify-between gap-2 text-xs text-[var(--text-muted)]">
-        <TicketAssigneeChip person={ticket.assignee} />
+        <TicketAssigneeChips people={ticketAssignees(ticket)} />
         <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       </div>
     </button>
-      {canQuickAssign && onQuickAssign && !ticket.assignee && (
+      {canQuickAssign && onQuickAssign && ticketAssignees(ticket).length === 0 && (
         <QuickAssignButton onClick={() => onQuickAssign(ticket)} />
       )}
     </div>
@@ -616,7 +616,7 @@ export function TicketKanbanView({
 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-      <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-4">
+      <div className="flex h-full min-h-0 w-full flex-1 gap-3 overflow-x-auto overflow-y-hidden p-4">
         {effectiveColumns.map((column) => {
           const columnTickets = tickets.filter((ticket) => ticket.state.id === column.id);
           return (
@@ -639,7 +639,7 @@ export function TicketKanbanView({
                 </div>
                 <span className="text-xs text-[var(--text-muted)]">{columnTickets.length}</span>
               </div>
-              <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
+              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain p-2">
                 {columnTickets.map((ticket) => (
                   <TicketKanbanCard
                     key={`${ticket.ref.provider}:${ticket.ref.id}`}
@@ -670,7 +670,7 @@ export function TicketKanbanShell({ columns }: { columns: TicketingColumn[] }) {
       ];
 
   return (
-    <div className="flex min-h-0 flex-1 gap-3 overflow-hidden p-4" aria-label="Loading kanban view">
+    <div className="flex h-full min-h-0 w-full flex-1 gap-3 overflow-hidden p-4" aria-label="Loading kanban view">
       {shellColumns.map((column) => (
         <section
           key={column.id}

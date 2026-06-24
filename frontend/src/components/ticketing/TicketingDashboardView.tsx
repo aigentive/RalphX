@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { atlassianApi } from "@/api/atlassian";
 import { linearApi } from "@/api/linear";
-import type { AgentConversationWorkspaceMode } from "@/api/chat";
+import type { ComposerIntegrationReference } from "@/api/chat";
 import type {
   ListTicketsInput,
   TicketDeepLink,
@@ -18,7 +18,6 @@ import {
   findTicketTransitionForColumn,
   flattenTicketPages,
   useRefreshTickets,
-  useStartWorkFromTicket,
   useTicketAssociations,
   useTicketDetail,
   useTicketingMutations,
@@ -41,6 +40,7 @@ import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import { formatRelativeTime } from "@/lib/formatters";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -59,6 +59,7 @@ import { TicketingStatePanel } from "./TicketingStatePanel";
 import { TicketKanbanShell, TicketKanbanView, TicketListView } from "./TicketViews";
 import {
   distinctAssigneeNames,
+  distinctCurrentUserSprintNames,
   filterTicketsByAssignee,
   filterTicketsByProject,
   hasActiveTicketFilters,
@@ -139,22 +140,15 @@ function containerLabelsForProvider(provider: string | null): {
     // Jira containers are projects (read:jira-work), not Agile boards.
     return { containerLabel: "Project", allContainersLabel: "All projects" };
   }
+  if (provider === "clickup") {
+    // ClickUp containers are Spaces within the selected Workspace (Team).
+    return { containerLabel: "Space", allContainersLabel: "All spaces" };
+  }
   return { containerLabel: "Container", allContainersLabel: "All containers" };
 }
 
-const START_WORK_MODES: Array<{
-  value: AgentConversationWorkspaceMode;
-  label: string;
-}> = [
-  { value: "edit", label: "Agent" },
-  { value: "plan", label: "Plan" },
-  { value: "ideation", label: "Ideation" },
-  { value: "chat", label: "Chat" },
-];
-
 interface StartWorkSelection {
   projectId: string;
-  mode: AgentConversationWorkspaceMode;
 }
 
 function StartWorkDialog({
@@ -162,7 +156,6 @@ function StartWorkDialog({
   ticket,
   projects,
   selected,
-  isPending,
   onSelectionChange,
   onConfirm,
   onClose,
@@ -171,7 +164,6 @@ function StartWorkDialog({
   ticket: TicketSummary | null;
   projects: Project[];
   selected: StartWorkSelection;
-  isPending: boolean;
   onSelectionChange: (selection: StartWorkSelection) => void;
   onConfirm: () => void;
   onClose: () => void;
@@ -179,16 +171,17 @@ function StartWorkDialog({
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
       <DialogContent className="sm:max-w-[460px]">
-        <DialogHeader>
-          <DialogTitle>Start RalphX Work</DialogTitle>
-          <DialogDescription>
-            Choose where to start the linked conversation for {ticket ? ticketKey(ticket.ref) : "this ticket"}.
+        <DialogHeader className="block space-y-1.5 px-6 py-5 pr-14">
+          <DialogTitle className="text-lg leading-6">Start Conversation</DialogTitle>
+          <DialogDescription className="max-w-[34rem] leading-5">
+            Choose a project. The new composer will open with{" "}
+            {ticket ? ticketKey(ticket.ref) : "this ticket"} attached as a reference.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-4 py-2">
+        <div className="grid gap-4 px-6 py-5">
           <label className="grid gap-1.5 text-sm">
-            Project
+            <span className="font-medium text-[var(--text-primary)]">Project</span>
             <TicketSearchableSelect
               ariaLabel="Project"
               size="md"
@@ -204,43 +197,57 @@ function StartWorkDialog({
               }))}
             />
           </label>
-
-          <label className="grid gap-1.5 text-sm">
-            Conversation type
-            <TicketSearchableSelect
-              ariaLabel="Conversation type"
-              size="md"
-              value={selected.mode}
-              onValueChange={(nextMode) =>
-                onSelectionChange({
-                  ...selected,
-                  mode: nextMode as AgentConversationWorkspaceMode,
-                })
-              }
-              searchPlaceholder="Search conversation types..."
-              options={START_WORK_MODES.map((mode) => ({
-                value: mode.value,
-                label: mode.label,
-              }))}
-            />
-          </label>
         </div>
 
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={onClose} disabled={isPending}>
+        <DialogFooter className="px-6 py-4">
+          <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
           <Button
             type="button"
             onClick={onConfirm}
-            disabled={isPending || !selected.projectId}
+            disabled={!selected.projectId || projects.length === 0}
           >
-            {isPending ? "Starting" : "Start"}
+            Open composer
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
+}
+
+function ticketComposerReference(ticket: TicketSummary): ComposerIntegrationReference {
+  if (ticket.ref.provider === "jira") {
+    const id = ticket.ref.key ?? ticket.ref.id;
+    return {
+      provider: "atlassian",
+      kind: "jira",
+      id,
+      key: id,
+      title: ticket.title,
+      ...(ticket.url ? { url: ticket.url } : {}),
+    };
+  }
+  if (ticket.ref.provider === "linear") {
+    const id = ticket.ref.key ?? ticket.ref.id;
+    return {
+      provider: "linear",
+      kind: "linear",
+      id,
+      key: id,
+      title: ticket.title,
+      ...(ticket.url ? { url: ticket.url } : {}),
+    };
+  }
+  const id = ticket.ref.key ?? ticket.ref.id;
+  return {
+    provider: "clickup",
+    kind: "clickup",
+    id,
+    key: id,
+    title: ticket.title,
+    ...(ticket.url ? { url: ticket.url } : {}),
+  };
 }
 
 interface TicketingStatusNotice {
@@ -312,13 +319,13 @@ export function TicketingDashboardView({
   } = useTicketingStore();
   const setCurrentView = useUiStore((s) => s.setCurrentView);
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
-  const selectAgentConversation = useAgentSessionStore((s) => s.selectConversation);
+  const clearAgentSelection = useAgentSessionStore((s) => s.clearSelection);
   const setFocusedAgentProject = useAgentSessionStore((s) => s.setFocusedProject);
+  const setStartConversationDraft = useAgentSessionStore((s) => s.setStartConversationDraft);
   const [startWorkDialogOpen, setStartWorkDialogOpen] = useState(false);
   const [seenBaseline, setSeenBaseline] = useState<string | null>(null);
   const [startWorkSelection, setStartWorkSelection] = useState<StartWorkSelection>({
     projectId,
-    mode: "edit",
   });
 
   const queryClient = useQueryClient();
@@ -354,12 +361,11 @@ export function TicketingDashboardView({
   const containers = useMemo(() => containersQuery.data ?? [], [containersQuery.data]);
 
   // When Linear is the only enabled provider, auto-load its tickets instead of
-  // forcing a project pick: Linear search is provider-wide, so the container gate
-  // (meant to avoid broad fetches while choosing among providers/projects) only
-  // adds friction for a single-provider Linear dashboard. Jira keeps the gate
-  // because its statuses/issues are meaningfully project-scoped.
+  // forcing a container pick. Jira projects and ClickUp Spaces remain explicit
+  // scopes so the dashboard does not fire broad provider-wide fetches.
   const autoLoadsWithoutContainer =
-    validProviders.length === 1 && activeProvider === "linear";
+    validProviders.length === 1 &&
+    activeProvider === "linear";
   // When a readable provider exposes containers but none is selected, force the
   // user to pick one (no auto-select) and gate the columns/tickets queries so no
   // provider-wide unfiltered fetch fires.
@@ -404,21 +410,38 @@ export function TicketingDashboardView({
   const ticketsQuery = useTickets(ticketQuery, { enabled: Boolean(ticketQuery) });
   const tickets = useMemo(() => flattenTicketPages(ticketsQuery.data), [ticketsQuery.data]);
   const assigneeOptions = useMemo(() => distinctAssigneeNames(tickets), [tickets]);
+  const sprintOptions = useMemo(
+    () => (activeProvider === "clickup" ? distinctCurrentUserSprintNames(tickets) : []),
+    [activeProvider, tickets],
+  );
+  useEffect(() => {
+    if (!filters.sprint) {
+      return;
+    }
+    if (activeProvider !== "clickup" || !sprintOptions.includes(filters.sprint)) {
+      setFilters({ sprint: null });
+    }
+  }, [activeProvider, filters.sprint, setFilters, sprintOptions]);
   const activeContainerName = useMemo(
     () => containers.find((container) => container.id === activeContainerId)?.name ?? null,
     [containers, activeContainerId],
   );
-  // Jira scopes tickets to the selected project server-side (issues carry no
-  // matching `project` field), so the client-side container-name filter must be
-  // skipped for Jira; Linear returns all issues and relies on this client filter.
-  const clientContainerFilter = activeProvider === "jira" ? null : activeContainerName;
+  // Jira and ClickUp scope tickets to the selected container server-side (issues
+  // carry no matching `project` field), so the client-side container-name filter
+  // must be skipped for them; Linear returns all issues and relies on this
+  // client filter.
+  const clientContainerFilter =
+    activeProvider === "jira" || activeProvider === "clickup" ? null : activeContainerName;
   const displayedTickets = useMemo(
     () =>
       filterTicketsByProject(
-        filterTicketsByAssignee(tickets, filters.assignee),
+        filterTicketsByProject(
+          filterTicketsByAssignee(tickets, filters.assignee),
+          activeProvider === "clickup" ? filters.sprint : null,
+        ),
         clientContainerFilter,
       ),
-    [tickets, filters.assignee, clientContainerFilter],
+    [tickets, filters.assignee, filters.sprint, activeProvider, clientContainerFilter],
   );
   const ticketColumns = useMemo(() => columnsFromTickets(tickets), [tickets]);
   // Remember the last non-empty columns so the kanban board does not collapse
@@ -458,7 +481,6 @@ export function TicketingDashboardView({
   );
   const refreshTickets = useRefreshTickets();
   const ticketingMutations = useTicketingMutations(projectId);
-  const startWorkFromTicket = useStartWorkFromTicket();
   const conversationsQuery = useConversations({ view: "ticketing", projectId });
   const bindableConversations = useMemo(
     () =>
@@ -548,12 +570,11 @@ export function TicketingDashboardView({
     : mergeProviderAndTicketColumns(statusColumns, transitionColumns);
   const providerName = selectedProvider?.label ?? (activeProvider ? providerLabel(activeProvider) : "Provider");
   const containerLabels = containerLabelsForProvider(activeProvider);
+  // ClickUp conversation-linking is deferred (no ClickUp link table yet), so
+  // binding an existing conversation stays hidden. Starting new RalphX work is
+  // still provider-neutral and includes the ticket reference in the composer.
+  const supportsConversationBinding = activeProvider !== "clickup";
   const statusMessage = selectedProvider?.errorMessage ?? selectedProvider?.permissionMessage ?? undefined;
-  const startWorkError = startWorkFromTicket.error instanceof Error
-    ? startWorkFromTicket.error.message
-    : startWorkFromTicket.error
-      ? "RalphX work could not be started."
-      : null;
   const statusNotices: TicketingStatusNotice[] = [
     ...(selectedProvider?.staleAt
       ? [{
@@ -731,21 +752,17 @@ export function TicketingDashboardView({
       return;
     }
     const targetProjectId = startWorkSelection.projectId;
-    startWorkFromTicket.mutate({
+    setStartConversationDraft({
       projectId: targetProjectId,
-      ticketRef: selectedTicket.ref,
-      mode: startWorkSelection.mode,
-      content: `Start RalphX work for ${ticketKey(selectedTicket.ref)}: ${selectedTicket.title}`,
-    }, {
-      onSuccess: (result) => {
-        const conversationId = result.conversation.id;
-        setStartWorkDialogOpen(false);
-        setFocusedAgentProject(targetProjectId);
-        selectAgentConversation(targetProjectId, conversationId);
-        setActiveConversation(`project:${targetProjectId}`, conversationId);
-        setCurrentView("agents");
-      },
+      content: "",
+      mode: "edit",
+      composerIntegrationReferences: [ticketComposerReference(selectedTicket)],
     });
+    setStartWorkDialogOpen(false);
+    setFocusedAgentProject(targetProjectId);
+    clearAgentSelection();
+    setActiveConversation(`project:${targetProjectId}`, null);
+    setCurrentView("agents");
   }
 
   let content: React.ReactNode;
@@ -771,7 +788,7 @@ export function TicketingDashboardView({
       <TicketingStatePanel
         state="empty"
         title="No ticketing providers available"
-        description="Connect Jira or Linear from Settings to browse tickets."
+        description="Connect Jira, Linear, or ClickUp from Settings to browse tickets."
       />
     );
   } else if (validProviders.length === 0) {
@@ -904,7 +921,20 @@ export function TicketingDashboardView({
         }}
       >
         <div className="min-w-0">
-          <h1 className="text-lg font-semibold text-[var(--text-primary)]">Ticketing</h1>
+          <h1
+            aria-label="Ticketing"
+            className="flex min-w-0 items-center gap-2 text-lg font-semibold text-[var(--text-primary)]"
+          >
+            <span>Ticketing</span>
+            <Badge
+              data-testid="ticketing-visible-count"
+              aria-label={`${displayedTickets.length} visible ${displayedTickets.length === 1 ? "ticket" : "tickets"}`}
+              variant="outline"
+              className="h-5 rounded-full border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 text-xs font-medium leading-none text-[var(--text-muted)]"
+            >
+              {displayedTickets.length}
+            </Badge>
+          </h1>
           <p className="mt-0.5 text-xs text-[var(--text-muted)]">
             Browse provider tickets and inspect RalphX associations.
           </p>
@@ -922,6 +952,7 @@ export function TicketingDashboardView({
         containers={containers}
         columns={filterColumns}
         assigneeOptions={assigneeOptions}
+        sprintOptions={sprintOptions}
         containerLabel={containerLabels.containerLabel}
         allContainersLabel={containerLabels.allContainersLabel}
         activeContainerId={activeContainerId}
@@ -974,10 +1005,11 @@ export function TicketingDashboardView({
         onAddComment={handleAddComment}
         onSetLabels={selectedTicket ? handleSetLabels : undefined}
         seenUntil={seenBaseline}
-        isStartWorkPending={startWorkFromTicket.isPending}
-        startWorkError={startWorkError}
+        isStartWorkPending={false}
+        startWorkError={null}
+        showConversationBinding={supportsConversationBinding}
         bindableConversations={bindableConversations}
-        onBindConversation={selectedTicket ? handleBindConversation : undefined}
+        onBindConversation={selectedTicket && supportsConversationBinding ? handleBindConversation : undefined}
         isBindPending={bindConversation.isPending}
         bindError={bindError}
         onNavigate={onNavigateToAssociation}
@@ -990,7 +1022,6 @@ export function TicketingDashboardView({
         ticket={selectedTicket}
         projects={projectsQuery.data ?? []}
         selected={startWorkSelection}
-        isPending={startWorkFromTicket.isPending}
         onSelectionChange={setStartWorkSelection}
         onConfirm={handleConfirmStartWorkFromTicket}
         onClose={() => setStartWorkDialogOpen(false)}

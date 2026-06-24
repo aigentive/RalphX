@@ -12,6 +12,7 @@ import {
   isCommentNewSince,
   isOptimisticCommentId,
   isTicketUpdatedSince,
+  distinctCurrentUserSprintNames,
   sortCommentsByCreatedAt,
   ticketRefKey,
   UNASSIGNED_ASSIGNEE,
@@ -25,11 +26,12 @@ function ticketInState(id: string, stateId: string, stateName: string): TicketSu
     labels: [],
     updatedAt: "2026-06-20T12:00:00.000Z",
     associationCount: 0,
+    currentUserAssigned: false,
   };
 }
 
 function comment(overrides: Partial<TicketComment>): TicketComment {
-  return { bodyMarkdown: "", bodyText: "", ...overrides };
+  return { bodyMarkdown: "", bodyText: "", replies: [], ...overrides };
 }
 
 function ticket(id: string, assigneeName: string | null): TicketSummary {
@@ -41,6 +43,7 @@ function ticket(id: string, assigneeName: string | null): TicketSummary {
     labels: [],
     updatedAt: "2026-06-20T12:00:00.000Z",
     associationCount: 0,
+    currentUserAssigned: false,
   };
 }
 
@@ -71,6 +74,29 @@ describe("sortCommentsByCreatedAt", () => {
       comment({ id: "a", createdAt: BEFORE }),
     ]);
     expect(sorted.map((c) => c.id)).toEqual(["a", "b", "x"]);
+  });
+
+  it("orders ClickUp epoch-millisecond timestamp strings", () => {
+    const sorted = sortCommentsByCreatedAt([
+      comment({ id: "newer", createdAt: "1700000001000" }),
+      comment({ id: "older", createdAt: "1700000000000" }),
+    ]);
+    expect(sorted.map((c) => c.id)).toEqual(["older", "newer"]);
+  });
+
+  it("orders threaded replies oldest first", () => {
+    const [root] = sortCommentsByCreatedAt([
+      comment({
+        id: "root",
+        createdAt: BEFORE,
+        replies: [
+          comment({ id: "reply-newer", createdAt: "1700000001000" }),
+          comment({ id: "reply-older", createdAt: "1700000000000" }),
+        ],
+      }),
+    ]);
+
+    expect(root?.replies?.map((reply) => reply.id)).toEqual(["reply-older", "reply-newer"]);
   });
 
   it("does not mutate the input array", () => {
@@ -130,6 +156,17 @@ describe("distinctAssigneeNames", () => {
     const tickets = [ticket("1", "Ada"), ticket("2", null), ticket("3", "Ada"), ticket("4", "Grace")];
     expect(distinctAssigneeNames(tickets)).toEqual(["Ada", "Grace"]);
   });
+
+  it("includes every assignee from multi-assignee tickets", () => {
+    const tickets = [
+      {
+        ...ticket("1", "Ada"),
+        assignees: [{ name: "Ada" }, { name: "Grace" }],
+      },
+      ticket("2", null),
+    ];
+    expect(distinctAssigneeNames(tickets)).toEqual(["Ada", "Grace"]);
+  });
 });
 
 describe("filterTicketsByAssignee", () => {
@@ -147,6 +184,17 @@ describe("filterTicketsByAssignee", () => {
   it("returns only tickets matching the named assignee", () => {
     const result = filterTicketsByAssignee(tickets, "Grace");
     expect(result.map((t) => t.ref.id)).toEqual(["3"]);
+  });
+
+  it("returns tickets when the selected assignee appears anywhere in the assignee list", () => {
+    const result = filterTicketsByAssignee(
+      [
+        { ...ticket("1", "Ada"), assignees: [{ name: "Ada" }, { name: "Grace" }] },
+        ticket("2", "Linus"),
+      ],
+      "Grace",
+    );
+    expect(result.map((t) => t.ref.id)).toEqual(["1"]);
   });
 });
 
@@ -192,17 +240,31 @@ describe("groupTicketsByStatus", () => {
 });
 
 describe("hasActiveTicketFilters", () => {
-  const empty = { text: "", stateIds: [], labels: [], assignee: null };
+  const empty = { text: "", stateIds: [], labels: [], assignee: null, sprint: null };
 
   it("is false when no filter is set (whitespace-only text counts as empty)", () => {
     expect(hasActiveTicketFilters(empty)).toBe(false);
     expect(hasActiveTicketFilters({ ...empty, text: "   " })).toBe(false);
   });
 
-  it("is true when any of text, status, labels, or assignee is set", () => {
+  it("is true when any of text, status, labels, assignee, or sprint is set", () => {
     expect(hasActiveTicketFilters({ ...empty, text: "bug" })).toBe(true);
     expect(hasActiveTicketFilters({ ...empty, stateIds: ["todo"] })).toBe(true);
     expect(hasActiveTicketFilters({ ...empty, labels: ["backend"] })).toBe(true);
     expect(hasActiveTicketFilters({ ...empty, assignee: "Me" })).toBe(true);
+    expect(hasActiveTicketFilters({ ...empty, sprint: "Sprint 42" })).toBe(true);
+  });
+});
+
+describe("distinctCurrentUserSprintNames", () => {
+  it("returns sorted sprint names only from tickets assigned to the current user", () => {
+    expect(
+      distinctCurrentUserSprintNames([
+        { ...ticket("1", "Me"), project: "Sprint 42", currentUserAssigned: true },
+        { ...ticket("2", "Me"), project: "Backlog", currentUserAssigned: false },
+        { ...ticket("3", "Me"), project: "Sprint 41", currentUserAssigned: true },
+        { ...ticket("4", "Me"), project: "Sprint 42", currentUserAssigned: true },
+      ]),
+    ).toEqual(["Sprint 41", "Sprint 42"]);
   });
 });

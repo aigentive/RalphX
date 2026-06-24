@@ -30,6 +30,7 @@ import {
   useStartWorkFromTicket,
   useTicketingProviders,
   useTickets,
+  TICKET_DETAIL_CACHE_MS,
 } from "./useTicketing";
 
 vi.mock("@/api/ticketing", async (importActual) => {
@@ -771,6 +772,52 @@ describe("useTicketing hooks", () => {
     expect(result.current.data?.title).toBe("Fix merge race");
   });
 
+  it("keeps loaded ticket detail comments fresh for a daily cache window", async () => {
+    const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
+    const detail: TicketDetail = {
+      ref: ticketRef,
+      title: "Fix merge race",
+      state: { id: "todo", name: "To Do", category: "todo" },
+      labels: [],
+      updatedAt: "2026-06-19T22:00:00.000Z",
+      url: null,
+      associationCount: 0,
+      descriptionMarkdown: "Investigate transition race.",
+      comments: [
+        {
+          id: "comment-1",
+          bodyMarkdown: "Loaded once",
+          bodyText: "Loaded once",
+          attachments: [],
+          replies: [],
+        },
+      ],
+      attachments: [],
+      transitions: [],
+    };
+    const harness = createWrapper();
+    vi.mocked(ticketingApi.getTicketDetail).mockResolvedValue(detail);
+
+    const first = renderHook(() => useTicketDetail({ provider: "jira", ticketRef }), {
+      wrapper: harness.wrapper,
+    });
+    await waitFor(() => expect(first.result.current.isSuccess).toBe(true));
+    first.unmount();
+
+    const query = harness.queryClient.getQueryCache().find({
+      queryKey: ticketingKeys.detail({ provider: "jira", ticketRef }),
+    });
+    expect(query?.options.staleTime).toBe(TICKET_DETAIL_CACHE_MS);
+    expect(query?.options.refetchOnMount).toBe(false);
+    expect(query?.options.refetchOnWindowFocus).toBe(false);
+
+    const second = renderHook(() => useTicketDetail({ provider: "jira", ticketRef }), {
+      wrapper: harness.wrapper,
+    });
+    await waitFor(() => expect(second.result.current.data?.comments[0]?.bodyText).toBe("Loaded once"));
+    expect(ticketingApi.getTicketDetail).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the ticket-detail query disabled when input is null", () => {
     const { result } = renderHook(() => useTicketDetail(null), {
       wrapper: createWrapper().wrapper,
@@ -1465,4 +1512,3 @@ describe("useTicketing hooks", () => {
     ).toEqual(["bug", "ui"]);
   });
 });
-

@@ -271,6 +271,9 @@ export interface AgentComposerSurfaceProps {
   onFilesSelected?: ((files: File[]) => void | Promise<unknown>) | undefined;
   onRemoveAttachment?: ((id: string) => void | Promise<unknown>) | undefined;
   attachmentsUploading?: boolean;
+  initialProjectReferences?: AgentComposerProjectReference[];
+  initialIntegrationReferences?: AgentComposerIntegrationReference[];
+  initialArtifactReferences?: AgentComposerArtifactReference[];
   mode?: ModeFieldConfig;
   chatFocus?: ChatFocusFieldConfig;
   slashCommands?: AgentComposerSlashCommand[];
@@ -295,6 +298,9 @@ const COMPOSER_COLLAPSED_MIN_HEIGHT = 38;
 const COMPOSER_EXPANDED_MIN_HEIGHT = 92;
 /** Textarea growth ceiling (px) before it scrolls internally. */
 const COMPOSER_MAX_HEIGHT = 220;
+const EMPTY_PROJECT_REFERENCES: AgentComposerProjectReference[] = [];
+const EMPTY_INTEGRATION_REFERENCES: AgentComposerIntegrationReference[] = [];
+const EMPTY_ARTIFACT_REFERENCES: AgentComposerArtifactReference[] = [];
 
 export function AgentComposerSurface({
   project,
@@ -321,6 +327,9 @@ export function AgentComposerSurface({
   onFilesSelected,
   onRemoveAttachment,
   attachmentsUploading = false,
+  initialProjectReferences = EMPTY_PROJECT_REFERENCES,
+  initialIntegrationReferences = EMPTY_INTEGRATION_REFERENCES,
+  initialArtifactReferences = EMPTY_ARTIFACT_REFERENCES,
   mode,
   chatFocus,
   slashCommands = [],
@@ -357,15 +366,18 @@ export function AgentComposerSurface({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const restoreTextareaFocusOnActionMenuCloseRef = useRef(false);
   const restoreTextareaFocusCursorRef = useRef<number | null>(null);
+  const hydratedInitialReferencesSignatureRef = useRef<string | null>(null);
   const value = isControlled ? controlledValue : internalValue;
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const isAgentAlive = agentStatus !== "idle";
   const isAgentGenerating = agentStatus === "generating";
   const canQueue = !isReadOnly && isAgentAlive;
-  const shouldShowStop = Boolean(onStop) && isAgentGenerating && value.trim().length === 0;
+  const shouldShowStop =
+    Boolean(onStop) && isAgentGenerating && value.trim().length === 0;
   const emptySubmitValue = emptySubmitMessage?.trim() ?? "";
-  const hasSubmittableValue = value.trim().length > 0 || emptySubmitValue.length > 0;
+  const hasSubmittableValue =
+    value.trim().length > 0 || emptySubmitValue.length > 0;
   const canSubmit =
     hasSubmittableValue &&
     !isReadOnly &&
@@ -552,7 +564,26 @@ export function AgentComposerSurface({
   const integrationByMenuId = useMemo(() => {
     const map = new Map<string, AgentComposerIntegrationReference>();
     for (const resource of integrationResourcesQuery.data ?? []) {
+      if (integrationKind === "clickup") {
+        const key =
+          "customId" in resource && resource.customId
+            ? resource.customId
+            : resource.id;
+        const reference: AgentComposerIntegrationReference = {
+          provider: "clickup",
+          kind: "clickup",
+          id: resource.id,
+          key,
+          ...("name" in resource ? { title: resource.name } : {}),
+          ...(resource.url ? { url: resource.url } : {}),
+        };
+        map.set(`integration:clickup:${resource.id}`, reference);
+        continue;
+      }
       if (integrationKind === "linear") {
+        if (!("key" in resource) || !("title" in resource)) {
+          continue;
+        }
         const reference: AgentComposerIntegrationReference = {
           provider: "linear",
           kind: "linear",
@@ -614,6 +645,49 @@ export function AgentComposerSurface({
       ]),
     [selectedArtifactReferences],
   );
+  useEffect(() => {
+    const projectReferences = normalizeComposerProjectReferences(
+      initialProjectReferences,
+    );
+    const integrationReferences = normalizeComposerIntegrationReferences(
+      initialIntegrationReferences,
+    );
+    const artifactReferences = normalizeComposerArtifactReferences(
+      initialArtifactReferences,
+    );
+    const signature = JSON.stringify({
+      projectReferences,
+      integrationReferences,
+      artifactReferences,
+    });
+    if (hydratedInitialReferencesSignatureRef.current === signature) {
+      return;
+    }
+    hydratedInitialReferencesSignatureRef.current = signature;
+    setSelectedProjectReferences(
+      new Map(projectReferences.map((reference) => [reference.path, reference])),
+    );
+    setSelectedIntegrationReferences(
+      new Map(
+        integrationReferences.map((reference) => [
+          `${reference.provider}:${reference.kind}:${reference.id}`,
+          reference,
+        ]),
+      ),
+    );
+    setSelectedArtifactReferences(
+      new Map(
+        artifactReferences.map((reference) => [
+          `${reference.kind}:${reference.artifactId}`,
+          reference,
+        ]),
+      ),
+    );
+  }, [
+    initialArtifactReferences,
+    initialIntegrationReferences,
+    initialProjectReferences,
+  ]);
   const slashCommandByMenuId = useMemo(() => {
     const map = new Map<string, AgentComposerSlashCommand>();
     for (const command of slashCommands) {
@@ -790,36 +864,59 @@ export function AgentComposerSurface({
       if (integrationResourcesQuery.isError) {
         return [];
       }
-      return (integrationResourcesQuery.data ?? []).map((resource) => ({
-        id:
-          integrationKind === "linear"
-            ? `integration:linear:${resource.id}`
-            : "kind" in resource
-              ? `integration:${resource.kind}:${resource.id}`
-              : `integration:unknown:${resource.id}`,
-        kind: "integration" as const,
-        label:
-          integrationKind === "linear"
-            ? `@linear:${resource.key ?? resource.id}`
-            : "kind" in resource && resource.kind === "jira"
-              ? `@jira:${resource.key ?? resource.id}`
-              : `@confluence:${resource.id}`,
-        description: resource.title,
-        detail:
-          integrationKind === "linear"
-            ? "stateName" in resource
-              ? (resource.stateName ?? "linear")
-              : "linear"
-            : "kind" in resource
-              ? resource.kind
-              : "integration",
-        sourceLabel:
-          integrationKind === "linear"
-            ? "Linear"
-            : "kind" in resource && resource.kind === "jira"
-              ? "Jira"
-              : "Confluence",
-      }));
+      return (integrationResourcesQuery.data ?? []).map((resource) => {
+        const description =
+          integrationKind === "clickup"
+            ? "name" in resource
+              ? resource.name
+              : undefined
+            : "title" in resource
+              ? resource.title
+              : undefined;
+        const item: AgentComposerMenuItem = {
+          id:
+            integrationKind === "clickup"
+              ? `integration:clickup:${resource.id}`
+              : integrationKind === "linear"
+                ? `integration:linear:${resource.id}`
+                : "kind" in resource
+                  ? `integration:${resource.kind}:${resource.id}`
+                  : `integration:unknown:${resource.id}`,
+          kind: "integration",
+          label:
+            integrationKind === "clickup"
+              ? `@clickup:${"customId" in resource && resource.customId ? resource.customId : resource.id}`
+              : integrationKind === "linear"
+                ? `@linear:${"key" in resource ? (resource.key ?? resource.id) : resource.id}`
+                : "kind" in resource && resource.kind === "jira"
+                  ? `@jira:${resource.key ?? resource.id}`
+                  : `@confluence:${resource.id}`,
+          detail:
+            integrationKind === "clickup"
+              ? "statusName" in resource
+                ? (resource.statusName ?? "clickup")
+                : "clickup"
+              : integrationKind === "linear"
+                ? "stateName" in resource
+                  ? (resource.stateName ?? "linear")
+                  : "linear"
+                : "kind" in resource
+                  ? resource.kind
+                  : "integration",
+          sourceLabel:
+            integrationKind === "clickup"
+              ? "ClickUp"
+              : integrationKind === "linear"
+                ? "Linear"
+                : "kind" in resource && resource.kind === "jira"
+                  ? "Jira"
+                  : "Confluence",
+        };
+        if (description) {
+          item.description = description;
+        }
+        return item;
+      });
     }
     return slashCommandItems
       .filter((item) => {
@@ -851,11 +948,13 @@ export function AgentComposerSurface({
       return null;
     }
     const target =
-      integrationKind === "linear"
-        ? "Linear"
-        : integrationKind === "confluence"
-          ? "Confluence"
-          : "Jira";
+      integrationKind === "clickup"
+        ? "ClickUp"
+        : integrationKind === "linear"
+          ? "Linear"
+          : integrationKind === "confluence"
+            ? "Confluence"
+            : "Jira";
     const message = extractErrorMessage(
       integrationResourcesQuery.error,
       `Unable to search ${target}`,
@@ -872,7 +971,7 @@ export function AgentComposerSurface({
     integrationSearchErrorLabel ??
     (integrationQuery.trim()
       ? "No matching integration items"
-      : "Type to search Jira or Confluence");
+      : "Type to search Jira, Linear, ClickUp, or Confluence");
   const menuEmptyLabel =
     activeTrigger?.kind === "path"
       ? "No matching files or folders"
@@ -1161,6 +1260,7 @@ export function AgentComposerSurface({
       setSelectedIntegrationReferences((current) => {
         const nextSet = new Map(current);
         nextSet.delete(`${reference.kind}:${reference.id}`);
+        nextSet.delete(`${reference.provider}:${reference.kind}:${reference.id}`);
         return nextSet;
       });
       focusTextareaAtComposerCursor(cursorPosition);
@@ -1386,7 +1486,10 @@ export function AgentComposerSurface({
       data-testid={dataTestId}
       data-collapsible={collapsible ? "true" : "false"}
       data-collapsed={isCollapsed ? "true" : "false"}
-      className={cn("agent-composer-surface relative mx-auto w-full max-w-full", className)}
+      className={cn(
+        "agent-composer-surface relative mx-auto w-full max-w-full",
+        className,
+      )}
       {...attachmentDropProps}
     >
       <div
@@ -1435,7 +1538,7 @@ export function AgentComposerSurface({
           className={cn(
             "agent-composer-textarea block w-full resize-none border-0 bg-transparent px-5 text-[0.9375rem] leading-[1.5] shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-[1rem]",
             collapsible && "transition-[height] duration-150 ease-out",
-            compact ? "pb-2 pt-2" : "pb-2 pt-4"
+            compact ? "pb-2 pt-2" : "pb-2 pt-4",
           )}
           style={{
             color: "var(--text-primary)",
@@ -1447,7 +1550,9 @@ export function AgentComposerSurface({
           aria-label="Message input"
         />
 
-        {(attachments.length > 0 || hasSelectedReferences || attachmentsUploading) && (
+        {(attachments.length > 0 ||
+          hasSelectedReferences ||
+          attachmentsUploading) && (
           <div className="px-5 pb-3">
             {attachments.length > 0 && (
               <div className="pb-3">
@@ -1487,7 +1592,9 @@ export function AgentComposerSurface({
             aria-hidden={isExpanded ? undefined : true}
             className={cn(
               "overflow-hidden px-5 transition-all duration-150 ease-out",
-              isExpanded ? "max-h-20 pb-3 opacity-100" : "pointer-events-none max-h-0 pb-0 opacity-0"
+              isExpanded
+                ? "max-h-20 pb-3 opacity-100"
+                : "pointer-events-none max-h-0 pb-0 opacity-0",
             )}
           >
             {helperText}
@@ -1497,7 +1604,7 @@ export function AgentComposerSurface({
         <div
           className={cn(
             "border-t px-3.5 transition-[padding] duration-150 ease-out",
-            compact ? "py-1.5" : "py-2"
+            compact ? "py-1.5" : "py-2",
           )}
           style={{
             borderColor: "var(--overlay-faint)",
@@ -1508,7 +1615,7 @@ export function AgentComposerSurface({
           <div
             className={cn(
               "agent-composer-control-row flex flex-wrap items-center transition-[gap] duration-150 ease-out",
-              compact ? "gap-1.5" : "gap-2"
+              compact ? "gap-1.5" : "gap-2",
             )}
           >
             {enableAttachments && (
@@ -1599,7 +1706,10 @@ export function AgentComposerSurface({
 
             {chatFocus && chatFocus.options.length > 1 && (
               <div className="agent-composer-chat-focus-slot flex min-w-0 shrink-0">
-                <ComposerChatFocusPill chatFocus={chatFocus} compact={compact} />
+                <ComposerChatFocusPill
+                  chatFocus={chatFocus}
+                  compact={compact}
+                />
               </div>
             )}
 
@@ -1612,7 +1722,7 @@ export function AgentComposerSurface({
                   ? "min-w-0"
                   : shouldShowStop
                     ? "min-w-[100px]"
-                    : "min-w-[118px]"
+                    : "min-w-[118px]",
               )}
               style={{
                 background:
@@ -1693,9 +1803,7 @@ function ComposerActionMenu({
 }) {
   const hasPersistentActions = true;
   const hasPrimaryActions =
-    enableAttachments ||
-    Boolean(project.endAction) ||
-    Boolean(onForkSession);
+    enableAttachments || Boolean(project.endAction) || Boolean(onForkSession);
   const setOpen = onOpenChange;
 
   return (
@@ -1706,7 +1814,7 @@ function ComposerActionMenu({
           className={cn(
             "agent-composer-plus-trigger flex shrink-0 items-center justify-center rounded-md transition-[height,width,background-color,color] duration-150 ease-out disabled:opacity-40",
             compact ? "h-8 w-8" : "h-10 w-10",
-            !hasPersistentActions && "agent-composer-compact-only"
+            !hasPersistentActions && "agent-composer-compact-only",
           )}
           style={{
             background:
@@ -1765,7 +1873,10 @@ function ComposerActionMenu({
         {onForkSession && (
           <>
             {(enableAttachments || project.endAction) && (
-              <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
+              <div
+                className="my-1 h-px"
+                style={{ background: "var(--overlay-weak)" }}
+              />
             )}
             <button
               type="button"
@@ -1837,6 +1948,14 @@ function ComposerActionMenu({
               <Search className="h-4 w-4" />
               Linear
             </button>
+            <button
+              type="button"
+              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
+              onClick={() => onInsertIntegrationTrigger("clickup")}
+            >
+              <Search className="h-4 w-4" />
+              ClickUp
+            </button>
           </div>
         </div>
       </PopoverContent>
@@ -1893,17 +2012,25 @@ function ComposerReferencePills({
       {integrationReferences.map((reference) => {
         const isJira = reference.kind === "jira";
         const isLinear = reference.kind === "linear";
+        const isClickUp = reference.kind === "clickup";
         const label =
-          isJira || isLinear
+          isJira || isLinear || isClickUp
             ? (reference.key ?? reference.id)
             : (reference.title ?? reference.id);
-        const description = isJira || isLinear ? reference.title : reference.id;
-        const typeLabel = isLinear ? "Linear" : isJira ? "Jira" : "Confluence";
+        const description =
+          isJira || isLinear || isClickUp ? reference.title : reference.id;
+        const typeLabel = isClickUp
+          ? "ClickUp"
+          : isLinear
+            ? "Linear"
+            : isJira
+              ? "Jira"
+              : "Confluence";
         return (
           <ComposerReferencePill
             key={`integration:${reference.provider}:${reference.kind}:${reference.id}`}
             testId={`agent-composer-reference-pill-integration:${reference.kind}:${reference.id}`}
-            icon={isJira || isLinear ? Ticket : BookOpen}
+            icon={isJira || isLinear || isClickUp ? Ticket : BookOpen}
             typeLabel={typeLabel}
             label={label}
             removeLabel={`Remove ${typeLabel} reference ${label}`}
@@ -2008,7 +2135,9 @@ function insertIntegrationTrigger(
       ? "@jira:"
       : kind === "linear"
         ? "@linear:"
-        : "@confluence:";
+        : kind === "clickup"
+          ? "@clickup:"
+          : "@confluence:";
   const before = value.slice(0, start);
   const after = value.slice(end);
   const spacer = before.length > 0 && !/\s$/.test(before) ? " " : "";
@@ -2073,15 +2202,18 @@ function ComposerModeChip({
         <button
           type="button"
           disabled={mode.disabled}
-          data-testid={mode.testId ? `${mode.testId}-chip` : "agent-composer-mode-chip"}
+          data-testid={
+            mode.testId ? `${mode.testId}-chip` : "agent-composer-mode-chip"
+          }
           data-composer-mode-chip="true"
           aria-label={`Mode: ${activeOption?.label ?? mode.value}. Click to change.`}
           className={cn(
             "inline-flex shrink-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out hover:bg-[var(--bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed",
-            compact ? "h-8 px-2.5" : "h-10 px-3"
+            compact ? "h-8 px-2.5" : "h-10 px-3",
           )}
           style={{
-            background: "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
+            background:
+              "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
             borderColor: "var(--form-border)",
           }}
         >
@@ -2111,7 +2243,10 @@ function ComposerModeChip({
         }}
         onOpenAutoFocus={(event) => event.preventDefault()}
       >
-        <ComposerModeMenuSection mode={mode} onDone={() => onOpenChange(false)} />
+        <ComposerModeMenuSection
+          mode={mode}
+          onDone={() => onOpenChange(false)}
+        />
       </PopoverContent>
     </Popover>
   );
@@ -2155,7 +2290,7 @@ function ComposerChatFocusPill({
           aria-label={`Chat focus: ${activeOption?.label ?? chatFocus.value}. Click to change.`}
           className={cn(
             "flex min-w-0 shrink-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out disabled:opacity-50",
-            compact ? "h-8 px-2.5" : "h-10 px-3"
+            compact ? "h-8 px-2.5" : "h-10 px-3",
           )}
           style={triggerStyle}
         >
@@ -2448,7 +2583,7 @@ function ComposerRuntimePill({
           className={cn(
             "flex min-w-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out",
             compact ? "h-8 px-2.5" : "h-10 px-3",
-            className
+            className,
           )}
           style={{
             background:

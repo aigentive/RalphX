@@ -141,6 +141,22 @@ const mockLinearIntegrationSettings = {
   updatedAt: new Date(0).toISOString(),
 };
 
+const mockClickUpIntegrationSettings = {
+  enabled: false,
+  hasApiToken: false,
+  workspaceId: null as string | null,
+  validationStatus: "not_configured",
+  taskSearchAvailable: false,
+  lastValidatedAt: null as string | null,
+  lastError: null as string | null,
+  updatedAt: new Date(0).toISOString(),
+};
+
+const mockClickUpWorkspaces = [
+  { id: "team-1", name: "Acme Workspace", color: "#ff6b35" },
+  { id: "team-2", name: "Globex Workspace", color: null as string | null },
+];
+
 function mockLinearIssue(input: {
   conversationId: string;
   projectId?: string | null;
@@ -650,6 +666,42 @@ const mockTicketingTickets = [
     url: "https://example.atlassian.net/browse/RX-3",
     associationCount: 1,
   },
+  {
+    ref: { provider: "clickup", id: "cu-1001", key: "CU-1001" },
+    title: "Wire ClickUp tasks into the unified dashboard",
+    state: { id: "in_progress", name: "In Progress", category: "in_progress", color: null },
+    assignee: { id: "cu-user-1", name: "A. Demian", email: null, avatarUrl: null },
+    reporter: { id: "cu-user-2", name: "Platform", email: null, avatarUrl: null },
+    labels: ["integrations", "frontend"],
+    priority: "High",
+    updatedAt: "2026-06-20T15:00:00.000Z",
+    url: "https://app.clickup.com/t/cu-1001",
+    associationCount: 0,
+  },
+  {
+    ref: { provider: "clickup", id: "cu-1002", key: "CU-1002" },
+    title: "Validate ClickUp personal API token",
+    state: { id: "todo", name: "To Do", category: "todo", color: null },
+    assignee: null,
+    reporter: { id: "cu-user-2", name: "Platform", email: null, avatarUrl: null },
+    labels: ["backend"],
+    priority: "Medium",
+    updatedAt: "2026-06-20T12:30:00.000Z",
+    url: "https://app.clickup.com/t/cu-1002",
+    associationCount: 0,
+  },
+  {
+    ref: { provider: "clickup", id: "cu-1003", key: "CU-1003" },
+    title: "List ClickUp Spaces as dashboard containers",
+    state: { id: "done", name: "Done", category: "done", color: null },
+    assignee: { id: "cu-user-1", name: "A. Demian", email: null, avatarUrl: null },
+    reporter: { id: "cu-user-2", name: "Platform", email: null, avatarUrl: null },
+    labels: ["frontend"],
+    priority: "Low",
+    updatedAt: "2026-06-19T09:00:00.000Z",
+    url: "https://app.clickup.com/t/cu-1003",
+    associationCount: 0,
+  },
 ];
 
 const mockTicketingAssociations = {
@@ -1014,6 +1066,60 @@ const commandHandlers: Record<
     return mockLinearIntegrationSettings;
   },
   search_linear_issues: async () => ({ issues: [] }),
+  get_clickup_integration_settings: async () => mockClickUpIntegrationSettings,
+  save_clickup_integration_settings: async (args) => {
+    const input = args.input as {
+      apiToken?: string | null;
+      workspaceId?: string | null;
+    };
+    // Tri-state token: only re-gate the connection when the token changes.
+    if (input.apiToken !== undefined) {
+      mockClickUpIntegrationSettings.hasApiToken = Boolean(
+        input.apiToken?.trim(),
+      );
+      mockClickUpIntegrationSettings.enabled = false;
+      mockClickUpIntegrationSettings.validationStatus =
+        mockClickUpIntegrationSettings.hasApiToken
+          ? "pending"
+          : "not_configured";
+      mockClickUpIntegrationSettings.taskSearchAvailable = false;
+    }
+    // Tri-state workspace: undefined leaves it untouched, "" clears it.
+    if (input.workspaceId !== undefined) {
+      mockClickUpIntegrationSettings.workspaceId = input.workspaceId?.trim()
+        ? input.workspaceId
+        : null;
+    }
+    mockClickUpIntegrationSettings.lastError = null;
+    mockClickUpIntegrationSettings.updatedAt = new Date(0).toISOString();
+    return mockClickUpIntegrationSettings;
+  },
+  validate_clickup_integration: async () => {
+    Object.assign(mockClickUpIntegrationSettings, {
+      enabled: true,
+      validationStatus: "valid",
+      taskSearchAvailable: true,
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+    return mockClickUpIntegrationSettings;
+  },
+  disconnect_clickup_integration: async () => {
+    Object.assign(mockClickUpIntegrationSettings, {
+      enabled: false,
+      hasApiToken: false,
+      workspaceId: null,
+      validationStatus: "not_configured",
+      taskSearchAvailable: false,
+      lastValidatedAt: null,
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+    return mockClickUpIntegrationSettings;
+  },
+  list_clickup_workspaces: async () => ({ workspaces: mockClickUpWorkspaces }),
+  search_clickup_tasks: async () => ({ tasks: [] }),
   get_agent_conversation_linear_issue: async (args) => {
     const input = args.input as { conversationId: string };
     return {
@@ -1077,19 +1183,47 @@ const commandHandlers: Record<
       permissionMessage: null,
       errorMessage: null,
     },
+    {
+      provider: "clickup",
+      label: "ClickUp",
+      enabled: true,
+      connectionStatus: "connected",
+      capabilities: mockTicketingCapabilities,
+      fetchedAt: "2026-06-19T22:00:00.000Z",
+      staleAt: null,
+      permissionMessage: null,
+      errorMessage: null,
+    },
   ],
   list_ticketing_containers: async (args) => {
-    const provider = args.provider as string | undefined;
+    const provider = (args.provider as string | undefined) ?? "jira";
+    const ticketCount = mockTicketingTickets.filter(
+      (ticket) => ticket.ref.provider === provider,
+    ).length;
+    if (provider === "clickup") {
+      // ClickUp containers are Spaces within the selected Workspace (Team).
+      return [
+        {
+          provider,
+          id: "space-eng",
+          key: null,
+          name: "Engineering",
+          kind: "project",
+          parentId: null,
+          ticketCount,
+        },
+      ];
+    }
     return [
       {
         // Jira/Linear containers are projects; the container id is the project key.
-        provider: provider ?? "jira",
+        provider,
         id: "RX",
         key: "RX",
         name: "RalphX",
         kind: "project",
         parentId: null,
-        ticketCount: mockTicketingTickets.length,
+        ticketCount,
       },
     ];
   },

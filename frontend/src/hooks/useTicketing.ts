@@ -36,6 +36,8 @@ interface QueryOptions {
   enabled?: boolean | undefined;
 }
 
+export const TICKET_DETAIL_CACHE_MS = 24 * 60 * 60 * 1000;
+
 export const ticketingKeys = {
   all: ["ticketing"] as const,
   providers: (projectId?: string) =>
@@ -249,6 +251,7 @@ function optimisticComment(input: AddTicketCommentMutationInput & { clientOperat
     bodyText: input.bodyMarkdown,
     createdAt,
     updatedAt: createdAt,
+    attachments: [],
   };
 }
 
@@ -381,7 +384,10 @@ export function useTicketDetail(input: TicketRefInput | null, options: QueryOpti
       return ticketingApi.getTicketDetail(input);
     },
     enabled: (options.enabled ?? true) && Boolean(input?.ticketRef.id),
-    staleTime: 30_000,
+    staleTime: TICKET_DETAIL_CACHE_MS,
+    gcTime: TICKET_DETAIL_CACHE_MS,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 }
 

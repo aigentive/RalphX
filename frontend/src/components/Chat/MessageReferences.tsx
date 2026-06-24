@@ -48,18 +48,32 @@ export function MessageReferences({
       {integrationReferences.map((reference) => {
         const isJira = reference.kind === "jira";
         const isLinear = reference.kind === "linear";
-        const ticketProvider = isLinear ? "linear" : isJira ? "jira" : null;
+        const isClickUp = reference.kind === "clickup";
+        const ticketProvider = isClickUp
+          ? "clickup"
+          : isLinear
+            ? "linear"
+            : isJira
+              ? "jira"
+              : null;
         const label =
-          isJira || isLinear
+          isJira || isLinear || isClickUp
             ? (reference.key ?? reference.id)
             : (reference.title ?? reference.id);
-        const description = isJira || isLinear ? reference.title : reference.id;
-        const typeLabel = isLinear ? "Linear" : isJira ? "Jira" : "Confluence";
+        const description =
+          isJira || isLinear || isClickUp ? reference.title : reference.id;
+        const typeLabel = isClickUp
+          ? "ClickUp"
+          : isLinear
+            ? "Linear"
+            : isJira
+              ? "Jira"
+              : "Confluence";
         return (
           <ReferenceChip
             key={`integration:${reference.provider}:${reference.kind}:${reference.id}`}
             testId={`message-reference-integration:${reference.kind}:${reference.id}`}
-            icon={isJira || isLinear ? Ticket : BookOpen}
+            icon={isJira || isLinear || isClickUp ? Ticket : BookOpen}
             typeLabel={typeLabel}
             label={label}
             {...(description && description !== label ? { description } : {})}

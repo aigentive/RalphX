@@ -1,6 +1,7 @@
 import type {
   TicketComment,
   TicketingColumn,
+  TicketingPerson,
   TicketRef,
   TicketStateCategory,
   TicketSummary,
@@ -12,24 +13,53 @@ export function ticketRefKey(ref: TicketRef): string {
   return `${ref.provider}:${ref.id}`;
 }
 
-/** Whether any ticket filter (text, status, labels, assignee) is currently active. */
+/** Whether any ticket filter (text, status, labels, assignee, sprint) is currently active. */
 export function hasActiveTicketFilters(filters: TicketingFilterState): boolean {
   return (
     filters.text.trim() !== ""
     || filters.stateIds.length > 0
     || filters.labels.length > 0
     || filters.assignee !== null
+    || filters.sprint !== null
   );
 }
 
 /** Sentinel assignee-filter value selecting tickets with no assignee. */
 export const UNASSIGNED_ASSIGNEE = "__unassigned__";
 
+type TicketSummaryWithAssignees = TicketSummary & {
+  assignees?: TicketingPerson[];
+};
+
+export function ticketAssignees(ticket: TicketSummaryWithAssignees): TicketingPerson[] {
+  if (ticket.assignees && ticket.assignees.length > 0) {
+    return ticket.assignees;
+  }
+  return ticket.assignee ? [ticket.assignee] : [];
+}
+
 /** Distinct, sorted assignee display names present in the given tickets. */
 export function distinctAssigneeNames(tickets: TicketSummary[]): string[] {
   const names = new Set<string>();
   for (const ticket of tickets) {
-    const name = ticket.assignee?.name?.trim();
+    for (const person of ticketAssignees(ticket)) {
+      const name = person.name?.trim();
+      if (name) {
+        names.add(name);
+      }
+    }
+  }
+  return Array.from(names).sort((left, right) => left.localeCompare(right));
+}
+
+/** Distinct, sorted ClickUp list/sprint names present on current-user tickets. */
+export function distinctCurrentUserSprintNames(tickets: TicketSummary[]): string[] {
+  const names = new Set<string>();
+  for (const ticket of tickets) {
+    if (!ticket.currentUserAssigned) {
+      continue;
+    }
+    const name = ticket.project?.trim();
     if (name) {
       names.add(name);
     }
@@ -49,9 +79,11 @@ export function filterTicketsByAssignee(
     return tickets;
   }
   if (assignee === UNASSIGNED_ASSIGNEE) {
-    return tickets.filter((ticket) => !ticket.assignee);
+    return tickets.filter((ticket) => ticketAssignees(ticket).length === 0);
   }
-  return tickets.filter((ticket) => ticket.assignee?.name === assignee);
+  return tickets.filter((ticket) =>
+    ticketAssignees(ticket).some((person) => person.name === assignee),
+  );
 }
 
 /**
@@ -114,7 +146,8 @@ function toTime(value: string | null | undefined): number | null {
   if (!value) {
     return null;
   }
-  const time = new Date(value).getTime();
+  const trimmed = value.trim();
+  const time = /^\d+$/.test(trimmed) ? Number(trimmed) : new Date(trimmed).getTime();
   return Number.isNaN(time) ? null : time;
 }
 
@@ -125,7 +158,10 @@ export function isOptimisticCommentId(id: string | null | undefined): boolean {
 
 /** Oldest-first by createdAt; comments without a timestamp sort to the end. */
 export function sortCommentsByCreatedAt(comments: TicketComment[]): TicketComment[] {
-  return [...comments].sort((left, right) => {
+  return [...comments].map((comment) => ({
+    ...comment,
+    replies: sortCommentsByCreatedAt(comment.replies ?? []),
+  })).sort((left, right) => {
     const leftTime = toTime(left.createdAt);
     const rightTime = toTime(right.createdAt);
     if (leftTime === null && rightTime === null) {

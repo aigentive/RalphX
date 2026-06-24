@@ -1,10 +1,13 @@
 use super::*;
 use std::sync::Arc;
 
+use crate::application::clickup_integration_service::ClickUpAttachment;
+use crate::application::linear_integration_service::LinearAttachment;
 use crate::application::{
-    AppState, AtlassianJiraAttachment, AtlassianJiraComment, JiraIssueDetail, JiraProjectSummary,
-    JiraStatusSummary, LinearIntegrationSettings, TeamService, TeamStateTracker,
-    TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
+    AppState, AtlassianJiraAttachment, AtlassianJiraComment, ClickUpComment, ClickUpSpace,
+    ClickUpStatus, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail,
+    JiraProjectSummary, JiraStatusSummary, LinearIntegrationSettings, TeamService,
+    TeamStateTracker, TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
     TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
@@ -14,8 +17,8 @@ use crate::domain::entities::{
     ChatConversationId, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
 use crate::domain::integrations::{
-    AtlassianIntegrationSettings, IntegrationValidationStatus, ProviderTicketOperation,
-    ProviderTicketOperationKind, ProviderTicketOperationStatus,
+    AtlassianIntegrationSettings, ClickUpIntegrationSettings, IntegrationValidationStatus,
+    ProviderTicketOperation, ProviderTicketOperationKind, ProviderTicketOperationStatus,
 };
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
@@ -77,6 +80,553 @@ fn provider_validation_rejects_unknown_ticketing_provider() {
     let error = validate_provider("github").expect_err("unknown provider should fail");
 
     assert!(error.contains("Unknown ticketing provider"));
+}
+
+#[test]
+fn provider_validation_accepts_clickup() {
+    validate_provider("clickup").expect("clickup is a supported ticketing provider");
+}
+
+#[test]
+fn clickup_ticket_ref_maps_to_clickup_composer_reference() {
+    let reference = ticket_ref_to_composer_reference(
+        "clickup",
+        &TicketRefInput {
+            provider: "clickup".to_string(),
+            id: "task-1".to_string(),
+            key: Some("RX-7".to_string()),
+        },
+    );
+
+    assert_eq!(reference.provider, "clickup");
+    assert_eq!(reference.kind, "clickup");
+    assert_eq!(reference.id, "task-1");
+    assert_eq!(reference.key.as_deref(), Some("RX-7"));
+}
+
+#[test]
+fn clickup_provider_summary_reports_writeback_caps_with_manual_freshness() {
+    let settings = ClickUpIntegrationSettings {
+        enabled: true,
+        validation_status: IntegrationValidationStatus::Valid,
+        task_search_available: true,
+        ..Default::default()
+    };
+
+    let summary = clickup_provider_summary(&settings);
+
+    assert_eq!(summary.provider, "clickup");
+    assert_eq!(summary.label, "ClickUp");
+    assert_eq!(summary.connection_status, "connected");
+    assert!(summary.enabled);
+    // Full write-back parity (transition/assign/comment/tags) is exposed.
+    assert!(summary.capabilities.status_write);
+    assert!(summary.capabilities.assignment_write);
+    assert!(summary.capabilities.comment_write);
+    assert!(summary.capabilities.label_write);
+    assert!(summary.capabilities.supports_kanban);
+    // ClickUp has no webhook reconciliation, so freshness is manual like Jira. The
+    // deferred start-work/conversation-link affordance is gated client-side, so
+    // there is no backend capability flag for it to assert here.
+    assert_eq!(summary.capabilities.freshness, "manual");
+    assert!(summary.permission_message.is_none());
+    assert!(summary.error_message.is_none());
+}
+
+#[test]
+fn clickup_provider_summary_reflects_disabled_error_and_limited_states() {
+    let disconnected = clickup_provider_summary(&ClickUpIntegrationSettings::default());
+    assert_eq!(disconnected.connection_status, "disconnected");
+    assert!(!disconnected.enabled);
+    // No accidental write affordance when not connected.
+    assert!(!disconnected.capabilities.status_write);
+    assert!(!disconnected.capabilities.label_write);
+
+    let errored = clickup_provider_summary(&ClickUpIntegrationSettings {
+        enabled: true,
+        validation_status: IntegrationValidationStatus::Invalid,
+        last_error: Some("Token rejected".to_string()),
+        ..Default::default()
+    });
+    assert_eq!(errored.connection_status, "error");
+    assert!(!errored.enabled);
+    assert_eq!(errored.error_message.as_deref(), Some("Token rejected"));
+
+    let limited = clickup_provider_summary(&ClickUpIntegrationSettings {
+        enabled: true,
+        validation_status: IntegrationValidationStatus::Valid,
+        task_search_available: false,
+        ..Default::default()
+    });
+    assert_eq!(limited.connection_status, "permission_limited");
+    assert!(!limited.enabled);
+    assert!(limited.permission_message.is_some());
+}
+
+#[test]
+fn clickup_space_maps_to_project_container() {
+    let container = clickup_space_to_container(ClickUpSpace {
+        id: "space-1".to_string(),
+        name: "Platform".to_string(),
+        private: false,
+    });
+
+    assert_eq!(container.provider, "clickup");
+    assert_eq!(container.id, "space-1");
+    assert!(container.key.is_none());
+    assert_eq!(container.name, "Platform");
+    // Spaces reuse the existing `project` kind (no shared enum widening).
+    assert_eq!(container.kind, "project");
+    assert!(container.parent_id.is_none());
+}
+
+#[test]
+fn clickup_status_maps_into_column_with_name_derived_id() {
+    let column = clickup_status_to_column(
+        ClickUpStatus {
+            id: Some("status-99".to_string()),
+            status: "In Progress".to_string(),
+            status_type: "custom".to_string(),
+            category: "in_progress".to_string(),
+            color: Some("#abcdef".to_string()),
+            orderindex: Some(1),
+        },
+        1,
+    );
+
+    // The column id is derived from the status NAME (not the optional ClickUp
+    // status id) so it matches the ticket state id for kanban grouping.
+    assert_eq!(column.id, state_id("In Progress"));
+    assert_eq!(column.name, "In Progress");
+    assert_eq!(column.category, "in_progress");
+    assert_eq!(column.order, 1);
+    assert_eq!(column.color.as_deref(), Some("#abcdef"));
+}
+
+#[test]
+fn clickup_summary_maps_status_assignee_tags_and_project() {
+    let ticket = clickup_summary_to_ticket(ClickUpTaskSummary {
+        id: "task-1".to_string(),
+        custom_id: Some("RX-7".to_string()),
+        name: "Wire ClickUp dashboard".to_string(),
+        url: Some("https://app.clickup.com/t/task-1".to_string()),
+        status_name: Some("In Progress".to_string()),
+        status_type: Some("custom".to_string()),
+        status_category: Some("in_progress".to_string()),
+        status_color: Some("#112233".to_string()),
+        assignees: vec!["Reef Agent".to_string(), "Second Person".to_string()],
+        assignee_ids: vec![42, 7],
+        tags: vec!["backend".to_string(), "clickup".to_string()],
+        space_id: Some("space-1".to_string()),
+        list_name: Some("Sprint 1".to_string()),
+        updated_at: Some("2026-06-20T12:00:00Z".to_string()),
+    });
+
+    assert_eq!(ticket.ref_.provider, "clickup");
+    assert_eq!(ticket.ref_.id, "task-1");
+    // ClickUp custom id is the human-readable key.
+    assert_eq!(ticket.ref_.key.as_deref(), Some("RX-7"));
+    assert_eq!(ticket.title, "Wire ClickUp dashboard");
+    // State id is name-derived so it aligns with the column id for kanban grouping.
+    assert_eq!(ticket.state.id, state_id("In Progress"));
+    assert_eq!(ticket.state.name, "In Progress");
+    // Category comes from the already-derived status.type mapping.
+    assert_eq!(ticket.state.category, "in_progress");
+    assert_eq!(ticket.state.color.as_deref(), Some("#112233"));
+    // The first assignee still fills the legacy single assignee slot.
+    assert_eq!(
+        ticket.assignee.as_ref().map(|person| person.name.as_str()),
+        Some("Reef Agent")
+    );
+    assert_eq!(
+        ticket
+            .assignees
+            .iter()
+            .map(|person| person.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Reef Agent", "Second Person"]
+    );
+    // ClickUp tags surface as labels.
+    assert_eq!(
+        ticket.labels,
+        vec!["backend".to_string(), "clickup".to_string()]
+    );
+    assert_eq!(ticket.project.as_deref(), Some("Sprint 1"));
+    assert_eq!(ticket.updated_at, "2026-06-20T12:00:00Z");
+    assert_eq!(
+        ticket.url.as_deref(),
+        Some("https://app.clickup.com/t/task-1")
+    );
+    assert_eq!(ticket.association_count, 0);
+    assert!(!ticket.current_user_assigned);
+}
+
+#[test]
+fn clickup_summary_detects_current_user_assignment_by_username_or_email() {
+    let summary = ClickUpTaskSummary {
+        id: "task-1".to_string(),
+        custom_id: None,
+        name: "Current user task".to_string(),
+        url: None,
+        status_name: None,
+        status_type: None,
+        status_category: None,
+        status_color: None,
+        assignees: vec!["agent@example.com".to_string()],
+        assignee_ids: Vec::new(),
+        tags: Vec::new(),
+        space_id: None,
+        list_name: Some("Sprint 42".to_string()),
+        updated_at: None,
+    };
+    let user = ClickUpUser {
+        id: 42,
+        username: Some("Agent".to_string()),
+        email: Some("agent@example.com".to_string()),
+    };
+    let other = ClickUpUser {
+        id: 43,
+        username: Some("Someone Else".to_string()),
+        email: Some("else@example.com".to_string()),
+    };
+
+    assert!(clickup_summary_assigned_to_user(&summary, &user));
+    assert!(!clickup_summary_assigned_to_user(&summary, &other));
+
+    let id_only_summary = ClickUpTaskSummary {
+        assignees: vec!["A".to_string()],
+        assignee_ids: vec![42],
+        ..summary
+    };
+    assert!(clickup_summary_assigned_to_user(&id_only_summary, &user));
+
+    let username_summary = ClickUpTaskSummary {
+        assignees: vec!["AGENT".to_string()],
+        assignee_ids: Vec::new(),
+        ..id_only_summary
+    };
+    assert!(clickup_summary_assigned_to_user(&username_summary, &user));
+}
+
+#[test]
+fn clickup_summary_derives_state_when_status_fields_missing() {
+    let ticket = clickup_summary_to_ticket(ClickUpTaskSummary {
+        id: "task-2".to_string(),
+        custom_id: None,
+        name: "No status".to_string(),
+        url: None,
+        status_name: None,
+        status_type: None,
+        status_category: None,
+        status_color: None,
+        assignees: Vec::new(),
+        assignee_ids: Vec::new(),
+        tags: Vec::new(),
+        space_id: None,
+        list_name: None,
+        updated_at: None,
+    });
+
+    assert!(ticket.ref_.key.is_none());
+    assert_eq!(ticket.state.name, "Provider result");
+    assert_eq!(ticket.state.category, state_category("Provider result"));
+    assert_eq!(ticket.state.id, state_id("Provider result"));
+    assert!(ticket.assignee.is_none());
+    assert!(ticket.labels.is_empty());
+    assert!(ticket.project.is_none());
+    assert!(!ticket.updated_at.is_empty());
+}
+
+#[test]
+fn clickup_content_maps_description_comments_and_creator() {
+    let detail = clickup_content_to_detail(ClickUpTaskContent {
+        id: "task-1".to_string(),
+        custom_id: Some("RX-7".to_string()),
+        name: "Wire ClickUp dashboard".to_string(),
+        url: Some("https://app.clickup.com/t/task-1".to_string()),
+        description: "Implement the ClickUp arms.".to_string(),
+        status_name: Some("Done".to_string()),
+        status_type: Some("done".to_string()),
+        status_category: Some("done".to_string()),
+        creator: Some("Reporter Person".to_string()),
+        assignees: vec!["Reef Agent".to_string()],
+        tags: vec!["backend".to_string()],
+        comments: vec![ClickUpComment {
+            id: "comment-1".to_string(),
+            body: "Looks good".to_string(),
+            author_id: Some(7),
+            author_name: Some("Commenter".to_string()),
+            created_at: Some("2026-06-21T09:00:00Z".to_string()),
+            attachments: vec![ClickUpAttachment {
+                id: Some("comment-att-1".to_string()),
+                filename: "comment-image.jpg".to_string(),
+                mime_type: Some("image/jpeg".to_string()),
+                size: Some(1024),
+                url: Some("https://attachments.clickup.test/comment-image.jpg".to_string()),
+            }],
+            replies: vec![ClickUpComment {
+                id: "reply-1".to_string(),
+                body: "Thread reply".to_string(),
+                author_id: Some(8),
+                author_name: Some("Responder".to_string()),
+                created_at: Some("2026-06-21T09:05:00Z".to_string()),
+                attachments: Vec::new(),
+                replies: Vec::new(),
+            }],
+        }],
+        attachments: vec![ClickUpAttachment {
+            id: Some("att-1".to_string()),
+            filename: "screenshot.png".to_string(),
+            mime_type: Some("image/png".to_string()),
+            size: Some(4096),
+            url: Some("https://attachments.clickup.test/screenshot.png".to_string()),
+        }],
+        updated_at: Some("2026-06-21T10:00:00Z".to_string()),
+        space_id: Some("space-1".to_string()),
+        list_name: Some("Sprint 1".to_string()),
+    });
+
+    assert_eq!(detail.summary.ref_.provider, "clickup");
+    assert_eq!(detail.summary.ref_.id, "task-1");
+    assert_eq!(detail.summary.ref_.key.as_deref(), Some("RX-7"));
+    assert_eq!(detail.summary.state.category, "done");
+    assert_eq!(detail.summary.state.id, state_id("Done"));
+    assert_eq!(
+        detail
+            .summary
+            .reporter
+            .as_ref()
+            .map(|person| person.name.as_str()),
+        Some("Reporter Person")
+    );
+    assert_eq!(
+        detail
+            .summary
+            .assignee
+            .as_ref()
+            .map(|person| person.name.as_str()),
+        Some("Reef Agent")
+    );
+    assert_eq!(detail.summary.labels, vec!["backend".to_string()]);
+    assert_eq!(
+        detail.description_markdown.as_deref(),
+        Some("Implement the ClickUp arms.")
+    );
+    assert_eq!(
+        detail.description_text.as_deref(),
+        Some("Implement the ClickUp arms.")
+    );
+    assert!(detail.acceptance_criteria_markdown.is_none());
+    assert_eq!(detail.attachments.len(), 1);
+    assert_eq!(detail.attachments[0].filename, "screenshot.png");
+    assert_eq!(
+        detail.attachments[0].mime_type.as_deref(),
+        Some("image/png")
+    );
+    assert_eq!(detail.attachments[0].size, Some(4096));
+    assert_eq!(
+        detail.attachments[0].url.as_deref(),
+        Some("https://attachments.clickup.test/screenshot.png")
+    );
+    assert!(detail.transitions.is_empty());
+    assert_eq!(detail.comments.len(), 1);
+    let comment = &detail.comments[0];
+    assert_eq!(comment.id.as_deref(), Some("comment-1"));
+    assert_eq!(comment.body_markdown, "Looks good");
+    assert_eq!(comment.body_text, "Looks good");
+    assert_eq!(comment.replies.len(), 1);
+    assert_eq!(comment.replies[0].body_text, "Thread reply");
+    assert_eq!(comment.attachments.len(), 1);
+    assert_eq!(comment.attachments[0].filename, "comment-image.jpg");
+    assert_eq!(
+        comment.author.as_ref().map(|person| person.name.as_str()),
+        Some("Commenter")
+    );
+    assert_eq!(comment.created_at.as_deref(), Some("2026-06-21T09:00:00Z"));
+    assert!(comment.updated_at.is_none());
+}
+
+#[test]
+fn clickup_content_maps_empty_provider_payload_with_fallbacks() {
+    let detail = clickup_content_to_detail(ClickUpTaskContent {
+        id: "task-empty".to_string(),
+        custom_id: None,
+        name: "Sparse ClickUp task".to_string(),
+        url: None,
+        description: String::new(),
+        status_name: None,
+        status_type: None,
+        status_category: None,
+        creator: None,
+        assignees: Vec::new(),
+        tags: Vec::new(),
+        comments: Vec::new(),
+        attachments: Vec::new(),
+        updated_at: None,
+        space_id: None,
+        list_name: None,
+    });
+
+    assert_eq!(detail.summary.ref_.provider, "clickup");
+    assert_eq!(detail.summary.ref_.id, "task-empty");
+    assert!(detail.summary.ref_.key.is_none());
+    assert_eq!(detail.summary.state.name, "Provider result");
+    assert_eq!(detail.summary.state.id, state_id("Provider result"));
+    assert_eq!(
+        detail.summary.state.category,
+        state_category("Provider result")
+    );
+    assert!(detail.summary.assignee.is_none());
+    assert!(detail.summary.assignees.is_empty());
+    assert!(detail.summary.reporter.is_none());
+    assert!(detail.summary.labels.is_empty());
+    assert!(detail.summary.project.is_none());
+    assert!(detail.summary.url.is_none());
+    assert!(!detail.summary.updated_at.is_empty());
+    assert_eq!(detail.description_markdown.as_deref(), Some(""));
+    assert_eq!(detail.description_text.as_deref(), Some(""));
+    assert!(detail.comments.is_empty());
+    assert!(detail.attachments.is_empty());
+    assert!(detail.transitions.is_empty());
+    assert!(detail.fetched_at.is_some());
+}
+
+#[test]
+fn clickup_comment_mapper_preserves_sparse_nested_comments() {
+    let comment = ticket_comment_from_clickup_comment(ClickUpComment {
+        id: "root".to_string(),
+        body: "Root".to_string(),
+        author_id: None,
+        author_name: None,
+        created_at: None,
+        attachments: vec![ClickUpAttachment {
+            id: None,
+            filename: "capture.png".to_string(),
+            mime_type: None,
+            size: None,
+            url: None,
+        }],
+        replies: vec![ClickUpComment {
+            id: "reply".to_string(),
+            body: "Reply".to_string(),
+            author_id: Some(99),
+            author_name: Some("Responder".to_string()),
+            created_at: Some("2026-06-23T12:00:00Z".to_string()),
+            attachments: Vec::new(),
+            replies: Vec::new(),
+        }],
+    });
+
+    assert_eq!(comment.id.as_deref(), Some("root"));
+    assert!(comment.author.is_none());
+    assert!(comment.created_at.is_none());
+    assert_eq!(comment.attachments.len(), 1);
+    assert_eq!(comment.attachments[0].filename, "capture.png");
+    assert!(comment.attachments[0].url.is_none());
+    assert_eq!(comment.replies.len(), 1);
+    assert_eq!(comment.replies[0].body_text, "Reply");
+    assert_eq!(
+        comment.replies[0]
+            .author
+            .as_ref()
+            .map(|person| person.name.as_str()),
+        Some("Responder")
+    );
+    assert_eq!(
+        comment.replies[0].created_at.as_deref(),
+        Some("2026-06-23T12:00:00Z")
+    );
+}
+
+#[test]
+fn clickup_ticket_state_id_aligns_with_column_id_for_kanban() {
+    // Kanban groups tickets by `state.id == column.id`. ClickUp tasks carry no
+    // status id, so both sides must derive the id from the same status name.
+    let column = clickup_status_to_column(
+        ClickUpStatus {
+            id: None,
+            status: "In Review".to_string(),
+            status_type: "custom".to_string(),
+            category: "in_progress".to_string(),
+            color: None,
+            orderindex: Some(2),
+        },
+        0,
+    );
+    let ticket = clickup_summary_to_ticket(ClickUpTaskSummary {
+        id: "task-9".to_string(),
+        custom_id: None,
+        name: "Review me".to_string(),
+        url: None,
+        status_name: Some("In Review".to_string()),
+        status_type: Some("custom".to_string()),
+        status_category: Some("in_progress".to_string()),
+        status_color: None,
+        assignees: Vec::new(),
+        assignee_ids: Vec::new(),
+        tags: Vec::new(),
+        space_id: Some("space-1".to_string()),
+        list_name: None,
+        updated_at: None,
+    });
+
+    assert_eq!(ticket.state.id, column.id);
+    assert_eq!(ticket.state.category, column.category);
+}
+
+#[test]
+fn clickup_batch_associations_resolve_to_empty_without_error() {
+    // ClickUp conversation-linking is deferred, so batched association matching
+    // returns empty rather than hitting the unknown-provider error path.
+    let project_id = ProjectId::from_string("proj-clickup".to_string());
+    let reference = ticket_ref_to_composer_reference(
+        "clickup",
+        &TicketRefInput {
+            provider: "clickup".to_string(),
+            id: "task-1".to_string(),
+            key: None,
+        },
+    );
+
+    let associations =
+        linked_agent_conversation_associations_from_batch("clickup", &project_id, &reference, &[])
+            .expect("clickup batch associations resolve without a provider error");
+
+    assert!(associations.is_empty());
+}
+
+#[tokio::test]
+async fn list_ticketing_providers_includes_clickup() {
+    let state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let app = build_ticketing_start_app(state, execution_state);
+
+    let providers = list_ticketing_providers(None, app.state())
+        .await
+        .expect("providers list resolves");
+
+    let provider_ids: Vec<&str> = providers
+        .iter()
+        .map(|provider| provider.provider.as_str())
+        .collect();
+    assert!(provider_ids.contains(&"clickup"));
+    assert!(provider_ids.contains(&"jira"));
+    assert!(provider_ids.contains(&"linear"));
+}
+
+#[tokio::test]
+async fn clickup_conversation_associations_are_empty_pending_followup() {
+    // ClickUp conversation-linking is deferred, so ClickUp tickets must resolve
+    // to zero associations (not a fallthrough provider error) so the unified list
+    // can hydrate association counts for ClickUp like the other providers.
+    let state = AppState::new_test();
+    let project_id = seed_ticketing_project(&state, "ticket-clickup-assoc").await;
+
+    let associations = project_ticket_conversation_associations(&state, "clickup", &project_id)
+        .await
+        .expect("clickup associations resolve without a provider error");
+
+    assert!(associations.is_empty());
 }
 
 #[test]
@@ -194,7 +744,10 @@ fn mutation_response_maps_label_result_payload() {
 
     assert_eq!(response.operation.operation, "set_labels");
     let labels = response.labels.expect("labels payload should map through");
-    assert_eq!(labels.labels, vec!["bug".to_string(), "frontend".to_string()]);
+    assert_eq!(
+        labels.labels,
+        vec!["bug".to_string(), "frontend".to_string()]
+    );
 }
 
 #[test]
@@ -267,15 +820,33 @@ fn linear_detail_maps_provider_comments() {
             created_at: Some("2026-06-21T08:00:00Z".to_string()),
             updated_at: None,
         }],
+        attachments: vec![LinearAttachment {
+            id: "attachment-1".to_string(),
+            title: "Design mock".to_string(),
+            subtitle: Some("Figma".to_string()),
+            url: "https://uploads.linear.app/design.png".to_string(),
+        }],
         labels: vec!["backend".to_string()],
         project: Some("Platform".to_string()),
     });
 
     assert_eq!(detail.comments.len(), 1);
     assert_eq!(detail.comments[0].body_markdown, "Provider **comment**");
-    assert_eq!(detail.comments[0].author.as_ref().map(|author| author.name.as_str()), Some("Reviewer"));
+    assert_eq!(
+        detail.comments[0]
+            .author
+            .as_ref()
+            .map(|author| author.name.as_str()),
+        Some("Reviewer")
+    );
     assert_eq!(detail.summary.labels, vec!["backend".to_string()]);
     assert_eq!(detail.summary.project.as_deref(), Some("Platform"));
+    assert_eq!(detail.attachments.len(), 1);
+    assert_eq!(detail.attachments[0].filename, "Design mock");
+    assert_eq!(
+        detail.attachments[0].url.as_deref(),
+        Some("https://uploads.linear.app/design.png")
+    );
 }
 
 #[test]
@@ -293,7 +864,10 @@ fn jira_summary_maps_with_empty_metadata_and_provider_state() {
     assert_eq!(summary.ref_.id, "10001");
     assert_eq!(summary.ref_.key.as_deref(), Some("JRA-1"));
     assert_eq!(summary.title, "Investigate flaky merge");
-    assert_eq!(summary.url.as_deref(), Some("https://jira.test/browse/JRA-1"));
+    assert_eq!(
+        summary.url.as_deref(),
+        Some("https://jira.test/browse/JRA-1")
+    );
     // Jira search summaries carry no assignee/reporter/labels/project metadata.
     assert!(summary.assignee.is_none());
     assert!(summary.reporter.is_none());
@@ -363,7 +937,10 @@ fn linear_summary_prefers_provider_state_fields_when_present() {
         summary.assignee.as_ref().map(|person| person.name.as_str()),
         Some("Reef Agent")
     );
-    assert_eq!(summary.labels, vec!["frontend".to_string(), "linear".to_string()]);
+    assert_eq!(
+        summary.labels,
+        vec!["frontend".to_string(), "linear".to_string()]
+    );
     assert_eq!(summary.project.as_deref(), Some("Platform"));
     assert_eq!(summary.updated_at, "2026-06-20T12:00:00Z");
 }
@@ -469,8 +1046,14 @@ fn jira_content_maps_description_comments_and_attachments() {
     );
     assert_eq!(detail.summary.updated_at, "2026-06-20T09:00:00Z");
     // No description_markdown means it falls back to the body.
-    assert_eq!(detail.description_markdown.as_deref(), Some("Body fallback"));
-    assert_eq!(detail.description_text.as_deref(), Some("Plain description"));
+    assert_eq!(
+        detail.description_markdown.as_deref(),
+        Some("Body fallback")
+    );
+    assert_eq!(
+        detail.description_text.as_deref(),
+        Some("Plain description")
+    );
     assert_eq!(
         detail.acceptance_criteria_markdown.as_deref(),
         Some("- criterion")
@@ -484,7 +1067,10 @@ fn jira_content_maps_description_comments_and_attachments() {
     );
     assert_eq!(detail.attachments.len(), 1);
     assert_eq!(detail.attachments[0].filename, "diagram.png");
-    assert_eq!(detail.attachments[0].mime_type.as_deref(), Some("image/png"));
+    assert_eq!(
+        detail.attachments[0].mime_type.as_deref(),
+        Some("image/png")
+    );
     assert_eq!(detail.attachments[0].size, Some(2048));
     assert_eq!(
         detail.attachments[0].url.as_deref(),
@@ -516,7 +1102,10 @@ fn jira_content_prefers_description_markdown_over_body() {
         attachments: Vec::new(),
     });
 
-    assert_eq!(detail.description_markdown.as_deref(), Some("# Real markdown"));
+    assert_eq!(
+        detail.description_markdown.as_deref(),
+        Some("# Real markdown")
+    );
     // status=None falls back to the synthetic provider-result state.
     assert_eq!(detail.summary.state.name, "Provider result");
     assert!(detail.summary.assignee.is_none());
@@ -538,11 +1127,15 @@ fn linear_content_uses_body_for_description_and_creator_for_reporter() {
         creator: Some("Creator".to_string()),
         updated_at: Some("2026-06-20T10:00:00Z".to_string()),
         comments: Vec::new(),
+        attachments: Vec::new(),
         labels: vec!["urgent".to_string()],
         project: Some("Roadmap".to_string()),
     });
 
-    assert_eq!(detail.description_markdown.as_deref(), Some("Linear body text"));
+    assert_eq!(
+        detail.description_markdown.as_deref(),
+        Some("Linear body text")
+    );
     assert_eq!(detail.description_text.as_deref(), Some("Linear body text"));
     assert!(detail.acceptance_criteria_markdown.is_none());
     assert_eq!(
@@ -794,6 +1387,28 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
 }
 
 #[test]
+fn ticket_matches_filters_assignee_matches_any_assignee() {
+    let mut ticket = ticket_summary_fixture("CU-1", "Multi-assignee task", "Todo", None, &[]);
+    ticket.assignees = vec![named_person("Ada Lovelace"), named_person("Grace Hopper")];
+
+    let by_second_assignee = TicketFiltersInput {
+        text: None,
+        assignee: Some("Grace".to_string()),
+        state_ids: None,
+        labels: None,
+    };
+    assert!(ticket_matches_filters(&ticket, &by_second_assignee));
+
+    let miss = TicketFiltersInput {
+        text: None,
+        assignee: Some("Katherine".to_string()),
+        state_ids: None,
+        labels: None,
+    };
+    assert!(!ticket_matches_filters(&ticket, &miss));
+}
+
+#[test]
 fn ticket_matches_filters_requires_all_labels_present() {
     let ticket = ticket_summary_fixture("LIN-1", "Title", "Todo", None, &["backend", "linear"]);
     let all_present = TicketFiltersInput {
@@ -821,6 +1436,8 @@ fn ticket_summary_fixture(
     assignee: Option<&str>,
     labels: &[&str],
 ) -> TicketSummaryResponse {
+    let assignee = assignee.map(named_person);
+    let assignees = assignee.iter().cloned().collect();
     TicketSummaryResponse {
         ref_: TicketRefInput {
             provider: "linear".to_string(),
@@ -829,7 +1446,8 @@ fn ticket_summary_fixture(
         },
         title: title.to_string(),
         state: ticket_state(state_name),
-        assignee: assignee.map(named_person),
+        assignee,
+        assignees,
         reporter: None,
         labels: labels.iter().map(|label| label.to_string()).collect(),
         project: None,
@@ -841,6 +1459,7 @@ fn ticket_summary_fixture(
         open_pr_number: None,
         open_pr_url: None,
         open_pr_status: None,
+        current_user_assigned: false,
     }
 }
 
@@ -957,6 +1576,54 @@ async fn start_work_from_ticket_queues_message_and_links_jira_after_successful_s
     assert_eq!(linked.issue_key, "RAL-42");
     assert_eq!(linked.issue_id.as_deref(), Some("10001"));
     assert!(linked.manually_assigned);
+}
+
+#[tokio::test]
+async fn start_work_from_ticket_queues_message_for_clickup_without_link_table() {
+    // Seed harness availability so the start runtime check passes on sandboxed CI
+    // runners that have no real agent CLI on PATH (the probe is otherwise ambient).
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
+    let state = AppState::new_test();
+    let project_id = seed_ticketing_project(&state, "ticket-start-clickup").await;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_ticketing_start_app(state, Arc::clone(&execution_state));
+
+    let response = start_ralphx_work_from_ticket(
+        ticket_start_input(
+            &project_id,
+            TicketRefInput {
+                provider: "clickup".to_string(),
+                id: "8689abc".to_string(),
+                key: Some("CU-42".to_string()),
+            },
+        ),
+        app.state(),
+        app.state(),
+        app.state(),
+        app.handle().clone(),
+    )
+    .await
+    .expect("clickup ticket start should succeed without a link table");
+
+    assert_eq!(response.conversation.context_id, project_id.as_str());
+    assert_eq!(response.conversation.title.as_deref(), Some("CU-42"));
+    assert!(response.send_result.was_queued);
+    let queued = app
+        .state::<AppState>()
+        .message_queue
+        .get_queued(ChatContextType::Project, response.conversation.id.as_str());
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].composer_integration_references.len(), 1);
+    assert_eq!(
+        queued[0].composer_integration_references[0].provider,
+        "clickup"
+    );
+    assert_eq!(queued[0].composer_integration_references[0].kind, "clickup");
+    assert_eq!(
+        queued[0].composer_integration_references[0].key.as_deref(),
+        Some("CU-42")
+    );
 }
 
 #[tokio::test]
@@ -1138,6 +1805,7 @@ fn hydrate_input_summary(ticket_ref: TicketRefInput) -> TicketSummaryResponse {
         title: "Linked ticket".to_string(),
         state: ticket_state("To Do"),
         assignee: None,
+        assignees: Vec::new(),
         reporter: None,
         labels: Vec::new(),
         project: None,
@@ -1149,6 +1817,7 @@ fn hydrate_input_summary(ticket_ref: TicketRefInput) -> TicketSummaryResponse {
         open_pr_number: None,
         open_pr_url: None,
         open_pr_status: None,
+        current_user_assigned: false,
     }
 }
 

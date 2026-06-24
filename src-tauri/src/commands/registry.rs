@@ -247,6 +247,13 @@ macro_rules! register_tauri_commands {
             commands::linear_commands::search_linear_issues,
             commands::linear_commands::validate_linear_integration,
             commands::linear_commands::disconnect_linear_integration,
+            // ClickUp integration commands
+            commands::clickup_commands::get_clickup_integration_settings,
+            commands::clickup_commands::save_clickup_integration_settings,
+            commands::clickup_commands::validate_clickup_integration,
+            commands::clickup_commands::disconnect_clickup_integration,
+            commands::clickup_commands::list_clickup_workspaces,
+            commands::clickup_commands::search_clickup_tasks,
             // Artifact commands
             commands::artifact_commands::get_artifacts,
             commands::artifact_commands::get_artifact,

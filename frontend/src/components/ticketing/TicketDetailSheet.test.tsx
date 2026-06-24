@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 const { openUrlMock } = vi.hoisted(() => ({ openUrlMock: vi.fn() }));
@@ -35,6 +36,7 @@ const baseTicket: TicketSummary = {
   url: null,
   associationCount: 0,
   openPrCount: 0,
+  currentUserAssigned: false,
 };
 
 const writableTransition: TicketTransitionOption = {
@@ -45,8 +47,10 @@ const writableTransition: TicketTransitionOption = {
 
 function renderSheet(
   overrides: {
-    ticket?: TicketSummary;
+    ticket?: TicketSummary | TicketDetail;
     capabilities?: TicketingCapabilities;
+    associations?: TicketAssociations;
+    onStartWork?: () => void;
   } = {},
 ) {
   return render(
@@ -56,12 +60,13 @@ function renderSheet(
         ticket={overrides.ticket ?? baseTicket}
         capabilities={overrides.capabilities ?? baseCapabilities}
         transitions={[writableTransition]}
-        associations={undefined}
+        associations={overrides.associations}
         isDetailLoading={false}
         isAssociationsLoading={false}
         isTransitionPending={false}
         isAssignPending={false}
         isCommentPending={false}
+        {...(overrides.onStartWork ? { onStartWork: overrides.onStartWork } : {})}
         onClose={vi.fn()}
       />
     </TooltipProvider>,
@@ -82,7 +87,8 @@ describe("TicketDetailSheet assignee control", () => {
     });
 
     expect(screen.getByText("Assignee")).toBeInTheDocument();
-    expect(screen.getByText("Adrian Demian")).toBeInTheDocument();
+    expect(screen.getByLabelText("Adrian Demian")).toHaveAttribute("title", "Adrian Demian");
+    expect(screen.queryByText("Adrian Demian")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /assign to me/i })).not.toBeInTheDocument();
     // Clear assignee stays available because assignment write-back is enabled.
     expect(screen.getByRole("button", { name: /clear assignee/i })).toBeInTheDocument();
@@ -94,7 +100,8 @@ describe("TicketDetailSheet assignee control", () => {
       capabilities: { ...baseCapabilities, assignmentWrite: false },
     });
 
-    expect(screen.getByText("Adrian Demian")).toBeInTheDocument();
+    expect(screen.getByLabelText("Adrian Demian")).toHaveAttribute("title", "Adrian Demian");
+    expect(screen.queryByText("Adrian Demian")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /assign to me/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /clear assignee/i })).not.toBeInTheDocument();
   });
@@ -112,6 +119,64 @@ describe("TicketDetailSheet assignee control", () => {
     expect(status.className).toContain("text-xs");
     // Unified off the former --bg-surface outlier onto --bg-elevated.
     expect((status as HTMLElement).style.backgroundColor).toBe("var(--bg-elevated)");
+  });
+});
+
+describe("TicketDetailSheet ticket git metadata", () => {
+  it("shows the ticket branch prompt when there are no RalphX links yet", () => {
+    const onStartWork = vi.fn();
+    renderSheet({
+      onStartWork,
+      associations: {
+        tasks: [],
+        proposals: [],
+        sessions: [],
+        conversations: [],
+        pullRequests: [],
+        checks: [],
+        qa: [],
+        specs: [],
+        fetchedAt: null,
+      },
+    });
+
+    expect(screen.getByText("Ticket Git")).toBeInTheDocument();
+    expect(screen.getByText("ralphx/ticket/linear-abc-1")).toBeInTheDocument();
+    expect(
+      screen.getByText("No RalphX links yet. Start a conversation with this ticket attached."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Start conversation" }));
+    expect(onStartWork).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads pull request metadata from the ticket even without association links", async () => {
+    openUrlMock.mockClear();
+    renderSheet({
+      ticket: {
+        ...baseTicket,
+        openPrNumber: 42,
+        openPrUrl: "https://github.com/acme/app/pull/42",
+        openPrStatus: "open",
+      },
+      associations: {
+        tasks: [],
+        proposals: [],
+        sessions: [],
+        conversations: [],
+        pullRequests: [],
+        checks: [],
+        qa: [],
+        specs: [],
+        fetchedAt: null,
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "PR #42 (open)" }));
+
+    await waitFor(() => {
+      expect(openUrlMock).toHaveBeenCalledWith("https://github.com/acme/app/pull/42");
+    });
   });
 });
 
@@ -178,6 +243,119 @@ describe("TicketDetailSheet new-comment awareness", () => {
 
     expect(screen.queryByText("New")).not.toBeInTheDocument();
     expect(screen.queryByText(/new$/)).not.toBeInTheDocument();
+  });
+
+  it("expands threaded replies when a provider supplies nested comments", () => {
+    render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={{
+            ...detailWithComments,
+            comments: [
+              {
+                id: "thread-root",
+                author: { name: "Reviewer" },
+                bodyMarkdown: "Root comment",
+                bodyText: "Root comment",
+                createdAt: "2026-06-20T13:00:00.000Z",
+                replies: [
+                  {
+                    id: "thread-reply",
+                    author: { name: "Responder" },
+                    bodyMarkdown: "Thread reply",
+                    bodyText: "Thread reply",
+                    createdAt: "2026-06-20T13:05:00.000Z",
+                  },
+                ],
+              },
+            ],
+          }}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getByText("Root comment")).toBeInTheDocument();
+    expect(screen.queryByText("Thread reply")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "View thread (1)" }));
+
+    expect(screen.getByText("Thread reply")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hide thread (1)" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it("renders ClickUp epoch-millisecond comments and replies oldest first", () => {
+    render(
+      <TooltipProvider>
+        <TicketDetailSheet
+          open
+          ticket={{
+            ...detailWithComments,
+            comments: [
+              {
+                id: "newer-root",
+                author: { name: "Reviewer" },
+                bodyMarkdown: "Newer root",
+                bodyText: "Newer root",
+                createdAt: "1700000002000",
+              },
+              {
+                id: "older-root",
+                author: { name: "Reviewer" },
+                bodyMarkdown: "Older root",
+                bodyText: "Older root",
+                createdAt: "1700000000000",
+                replies: [
+                  {
+                    id: "newer-reply",
+                    author: { name: "Responder" },
+                    bodyMarkdown: "Newer reply",
+                    bodyText: "Newer reply",
+                    createdAt: "1700000003000",
+                  },
+                  {
+                    id: "older-reply",
+                    author: { name: "Responder" },
+                    bodyMarkdown: "Older reply",
+                    bodyText: "Older reply",
+                    createdAt: "1700000001000",
+                  },
+                ],
+              },
+            ],
+          }}
+          capabilities={baseCapabilities}
+          transitions={[writableTransition]}
+          associations={undefined}
+          isDetailLoading={false}
+          isAssociationsLoading={false}
+          isTransitionPending={false}
+          isAssignPending={false}
+          isCommentPending={false}
+          onClose={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    const bodyText = document.body.textContent ?? "";
+    expect(bodyText.indexOf("Older root")).toBeLessThan(bodyText.indexOf("Newer root"));
+
+    fireEvent.click(screen.getByRole("button", { name: "View thread (2)" }));
+
+    const expandedText = document.body.textContent ?? "";
+    expect(expandedText.indexOf("Older reply")).toBeLessThan(expandedText.indexOf("Newer reply"));
   });
 });
 
@@ -566,6 +744,103 @@ describe("TicketDetailSheet project chip", () => {
 });
 
 describe("TicketDetailSheet description images", () => {
+  it("renders ticket image attachments in the detail sheet", () => {
+    renderSheet({
+      ticket: {
+        ...baseTicket,
+        descriptionMarkdown: "",
+        descriptionText: "",
+        comments: [],
+        attachments: [
+          {
+            id: "att-1",
+            filename: "mockup.png",
+            mimeType: "image/png",
+            size: 2048,
+            url: "https://provider.example/mockup.png",
+          },
+        ],
+        transitions: [],
+      },
+    });
+
+    expect(screen.getByText("Attachments (1)")).toBeInTheDocument();
+    expect(screen.getByAltText("mockup.png")).toHaveAttribute(
+      "src",
+      "https://provider.example/mockup.png",
+    );
+    expect(screen.getByText("image/png · 2.0 KB")).toBeInTheDocument();
+  });
+
+  it("opens image attachments in an in-app preview instead of the external URL", async () => {
+    openUrlMock.mockClear();
+    renderSheet({
+      ticket: {
+        ...baseTicket,
+        descriptionMarkdown: "",
+        descriptionText: "",
+        comments: [],
+        attachments: [
+          {
+            id: "att-1",
+            filename: "mockup.png",
+            mimeType: "image/png",
+            size: 2048,
+            url: "https://provider.example/mockup.png",
+          },
+        ],
+        transitions: [],
+      },
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Preview attachment mockup.png" }));
+
+    expect(openUrlMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "mockup.png" })).toBeInTheDocument();
+    expect(screen.getAllByAltText("mockup.png").at(-1)).toHaveAttribute(
+      "src",
+      "https://provider.example/mockup.png",
+    );
+  });
+
+  it("renders comment image attachments below the comment body", () => {
+    renderSheet({
+      ticket: {
+        ...baseTicket,
+        descriptionMarkdown: "",
+        descriptionText: "",
+        comments: [
+          {
+            id: "comment-1",
+            bodyMarkdown: "See attached",
+            bodyText: "See attached",
+            attachments: [
+              {
+                id: "comment-att-1",
+                filename: "comment-shot.jpg",
+                mimeType: "image/jpeg",
+                size: 1024,
+                url: "https://provider.example/comment-shot.jpg",
+              },
+            ],
+            replies: [],
+          },
+        ],
+        attachments: [],
+        transitions: [],
+      },
+    });
+
+    expect(screen.getByText("See attached")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Preview attachment comment-shot.jpg" }),
+    ).toBeInTheDocument();
+    expect(screen.getByAltText("comment-shot.jpg")).toHaveAttribute(
+      "src",
+      "https://provider.example/comment-shot.jpg",
+    );
+  });
+
   it("falls back to an open-in-browser button when a description image fails to load", async () => {
     openUrlMock.mockClear();
     render(

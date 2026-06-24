@@ -18,6 +18,9 @@ pub mod artifact_commands;
 pub mod chat_attachment_commands;
 pub mod conversation_stats_commands;
 pub mod chat_responses;
+pub mod clickup_commands;
+#[cfg(test)]
+mod clickup_commands_tests;
 pub mod diagnostic_commands;
 pub mod diff_commands;
 pub mod execution_commands;
@@ -129,6 +132,12 @@ pub use conversation_stats_commands::{
     UsageTotalsResponse,
 };
 pub use chat_responses::ChatMessageResponse;
+pub use clickup_commands::{
+    disconnect_clickup_integration, get_clickup_integration_settings, list_clickup_workspaces,
+    save_clickup_integration_settings, search_clickup_tasks, validate_clickup_integration,
+    ClickUpIntegrationSettingsResponse, ListClickUpWorkspacesResponse,
+    SaveClickUpIntegrationSettingsInput, SearchClickUpTasksInput, SearchClickUpTasksResponse,
+};
 pub use diagnostic_commands::{
     get_agent_health, get_codex_cli_diagnostics, AgentHealthReport,
     CodexCliDiagnosticsResponse, IprEntryResponse, RunningAgentResponse,
