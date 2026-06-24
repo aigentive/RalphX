@@ -19,7 +19,7 @@ import {
 
 const {
   artifactPaneModuleLoadedMock,
-  getAgentRunningStatesMock,
+  getAgentConversationRuntimeStatusesMock,
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
   getWorkspaceChangeSummaryMock,
@@ -475,8 +475,15 @@ describe("AgentsView performance", () => {
       selectedProjectId: "project-1",
       selectedConversationId: "conversation-1",
     });
-    getAgentRunningStatesMock.mockResolvedValue({
-      "conversation-1": { isRunning: true, agentStatus: "generating" },
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": {
+        conversationId: "conversation-1",
+        isRunning: true,
+        agentStatus: "generating",
+        primarySource: "workspace",
+        summaryLabel: "Agent running",
+        items: [],
+      },
     });
     useChatStore
       .getState()

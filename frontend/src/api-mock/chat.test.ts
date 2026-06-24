@@ -4,6 +4,7 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 import type { ChatConversation } from "@/types/chat-conversation";
 import {
   mockChatApi,
+  mockGetAgentConversationRuntimeStatuses,
   mockGetAgentRunningStates,
   mockGetConversationSummary,
   mockGetConversationTimelinePage,
@@ -224,6 +225,31 @@ describe("mockGetAgentRunningStates", () => {
     ).resolves.toEqual({
       "conv-1": { isRunning: false, agentStatus: "idle" },
       "conv-2": { isRunning: false, agentStatus: "idle" },
+    });
+  });
+});
+
+describe("mockGetAgentConversationRuntimeStatuses", () => {
+  it("returns idle runtime statuses for requested conversation ids", async () => {
+    await expect(
+      mockGetAgentConversationRuntimeStatuses(["conv-1", "conv-2"]),
+    ).resolves.toEqual({
+      "conv-1": {
+        conversationId: "conv-1",
+        isRunning: false,
+        agentStatus: "idle",
+        primarySource: null,
+        summaryLabel: null,
+        items: [],
+      },
+      "conv-2": {
+        conversationId: "conv-2",
+        isRunning: false,
+        agentStatus: "idle",
+        primarySource: null,
+        summaryLabel: null,
+        items: [],
+      },
     });
   });
 });

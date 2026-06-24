@@ -70,6 +70,11 @@ import {
 import { AgentConversationBaseLine } from "./AgentConversationBaseLine";
 import { AgentConversationWorkspaceLine } from "./AgentConversationWorkspaceLine";
 import { AgentWorkspacePrReviewCard } from "./AgentWorkspacePrReviewCard";
+import {
+  AgentRuntimeStatusWidget,
+  type AgentTaskRuntimeContextType,
+} from "./AgentRuntimeStatusWidget";
+import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
 import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceChangesCard";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import { AgentWorkspaceFileLinkProvider } from "./AgentWorkspaceFileLinkProvider";
@@ -470,6 +475,14 @@ interface AgentsActiveConversationPanelProps {
     workspace: AgentConversationWorkspace | null
   ) => void;
   onFocusIdeationSession: (sessionId: string) => void;
+  onFocusVerificationSession: (
+    parentSessionId: string,
+    childSessionId: string
+  ) => void;
+  onFocusTaskRuntime: (
+    taskId: string,
+    contextType: AgentTaskRuntimeContextType
+  ) => void;
   onForkConversation: (
     conversationId: string
   ) => Promise<ForkAgentConversationResult>;
@@ -511,6 +524,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onAgentUserMessageSent,
   onConversationModeSwitched,
   onFocusIdeationSession,
+  onFocusVerificationSession,
+  onFocusTaskRuntime,
   onForkConversation,
   onOpenPublishPane,
   onOpenPublishFile,
@@ -650,7 +665,16 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const panelIdeationSessionId =
     focusedChatSessionId ??
     (activeConversation.contextType === "ideation" ? activeConversation.contextId : undefined);
+  const taskRuntimeFocus = chatFocus.type === "task_runtime" ? chatFocus : null;
+  const panelSelectedTaskId = taskRuntimeFocus?.taskId ?? null;
+  const panelTaskRuntimeContextType = taskRuntimeFocus?.contextType;
+  const focusedPanelKey = taskRuntimeFocus
+    ? `${taskRuntimeFocus.contextType}:${taskRuntimeFocus.taskId}`
+    : focusedChatSessionId ?? "workspace";
   const isFocusedChildChat = chatFocus.type !== "workspace";
+  const runtimeStatusQuery = useAgentConversationRuntimeStatus(selectedConversationId, {
+    enabled: activeConversation.contextType === "project",
+  });
   const activeConversationStoreKey = useMemo(
     () => getAgentConversationStoreKey(activeConversation),
     [activeConversation],
@@ -860,11 +884,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     />
   ) : null;
   const panelStoreKeyOverride = useMemo(() => {
+    if (taskRuntimeFocus) {
+      return buildStoreKey(taskRuntimeFocus.contextType, taskRuntimeFocus.taskId);
+    }
     if (focusedChatSessionId) {
       return buildStoreKey("ideation", focusedChatSessionId);
     }
     return getAgentConversationStoreKey(activeConversation);
-  }, [activeConversation, focusedChatSessionId]);
+  }, [activeConversation, focusedChatSessionId, taskRuntimeFocus]);
   const queuedMessagesSelector = useMemo(
     () => selectQueuedMessages(panelStoreKeyOverride),
     [panelStoreKeyOverride]
@@ -912,6 +939,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         const icon =
           option.type === "workspace"
             ? MessageSquare
+            : option.type === "task_runtime"
+            ? Play
             : option.tone === "accent"
             ? Lightbulb
             : option.tone === "warning"
@@ -934,6 +963,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       testId: "agents-composer-chat-focus",
     };
   }, [chatFocus.type, chatFocusOptions, onSelectChatFocus]);
+  const handleViewRuntimeWorkspace = useCallback(() => {
+    onSelectChatFocus("workspace");
+  }, [onSelectChatFocus]);
   const workspaceModelOptions = useMemo(
     () =>
       agentModelOptions(
@@ -1720,7 +1752,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           workspace={isFocusedChildChat ? null : activeWorkspace}
         >
           <IntegratedChatPanel
-            key={`${selectedConversationId}:${chatFocus.type}:${focusedChatSessionId ?? "workspace"}`}
+            key={`${selectedConversationId}:${chatFocus.type}:${focusedPanelKey}`}
             projectId={activeProjectId}
             {...(panelIdeationSessionId
               ? { ideationSessionId: panelIdeationSessionId }
@@ -1728,9 +1760,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             {...(!isFocusedChildChat
               ? { conversationIdOverride: selectedConversationId }
               : {})}
-            selectedTaskIdOverride={null}
+            selectedTaskIdOverride={panelSelectedTaskId}
+            {...(panelTaskRuntimeContextType
+              ? { taskRuntimeContextTypeOverride: panelTaskRuntimeContextType }
+              : {})}
             storeContextKeyOverride={panelStoreKeyOverride}
-            {...(!isFocusedChildChat && activeConversation.contextType === "project"
+            {...(taskRuntimeFocus
+              ? { agentProcessContextIdOverride: taskRuntimeFocus.taskId }
+              : !isFocusedChildChat && activeConversation.contextType === "project"
               ? { agentProcessContextIdOverride: selectedConversationId }
               : {})}
             {...(!isFocusedChildChat
@@ -1850,6 +1887,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     pauseHydration={isComposerHydrationPaused}
                     onOpenFile={onOpenPublishFile}
                     onPreloadPublishPane={onPreloadArtifacts}
+                  />
+                  <AgentRuntimeStatusWidget
+                    status={runtimeStatusQuery.data}
+                    onViewWorkspace={handleViewRuntimeWorkspace}
+                    onViewIdeation={onFocusIdeationSession}
+                    onViewVerification={onFocusVerificationSession}
+                    onViewTaskRuntime={onFocusTaskRuntime}
                   />
                   {shouldShowPlanComposerCta && (
                     <PlanComposerCtaRow
