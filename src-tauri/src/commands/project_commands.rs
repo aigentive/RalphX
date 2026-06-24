@@ -1021,12 +1021,12 @@ where
 fn parse_gh_auth_login_prompt(line: &str) -> Option<GhAuthLoginPrompt> {
     let code = line
         .split_once("one-time code:")
-        .map(|(_, value)| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+        .and_then(|(_, value)| value.split_whitespace().next())
+        .map(str::to_string);
     let url = line
         .split_once("web browser:")
-        .map(|(_, value)| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+        .and_then(|(_, value)| value.split_whitespace().next())
+        .map(str::to_string);
 
     (code.is_some() || url.is_some()).then_some(GhAuthLoginPrompt { code, url })
 }
