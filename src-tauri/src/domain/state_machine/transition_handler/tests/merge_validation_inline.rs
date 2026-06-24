@@ -62,3 +62,64 @@ async fn install_retry_succeeds_after_transient_failure() {
         "retry should have overwritten status to success"
     );
 }
+
+#[tokio::test]
+async fn install_is_skipped_when_node_modules_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("node_modules")).unwrap();
+
+    let entries = vec![PreExecAnalysisEntry {
+        path: ".".to_string(),
+        label: "Test".to_string(),
+        install: Some("echo should-not-run".to_string()),
+        worktree_setup: vec![],
+    }];
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (log, had_failures) = run_install_phase(
+        &entries,
+        dir.path(),
+        "test-task-id",
+        None,
+        &|s: &str| s.to_string(),
+        "test",
+        &cancel,
+    )
+    .await;
+
+    assert!(!had_failures, "skipped setup should not mark failures");
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0].status, "skipped");
+    assert_eq!(log[0].stderr, "node_modules already exists — install skipped");
+}
+
+#[tokio::test]
+async fn install_captures_cancelled_commands_as_failures() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let entries = vec![PreExecAnalysisEntry {
+        path: ".".to_string(),
+        label: "Test".to_string(),
+        install: Some("sleep 2".to_string()),
+        worktree_setup: vec![],
+    }];
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    cancel.cancel();
+
+    let (log, had_failures) = run_install_phase(
+        &entries,
+        dir.path(),
+        "test-task-id",
+        None,
+        &|s: &str| s.to_string(),
+        "test",
+        &cancel,
+    )
+    .await;
+
+    assert!(had_failures, "cancelled command should mark failure");
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0].status, "failed");
+    assert_eq!(log[0].stderr, "Command cancelled");
+}
