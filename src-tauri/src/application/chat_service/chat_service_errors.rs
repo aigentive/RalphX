@@ -15,8 +15,18 @@ use serde::{Deserialize, Serialize};
 /// Claude CLI error message indicating an expired/invalid session.
 /// Source: Claude CLI stderr when resuming with a stale session ID.
 pub const STALE_SESSION_ERROR: &str = "No conversation found with session ID";
-const CLAUDE_USAGE_LIMIT_PREFIX: &str = "you've hit your limit";
+/// Stable stem shared by Claude subscription/usage limit banners. The trailing
+/// scope word varies ("You've hit your limit", "You've hit your session limit",
+/// "You've hit your usage limit", ...), so we match the stem plus "limit"
+/// instead of a fixed full phrase. ❌ Don't narrow this back to a single phrase:
+/// a missed banner is hard-failed as `AgentExit` instead of paused/auto-resumed.
+const CLAUDE_USAGE_LIMIT_STEM: &str = "you've hit your";
 const CLAUDE_EXTRA_USAGE_PREFIX: &str = "you're out of extra usage";
+
+/// True when `lower` (already lowercased) is a Claude usage/session limit banner.
+fn is_claude_usage_limit_banner(lower: &str) -> bool {
+    lower.contains(CLAUDE_USAGE_LIMIT_STEM) && lower.contains("limit")
+}
 
 /// Category of provider/API error for recovery decisions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -453,7 +463,7 @@ pub fn classify_provider_error(error_text: &str) -> Option<StreamError> {
     let lower = error_text.to_lowercase();
 
     // Claude Code subscription exhaustion banner delivered as assistant text.
-    if lower.contains(CLAUDE_USAGE_LIMIT_PREFIX) || lower.contains(CLAUDE_EXTRA_USAGE_PREFIX) {
+    if is_claude_usage_limit_banner(&lower) || lower.contains(CLAUDE_EXTRA_USAGE_PREFIX) {
         let retry_after = parse_retry_after_from_message(error_text);
         return Some(StreamError::ProviderError {
             category: ProviderErrorCategory::RateLimit,
@@ -550,7 +560,7 @@ pub fn classify_provider_error(error_text: &str) -> Option<StreamError> {
 #[doc(hidden)]
 pub fn classify_provider_error_from_assistant_content(error_text: &str) -> Option<StreamError> {
     let lower = error_text.to_lowercase();
-    if lower.contains(CLAUDE_USAGE_LIMIT_PREFIX) || lower.contains(CLAUDE_EXTRA_USAGE_PREFIX) {
+    if is_claude_usage_limit_banner(&lower) || lower.contains(CLAUDE_EXTRA_USAGE_PREFIX) {
         classify_provider_error(error_text)
     } else {
         None

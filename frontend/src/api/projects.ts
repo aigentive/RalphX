@@ -18,7 +18,7 @@ import {
   type WorkflowSchema,
   type WorkflowColumn,
 } from "@/types/workflow";
-import { typedInvoke, typedInvokeWithTransform } from "@/lib/tauri";
+import { TauriVoidSchema, typedInvoke, typedInvokeWithTransform } from "@/lib/tauri";
 import {
   CreateWorkflowInputSchema,
   UpdateWorkflowInputSchema,
@@ -30,6 +30,7 @@ import {
  * Project list schema for array responses (snake_case from backend)
  */
 const ProjectListResponseSchema = z.array(ProjectResponseSchema);
+const PrTemplateResponseSchema = z.string().nullable();
 
 /**
  * Transform project list from snake_case to camelCase
@@ -186,6 +187,22 @@ export const projectsApi = {
    */
   delete: (projectId: string) =>
     typedInvoke("delete_project", { id: projectId }, z.void()),
+
+  /**
+   * Read the project's fixed pull request template file.
+   * @param projectId The project ID
+   * @returns Exact file content, or null when the template is absent
+   */
+  readPrTemplate: (projectId: string) =>
+    typedInvoke("read_pr_template", { projectId }, PrTemplateResponseSchema),
+
+  /**
+   * Write exact content to the project's fixed pull request template file.
+   * @param projectId The project ID
+   * @param content Exact template content
+   */
+  writePrTemplate: (projectId: string, content: string) =>
+    typedInvoke("write_pr_template", { projectId, content }, TauriVoidSchema),
 
   /**
    * Update custom analysis override for a project

@@ -1333,9 +1333,7 @@ export async function getConversationSummary(
  * @param conversationId The conversation ID
  * @returns The conversation with messages
  */
-export async function getConversation(
-  conversationId: string,
-): Promise<{
+export async function getConversation(conversationId: string): Promise<{
   conversation: ChatConversation;
   messages: ChatMessageResponse[];
 }> {
@@ -1649,8 +1647,8 @@ export interface ComposerProjectReference {
 }
 
 export interface ComposerIntegrationReference {
-  provider: "atlassian" | "linear";
-  kind: "jira" | "confluence" | "linear";
+  provider: "atlassian" | "linear" | "clickup";
+  kind: "jira" | "confluence" | "linear" | "clickup";
   id: string;
   key?: string;
   title?: string;
@@ -2154,7 +2152,7 @@ const WorkspaceOpenTargetResponseSchema = z.object({
   kind: z.enum(["editor", "fileManager"]),
 });
 
-const StartAgentConversationResponseSchema = z.object({
+export const StartAgentConversationResponseSchema = z.object({
   conversation: ChatConversationResponseSchema,
   workspace: AgentConversationWorkspaceResponseSchema.nullable(),
   send_result: SendAgentMessageResponseSchema,
@@ -2311,7 +2309,7 @@ function transformAgentConversationWorkspace(
 }
 
 function sourcePullRequestInvokeInput(
-  sourcePullRequest: AgentConversationSourcePullRequest
+  sourcePullRequest: AgentConversationSourcePullRequest,
 ) {
   return {
     number: sourcePullRequest.number,
@@ -2348,7 +2346,7 @@ function transformAgentSidebarConversationGroups(
   };
 }
 
-function transformStartAgentConversationResponse(
+export function transformStartAgentConversationResponse(
   raw: RawStartAgentConversationResponse,
 ): StartAgentConversationResult {
   return {
@@ -2357,6 +2355,45 @@ function transformStartAgentConversationResponse(
       ? transformAgentConversationWorkspace(raw.workspace)
       : null,
     sendResult: transformSendAgentMessageResponse(raw.send_result),
+  };
+}
+
+export function startAgentConversationInvokeInput(
+  input: StartAgentConversationInput,
+) {
+  return {
+    projectId: input.projectId,
+    content: input.content,
+    ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+    ...(input.providerHarness
+      ? { providerHarness: input.providerHarness }
+      : {}),
+    ...(input.modelId ? { modelOverride: input.modelId } : {}),
+    ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
+    ...(input.mode ? { mode: input.mode } : {}),
+    ...(input.composerProjectReferences?.length
+      ? { composerProjectReferences: input.composerProjectReferences }
+      : {}),
+    ...(input.composerIntegrationReferences?.length
+      ? { composerIntegrationReferences: input.composerIntegrationReferences }
+      : {}),
+    ...(input.composerArtifactReferences?.length
+      ? { composerArtifactReferences: input.composerArtifactReferences }
+      : {}),
+    ...(input.base
+      ? {
+          baseRefKind: input.base.kind,
+          baseRef: input.base.ref,
+          baseDisplayName: input.base.displayName,
+          ...(input.base.sourcePullRequest
+            ? {
+                baseSourcePullRequest: sourcePullRequestInvokeInput(
+                  input.base.sourcePullRequest,
+                ),
+              }
+            : {}),
+        }
+      : {}),
   };
 }
 
@@ -2448,7 +2485,7 @@ function transformAgentConversationWorkspaceFreshness(
 }
 
 function transformAgentWorkspacePrReviewMonitor(
-  raw: RawAgentWorkspacePrReviewMonitor
+  raw: RawAgentWorkspacePrReviewMonitor,
 ): AgentWorkspacePrReviewMonitor {
   return {
     conversationId: raw.conversation_id,
@@ -2473,7 +2510,7 @@ function transformAgentWorkspacePrReviewMonitor(
 }
 
 function transformAgentWorkspacePrReviewAction(
-  raw: RawAgentWorkspacePrReviewAction
+  raw: RawAgentWorkspacePrReviewAction,
 ): AgentWorkspacePrReviewAction {
   return {
     id: raw.id,
@@ -2494,7 +2531,7 @@ function transformAgentWorkspacePrReviewAction(
 }
 
 function transformAgentWorkspacePrReviewContext(
-  raw: RawAgentWorkspacePrReviewContext
+  raw: RawAgentWorkspacePrReviewContext,
 ): AgentWorkspacePrReviewContext {
   return {
     success: raw.success,
@@ -2511,13 +2548,15 @@ function transformAgentWorkspacePrReviewContext(
     pendingAction: raw.pending_action
       ? transformAgentWorkspacePrReviewAction(raw.pending_action)
       : null,
-    recentActions: raw.recent_actions.map(transformAgentWorkspacePrReviewAction),
+    recentActions: raw.recent_actions.map(
+      transformAgentWorkspacePrReviewAction,
+    ),
     issueCommentEvidence: raw.issue_comment_evidence,
   };
 }
 
 function transformSubmitAgentWorkspacePrReviewActionResponse(
-  raw: RawSubmitAgentWorkspacePrReviewActionResponse
+  raw: RawSubmitAgentWorkspacePrReviewActionResponse,
 ): SubmitAgentWorkspacePrReviewActionResult {
   return {
     success: raw.success,
@@ -2529,7 +2568,7 @@ function transformSubmitAgentWorkspacePrReviewActionResponse(
 }
 
 function transformSkipAgentWorkspacePrReviewActionResponse(
-  raw: RawSkipAgentWorkspacePrReviewActionResponse
+  raw: RawSkipAgentWorkspacePrReviewActionResponse,
 ): SkipAgentWorkspacePrReviewActionResult {
   return {
     success: raw.success,
@@ -2654,7 +2693,7 @@ export async function listAgentConversationWorkspacePublicationEvents(
 async function fetchAgentWorkspaceJson<T>(
   path: string,
   schema: z.ZodType<T>,
-  init?: RequestInit
+  init?: RequestInit,
 ): Promise<T> {
   const response = await fetch(backendApiUrl(path), init);
   if (!response.ok) {
@@ -2672,18 +2711,18 @@ async function fetchAgentWorkspaceJson<T>(
     throw new Error(
       detail
         ? `${response.status} ${response.statusText}: ${detail}`
-        : `${response.status} ${response.statusText}`
+        : `${response.status} ${response.statusText}`,
     );
   }
   return schema.parse(await response.json());
 }
 
 export async function getAgentWorkspacePrReviewContext(
-  conversationId: string
+  conversationId: string,
 ): Promise<AgentWorkspacePrReviewContext> {
   const raw = await fetchAgentWorkspaceJson(
     `agent-workspaces/${encodeURIComponent(conversationId)}/pr-review-context`,
-    AgentWorkspacePrReviewContextResponseSchema
+    AgentWorkspacePrReviewContextResponseSchema,
   );
   return transformAgentWorkspacePrReviewContext(raw);
 }
@@ -2691,7 +2730,7 @@ export async function getAgentWorkspacePrReviewContext(
 export async function submitAgentWorkspacePrReviewAction(
   conversationId: string,
   actionId: string,
-  actionKind?: AgentWorkspacePrReviewActionKind | null
+  actionKind?: AgentWorkspacePrReviewActionKind | null,
 ): Promise<SubmitAgentWorkspacePrReviewActionResult> {
   const raw = await fetchAgentWorkspaceJson(
     `agent-workspaces/${encodeURIComponent(conversationId)}/pr-review-actions/${encodeURIComponent(actionId)}/submit`,
@@ -2700,7 +2739,7 @@ export async function submitAgentWorkspacePrReviewAction(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action_kind: actionKind ?? null }),
-    }
+    },
   );
   return transformSubmitAgentWorkspacePrReviewActionResponse(raw);
 }
@@ -2708,7 +2747,7 @@ export async function submitAgentWorkspacePrReviewAction(
 export async function skipAgentWorkspacePrReviewAction(
   conversationId: string,
   actionId: string,
-  reason?: string | null
+  reason?: string | null,
 ): Promise<SkipAgentWorkspacePrReviewActionResult> {
   const raw = await fetchAgentWorkspaceJson(
     `agent-workspaces/${encodeURIComponent(conversationId)}/pr-review-actions/${encodeURIComponent(actionId)}/skip`,
@@ -2717,7 +2756,7 @@ export async function skipAgentWorkspacePrReviewAction(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason: reason ?? null }),
-    }
+    },
   );
   return transformSkipAgentWorkspacePrReviewActionResponse(raw);
 }
@@ -2859,45 +2898,7 @@ export async function startAgentConversation(
   const raw = await typedInvoke(
     "start_agent_conversation",
     {
-      input: {
-        projectId: input.projectId,
-        content: input.content,
-        ...(input.conversationId
-          ? { conversationId: input.conversationId }
-          : {}),
-        ...(input.providerHarness
-          ? { providerHarness: input.providerHarness }
-          : {}),
-        ...(input.modelId ? { modelOverride: input.modelId } : {}),
-        ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
-        ...(input.mode ? { mode: input.mode } : {}),
-        ...(input.composerProjectReferences?.length
-          ? { composerProjectReferences: input.composerProjectReferences }
-          : {}),
-        ...(input.composerIntegrationReferences?.length
-          ? {
-              composerIntegrationReferences:
-                input.composerIntegrationReferences,
-            }
-          : {}),
-        ...(input.composerArtifactReferences?.length
-          ? { composerArtifactReferences: input.composerArtifactReferences }
-          : {}),
-        ...(input.base
-          ? {
-              baseRefKind: input.base.kind,
-              baseRef: input.base.ref,
-              baseDisplayName: input.base.displayName,
-              ...(input.base.sourcePullRequest
-                ? {
-                    baseSourcePullRequest: sourcePullRequestInvokeInput(
-                      input.base.sourcePullRequest
-                    ),
-                  }
-                : {}),
-            }
-          : {}),
-      },
+      input: startAgentConversationInvokeInput(input),
     },
     StartAgentConversationResponseSchema,
   );
@@ -2936,7 +2937,7 @@ export async function switchAgentConversationMode(
               ...(input.base.sourcePullRequest
                 ? {
                     baseSourcePullRequest: sourcePullRequestInvokeInput(
-                      input.base.sourcePullRequest
+                      input.base.sourcePullRequest,
                     ),
                   }
                 : {}),
@@ -2984,7 +2985,9 @@ export async function sendAgentMessage(
           ? { providerHarness: options.providerHarness }
           : {}),
         ...(options?.modelId ? { modelOverride: options.modelId } : {}),
-        ...(options?.logicalEffort ? { logicalEffort: options.logicalEffort } : {}),
+        ...(options?.logicalEffort
+          ? { logicalEffort: options.logicalEffort }
+          : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
         ...(options?.composerProjectReferences?.length
           ? { composerProjectReferences: options.composerProjectReferences }
