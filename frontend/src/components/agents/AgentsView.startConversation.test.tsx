@@ -25,6 +25,7 @@ import {
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
 import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
+import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
 import { useStartAgentConversation } from "./useStartAgentConversation";
 
 const {
@@ -328,6 +329,14 @@ describe("AgentsView start conversation", () => {
       "agent-conversation-2"
     );
     expect(useAgentSessionStore.getState().selectedConversationId).toBe("conversation-2");
+    expect(
+      useAgentSessionStore.getState().artifactByConversationId["conversation-2"]
+    ).toEqual(
+      expect.objectContaining({
+        isOpen: false,
+        activeTab: "plan",
+      })
+    );
     expect(queryClient.getQueryData(["chat", "conversations", "conversation-2"])).toEqual({
       conversation: expect.objectContaining({ id: "conversation-2" }),
       messages: [
@@ -1297,6 +1306,100 @@ describe("AgentsView start conversation", () => {
       queryKey: agentJiraIssueKeys.issue("conversation-with-jira"),
     });
     expect(onJiraLinked).toHaveBeenCalledWith("conversation-with-jira");
+    expect(
+      useAgentSessionStore.getState().artifactByConversationId["conversation-with-jira"]
+    ).toEqual(
+      expect.objectContaining({
+        isOpen: true,
+        activeTab: "jira",
+      })
+    );
+  });
+
+  it("opens and invalidates the Linear tab after starting with a Linear reference", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const seededConversation = conversation({
+      id: "conversation-with-linear",
+      contextId: "project-1",
+      title: null,
+    });
+    createConversationMock.mockResolvedValue(seededConversation);
+    startAgentConversationMock.mockResolvedValue({
+      conversation: seededConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-with-linear",
+      }),
+      sendResult: {
+        conversationId: "conversation-with-linear",
+        agentRunId: "run-with-linear",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const onLinearLinked = vi.fn();
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation: vi.fn(),
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+          onLinearLinked,
+        }),
+      { wrapper }
+    );
+
+    await result.current({
+      projectId: "project-1",
+      content: "start with linear",
+      runtime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "xhigh",
+      },
+      mode: "edit",
+      base: null,
+      files: [],
+      composerIntegrationReferences: [
+        {
+          provider: "linear",
+          kind: "linear",
+          id: "LIN-42",
+          key: "LIN-42",
+          title: "Fix composer references",
+        },
+      ],
+    });
+
+    expect(invalidateQueriesSpy).toHaveBeenCalledWith({
+      queryKey: agentLinearIssueKeys.issue("conversation-with-linear"),
+    });
+    expect(onLinearLinked).toHaveBeenCalledWith("conversation-with-linear");
+    expect(
+      useAgentSessionStore.getState().artifactByConversationId["conversation-with-linear"]
+    ).toEqual(
+      expect.objectContaining({
+        isOpen: true,
+        activeTab: "linear",
+      })
+    );
   });
 
   it("clears optimistic running state when the seeded agent start fails", async () => {

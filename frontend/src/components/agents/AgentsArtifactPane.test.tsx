@@ -864,6 +864,13 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
   });
 
+  it("does not fall back to publish for generic edit workspace pane opens", () => {
+    renderPane("plan", workspace({ mode: "edit" }));
+
+    expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-publish-pane")).not.toBeInTheDocument();
+  });
+
   it("shows pre-PR Auto Publish with independent PR automation controls", async () => {
     renderPane("publish", workspace({ mode: "edit" }));
 
