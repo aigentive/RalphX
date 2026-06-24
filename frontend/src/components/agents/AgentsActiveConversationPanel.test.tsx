@@ -600,6 +600,16 @@ function planArtifact(status: "draft" | "approved" = "draft") {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function renderPanel(
   overrides: Partial<ComponentProps<typeof AgentsActiveConversationPanel>> = {},
 ) {
@@ -1038,6 +1048,60 @@ describe("AgentsActiveConversationPanel", () => {
       "ideation",
       promotedWorkspace,
     );
+  });
+
+  it("shows and disables composer plan CTAs while the recommendation check is running", async () => {
+    const user = userEvent.setup();
+    const assessment = deferred<null>();
+    const approvedPlan = planArtifact("approved");
+    getSessionPlanMock.mockResolvedValue({
+      ...approvedPlan,
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: new Date().toISOString(),
+      },
+    });
+    getPlanComplexityAssessmentMock.mockReturnValue(assessment.promise);
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+    });
+
+    const row = await screen.findByTestId("agents-plan-composer-cta-row");
+    expect(within(row).getByTestId("agents-plan-composer-cta-hint"))
+      .toHaveTextContent(/Checking recommended next action/i);
+
+    const implementButton = within(row).getByRole("button", {
+      name: /Implement Directly/i,
+    });
+    const createButton = within(row).getByRole("button", {
+      name: /Create Proposals/i,
+    });
+    const verifyButton = within(row).getByRole("button", {
+      name: /Verify Plan/i,
+    });
+
+    expect(implementButton).toBeDisabled();
+    expect(createButton).toBeDisabled();
+    expect(verifyButton).toBeDisabled();
+
+    await user.click(implementButton);
+    await user.click(createButton);
+    await user.click(verifyButton);
+
+    expect(sendAgentMessageMock).not.toHaveBeenCalled();
+    expect(confirmVerificationMock).not.toHaveBeenCalled();
+
+    assessment.resolve(null);
   });
 
   it("hides approved plan composer CTAs when the workspace has changes", async () => {

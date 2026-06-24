@@ -62,6 +62,7 @@ import {
 } from "./agentWorkspaceQueries";
 import {
   buildPlanActionHint,
+  isPlanRecommendationCheckPending,
   PLAN_IMPLEMENT_DIRECTLY_REQUEST,
   PLAN_TO_PROPOSALS_REQUEST,
 } from "./agentPlanModeActions";
@@ -1115,9 +1116,16 @@ function AgentPlanPanel({
     staleTime: 5_000,
     refetchInterval: (query) => (query.state.data ? false : 4_000),
   });
+  const isPlanRecommendationPending = isPlanRecommendationCheckPending({
+    assessment: planComplexityQuery.data,
+    isFetching:
+      (planComplexityQuery.isFetching || planComplexityQuery.isLoading) &&
+      !planComplexityQuery.data,
+    approvedAt: planArtifact?.planApproval?.approvedAt,
+  });
   const planActionHint = buildPlanActionHint({
     assessment: planComplexityQuery.data,
-    isAssessing: planComplexityQuery.isFetching && !planComplexityQuery.data,
+    isAssessing: isPlanRecommendationPending,
     canChoose: canImplementDirectly && canCreateProposals,
   });
 
@@ -1272,6 +1280,9 @@ function AgentPlanPanel({
               })}
               {...(planComplexityQuery.data && {
                 primaryPlanAction: planComplexityQuery.data.recommendedAction,
+              })}
+              {...(isPlanRecommendationPending && {
+                isPlanActionRecommendationPending: true,
               })}
               {...(planActionHint && { planActionHint })}
               {...(canCreateProposals && { onCreateProposals: handleCreateProposals })}
