@@ -535,7 +535,7 @@ describe("App", () => {
     );
     expect(toasterProps?.style).toEqual(
       expect.objectContaining({
-        zIndex: 70,
+        zIndex: 40,
       }),
     );
   });

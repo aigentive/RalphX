@@ -135,8 +135,8 @@ export default function SettingsDialog({
         <DialogContent
           forceMount
           data-testid="settings-dialog"
-          overlayClassName="settings-layer__scrim z-[80]"
-          className={`settings-modal z-[81] p-0 gap-0 overflow-hidden flex flex-col max-w-[95vw] w-[95vw] h-[95vh] bg-[var(--dialog-bg)] border border-[var(--dialog-border-color)] duration-0 data-[state=open]:animate-none data-[state=closed]:animate-none ${
+          overlayClassName="settings-layer__scrim"
+          className={`settings-modal p-0 gap-0 overflow-hidden flex flex-col max-w-[95vw] w-[95vw] h-[95vh] bg-[var(--dialog-bg)] border border-[var(--dialog-border-color)] duration-0 data-[state=open]:animate-none data-[state=closed]:animate-none ${
             isClosing ? "pointer-events-none opacity-0 scale-[0.98]" : ""
           }`}
           style={{

@@ -30,7 +30,7 @@ const Toaster = ({ style, ...props }: ToasterProps) => {
           "--normal-text": "var(--popover-foreground)",
           "--normal-border": "var(--border)",
           "--border-radius": "var(--radius)",
-          zIndex: 70,
+          zIndex: 40,
           ...style,
         } as React.CSSProperties
       }
