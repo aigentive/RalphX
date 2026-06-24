@@ -31,6 +31,7 @@ import { useAgentConversationInvalidation } from "./useAgentConversationInvalida
 import { useAgentUserMessageAutoTitle } from "./useAgentUserMessageAutoTitle";
 import { useAgentUserMessageJiraInvalidation } from "./useAgentUserMessageJiraInvalidation";
 import { hasJiraIntegrationReference } from "./agentJiraIssueQueries";
+import { hasLinearIntegrationReference } from "./agentLinearIssueQueries";
 import { useAgentsSessionBindings } from "./useAgentsSessionBindings";
 import { useSyncedAgentProjectFocus } from "./useSyncedAgentProjectFocus";
 import { useAgentsOptimisticState } from "./useAgentsOptimisticState";
@@ -521,6 +522,12 @@ export function useAgentsViewController({
     },
     [openArtifactTab],
   );
+  const openLinearTabForConversation = useCallback(
+    (conversationId: string) => {
+      openArtifactTab(conversationId, "linear");
+    },
+    [openArtifactTab],
+  );
   useEffect(() => {
     const invalidateReviewArtifact = (payload: PrReviewArtifactEventPayload) => {
       const conversationId = payload.conversationId ?? payload.conversation_id;
@@ -603,6 +610,7 @@ export function useAgentsViewController({
     setOptimisticWorkspacesByConversationId,
     setRuntimeForConversation,
     onJiraLinked: openJiraTabForConversation,
+    onLinearLinked: openLinearTabForConversation,
   });
 
   const {
@@ -758,12 +766,15 @@ export function useAgentsViewController({
       invalidateAgentUserMessageJira(event);
       if (hasJiraIntegrationReference(event.composerIntegrationReferences)) {
         openJiraTabForConversation(event.result.conversationId);
+      } else if (hasLinearIntegrationReference(event.composerIntegrationReferences)) {
+        openLinearTabForConversation(event.result.conversationId);
       }
     },
     [
       handleAgentUserMessageAutoTitle,
       invalidateAgentUserMessageJira,
       openJiraTabForConversation,
+      openLinearTabForConversation,
     ],
   );
   const handleStartRuntimePreferenceChange = useCallback(
