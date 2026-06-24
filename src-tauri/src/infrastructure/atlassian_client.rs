@@ -2430,6 +2430,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_jira_projects_stops_when_project_search_reports_last_page() {
+        let requester = FakeRequester::with_responses(vec![serde_json::json!({
+            "startAt": 0,
+            "maxResults": 2,
+            "total": 10,
+            "isLast": true,
+            "values": [
+                { "id": "10000", "key": "RX", "name": "RalphX" },
+                { "id": "10001", "key": "OPS", "name": "Operations" }
+            ],
+        })]);
+
+        let projects = list_jira_projects(&requester, &api_token_auth(), 5)
+            .await
+            .expect("projects should parse");
+
+        assert_eq!(projects.len(), 2);
+        assert_eq!(requester.recorded().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_jira_projects_treats_exhausted_fake_responses_as_empty() {
+        let requester = FakeRequester::with_responses(Vec::new());
+
+        let projects = list_jira_projects(&requester, &api_token_auth(), 5)
+            .await
+            .expect("null fake response is treated as empty");
+
+        assert!(projects.is_empty());
+    }
+
+    #[tokio::test]
     async fn list_jira_projects_returns_empty_when_values_absent() {
         let requester = FakeRequester::with_response(serde_json::json!({}));
         let projects = list_jira_projects(&requester, &api_token_auth(), 100)
@@ -2612,6 +2644,21 @@ mod tests {
                 .and_then(Value::as_str),
             Some("token-2"),
         );
+    }
+
+    #[tokio::test]
+    async fn search_jira_by_project_stops_on_empty_issue_page() {
+        let requester = FakeRequester::with_responses(vec![serde_json::json!({
+            "issues": [],
+            "nextPageToken": "unused-token",
+        })]);
+
+        let issues = search_jira_by_project(&requester, &api_token_auth(), "RX", 5)
+            .await
+            .expect("empty page should parse");
+
+        assert!(issues.is_empty());
+        assert_eq!(requester.recorded().len(), 1);
     }
 
     #[tokio::test]

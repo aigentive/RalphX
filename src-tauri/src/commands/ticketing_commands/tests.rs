@@ -1,14 +1,23 @@
 use super::*;
-use std::{path::Path, process::Command, sync::Arc};
+use std::{
+    path::Path,
+    process::Command,
+    sync::{Arc, Mutex},
+};
 
+use async_trait::async_trait;
 use crate::application::clickup_integration_service::ClickUpAttachment;
 use crate::application::linear_integration_service::LinearAttachment;
 use crate::application::{
-    AppState, AtlassianJiraAttachment, AtlassianJiraComment, ClickUpComment, ClickUpSpace,
-    ClickUpStatus, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail,
-    JiraProjectSummary, JiraStatusSummary, LinearIntegrationSettings, TeamService,
-    TeamStateTracker, TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
-    TicketingTransitionOption,
+    AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianIntegrationService,
+    AtlassianOAuthResource, AtlassianOAuthTokenResponse, AppState, AtlassianJiraAttachment,
+    AtlassianJiraComment, ClickUpComment, ClickUpSpace, ClickUpStatus, ClickUpTaskContent,
+    ClickUpTaskSummary, ClickUpUser, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
+    AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
+    LinearApiClient, LinearAuthContext, LinearIntegrationService, LinearIntegrationSettings,
+    LinearIntegrationSettingsRepository, LinearIssueContent, LinearIssueSummary, LinearProject,
+    TeamService, TeamStateTracker, TicketingLabelResult, TicketingMutationResult,
+    TicketingTicketIdentity, TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
@@ -17,8 +26,14 @@ use crate::domain::entities::{
     ChatConversationId, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
 use crate::domain::integrations::{
-    AtlassianIntegrationSettings, ClickUpIntegrationSettings, IntegrationValidationStatus,
-    ProviderTicketOperation, ProviderTicketOperationKind, ProviderTicketOperationStatus,
+    AtlassianAuthMethod, AtlassianIntegrationSettings, AtlassianIntegrationSettingsRepository,
+    ClickUpIntegrationSettings, IntegrationValidationStatus, ProviderTicketOperation,
+    ProviderTicketOperationKind, ProviderTicketOperationStatus,
+};
+use crate::domain::services::{ComposerIntegrationReference, SecretStore};
+use crate::infrastructure::memory::{
+    MemoryAtlassianIntegrationSettingsRepository, MemoryLinearIntegrationSettingsRepository,
+    MemorySecretStore,
 };
 use crate::tests::mock_github_service::MockGithubService;
 use tauri::test::{mock_builder, mock_context, noop_assets};
@@ -628,6 +643,365 @@ async fn clickup_conversation_associations_are_empty_pending_followup() {
         .expect("clickup associations resolve without a provider error");
 
     assert!(associations.is_empty());
+}
+
+#[derive(Default)]
+struct FakeLinearTicketingClient {
+    issues: Mutex<Vec<LinearIssueSummary>>,
+    projects: Mutex<Vec<LinearProject>>,
+    search_limits: Mutex<Vec<usize>>,
+    list_projects_first: Mutex<Vec<usize>>,
+}
+
+#[async_trait]
+impl LinearApiClient for FakeLinearTicketingClient {
+    async fn validate(&self, _auth: &LinearAuthContext) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn search_issues(
+        &self,
+        _auth: &LinearAuthContext,
+        _query: &str,
+        limit: usize,
+    ) -> Result<Vec<LinearIssueSummary>, String> {
+        self.search_limits.lock().unwrap().push(limit);
+        Ok(self.issues.lock().unwrap().clone())
+    }
+
+    async fn fetch_issue(
+        &self,
+        _auth: &LinearAuthContext,
+        reference: &ComposerIntegrationReference,
+    ) -> Result<LinearIssueContent, String> {
+        Ok(LinearIssueContent {
+            id: reference.id.clone(),
+            key: reference.key.clone(),
+            title: reference
+                .title
+                .clone()
+                .unwrap_or_else(|| reference.id.clone()),
+            url: reference.url.clone(),
+            body: String::new(),
+            state_name: None,
+            assignee: None,
+            creator: None,
+            updated_at: None,
+            comments: Vec::new(),
+            attachments: Vec::new(),
+            labels: Vec::new(),
+            project: None,
+        })
+    }
+
+    async fn list_projects(
+        &self,
+        _auth: &LinearAuthContext,
+        first: usize,
+    ) -> Result<Vec<LinearProject>, String> {
+        self.list_projects_first.lock().unwrap().push(first);
+        Ok(self.projects.lock().unwrap().clone())
+    }
+}
+
+#[derive(Default)]
+struct FakeAtlassianTicketingClient {
+    projects: Mutex<Vec<JiraProjectSummary>>,
+    list_project_limits: Mutex<Vec<usize>>,
+}
+
+#[async_trait]
+impl AtlassianApiClient for FakeAtlassianTicketingClient {
+    async fn validate(
+        &self,
+        _auth: &AtlassianAuthContext,
+    ) -> Result<AtlassianConnectivity, String> {
+        Ok(AtlassianConnectivity {
+            jira_available: true,
+            confluence_available: true,
+        })
+    }
+
+    async fn search(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _kind: AtlassianResourceKind,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<AtlassianResourceSummary>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn fetch(
+        &self,
+        _auth: &AtlassianAuthContext,
+        reference: &ComposerIntegrationReference,
+    ) -> Result<AtlassianResourceContent, String> {
+        Ok(AtlassianResourceContent {
+            kind: reference
+                .kind
+                .parse::<AtlassianResourceKind>()
+                .unwrap_or(AtlassianResourceKind::Jira),
+            id: reference.id.clone(),
+            key: reference.key.clone(),
+            title: reference
+                .title
+                .clone()
+                .unwrap_or_else(|| reference.id.clone()),
+            url: reference.url.clone(),
+            body: String::new(),
+            status: None,
+            assignee: None,
+            reporter: None,
+            updated_at_remote: None,
+            description_markdown: None,
+            description_text: None,
+            acceptance_criteria_markdown: None,
+            acceptance_criteria_text: None,
+            comments: Vec::new(),
+            attachments: Vec::new(),
+        })
+    }
+
+    async fn assign_jira_issue_to_current_user(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn list_jira_projects(
+        &self,
+        _auth: &AtlassianAuthContext,
+        limit: usize,
+    ) -> Result<Vec<JiraProjectSummary>, String> {
+        self.list_project_limits.lock().unwrap().push(limit);
+        Ok(self.projects.lock().unwrap().clone())
+    }
+
+    async fn exchange_oauth_code(
+        &self,
+        _client_id: &str,
+        _client_secret: &str,
+        _code: &str,
+        _redirect_uri: &str,
+    ) -> Result<AtlassianOAuthTokenResponse, String> {
+        Err("not used by ticketing command tests".to_string())
+    }
+
+    async fn refresh_oauth_token(
+        &self,
+        _client_id: &str,
+        _client_secret: &str,
+        _refresh_token: &str,
+    ) -> Result<AtlassianOAuthTokenResponse, String> {
+        Err("not used by ticketing command tests".to_string())
+    }
+
+    async fn oauth_accessible_resources(
+        &self,
+        _access_token: &str,
+    ) -> Result<Vec<AtlassianOAuthResource>, String> {
+        Ok(Vec::new())
+    }
+}
+
+async fn valid_linear_service(
+    client: Arc<FakeLinearTicketingClient>,
+) -> Arc<LinearIntegrationService> {
+    let repo = Arc::new(MemoryLinearIntegrationSettingsRepository::new());
+    let secret_store = Arc::new(MemorySecretStore::new());
+    secret_store
+        .put_secret("linear-token", "token-value")
+        .await
+        .unwrap();
+    repo.upsert(&LinearIntegrationSettings {
+        enabled: true,
+        token_secret_ref: Some("linear-token".to_string()),
+        validation_status: IntegrationValidationStatus::Valid,
+        issue_search_available: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    LinearIntegrationService::new(repo, secret_store, client).into()
+}
+
+async fn valid_atlassian_service(
+    client: Arc<FakeAtlassianTicketingClient>,
+) -> Arc<AtlassianIntegrationService> {
+    let repo = Arc::new(MemoryAtlassianIntegrationSettingsRepository::new());
+    let secret_store = Arc::new(MemorySecretStore::new());
+    secret_store
+        .put_secret("atlassian-token", "token-value")
+        .await
+        .unwrap();
+    repo.upsert(&AtlassianIntegrationSettings {
+        enabled: true,
+        auth_method: AtlassianAuthMethod::ApiToken,
+        site_url: Some("https://example.atlassian.net".to_string()),
+        email: Some("agent@example.com".to_string()),
+        token_secret_ref: Some("atlassian-token".to_string()),
+        validation_status: IntegrationValidationStatus::Valid,
+        jira_available: true,
+        confluence_available: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    AtlassianIntegrationService::new(repo, secret_store, client).into()
+}
+
+fn linear_issue_summary(
+    id: &str,
+    title: &str,
+    assignee: Option<&str>,
+    labels: &[&str],
+) -> LinearIssueSummary {
+    LinearIssueSummary {
+        id: id.to_string(),
+        key: Some(id.to_string()),
+        title: title.to_string(),
+        url: None,
+        excerpt: None,
+        state_id: Some("state-todo".to_string()),
+        state_name: Some("Todo".to_string()),
+        state_category: Some("todo".to_string()),
+        state_color: None,
+        assignee: assignee.map(str::to_string),
+        updated_at: Some("2026-06-24T10:00:00Z".to_string()),
+        labels: labels.iter().map(|label| label.to_string()).collect(),
+        project: Some("Platform".to_string()),
+    }
+}
+
+#[tokio::test]
+async fn list_ticketing_containers_uses_expanded_provider_limits() {
+    let linear_client = Arc::new(FakeLinearTicketingClient::default());
+    linear_client
+        .projects
+        .lock()
+        .unwrap()
+        .push(LinearProject {
+            id: "linear-project-1".to_string(),
+            name: "Linear Project".to_string(),
+        });
+    let atlassian_client = Arc::new(FakeAtlassianTicketingClient::default());
+    atlassian_client
+        .projects
+        .lock()
+        .unwrap()
+        .push(JiraProjectSummary {
+            id: "10001".to_string(),
+            key: "RX".to_string(),
+            name: "RalphX".to_string(),
+        });
+    let mut state = AppState::new_test();
+    state.linear_integration_service = valid_linear_service(Arc::clone(&linear_client)).await;
+    state.atlassian_integration_service =
+        valid_atlassian_service(Arc::clone(&atlassian_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let jira = list_ticketing_containers("jira".to_string(), None, app.state())
+        .await
+        .expect("jira containers should load");
+    let linear = list_ticketing_containers("linear".to_string(), None, app.state())
+        .await
+        .expect("linear containers should load");
+
+    assert_eq!(jira[0].id, "RX");
+    assert_eq!(linear[0].id, "linear-project-1");
+    assert_eq!(
+        atlassian_client
+            .list_project_limits
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &[TICKETING_CONTAINER_LIMIT]
+    );
+    assert_eq!(
+        linear_client
+            .list_projects_first
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &[TICKETING_CONTAINER_LIMIT]
+    );
+}
+
+#[tokio::test]
+async fn list_tickets_builds_paged_response_from_provider_summaries() {
+    let linear_client = Arc::new(FakeLinearTicketingClient::default());
+    linear_client.issues.lock().unwrap().extend([
+        linear_issue_summary("LIN-1", "First ticket", Some("Ada"), &["backend"]),
+        linear_issue_summary("LIN-2", "Second ticket", Some("Grace"), &["backend"]),
+    ]);
+    let mut state = AppState::new_test();
+    state.linear_integration_service = valid_linear_service(Arc::clone(&linear_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let page = list_tickets(
+        ListTicketsQuery {
+            provider: PROVIDER_LINEAR.to_string(),
+            project_id: None,
+            container_id: None,
+            cursor: None,
+            limit: Some(1),
+            filters: Some(TicketFiltersInput {
+                text: Some("ticket".to_string()),
+                assignee: None,
+                state_ids: None,
+                labels: Some(vec!["backend".to_string()]),
+            }),
+            sort: Some("updated".to_string()),
+        },
+        app.state(),
+    )
+    .await
+    .expect("ticket page should load");
+
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].ref_.id, "LIN-1");
+    assert_eq!(page.total, Some(2));
+    assert_eq!(page.next_cursor.as_deref(), Some("offset:1"));
+    assert_eq!(linear_client.search_limits.lock().unwrap().as_slice(), &[2]);
+}
+
+#[tokio::test]
+async fn list_ticket_filter_options_builds_truncated_provider_response() {
+    let linear_client = Arc::new(FakeLinearTicketingClient::default());
+    linear_client.issues.lock().unwrap().extend([
+        linear_issue_summary("LIN-1", "First ticket", Some("Ada"), &[]),
+        linear_issue_summary("LIN-2", "Second ticket", Some("Grace"), &[]),
+    ]);
+    let mut state = AppState::new_test();
+    state.linear_integration_service = valid_linear_service(Arc::clone(&linear_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let options = list_ticket_filter_options(
+        ListTicketFilterOptionsQuery {
+            provider: PROVIDER_LINEAR.to_string(),
+            project_id: Some("project-1".to_string()),
+            container_id: None,
+            limit: Some(1),
+            filters: Some(TicketFiltersInput {
+                text: Some("ticket".to_string()),
+                assignee: None,
+                state_ids: None,
+                labels: None,
+            }),
+        },
+        app.state(),
+    )
+    .await
+    .expect("filter options should load");
+
+    assert_eq!(options.assignees, vec!["Ada"]);
+    assert!(options.sprints.is_empty());
+    assert!(options.truncated);
+    assert!(!options.complete);
+    assert_eq!(linear_client.search_limits.lock().unwrap().as_slice(), &[2]);
 }
 
 #[test]

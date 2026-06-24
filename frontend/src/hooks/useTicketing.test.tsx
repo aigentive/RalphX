@@ -204,6 +204,17 @@ describe("useTicketing hooks", () => {
     expect(ticketingApi.listTicketFilterOptions).not.toHaveBeenCalled();
   });
 
+  it("reports an error if ticket filter options are manually refetched without input", async () => {
+    const { result } = renderHook(() => useTicketFilterOptions(null, { enabled: false }), {
+      wrapper: createWrapper().wrapper,
+    });
+
+    const response = await act(() => result.current.refetch());
+
+    expect(response.error).toEqual(new Error("Ticket filter options query is required"));
+    expect(ticketingApi.listTicketFilterOptions).not.toHaveBeenCalled();
+  });
+
   it("generates clientOperationId and applies optimistic status transitions", async () => {
     const ticketRef: TicketRef = { provider: "jira", id: "10001", key: "RX-1" };
     const transition: TicketTransitionOption = {
