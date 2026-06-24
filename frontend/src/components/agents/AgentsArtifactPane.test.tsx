@@ -1,4 +1,4 @@
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type {
+  AgentWorkspacePrReviewContext,
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
 } from "@/api/chat";
@@ -369,6 +370,45 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function prReviewContext(
+  conversationId: string,
+  reviewArtifactId: string | null,
+): AgentWorkspacePrReviewContext {
+  return {
+    success: true,
+    workspace: workspace({ conversationId, mode: "review_pr" }),
+    events: [],
+    prNumber: 78,
+    prUrl: "https://github.com/mock/project/pull/78",
+    currentHeadSha: "head-sha",
+    health: null,
+    reviewFeedback: null,
+    monitor: {
+      conversationId,
+      projectId: "project-1",
+      prNumber: 78,
+      status: "watching",
+      monitorEnabled: true,
+      firstReviewCompleted: Boolean(reviewArtifactId),
+      lastSeenHeadSha: "head-sha",
+      lastReviewedHeadSha: reviewArtifactId ? "head-sha" : null,
+      lastReviewRunId: reviewArtifactId ? "run-1" : null,
+      lastReviewOutcome: reviewArtifactId ? "approved" : null,
+      lastSubmittedReviewId: null,
+      reviewArtifactId,
+      reviewArtifactHeadSha: reviewArtifactId ? "head-sha" : null,
+      reviewArtifactVersion: reviewArtifactId ? 1 : null,
+      reviewArtifactUpdatedAt: reviewArtifactId ? "2026-04-23T09:30:00Z" : null,
+      lastError: null,
+      createdAt: "2026-04-23T09:00:00Z",
+      updatedAt: "2026-04-23T09:30:00Z",
+    },
+    pendingAction: null,
+    recentActions: [],
+    issueCommentEvidence: [],
+  };
+}
+
 function renderPane(
   activeTab: AgentArtifactTab = "tasks",
   paneWorkspace: AgentConversationWorkspace | null = workspace(),
@@ -376,9 +416,8 @@ function renderPane(
   isPublishingWorkspace = false,
   paneConversation = null,
   paneProps: Partial<ComponentProps<typeof AgentsArtifactPane>> = {},
+  queryClient: QueryClient = createTestQueryClient(),
 ) {
-  const queryClient = createTestQueryClient();
-
   return render(
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={0}>
@@ -902,6 +941,72 @@ describe("AgentsArtifactPane", () => {
     expect(await screen.findByText("PR Review")).toBeInTheDocument();
     expect(getPrReviewContextMock).toHaveBeenCalledWith("conversation-1");
     expect(getArtifactMock).toHaveBeenCalledWith("review-artifact-1");
+  });
+
+  it("drops placeholder PR review context when switching conversations", async () => {
+    const queryClient = createTestQueryClient();
+    queryClient.setDefaultOptions({
+      queries: {
+        retry: false,
+        placeholderData: (previousData: unknown) => previousData,
+      },
+      mutations: { retry: false },
+    });
+    getPrReviewContextMock.mockResolvedValueOnce(
+      prReviewContext("conversation-1", "review-artifact-1"),
+    );
+    getArtifactMock.mockResolvedValue({
+      id: "review-artifact-1",
+      type: "pr_review",
+      name: "PR #78 Review",
+      content: {
+        type: "inline",
+        text: "# PR Review\n\nNo blocking findings.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:30:00Z",
+        createdBy: "ralphx-pr-reviewer",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    });
+
+    const pane = (conversationId: string) => (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delayDuration={0}>
+          <div className="h-[480px]">
+            <AgentsArtifactPane
+              conversation={conversation({
+                id: conversationId,
+                agentMode: "review_pr",
+              })}
+              workspace={workspace({ conversationId, mode: "review_pr" })}
+              activeTab="review"
+              taskMode="graph"
+              onTabChange={() => {}}
+              onTaskModeChange={() => {}}
+              onPublishWorkspace={vi.fn()}
+              isPublishingWorkspace={false}
+              onClose={() => {}}
+            />
+          </div>
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+
+    const { rerender } = render(pane("conversation-1"));
+
+    expect(await screen.findByTestId("agents-artifact-tab-review")).toBeInTheDocument();
+    expect(await screen.findByText("PR Review")).toBeInTheDocument();
+
+    getPrReviewContextMock.mockReturnValue(
+      deferred<AgentWorkspacePrReviewContext>().promise,
+    );
+    rerender(pane("conversation-2"));
+
+    expect(screen.queryByTestId("agents-artifact-tab-review")).not.toBeInTheDocument();
+    expect(screen.queryByText("PR Review")).not.toBeInTheDocument();
   });
 
   it("persists pre-PR autofix preference while initial Auto Publish is off", async () => {
