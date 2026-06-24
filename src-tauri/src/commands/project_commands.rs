@@ -1449,7 +1449,7 @@ mod git_auth_command_tests {
             is_cross_repository: false,
         }]);
 
-        let mut state = AppState::new_test();
+        let state = AppState::new_test();
         state.github_service = Some(github.clone() as Arc<dyn GithubServiceTrait>);
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let mut project = Project::new(
@@ -1643,5 +1643,143 @@ mod git_auth_command_tests {
             .await
             .expect_err("missing branches directory should fail")
             .contains("Directory does not exist"));
+    }
+
+    #[tokio::test]
+    async fn get_git_remote_url_skips_missing_and_non_github_remotes() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let repo = tmp.path();
+        Command::new(resolve_git_cli_path())
+            .args(["init"])
+            .current_dir(repo)
+            .output()
+            .expect("git init should run");
+
+        let state = AppState::new_test();
+        let mut project = Project::new("Remote".to_string(), repo.to_string_lossy().to_string());
+        project.id = ProjectId::from_string("project-remote-test".to_string());
+        state.project_repo.create(project).await.unwrap();
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let result = get_git_remote_url(
+            "project-remote-test".to_string(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("get_git_remote_url should succeed with missing remote");
+        assert!(result.is_none());
+
+        Command::new(resolve_git_cli_path())
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://gitlab.com/aigentive/test-repo.git",
+            ])
+            .current_dir(repo)
+            .output()
+            .expect("git remote add should run");
+
+        let gitlab = get_git_remote_url(
+            "project-remote-test".to_string(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("get_git_remote_url should succeed for non-github remote");
+        assert!(gitlab.is_none());
+
+        Command::new(resolve_git_cli_path())
+            .args([
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/aigentive/test-repo.git",
+            ])
+            .current_dir(repo)
+            .output()
+            .expect("git remote set-url should run");
+
+        let github = get_git_remote_url(
+            "project-remote-test".to_string(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("get_git_remote_url should succeed for github remote");
+        assert_eq!(
+            github,
+            Some("https://github.com/aigentive/test-repo.git".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn switch_git_origin_to_ssh_rejects_non_convertible_origin() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let repo = tmp.path();
+        Command::new(resolve_git_cli_path())
+            .args(["init"])
+            .current_dir(repo)
+            .output()
+            .expect("git init should run");
+
+        Command::new(resolve_git_cli_path())
+            .args(["remote", "add", "origin", "https://bitbucket.org/aigentive/test-repo.git"])
+            .current_dir(repo)
+            .output()
+            .expect("git remote add should run");
+
+        let mut state = AppState::new_test();
+        let mut project = Project::new("Remote".to_string(), repo.to_string_lossy().to_string());
+        project.id = ProjectId::from_string("project-remote-switch".to_string());
+        state.project_repo.create(project).await.unwrap();
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let result = switch_git_origin_to_ssh(
+            "project-remote-switch".to_string(),
+            app.state::<AppState>(),
+        )
+        .await;
+
+        let error = result.expect_err("non-github remote should not be convertible");
+        assert!(
+            error.contains("Origin is not a convertible GitHub HTTPS remote"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_git_config_command_fails_if_directory_is_missing() {
+        let missing = tempfile::tempdir()
+            .expect("tempdir should be created")
+            .path()
+            .join("missing-dir");
+        let error = run_git_config_command(&missing, &["remote", "get-url", "origin"])
+            .await
+            .expect_err("command should fail when current dir is missing");
+        assert!(
+            error.contains("Failed to spawn git")
+                || error.contains("git config command timed out"),
+            "expected spawn or timeout failure, got {error}"
+        );
+    }
+
+    #[test]
+    fn gh_auth_login_prompt_exposes_code_and_url_together() {
+        let prompt = parse_gh_auth_login_prompt(
+            "Open this URL to continue: one-time code: ABCD-EFGH\nweb browser: https://github.com/login/device",
+        )
+        .expect("prompt should parse");
+        assert_eq!(prompt.code, Some("ABCD-EFGH".to_string()));
+        assert_eq!(
+            prompt.url,
+            Some("https://github.com/login/device".to_string())
+        );
     }
 }
