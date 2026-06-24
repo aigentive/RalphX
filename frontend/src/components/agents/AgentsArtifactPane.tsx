@@ -411,8 +411,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ? activeTab
       : reviewArtifactId
         ? "review"
-        : showPublishTab
-        ? "publish"
         : showJiraTab
           ? "jira"
           : showLinearTab
