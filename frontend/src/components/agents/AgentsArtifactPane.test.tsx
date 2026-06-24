@@ -1204,6 +1204,10 @@ describe("AgentsArtifactPane", () => {
       "PR #2857 has merge conflicts",
     );
     expect(screen.getByText(/Auto Publish is waiting/i)).toBeInTheDocument();
+    expect(screen.getByText("PR conflicts")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-push-status-pill")).toHaveTextContent(
+      "Conflicting",
+    );
     await user.click(
       screen.getByRole("button", { name: "Resolve conflicts" }),
     );
