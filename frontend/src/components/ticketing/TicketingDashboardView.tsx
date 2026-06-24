@@ -81,6 +81,7 @@ function toTicketFilters(filters: ReturnType<typeof useTicketingStore.getState>[
     ...(filters.text.trim() && { text: filters.text.trim() }),
     ...(filters.stateIds.length > 0 && { stateIds: filters.stateIds }),
     ...(filters.labels.length > 0 && { labels: filters.labels }),
+    ...(filters.watcherMe && { watcherMe: true }),
   };
   return Object.keys(next).length > 0 ? next : undefined;
 }
@@ -409,6 +410,13 @@ export function TicketingDashboardView({
 
   const ticketsQuery = useTickets(ticketQuery, { enabled: Boolean(ticketQuery) });
   const tickets = useMemo(() => flattenTicketPages(ticketsQuery.data), [ticketsQuery.data]);
+  const hasWatcherMetadata = useMemo(
+    () =>
+      tickets.some((ticket) =>
+        ticket.currentUserWatching || (ticket.watchers?.length ?? 0) > 0,
+      ),
+    [tickets],
+  );
   const assigneeOptions = useMemo(() => distinctAssigneeNames(tickets), [tickets]);
   const sprintOptions = useMemo(
     () => (activeProvider === "clickup" ? distinctCurrentUserSprintNames(tickets) : []),
@@ -422,6 +430,11 @@ export function TicketingDashboardView({
       setFilters({ sprint: null });
     }
   }, [activeProvider, filters.sprint, setFilters, sprintOptions]);
+  useEffect(() => {
+    if (activeProvider !== "clickup" && filters.watcherMe) {
+      setFilters({ watcherMe: false });
+    }
+  }, [activeProvider, filters.watcherMe, setFilters]);
   const activeContainerName = useMemo(
     () => containers.find((container) => container.id === activeContainerId)?.name ?? null,
     [containers, activeContainerId],
@@ -953,6 +966,9 @@ export function TicketingDashboardView({
         columns={filterColumns}
         assigneeOptions={assigneeOptions}
         sprintOptions={sprintOptions}
+        showWatcherFilter={
+          activeProvider === "clickup" && (hasWatcherMetadata || filters.watcherMe)
+        }
         containerLabel={containerLabels.containerLabel}
         allContainersLabel={containerLabels.allContainersLabel}
         activeContainerId={activeContainerId}

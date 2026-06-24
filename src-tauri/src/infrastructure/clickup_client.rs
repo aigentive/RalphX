@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use http_body_util::{BodyExt, Full};
@@ -316,7 +318,7 @@ pub(crate) async fn fetch_filtered_tasks<C: ClickUpJsonRequester + ?Sized>(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_ascii_lowercase);
-    let limit = options.limit.unwrap_or(100).max(1);
+    let limit = options.limit.filter(|limit| *limit > 0);
     let mut tasks = Vec::new();
     let mut page = 0usize;
     loop {
@@ -334,7 +336,7 @@ pub(crate) async fn fetch_filtered_tasks<C: ClickUpJsonRequester + ?Sized>(
                         continue;
                     }
                     tasks.push(summary);
-                    if tasks.len() >= limit {
+                    if limit.is_some_and(|limit| tasks.len() >= limit) {
                         break;
                     }
                 }
@@ -345,7 +347,11 @@ pub(crate) async fn fetch_filtered_tasks<C: ClickUpJsonRequester + ?Sized>(
             .and_then(Value::as_bool)
             .unwrap_or(true);
         page += 1;
-        if tasks.len() >= limit || last_page || count == 0 || page >= MAX_TASK_PAGES {
+        if limit.is_some_and(|limit| tasks.len() >= limit)
+            || last_page
+            || count == 0
+            || page >= MAX_TASK_PAGES
+        {
             break;
         }
     }
@@ -581,7 +587,7 @@ pub(crate) async fn apply_task_tags<C: ClickUpJsonRequester + ?Sized>(
 
 fn filtered_tasks_url(team_id: &str, space_ids: &[String], page: usize) -> String {
     let mut url = format!(
-        "{CLICKUP_API_BASE}/team/{}/task?page={page}",
+        "{CLICKUP_API_BASE}/team/{}/task?page={page}&include_closed=true",
         percent_encode_path_segment(team_id)
     );
     for space_id in space_ids {
@@ -593,9 +599,13 @@ fn filtered_tasks_url(team_id: &str, space_ids: &[String], page: usize) -> Strin
 }
 
 fn user_from_value(value: &Value) -> Option<ClickUpUser> {
+    let value = value
+        .get("user")
+        .or_else(|| value.get("member"))
+        .unwrap_or(value);
     Some(ClickUpUser {
-        id: value.get("id").and_then(Value::as_i64)?,
-        username: opt_str(value, "username"),
+        id: clickup_user_id(value)?,
+        username: opt_str(value, "username").or_else(|| opt_str(value, "name")),
         email: opt_str(value, "email"),
     })
 }
@@ -648,6 +658,7 @@ fn task_summary_from_value(task: &Value) -> Option<ClickUpTaskSummary> {
         status_color: status.and_then(|value| opt_str(value, "color")),
         assignees: collect_assignee_names(task),
         assignee_ids: collect_assignee_ids(task),
+        watchers: collect_clickup_users_from_fields(task, &["watchers", "followers"]),
         tags: collect_tag_names(task),
         space_id: task.get("space").and_then(|value| opt_str(value, "id")),
         list_name: task.get("list").and_then(|value| opt_str(value, "name")),
@@ -674,6 +685,10 @@ fn task_summary_matches_query(summary: &ClickUpTaskSummary, query: &str) -> bool
             .iter()
             .chain(summary.assignees.iter())
             .any(|value| value.to_ascii_lowercase().contains(query))
+        || summary
+            .watchers
+            .iter()
+            .any(|user| clickup_user_matches_query(user, query))
 }
 
 fn task_content_from_value(task: &Value) -> Option<ClickUpTaskContent> {
@@ -696,6 +711,7 @@ fn task_content_from_value(task: &Value) -> Option<ClickUpTaskContent> {
             .get("creator")
             .and_then(|value| opt_str(value, "username")),
         assignees: collect_assignee_names(task),
+        watchers: collect_clickup_users_from_fields(task, &["watchers", "followers"]),
         tags: collect_tag_names(task),
         comments: Vec::new(),
         attachments: collect_clickup_attachments(task),
@@ -774,6 +790,44 @@ fn clickup_user_display_name(value: &Value) -> Option<String> {
     opt_str(value, "username")
         .or_else(|| opt_str(value, "email"))
         .or_else(|| opt_str(value, "name"))
+}
+
+fn clickup_user_id(value: &Value) -> Option<i64> {
+    value
+        .get("id")
+        .and_then(Value::as_i64)
+        .or_else(|| opt_str(value, "id").and_then(|id| id.parse::<i64>().ok()))
+}
+
+fn clickup_user_matches_query(user: &ClickUpUser, query: &str) -> bool {
+    user.id.to_string().contains(query)
+        || user
+            .username
+            .as_deref()
+            .is_some_and(|name| name.to_ascii_lowercase().contains(query))
+        || user
+            .email
+            .as_deref()
+            .is_some_and(|email| email.to_ascii_lowercase().contains(query))
+}
+
+fn collect_clickup_users_from_fields(task: &Value, fields: &[&str]) -> Vec<ClickUpUser> {
+    let mut seen = HashSet::new();
+    let mut users = Vec::new();
+    for field in fields {
+        for user in task
+            .get(*field)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(user_from_value)
+        {
+            if seen.insert(user.id) {
+                users.push(user);
+            }
+        }
+    }
+    users
 }
 
 fn collect_assignee_names(task: &Value) -> Vec<String> {
