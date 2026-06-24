@@ -46,6 +46,10 @@ pub struct ComposerIntegrationReference {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_transcript: Option<bool>,
 }
 
 /// An artifact reference selected in the chat composer.

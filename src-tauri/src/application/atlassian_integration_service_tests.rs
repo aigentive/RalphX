@@ -664,6 +664,8 @@ async fn fetch_resource_content_routes_to_client() {
             key: Some("PROJ-1".to_string()),
             title: Some("Issue".to_string()),
             url: None,
+            summary_excerpt: None,
+            include_transcript: None,
         })
         .await
         .expect("fetch should succeed");
@@ -759,6 +761,8 @@ async fn project_listing_methods_require_enabled_settings() {
                 key: None,
                 title: None,
                 url: None,
+                summary_excerpt: None,
+                include_transcript: None,
             })
             .await
             .unwrap_err(),
@@ -796,6 +800,8 @@ async fn expand_references_returns_message_when_disabled() {
                 key: None,
                 title: None,
                 url: None,
+                summary_excerpt: None,
+                include_transcript: None,
             }],
         )
         .await;
@@ -818,6 +824,8 @@ async fn expand_references_skips_non_atlassian_and_reports_fetch_errors() {
                     key: None,
                     title: None,
                     url: None,
+                    summary_excerpt: None,
+                    include_transcript: None,
                 },
                 ComposerIntegrationReference {
                     provider: "atlassian".to_string(),
@@ -826,6 +834,8 @@ async fn expand_references_skips_non_atlassian_and_reports_fetch_errors() {
                     key: Some("PROJ-1".to_string()),
                     title: Some("Issue".to_string()),
                     url: None,
+                    summary_excerpt: None,
+                    include_transcript: None,
                 },
             ],
         )
@@ -853,6 +863,8 @@ async fn expand_references_reports_fetch_error_as_skipped() {
                 key: None,
                 title: None,
                 url: None,
+                summary_excerpt: None,
+                include_transcript: None,
             }],
         )
         .await;
@@ -877,6 +889,8 @@ async fn expand_references_truncates_large_resource_body() {
                 key: Some("PROJ-1".to_string()),
                 title: Some("Big".to_string()),
                 url: None,
+                summary_excerpt: None,
+                include_transcript: None,
             }],
         )
         .await;
@@ -1183,6 +1197,8 @@ async fn empty_client_returns_happy_path_stubs() {
                 key: Some("PROJ-1".to_string()),
                 title: None,
                 url: None,
+                summary_excerpt: None,
+                include_transcript: None,
             },
         )
         .await
@@ -1231,6 +1247,8 @@ async fn unavailable_client_propagates_reason() {
                     key: None,
                     title: None,
                     url: None,
+                    summary_excerpt: None,
+                    include_transcript: None,
                 }
             )
             .await

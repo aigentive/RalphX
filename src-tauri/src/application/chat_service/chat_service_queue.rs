@@ -18,6 +18,9 @@ use super::chat_service_types::{
 };
 use super::has_meaningful_output;
 use super::{ChatService, SendMessageOptions};
+use crate::application::integration_reference_expansion::{
+    expand_integration_references_for_prompt, log_skipped_integration_references,
+};
 use crate::application::question_state::QuestionState;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
@@ -1101,6 +1104,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.linear_integration_service)
             });
+            let granola_integration_service = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<AppState>();
+                Arc::clone(&app_state.granola_integration_service)
+            });
             let agent_conversation_jira_issue_repo = app_handle.as_ref().map(|handle| {
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.agent_conversation_jira_issue_repo)
@@ -1160,24 +1167,16 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     &queued_msg.composer_project_references,
                     working_directory,
                 );
-            let runtime_content = if merged_integration_references.is_empty() {
-                runtime_content
-            } else if let Some(service) = atlassian_integration_service.as_ref() {
-                service
-                    .expand_references_for_prompt(&runtime_content, &merged_integration_references)
-                    .await
-            } else {
-                runtime_content
-            };
-            let runtime_content = if merged_integration_references.is_empty() {
-                runtime_content
-            } else if let Some(service) = linear_integration_service.as_ref() {
-                service
-                    .expand_references_for_prompt(&runtime_content, &merged_integration_references)
-                    .await
-            } else {
-                runtime_content
-            };
+            let integration_expansion = expand_integration_references_for_prompt(
+                &runtime_content,
+                &merged_integration_references,
+                atlassian_integration_service,
+                linear_integration_service,
+                granola_integration_service,
+            )
+            .await;
+            log_skipped_integration_references(&integration_expansion.skipped_references);
+            let runtime_content = integration_expansion.rewritten_prompt;
             let runtime_content =
                 super::chat_service_composer_references::append_artifact_references_for_prompt(
                     &runtime_content,
@@ -1713,6 +1712,8 @@ mod tests {
             key: Some("RX-42".to_string()),
             title: Some("Fix queue replay".to_string()),
             url: None,
+            summary_excerpt: None,
+            include_transcript: None,
         }];
         message.composer_artifact_references = vec![ComposerArtifactReference {
             artifact_id: "artifact-1".to_string(),

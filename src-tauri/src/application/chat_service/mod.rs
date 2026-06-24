@@ -46,6 +46,10 @@ use crate::application::interactive_process_registry::{
 };
 use crate::application::question_state::QuestionState;
 use crate::application::AtlassianIntegrationService;
+use crate::application::GranolaIntegrationService;
+use crate::application::integration_reference_expansion::{
+    expand_integration_references_for_prompt, log_skipped_integration_references,
+};
 use crate::application::LinearIntegrationService;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::ideation::SessionPurpose;
@@ -933,6 +937,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
     linear_integration_service: Option<Arc<LinearIntegrationService>>,
+    granola_integration_service: Option<Arc<GranolaIntegrationService>>,
     ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -1020,6 +1025,7 @@ impl<R: Runtime> AppChatService<R> {
             agent_provider_settings_repo: None,
             atlassian_integration_service: None,
             linear_integration_service: None,
+            granola_integration_service: None,
             ideation_effort_settings_repo: None,
             ideation_model_settings_repo: None,
             ideation_session_repo,
@@ -1234,6 +1240,14 @@ impl<R: Runtime> AppChatService<R> {
         service: Arc<LinearIntegrationService>,
     ) -> Self {
         self.linear_integration_service = Some(service);
+        self
+    }
+
+    pub fn with_granola_integration_service(
+        mut self,
+        service: Arc<GranolaIntegrationService>,
+    ) -> Self {
+        self.granola_integration_service = Some(service);
         self
     }
 
@@ -1596,10 +1610,8 @@ impl<R: Runtime> AppChatService<R> {
 
         let run_ids: HashSet<AgentRunId> = live_entries
             .iter()
-            .filter_map(|(_, info, _, _)| {
-                (!info.agent_run_id.is_empty())
-                    .then(|| AgentRunId::from_string(&info.agent_run_id))
-            })
+            .filter(|(_, info, _, _)| !info.agent_run_id.is_empty())
+            .map(|(_, info, _, _)| AgentRunId::from_string(&info.agent_run_id))
             .collect();
         let run_id_list: Vec<AgentRunId> = run_ids.iter().copied().collect();
         let run_statuses: HashMap<String, AgentRunStatus> =
@@ -3067,36 +3079,16 @@ impl<R: Runtime> AppChatService<R> {
                 Err(_) => message.to_string(),
             }
         };
-        let with_atlassian_references = if merged_integration_references.is_empty() {
-            with_project_references
-        } else {
-            match self.atlassian_integration_service.as_ref() {
-                Some(service) => {
-                    service
-                        .expand_references_for_prompt(
-                            &with_project_references,
-                            &merged_integration_references,
-                        )
-                        .await
-                }
-                None => with_project_references,
-            }
-        };
-        let with_integration_references = if merged_integration_references.is_empty() {
-            with_atlassian_references
-        } else {
-            match self.linear_integration_service.as_ref() {
-                Some(service) => {
-                    service
-                        .expand_references_for_prompt(
-                            &with_atlassian_references,
-                            &merged_integration_references,
-                        )
-                        .await
-                }
-                None => with_atlassian_references,
-            }
-        };
+        let integration_expansion = expand_integration_references_for_prompt(
+            &with_project_references,
+            &merged_integration_references,
+            self.atlassian_integration_service.clone(),
+            self.linear_integration_service.clone(),
+            self.granola_integration_service.clone(),
+        )
+        .await;
+        log_skipped_integration_references(&integration_expansion.skipped_references);
+        let with_integration_references = integration_expansion.rewritten_prompt;
         let with_artifact_references =
             chat_service_composer_references::append_artifact_references_for_prompt(
                 &with_integration_references,

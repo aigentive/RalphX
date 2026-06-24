@@ -128,7 +128,7 @@ use crate::infrastructure::sqlite::{
     SqliteTeamSessionRepository, SqliteTicketCanonicalBranchRepository,
     SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
 };
-use crate::infrastructure::GhCliGithubService;
+use crate::infrastructure::{GhCliGithubService, HyperGranolaApiClient};
 use crate::infrastructure::HyperAtlassianApiClient;
 use crate::infrastructure::HyperClickUpApiClient;
 use crate::infrastructure::HyperLinearApiClient;
@@ -431,20 +431,26 @@ impl AppState {
     fn production_granola_integration_service(
         shared_conn: &Arc<Mutex<rusqlite::Connection>>,
     ) -> Arc<GranolaIntegrationService> {
-        // The Granola HTTP client lands in the follow-up Granola API-client task.
-        // Until then production wires the unavailable client so settings persist
-        // and validation reports a clear error instead of panicking.
-        let client: Arc<dyn crate::application::GranolaApiClient> =
-            Arc::new(UnavailableGranolaApiClient::new(
-                "Granola HTTP client is not available yet; integration validation will fail until the Granola API client lands",
-            ));
         Arc::new(GranolaIntegrationService::new(
             Arc::new(SqliteGranolaIntegrationSettingsRepository::from_shared(
                 Arc::clone(shared_conn),
             )),
             Arc::new(MacosKeychainSecretStore::new()),
-            client,
+            Self::production_granola_api_client(),
         ))
+    }
+
+    fn production_granola_api_client() -> Arc<dyn crate::application::GranolaApiClient> {
+        match HyperGranolaApiClient::new() {
+            Ok(client) => Arc::new(client),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Granola HTTP client unavailable; integration validation will fail until TLS roots are available"
+                );
+                Arc::new(UnavailableGranolaApiClient::new(error))
+            }
+        }
     }
 
     fn memory_granola_integration_service() -> Arc<GranolaIntegrationService> {

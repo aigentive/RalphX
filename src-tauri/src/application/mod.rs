@@ -39,6 +39,7 @@ pub mod chat_resumption;
 pub mod chat_service;
 pub mod clickup_integration_service;
 pub mod granola_integration_service;
+pub mod integration_reference_expansion;
 pub mod dependency_service;
 pub mod event_cleanup_service;
 pub mod execution_settings_bootstrap;
@@ -147,7 +148,8 @@ pub use clickup_integration_service::{
     ClickUpWorkspace, EmptyClickUpApiClient, UnavailableClickUpApiClient,
 };
 pub use granola_integration_service::{
-    EmptyGranolaApiClient, GranolaApiClient, GranolaAuthContext, GranolaIntegrationService,
+    EmptyGranolaApiClient, GranolaApiClient, GranolaApiError, GranolaAuthContext,
+    GranolaIntegrationService, GranolaNoteDetail, GranolaTranscriptEntry,
     UnavailableGranolaApiClient,
 };
 pub use chat_attachment_service::ChatAttachmentService;
@@ -258,6 +260,10 @@ mod chat_service_output_tests;
 mod clickup_integration_service_tests;
 #[cfg(test)]
 mod granola_integration_service_tests;
+#[cfg(test)]
+mod granola_integration_prompt_tests;
+#[cfg(test)]
+mod integration_reference_expansion_tests;
 #[cfg(test)]
 mod git_artifact_cleanup_tests;
 #[cfg(test)]
