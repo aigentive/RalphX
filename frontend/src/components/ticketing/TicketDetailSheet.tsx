@@ -589,7 +589,7 @@ function TicketAttachmentPreview({
               className={compact ? "h-full w-full object-cover" : "max-h-64 w-full object-contain"}
               onError={() => setFailed(true)}
             />
-            <span className="absolute inset-0 flex items-center justify-center bg-[var(--overlay-scrim)] text-white opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+            <span className="absolute inset-0 flex items-center justify-center bg-transparent text-white opacity-0 transition group-hover:bg-[var(--overlay-scrim)] group-hover:opacity-100 group-focus-visible:bg-[var(--overlay-scrim)] group-focus-visible:opacity-100">
               <ZoomIn className="h-5 w-5" aria-hidden="true" />
               <span className="sr-only">Preview image</span>
             </span>

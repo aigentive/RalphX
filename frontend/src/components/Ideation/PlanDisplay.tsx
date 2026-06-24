@@ -77,6 +77,7 @@ export interface PlanDisplayProps {
   implementDirectlyLabel?: string;
   isImplementingDirectly?: boolean;
   primaryPlanAction?: "implement_directly" | "create_proposals";
+  isPlanActionRecommendationPending?: boolean;
   planActionHint?: string | null;
   /** Show the overflow action cluster (version picker / copy / export / edit) */
   showOverflowActions?: boolean;
@@ -359,6 +360,7 @@ export function PlanDisplay({
   implementDirectlyLabel = "Implement Directly",
   isImplementingDirectly = false,
   primaryPlanAction,
+  isPlanActionRecommendationPending = false,
   planActionHint = null,
   showOverflowActions = true,
   chromeless = false,
@@ -372,11 +374,13 @@ export function PlanDisplay({
     (linkedProposalsCount === undefined || linkedProposalsCount === 0);
   const showImplementDirectly = Boolean(onImplementDirectly);
   const isCreateProposalsPrimary =
-    primaryPlanAction === "create_proposals" ||
-    (!showImplementDirectly && Boolean(showCreateProposals));
+    !isPlanActionRecommendationPending &&
+    (primaryPlanAction === "create_proposals" ||
+      (!showImplementDirectly && Boolean(showCreateProposals)));
   const isImplementDirectlyPrimary =
-    primaryPlanAction === "implement_directly" ||
-    (showImplementDirectly && !showCreateProposals);
+    !isPlanActionRecommendationPending &&
+    (primaryPlanAction === "implement_directly" ||
+      (showImplementDirectly && !showCreateProposals));
   const isOpen = isExpanded !== undefined ? isExpanded : internalIsOpen;
   const setIsOpen = onExpandedChange ?? setInternalIsOpen;
   const actionButtonStyle = (isPrimary: boolean) => ({
@@ -712,7 +716,9 @@ export function PlanDisplay({
                   variant="ghost"
                   size="sm"
                   onClick={onVerifyPlan}
-                  disabled={isVerifyingPlan}
+                  disabled={
+                    isVerifyingPlan || isPlanActionRecommendationPending
+                  }
                   data-testid="plan-verify-button"
                   className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
                   style={{
@@ -736,13 +742,15 @@ export function PlanDisplay({
                 </Button>
               )}
 
-              {primaryPlanAction === "create_proposals" ? (
+              {isPlanActionRecommendationPending ||
+              primaryPlanAction === "create_proposals" ? (
                 <>
                   {showCreateProposals && (
                     <Button
                       variant="ghost"
                       size="sm"
                       onClick={onCreateProposals}
+                      disabled={isPlanActionRecommendationPending}
                       className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
                       style={actionButtonStyle(isCreateProposalsPrimary)}
                       onMouseEnter={(e) => actionButtonHover(e, isCreateProposalsPrimary)}
@@ -757,7 +765,10 @@ export function PlanDisplay({
                       variant="ghost"
                       size="sm"
                       onClick={onImplementDirectly}
-                      disabled={isImplementingDirectly}
+                      disabled={
+                        isImplementingDirectly ||
+                        isPlanActionRecommendationPending
+                      }
                       className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
                       style={actionButtonStyle(isImplementDirectlyPrimary)}
                       onMouseEnter={(e) => actionButtonHover(e, isImplementDirectlyPrimary)}
@@ -779,7 +790,10 @@ export function PlanDisplay({
                       variant="ghost"
                       size="sm"
                       onClick={onImplementDirectly}
-                      disabled={isImplementingDirectly}
+                      disabled={
+                        isImplementingDirectly ||
+                        isPlanActionRecommendationPending
+                      }
                       className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
                       style={actionButtonStyle(isImplementDirectlyPrimary)}
                       onMouseEnter={(e) =>
@@ -802,6 +816,7 @@ export function PlanDisplay({
                       variant="ghost"
                       size="sm"
                       onClick={onCreateProposals}
+                      disabled={isPlanActionRecommendationPending}
                       className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
                       style={actionButtonStyle(isCreateProposalsPrimary)}
                       onMouseEnter={(e) =>
