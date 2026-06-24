@@ -31,6 +31,7 @@ pub(crate) mod tool_result_preview;
 pub(crate) mod verification_child_process_registry;
 
 use crate::application::agent_conversation_workspace::{
+    ensure_linked_plan_branch_agent_worktree,
     is_terminal_agent_conversation_publication_status,
     resolve_agent_conversation_workspace_path_for_send,
     rollover_agent_conversation_workspace_with_setup_mode, AgentConversationWorkspaceSetupMode,
@@ -2370,6 +2371,15 @@ impl<R: Runtime> AppChatService<R> {
                 ))
             })?;
 
+        if workspace.mode == AgentConversationWorkspaceMode::Ideation {
+            if let Some(path) = self
+                .resolve_linked_plan_branch_working_directory(&project, workspace)
+                .await?
+            {
+                return Ok(path);
+            }
+        }
+
         match resolve_agent_conversation_workspace_path_for_send(&project, workspace) {
             Ok(path) => Ok(path),
             Err(error) => {
@@ -2383,6 +2393,44 @@ impl<R: Runtime> AppChatService<R> {
                 Err(ChatServiceError::SpawnFailed(error.to_string()))
             }
         }
+    }
+
+    async fn resolve_linked_plan_branch_working_directory(
+        &self,
+        project: &crate::domain::entities::Project,
+        workspace: &AgentConversationWorkspace,
+    ) -> Result<Option<PathBuf>, ChatServiceError> {
+        let Some(plan_branch_id) = workspace.linked_plan_branch_id.as_ref() else {
+            return Ok(None);
+        };
+
+        let repo = self.plan_branch_repo.lock().unwrap().clone();
+        let Some(repo) = repo else {
+            return Err(ChatServiceError::SpawnFailed(
+                "Plan branch repository unavailable for linked agent workspace".to_string(),
+            ));
+        };
+
+        let Some(plan_branch) = repo
+            .get_by_id(plan_branch_id)
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+        else {
+            return Err(ChatServiceError::SpawnFailed(format!(
+                "Plan branch not found for linked agent workspace: {}",
+                plan_branch_id
+            )));
+        };
+
+        let path = ensure_linked_plan_branch_agent_worktree(project, &plan_branch)
+            .await
+            .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?;
+
+        if workspace.status == AgentConversationWorkspaceStatus::Missing {
+            self.mark_agent_conversation_workspace_active(workspace).await;
+        }
+
+        Ok(Some(path))
     }
 
     async fn mark_agent_conversation_workspace_missing(
@@ -2409,6 +2457,34 @@ impl<R: Runtime> AppChatService<R> {
                 conversation_id = workspace.conversation_id.as_str(),
                 error = %error,
                 "Failed to mark missing agent conversation workspace"
+            );
+        }
+    }
+
+    async fn mark_agent_conversation_workspace_active(
+        &self,
+        workspace: &AgentConversationWorkspace,
+    ) {
+        let repo = self
+            .agent_conversation_workspace_repo
+            .lock()
+            .unwrap()
+            .clone();
+        let Some(repo) = repo else {
+            return;
+        };
+
+        if let Err(error) = repo
+            .update_status(
+                &workspace.conversation_id,
+                AgentConversationWorkspaceStatus::Active,
+            )
+            .await
+        {
+            tracing::warn!(
+                conversation_id = workspace.conversation_id.as_str(),
+                error = %error,
+                "Failed to mark linked agent conversation workspace active"
             );
         }
     }
