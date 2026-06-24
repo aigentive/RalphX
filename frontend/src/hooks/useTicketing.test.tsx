@@ -57,7 +57,6 @@ vi.mock("@/api/ticketing", async (importActual) => {
     },
   };
 });
-
 function createQueryClient() {
   return new QueryClient({
     defaultOptions: {

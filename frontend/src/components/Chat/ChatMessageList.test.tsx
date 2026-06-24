@@ -18,10 +18,7 @@ import {
   ChatMessageList,
   type ChatMessageData,
 } from "./ChatMessageList";
-import {
-  buildStreamingTranscriptWindow,
-  getNextStreamingTranscriptWindow,
-} from "./ChatMessageList.streamingWindow";
+import { buildLiveTranscriptRows } from "./ChatMessageList.liveRows";
 import { isTranscriptRootReadyForReveal } from "./ChatMessageList.readiness";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { ToolCall } from "./ToolCallIndicator";
@@ -1941,7 +1938,7 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(toolGroup.compareDocumentPosition(text2) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it("groups streaming text and tool widgets inside one assistant message row", () => {
+    it("groups streaming live rows under one assistant sender group", () => {
       const blocks: StreamingContentBlock[] = [
         { type: "text", text: "First I will fetch the page." },
         {
@@ -1962,12 +1959,21 @@ describe("ChatMessageList - Scroll Behavior", () => {
       const firstText = screen.getByText(/First I will fetch the page/);
       const secondText = screen.getByText(/The page contains useful info/);
       const toolGroup = screen.getByRole("button", { name: "Agent called 1 tool" });
-      const liveAssistantRow = firstText.closest('[data-chat-message-item="true"]');
+      const firstTextRow = firstText.closest('[data-chat-message-item="true"]');
+      const toolRow = toolGroup.closest('[data-chat-message-item="true"]');
+      const secondTextRow = secondText.closest('[data-chat-message-item="true"]');
 
-      expect(liveAssistantRow).toBeInTheDocument();
-      expect(liveAssistantRow).toContainElement(toolGroup);
-      expect(liveAssistantRow).toContainElement(secondText);
-      expect(liveAssistantRow?.querySelector("svg.lucide-bot")).toBeInTheDocument();
+      expect(firstTextRow).toBeInTheDocument();
+      expect(toolRow).toBeInTheDocument();
+      expect(secondTextRow).toBeInTheDocument();
+      expect(toolRow).toContainElement(toolGroup);
+      expect(firstTextRow).not.toBe(toolRow);
+      expect(toolRow).not.toBe(secondTextRow);
+      expect(firstTextRow?.querySelector("svg.lucide-bot")).toBeInTheDocument();
+      expect(toolRow?.querySelector("svg.lucide-bot")).not.toBeInTheDocument();
+      expect(secondTextRow?.querySelector("svg.lucide-bot")).not.toBeInTheDocument();
+      expect(toolRow?.querySelector('[data-testid="message-assistant-icon-spacer"]')).toBeInTheDocument();
+      expect(secondTextRow?.querySelector('[data-testid="message-assistant-icon-spacer"]')).toBeInTheDocument();
 
       const matchingRows = Array.from(
         container.querySelectorAll('[data-chat-message-item="true"]')
@@ -3689,7 +3695,7 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(screen.getByText(/Based on the results/)).toBeInTheDocument();
     });
 
-    it("windows older live text blocks so long Codex streams do not render hundreds of bubbles", () => {
+    it("keeps older live text rows scroll-accessible instead of tail-clipping raw blocks", () => {
       const blocks: StreamingContentBlock[] = Array.from({ length: 65 }, (_, index) => ({
         type: "text",
         text: `Codex live update ${index + 1}`,
@@ -3704,12 +3710,13 @@ describe("ChatMessageList - Scroll Behavior", () => {
         />
       );
 
-      expect(screen.queryByText(/Codex live update 1/)).not.toBeInTheDocument();
-      expect(screen.getByText(/Codex live update 65/)).toBeInTheDocument();
-      expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(40);
+      expect(screen.getByText("Codex live update 1")).toBeInTheDocument();
+      expect(screen.getByText("Codex live update 65")).toBeInTheDocument();
+      expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(65);
+      expect(screen.queryByTestId("streaming-transcript-window-notice")).not.toBeInTheDocument();
     });
 
-    it("bounds interleaved live text and tool blocks instead of only compacting text runs", () => {
+    it("keeps interleaved live text and tool rows scroll-accessible", () => {
       const blocks: StreamingContentBlock[] = Array.from({ length: 60 }, (_, index): StreamingContentBlock[] => [
         { type: "text", text: `Interleaved live update ${index + 1}` },
         {
@@ -3731,11 +3738,46 @@ describe("ChatMessageList - Scroll Behavior", () => {
         />
       );
 
-      expect(screen.queryByText(/Interleaved live update 1/)).not.toBeInTheDocument();
-      expect(screen.getByText(/Interleaved live update 60/)).toBeInTheDocument();
-      expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(20);
-      expect(screen.getAllByRole("button", { name: "Agent called 1 tool" })).toHaveLength(20);
+      expect(screen.getByText("Interleaved live update 1")).toBeInTheDocument();
+      expect(screen.getByText("Interleaved live update 60")).toBeInTheDocument();
+      expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(60);
+      expect(screen.getAllByRole("button", { name: "Agent called 1 tool" })).toHaveLength(60);
       expect(screen.queryAllByTestId("tool-call-indicator")).toHaveLength(0);
+      expect(screen.queryByTestId("streaming-transcript-window-notice")).not.toBeInTheDocument();
+    });
+
+    it("counts consecutive live tool calls as one grouped visible row", () => {
+      const blocks: StreamingContentBlock[] = [
+        { type: "text", text: "Before grouped tools" },
+        {
+          type: "tool_use",
+          toolCall: { id: "tc-1", name: "Read", arguments: { file: "a.ts" } },
+        },
+        {
+          type: "tool_use",
+          toolCall: { id: "tc-2", name: "Read", arguments: { file: "b.ts" } },
+        },
+        {
+          type: "tool_use",
+          toolCall: { id: "tc-3", name: "Read", arguments: { file: "c.ts" } },
+        },
+        { type: "text", text: "After grouped tools" },
+      ];
+
+      render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={[]}
+          isSending={true}
+          streamingContentBlocks={blocks}
+        />
+      );
+
+      expect(screen.getByText("Before grouped tools")).toBeInTheDocument();
+      expect(screen.getByText("After grouped tools")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Agent called 3 tools" })).toBeInTheDocument();
+      expect(screen.queryAllByTestId("tool-call-indicator")).toHaveLength(0);
+      expect(screen.queryByTestId("streaming-transcript-window-notice")).not.toBeInTheDocument();
     });
 
     it("preserves a running task card even when its marker is older than the live tail", () => {
@@ -3768,20 +3810,20 @@ describe("ChatMessageList - Scroll Behavior", () => {
       );
 
       expect(screen.getByTestId("task-subagent-card-task-old")).toBeInTheDocument();
-      expect(screen.queryByText(/Post-task live update 1/)).not.toBeInTheDocument();
-      expect(screen.getByText(/Post-task live update 65/)).toBeInTheDocument();
-      expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(40);
+      expect(screen.getByText("Post-task live update 1")).toBeInTheDocument();
+      expect(screen.getByText("Post-task live update 65")).toBeInTheDocument();
+      expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(65);
     });
 
-    it("freezes the rendered live transcript window while the user is away from bottom", () => {
-      const previous = buildStreamingTranscriptWindow(
+    it("builds a complete live row model while the virtualized timeline owns viewport range", () => {
+      const previousRows = buildLiveTranscriptRows(
         Array.from({ length: 45 }, (_, index): StreamingContentBlock => ({
           type: "text",
           text: `Previous live update ${index + 1}`,
         })),
         new Map(),
       );
-      const live = buildStreamingTranscriptWindow(
+      const liveRows = buildLiveTranscriptRows(
         Array.from({ length: 80 }, (_, index): StreamingContentBlock => ({
           type: "text",
           text: `Latest live update ${index + 1}`,
@@ -3789,8 +3831,10 @@ describe("ChatMessageList - Scroll Behavior", () => {
         new Map(),
       );
 
-      expect(getNextStreamingTranscriptWindow(previous, live, false)).toBe(previous);
-      expect(getNextStreamingTranscriptWindow(previous, live, true)).toBe(live);
+      expect(previousRows).toHaveLength(45);
+      expect(liveRows).toHaveLength(80);
+      expect(liveRows[0]).toMatchObject({ kind: "text", text: "Latest live update 1" });
+      expect(liveRows.at(-1)).toMatchObject({ kind: "text", text: "Latest live update 80" });
     });
 
     it("keeps advancing live transcript blocks when still inside the bottom range", async () => {
