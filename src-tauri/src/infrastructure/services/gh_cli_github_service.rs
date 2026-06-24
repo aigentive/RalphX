@@ -20,10 +20,10 @@ use tracing::{debug, warn};
 
 use crate::domain::services::github_service::{
     GithubConnectionStatus, GithubServiceTrait, PrAnnotationSourceUnavailable, PrAutoMergeRequest,
-    PrBranchMatch, PrDiffAnnotation, PrDiffAnnotations, PrHealth, PrHealthCheck,
+    PrBranchMatch, PrDetail, PrDiffAnnotation, PrDiffAnnotations, PrHealth, PrHealthCheck,
     PrIssueCommentSummary, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
-    PrReviewFeedback, PrReviewSubmissionEvent, PrSearchResult, PrStatus, PrSubmittedReview,
-    PrSyncState,
+    PrReviewFeedback, PrReviewSubmissionEvent, PrReviewThread, PrReviewThreadComment,
+    PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
 };
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -404,6 +404,17 @@ fn build_pr_health_view_args(pr_number: i64) -> Vec<String> {
         pr_number.to_string(),
         "--json".to_string(),
         "state,mergeStateStatus,mergeable,isDraft,headRefName,baseRefName,headRefOid,baseRefOid,mergedAt,mergeCommit,reviewDecision,statusCheckRollup,autoMergeRequest".to_string(),
+    ]
+}
+
+fn build_pr_detail_view_args(pr_number: i64) -> Vec<String> {
+    vec![
+        "pr".to_string(),
+        "view".to_string(),
+        pr_number.to_string(),
+        "--json".to_string(),
+        "number,title,body,author,createdAt,url,state,isDraft,headRefName,baseRefName,mergeCommit"
+            .to_string(),
     ]
 }
 
@@ -892,6 +903,29 @@ impl GithubServiceTrait for GhCliGithubService {
                 .then(left.id.cmp(&right.id))
         });
         Ok(payload)
+    }
+
+    async fn fetch_pr_detail(&self, working_dir: &Path, pr_number: i64) -> AppResult<PrDetail> {
+        let stdout = self
+            .runner
+            .run_gh(working_dir, &build_pr_detail_view_args(pr_number))
+            .await?;
+        parse_pr_detail_output(pr_number, &stdout.join("\n"))
+    }
+
+    async fn fetch_pr_review_thread(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+    ) -> AppResult<PrReviewThread> {
+        // Reuses the same review-comments source as `fetch_pr_diff_annotations`,
+        // but returns the conversation thread directly (live, transient) so the
+        // detail view never triggers the opt-in check-run/code-scanning fan-out.
+        let stdout = self
+            .runner
+            .run_gh(working_dir, &build_pr_review_comments_api_args(pr_number))
+            .await?;
+        parse_pr_review_thread_output(pr_number, &stdout.join("\n"))
     }
 
     async fn submit_pr_review(
@@ -1439,6 +1473,48 @@ pub(crate) fn parse_pr_status_output(json_str: &str) -> AppResult<PrStatus> {
     }
 }
 
+/// Parse `gh pr view <n> --json title,body,author,...` into a [`PrDetail`].
+pub(crate) fn parse_pr_detail_output(pr_number: i64, json_str: &str) -> AppResult<PrDetail> {
+    let v: Value = serde_json::from_str(json_str).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh pr view detail JSON: {e}\nRaw: {json_str}"
+        ))
+    })?;
+
+    let context = "gh pr view detail";
+    let state = parse_pr_status_value(&v)?;
+    let head_ref_name = required_string(&v, "headRefName", context)?;
+    let base_ref_name = required_string(&v, "baseRefName", context)?;
+
+    Ok(PrDetail {
+        number: v.get("number").and_then(Value::as_i64).unwrap_or(pr_number),
+        title: v
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        body: v
+            .get("body")
+            .and_then(Value::as_str)
+            .filter(|body| !body.is_empty())
+            .map(str::to_string),
+        author: v
+            .get("author")
+            .and_then(|author| author.get("login"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        created_at: v
+            .get("createdAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        url: v.get("url").and_then(Value::as_str).map(str::to_string),
+        state,
+        is_draft: v.get("isDraft").and_then(Value::as_bool).unwrap_or(false),
+        head_ref_name,
+        base_ref_name,
+    })
+}
+
 pub(crate) fn parse_pr_sync_state_output(json_str: &str) -> AppResult<PrSyncState> {
     let v: Value = serde_json::from_str(json_str).map_err(|e| {
         AppError::Infrastructure(format!(
@@ -1896,6 +1972,75 @@ pub(crate) fn parse_pr_review_comment_annotations_output(
             }
         })
         .collect())
+}
+
+/// Parse the PR review-comments API payload into a live [`PrReviewThread`].
+///
+/// Shares the review-comments source with `parse_pr_review_comment_annotations_output`
+/// but preserves the conversation shape (author/body/reply linkage) rather than
+/// projecting onto diff annotations.
+pub(crate) fn parse_pr_review_thread_output(
+    pr_number: i64,
+    comments_json: &str,
+) -> AppResult<PrReviewThread> {
+    let comments_value: Value = serde_json::from_str(comments_json).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh review thread JSON: {e}\nRaw: {comments_json}"
+        ))
+    })?;
+    let comments = flatten_paginated_array(&comments_value).ok_or_else(|| {
+        AppError::Infrastructure(format!(
+            "gh review thread: expected JSON array/pages, got: {comments_json}"
+        ))
+    })?;
+
+    let comments = comments
+        .into_iter()
+        .map(|comment| {
+            let id = json_id_to_string(comment.get("id"))
+                .unwrap_or_else(|| format!("pr-{pr_number}-review-comment"));
+            let line = comment.get("line").and_then(Value::as_i64);
+            let original_line = comment.get("original_line").and_then(Value::as_i64);
+            PrReviewThreadComment {
+                id,
+                author: comment
+                    .get("user")
+                    .and_then(|user| user.get("login"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                body: comment
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                path: comment
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                side: comment
+                    .get("side")
+                    .and_then(Value::as_str)
+                    .or_else(|| comment.get("diff_side").and_then(Value::as_str))
+                    .map(|side| side.to_ascii_lowercase()),
+                line: line.or(original_line),
+                url: comment
+                    .get("html_url")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                created_at: comment
+                    .get("created_at")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                in_reply_to_id: json_id_to_string(comment.get("in_reply_to_id")),
+                is_outdated: line.is_none() && original_line.is_some(),
+            }
+        })
+        .collect();
+
+    Ok(PrReviewThread {
+        pr_number,
+        comments,
+    })
 }
 
 pub(crate) fn parse_check_runs_output(json_str: &str) -> AppResult<Vec<CheckRunAnnotationSource>> {

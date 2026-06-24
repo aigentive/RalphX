@@ -10,10 +10,11 @@ use crate::infrastructure::services::gh_cli_github_service::{
     parse_code_scanning_alert_annotations_output, parse_gh_auth_status_lines,
     parse_issue_create_plain_output,
     parse_pr_annotation_head_sha_output, parse_pr_create_output, parse_pr_create_plain_output,
-    parse_pr_health_output, parse_pr_review_comment_annotations_output,
-    parse_pr_review_decision_output, parse_pr_review_feedback_output, parse_pr_search_output,
-    parse_pr_status_output, parse_pr_sync_state_output, parse_submit_pr_review_output,
-    sanitize_stderr_line, scrub_token_urls, CheckRunAnnotationSource,
+    parse_pr_detail_output, parse_pr_health_output, parse_pr_review_comment_annotations_output,
+    parse_pr_review_decision_output, parse_pr_review_feedback_output,
+    parse_pr_review_thread_output, parse_pr_search_output, parse_pr_status_output,
+    parse_pr_sync_state_output, parse_submit_pr_review_output, sanitize_stderr_line,
+    scrub_token_urls, CheckRunAnnotationSource,
 };
 
 // ── parse_pr_create_output ─────────────────────────────────────────────────
@@ -176,6 +177,136 @@ fn parse_pr_status_unknown_state_errors() {
 fn parse_pr_status_missing_state_errors() {
     let json = r#"{"mergedAt": null}"#;
     let err = parse_pr_status_output(json).unwrap_err();
+    assert!(matches!(err, AppError::Infrastructure(_)));
+}
+
+// ── parse_pr_detail_output ─────────────────────────────────────────────────
+
+#[test]
+fn parse_pr_detail_extracts_description_fields() {
+    let json = r#"{
+        "number": 77,
+        "title": "Add GitHub PR visibility",
+        "body": "Surfaces PRs and attached RX conversations.",
+        "author": {"login": "adriandemian"},
+        "createdAt": "2026-06-24T08:00:00Z",
+        "url": "https://github.com/owner/repo/pull/77",
+        "state": "OPEN",
+        "isDraft": true,
+        "headRefName": "ralphx/feature",
+        "baseRefName": "main",
+        "mergeCommit": null
+    }"#;
+
+    let detail = parse_pr_detail_output(77, json).unwrap();
+
+    assert_eq!(detail.number, 77);
+    assert_eq!(detail.title, "Add GitHub PR visibility");
+    assert_eq!(
+        detail.body.as_deref(),
+        Some("Surfaces PRs and attached RX conversations.")
+    );
+    assert_eq!(detail.author.as_deref(), Some("adriandemian"));
+    assert_eq!(detail.created_at.as_deref(), Some("2026-06-24T08:00:00Z"));
+    assert_eq!(detail.state, PrStatus::Open);
+    assert!(detail.is_draft);
+    assert_eq!(detail.head_ref_name, "ralphx/feature");
+    assert_eq!(detail.base_ref_name, "main");
+}
+
+#[test]
+fn parse_pr_detail_maps_merged_state_with_commit() {
+    let json = r#"{
+        "number": 5,
+        "title": "Merged work",
+        "body": "",
+        "author": null,
+        "createdAt": null,
+        "url": null,
+        "state": "MERGED",
+        "isDraft": false,
+        "headRefName": "feature",
+        "baseRefName": "main",
+        "mergeCommit": {"oid": "abc123"}
+    }"#;
+
+    let detail = parse_pr_detail_output(5, json).unwrap();
+
+    assert_eq!(
+        detail.state,
+        PrStatus::Merged {
+            merge_commit_sha: Some("abc123".to_string())
+        }
+    );
+    // Empty body collapses to None; absent author stays None (never panics).
+    assert_eq!(detail.body, None);
+    assert_eq!(detail.author, None);
+}
+
+#[test]
+fn parse_pr_detail_missing_head_ref_errors() {
+    let json = r#"{"state": "OPEN", "baseRefName": "main"}"#;
+    let err = parse_pr_detail_output(1, json).unwrap_err();
+    assert!(matches!(err, AppError::Infrastructure(_)));
+}
+
+// ── parse_pr_review_thread_output ──────────────────────────────────────────
+
+#[test]
+fn parse_pr_review_thread_preserves_conversation_shape() {
+    let json = r#"[[
+        {
+            "id": 1001,
+            "user": {"login": "reviewer"},
+            "body": "Please rename this.",
+            "path": "src/lib.rs",
+            "side": "RIGHT",
+            "line": 42,
+            "html_url": "https://github.com/owner/repo/pull/7#discussion_r1001",
+            "created_at": "2026-06-24T09:00:00Z"
+        },
+        {
+            "id": 1002,
+            "user": {"login": "author"},
+            "body": "Done.",
+            "path": "src/lib.rs",
+            "original_line": 42,
+            "in_reply_to_id": 1001,
+            "created_at": "2026-06-24T09:05:00Z"
+        }
+    ]]"#;
+
+    let thread = parse_pr_review_thread_output(7, json).unwrap();
+
+    assert_eq!(thread.pr_number, 7);
+    assert_eq!(thread.comments.len(), 2);
+
+    let first = &thread.comments[0];
+    assert_eq!(first.id, "1001");
+    assert_eq!(first.author.as_deref(), Some("reviewer"));
+    assert_eq!(first.body, "Please rename this.");
+    assert_eq!(first.side.as_deref(), Some("right"));
+    assert_eq!(first.line, Some(42));
+    assert!(!first.is_outdated);
+    assert_eq!(first.in_reply_to_id, None);
+
+    let reply = &thread.comments[1];
+    assert_eq!(reply.in_reply_to_id.as_deref(), Some("1001"));
+    // Anchored only via original_line → outdated.
+    assert!(reply.is_outdated);
+    assert_eq!(reply.line, Some(42));
+}
+
+#[test]
+fn parse_pr_review_thread_empty_pages_yield_no_comments() {
+    let thread = parse_pr_review_thread_output(9, "[[]]").unwrap();
+    assert_eq!(thread.pr_number, 9);
+    assert!(thread.comments.is_empty());
+}
+
+#[test]
+fn parse_pr_review_thread_invalid_json_errors() {
+    let err = parse_pr_review_thread_output(9, "not json").unwrap_err();
     assert!(matches!(err, AppError::Infrastructure(_)));
 }
 
@@ -926,6 +1057,76 @@ mod mock_roundtrip {
 
         assert_eq!(status, GithubConnectionStatus::unavailable());
         assert!(!status.gh_installed);
+    }
+
+    #[tokio::test]
+    async fn fetch_pr_detail_issues_single_pr_view_and_parses_payload() {
+        let json = r#"{
+            "number": 77,
+            "title": "Add GitHub PR visibility",
+            "body": "Body text",
+            "author": {"login": "adriandemian"},
+            "createdAt": "2026-06-24T08:00:00Z",
+            "url": "https://github.com/owner/repo/pull/77",
+            "state": "OPEN",
+            "isDraft": false,
+            "headRefName": "ralphx/feature",
+            "baseRefName": "main",
+            "mergeCommit": null
+        }"#;
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            json.to_string()
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let detail = service
+            .fetch_pr_detail(Path::new("/tmp"), 77)
+            .await
+            .unwrap();
+
+        assert_eq!(detail.number, 77);
+        assert_eq!(detail.title, "Add GitHub PR visibility");
+        assert_eq!(detail.head_ref_name, "ralphx/feature");
+        assert_eq!(detail.base_ref_name, "main");
+
+        // Exactly one `gh pr view <n> --json …` call; no extra fan-out.
+        let calls = runner.gh_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(&calls[0][0..3], &["pr", "view", "77"]);
+    }
+
+    #[tokio::test]
+    async fn fetch_pr_review_thread_issues_single_comments_call() {
+        let json = r#"[[
+            {
+                "id": 1001,
+                "user": {"login": "reviewer"},
+                "body": "Nit.",
+                "path": "src/lib.rs",
+                "side": "RIGHT",
+                "line": 10,
+                "html_url": "https://github.com/owner/repo/pull/7#discussion_r1001",
+                "created_at": "2026-06-24T09:00:00Z"
+            }
+        ]]"#;
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            json.to_string()
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let thread = service
+            .fetch_pr_review_thread(Path::new("/tmp"), 7)
+            .await
+            .unwrap();
+
+        assert_eq!(thread.pr_number, 7);
+        assert_eq!(thread.comments.len(), 1);
+        assert_eq!(thread.comments[0].author.as_deref(), Some("reviewer"));
+
+        // Only the review-comments API is hit — no check-run/code-scanning fan-out.
+        let calls = runner.gh_calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].iter().any(|arg| arg.contains("/comments")));
     }
 
     #[tokio::test]

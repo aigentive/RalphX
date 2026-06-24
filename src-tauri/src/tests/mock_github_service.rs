@@ -8,8 +8,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::domain::services::github_service::{
-    GithubServiceTrait, PrBranchMatch, PrDiffAnnotations, PrHealth, PrReviewFeedback,
-    PrReviewSubmissionEvent, PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
+    GithubConnectionStatus, GithubServiceTrait, PrBranchMatch, PrDetail, PrDiffAnnotations,
+    PrHealth, PrReviewFeedback, PrReviewSubmissionEvent, PrReviewThread, PrSearchResult, PrStatus,
+    PrSubmittedReview, PrSyncState,
 };
 use crate::error::AppError;
 use crate::AppResult;
@@ -29,6 +30,9 @@ pub struct MockGithubState {
     pub check_pr_review_feedback_delay_ms: u64,
     pub fetch_pr_diff_annotations_result: Option<AppResult<PrDiffAnnotations>>,
     pub fetch_pr_diff_annotations_delay_ms: u64,
+    pub fetch_pr_detail_result: Option<AppResult<PrDetail>>,
+    pub fetch_pr_review_thread_result: Option<AppResult<PrReviewThread>>,
+    pub fetch_github_connection_status_result: Option<AppResult<GithubConnectionStatus>>,
     pub fetch_pr_health_result: Option<AppResult<PrHealth>>,
     pub enable_pr_auto_merge_result: Option<AppResult<()>>,
     pub disable_pr_auto_merge_result: Option<AppResult<()>>,
@@ -54,6 +58,9 @@ pub struct MockGithubState {
     pub active_check_pr_review_feedback_calls: u32,
     pub max_concurrent_check_pr_review_feedback_calls: u32,
     pub fetch_pr_diff_annotations_calls: u32,
+    pub fetch_pr_detail_calls: u32,
+    pub fetch_pr_review_thread_calls: u32,
+    pub fetch_github_connection_status_calls: u32,
     pub fetch_pr_health_calls: u32,
     pub enable_pr_auto_merge_calls: u32,
     pub disable_pr_auto_merge_calls: u32,
@@ -80,6 +87,8 @@ pub struct MockGithubState {
     pub last_check_pr_sync_state_number: Option<i64>,
     pub last_check_pr_review_feedback_number: Option<i64>,
     pub last_fetch_pr_diff_annotations_number: Option<i64>,
+    pub last_fetch_pr_detail_number: Option<i64>,
+    pub last_fetch_pr_review_thread_number: Option<i64>,
     pub last_fetch_pr_health_number: Option<i64>,
     pub last_enable_pr_auto_merge_args: Option<(i64, String)>,
     pub last_disable_pr_auto_merge_number: Option<i64>,
@@ -167,6 +176,48 @@ impl MockGithubService {
     #[allow(dead_code)]
     pub fn with_pr_diff_annotations_delay_ms(&self, delay_ms: u64) {
         self.state().fetch_pr_diff_annotations_delay_ms = delay_ms;
+    }
+
+    /// Shorthand: configure fetch_pr_detail to succeed with the given detail.
+    #[allow(dead_code)]
+    pub fn will_return_pr_detail(&self, detail: PrDetail) {
+        self.state().fetch_pr_detail_result = Some(Ok(detail));
+    }
+
+    /// Shorthand: configure fetch_pr_detail to fail with the given message.
+    #[allow(dead_code)]
+    pub fn will_fail_pr_detail(&self, msg: impl Into<String>) {
+        self.state().fetch_pr_detail_result = Some(Err(AppError::Infrastructure(msg.into())));
+    }
+
+    /// Shorthand: configure fetch_pr_review_thread to return the given thread.
+    #[allow(dead_code)]
+    pub fn will_return_pr_review_thread(&self, thread: PrReviewThread) {
+        self.state().fetch_pr_review_thread_result = Some(Ok(thread));
+    }
+
+    /// Shorthand: configure fetch_pr_review_thread to fail with the given message.
+    #[allow(dead_code)]
+    pub fn will_fail_pr_review_thread(&self, msg: impl Into<String>) {
+        self.state().fetch_pr_review_thread_result =
+            Some(Err(AppError::Infrastructure(msg.into())));
+    }
+
+    /// Shorthand: configure the gh connection status (auth gate).
+    #[allow(dead_code)]
+    pub fn will_return_connection_status(&self, status: GithubConnectionStatus) {
+        self.state().fetch_github_connection_status_result = Some(Ok(status));
+    }
+
+    /// Shorthand: report an authenticated gh session for the given host/account.
+    #[allow(dead_code)]
+    pub fn will_be_authenticated(&self, host: impl Into<String>, account: impl Into<String>) {
+        self.state().fetch_github_connection_status_result = Some(Ok(GithubConnectionStatus {
+            gh_installed: true,
+            authenticated: true,
+            host: Some(host.into()),
+            account: Some(account.into()),
+        }));
     }
 
     /// Shorthand: configure any method to fail with the given message (Infrastructure error).
@@ -373,6 +424,38 @@ impl GithubServiceTrait for MockGithubService {
         }
 
         result.unwrap_or_else(|| Ok(PrDiffAnnotations::empty(pr_number)))
+    }
+
+    async fn fetch_pr_detail(&self, _working_dir: &Path, pr_number: i64) -> AppResult<PrDetail> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.fetch_pr_detail_calls += 1;
+        s.last_fetch_pr_detail_number = Some(pr_number);
+        s.fetch_pr_detail_result.take().unwrap_or_else(|| {
+            Err(AppError::Infrastructure(
+                "MockGithubService::fetch_pr_detail not configured".to_string(),
+            ))
+        })
+    }
+
+    async fn fetch_pr_review_thread(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+    ) -> AppResult<PrReviewThread> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.fetch_pr_review_thread_calls += 1;
+        s.last_fetch_pr_review_thread_number = Some(pr_number);
+        s.fetch_pr_review_thread_result
+            .take()
+            .unwrap_or_else(|| Ok(PrReviewThread::empty(pr_number)))
+    }
+
+    async fn fetch_github_connection_status(&self) -> AppResult<GithubConnectionStatus> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.fetch_github_connection_status_calls += 1;
+        s.fetch_github_connection_status_result
+            .take()
+            .unwrap_or_else(|| Ok(GithubConnectionStatus::unavailable()))
     }
 
     async fn fetch_pr_health(&self, working_dir: &Path, pr_number: i64) -> AppResult<PrHealth> {
