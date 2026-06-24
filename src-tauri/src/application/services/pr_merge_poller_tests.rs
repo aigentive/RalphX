@@ -422,6 +422,56 @@ async fn agent_workspace_pr_conflict_marks_supervision_blocked_without_autofix()
 }
 
 #[tokio::test]
+async fn agent_workspace_pr_conflict_marker_clears_resolved_conflict_state() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "resolved-conflict-conversation",
+        "project-resolved-conflict",
+        worktree.path(),
+    );
+    workspace.pr_autofix_enabled = false;
+    workspace.pr_auto_merge_desired = false;
+    workspace.pr_supervision_status = Some("blocked".to_string());
+    workspace.pr_supervision_summary = Some(
+        "PR #101 has merge conflicts. GitHub reports: PR is reported as conflicting.".to_string(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let health = open_pr_health("resolved-head");
+    let marked = super::mark_agent_workspace_pr_merge_conflict_if_needed(
+        101,
+        &health,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+    )
+    .await
+    .expect("conflict marker should succeed");
+
+    assert!(marked);
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
+    assert_eq!(
+        updated.pr_supervision_summary.as_deref(),
+        Some("RalphX is monitoring PR health.")
+    );
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn agent_workspace_pr_conflict_auto_publish_routes_update_only_repair_once() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let mut workspace = supervised_workspace(
@@ -525,6 +575,51 @@ async fn agent_workspace_pr_conflict_auto_publish_routes_update_only_repair_once
     .expect("duplicate conflict repair routing should succeed");
     assert!(!duplicate);
     assert_eq!(chat.get_sent_messages().await.len(), 1);
+}
+
+#[tokio::test]
+async fn agent_workspace_pr_conflict_repair_waits_when_auto_publish_is_paused() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "conflicting-paused-repair-conversation",
+        "project-conflicting-paused-repair",
+        worktree.path(),
+    );
+    workspace.pr_autofix_enabled = false;
+    workspace.pr_auto_merge_desired = false;
+    workspace.auto_publish_enabled = false;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let mut health = open_pr_health("paused-conflict-head");
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Dirty);
+    health.sync_state.mergeable = Some(PrMergeableState::Conflicting);
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_pr_conflict_repair_if_needed(
+        101,
+        &health,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("paused conflict repair routing should succeed");
+
+    assert!(!routed);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
 }
 
 #[test]

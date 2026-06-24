@@ -1113,6 +1113,34 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
+  it("surfaces paused PR conflicts without Auto Publish waiting copy", async () => {
+    const conflictingWorkspace = workspace({
+      mode: "edit",
+      publicationPrNumber: 2857,
+      publicationPrUrl: "https://github.com/mock/project/pull/2857",
+      publicationPrStatus: "open",
+      publicationPushStatus: "pushed",
+      autoPublishEnabled: false,
+      prSupervisionStatus: "blocked",
+      prSupervisionSummary:
+        "PR #2857 has merge conflicts. GitHub reports the pull request is conflicting.",
+    });
+
+    renderPane("publish", conflictingWorkspace);
+
+    expect(await screen.findByTestId("agents-pr-conflict")).toHaveTextContent(
+      "PR #2857 has merge conflicts",
+    );
+    expect(
+      screen.getByText(
+        "This pull request has conflicts. Resolve conflicts to update the branch from base before publishing can continue.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Resolve conflicts" }),
+    ).toBeEnabled();
+  });
+
   it("surfaces git auth repair actions in the publish pane", () => {
     useGitAuthDiagnosticsMock.mockReturnValue({
       data: {
