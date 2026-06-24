@@ -11,9 +11,11 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import type { AgentProviderSettingsResponse } from "@/api/harness-providers";
+import type {
+  AgentProviderSettingsResponse,
+  UpdateAgentProviderSettingsInput,
+} from "@/api/harness-providers";
 import type { ManagedProviderCliStatusResponse } from "@/api/provider-cli-management";
-import type { UpdateAgentProviderSettingsInput } from "@/api/harness-providers";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
@@ -35,6 +37,10 @@ import {
   isAgentModelSelectableForProvider,
   type AgentProvider,
 } from "@/lib/agent-models";
+import {
+  providerCliUpdateToastId,
+  providerCliUpdateToastMatchesInstalledStatus,
+} from "@/lib/provider-cli-update-toast";
 
 import { ErrorBanner, SectionCard } from "./SettingsView.shared";
 
@@ -374,7 +380,12 @@ export function HarnessProvidersSection() {
     const toastId = `provider-cli-management:${provider.provider}`;
     toast.loading(`${actionVerb} ${label} CLI...`, { id: toastId });
     try {
-      await installOrUpdateProviderAsync({ provider: provider.provider });
+      const result = await installOrUpdateProviderAsync({
+        provider: provider.provider,
+      });
+      if (providerCliUpdateToastMatchesInstalledStatus(status, result.status)) {
+        toast.dismiss(providerCliUpdateToastId(provider.provider));
+      }
       toast.success(`${label} CLI is ready.`, { id: toastId });
       await Promise.all([refetchStatus(), refetchProviders()]);
     } catch (error) {
