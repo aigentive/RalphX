@@ -1449,7 +1449,7 @@ mod git_auth_command_tests {
             is_cross_repository: false,
         }]);
 
-        let state = AppState::new_test();
+        let mut state = AppState::new_test();
         state.github_service = Some(github.clone() as Arc<dyn GithubServiceTrait>);
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let mut project = Project::new(
@@ -1731,7 +1731,7 @@ mod git_auth_command_tests {
             .output()
             .expect("git remote add should run");
 
-        let mut state = AppState::new_test();
+        let state = AppState::new_test();
         let mut project = Project::new("Remote".to_string(), repo.to_string_lossy().to_string());
         project.id = ProjectId::from_string("project-remote-switch".to_string());
         state.project_repo.create(project).await.unwrap();
