@@ -533,6 +533,11 @@ describe("App", () => {
         position: "bottom-left",
       }),
     );
+    expect(toasterProps?.style).toEqual(
+      expect.objectContaining({
+        zIndex: 70,
+      }),
+    );
   });
 
   it("should display the primary navigation shell", () => {

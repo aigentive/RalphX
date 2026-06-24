@@ -646,11 +646,13 @@ input[data-agent-sidebar-search="true"]:focus-visible {
 .settings-layer__scrim {
   background-color: var(--dialog-overlay-bg) !important;
   backdrop-filter: none !important;
+  z-index: 80 !important;
 }
 
 .settings-modal {
   display: grid !important;
   grid-template-rows: 56px minmax(0, 1fr);
+  z-index: 81 !important;
   border-radius: 14px !important;
   background-color: var(--dialog-bg) !important;
   border-color: var(--dialog-border-color) !important;

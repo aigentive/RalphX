@@ -226,6 +226,14 @@ describe("SettingsDialog", () => {
       );
     });
 
+    it("renders the settings layer above global toasts", () => {
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+
+      expect(screen.getByTestId("modal-overlay")).toHaveClass("z-[80]");
+      expect(screen.getByTestId("settings-dialog")).toHaveClass("z-[81]");
+    });
+
     it("paints the settings shell before hydrating the active section", () => {
       uiState.activeModal = "settings";
       render(<SettingsDialog {...defaultProps} />);

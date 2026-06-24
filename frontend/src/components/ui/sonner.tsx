@@ -8,7 +8,7 @@ import {
 import { useTheme } from "next-themes"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 
-const Toaster = ({ ...props }: ToasterProps) => {
+const Toaster = ({ style, ...props }: ToasterProps) => {
   const { theme = "system" } = useTheme()
   const effectiveTheme: "light" | "dark" | "system" = theme === "light" || theme === "dark" || theme === "system" ? theme : "system"
 
@@ -30,6 +30,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--normal-text": "var(--popover-foreground)",
           "--normal-border": "var(--border)",
           "--border-radius": "var(--radius)",
+          zIndex: 70,
+          ...style,
         } as React.CSSProperties
       }
       {...props}
