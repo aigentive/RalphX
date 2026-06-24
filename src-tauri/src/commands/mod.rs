@@ -29,6 +29,7 @@ pub mod git_commands;
 pub mod granola_commands;
 #[cfg(test)]
 mod granola_commands_tests;
+pub mod github_commands;
 pub mod harness_provider_commands;
 pub mod health;
 pub mod ideation_commands;
@@ -339,3 +340,5 @@ pub use git_commands::{
     resolve_merge_conflict, retry_merge, ChangeGitModeInput, CommitInfoResponse,
     TaskCommitsResponse, TaskDiffStatsResponse,
 };
+// GitHub commands (PR visibility — connection status)
+pub use github_commands::{get_github_connection_status, GithubConnectionStatusResponse};

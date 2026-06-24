@@ -227,6 +227,35 @@ pub struct PrSubmittedReview {
     pub url: Option<String>,
 }
 
+/// Read-only reflection of the locally-authenticated `gh` CLI (`gh auth status`).
+///
+/// RalphX stores no GitHub token (Decision 1); this is a live status surface only.
+/// `gh` not-installed and `gh` unauthenticated are distinct, non-error states.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GithubConnectionStatus {
+    /// Whether the `gh` binary is installed (resolvable + spawnable).
+    pub gh_installed: bool,
+    /// Whether `gh auth status` reports an authenticated account.
+    pub authenticated: bool,
+    /// The authenticated host (e.g. `github.com`), if any.
+    pub host: Option<String>,
+    /// The active authenticated account login, if any.
+    pub account: Option<String>,
+}
+
+impl GithubConnectionStatus {
+    /// Typed "not available" status — used for `gh` not-installed/unauthenticated
+    /// and when the GitHub service is absent from `AppState`. Never an error.
+    pub fn unavailable() -> Self {
+        Self {
+            gh_installed: false,
+            authenticated: false,
+            host: None,
+            account: None,
+        }
+    }
+}
+
 /// Abstraction over GitHub operations (production: `gh` CLI, tests: mock)
 #[async_trait]
 pub trait GithubServiceTrait: Send + Sync {
@@ -377,6 +406,15 @@ pub trait GithubServiceTrait: Send + Sync {
         _head: &str,
     ) -> AppResult<Option<PrBranchMatch>> {
         Ok(None)
+    }
+
+    /// Reflect the locally-authenticated `gh` CLI via `gh auth status`.
+    ///
+    /// Returns a typed status (never an error) distinguishing gh not-installed,
+    /// gh unauthenticated, and authenticated (+ host/account). The default body
+    /// reports "unavailable" so non-`gh` doubles need no override.
+    async fn fetch_github_connection_status(&self) -> AppResult<GithubConnectionStatus> {
+        Ok(GithubConnectionStatus::unavailable())
     }
 }
 

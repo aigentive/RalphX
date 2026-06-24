@@ -19,10 +19,11 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, warn};
 
 use crate::domain::services::github_service::{
-    GithubServiceTrait, PrAnnotationSourceUnavailable, PrAutoMergeRequest, PrBranchMatch,
-    PrDiffAnnotation, PrDiffAnnotations, PrHealth, PrHealthCheck, PrIssueCommentSummary,
-    PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback, PrReviewFeedback,
-    PrReviewSubmissionEvent, PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
+    GithubConnectionStatus, GithubServiceTrait, PrAnnotationSourceUnavailable, PrAutoMergeRequest,
+    PrBranchMatch, PrDiffAnnotation, PrDiffAnnotations, PrHealth, PrHealthCheck,
+    PrIssueCommentSummary, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
+    PrReviewFeedback, PrReviewSubmissionEvent, PrSearchResult, PrStatus, PrSubmittedReview,
+    PrSyncState,
 };
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -54,10 +55,24 @@ pub(crate) const DUPLICATE_PR_FRAGMENTS: [&str; 3] = [
     "already a pull request",
 ];
 
+/// Raw outcome of invoking `gh auth status`, before parsing into a typed status.
+///
+/// Captures whether the binary spawned (installed) and the combined output lines
+/// (stdout + sanitized stderr) used to parse host/account. A non-zero exit is
+/// expected when unauthenticated and is NOT an error here.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GhAuthStatusRaw {
+    pub gh_installed: bool,
+    pub output_lines: Vec<String>,
+}
+
 #[async_trait]
 pub(crate) trait GhCliCommandRunner: Send + Sync {
     async fn run_gh(&self, working_dir: &Path, args: &[String]) -> AppResult<Vec<String>>;
     async fn run_git(&self, working_dir: &Path, args: &[String]) -> AppResult<()>;
+    /// Invoke `gh auth status`, capturing installed-state + combined output.
+    /// Never errors on a non-zero exit (unauthenticated `gh` exits non-zero).
+    async fn run_gh_auth_status(&self) -> GhAuthStatusRaw;
 }
 
 struct RealGhCliCommandRunner;
@@ -70,6 +85,10 @@ impl GhCliCommandRunner for RealGhCliCommandRunner {
 
     async fn run_git(&self, working_dir: &Path, args: &[String]) -> AppResult<()> {
         GhCliGithubService::run_git_process(working_dir, args).await
+    }
+
+    async fn run_gh_auth_status(&self) -> GhAuthStatusRaw {
+        GhCliGithubService::run_gh_auth_status_process().await
     }
 }
 
@@ -241,6 +260,52 @@ impl GhCliGithubService {
         }
 
         Ok(())
+    }
+
+    /// Invoke `gh auth status`, capturing installed-state + combined output.
+    ///
+    /// `gh auth status` exits non-zero when unauthenticated, so a non-zero exit
+    /// is NOT treated as an error here — only a spawn failure (binary missing/not
+    /// executable) marks `gh` as not-installed. Output is gathered from both
+    /// stdout and stderr because `gh` has historically emitted the status block
+    /// on either stream. No `current_dir` override is set: `gh auth status` is
+    /// global and we avoid feeding any caller-derived path into the launch sink.
+    async fn run_gh_auth_status_process() -> GhAuthStatusRaw {
+        let spawn_result = tokio::process::Command::new(resolve_gh_cli_path())
+            .args(["auth", "status"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn();
+
+        let mut child = match spawn_result {
+            Ok(child) => child,
+            // Binary missing / not executable → gh not installed.
+            Err(_) => return GhAuthStatusRaw::default(),
+        };
+
+        let collected = timeout(SUBPROCESS_TIMEOUT, async {
+            let (stdout, stderr) = Self::collect_output(&mut child).await?;
+            let _ = child.wait().await;
+            Ok::<_, AppError>((stdout, stderr))
+        })
+        .await;
+
+        match collected {
+            Ok(Ok((mut stdout, mut stderr))) => {
+                stdout.append(&mut stderr);
+                GhAuthStatusRaw {
+                    gh_installed: true,
+                    output_lines: stdout,
+                }
+            }
+            // Timed out or pipe error: the binary spawned (installed) but no
+            // parseable output is available.
+            _ => GhAuthStatusRaw {
+                gh_installed: true,
+                output_lines: Vec::new(),
+            },
+        }
     }
 }
 
@@ -1060,9 +1125,77 @@ impl GithubServiceTrait for GhCliGithubService {
         let json_str = stdout.join("\n");
         parse_pr_branch_match_output(&json_str, head)
     }
+
+    async fn fetch_github_connection_status(&self) -> AppResult<GithubConnectionStatus> {
+        let raw = self.runner.run_gh_auth_status().await;
+        if !raw.gh_installed {
+            return Ok(GithubConnectionStatus::unavailable());
+        }
+        let (authenticated, host, account) = parse_gh_auth_status_lines(&raw.output_lines);
+        Ok(GithubConnectionStatus {
+            gh_installed: true,
+            authenticated,
+            host,
+            account,
+        })
+    }
 }
 
 // ── Output parsers ────────────────────────────────────────────────────────────
+
+/// Parse `gh auth status` output lines into `(authenticated, host, account)`.
+///
+/// Prefers the account block marked `Active account: true`; falls back to the
+/// first authenticated block (older `gh` has no active-account marker). Token
+/// lines are ignored — only the `Logged in to <host> account <account>` lines
+/// carry the host/account we surface.
+pub(crate) fn parse_gh_auth_status_lines(
+    lines: &[String],
+) -> (bool, Option<String>, Option<String>) {
+    let mut entries: Vec<(String, String)> = Vec::new();
+    let mut active_index: Option<usize> = None;
+
+    for line in lines {
+        if let Some((host, account)) = parse_logged_in_line(line) {
+            entries.push((host, account));
+        } else if is_active_account_true(line) {
+            if let Some(last) = entries.len().checked_sub(1) {
+                active_index = Some(last);
+            }
+        }
+    }
+
+    let Some((host, account)) = active_index
+        .or(if entries.is_empty() { None } else { Some(0) })
+        .map(|index| entries[index].clone())
+    else {
+        return (false, None, None);
+    };
+
+    (true, Some(host), Some(account))
+}
+
+/// Extract `(host, account)` from a `✓ Logged in to <host> account <account> (...)` line.
+fn parse_logged_in_line(line: &str) -> Option<(String, String)> {
+    const LOGGED_IN: &str = "Logged in to ";
+    const ACCOUNT: &str = " account ";
+    let start = line.find(LOGGED_IN)?;
+    let rest = &line[start + LOGGED_IN.len()..];
+    let account_at = rest.find(ACCOUNT)?;
+    let host = rest[..account_at].trim().to_string();
+    let after = rest[account_at + ACCOUNT.len()..].trim();
+    let account = after.split_whitespace().next()?.to_string();
+    if host.is_empty() || account.is_empty() {
+        return None;
+    }
+    Some((host, account))
+}
+
+/// True for the `- Active account: true` marker line.
+fn is_active_account_true(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("active account:") && lower.contains("true")
+}
 
 #[cfg(test)]
 pub(crate) fn parse_pr_create_output(json_str: &str) -> AppResult<(i64, String)> {

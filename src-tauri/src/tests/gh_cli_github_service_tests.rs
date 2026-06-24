@@ -7,7 +7,8 @@ use crate::domain::services::github_service::{PrMergeStateStatus, PrMergeableSta
 use crate::error::AppError;
 use crate::infrastructure::services::gh_cli_github_service::{
     parse_check_run_annotations_output, parse_check_runs_output,
-    parse_code_scanning_alert_annotations_output, parse_issue_create_plain_output,
+    parse_code_scanning_alert_annotations_output, parse_gh_auth_status_lines,
+    parse_issue_create_plain_output,
     parse_pr_annotation_head_sha_output, parse_pr_create_output, parse_pr_create_plain_output,
     parse_pr_health_output, parse_pr_review_comment_annotations_output,
     parse_pr_review_decision_output, parse_pr_review_feedback_output, parse_pr_search_output,
@@ -741,6 +742,53 @@ fn scrub_token_urls_no_mutation_on_plain_text() {
     assert_eq!(result, s);
 }
 
+// ── parse_gh_auth_status_lines ─────────────────────────────────────────────
+
+#[test]
+fn parse_gh_auth_status_picks_active_account_among_multiple() {
+    let lines = vec![
+        "github.com".to_string(),
+        "  ✓ Logged in to github.com account first (keyring)".to_string(),
+        "  - Active account: false".to_string(),
+        "  - Token: gho_************".to_string(),
+        "  ✓ Logged in to github.com account second (keyring)".to_string(),
+        "  - Active account: true".to_string(),
+    ];
+    let (authenticated, host, account) = parse_gh_auth_status_lines(&lines);
+    assert!(authenticated);
+    assert_eq!(host.as_deref(), Some("github.com"));
+    assert_eq!(account.as_deref(), Some("second"));
+}
+
+#[test]
+fn parse_gh_auth_status_falls_back_to_first_without_active_marker() {
+    let lines =
+        vec!["  ✓ Logged in to github.example.com account solo (keyring)".to_string()];
+    let (authenticated, host, account) = parse_gh_auth_status_lines(&lines);
+    assert!(authenticated);
+    assert_eq!(host.as_deref(), Some("github.example.com"));
+    assert_eq!(account.as_deref(), Some("solo"));
+}
+
+#[test]
+fn parse_gh_auth_status_unauthenticated_returns_none() {
+    let lines = vec![
+        "You are not logged into any GitHub hosts. Run gh auth login to authenticate.".to_string(),
+    ];
+    let (authenticated, host, account) = parse_gh_auth_status_lines(&lines);
+    assert!(!authenticated);
+    assert!(host.is_none());
+    assert!(account.is_none());
+}
+
+#[test]
+fn parse_gh_auth_status_empty_returns_none() {
+    let (authenticated, host, account) = parse_gh_auth_status_lines(&[]);
+    assert!(!authenticated);
+    assert!(host.is_none());
+    assert!(account.is_none());
+}
+
 // ── MockGithubService round-trip ───────────────────────────────────────────
 
 mod mock_roundtrip {
@@ -750,11 +798,12 @@ mod mock_roundtrip {
     use async_trait::async_trait;
 
     use crate::domain::services::github_service::{
-        GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrReviewSubmissionEvent, PrStatus,
+        GithubConnectionStatus, GithubServiceTrait, PrMergeStateStatus, PrMergeableState,
+        PrReviewSubmissionEvent, PrStatus,
     };
     use crate::error::AppError;
     use crate::infrastructure::services::gh_cli_github_service::{
-        GhCliCommandRunner, GhCliGithubService,
+        GhAuthStatusRaw, GhCliCommandRunner, GhCliGithubService,
     };
     use crate::tests::mock_github_service::MockGithubService;
     use crate::AppResult;
@@ -764,14 +813,22 @@ mod mock_roundtrip {
         gh_results: Mutex<Vec<AppResult<Vec<String>>>>,
         gh_calls: Mutex<Vec<Vec<String>>>,
         git_calls: Mutex<Vec<Vec<String>>>,
+        auth_status: Mutex<Option<GhAuthStatusRaw>>,
+        auth_status_calls: Mutex<u32>,
     }
 
     impl MockGhCliRunner {
         fn with_gh_results(results: Vec<AppResult<Vec<String>>>) -> Self {
             Self {
                 gh_results: Mutex::new(results),
-                gh_calls: Mutex::new(Vec::new()),
-                git_calls: Mutex::new(Vec::new()),
+                ..Default::default()
+            }
+        }
+
+        fn with_auth_status(raw: GhAuthStatusRaw) -> Self {
+            Self {
+                auth_status: Mutex::new(Some(raw)),
+                ..Default::default()
             }
         }
 
@@ -797,6 +854,78 @@ mod mock_roundtrip {
             self.git_calls.lock().unwrap().push(args.to_vec());
             Ok(())
         }
+
+        async fn run_gh_auth_status(&self) -> GhAuthStatusRaw {
+            *self.auth_status_calls.lock().unwrap() += 1;
+            self.auth_status.lock().unwrap().clone().unwrap_or_default()
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_github_connection_status_installed_authenticated() {
+        let runner = Arc::new(MockGhCliRunner::with_auth_status(GhAuthStatusRaw {
+            gh_installed: true,
+            output_lines: vec![
+                "github.com".to_string(),
+                "  ✓ Logged in to github.com account adriandemian (keyring)".to_string(),
+                "  - Active account: true".to_string(),
+                "  - Token: gho_************".to_string(),
+                "  ✓ Logged in to github.com account otheruser (keyring)".to_string(),
+                "  - Active account: false".to_string(),
+            ],
+        }));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let status = service.fetch_github_connection_status().await.unwrap();
+
+        assert_eq!(
+            status,
+            GithubConnectionStatus {
+                gh_installed: true,
+                authenticated: true,
+                host: Some("github.com".to_string()),
+                account: Some("adriandemian".to_string()),
+            }
+        );
+        assert_eq!(*runner.auth_status_calls.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn fetch_github_connection_status_installed_unauthenticated() {
+        let runner = Arc::new(MockGhCliRunner::with_auth_status(GhAuthStatusRaw {
+            gh_installed: true,
+            output_lines: vec![
+                "You are not logged into any GitHub hosts. Run gh auth login to authenticate."
+                    .to_string(),
+            ],
+        }));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let status = service.fetch_github_connection_status().await.unwrap();
+
+        assert_eq!(
+            status,
+            GithubConnectionStatus {
+                gh_installed: true,
+                authenticated: false,
+                host: None,
+                account: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_github_connection_status_missing_binary() {
+        let runner = Arc::new(MockGhCliRunner::with_auth_status(GhAuthStatusRaw {
+            gh_installed: false,
+            output_lines: Vec::new(),
+        }));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let status = service.fetch_github_connection_status().await.unwrap();
+
+        assert_eq!(status, GithubConnectionStatus::unavailable());
+        assert!(!status.gh_installed);
     }
 
     #[tokio::test]
