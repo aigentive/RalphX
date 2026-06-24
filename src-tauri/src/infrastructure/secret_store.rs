@@ -1,8 +1,10 @@
 #[cfg(target_os = "macos")]
 use security_framework::base::Error as KeychainError;
 
+#[cfg(target_os = "macos")]
 use crate::domain::services::{SecretStore, SecretStoreError};
 
+#[cfg(target_os = "macos")]
 const RALPHX_KEYCHAIN_SERVICE: &str = "com.ralphx.app";
 
 #[cfg(target_os = "macos")]
