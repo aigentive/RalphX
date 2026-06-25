@@ -318,6 +318,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     queryFn: () => chatApi.getAgentWorkspaceReviewContext(conversationId!),
     enabled: shouldLoadWorkspaceReviewContext,
     staleTime: 5_000,
+    refetchInterval: (query) =>
+      query.state.data?.monitor.status === "reviewing" ? 2_000 : false,
   });
   const workspaceReviewContext = workspaceReviewContextQuery.data ?? null;
   const workspaceReviewArtifactId =
