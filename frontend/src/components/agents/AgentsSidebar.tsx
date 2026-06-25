@@ -283,6 +283,7 @@ function ScrollableAgentSessionList<T>({
   const [measuredRowHeight, setMeasuredRowHeight] = useState<number | null>(null);
   const underflowFetchKeyRef = useRef<string | null>(null);
   const nextPageRequestRowCountRef = useRef<number | null>(null);
+  const nextPageRequestIdRef = useRef(0);
   const rowCount = rows.length;
   const rowHeight =
     measuredRowHeight ?? AGENTS_SIDEBAR_FALLBACK_SESSION_ROW_PX;
@@ -418,12 +419,23 @@ function ScrollableAgentSessionList<T>({
     if (nextPageRequestRowCountRef.current === rowCount) {
       return;
     }
+    const requestId = nextPageRequestIdRef.current + 1;
+    nextPageRequestIdRef.current = requestId;
     nextPageRequestRowCountRef.current = rowCount;
-    void Promise.resolve(fetchNextPage()).catch(() => {
-      if (nextPageRequestRowCountRef.current === rowCount) {
+    const clearRequestIfStillCurrent = () => {
+      if (
+        nextPageRequestIdRef.current === requestId &&
+        nextPageRequestRowCountRef.current === rowCount &&
+        latestRowCountRef.current <= rowCount
+      ) {
         nextPageRequestRowCountRef.current = null;
       }
-    });
+    };
+    void Promise.resolve(fetchNextPage())
+      .catch(clearRequestIfStillCurrent)
+      .finally(() => {
+        afterSidebarControlPaint(clearRequestIfStillCurrent);
+      });
   }, [fetchNextPage, hasNextPage, isFetchingNextPage, rowCount]);
   const fetchNextPageFromScrollPosition = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -446,9 +458,16 @@ function ScrollableAgentSessionList<T>({
       nextPageRequestRowCountRef.current !== null &&
       rowCount > nextPageRequestRowCountRef.current
     ) {
+      nextPageRequestIdRef.current += 1;
       nextPageRequestRowCountRef.current = null;
     }
   }, [rowCount]);
+
+  useEffect(() => {
+    nextPageRequestIdRef.current += 1;
+    nextPageRequestRowCountRef.current = null;
+    underflowFetchKeyRef.current = null;
+  }, [scrollKey]);
 
   const handleScrollerRef = useCallback((node: HTMLElement | Window | null) => {
     const element = node instanceof HTMLElement ? node : null;
