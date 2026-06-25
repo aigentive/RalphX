@@ -80,7 +80,7 @@ interface ProviderErrorPausedEvent {
  * }
  * ```
  */
-export function useExecutionEvents() {
+export function useExecutionEvents(projectIdOverride?: string | null) {
   const bus = useEventBus();
   const setExecutionStatus = useUiStore((state) => state.setExecutionStatus);
   const setExecutionQueuedCount = useUiStore(
@@ -105,7 +105,7 @@ export function useExecutionEvents() {
         } = payload;
 
         // Phase 82: Only update if event is for the active project (or unscoped)
-        const activeProjectId = useProjectStore.getState().activeProjectId;
+        const activeProjectId = projectIdOverride ?? useProjectStore.getState().activeProjectId;
         if (projectId && activeProjectId && projectId !== activeProjectId) {
           // Event is for a different project - ignore
           return;
@@ -138,7 +138,7 @@ export function useExecutionEvents() {
         const { queuedCount, queuedMessageCount, projectId } = payload;
 
         // Phase 82: Only update if event is for the active project (or unscoped)
-        const activeProjectId = useProjectStore.getState().activeProjectId;
+        const activeProjectId = projectIdOverride ?? useProjectStore.getState().activeProjectId;
         if (projectId && activeProjectId && projectId !== activeProjectId) {
           // Event is for a different project - ignore
           return;
@@ -190,5 +190,5 @@ export function useExecutionEvents() {
     return () => {
       unsubscribes.forEach((unsub) => unsub());
     };
-  }, [bus, setExecutionStatus, setExecutionQueuedCount, updateTask]);
+  }, [bus, projectIdOverride, setExecutionStatus, setExecutionQueuedCount, updateTask]);
 }

@@ -16,6 +16,7 @@ import type { MergePipelineTask } from "@/api/merge-pipeline";
 import { ActiveMergeCard } from "./ActiveMergeCard";
 import { WaitingMergeCard } from "./WaitingMergeCard";
 import { AttentionMergeCard } from "./AttentionMergeCard";
+import { shouldPreserveExecutionPopoverForTarget } from "./executionPopoverDismissal";
 import { api } from "@/lib/tauri";
 import { useUiStore } from "@/stores/uiStore";
 import { cn } from "@/lib/utils";
@@ -34,6 +35,10 @@ interface MergePipelinePopoverProps {
   children: React.ReactNode;
   /** Optional horizontal alignment offset for popover content */
   alignOffset?: number;
+  /** Optional controlled open state */
+  open?: boolean;
+  /** Optional controlled open-state handler */
+  onOpenChange?: (open: boolean) => void;
 }
 
 interface SectionHeaderProps {
@@ -82,8 +87,12 @@ export function MergePipelinePopover({
   runningCount,
   children,
   alignOffset = -24,
+  open,
+  onOpenChange,
 }: MergePipelinePopoverProps) {
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const popoverOpen = open ?? uncontrolledOpen;
+  const handleOpenChange = onOpenChange ?? setUncontrolledOpen;
   const [sections, setSections] = useState({
     active: true,
     waiting: true,
@@ -101,7 +110,7 @@ export function MergePipelinePopover({
   };
 
   const handleViewDetails = (taskId: string) => {
-    setOpen(false);
+    handleOpenChange(false);
     navigateToTask(taskId);
   };
 
@@ -120,7 +129,7 @@ export function MergePipelinePopover({
   const total = active.length + waiting.length + needsAttention.length;
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={popoverOpen} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         {children}
       </PopoverTrigger>
@@ -136,6 +145,11 @@ export function MergePipelinePopover({
           borderRadius: "10px",
           boxShadow:
             "0 4px 16px var(--overlay-scrim), 0 12px 32px var(--overlay-scrim)",
+        }}
+        onInteractOutside={(event) => {
+          if (shouldPreserveExecutionPopoverForTarget(event.target)) {
+            event.preventDefault();
+          }
         }}
       >
         {/* Header */}

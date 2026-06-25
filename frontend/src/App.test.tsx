@@ -1655,6 +1655,31 @@ describe("App", () => {
       );
     });
 
+    it("scopes Agents footer execution data to the selected agent conversation project", () => {
+      useProjectStore.setState({ activeProjectId: "active-project" });
+      useAgentSessionStore.setState({
+        selectedConversationId: "conversation-2",
+        selectedProjectId: "agent-project-2",
+        focusedProjectId: "agent-project-2",
+      });
+
+      render(<App />);
+
+      expect(vi.mocked(useExecutionEvents)).toHaveBeenCalledWith("agent-project-2");
+      expect(vi.mocked(useExecutionStatus)).toHaveBeenCalledWith(
+        "agent-project-2",
+        expect.objectContaining({ enabled: true })
+      );
+      expect(vi.mocked(useRunningProcesses)).toHaveBeenCalledWith(
+        "agent-project-2",
+        expect.objectContaining({ enabled: true })
+      );
+      expect(vi.mocked(useMergePipeline)).toHaveBeenCalledWith(
+        "agent-project-2",
+        expect.objectContaining({ enabled: true })
+      );
+    });
+
     it("hydrates footer-only execution data when the execution footer is visible", () => {
       useProjectStore.setState({ activeProjectId: "test-project-123" });
       useUiStore.setState({ currentView: "kanban" });

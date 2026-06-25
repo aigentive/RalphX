@@ -129,6 +129,9 @@ impl GlobalExecutionSettingsRepository for MemoryGlobalExecutionSettingsReposito
             global_max_concurrent: new_settings
                 .global_max_concurrent
                 .min(GLOBAL_MAX_CONCURRENT_LIMIT),
+            workspace_max_concurrent: new_settings
+                .workspace_max_concurrent
+                .min(GLOBAL_MAX_CONCURRENT_LIMIT),
             global_ideation_max: new_settings
                 .global_ideation_max
                 .min(GLOBAL_MAX_CONCURRENT_LIMIT),

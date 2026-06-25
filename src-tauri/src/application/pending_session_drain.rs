@@ -14,11 +14,14 @@ use crate::application::chat_service::{
     uses_execution_slot, ChatService, SendCallerContext, SendMessageOptions,
 };
 use crate::commands::ExecutionState;
-use crate::domain::entities::{ChatContextType, IdeationSessionId, ProjectId, TaskId};
-use crate::domain::repositories::{
-    ExecutionSettingsRepository, IdeationSessionRepository, TaskRepository,
+use crate::domain::entities::{
+    ChatContextType, IdeationSessionId, InternalStatus, ProjectId, TaskId,
 };
-use crate::domain::services::RunningAgentRegistry;
+use crate::domain::repositories::{
+    ChatConversationRepository, ExecutionSettingsRepository, IdeationSessionRepository,
+    ProjectRepository, TaskRepository,
+};
+use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 
 /// Drains deferred pending ideation sessions for a project when capacity frees up.
 ///
@@ -31,28 +34,37 @@ use crate::domain::services::RunningAgentRegistry;
 /// 4. Continue loop for additional pending sessions.
 pub struct PendingSessionDrainService {
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
     task_repo: Arc<dyn TaskRepository>,
+    conversation_repo: Arc<dyn ChatConversationRepository>,
     execution_settings_repo: Arc<dyn ExecutionSettingsRepository>,
     execution_state: Arc<ExecutionState>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
+    message_queue: Arc<MessageQueue>,
     chat_service: Arc<dyn ChatService>,
 }
 
 impl PendingSessionDrainService {
     pub fn new(
         ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+        project_repo: Arc<dyn ProjectRepository>,
         task_repo: Arc<dyn TaskRepository>,
+        conversation_repo: Arc<dyn ChatConversationRepository>,
         execution_settings_repo: Arc<dyn ExecutionSettingsRepository>,
         execution_state: Arc<ExecutionState>,
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
+        message_queue: Arc<MessageQueue>,
         chat_service: Arc<dyn ChatService>,
     ) -> Self {
         Self {
             ideation_session_repo,
+            project_repo,
             task_repo,
+            conversation_repo,
             execution_settings_repo,
             execution_state,
             running_agent_registry,
+            message_queue,
             chat_service,
         }
     }
@@ -105,25 +117,26 @@ impl PendingSessionDrainService {
             let running_global_ideation = self.count_global_ideation_slots().await;
             let running_project_ideation = self.count_project_ideation_slots(project_id).await;
             let running_project_total = self.count_project_total_slots(project_id).await;
+            let global_execution_waiting = self.has_runnable_execution_waiting(None).await;
+            let project_execution_waiting =
+                self.has_runnable_execution_waiting(Some(&pid_typed)).await;
 
-            // execution_waiting: conservative approximation — we don't track the message
-            // queue here. Passing false means we may borrow an idle execution slot for
-            // ideation, consistent with the borrow-idle-execution setting. The global
-            // and per-project ideation limits are the primary guards.
             if !self.execution_state.can_start_ideation(
                 running_global_ideation,
                 running_project_ideation,
                 running_project_total,
                 project_settings.max_concurrent_tasks,
                 project_settings.project_ideation_max,
-                false, // global_execution_waiting (conservative)
-                false, // project_execution_waiting (conservative)
+                global_execution_waiting,
+                project_execution_waiting,
             ) {
                 tracing::debug!(
                     project_id = %project_id,
                     session_id = %session_id,
                     running_global_ideation,
                     running_project_ideation,
+                    global_execution_waiting,
+                    project_execution_waiting,
                     "PendingSessionDrainService: no capacity, re-persisting prompt"
                 );
                 self.restore_prompt(&session_id, &prompt).await;
@@ -264,5 +277,63 @@ impl PendingSessionDrainService {
             }
         }
         count
+    }
+
+    async fn has_runnable_execution_waiting(&self, project_filter: Option<&ProjectId>) -> bool {
+        if let Some(project_id) = project_filter {
+            if matches!(
+                self.task_repo.get_by_project(project_id).await,
+                Ok(tasks) if tasks
+                    .iter()
+                    .any(|task| task.internal_status == InternalStatus::Ready)
+            ) {
+                return true;
+            }
+        } else if let Ok(projects) = self.project_repo.get_all().await {
+            for project in projects {
+                if matches!(
+                    self.task_repo.get_by_project(&project.id).await,
+                    Ok(tasks) if tasks
+                        .iter()
+                        .any(|task| task.internal_status == InternalStatus::Ready)
+                ) {
+                    return true;
+                }
+            }
+        }
+
+        for key in self.message_queue.list_keys() {
+            match key.context_type {
+                ChatContextType::Project => {
+                    if matches!(
+                        crate::application::workspace_capacity::queue_key_matches_workspace_project(
+                            &key,
+                            project_filter,
+                            &self.project_repo,
+                            &self.conversation_repo,
+                        )
+                        .await,
+                        Ok(true)
+                    ) {
+                        return true;
+                    }
+                }
+                ChatContextType::TaskExecution
+                | ChatContextType::Review
+                | ChatContextType::Merge => {
+                    let task_id = TaskId::from_string(key.context_id.clone());
+                    if matches!(
+                        self.task_repo.get_by_id(&task_id).await,
+                        Ok(Some(task)) if project_filter
+                            .is_none_or(|project_id| task.project_id == *project_id)
+                    ) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        false
     }
 }

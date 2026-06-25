@@ -33,6 +33,7 @@ export default function GlobalExecutionSection() {
         setError(err instanceof Error ? err.message : "Failed to load global settings");
         setGlobalSettings({
           globalMaxConcurrent: 20,
+          workspaceMaxConcurrent: 10,
           globalIdeationMax: 10,
           allowIdeationBorrowIdleExecution: false,
         });
@@ -76,6 +77,21 @@ export default function GlobalExecutionSection() {
     setGlobalSettings((prev) => {
       const nextSettings = {
         globalMaxConcurrent: value,
+        workspaceMaxConcurrent: prev?.workspaceMaxConcurrent ?? 10,
+        globalIdeationMax: prev?.globalIdeationMax ?? 10,
+        allowIdeationBorrowIdleExecution:
+          prev?.allowIdeationBorrowIdleExecution ?? false,
+      };
+      scheduleSave(nextSettings);
+      return nextSettings;
+    });
+  }, [scheduleSave]);
+
+  const handleWorkspaceMaxChange = useCallback((value: number) => {
+    setGlobalSettings((prev) => {
+      const nextSettings = {
+        globalMaxConcurrent: prev?.globalMaxConcurrent ?? 20,
+        workspaceMaxConcurrent: value,
         globalIdeationMax: prev?.globalIdeationMax ?? 10,
         allowIdeationBorrowIdleExecution:
           prev?.allowIdeationBorrowIdleExecution ?? false,
@@ -89,6 +105,7 @@ export default function GlobalExecutionSection() {
     setGlobalSettings((prev) => {
       const nextSettings = {
         globalMaxConcurrent: prev?.globalMaxConcurrent ?? 20,
+        workspaceMaxConcurrent: prev?.workspaceMaxConcurrent ?? 10,
         globalIdeationMax: value,
         allowIdeationBorrowIdleExecution:
           prev?.allowIdeationBorrowIdleExecution ?? false,
@@ -102,6 +119,7 @@ export default function GlobalExecutionSection() {
     setGlobalSettings((prev) => {
       const nextSettings = {
         globalMaxConcurrent: prev?.globalMaxConcurrent ?? 20,
+        workspaceMaxConcurrent: prev?.workspaceMaxConcurrent ?? 10,
         globalIdeationMax: prev?.globalIdeationMax ?? 10,
         allowIdeationBorrowIdleExecution:
           !(prev?.allowIdeationBorrowIdleExecution ?? false),
@@ -149,6 +167,18 @@ export default function GlobalExecutionSection() {
         onChange={handleGlobalMaxChange}
       />
       <NumberSettingRow
+        id="workspace-max-concurrent"
+        label="Workspace Main Agent Cap"
+        description="Maximum concurrent workspace conversations across all projects (1-50)"
+        value={globalSettings?.workspaceMaxConcurrent ?? 10}
+        min={1}
+        max={50}
+        step={1}
+        unit=""
+        disabled={isSaving}
+        onChange={handleWorkspaceMaxChange}
+      />
+      <NumberSettingRow
         id="global-ideation-max"
         label="Global Ideation Cap"
         description="Maximum concurrent ideation and verification sessions across all projects (1-50)"
@@ -163,7 +193,7 @@ export default function GlobalExecutionSection() {
       <ToggleSettingRow
         id="allow-ideation-borrow-idle-execution"
         label="Allow Ideation Borrowing"
-        description="Let ideation use idle execution capacity when no runnable execution work is waiting"
+        description="Let lower-priority ideation use idle capacity when no Workspaces or Tasks are waiting"
         checked={globalSettings?.allowIdeationBorrowIdleExecution ?? false}
         disabled={isSaving}
         onChange={handleBorrowToggle}

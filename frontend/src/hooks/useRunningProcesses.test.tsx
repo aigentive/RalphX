@@ -40,6 +40,15 @@ const mockResponse: RunningProcessesResponse = {
       taskBranch: "ralphx/app/task-2",
     },
   ],
+  ideationSessions: [],
+  workspaceSessions: [],
+  lanes: [],
+  capacity: {
+    totalActive: 2,
+    globalMaxConcurrent: 20,
+    borrowingEnabled: false,
+    priority: ["workspaces", "tasks", "ideation"],
+  },
 };
 
 describe("useRunningProcesses", () => {

@@ -203,6 +203,15 @@ export interface ActivityFilter {
   sessionId: string | null;
 }
 
+export type ExecutionBarPopoverKind =
+  | "running"
+  | "queued"
+  | "paused"
+  | "merge"
+  | "terminals"
+  | null;
+export type ExecutionBarRunningTab = "running" | "workspaces" | "execution" | "ideation";
+
 /** Confirmation dialog configuration */
 export interface ConfirmationConfig {
   title: string;
@@ -244,6 +253,10 @@ interface UiState {
   recoveryPromptSurface: "chat" | "task_detail" | null;
   /** Current execution status (pause state, running/queued counts) */
   executionStatus: ExecutionStatusResponse;
+  /** Currently open execution bar popover, if any */
+  executionBarOpenPopover: ExecutionBarPopoverKind;
+  /** Last selected tab inside the Running execution bar popover */
+  executionBarRunningTab: ExecutionBarRunningTab;
   /** Whether to show archived tasks on the board */
   showArchived: boolean;
   /** Whether to show merge tasks on the board */
@@ -362,6 +375,10 @@ interface UiActions {
   setExecutionRunningCount: (count: number) => void;
   /** Set queued count */
   setExecutionQueuedCount: (count: number, queuedMessageCount?: number) => void;
+  /** Set the currently open execution bar popover */
+  setExecutionBarOpenPopover: (popover: ExecutionBarPopoverKind) => void;
+  /** Set the selected tab inside the Running execution bar popover */
+  setExecutionBarRunningTab: (tab: ExecutionBarRunningTab) => void;
   /** Set whether to show archived tasks */
   setShowArchived: (show: boolean) => void;
   /** Set whether to show merge tasks */
@@ -491,6 +508,8 @@ export const useUiStore = create<UiState & UiActions>()(
       ideationMaxProject: 5,
       ideationMaxGlobal: 10,
     },
+    executionBarOpenPopover: null,
+    executionBarRunningTab: "execution",
     showArchived: false,
     showMergeTasks: loadShowMergeTasks(),
     boardSearchQuery: null,
@@ -661,6 +680,16 @@ export const useUiStore = create<UiState & UiActions>()(
         if (queuedMessageCount !== undefined) {
           state.executionStatus.queuedMessageCount = queuedMessageCount;
         }
+      }),
+
+    setExecutionBarOpenPopover: (popover) =>
+      set((state) => {
+        state.executionBarOpenPopover = popover;
+      }),
+
+    setExecutionBarRunningTab: (tab) =>
+      set((state) => {
+        state.executionBarRunningTab = tab;
       }),
 
     setShowArchived: (show) =>
