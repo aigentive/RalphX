@@ -63,6 +63,25 @@ fn test_global_execution_settings_default() {
 }
 
 #[test]
+fn test_global_execution_settings_deserializes_legacy_without_workspace_limit() {
+    let json = r#"{
+        "global_max_concurrent": 12,
+        "global_ideation_max": 5,
+        "allow_ideation_borrow_idle_execution": true
+    }"#;
+
+    let settings: GlobalExecutionSettings = serde_json::from_str(json).unwrap();
+
+    assert_eq!(settings.global_max_concurrent, 12);
+    assert_eq!(
+        settings.workspace_max_concurrent,
+        DEFAULT_WORKSPACE_MAX_CONCURRENT
+    );
+    assert_eq!(settings.global_ideation_max, 5);
+    assert!(settings.allow_ideation_borrow_idle_execution);
+}
+
+#[test]
 fn test_global_execution_settings_validate_within_range() {
     let settings = GlobalExecutionSettings {
         global_max_concurrent: 30,
