@@ -465,4 +465,134 @@ describe("AgentRuntimeStatusWidget", () => {
       screen.getByRole("button", { name: "View Ideation" }),
     ).toBeInTheDocument();
   });
+
+  it("matches ideation, verification, and task runtime focus rows", () => {
+    const baseStatus = runtimeStatus({
+      primarySource: "verification",
+      summaryLabel: "Runtime activity",
+      items: [
+        runtimeItem({
+          source: "ideation",
+          contextType: "ideation",
+          contextId: "session-1",
+          label: "Ideation running",
+          title: "Plan chat",
+          taskId: null,
+          internalStatus: null,
+        }),
+        runtimeItem({
+          source: "verification",
+          contextType: "ideation",
+          contextId: "verification-child",
+          label: "Verifying",
+          title: "Verification run",
+          taskId: null,
+          internalStatus: null,
+          parentSessionId: "parent-session",
+          childSessionId: null,
+        }),
+        runtimeItem({
+          source: "review",
+          contextType: "review",
+          contextId: "task-2",
+          label: "Reviewing",
+          title: "Review task",
+          taskId: "task-2",
+          internalStatus: "reviewing",
+        }),
+      ],
+    });
+    const defaultHandlers = {
+      onViewWorkspace: vi.fn(),
+      onViewIdeation: vi.fn(),
+      onViewVerification: vi.fn(),
+      onViewTaskRuntime: vi.fn(),
+    };
+
+    const { rerender } = render(
+      <AgentRuntimeStatusWidget
+        status={baseStatus}
+        currentFocus={{ type: "ideation", sessionId: "session-1" }}
+        {...defaultHandlers}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("agents-runtime-status-current-ideation"),
+    ).toHaveAttribute("aria-label", "Currently viewing Plan chat");
+
+    rerender(
+      <AgentRuntimeStatusWidget
+        status={baseStatus}
+        currentFocus={{
+          type: "verification",
+          parentSessionId: "parent-session",
+          childSessionId: "verification-child",
+        }}
+        {...defaultHandlers}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("agents-runtime-status-current-verification"),
+    ).toHaveAttribute("aria-label", "Currently viewing Verification run");
+
+    rerender(
+      <AgentRuntimeStatusWidget
+        status={baseStatus}
+        currentFocus={{
+          type: "task_runtime",
+          taskId: "task-2",
+          contextType: "review",
+        }}
+        {...defaultHandlers}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("agents-runtime-status-current-review"),
+    ).toHaveAttribute("aria-label", "Currently viewing Review task");
+  });
+
+  it("does not scroll when no runtime row is running or selected", async () => {
+    render(
+      <AgentRuntimeStatusWidget
+        status={runtimeStatus({
+          primarySource: "workspace",
+          summaryLabel: "Runtime waiting",
+          items: [
+            runtimeItem({
+              source: "workspace",
+              contextType: "project",
+              contextId: "conversation-1",
+              label: "Workspace waiting",
+              title: "Workspace chat",
+              agentStatus: "waiting_for_input",
+              taskId: null,
+              internalStatus: null,
+              conversationId: "conversation-1",
+            }),
+            runtimeItem({
+              source: "review",
+              contextType: "review",
+              contextId: "task-2",
+              label: "Review waiting",
+              title: "Review task",
+              agentStatus: "waiting_for_input",
+              taskId: "task-2",
+              internalStatus: "reviewing",
+            }),
+          ],
+        })}
+        onViewWorkspace={vi.fn()}
+        onViewIdeation={vi.fn()}
+        onViewVerification={vi.fn()}
+        onViewTaskRuntime={vi.fn()}
+      />,
+    );
+
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
+  });
 });
