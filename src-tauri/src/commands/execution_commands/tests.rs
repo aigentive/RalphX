@@ -2214,6 +2214,15 @@ async fn test_get_running_processes_reports_scoped_lanes_and_capacity() {
     .await
     .expect("running processes should load");
 
+    let aggregate_response = get_running_processes(
+        None,
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("aggregate running processes should load");
+
     let _ = live_process.kill();
     let _ = live_process.wait();
 
@@ -2280,6 +2289,35 @@ async fn test_get_running_processes_reports_scoped_lanes_and_capacity() {
             "ideation".to_string(),
         ]
     );
+
+    assert_eq!(aggregate_response.workspace_sessions.len(), 2);
+    assert_eq!(aggregate_response.processes.len(), 2);
+    assert_eq!(aggregate_response.ideation_sessions.len(), 2);
+    let aggregate_workspace_lane = aggregate_response
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == "workspaces")
+        .expect("aggregate workspace lane");
+    assert_eq!(aggregate_workspace_lane.active, 2);
+    assert_eq!(aggregate_workspace_lane.waiting, 2);
+    assert_eq!(aggregate_workspace_lane.max, 1);
+    assert_eq!(aggregate_workspace_lane.borrowed, 1);
+    let aggregate_task_lane = aggregate_response
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == "tasks")
+        .expect("aggregate task lane");
+    assert_eq!(aggregate_task_lane.active, 2);
+    assert_eq!(aggregate_task_lane.waiting, 2);
+    assert_eq!(aggregate_task_lane.max, 10);
+    let aggregate_ideation_lane = aggregate_response
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == "ideation")
+        .expect("aggregate ideation lane");
+    assert_eq!(aggregate_ideation_lane.active, 2);
+    assert_eq!(aggregate_ideation_lane.waiting, 1);
+    assert_eq!(aggregate_response.capacity.total_active, 6);
 }
 
 #[tokio::test]
@@ -4964,6 +5002,121 @@ async fn test_stop_execution_syncs_quota() {
     assert_eq!(max_concurrent, 6);
     assert_eq!(execution_state.max_concurrent(), 6);
     assert_eq!(resolved_project_id, Some(project.id));
+}
+
+#[tokio::test]
+async fn test_stop_execution_persists_stopped_and_clears_project_queues() {
+    let execution_state = Arc::new(ExecutionState::new());
+    let active_project_state = Arc::new(ActiveProjectState::new());
+    let app_state = AppState::new_test();
+
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Stop Queues Project".to_string(),
+            "/test/stop-queues-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let other_project = app_state
+        .project_repo
+        .create(Project::new(
+            "Other Stop Queues Project".to_string(),
+            "/test/other-stop-queues-project".to_string(),
+        ))
+        .await
+        .unwrap();
+
+    let task = app_state
+        .task_repo
+        .create(Task::new(project.id.clone(), "Queued task chat".to_string()))
+        .await
+        .unwrap();
+    let other_task = app_state
+        .task_repo
+        .create(Task::new(
+            other_project.id.clone(),
+            "Other queued task chat".to_string(),
+        ))
+        .await
+        .unwrap();
+
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        project.id.as_str(),
+        "project queue".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Task,
+        task.id.as_str(),
+        "task chat queue".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::TaskExecution,
+        task.id.as_str(),
+        "task execution queue".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        other_project.id.as_str(),
+        "other project queue".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Task,
+        other_task.id.as_str(),
+        "other task queue".to_string(),
+    );
+
+    let app = mock_builder()
+        .manage(Arc::clone(&active_project_state))
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = stop_execution(
+        Some(project.id.as_str().to_string()),
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("stop execution should succeed");
+
+    assert!(response.success);
+    assert!(execution_state.is_paused());
+    assert_eq!(response.status.halt_mode, "stopped");
+
+    let state = app.state::<AppState>();
+    assert!(state
+        .message_queue
+        .get_queued(ChatContextType::Project, project.id.as_str())
+        .is_empty());
+    assert!(state
+        .message_queue
+        .get_queued(ChatContextType::Task, task.id.as_str())
+        .is_empty());
+    assert!(state
+        .message_queue
+        .get_queued(ChatContextType::TaskExecution, task.id.as_str())
+        .is_empty());
+    assert_eq!(
+        state
+            .message_queue
+            .get_queued(ChatContextType::Project, other_project.id.as_str())
+            .len(),
+        1
+    );
+    assert_eq!(
+        state
+            .message_queue
+            .get_queued(ChatContextType::Task, other_task.id.as_str())
+            .len(),
+        1
+    );
+
+    let settings = state.app_state_repo.get().await.unwrap();
+    assert_eq!(settings.execution_halt_mode, ExecutionHaltMode::Stopped);
 }
 
 #[tokio::test]
