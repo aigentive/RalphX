@@ -2068,12 +2068,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       scrollerResizeRafRef.current = requestAnimationFrame(() => {
         scrollerResizeRafRef.current = null;
         if (shouldKeepBottomPinned()) {
-          scrollToTrueBottom("auto");
+          scheduleBottomPin("scroller resized", "auto");
           return;
         }
         reconcileScrollerBottomState();
       });
-    }, [reconcileScrollerBottomState, scrollToTrueBottom, shouldKeepBottomPinned]);
+    }, [reconcileScrollerBottomState, scheduleBottomPin, shouldKeepBottomPinned]);
 
     useEffect(() => {
       if (externalLayoutVersion <= 0) {
