@@ -1,6 +1,6 @@
 //! Agent workspace HTTP handlers.
 
-use std::{str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc, time::Instant};
 
 use axum::{
     extract::{Path, State},
@@ -16,8 +16,7 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
-    start_agent_workspace_review,
-    AgentWorkspaceReviewTarget,
+    start_agent_workspace_review, AgentWorkspaceReviewTarget,
 };
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
@@ -931,6 +930,7 @@ pub async fn get_agent_workspace_review_context(
     State(state): State<HttpServerState>,
     Path(conversation_id): Path<String>,
 ) -> Result<Json<AgentWorkspaceReviewContextResponse>, JsonError> {
+    let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
     let workspace_response =
@@ -942,6 +942,29 @@ pub async fn get_agent_workspace_review_context(
     let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let target_scope = workspace_review_target_scope_log(context.target.as_ref());
+    let diff_fingerprint = compact_workspace_review_log_fingerprint(
+        context
+            .target
+            .as_ref()
+            .map(|target| target.diff_fingerprint.as_str()),
+    );
+    tracing::info!(
+        target: "ralphx_lib::http_server::agent_workspaces",
+        operation = "workspace_review_context_http",
+        conversation_id = %conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        monitor_status = %context.monitor.status,
+        target_scope = %target_scope,
+        diff_fingerprint = %diff_fingerprint,
+        is_current = context.is_current,
+        is_outdated = context.is_outdated,
+        should_show_tab = context.should_show_tab,
+        has_artifact = context.monitor.review_artifact_id.is_some(),
+        "Served workspace Review context"
+    );
 
     Ok(Json(AgentWorkspaceReviewContextResponse {
         success: true,
@@ -961,15 +984,48 @@ pub async fn start_agent_workspace_review_run(
     Path(conversation_id): Path<String>,
     Json(req): Json<StartAgentWorkspaceReviewRequest>,
 ) -> Result<Json<StartAgentWorkspaceReviewResponse>, JsonError> {
+    let started = Instant::now();
+    let force = req.force.unwrap_or(false);
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
-    let start = start_agent_workspace_review(
-        std::sync::Arc::clone(&state.app_state),
-        &workspace,
-        req.force.unwrap_or(false),
-    )
-    .await
-    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let start =
+        start_agent_workspace_review(std::sync::Arc::clone(&state.app_state), &workspace, force)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+    let target_scope = workspace_review_target_scope_log(start.context.target.as_ref());
+    let diff_fingerprint = compact_workspace_review_log_fingerprint(
+        start
+            .context
+            .target
+            .as_ref()
+            .map(|target| target.diff_fingerprint.as_str()),
+    );
+    let skipped_reason = start
+        .skipped_reason
+        .as_deref()
+        .unwrap_or("none")
+        .to_string();
+    tracing::info!(
+        target: "ralphx_lib::http_server::agent_workspaces",
+        operation = "workspace_review_start_http",
+        conversation_id = %conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        force,
+        started = start.started,
+        skipped_reason = %skipped_reason,
+        was_queued = start.was_queued,
+        monitor_status = %start.context.monitor.status,
+        target_scope = %target_scope,
+        diff_fingerprint = %diff_fingerprint,
+        is_current = start.context.is_current,
+        is_outdated = start.context.is_outdated,
+        has_artifact = start.context.monitor.review_artifact_id.is_some(),
+        "Handled workspace Review start request"
+    );
     Ok(Json(StartAgentWorkspaceReviewResponse {
         success: true,
         target: start
@@ -992,10 +1048,14 @@ pub async fn write_agent_workspace_review_artifact(
     Path(conversation_id): Path<String>,
     Json(req): Json<WriteAgentWorkspaceReviewArtifactRequest>,
 ) -> Result<Json<WriteAgentWorkspaceReviewArtifactResponse>, JsonError> {
+    let started = Instant::now();
+    let requested_diff_fingerprint = req.diff_fingerprint.clone();
+    let created_by_run_id = req.created_by_run_id.clone();
     let content = non_empty_string(
         normalize_workspace_review_artifact_content(req.content),
         "content",
     )?;
+    let content_bytes = content.len();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
     let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
@@ -1059,7 +1119,9 @@ pub async fn write_agent_workspace_review_artifact(
 
     let title = workspace_review_artifact_title(
         req.title,
-        previous_artifact.as_ref().map(|artifact| artifact.name.as_str()),
+        previous_artifact
+            .as_ref()
+            .map(|artifact| artifact.name.as_str()),
         monitor.reviewed_target_scope,
         target_scope,
         context.target.as_ref(),
@@ -1107,7 +1169,7 @@ pub async fn write_agent_workspace_review_artifact(
         target_scope,
         target_head_sha.clone(),
         target_diff_fingerprint.clone(),
-        req.created_by_run_id,
+        created_by_run_id.clone(),
         created.id.clone(),
         created.metadata.version,
         created.metadata.created_at,
@@ -1150,6 +1212,24 @@ pub async fn write_agent_workspace_review_artifact(
 
     let mut artifact_response = ArtifactResponse::from(created);
     artifact_response.previous_artifact_id = previous_artifact_id.clone();
+    tracing::info!(
+        target: "ralphx_lib::http_server::agent_workspaces",
+        operation = "workspace_review_artifact_write_http",
+        conversation_id = %conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        target_scope = %target_scope,
+        diff_fingerprint = %compact_workspace_review_log_fingerprint(Some(&target_diff_fingerprint)),
+        requested_diff_fingerprint = %compact_workspace_review_log_fingerprint(requested_diff_fingerprint.as_deref()),
+        artifact_id = %artifact_response.id,
+        artifact_version = artifact_response.version,
+        previous_artifact_id = %previous_artifact_id.as_deref().unwrap_or("none"),
+        created_by_run_id = %created_by_run_id.as_deref().unwrap_or("none"),
+        content_bytes,
+        monitor_status = %monitor.status,
+        "Wrote workspace Review artifact"
+    );
 
     Ok(Json(WriteAgentWorkspaceReviewArtifactResponse {
         success: true,
@@ -1165,7 +1245,18 @@ pub async fn complete_agent_workspace_review_run(
     Path(conversation_id): Path<String>,
     Json(req): Json<CompleteAgentWorkspaceReviewRunRequest>,
 ) -> Result<Json<CompleteAgentWorkspaceReviewRunResponse>, JsonError> {
-    let _summary = non_empty_string(req.summary, "summary")?;
+    let started = Instant::now();
+    let summary = non_empty_string(req.summary, "summary")?;
+    let summary_bytes = summary.len();
+    let has_outcome = req
+        .outcome
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let has_blocker = req
+        .blocker
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let created_by_run_id = req.created_by_run_id.clone();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
     let monitor = crate::application::agent_workspace_review::complete_agent_workspace_review_run(
@@ -1177,6 +1268,22 @@ pub async fn complete_agent_workspace_review_run(
     )
     .await
     .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    tracing::info!(
+        target: "ralphx_lib::http_server::agent_workspaces",
+        operation = "workspace_review_complete_http",
+        conversation_id = %conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        monitor_status = %monitor.status,
+        has_artifact = monitor.review_artifact_id.is_some(),
+        artifact_id = %monitor.review_artifact_id.as_ref().map(|id| id.as_str()).unwrap_or("none"),
+        created_by_run_id = %created_by_run_id.as_deref().unwrap_or("none"),
+        has_outcome,
+        has_blocker,
+        summary_bytes,
+        "Handled workspace Review completion"
+    );
     Ok(Json(CompleteAgentWorkspaceReviewRunResponse {
         success: true,
         monitor: AgentWorkspaceReviewMonitorResponse::from(monitor),
@@ -2382,6 +2489,18 @@ fn parse_workspace_review_target_scope(
     value: Option<&str>,
 ) -> Option<AgentWorkspaceReviewTargetScope> {
     value.and_then(|value| AgentWorkspaceReviewTargetScope::from_str(value.trim()).ok())
+}
+
+fn compact_workspace_review_log_fingerprint(value: Option<&str>) -> String {
+    value
+        .map(|value| value.chars().take(12).collect())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn workspace_review_target_scope_log(target: Option<&AgentWorkspaceReviewTarget>) -> String {
+    target
+        .map(|target| target.scope.to_string())
+        .unwrap_or_else(|| "none".to_string())
 }
 
 fn default_workspace_review_artifact_title(
