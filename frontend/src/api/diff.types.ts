@@ -128,8 +128,22 @@ export interface AgentWorkspaceChangeBucketSummary {
   deletions: number;
 }
 
+export interface AgentWorkspaceConflictSummary {
+  fileCount: number;
+  files: string[];
+}
+
+export interface AgentWorkspaceRepairState {
+  expectedBranch: string;
+  checkedOutBranch: string;
+  rebaseInProgress: boolean;
+  mergeInProgress: boolean;
+}
+
 export interface AgentWorkspaceChangeSummary {
   supportsWorktreeModes: boolean;
   staged: AgentWorkspaceChangeBucketSummary;
   unstaged: AgentWorkspaceChangeBucketSummary;
+  conflicted?: AgentWorkspaceConflictSummary;
+  repairState?: AgentWorkspaceRepairState;
 }
