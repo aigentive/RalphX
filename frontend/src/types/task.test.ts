@@ -75,6 +75,14 @@ describe("TaskSchema", () => {
     expect(transformTask(parsed).ideationSessionId).toBe("session-123");
   });
 
+  it("should preserve a string execution_plan_id through transform", () => {
+    const parsed = TaskSchema.parse({
+      ...validTask,
+      execution_plan_id: "exec-plan-123",
+    });
+    expect(transformTask(parsed).executionPlanId).toBe("exec-plan-123");
+  });
+
   it("should parse all valid internal statuses", () => {
     for (const status of INTERNAL_STATUS_VALUES) {
       expect(() =>
@@ -243,6 +251,18 @@ describe("CreateTaskSchema", () => {
     };
     const result = CreateTaskSchema.parse(createData);
     expect(result.needsQa).toBeUndefined();
+  });
+
+  it("should allow active flow ids", () => {
+    const createData = {
+      projectId: "project-123",
+      title: "New Task",
+      ideationSessionId: "session-123",
+      executionPlanId: "exec-plan-123",
+    };
+    const result = CreateTaskSchema.parse(createData);
+    expect(result.ideationSessionId).toBe("session-123");
+    expect(result.executionPlanId).toBe("exec-plan-123");
   });
 });
 

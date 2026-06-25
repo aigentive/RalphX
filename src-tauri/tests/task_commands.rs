@@ -32,6 +32,8 @@ async fn test_create_task_with_defaults() {
         description: None,
         priority: None,
         steps: None,
+        ideation_session_id: None,
+        execution_plan_id: None,
     };
 
     // We can't easily call tauri commands without the full runtime,
@@ -1352,13 +1354,15 @@ mod ipc_contract {
 
     #[test]
     fn create_task_input_deserializes_camel_case() {
-        let json = r#"{"projectId":"proj-123","title":"Build auth module","category":"regular","description":"Implement JWT","priority":50,"steps":["Step A","Step B"]}"#;
+        let json = r#"{"projectId":"proj-123","title":"Build auth module","category":"regular","description":"Implement JWT","priority":50,"steps":["Step A","Step B"],"ideationSessionId":"session-123","executionPlanId":"exec-plan-123"}"#;
         let input: CreateTaskInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.project_id, "proj-123");
         assert_eq!(input.title, "Build auth module");
         assert_eq!(input.category, Some("regular".to_string()));
         assert_eq!(input.description, Some("Implement JWT".to_string()));
         assert_eq!(input.priority, Some(50));
+        assert_eq!(input.ideation_session_id, Some("session-123".to_string()));
+        assert_eq!(input.execution_plan_id, Some("exec-plan-123".to_string()));
         assert_eq!(
             input.steps,
             Some(vec!["Step A".to_string(), "Step B".to_string()])
@@ -1375,6 +1379,8 @@ mod ipc_contract {
         assert!(input.description.is_none());
         assert!(input.priority.is_none());
         assert!(input.steps.is_none());
+        assert!(input.ideation_session_id.is_none());
+        assert!(input.execution_plan_id.is_none());
     }
 
     #[test]

@@ -11,8 +11,8 @@ use crate::commands::execution_commands::prepare_resumed_task_for_entry_actions;
 use crate::commands::execution_commands::project_has_execution_capacity_for_state;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    ExecutionRecoveryMetadata, ExecutionRecoveryState, InternalStatus, ProjectId, Task,
-    TaskCategory, TaskId, TaskStepStatus,
+    ExecutionPlanId, ExecutionRecoveryMetadata, ExecutionRecoveryState, IdeationSessionId,
+    InternalStatus, ProjectId, Task, TaskCategory, TaskId, TaskStepStatus,
 };
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::metadata_builder::build_restart_metadata;
@@ -60,6 +60,97 @@ fn validate_update_task_input(input: &UpdateTaskInput) -> Result<(), String> {
     Ok(())
 }
 
+fn non_empty_input(value: &Option<String>) -> Option<&str> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+async fn attach_create_task_plan_scope(
+    task: &mut Task,
+    input: &CreateTaskInput,
+    state: &AppState,
+) -> Result<(), String> {
+    if let Some(execution_plan_id_str) = non_empty_input(&input.execution_plan_id) {
+        let execution_plan_id = ExecutionPlanId::from_string(execution_plan_id_str.to_string());
+        let execution_plan = state
+            .execution_plan_repo
+            .get_by_id(&execution_plan_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Execution plan not found: {}", execution_plan_id.as_str()))?;
+
+        if let Some(requested_session_id) = non_empty_input(&input.ideation_session_id) {
+            if requested_session_id != execution_plan.session_id.as_str() {
+                return Err(format!(
+                    "Execution plan {} belongs to session {}, not {}",
+                    execution_plan_id.as_str(),
+                    execution_plan.session_id.as_str(),
+                    requested_session_id
+                ));
+            }
+        }
+
+        let session = state
+            .ideation_session_repo
+            .get_by_id(&execution_plan.session_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| {
+                format!(
+                    "Ideation session not found for execution plan {}: {}",
+                    execution_plan_id.as_str(),
+                    execution_plan.session_id.as_str()
+                )
+            })?;
+
+        if session.project_id.as_str() != task.project_id.as_str() {
+            return Err(format!(
+                "Execution plan {} belongs to project {}, not {}",
+                execution_plan_id.as_str(),
+                session.project_id.as_str(),
+                task.project_id.as_str()
+            ));
+        }
+
+        task.ideation_session_id = Some(execution_plan.session_id.clone());
+        task.execution_plan_id = Some(execution_plan.id.clone());
+        task.plan_artifact_id = session
+            .plan_artifact_id
+            .clone()
+            .or_else(|| session.inherited_plan_artifact_id.clone());
+        return Ok(());
+    }
+
+    if let Some(session_id_str) = non_empty_input(&input.ideation_session_id) {
+        let session_id = IdeationSessionId::from_string(session_id_str.to_string());
+        let session = state
+            .ideation_session_repo
+            .get_by_id(&session_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Ideation session not found: {}", session_id.as_str()))?;
+
+        if session.project_id.as_str() != task.project_id.as_str() {
+            return Err(format!(
+                "Ideation session {} belongs to project {}, not {}",
+                session_id.as_str(),
+                session.project_id.as_str(),
+                task.project_id.as_str()
+            ));
+        }
+
+        task.ideation_session_id = Some(session.id.clone());
+        task.plan_artifact_id = session
+            .plan_artifact_id
+            .clone()
+            .or_else(|| session.inherited_plan_artifact_id.clone());
+    }
+
+    Ok(())
+}
+
 fn build_transition_service(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
@@ -89,7 +180,7 @@ pub async fn create_task(
     input: CreateTaskInput,
     state: State<'_, AppState>,
 ) -> Result<TaskResponse, String> {
-    let project_id = ProjectId::from_string(input.project_id);
+    let project_id = ProjectId::from_string(input.project_id.clone());
     let category: TaskCategory = input
         .category
         .as_deref()
@@ -97,14 +188,15 @@ pub async fn create_task(
         .parse()
         .unwrap_or(TaskCategory::Regular);
 
-    let mut task = Task::new_with_category(project_id, input.title, category);
+    let mut task = Task::new_with_category(project_id, input.title.clone(), category);
 
-    if let Some(desc) = input.description {
-        task.description = Some(desc);
+    if let Some(desc) = &input.description {
+        task.description = Some(desc.clone());
     }
     if let Some(priority) = input.priority {
         task.priority = priority;
     }
+    attach_create_task_plan_scope(&mut task, &input, &state).await?;
 
     // Create the task first
     let created_task = state
@@ -986,7 +1078,26 @@ impl TaskStopper for TransitionTaskStopper {
 
 #[cfg(test)]
 mod update_task_validation_tests {
-    use super::{validate_update_task_input, UpdateTaskInput};
+    use super::{
+        attach_create_task_plan_scope, validate_update_task_input, CreateTaskInput, TaskResponse,
+        UpdateTaskInput,
+    };
+    use crate::application::AppState;
+    use crate::domain::entities::{
+        ExecutionPlan, IdeationSession, IdeationSessionId, Project, ProjectId, Task,
+    };
+    use crate::domain::repositories::ProjectRepository;
+    use crate::infrastructure::memory::{MemoryProjectRepository, MemoryTaskRepository};
+    use std::sync::Arc;
+
+    async fn setup_test_state() -> AppState {
+        let task_repo = Arc::new(MemoryTaskRepository::new());
+        let project_repo = Arc::new(MemoryProjectRepository::new());
+        let project = Project::new("Test Project".to_string(), "/test/path".to_string());
+        project_repo.create(project).await.unwrap();
+
+        AppState::with_repos(task_repo, project_repo)
+    }
 
     #[test]
     fn rejects_status_edits_through_update_task() {
@@ -1013,6 +1124,154 @@ mod update_task_validation_tests {
         };
 
         validate_update_task_input(&input).expect("non-status edits should remain allowed");
+    }
+
+    #[tokio::test]
+    async fn attaches_execution_plan_scope() {
+        let state = setup_test_state().await;
+        let project_id = ProjectId::from_string("test-project".to_string());
+        let session = state
+            .ideation_session_repo
+            .create(IdeationSession::new(project_id.clone()))
+            .await
+            .unwrap();
+        let execution_plan = state
+            .execution_plan_repo
+            .create(ExecutionPlan::new(session.id.clone()))
+            .await
+            .unwrap();
+        let mut task = Task::new(project_id, "Scoped task".to_string());
+        let input = CreateTaskInput {
+            project_id: "test-project".to_string(),
+            title: "Scoped task".to_string(),
+            category: None,
+            description: None,
+            priority: None,
+            steps: None,
+            ideation_session_id: None,
+            execution_plan_id: Some(execution_plan.id.as_str().to_string()),
+        };
+
+        attach_create_task_plan_scope(&mut task, &input, &state)
+            .await
+            .unwrap();
+
+        assert_eq!(task.ideation_session_id, Some(session.id));
+        assert_eq!(task.execution_plan_id, Some(execution_plan.id));
+    }
+
+    #[tokio::test]
+    async fn rejects_execution_plan_session_mismatch() {
+        let state = setup_test_state().await;
+        let project_id = ProjectId::from_string("test-project".to_string());
+        let session = state
+            .ideation_session_repo
+            .create(IdeationSession::new(project_id.clone()))
+            .await
+            .unwrap();
+        let other_session_id = IdeationSessionId::new();
+        let execution_plan = state
+            .execution_plan_repo
+            .create(ExecutionPlan::new(session.id))
+            .await
+            .unwrap();
+        let mut task = Task::new(project_id, "Scoped task".to_string());
+        let input = CreateTaskInput {
+            project_id: "test-project".to_string(),
+            title: "Scoped task".to_string(),
+            category: None,
+            description: None,
+            priority: None,
+            steps: None,
+            ideation_session_id: Some(other_session_id.as_str().to_string()),
+            execution_plan_id: Some(execution_plan.id.as_str().to_string()),
+        };
+
+        let err = attach_create_task_plan_scope(&mut task, &input, &state)
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("belongs to session"));
+    }
+
+    #[tokio::test]
+    async fn rejects_execution_plan_project_mismatch() {
+        let state = setup_test_state().await;
+        let session_project_id = ProjectId::from_string("test-project".to_string());
+        let task_project_id = ProjectId::from_string("other-project".to_string());
+        let session = state
+            .ideation_session_repo
+            .create(IdeationSession::new(session_project_id))
+            .await
+            .unwrap();
+        let execution_plan = state
+            .execution_plan_repo
+            .create(ExecutionPlan::new(session.id))
+            .await
+            .unwrap();
+        let mut task = Task::new(task_project_id, "Scoped task".to_string());
+        let input = CreateTaskInput {
+            project_id: "other-project".to_string(),
+            title: "Scoped task".to_string(),
+            category: None,
+            description: None,
+            priority: None,
+            steps: None,
+            ideation_session_id: None,
+            execution_plan_id: Some(execution_plan.id.as_str().to_string()),
+        };
+
+        let err = attach_create_task_plan_scope(&mut task, &input, &state)
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("belongs to project"));
+    }
+
+    #[tokio::test]
+    async fn attaches_session_only_scope() {
+        let state = setup_test_state().await;
+        let project_id = ProjectId::from_string("test-project".to_string());
+        let session = state
+            .ideation_session_repo
+            .create(IdeationSession::new(project_id.clone()))
+            .await
+            .unwrap();
+        let mut task = Task::new(project_id, "Scoped task".to_string());
+        let input = CreateTaskInput {
+            project_id: "test-project".to_string(),
+            title: "Scoped task".to_string(),
+            category: None,
+            description: None,
+            priority: None,
+            steps: None,
+            ideation_session_id: Some(session.id.as_str().to_string()),
+            execution_plan_id: None,
+        };
+
+        attach_create_task_plan_scope(&mut task, &input, &state)
+            .await
+            .unwrap();
+
+        assert_eq!(task.ideation_session_id, Some(session.id));
+        assert!(task.execution_plan_id.is_none());
+    }
+
+    #[test]
+    fn task_response_includes_execution_plan_id() {
+        let project_id = ProjectId::from_string("test-project".to_string());
+        let session = IdeationSession::new(project_id.clone());
+        let execution_plan = ExecutionPlan::new(session.id.clone());
+        let mut task = Task::new(project_id, "Scoped task".to_string());
+        task.ideation_session_id = Some(session.id);
+        task.execution_plan_id = Some(execution_plan.id.clone());
+
+        let response = TaskResponse::from(task);
+
+        assert_eq!(
+            response.execution_plan_id,
+            Some(execution_plan.id.as_str().to_string())
+        );
     }
 }
 

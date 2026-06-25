@@ -13,6 +13,7 @@ import { chatKeys } from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useProjects } from "@/hooks/useProjects";
 import { useEventBus } from "@/providers/EventProvider";
+import { PlanArtifactEventSchema } from "@/types/events";
 import { useAgentArtifactController } from "./useAgentArtifactController";
 import { useAgentConversationTitleEvents } from "./useAgentConversationTitleEvents";
 import { useAgentArtifactResize } from "./useAgentArtifactResize";
@@ -41,6 +42,7 @@ import { runtimeFromConversation } from "./agentConversationRuntime";
 import {
   agentWorkspaceKeys,
   preflightAgentWorkspaceFreshness,
+  prReviewContextForConversation,
 } from "./agentWorkspaceQueries";
 import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import {
@@ -339,19 +341,25 @@ export function useAgentsViewController({
     invalidateProjectConversations,
     selectedConversationMessages,
   });
-  const shouldLoadPrReviewContext = Boolean(
-    selectedConversationId &&
-      activeConversation?.contextType === "project" &&
-      activeConversationMode === "review_pr",
-  );
+  const prReviewConversationId =
+    activeConversation?.contextType === "project" &&
+    activeConversationMode === "review_pr" &&
+    activeWorkspace?.mode === "review_pr"
+      ? activeWorkspace.conversationId
+      : null;
+  const shouldLoadPrReviewContext = Boolean(prReviewConversationId);
   const prReviewContextQuery = useQuery({
-    queryKey: agentWorkspaceKeys.prReview(selectedConversationId ?? ""),
-    queryFn: () => chatApi.getAgentWorkspacePrReviewContext(selectedConversationId!),
+    queryKey: agentWorkspaceKeys.prReview(prReviewConversationId ?? ""),
+    queryFn: () => chatApi.getAgentWorkspacePrReviewContext(prReviewConversationId!),
     enabled: shouldLoadPrReviewContext,
     staleTime: 5_000,
   });
+  const prReviewContext = prReviewContextForConversation(
+    prReviewContextQuery.data,
+    prReviewConversationId,
+  );
   const reviewArtifactId =
-    prReviewContextQuery.data?.monitor?.reviewArtifactId ?? null;
+    prReviewContext?.monitor?.reviewArtifactId ?? null;
   const availableArtifactTabsWithReview = useMemo<IdeationArtifactTab[]>(() => {
     if (!reviewArtifactId || availableArtifactTabs.includes("review")) {
       return availableArtifactTabs;
@@ -520,6 +528,38 @@ export function useAgentsViewController({
       unsubscribeUpdated();
     };
   }, [eventBus, openArtifactTab, queryClient, selectedConversationId]);
+
+  useEffect(() => {
+    const unsubscribeCreated = eventBus.subscribe<unknown>(
+      "plan_artifact:created",
+      (payload) => {
+        const parsed = PlanArtifactEventSchema.safeParse({
+          type: "created",
+          ...(payload as Record<string, unknown>),
+        });
+        if (!parsed.success || parsed.data.type !== "created") {
+          return;
+        }
+        if (
+          !selectedConversationId ||
+          activeConversationMode !== "plan" ||
+          parsed.data.sessionId !== attachedIdeationSessionId
+        ) {
+          return;
+        }
+
+        openArtifactTab(selectedConversationId, "plan");
+      },
+    );
+
+    return unsubscribeCreated;
+  }, [
+    activeConversationMode,
+    attachedIdeationSessionId,
+    eventBus,
+    openArtifactTab,
+    selectedConversationId,
+  ]);
 
   const handleStartAgentConversation = useStartAgentConversation({
     handleAutoManagedTitle,

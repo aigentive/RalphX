@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 
 import { MessageReferences } from "./MessageReferences";
+import { useTicketingStore } from "@/stores/ticketingStore";
+import { useUiStore } from "@/stores/uiStore";
 import {
   parseComposerReferencesFromMetadata,
   serializeComposerReferencesMetadata,
@@ -192,12 +194,100 @@ describe("MessageReferences", () => {
 
     expect(screen.getByTestId("message-reference-project:src/main.ts")).toBeTruthy();
     expect(screen.getByTestId("message-reference-project:docs/specs")).toBeTruthy();
-    expect(screen.getByTestId("message-reference-integration:jira:10001")).toHaveAttribute(
-      "href",
-      "https://example.atlassian.net/browse/RX-42",
-    );
+    fireEvent.click(screen.getByTestId("message-reference-integration:jira:10001"));
+    expect(useTicketingStore.getState().activeProvider).toBe("jira");
+    expect(useTicketingStore.getState().selectedTicketRef).toEqual({
+      provider: "jira",
+      id: "10001",
+      key: "RX-42",
+    });
+    expect(useUiStore.getState().currentView).toBe("ticketing");
     expect(screen.getByText("RX-42")).toBeTruthy();
     expect(screen.getByText("Fix composer references")).toBeTruthy();
     expect(screen.getByText("Implementation Notes")).toBeTruthy();
+  });
+
+  it("opens a linear ticket chip into the ticketing view", () => {
+    useTicketingStore.getState().setProvider(null);
+    useTicketingStore.getState().setSelectedTicketRef(null);
+    useUiStore.getState().setCurrentView("kanban");
+
+    render(
+      <MessageReferences
+        projectReferences={[]}
+        integrationReferences={[
+          {
+            provider: "linear",
+            kind: "linear",
+            id: "issue-uuid-1",
+            key: "ENG-7",
+            title: "Wire ticket chips",
+          },
+        ]}
+        artifactReferences={[]}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByTestId("message-reference-integration:linear:issue-uuid-1"),
+    );
+
+    expect(useTicketingStore.getState().activeProvider).toBe("linear");
+    expect(useTicketingStore.getState().selectedTicketRef).toEqual({
+      provider: "linear",
+      id: "issue-uuid-1",
+      key: "ENG-7",
+    });
+    expect(useUiStore.getState().currentView).toBe("ticketing");
+  });
+
+  it("renders ticket chips as buttons (not links) so they dispatch onClick", () => {
+    render(
+      <MessageReferences
+        projectReferences={[]}
+        integrationReferences={[
+          {
+            provider: "linear",
+            kind: "linear",
+            id: "issue-uuid-2",
+            key: "ENG-9",
+            title: "Use a button",
+            url: "https://linear.app/example/issue/ENG-9",
+          },
+        ]}
+        artifactReferences={[]}
+      />,
+    );
+
+    const chip = screen.getByTestId(
+      "message-reference-integration:linear:issue-uuid-2",
+    );
+    // Even though a url is present, the ticket chip prefers the button branch.
+    expect(chip.tagName).toBe("BUTTON");
+    expect(chip.getAttribute("type")).toBe("button");
+  });
+
+  it("renders non-ticket integrations (confluence) as links without onOpenTicket", () => {
+    render(
+      <MessageReferences
+        projectReferences={[]}
+        integrationReferences={[
+          {
+            provider: "atlassian",
+            kind: "confluence",
+            id: "conf-1",
+            title: "Implementation Notes",
+            url: "https://example.atlassian.net/wiki/spaces/ENG/pages/conf-1",
+          },
+        ]}
+        artifactReferences={[]}
+      />,
+    );
+
+    const chip = screen.getByTestId(
+      "message-reference-integration:confluence:conf-1",
+    );
+    expect(chip.tagName).toBe("A");
+    expect(chip.tagName).not.toBe("BUTTON");
   });
 });

@@ -4,8 +4,15 @@ export type AgentComposerTriggerKind =
   | "skill"
   | "slash-command"
   | "integration";
-export type AgentComposerIntegrationKind = "jira" | "confluence" | "linear";
-export type AgentComposerIntegrationProvider = "atlassian" | "linear";
+export type AgentComposerIntegrationKind =
+  | "jira"
+  | "confluence"
+  | "linear"
+  | "clickup";
+export type AgentComposerIntegrationProvider =
+  | "atlassian"
+  | "linear"
+  | "clickup";
 
 export interface AgentComposerTrigger {
   kind: AgentComposerTriggerKind;
@@ -163,7 +170,7 @@ export function extractComposerIntegrationTokens(
 ): AgentComposerIntegrationReference[] {
   const references = new Map<string, AgentComposerIntegrationReference>();
   for (const match of text.matchAll(
-    /@(jira|confluence|conf|linear):([^\s]+)/gi,
+    /@(jira|confluence|conf|linear|clickup):([^\s]+)/gi,
   )) {
     const rawKind = match[1]?.toLowerCase();
     const rawId = match[2]?.replace(/[),.;]+$/g, "");
@@ -175,16 +182,26 @@ export function extractComposerIntegrationTokens(
         ? "jira"
         : rawKind === "linear"
           ? "linear"
-          : "confluence";
+          : rawKind === "clickup"
+            ? "clickup"
+            : "confluence";
     const id =
-      kind === "jira" || kind === "linear" ? rawId.toUpperCase() : rawId;
+      kind === "jira" || kind === "linear" || kind === "clickup"
+        ? rawId.toUpperCase()
+        : rawId;
     const provider: AgentComposerIntegrationProvider =
-      kind === "linear" ? "linear" : "atlassian";
+      kind === "linear"
+        ? "linear"
+        : kind === "clickup"
+          ? "clickup"
+          : "atlassian";
     const reference: AgentComposerIntegrationReference = {
       provider,
       kind,
       id,
-      ...(kind === "jira" || kind === "linear" ? { key: id } : {}),
+      ...(kind === "jira" || kind === "linear" || kind === "clickup"
+        ? { key: id }
+        : {}),
     };
     references.set(`${provider}:${kind}:${id}`, reference);
   }
@@ -303,12 +320,17 @@ export function normalizeComposerIntegrationReferences(
         reference.kind !== "jira" &&
         reference.kind !== "confluence") ||
       (provider === "linear" && reference.kind !== "linear") ||
-      (provider !== "atlassian" && provider !== "linear")
+      (provider === "clickup" && reference.kind !== "clickup") ||
+      (provider !== "atlassian" &&
+        provider !== "linear" &&
+        provider !== "clickup")
     ) {
       continue;
     }
     const key =
-      reference.kind === "jira" || reference.kind === "linear"
+      reference.kind === "jira" ||
+      reference.kind === "linear" ||
+      reference.kind === "clickup"
         ? (reference.key ?? id).trim()
         : undefined;
     safeReferences.set(`${provider}:${reference.kind}:${id}`, {
@@ -326,7 +348,7 @@ export function normalizeComposerIntegrationReferences(
 function parseIntegrationTriggerQuery(
   query: string,
 ): { kind: AgentComposerIntegrationKind; query: string } | null {
-  const match = /^(jira|confluence|conf|linear):(.*)$/i.exec(query);
+  const match = /^(jira|confluence|conf|linear|clickup):(.*)$/i.exec(query);
   if (!match) {
     return null;
   }
@@ -336,7 +358,9 @@ function parseIntegrationTriggerQuery(
       ? "jira"
       : rawKind === "linear"
         ? "linear"
-        : "confluence";
+        : rawKind === "clickup"
+          ? "clickup"
+          : "confluence";
   return { kind, query: match[2] ?? "" };
 }
 
@@ -349,7 +373,7 @@ function parsePlanTriggerQuery(query: string): { query: string } | null {
 }
 
 function isIntegrationReferenceToken(token: string): boolean {
-  return /^(jira|confluence|conf|linear):/i.test(token);
+  return /^(jira|confluence|conf|linear|clickup):/i.test(token);
 }
 
 function isPlanReferenceToken(token: string): boolean {
@@ -361,7 +385,8 @@ function detectIntegrationTriggerInLine(
   lineStart: number,
   safeCursor: number,
 ): AgentComposerTrigger | null {
-  const triggerPattern = /(^|[\s([{`'"])@(jira|confluence|conf|linear):/gi;
+  const triggerPattern =
+    /(^|[\s([{`'"])@(jira|confluence|conf|linear|clickup):/gi;
   let lastMatch: {
     markerIndex: number;
     rawKind: string;
@@ -397,7 +422,9 @@ function detectIntegrationTriggerInLine(
         ? "jira"
         : lastMatch.rawKind.toLowerCase() === "linear"
           ? "linear"
-          : "confluence",
+          : lastMatch.rawKind.toLowerCase() === "clickup"
+            ? "clickup"
+            : "confluence",
     query,
     rangeStart,
     rangeEnd: safeCursor,

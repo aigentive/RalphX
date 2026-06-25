@@ -398,6 +398,32 @@ pub(crate) fn standard_chat_harness_cli_resolvers(
         .collect()
 }
 
+/// Test-only seam: seed the harness probe cache so harness-availability checks
+/// (e.g. `validate_chat_runtime_for_context`) resolve as available without a real
+/// agent CLI on PATH. Lib tests that exercise real start/send flows must call this
+/// so they pass on sandboxed CI runners that have no `claude`/`codex` binary.
+#[cfg(test)]
+pub(crate) fn seed_available_harness_probes_for_test() {
+    let cache = HARNESS_RUNTIME_PROBE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache.lock().expect("lock harness probe cache");
+    for harness in standard_harness_runtime_adapters().into_keys() {
+        cache.insert(
+            harness,
+            HarnessRuntimeProbe {
+                binary_path: Some("/tmp/test-harness".to_string()),
+                binary_found: true,
+                probe_succeeded: true,
+                available: true,
+                missing_core_exec_features: Vec::new(),
+                cli_version: None,
+                supported_model_aliases: None,
+                supported_efforts: None,
+                error: None,
+            },
+        );
+    }
+}
+
 fn probe_harness_uncached(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
     let adapters = standard_harness_runtime_adapters();
     adapters

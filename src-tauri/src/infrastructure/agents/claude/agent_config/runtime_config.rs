@@ -997,6 +997,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     if let Some(v) = lookup("RALPHX_UI_ATLASSIAN_OAUTH") {
         cfg.ui_feature_flags.atlassian_oauth = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
+    if let Some(v) = lookup("RALPHX_UI_TICKETING_DASHBOARD") {
+        cfg.ui_feature_flags.ticketing_dashboard =
+            matches!(v.to_lowercase().as_str(), "true" | "1");
+    }
 }
 
 /// Validate ReconciliationConfig fields and clamp to safe defaults on invalid values (GAP M7).

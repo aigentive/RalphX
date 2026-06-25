@@ -89,6 +89,10 @@ async fn install_skips_when_node_modules_directory_exists() {
     assert_eq!(log.len(), 1, "skip should record one log entry");
     assert_eq!(log[0].status, "skipped");
     assert_eq!(log[0].exit_code, None);
+    assert_eq!(
+        log[0].stderr,
+        "node_modules already exists — install skipped"
+    );
 }
 
 #[tokio::test]
@@ -117,6 +121,10 @@ async fn install_skips_when_node_modules_symlink_target_exists() {
     );
     assert_eq!(log.len(), 1, "skip should record one log entry");
     assert_eq!(log[0].status, "skipped");
+    assert_eq!(
+        log[0].stderr,
+        "node_modules already exists — install skipped"
+    );
     assert!(
         dir.path().join("node_modules").is_symlink(),
         "valid symlink should be preserved"
@@ -152,4 +160,29 @@ async fn install_removes_broken_node_modules_symlink_before_running_command() {
         !dir.path().join("node_modules").is_symlink(),
         "broken symlink should be removed before command execution"
     );
+}
+
+#[tokio::test]
+async fn install_captures_cancelled_commands_as_failures() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let entries = install_entry("sleep 2");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    cancel.cancel();
+
+    let (log, had_failures) = run_install_phase(
+        &entries,
+        dir.path(),
+        "test-task-id",
+        None,
+        &|s: &str| s.to_string(),
+        "test",
+        &cancel,
+    )
+    .await;
+
+    assert!(had_failures, "cancelled command should mark failure");
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0].status, "failed");
+    assert_eq!(log[0].stderr, "Command cancelled");
 }
