@@ -844,7 +844,7 @@ async fn test_resolve_pr_describer_runtime_uses_default_client_without_provider_
 }
 
 #[tokio::test]
-async fn test_resolve_workspace_reviewer_runtime_preserves_latest_run_model_and_effort() {
+async fn test_resolve_workspace_reviewer_runtime_uses_latest_run_harness_with_utility_model_lock() {
     let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let state = AppState::new_test()
@@ -865,17 +865,23 @@ async fn test_resolve_workspace_reviewer_runtime_preserves_latest_run_model_and_
     let runtime = state
         .resolve_workspace_reviewer_runtime(&conversation, Some(&latest_run))
         .await
-        .expect("workspace reviewer should resolve from latest run settings");
+        .expect("workspace reviewer should resolve from latest run harness");
 
     assert!(
         Arc::ptr_eq(&runtime.client, &codex_mock),
         "workspace reviewer should use the harness that produced the latest conversation run"
     );
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.5"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::High));
-    assert_eq!(runtime.approval_policy.as_deref(), Some("on-request"));
-    assert_eq!(runtime.sandbox_mode.as_deref(), Some("workspace-write"));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
+    assert_eq!(
+        runtime.approval_policy.as_deref(),
+        Some(CODEX_DEFAULT_APPROVAL_POLICY)
+    );
+    assert_eq!(
+        runtime.sandbox_mode.as_deref(),
+        Some(CODEX_DEFAULT_SANDBOX_MODE)
+    );
 }
 
 #[tokio::test]
@@ -899,7 +905,7 @@ async fn test_resolve_workspace_reviewer_runtime_uses_default_provider_without_r
         "conversations without run or provider metadata should use the enabled default provider"
     );
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Claude));
-    assert_eq!(runtime.model.as_deref(), Some("sonnet"));
+    assert_eq!(runtime.model.as_deref(), Some("haiku"));
     assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
 }
 

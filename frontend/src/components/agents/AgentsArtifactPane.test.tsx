@@ -1107,6 +1107,52 @@ describe("AgentsArtifactPane", () => {
     expect(within(content).queryByRole("heading", { name: "Review" })).not.toBeInTheDocument();
   });
 
+  it("polls the Review context while the background review is preparing", async () => {
+    vi.useFakeTimers();
+    try {
+      getWorkspaceReviewContextMock.mockResolvedValue({
+        success: true,
+        workspace: workspace({ mode: "edit" }),
+        events: [],
+        target: {
+          scope: "selected_source",
+          baseRef: "base-sha",
+          baseSha: "base-sha",
+          headRef: "refs/ralphx/pr-heads/351",
+          headSha: "head-sha",
+          diffFingerprint: "fingerprint-351",
+          sourcePullRequestNumber: 351,
+        },
+        monitor: {
+          status: "reviewing",
+          reviewArtifactId: null,
+          reviewArtifactVersion: null,
+        },
+        isCurrent: false,
+        isOutdated: false,
+        shouldShowTab: true,
+      });
+
+      renderPane("review", workspace({ mode: "edit" }), vi.fn(), false, conversation());
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {});
+
+      expect(screen.getByText("Preparing review...")).toBeInTheDocument();
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not fall back to publish for generic edit workspace pane opens", () => {
     renderPane("plan", workspace({ mode: "edit" }));
 
