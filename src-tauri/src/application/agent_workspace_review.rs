@@ -816,3 +816,517 @@ fn review_started_summary(target: &AgentWorkspaceReviewTarget) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::entities::{
+        AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ArtifactId,
+        ChatConversationId, IdeationAnalysisBaseRefKind,
+    };
+    use std::process::Command;
+
+    fn git(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git command should spawn");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn init_repo() -> (tempfile::TempDir, PathBuf, String) {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("repo dir should be created");
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "Test User"]);
+        std::fs::write(repo.join("README.md"), "base\n").expect("base file should be written");
+        git(&repo, &["add", "README.md"]);
+        git(&repo, &["commit", "-m", "base"]);
+        let base_sha = git(&repo, &["rev-parse", "HEAD"]);
+        (temp, repo, base_sha)
+    }
+
+    async fn seed_project(state: &AppState, repo: &Path) -> Project {
+        let mut project = Project::new(
+            "Workspace Review".to_string(),
+            repo.to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should persist");
+        project
+    }
+
+    fn workspace(
+        project: &Project,
+        worktree_path: &Path,
+        base_kind: IdeationAnalysisBaseRefKind,
+        base_ref: &str,
+        base_commit: Option<String>,
+    ) -> AgentConversationWorkspace {
+        AgentConversationWorkspace::new(
+            ChatConversationId::new(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            base_kind,
+            base_ref.to_string(),
+            Some(base_ref.to_string()),
+            base_commit,
+            "ralphx/test/workspace-review".to_string(),
+            worktree_path.to_string_lossy().to_string(),
+        )
+    }
+
+    fn committed_workspace_delta(repo: &Path) {
+        std::fs::write(repo.join("committed.rs"), "pub fn committed() {}\n")
+            .expect("committed file should be written");
+        git(repo, &["add", "committed.rs"]);
+        git(repo, &["commit", "-m", "committed change"]);
+    }
+
+    #[tokio::test]
+    async fn load_context_resolves_workspace_delta_and_monitor_fields() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+        std::fs::write(repo.join("staged.rs"), "pub fn staged() {}\n")
+            .expect("staged file should be written");
+        git(&repo, &["add", "staged.rs"]);
+        std::fs::write(repo.join("unstaged.rs"), "pub fn unstaged() {}\n")
+            .expect("unstaged file should be written");
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha.clone()),
+        );
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("workspace delta context should load");
+        let target = context.target.expect("workspace delta should be reviewable");
+
+        assert_eq!(target.scope, AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+        assert_eq!(target.base_ref, base_sha);
+        assert_eq!(target.head_ref, "HEAD");
+        assert!(target.base_sha.is_some());
+        assert!(target.head_sha.is_some());
+        assert!(!target.diff_fingerprint.is_empty());
+        assert_eq!(target.working_directory, repo);
+        assert!(!context.is_current);
+        assert!(!context.is_outdated);
+        assert!(context.should_show_tab);
+        assert_eq!(
+            context.monitor.current_target_scope,
+            Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
+        );
+        assert_eq!(context.monitor.workspace_head_ref.as_deref(), Some("HEAD"));
+        assert_eq!(context.monitor.workspace_base_ref.as_deref(), Some(base_sha.as_str()));
+    }
+
+    #[tokio::test]
+    async fn load_context_resolves_selected_branch_when_workspace_has_no_delta() {
+        let (temp, repo, _base_sha) = init_repo();
+        git(&repo, &["checkout", "-b", "feature/source"]);
+        std::fs::write(repo.join("feature.rs"), "pub fn feature() {}\n")
+            .expect("feature file should be written");
+        git(&repo, &["add", "feature.rs"]);
+        git(&repo, &["commit", "-m", "feature change"]);
+        let feature_head = git(&repo, &["rev-parse", "HEAD"]);
+        git(&repo, &["checkout", "main"]);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let missing_worktree = temp.path().join("missing-worktree");
+        let workspace = workspace(
+            &project,
+            &missing_worktree,
+            IdeationAnalysisBaseRefKind::LocalBranch,
+            "feature/source",
+            None,
+        );
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("selected branch context should load");
+        let target = context.target.expect("selected branch should be reviewable");
+
+        assert_eq!(
+            target.scope,
+            AgentWorkspaceReviewTargetScope::SelectedSource
+        );
+        assert_eq!(target.base_ref, "main");
+        assert_eq!(target.head_ref, "feature/source");
+        assert_eq!(target.head_sha.as_deref(), Some(feature_head.as_str()));
+        assert_eq!(target.source_pull_request_number, None);
+        assert_eq!(
+            context.monitor.selected_source_head_ref.as_deref(),
+            Some("feature/source")
+        );
+        assert!(context.should_show_tab);
+    }
+
+    #[tokio::test]
+    async fn load_context_resolves_selected_pull_request_metadata() {
+        let (temp, repo, _base_sha) = init_repo();
+        git(&repo, &["checkout", "-b", "feature/pr-42"]);
+        std::fs::write(repo.join("pr.rs"), "pub fn pr() {}\n")
+            .expect("pr file should be written");
+        git(&repo, &["add", "pr.rs"]);
+        git(&repo, &["commit", "-m", "pr change"]);
+        let pr_head = git(&repo, &["rev-parse", "HEAD"]);
+        git(&repo, &["checkout", "main"]);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let mut workspace = workspace(
+            &project,
+            &temp.path().join("missing-worktree"),
+            IdeationAnalysisBaseRefKind::PullRequest,
+            "feature/pr-42",
+            None,
+        );
+        workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+            number: 42,
+            url: Some("https://github.example/pr/42".to_string()),
+            title: Some("Review source".to_string()),
+            head_ref_name: "feature/pr-42".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: Some(pr_head.clone()),
+        });
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("selected PR context should load");
+        let target = context.target.expect("selected PR should be reviewable");
+
+        assert_eq!(target.base_ref, "main");
+        assert_eq!(target.head_ref, "feature/pr-42");
+        assert_eq!(target.head_sha.as_deref(), Some(pr_head.as_str()));
+        assert_eq!(target.source_pull_request_number, Some(42));
+        assert_eq!(
+            context.monitor.selected_source_pull_request_number,
+            Some(42)
+        );
+    }
+
+    #[tokio::test]
+    async fn load_context_handles_missing_sources_without_review_tab() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let missing_repo = temp.path().join("missing-repo");
+        let state = AppState::new_test();
+        let project = seed_project(&state, &missing_repo).await;
+        let workspace = workspace(
+            &project,
+            &temp.path().join("missing-worktree"),
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            None,
+        );
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("empty context should load");
+
+        assert!(context.target.is_none());
+        assert_eq!(context.monitor.status, AgentWorkspaceReviewMonitorStatus::Idle);
+        assert!(!context.is_current);
+        assert!(!context.is_outdated);
+        assert!(!context.should_show_tab);
+    }
+
+    #[tokio::test]
+    async fn existing_review_artifact_marks_context_current_then_outdated() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        let initial = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("initial context should load");
+        let target = initial.target.expect("initial target should exist");
+        let mut monitor = initial.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some("run-1".to_string()),
+            ArtifactId::from_string("artifact-1"),
+            1,
+            Utc::now(),
+            None,
+        );
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("monitor should persist");
+
+        let current = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("current context should load");
+        assert!(current.is_current);
+        assert!(!current.is_outdated);
+        assert_eq!(current.monitor.status, AgentWorkspaceReviewMonitorStatus::Ready);
+
+        std::fs::write(repo.join("later.rs"), "pub fn later() {}\n")
+            .expect("later file should be written");
+        let outdated = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("outdated context should load");
+        assert!(!outdated.is_current);
+        assert!(outdated.is_outdated);
+        assert!(outdated.should_show_tab);
+    }
+
+    #[tokio::test]
+    async fn start_review_skips_current_and_already_reviewing_targets() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = Arc::new(AppState::new_test());
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        let initial = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("initial context should load");
+        let target = initial.target.expect("target should exist");
+
+        let mut current_monitor = initial.monitor.clone();
+        apply_review_artifact_to_monitor(
+            &mut current_monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some("run-current".to_string()),
+            ArtifactId::from_string("artifact-current"),
+            2,
+            Utc::now(),
+            None,
+        );
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(current_monitor)
+            .await
+            .expect("current monitor should persist");
+        let current_start = start_agent_workspace_review(Arc::clone(&state), &workspace, false)
+            .await
+            .expect("current start should not spawn");
+        assert!(!current_start.started);
+        assert_eq!(current_start.skipped_reason.as_deref(), Some("current"));
+        assert_eq!(
+            current_start.context.monitor.status,
+            AgentWorkspaceReviewMonitorStatus::Ready
+        );
+
+        let mut reviewing_monitor =
+            AgentWorkspaceReviewMonitor::new(workspace.conversation_id.clone(), project.id.clone());
+        apply_current_target_to_monitor(&mut reviewing_monitor, Some(&target));
+        reviewing_monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(reviewing_monitor)
+            .await
+            .expect("reviewing monitor should persist");
+        let reviewing_start = start_agent_workspace_review(state, &workspace, false)
+            .await
+            .expect("reviewing start should not spawn");
+        assert!(!reviewing_start.started);
+        assert_eq!(
+            reviewing_start.skipped_reason.as_deref(),
+            Some("already_reviewing")
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_review_run_sets_ready_idle_and_blocked_statuses() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+
+        let idle = complete_agent_workspace_review_run(
+            &state,
+            &workspace,
+            Some("no_changes".to_string()),
+            None,
+            Some("run-idle".to_string()),
+        )
+        .await
+        .expect("idle completion should persist");
+        assert_eq!(idle.status, AgentWorkspaceReviewMonitorStatus::Idle);
+        assert_eq!(idle.last_run_id.as_deref(), Some("run-idle"));
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+        let mut ready_monitor = context.monitor;
+        apply_review_artifact_to_monitor(
+            &mut ready_monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some("run-ready".to_string()),
+            ArtifactId::from_string("artifact-ready"),
+            3,
+            Utc::now(),
+            None,
+        );
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(ready_monitor)
+            .await
+            .expect("ready monitor should persist");
+        let ready =
+            complete_agent_workspace_review_run(&state, &workspace, None, None, None)
+                .await
+                .expect("ready completion should persist");
+        assert_eq!(ready.status, AgentWorkspaceReviewMonitorStatus::Ready);
+        assert_eq!(ready.review_artifact_version, Some(3));
+
+        let blocked = complete_agent_workspace_review_run(
+            &state,
+            &workspace,
+            Some("blocked".to_string()),
+            Some("tool failed".to_string()),
+            Some("run-blocked".to_string()),
+        )
+        .await
+        .expect("blocked completion should persist");
+        assert_eq!(blocked.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(blocked.last_run_id.as_deref(), Some("run-blocked"));
+        assert_eq!(blocked.last_error.as_deref(), Some("blocked"));
+    }
+
+    #[tokio::test]
+    async fn mark_workspace_review_blocked_persists_monitor_error() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+
+        mark_workspace_review_blocked(
+            &state,
+            &workspace,
+            &target,
+            "helper-1",
+            "review failed".to_string(),
+        )
+        .await;
+
+        let monitor = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor read should succeed")
+            .expect("monitor should exist");
+        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(monitor.last_run_id.as_deref(), Some("helper-1"));
+        assert_eq!(monitor.last_error.as_deref(), Some("review failed"));
+        assert_eq!(
+            monitor.current_target_scope,
+            Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
+        );
+    }
+
+    #[test]
+    fn review_request_message_and_started_summary_describe_targets() {
+        let project_id = crate::domain::entities::ProjectId::new();
+        let workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-review-message"),
+            project_id,
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("main".to_string()),
+            Some("base-sha".to_string()),
+            "feature/review".to_string(),
+            "/tmp/worktree".to_string(),
+        );
+        let selected = AgentWorkspaceReviewTarget {
+            scope: AgentWorkspaceReviewTargetScope::SelectedSource,
+            base_ref: "main".to_string(),
+            base_sha: Some("base-sha".to_string()),
+            head_ref: "feature/review".to_string(),
+            head_sha: Some("head-sha".to_string()),
+            diff_fingerprint: "fingerprint".to_string(),
+            working_directory: PathBuf::from("/tmp/worktree"),
+            source_pull_request_number: Some(483),
+        };
+        let message = build_review_request_message(&workspace, &selected);
+        assert!(message.contains("Create or refresh the Review artifact"));
+        assert!(message.contains("- Scope: selected_source"));
+        assert!(message.contains("- Source pull request: #483"));
+        assert!(message.contains(&workspace.conversation_id.as_str()));
+        assert_eq!(
+            review_started_summary(&selected),
+            "Reviewing selected PR #483 against main."
+        );
+
+        let mut branch = selected.clone();
+        branch.source_pull_request_number = None;
+        assert_eq!(
+            review_started_summary(&branch),
+            "Reviewing selected source branch feature/review against main."
+        );
+
+        let mut workspace_delta = selected;
+        workspace_delta.scope = AgentWorkspaceReviewTargetScope::WorkspaceDelta;
+        assert_eq!(
+            review_started_summary(&workspace_delta),
+            "Reviewing current workspace changes."
+        );
+    }
+}

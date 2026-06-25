@@ -864,7 +864,8 @@ mod enum_roundtrip_tests {
     use super::{
         AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
         AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
-        AgentWorkspacePrReviewMonitorStatus,
+        AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitorStatus,
+        AgentWorkspaceReviewTargetScope,
     };
     use std::str::FromStr;
 
@@ -917,6 +918,35 @@ mod enum_roundtrip_tests {
     }
 
     #[test]
+    fn workspace_review_monitor_status_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentWorkspaceReviewMonitorStatus::Idle, "idle"),
+            (AgentWorkspaceReviewMonitorStatus::Reviewing, "reviewing"),
+            (AgentWorkspaceReviewMonitorStatus::Ready, "ready"),
+            (AgentWorkspaceReviewMonitorStatus::Blocked, "blocked"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(
+                AgentWorkspaceReviewMonitorStatus::from_str(text).unwrap(),
+                variant
+            );
+        }
+        assert!(AgentWorkspaceReviewMonitorStatus::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn workspace_review_target_scope_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentWorkspaceReviewTargetScope::SelectedSource, "selected_source"),
+            (AgentWorkspaceReviewTargetScope::WorkspaceDelta, "workspace_delta"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(AgentWorkspaceReviewTargetScope::from_str(text).unwrap(), variant);
+        }
+        assert!(AgentWorkspaceReviewTargetScope::from_str("bogus").is_err());
+    }
+
+    #[test]
     fn action_kind_display_and_from_str_roundtrip() {
         for (variant, text) in [
             (AgentWorkspacePrReviewActionKind::RequestChanges, "request_changes"),
@@ -946,6 +976,57 @@ mod enum_roundtrip_tests {
             );
         }
         assert!(AgentWorkspacePrReviewActionStatus::from_str("bogus").is_err());
+    }
+}
+
+#[cfg(test)]
+mod workspace_review_monitor_tests {
+    use super::{
+        AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+        AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, ProjectId,
+    };
+
+    #[test]
+    fn workspace_review_monitor_defaults_and_currentness_are_explicit() {
+        let conversation_id = ChatConversationId::from_string("review-monitor-conversation");
+        let project_id = ProjectId::from_string("project-1");
+        let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id);
+
+        assert_eq!(monitor.conversation_id, conversation_id);
+        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Idle);
+        assert!(monitor.current_target_scope.is_none());
+        assert!(monitor.review_artifact_id.is_none());
+        assert!(!monitor.is_current_for_target(
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            Some("head"),
+            "fingerprint"
+        ));
+
+        monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+        monitor.reviewed_head_sha = Some("head".to_string());
+        monitor.reviewed_diff_fingerprint = Some("fingerprint".to_string());
+        monitor.review_artifact_id = Some(ArtifactId::from_string("artifact-1"));
+
+        assert!(monitor.is_current_for_target(
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            Some("head"),
+            "fingerprint"
+        ));
+        assert!(!monitor.is_current_for_target(
+            AgentWorkspaceReviewTargetScope::SelectedSource,
+            Some("head"),
+            "fingerprint"
+        ));
+        assert!(!monitor.is_current_for_target(
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            Some("different-head"),
+            "fingerprint"
+        ));
+        assert!(!monitor.is_current_for_target(
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            Some("head"),
+            "different-fingerprint"
+        ));
     }
 }
 
