@@ -111,7 +111,10 @@ impl WebhookRegistrationRepository for MemoryWebhookRegistrationRepository {
         Ok(())
     }
 
-    async fn list_active_for_project(&self, project_id: &str) -> AppResult<Vec<WebhookRegistration>> {
+    async fn list_active_for_project(
+        &self,
+        project_id: &str,
+    ) -> AppResult<Vec<WebhookRegistration>> {
         let store = self.store.read().await;
         let project_id = project_id.to_string();
         let mut results: Vec<_> = store

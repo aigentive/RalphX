@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::domain::entities::{ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationSessionId};
+use crate::domain::entities::{
+    ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationSessionId,
+};
 use crate::domain::repositories::ExecutionPlanRepository;
 use crate::error::{AppError, AppResult};
 
@@ -40,7 +42,10 @@ impl ExecutionPlanRepository for MemoryExecutionPlanRepository {
         Ok(plans.get(id.as_str()).cloned())
     }
 
-    async fn get_by_session(&self, session_id: &IdeationSessionId) -> AppResult<Vec<ExecutionPlan>> {
+    async fn get_by_session(
+        &self,
+        session_id: &IdeationSessionId,
+    ) -> AppResult<Vec<ExecutionPlan>> {
         let plans = self.plans.read().await;
         let mut result: Vec<ExecutionPlan> = plans
             .values()
@@ -70,14 +75,20 @@ impl ExecutionPlanRepository for MemoryExecutionPlanRepository {
                 plan.status = ExecutionPlanStatus::Superseded;
                 Ok(())
             }
-            None => Err(AppError::NotFound(format!("Execution plan not found: {}", id))),
+            None => Err(AppError::NotFound(format!(
+                "Execution plan not found: {}",
+                id
+            ))),
         }
     }
 
     async fn delete(&self, id: &ExecutionPlanId) -> AppResult<()> {
         let mut plans = self.plans.write().await;
         if plans.remove(id.as_str()).is_none() {
-            return Err(AppError::NotFound(format!("Execution plan not found: {}", id)));
+            return Err(AppError::NotFound(format!(
+                "Execution plan not found: {}",
+                id
+            )));
         }
         Ok(())
     }

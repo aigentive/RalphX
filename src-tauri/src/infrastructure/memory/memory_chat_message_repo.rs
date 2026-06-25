@@ -266,7 +266,8 @@ impl ChatMessageRepository for MemoryChatMessageRepository {
         let messages = self.messages.read().unwrap();
 
         // Find the created_at of the cursor message if provided
-        let cursor_created_at = after_message_id.and_then(|id| messages.get(id).map(|m| m.created_at));
+        let cursor_created_at =
+            after_message_id.and_then(|id| messages.get(id).map(|m| m.created_at));
 
         let count = messages
             .values()
@@ -289,8 +290,8 @@ impl ChatMessageRepository for MemoryChatMessageRepository {
     ) -> AppResult<i64> {
         let messages = self.messages.read().unwrap();
 
-        let cursor_created_at = cursor_message_id
-            .and_then(|id| messages.get(id).map(|m| m.created_at));
+        let cursor_created_at =
+            cursor_message_id.and_then(|id| messages.get(id).map(|m| m.created_at));
 
         let count = messages
             .values()
@@ -318,9 +319,7 @@ impl ChatMessageRepository for MemoryChatMessageRepository {
             .filter(|m| {
                 m.role == MessageRole::User
                     && match context_type {
-                        "ideation" => {
-                            m.session_id.as_ref().map(|s| s.as_str()) == Some(context_id)
-                        }
+                        "ideation" => m.session_id.as_ref().map(|s| s.as_str()) == Some(context_id),
                         "task" | "task_execution" => {
                             m.task_id.as_ref().map(|s| s.as_str()) == Some(context_id)
                         }

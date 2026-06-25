@@ -55,6 +55,7 @@ const mockReviewSettings = {
   ai_review_enabled: true,
   ai_review_auto_fix: true,
   require_fix_approval: false,
+  auto_create_followup_agent_conversation: true,
 };
 
 const mockExternalMcpConfig = {
@@ -2350,6 +2351,7 @@ const commandHandlers: Record<
       requireHumanReview?: boolean;
       maxFixAttempts?: number;
       maxRevisionCycles?: number;
+      autoCreateFollowupAgentConversation?: boolean;
     };
     if (input.requireHumanReview !== undefined) {
       mockReviewSettings.require_human_review = input.requireHumanReview;
@@ -2359,6 +2361,10 @@ const commandHandlers: Record<
     }
     if (input.maxRevisionCycles !== undefined) {
       mockReviewSettings.max_revision_cycles = input.maxRevisionCycles;
+    }
+    if (input.autoCreateFollowupAgentConversation !== undefined) {
+      mockReviewSettings.auto_create_followup_agent_conversation =
+        input.autoCreateFollowupAgentConversation;
     }
     return { ...mockReviewSettings };
   },

@@ -47,8 +47,7 @@ impl MemoryIdeationSessionRepository {
     ) {
         session.verification_current_round =
             (snapshot.current_round > 0).then_some(snapshot.current_round);
-        session.verification_max_rounds =
-            (snapshot.max_rounds > 0).then_some(snapshot.max_rounds);
+        session.verification_max_rounds = (snapshot.max_rounds > 0).then_some(snapshot.max_rounds);
         session.verification_gap_count = snapshot.current_gaps.len() as u32;
         session.verification_gap_score = (!snapshot.current_gaps.is_empty())
             .then_some(crate::domain::services::gap_score(&snapshot.current_gaps));
@@ -202,10 +201,7 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
             .unwrap()
             .values()
             .filter(|s| {
-                s.inherited_plan_artifact_id
-                    .as_ref()
-                    .map(|id| id.as_str())
-                    == Some(artifact_id)
+                s.inherited_plan_artifact_id.as_ref().map(|id| id.as_str()) == Some(artifact_id)
             })
             .cloned()
             .collect())
@@ -338,12 +334,7 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
         &self,
         id: &IdeationSessionId,
     ) -> AppResult<Option<(VerificationStatus, bool)>> {
-        let session = self
-            .sessions
-            .read()
-            .unwrap()
-            .get(&id.to_string())
-            .cloned();
+        let session = self.sessions.read().unwrap().get(&id.to_string()).cloned();
         let Some(session) = session else {
             return Ok(None);
         };
@@ -354,7 +345,10 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
             .unwrap()
             .get(&(id.to_string(), session.verification_generation))
             .map(|snapshot| (snapshot.status, snapshot.in_progress))
-            .unwrap_or((session.verification_status, session.verification_in_progress));
+            .unwrap_or((
+                session.verification_status,
+                session.verification_in_progress,
+            ));
 
         Ok(Some(effective))
     }
@@ -364,10 +358,10 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
         id: &IdeationSessionId,
         snapshot: &VerificationRunSnapshot,
     ) -> AppResult<()> {
-        self.verification_runs.write().unwrap().insert(
-            (id.to_string(), snapshot.generation),
-            snapshot.clone(),
-        );
+        self.verification_runs
+            .write()
+            .unwrap()
+            .insert((id.to_string(), snapshot.generation), snapshot.clone());
         if let Some(session) = self.sessions.write().unwrap().get_mut(&id.to_string()) {
             if session.verification_generation == snapshot.generation {
                 Self::apply_verification_snapshot_summary(session, snapshot);
@@ -398,8 +392,9 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
         convergence_reason: String,
     ) -> AppResult<()> {
         if let Some(session) = self.sessions.write().unwrap().get_mut(&id.to_string()) {
-            session.plan_artifact_id =
-                Some(crate::domain::entities::ArtifactId::from_string(new_plan_artifact_id));
+            session.plan_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
+                new_plan_artifact_id,
+            ));
             session.verification_status = VerificationStatus::Skipped;
             session.verification_in_progress = false;
             session.verification_current_round = None;
@@ -423,9 +418,15 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
         _previous_version_id: String,
         convergence_reason: String,
     ) -> AppResult<()> {
-        if let Some(session) = self.sessions.write().unwrap().get_mut(&session_id.to_string()) {
-            session.plan_artifact_id =
-                Some(crate::domain::entities::ArtifactId::from_string(new_artifact_id));
+        if let Some(session) = self
+            .sessions
+            .write()
+            .unwrap()
+            .get_mut(&session_id.to_string())
+        {
+            session.plan_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
+                new_artifact_id,
+            ));
             session.verification_status = VerificationStatus::Skipped;
             session.verification_in_progress = false;
             session.verification_current_round = None;
@@ -473,9 +474,7 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
             .read()
             .unwrap()
             .values()
-            .filter(|s| {
-                s.verification_in_progress && s.status != IdeationSessionStatus::Archived
-            })
+            .filter(|s| s.verification_in_progress && s.status != IdeationSessionStatus::Archived)
             .cloned()
             .collect())
     }
@@ -551,7 +550,9 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
         // Exclude verification child sessions from counts
         let project_sessions: Vec<_> = sessions
             .values()
-            .filter(|s| &s.project_id == project_id && s.session_purpose != SessionPurpose::Verification)
+            .filter(|s| {
+                &s.project_id == project_id && s.session_purpose != SessionPurpose::Verification
+            })
             .collect();
 
         let drafts = project_sessions
@@ -587,7 +588,10 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
         _search: Option<&str>,
     ) -> AppResult<(Vec<IdeationSessionWithProgress>, u32)> {
         // Validate group
-        if !matches!(group, "drafts" | "in_progress" | "accepted" | "done" | "archived") {
+        if !matches!(
+            group,
+            "drafts" | "in_progress" | "accepted" | "done" | "archived"
+        ) {
             return Err(AppError::Validation(format!(
                 "Unknown session group: '{}'. Valid groups: drafts, in_progress, accepted, done, archived",
                 group
@@ -674,10 +678,7 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
         Ok(())
     }
 
-    fn count_active_by_session_sync(
-        _conn: &Connection,
-        _session_id: &str,
-    ) -> AppResult<i64>
+    fn count_active_by_session_sync(_conn: &Connection, _session_id: &str) -> AppResult<i64>
     where
         Self: Sized,
     {
@@ -686,10 +687,7 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
         ))
     }
 
-    async fn count_active_proposals(
-        &self,
-        _session_id: &IdeationSessionId,
-    ) -> AppResult<usize> {
+    async fn count_active_proposals(&self, _session_id: &IdeationSessionId) -> AppResult<usize> {
         // Memory repo has no proposal storage; return 0 (not an error).
         Ok(0)
     }
@@ -837,11 +835,7 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
         Ok(())
     }
 
-    async fn update_last_effective_model(
-        &self,
-        session_id: &str,
-        model: &str,
-    ) -> AppResult<()> {
+    async fn update_last_effective_model(&self, session_id: &str, model: &str) -> AppResult<()> {
         let mut sessions = self.sessions.write().unwrap();
         if let Some(session) = sessions.values_mut().find(|s| s.id.as_str() == session_id) {
             session.last_effective_model = Some(model.to_string());
@@ -910,7 +904,12 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
                     && s.pending_initial_prompt.is_some()
             })
             .min_by_key(|s| s.created_at)
-            .map(|s| (s.id.as_str().to_string(), s.pending_initial_prompt.clone().unwrap()));
+            .map(|s| {
+                (
+                    s.id.as_str().to_string(),
+                    s.pending_initial_prompt.clone().unwrap(),
+                )
+            });
 
         match candidate {
             None => Ok(None),
@@ -929,8 +928,7 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
         let mut project_ids: Vec<String> = sessions
             .values()
             .filter(|s| {
-                s.status == IdeationSessionStatus::Active
-                    && s.pending_initial_prompt.is_some()
+                s.status == IdeationSessionStatus::Active && s.pending_initial_prompt.is_some()
             })
             .map(|s| s.project_id.as_str().to_string())
             .collect::<std::collections::HashSet<_>>()
@@ -940,10 +938,7 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
         Ok(project_ids)
     }
 
-    async fn count_pending_sessions_for_project(
-        &self,
-        project_id: &ProjectId,
-    ) -> AppResult<u32> {
+    async fn count_pending_sessions_for_project(&self, project_id: &ProjectId) -> AppResult<u32> {
         let sessions = self.sessions.read().unwrap();
         let count = sessions
             .values()

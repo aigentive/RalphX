@@ -115,7 +115,9 @@ async fn test_get_latest_child_session_id_filters_by_purpose_and_archive_state()
     repo.create(parent.clone()).await.unwrap();
     repo.create(general_child).await.unwrap();
     repo.create(verification_child.clone()).await.unwrap();
-    repo.create(archived_verification_child.clone()).await.unwrap();
+    repo.create(archived_verification_child.clone())
+        .await
+        .unwrap();
 
     let latest_including_archived = repo
         .get_latest_child_session_id(&parent.id, Some(SessionPurpose::Verification), true)
@@ -238,13 +240,9 @@ async fn test_update_verification_state_roundtrip() {
     assert!(!in_progress);
 
     // Update
-    repo.update_verification_state(
-        &session.id,
-        VerificationStatus::Reviewing,
-        true
-    )
-    .await
-    .unwrap();
+    repo.update_verification_state(&session.id, VerificationStatus::Reviewing, true)
+        .await
+        .unwrap();
 
     let found = repo.get_by_id(&session.id).await.unwrap().unwrap();
     assert_eq!(found.verification_status, VerificationStatus::Reviewing);
@@ -259,13 +257,9 @@ async fn test_reset_verification_clears_all_3_columns_when_not_in_progress() {
     repo.create(session.clone()).await.unwrap();
 
     // Set to needs_revision, not in progress
-    repo.update_verification_state(
-        &session.id,
-        VerificationStatus::NeedsRevision,
-        false
-    )
-    .await
-    .unwrap();
+    repo.update_verification_state(&session.id, VerificationStatus::NeedsRevision, false)
+        .await
+        .unwrap();
 
     repo.reset_verification(&session.id).await.unwrap();
 
@@ -286,13 +280,9 @@ async fn test_reset_verification_is_noop_when_in_progress() {
     repo.create(session.clone()).await.unwrap();
 
     // Set to reviewing with in_progress = true
-    repo.update_verification_state(
-        &session.id,
-        VerificationStatus::Reviewing,
-        true
-    )
-    .await
-    .unwrap();
+    repo.update_verification_state(&session.id, VerificationStatus::Reviewing, true)
+        .await
+        .unwrap();
 
     // Reset should be a no-op because in_progress = true
     repo.reset_verification(&session.id).await.unwrap();
@@ -436,13 +426,9 @@ async fn test_archive_clears_verification_in_progress_when_set() {
     repo.create(session.clone()).await.unwrap();
 
     // Set verification_in_progress = true
-    repo.update_verification_state(
-        &session.id,
-        VerificationStatus::Reviewing,
-        true
-    )
-    .await
-    .unwrap();
+    repo.update_verification_state(&session.id, VerificationStatus::Reviewing, true)
+        .await
+        .unwrap();
 
     // Archive should atomically clear the flag
     repo.update_status(&session.id, IdeationSessionStatus::Archived)
@@ -492,17 +478,16 @@ async fn test_reset_verification_is_noop_for_imported_verified() {
     repo.create(session.clone()).await.unwrap();
 
     // Set to ImportedVerified, not in progress
-    repo.update_verification_state(
-        &session.id,
-        VerificationStatus::ImportedVerified,
-        false
-    )
-    .await
-    .unwrap();
+    repo.update_verification_state(&session.id, VerificationStatus::ImportedVerified, false)
+        .await
+        .unwrap();
 
     // reset_verification should return false (no-op) for ImportedVerified
     let result = repo.reset_verification(&session.id).await.unwrap();
-    assert!(!result, "reset_verification must return false for ImportedVerified");
+    assert!(
+        !result,
+        "reset_verification must return false for ImportedVerified"
+    );
 
     let found = repo.get_by_id(&session.id).await.unwrap().unwrap();
     assert_eq!(
@@ -530,17 +515,16 @@ async fn test_get_stale_in_progress_sessions_excludes_archived() {
         .unwrap();
 
     // Re-set verification_in_progress=true after archiving to simulate defense-in-depth scenario
-    repo.update_verification_state(
-        &session.id,
-        VerificationStatus::Reviewing,
-        true,
-    )
-    .await
-    .unwrap();
+    repo.update_verification_state(&session.id, VerificationStatus::Reviewing, true)
+        .await
+        .unwrap();
 
     // Use a future cutoff so updated_at is definitely before it
     let stale_cutoff = chrono::Utc::now() + chrono::Duration::hours(1);
-    let results = repo.get_stale_in_progress_sessions(stale_cutoff).await.unwrap();
+    let results = repo
+        .get_stale_in_progress_sessions(stale_cutoff)
+        .await
+        .unwrap();
     assert!(
         results.iter().all(|s| s.id != session.id),
         "archived session must be excluded from stale query even with verification_in_progress=true"
@@ -556,16 +540,15 @@ async fn test_get_stale_in_progress_sessions_includes_active() {
     repo.create(session.clone()).await.unwrap();
 
     // Set verification_in_progress=true (session stays Active)
-    repo.update_verification_state(
-        &session.id,
-        VerificationStatus::Reviewing,
-        true,
-    )
-    .await
-    .unwrap();
+    repo.update_verification_state(&session.id, VerificationStatus::Reviewing, true)
+        .await
+        .unwrap();
 
     let stale_cutoff = chrono::Utc::now() + chrono::Duration::hours(1);
-    let results = repo.get_stale_in_progress_sessions(stale_cutoff).await.unwrap();
+    let results = repo
+        .get_stale_in_progress_sessions(stale_cutoff)
+        .await
+        .unwrap();
     assert!(
         results.iter().any(|s| s.id == session.id),
         "active stale session must be included in stale query"
@@ -591,7 +574,10 @@ async fn test_set_pending_if_unset_sets_when_none() {
     assert!(result, "must return true when prompt was None");
 
     let fetched = repo.get_by_id(&session.id).await.unwrap().unwrap();
-    assert_eq!(fetched.pending_initial_prompt.as_deref(), Some("First message"));
+    assert_eq!(
+        fetched.pending_initial_prompt.as_deref(),
+        Some("First message")
+    );
 }
 
 #[tokio::test]

@@ -132,8 +132,7 @@ impl GlobalExecutionSettingsRepository for MemoryGlobalExecutionSettingsReposito
             global_ideation_max: new_settings
                 .global_ideation_max
                 .min(GLOBAL_MAX_CONCURRENT_LIMIT),
-            allow_ideation_borrow_idle_execution: new_settings
-                .allow_ideation_borrow_idle_execution,
+            allow_ideation_borrow_idle_execution: new_settings.allow_ideation_borrow_idle_execution,
         }
         .validate();
 

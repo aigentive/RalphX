@@ -33,6 +33,7 @@ import { useTaskMutation } from "@/hooks/useTaskMutation";
 import { useUiStore } from "@/stores/uiStore";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { useCreateIdeationSession } from "@/hooks/useIdeation";
+import { navigateToIdeationSession } from "@/lib/navigation";
 import { toast } from "sonner";
 import { useTaskExecutionState, formatDuration } from "@/hooks/useTaskExecutionState";
 import { usePlanBranchForTask } from "@/hooks/usePlanBranchForTask";
@@ -100,7 +101,6 @@ export function TaskCard({
 
   // UI Store - use selectedTaskId for split layout (TaskDetailOverlay handles rendering)
   const setSelectedTaskId = useUiStore((state) => state.setSelectedTaskId);
-  const setCurrentView = useUiStore((state) => state.setCurrentView);
 
   // Ideation Store and mutation
   const addSession = useIdeationStore((state) => state.addSession);
@@ -238,8 +238,7 @@ export function TaskCard({
       // Add session to store and set as active
       addSession(session);
       setActiveSession(session.id);
-      // Navigate to ideation view
-      setCurrentView("ideation");
+      navigateToIdeationSession(session.id);
     } catch (error) {
       console.error("Failed to start ideation:", error);
       toast.error("Failed to start ideation session");

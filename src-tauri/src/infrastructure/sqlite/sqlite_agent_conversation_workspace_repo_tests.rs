@@ -1,8 +1,8 @@
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
-    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidenceUpsert,
+    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope,
@@ -137,6 +137,68 @@ async fn linked_ideation_session_lookup_returns_latest_workspace_and_none_for_mi
 
     let missing = repo
         .get_by_linked_ideation_session_id(&IdeationSessionId::from_string("missing-session"))
+        .await
+        .unwrap();
+    assert!(missing.is_none());
+}
+
+#[tokio::test]
+async fn followup_blocker_lookup_returns_latest_active_workspace() {
+    let (db, repo, first_id) = setup_repo();
+    let origin_id = ChatConversationId::from_string("origin-conversation");
+
+    let mut first = make_workspace(first_id.clone());
+    first.mode = AgentConversationWorkspaceMode::Ideation;
+    repo.create_or_update(first).await.unwrap();
+    repo.save_followup_provenance(
+        &first_id,
+        AgentWorkspaceFollowupProvenance {
+            origin_conversation_id: origin_id.clone(),
+            source_task_id: Some("task-1".to_string()),
+            source_context_type: Some("task".to_string()),
+            source_context_id: Some("task-1".to_string()),
+            source_agent_name: Some("ralphx-execution-worker".to_string()),
+            spawn_reason: Some("out_of_scope_failure".to_string()),
+            blocker_fingerprint: Some("scope-drift:task-1:file".to_string()),
+        },
+    )
+    .await
+    .unwrap();
+    repo.update_status(&first_id, AgentConversationWorkspaceStatus::Archived)
+        .await
+        .unwrap();
+
+    let second_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    seed_conversation(&db, &second_id);
+    let mut second = make_workspace(second_id.clone());
+    second.mode = AgentConversationWorkspaceMode::Ideation;
+    second.branch_name = "ralphx/project/agent-second".to_string();
+    second.worktree_path = "/tmp/ralphx/agent-22222222".to_string();
+    repo.create_or_update(second).await.unwrap();
+    repo.save_followup_provenance(
+        &second_id,
+        AgentWorkspaceFollowupProvenance {
+            origin_conversation_id: origin_id.clone(),
+            source_task_id: Some("task-1".to_string()),
+            source_context_type: Some("task".to_string()),
+            source_context_id: Some("task-1".to_string()),
+            source_agent_name: Some("ralphx-execution-reviewer".to_string()),
+            spawn_reason: Some("out_of_scope_failure".to_string()),
+            blocker_fingerprint: Some("scope-drift:task-1:file".to_string()),
+        },
+    )
+    .await
+    .unwrap();
+
+    let found = repo
+        .find_active_followup_by_blocker(&origin_id, "task-1", "scope-drift:task-1:file")
+        .await
+        .unwrap()
+        .expect("active matching follow-up should be found");
+    assert_eq!(found.conversation_id, second_id);
+
+    let missing = repo
+        .find_active_followup_by_blocker(&origin_id, "task-1", "scope-drift:task-1:other")
         .await
         .unwrap();
     assert!(missing.is_none());

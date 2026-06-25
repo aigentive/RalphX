@@ -1,4 +1,5 @@
 import {
+  AlertCircle,
   CheckCircle2,
   FileText,
   GitPullRequestArrow,
@@ -127,6 +128,11 @@ const LazyAgentsLinearIssuePanel = lazy(() =>
     default: module.AgentsLinearIssuePanel,
   })),
 );
+const LazyAgentsIssuesPanel = lazy(() =>
+  import("@/components/agents/AgentsIssuesPanel").then((module) => ({
+    default: module.AgentsIssuesPanel,
+  })),
+);
 
 const ARTIFACT_TABS: Array<{
   id: IdeationArtifactTab;
@@ -134,6 +140,7 @@ const ARTIFACT_TABS: Array<{
   icon: ElementType;
 }> = [
   { id: "review", label: "Review", icon: FileText },
+  { id: "issues", label: "Issues", icon: AlertCircle },
   { id: "plan", label: "Plan", icon: FileText },
   { id: "verification", label: "Verification", icon: CheckCircle2 },
   { id: "proposal", label: "Proposals", icon: GitPullRequestArrow },
@@ -451,13 +458,22 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     ],
   );
   const availableArtifactTabIds = useMemo<IdeationArtifactTab[]>(() => {
+    const tabs =
+      conversation?.contextType === "project"
+        ? (["issues", ...availableIdeationTabIds] as IdeationArtifactTab[])
+        : availableIdeationTabIds;
     const shouldShowReviewTab =
       Boolean(reviewArtifactId) || Boolean(workspaceReviewContext?.shouldShowTab);
-    if (!shouldShowReviewTab || availableIdeationTabIds.includes("review")) {
-      return availableIdeationTabIds;
+    if (!shouldShowReviewTab || tabs.includes("review")) {
+      return tabs;
     }
-    return ["review", ...availableIdeationTabIds];
-  }, [availableIdeationTabIds, reviewArtifactId, workspaceReviewContext?.shouldShowTab]);
+    return ["review", ...tabs];
+  }, [
+    availableIdeationTabIds,
+    conversation?.contextType,
+    reviewArtifactId,
+    workspaceReviewContext?.shouldShowTab,
+  ]);
   const visibleTabs = useMemo(
     () => [
       ...ARTIFACT_TABS.filter((tab) => availableArtifactTabIds.includes(tab.id)),
@@ -476,7 +492,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           ? "jira"
           : showLinearTab
             ? "linear"
-            : "plan";
+            : visibleTabs.some((tab) => tab.id === "plan")
+              ? "plan"
+              : visibleTabs[0]?.id ?? "plan";
   const workspaceReviewAutoStartKey =
     conversationId && workspaceReviewContext?.target
       ? `${conversationId}:${workspaceReviewContext.target.scope}:${workspaceReviewContext.target.diffFingerprint}`
@@ -939,6 +957,17 @@ function ArtifactContent({
     return (
       <Suspense fallback={<EmptyArtifactState title="Loading Linear..." />}>
         <LazyAgentsLinearIssuePanel
+          conversationId={conversationId}
+          projectId={projectId}
+        />
+      </Suspense>
+    );
+  }
+
+  if (activeTab === "issues") {
+    return (
+      <Suspense fallback={<EmptyArtifactState title="Loading issues..." />}>
+        <LazyAgentsIssuesPanel
           conversationId={conversationId}
           projectId={projectId}
         />

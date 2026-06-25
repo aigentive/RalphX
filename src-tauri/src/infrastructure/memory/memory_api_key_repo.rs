@@ -70,9 +70,7 @@ impl ApiKeyRepository for MemoryApiKeyRepository {
     async fn revoke(&self, id: &ApiKeyId) -> AppResult<()> {
         let mut keys = self.keys.write().await;
         if let Some(key) = keys.get_mut(id.as_str()) {
-            let now = chrono::Utc::now()
-                .format("%Y-%m-%dT%H:%M:%SZ")
-                .to_string();
+            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
             key.revoked_at = Some(now);
         }
         Ok(())
@@ -137,24 +135,22 @@ impl ApiKeyRepository for MemoryApiKeyRepository {
             .rev()
             .take(limit)
             .enumerate()
-            .map(|(i, (api_key_id, tool_name, project_id, success, latency_ms))| AuditLogEntry {
-                id: i as i64,
-                api_key_id: api_key_id.clone(),
-                tool_name: tool_name.clone(),
-                project_id: project_id.clone(),
-                success: *success,
-                latency_ms: *latency_ms,
-                created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-            })
+            .map(
+                |(i, (api_key_id, tool_name, project_id, success, latency_ms))| AuditLogEntry {
+                    id: i as i64,
+                    api_key_id: api_key_id.clone(),
+                    tool_name: tool_name.clone(),
+                    project_id: project_id.clone(),
+                    success: *success,
+                    latency_ms: *latency_ms,
+                    created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                },
+            )
             .collect();
         Ok(entries)
     }
 
-    async fn update_api_key_permissions(
-        &self,
-        key_id: &str,
-        permissions: i64,
-    ) -> AppResult<()> {
+    async fn update_api_key_permissions(&self, key_id: &str, permissions: i64) -> AppResult<()> {
         let mut keys = self.keys.write().await;
         if let Some(key) = keys.get_mut(key_id) {
             key.permissions = permissions as i32;

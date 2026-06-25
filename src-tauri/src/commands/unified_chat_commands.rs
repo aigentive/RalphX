@@ -2832,25 +2832,40 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
     team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
     app: tauri::AppHandle<R>,
 ) -> Result<StartAgentConversationResponse, String> {
+    start_agent_conversation_for_state(
+        input,
+        state.inner(),
+        execution_state.inner(),
+        team_service.inner().clone(),
+        app,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub(crate) async fn start_agent_conversation_for_state<R: Runtime + 'static>(
+    input: StartAgentConversationInput,
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    team_service: std::sync::Arc<crate::application::TeamService>,
+    app: tauri::AppHandle<R>,
+) -> Result<StartAgentConversationResponse, String> {
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
-        state: state.inner(),
-        execution_state: execution_state.inner(),
-        team_service: Some(team_service.inner().clone()),
+        state,
+        execution_state,
+        team_service: Some(team_service),
         app_handle: app,
     })
     .start(input)
     .await?;
 
     let workspace_response = match result.workspace {
-        Some(workspace) => {
-            Some(agent_workspace_response_for_state(state.inner(), workspace).await?)
-        }
+        Some(workspace) => Some(agent_workspace_response_for_state(state, workspace).await?),
         None => None,
     };
 
     Ok(StartAgentConversationResponse {
-        conversation: agent_conversation_response_for_state(state.inner(), result.conversation)
-            .await?,
+        conversation: agent_conversation_response_for_state(state, result.conversation).await?,
         workspace: workspace_response,
         send_result: SendAgentMessageResponse::from(result.send_result),
     })

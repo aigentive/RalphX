@@ -108,7 +108,8 @@ impl ChatAttachmentRepository for MemoryChatAttachmentRepository {
         let mut attachments = self.attachments.write().unwrap();
         let mut count = 0;
         for attachment in attachments.values_mut() {
-            if attachment.conversation_id == *from_conversation_id && attachment.message_id.is_none()
+            if attachment.conversation_id == *from_conversation_id
+                && attachment.message_id.is_none()
             {
                 attachment.conversation_id = to_conversation_id.clone();
                 count += 1;

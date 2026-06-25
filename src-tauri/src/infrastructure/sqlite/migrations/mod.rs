@@ -350,12 +350,18 @@ mod v20260621201947_ticket_canonical_branches_tests;
 mod v20260622103000_agent_workspace_reviews;
 #[cfg(test)]
 mod v20260622103000_agent_workspace_reviews_tests;
+mod v20260622162352_agent_workspace_followup_provenance;
+#[cfg(test)]
+mod v20260622162352_agent_workspace_followup_provenance_tests;
 mod v20260623074101_clickup_integration_settings;
 #[cfg(test)]
 mod v20260623074101_clickup_integration_settings_tests;
 mod v20260625115000_custom_provider_binary;
 #[cfg(test)]
 mod v20260625115000_custom_provider_binary_tests;
+mod v20260625153000_agent_conversation_issues;
+#[cfg(test)]
+mod v20260625153000_agent_conversation_issues_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -446,7 +452,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260625115000;
+pub const SCHEMA_VERSION: i64 = 20260625153000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1232,6 +1238,11 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260622103000_agent_workspace_reviews::migrate,
     },
     Migration {
+        version: 20260622162352,
+        name: "agent_workspace_followup_provenance",
+        migrate: v20260622162352_agent_workspace_followup_provenance::migrate,
+    },
+    Migration {
         version: 20260623074101,
         name: "clickup_integration_settings",
         migrate: v20260623074101_clickup_integration_settings::migrate,
@@ -1240,6 +1251,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260625115000,
         name: "custom_provider_binary",
         migrate: v20260625115000_custom_provider_binary::migrate,
+    },
+    Migration {
+        version: 20260625153000,
+        name: "agent_conversation_issues",
+        migrate: v20260625153000_agent_conversation_issues::migrate,
     },
 ];
 

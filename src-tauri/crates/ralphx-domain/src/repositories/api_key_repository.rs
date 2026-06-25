@@ -1,6 +1,6 @@
-use async_trait::async_trait;
 use crate::domain::entities::{ApiKey, ApiKeyId, AuditLogEntry};
 use crate::error::AppResult;
+use async_trait::async_trait;
 
 /// Parameters for atomic key rotation.
 pub struct RotateKeyParams {
@@ -70,11 +70,7 @@ pub trait ApiKeyRepository: Send + Sync {
     ) -> AppResult<Vec<AuditLogEntry>>;
 
     /// Update the permissions bitmask for a key; returns Err if key not found
-    async fn update_api_key_permissions(
-        &self,
-        key_id: &str,
-        permissions: i64,
-    ) -> AppResult<()>;
+    async fn update_api_key_permissions(&self, key_id: &str, permissions: i64) -> AppResult<()>;
 
     /// Atomically rotate a key: create the new key, set its project associations,
     /// and set the old key's grace period — all in a single SQLite transaction.

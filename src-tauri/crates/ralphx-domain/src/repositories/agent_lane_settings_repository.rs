@@ -15,7 +15,8 @@ pub trait AgentLaneSettingsRepository: Send + Sync {
         lane: AgentLane,
     ) -> Result<Option<StoredAgentLaneSettings>, Box<dyn std::error::Error>>;
 
-    async fn list_global(&self) -> Result<Vec<StoredAgentLaneSettings>, Box<dyn std::error::Error>>;
+    async fn list_global(&self)
+        -> Result<Vec<StoredAgentLaneSettings>, Box<dyn std::error::Error>>;
 
     async fn list_for_project(
         &self,
