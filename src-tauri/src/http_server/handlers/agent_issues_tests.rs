@@ -3,7 +3,7 @@ use crate::application::{AppState, TeamService, TeamStateTracker};
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceFollowupProvenance,
-    ChatConversation, IdeationAnalysisBaseRefKind, ProjectId, Task,
+    ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId, ProjectId, Task,
     AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED, AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED,
 };
 use crate::domain::review::ReviewSettings;
@@ -83,6 +83,16 @@ async fn seed_project_conversation(app_state: &AppState) -> (ProjectId, ChatConv
         .await
         .unwrap();
     (project_id, conversation)
+}
+
+async fn seed_source_task(
+    app_state: &AppState,
+    project_id: &ProjectId,
+    session_id: Option<IdeationSessionId>,
+) -> Task {
+    let mut task = Task::new(project_id.clone(), "Source task".to_string());
+    task.ideation_session_id = session_id;
+    app_state.task_repo.create(task).await.unwrap()
 }
 
 async fn register_issue_ok(
@@ -232,6 +242,96 @@ async fn register_issue_validates_required_fields_and_origin_context() {
         register_issue_error(state, req).await.0,
         StatusCode::BAD_REQUEST
     );
+}
+
+#[tokio::test]
+async fn register_issue_resolves_origin_from_source_task_workspace() {
+    let app_state = Arc::new(AppState::new_test());
+    let mut settings = ReviewSettings::default();
+    settings.auto_create_followup_agent_conversation = false;
+    app_state
+        .review_settings_repo
+        .update_settings(&settings)
+        .await
+        .unwrap();
+    let state = test_http_state(Arc::clone(&app_state));
+    let (project_id, origin) = seed_project_conversation(&app_state).await;
+    let session_id = IdeationSessionId::from_string("session-issue");
+    let task = seed_source_task(&app_state, &project_id, Some(session_id.clone())).await;
+    let mut workspace = test_workspace(&origin, &project_id);
+    workspace.linked_ideation_session_id = Some(session_id);
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let response = register_issue_ok(state, {
+        let mut req = issue_request(None);
+        req.source_task_id = Some(task.id.as_str().to_string());
+        req
+    })
+    .await;
+
+    assert_eq!(response.issue.conversation_id, origin.id.as_str());
+    assert_eq!(response.issue.source_task_id.as_deref(), Some(task.id.as_str()));
+    assert!(!response.auto_followup_created);
+}
+
+#[tokio::test]
+async fn register_issue_rejects_invalid_source_task_origins() {
+    let app_state = Arc::new(AppState::new_test());
+    let state = test_http_state(Arc::clone(&app_state));
+    let (project_id, origin) = seed_project_conversation(&app_state).await;
+
+    let task_without_session = seed_source_task(&app_state, &project_id, None).await;
+    let no_session = register_issue_error(state.clone(), {
+        let mut req = issue_request(None);
+        req.source_task_id = Some(task_without_session.id.as_str().to_string());
+        req
+    })
+    .await;
+    assert_eq!(no_session.0, StatusCode::BAD_REQUEST);
+
+    let session_id = IdeationSessionId::from_string("session-issue-no-workspace");
+    let task_without_workspace =
+        seed_source_task(&app_state, &project_id, Some(session_id.clone())).await;
+    let no_workspace = register_issue_error(state.clone(), {
+        let mut req = issue_request(None);
+        req.source_task_id = Some(task_without_workspace.id.as_str().to_string());
+        req
+    })
+    .await;
+    assert_eq!(no_workspace.0, StatusCode::BAD_REQUEST);
+
+    let orphan_session_id = IdeationSessionId::from_string("session-issue-orphan");
+    let orphan_task =
+        seed_source_task(&app_state, &project_id, Some(orphan_session_id.clone())).await;
+    let orphan_conversation = ChatConversation::new_project(project_id.clone());
+    let mut orphan_workspace = test_workspace(&orphan_conversation, &project_id);
+    orphan_workspace.linked_ideation_session_id = Some(orphan_session_id);
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(orphan_workspace)
+        .await
+        .unwrap();
+    let missing_conversation = register_issue_error(state.clone(), {
+        let mut req = issue_request(None);
+        req.source_task_id = Some(orphan_task.id.as_str().to_string());
+        req
+    })
+    .await;
+    assert_eq!(missing_conversation.0, StatusCode::NOT_FOUND);
+
+    let other_project_id = ProjectId::new();
+    let other_task = seed_source_task(&app_state, &other_project_id, None).await;
+    let project_mismatch = register_issue_error(state, {
+        let mut req = issue_request(Some(origin.id.as_str()));
+        req.source_task_id = Some(other_task.id.as_str().to_string());
+        req
+    })
+    .await;
+    assert_eq!(project_mismatch.0, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

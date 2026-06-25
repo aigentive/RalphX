@@ -1,6 +1,7 @@
 use crate::domain::entities::{
     AgentConversationIssue, ChatConversationId, ProjectId,
     AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED, AGENT_CONVERSATION_ISSUE_STATUS_OPEN,
+    AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED,
 };
 use crate::domain::repositories::AgentConversationIssueRepository;
 use crate::testing::SqliteTestDb;
@@ -78,4 +79,54 @@ async fn issue_lifecycle_round_trips() {
         all_issues[0].status,
         AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED
     );
+}
+
+#[tokio::test]
+async fn issue_status_reopen_and_missing_mutations_round_trip() {
+    let db = SqliteTestDb::new("sqlite_agent_conversation_issue_repo_edge_tests");
+    let repo = SqliteAgentConversationIssueRepository::new(db.new_connection());
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    let issue = repo
+        .save(&make_issue(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let resolved = repo
+        .update_status(&issue.id, AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED)
+        .await
+        .unwrap()
+        .expect("issue should exist");
+    assert_eq!(resolved.status, AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED);
+    assert!(resolved.resolved_at.is_some());
+
+    let reopened = repo
+        .update_status(&issue.id, AGENT_CONVERSATION_ISSUE_STATUS_OPEN)
+        .await
+        .unwrap()
+        .expect("issue should still exist");
+    assert_eq!(reopened.status, AGENT_CONVERSATION_ISSUE_STATUS_OPEN);
+    assert!(reopened.resolved_at.is_none());
+
+    assert!(repo.get_by_id("missing").await.unwrap().is_none());
+    assert!(repo
+        .update_status("missing", AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repo
+        .link_followup_conversation("missing", &ChatConversationId::from_string("followup-1"))
+        .await
+        .unwrap()
+        .is_none());
+
+    let missing_fingerprint = repo
+        .find_open_by_fingerprint(
+            &conversation_id,
+            Some("other-task"),
+            "plan_drift",
+            "scope-drift:task-1:src/unrelated.rs",
+        )
+        .await
+        .unwrap();
+    assert!(missing_fingerprint.is_none());
 }

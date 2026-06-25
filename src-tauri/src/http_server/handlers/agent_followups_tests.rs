@@ -3,8 +3,8 @@ use crate::application::{AppState, TeamService, TeamStateTracker};
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceFollowupProvenance,
-    AgentWorkspaceSourcePullRequest, ChatConversation, IdeationAnalysisBaseRefKind, ProjectId,
-    Task, TaskId,
+    AgentWorkspaceSourcePullRequest, ChatConversation, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, ProjectId, Task, TaskId,
 };
 use crate::http_server::types::HttpServerState;
 use axum::{extract::State, Json};
@@ -68,6 +68,16 @@ async fn seed_project_conversation(app_state: &AppState) -> (ProjectId, ChatConv
         .await
         .unwrap();
     (project_id, conversation)
+}
+
+async fn seed_source_task(
+    app_state: &AppState,
+    project_id: &ProjectId,
+    session_id: Option<IdeationSessionId>,
+) -> Task {
+    let mut task = Task::new(project_id.clone(), "Source task".to_string());
+    task.ideation_session_id = session_id;
+    app_state.task_repo.create(task).await.unwrap()
 }
 
 #[test]
@@ -242,4 +252,95 @@ async fn create_followup_validates_origin_before_spawning_new_branch() {
     .err()
     .expect("new branch creation needs an initialized app handle");
     assert_eq!(unavailable.0, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn create_followup_resolves_origin_from_source_task_workspace() {
+    let app_state = Arc::new(AppState::new_test());
+    let state = test_http_state(Arc::clone(&app_state));
+    let (project_id, origin) = seed_project_conversation(&app_state).await;
+    let session_id = IdeationSessionId::from_string("session-followup");
+    let task = seed_source_task(&app_state, &project_id, Some(session_id.clone())).await;
+    let mut workspace = test_workspace(&origin, &project_id);
+    workspace.linked_ideation_session_id = Some(session_id);
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let unavailable = create_followup_agent_conversation_for_request(&state, {
+        let mut req = followup_request(None);
+        req.source_task_id = Some(task.id.as_str().to_string());
+        req
+    })
+    .await
+    .err()
+    .expect("resolved source-task origin still needs an initialized app handle");
+
+    assert_eq!(unavailable.0, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn create_followup_rejects_invalid_source_task_origins() {
+    let app_state = Arc::new(AppState::new_test());
+    let state = test_http_state(Arc::clone(&app_state));
+    let (project_id, origin) = seed_project_conversation(&app_state).await;
+
+    let task_without_session = seed_source_task(&app_state, &project_id, None).await;
+    let no_session = create_followup_agent_conversation_for_request(&state, {
+        let mut req = followup_request(None);
+        req.source_task_id = Some(task_without_session.id.as_str().to_string());
+        req
+    })
+    .await
+    .err()
+    .expect("source task without ideation session should be rejected");
+    assert_eq!(no_session.0, StatusCode::BAD_REQUEST);
+
+    let session_id = IdeationSessionId::from_string("session-without-workspace");
+    let task_without_workspace =
+        seed_source_task(&app_state, &project_id, Some(session_id.clone())).await;
+    let no_workspace = create_followup_agent_conversation_for_request(&state, {
+        let mut req = followup_request(None);
+        req.source_task_id = Some(task_without_workspace.id.as_str().to_string());
+        req
+    })
+    .await
+    .err()
+    .expect("source task without linked Agent workspace should be rejected");
+    assert_eq!(no_workspace.0, StatusCode::BAD_REQUEST);
+
+    let orphan_session_id = IdeationSessionId::from_string("session-orphan-workspace");
+    let orphan_task =
+        seed_source_task(&app_state, &project_id, Some(orphan_session_id.clone())).await;
+    let orphan_conversation = ChatConversation::new_project(project_id.clone());
+    let mut orphan_workspace = test_workspace(&orphan_conversation, &project_id);
+    orphan_workspace.linked_ideation_session_id = Some(orphan_session_id);
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(orphan_workspace)
+        .await
+        .unwrap();
+    let missing_conversation = create_followup_agent_conversation_for_request(&state, {
+        let mut req = followup_request(None);
+        req.source_task_id = Some(orphan_task.id.as_str().to_string());
+        req
+    })
+    .await
+    .err()
+    .expect("linked workspace without conversation should be rejected");
+    assert_eq!(missing_conversation.0, StatusCode::NOT_FOUND);
+
+    let other_project_id = ProjectId::new();
+    let other_task = seed_source_task(&app_state, &other_project_id, None).await;
+    let project_mismatch = create_followup_agent_conversation_for_request(&state, {
+        let mut req = followup_request(Some(origin.id.as_str()));
+        req.source_task_id = Some(other_task.id.as_str().to_string());
+        req
+    })
+    .await
+    .err()
+    .expect("source task from another project should be rejected");
+    assert_eq!(project_mismatch.0, StatusCode::BAD_REQUEST);
 }
