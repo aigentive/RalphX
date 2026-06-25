@@ -90,6 +90,32 @@ fn custom_codex_wrapper_path_takes_launch_precedence() {
 }
 
 #[test]
+fn custom_binary_requires_path_before_launch() {
+    let mut settings = provider_settings(
+        AgentHarnessKind::Codex,
+        AgentProviderCliManagementMode::UserManaged,
+    );
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some("   ".to_string());
+
+    let result = checked_provider_cli_launch_path(&settings, "test runtime")
+        .expect("custom launch path result");
+    let probe = provider_runtime_probe(&settings).expect("custom Codex probe");
+
+    assert!(result
+        .expect_err("missing custom path should fail")
+        .contains("path is required"));
+    assert!(!probe.available);
+    assert!(!probe.binary_found);
+    assert_eq!(probe.binary_path.as_deref(), Some("   "));
+    assert!(probe
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("path is required"));
+}
+
+#[test]
 fn custom_binary_rejects_relative_path_before_launch() {
     let mut settings = provider_settings(
         AgentHarnessKind::Codex,
@@ -130,6 +156,80 @@ fn custom_binary_rejects_non_launchable_file() {
 }
 
 #[test]
+fn custom_codex_binary_probe_reports_probe_error() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let codex_path = temp_dir.path().join("codex-wrapper");
+    write_executable(
+        &codex_path,
+        "#!/bin/sh\nprintf 'probe failed\\n' >&2\nexit 7\n",
+    );
+    let mut settings = provider_settings(
+        AgentHarnessKind::Codex,
+        AgentProviderCliManagementMode::UserManaged,
+    );
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some(codex_path.to_string_lossy().into_owned());
+
+    let probe = provider_runtime_probe(&settings).expect("custom Codex probe");
+
+    assert_eq!(
+        probe.binary_path.as_deref(),
+        Some(codex_path.to_string_lossy().as_ref())
+    );
+    assert!(probe.binary_found);
+    assert!(!probe.probe_succeeded);
+    assert!(!probe.available);
+    assert!(probe
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("probe failed"));
+}
+
+#[test]
+fn custom_codex_binary_probe_reports_missing_core_features() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let codex_path = temp_dir.path().join("codex-wrapper");
+    write_executable(
+        &codex_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 0.100.0\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Usage' 'Options:' '  --version'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Usage' 'Options:' '  --version'
+  exit 2
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+    );
+    let mut settings = provider_settings(
+        AgentHarnessKind::Codex,
+        AgentProviderCliManagementMode::UserManaged,
+    );
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some(codex_path.to_string_lossy().into_owned());
+
+    let probe = provider_runtime_probe(&settings).expect("custom Codex probe");
+
+    assert!(probe.binary_found);
+    assert!(probe.probe_succeeded);
+    assert!(!probe.available);
+    assert_eq!(probe.cli_version.as_deref(), Some("0.100.0"));
+    assert!(probe
+        .missing_core_exec_features
+        .contains(&"exec_subcommand".to_string()));
+    assert!(probe
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("Custom Codex binary is missing required capability"));
+}
+
+#[test]
 fn custom_claude_binary_probe_uses_selected_path() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let claude_path = temp_dir.path().join("claude-wrapper");
@@ -165,6 +265,37 @@ fi
         .supported_model_aliases
         .as_ref()
         .is_some_and(|aliases| aliases.contains(&"fable".to_string())));
+}
+
+#[test]
+fn custom_claude_binary_probe_reports_probe_error() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let claude_path = temp_dir.path().join("claude-wrapper");
+    write_executable(
+        &claude_path,
+        "#!/bin/sh\nprintf 'probe failed\\n' >&2\nexit 7\n",
+    );
+    let mut settings = provider_settings(
+        AgentHarnessKind::Claude,
+        AgentProviderCliManagementMode::UserManaged,
+    );
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some(claude_path.to_string_lossy().into_owned());
+
+    let probe = provider_runtime_probe(&settings).expect("custom Claude probe");
+
+    assert_eq!(
+        probe.binary_path.as_deref(),
+        Some(claude_path.to_string_lossy().as_ref())
+    );
+    assert!(probe.binary_found);
+    assert!(!probe.probe_succeeded);
+    assert!(!probe.available);
+    assert!(probe
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("probe failed"));
 }
 
 #[test]

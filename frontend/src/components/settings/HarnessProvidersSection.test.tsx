@@ -441,6 +441,44 @@ describe("HarnessProvidersSection", () => {
     });
   });
 
+  it("saves the first browsed custom binary path when the dialog returns an array", async () => {
+    const user = userEvent.setup();
+    dialogMocks.open.mockResolvedValueOnce([
+      "/opt/custom/codex-wrapper",
+      "/opt/custom/ignored",
+    ]);
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    await user.click(within(codexCard).getByLabelText("Use custom binary"));
+    await user.click(within(codexCard).getByRole("button", { name: "Browse" }));
+
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      customBinaryEnabled: true,
+      customBinaryPath: "/opt/custom/codex-wrapper",
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
+    });
+  });
+
+  it("does not save a custom binary path when browsing is cancelled", async () => {
+    const user = userEvent.setup();
+    dialogMocks.open.mockResolvedValueOnce(null);
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    await user.click(within(codexCard).getByLabelText("Use custom binary"));
+    await user.click(within(codexCard).getByRole("button", { name: "Browse" }));
+
+    expect(dialogMocks.open).toHaveBeenCalledWith({
+      directory: false,
+      multiple: false,
+      title: "Select Codex binary",
+    });
+    expect(updateProviderAsync).not.toHaveBeenCalled();
+  });
+
   it("disables managed controls and hides update actions for active custom binaries", () => {
     const customSettings: AgentProvidersSettingsResponse = {
       ...settings,
