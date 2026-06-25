@@ -448,6 +448,107 @@ pub async fn delete_project(id: String, state: State<'_, AppState>) -> Result<()
         .map_err(|e| e.to_string())
 }
 
+/// Read the exact project PR template content, if the fixed template file exists.
+#[tauri::command]
+pub async fn read_pr_template(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    read_pr_template_for_state(&project_id, &state).await
+}
+
+/// Write exact project PR template content to `.github/PULL_REQUEST_TEMPLATE.md`.
+#[tauri::command]
+pub async fn write_pr_template(
+    project_id: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    write_pr_template_for_state(&project_id, &content, &state).await
+}
+
+#[doc(hidden)]
+pub async fn read_pr_template_for_state(
+    project_id: &str,
+    state: &AppState,
+) -> Result<Option<String>, String> {
+    let working_dir = get_project_working_directory(project_id, state).await?;
+    crate::application::project_pr_template::read_pr_template(&working_dir)
+        .map_err(|e| e.to_string())
+}
+
+#[doc(hidden)]
+pub async fn write_pr_template_for_state(
+    project_id: &str,
+    content: &str,
+    state: &AppState,
+) -> Result<(), String> {
+    let working_dir = get_project_working_directory(project_id, state).await?;
+    crate::application::project_pr_template::write_pr_template(&working_dir, content)
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod pr_template_command_tests {
+    use super::*;
+
+    async fn state_with_project(root: &Path) -> (AppState, String) {
+        let state = AppState::new_test();
+        let project = state
+            .project_repo
+            .create(Project::new(
+                "Template Project".to_string(),
+                root.display().to_string(),
+            ))
+            .await
+            .unwrap();
+        (state, project.id.as_str().to_string())
+    }
+
+    #[tokio::test]
+    async fn read_pr_template_for_state_returns_none_when_template_is_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, project_id) = state_with_project(root.path()).await;
+
+        let content = read_pr_template_for_state(&project_id, &state)
+            .await
+            .unwrap();
+
+        assert_eq!(content, None);
+    }
+
+    #[tokio::test]
+    async fn write_pr_template_for_state_writes_exact_content() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, project_id) = state_with_project(root.path()).await;
+
+        write_pr_template_for_state(&project_id, "## Summary\n", &state)
+            .await
+            .unwrap();
+
+        let template_path = root.path().join(".github").join("pull_request_template.md");
+        assert_eq!(
+            std::fs::read_to_string(template_path).unwrap(),
+            "## Summary\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn pr_template_helpers_return_project_lookup_errors() {
+        let state = AppState::new_test();
+
+        let read_error = read_pr_template_for_state("missing-project", &state)
+            .await
+            .unwrap_err();
+        let write_error = write_pr_template_for_state("missing-project", "content", &state)
+            .await
+            .unwrap_err();
+
+        assert!(read_error.contains("Project not found"));
+        assert!(write_error.contains("Project not found"));
+    }
+}
+
 /// Update custom analysis override for a project (Settings UI)
 /// Sets or clears the custom_analysis JSON field.
 #[tauri::command]
@@ -920,12 +1021,12 @@ where
 fn parse_gh_auth_login_prompt(line: &str) -> Option<GhAuthLoginPrompt> {
     let code = line
         .split_once("one-time code:")
-        .map(|(_, value)| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+        .and_then(|(_, value)| value.split_whitespace().next())
+        .map(str::to_string);
     let url = line
         .split_once("web browser:")
-        .map(|(_, value)| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+        .and_then(|(_, value)| value.split_whitespace().next())
+        .map(str::to_string);
 
     (code.is_some() || url.is_some()).then_some(GhAuthLoginPrompt { code, url })
 }
@@ -1542,5 +1643,143 @@ mod git_auth_command_tests {
             .await
             .expect_err("missing branches directory should fail")
             .contains("Directory does not exist"));
+    }
+
+    #[tokio::test]
+    async fn get_git_remote_url_skips_missing_and_non_github_remotes() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let repo = tmp.path();
+        Command::new(resolve_git_cli_path())
+            .args(["init"])
+            .current_dir(repo)
+            .output()
+            .expect("git init should run");
+
+        let state = AppState::new_test();
+        let mut project = Project::new("Remote".to_string(), repo.to_string_lossy().to_string());
+        project.id = ProjectId::from_string("project-remote-test".to_string());
+        state.project_repo.create(project).await.unwrap();
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let result = get_git_remote_url(
+            "project-remote-test".to_string(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("get_git_remote_url should succeed with missing remote");
+        assert!(result.is_none());
+
+        Command::new(resolve_git_cli_path())
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://gitlab.com/aigentive/test-repo.git",
+            ])
+            .current_dir(repo)
+            .output()
+            .expect("git remote add should run");
+
+        let gitlab = get_git_remote_url(
+            "project-remote-test".to_string(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("get_git_remote_url should succeed for non-github remote");
+        assert!(gitlab.is_none());
+
+        Command::new(resolve_git_cli_path())
+            .args([
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/aigentive/test-repo.git",
+            ])
+            .current_dir(repo)
+            .output()
+            .expect("git remote set-url should run");
+
+        let github = get_git_remote_url(
+            "project-remote-test".to_string(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("get_git_remote_url should succeed for github remote");
+        assert_eq!(
+            github,
+            Some("https://github.com/aigentive/test-repo.git".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn switch_git_origin_to_ssh_rejects_non_convertible_origin() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let repo = tmp.path();
+        Command::new(resolve_git_cli_path())
+            .args(["init"])
+            .current_dir(repo)
+            .output()
+            .expect("git init should run");
+
+        Command::new(resolve_git_cli_path())
+            .args(["remote", "add", "origin", "https://bitbucket.org/aigentive/test-repo.git"])
+            .current_dir(repo)
+            .output()
+            .expect("git remote add should run");
+
+        let state = AppState::new_test();
+        let mut project = Project::new("Remote".to_string(), repo.to_string_lossy().to_string());
+        project.id = ProjectId::from_string("project-remote-switch".to_string());
+        state.project_repo.create(project).await.unwrap();
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let result = switch_git_origin_to_ssh(
+            "project-remote-switch".to_string(),
+            app.state::<AppState>(),
+        )
+        .await;
+
+        let error = result.expect_err("non-github remote should not be convertible");
+        assert!(
+            error.contains("Origin is not a convertible GitHub HTTPS remote"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_git_config_command_fails_if_directory_is_missing() {
+        let missing = tempfile::tempdir()
+            .expect("tempdir should be created")
+            .path()
+            .join("missing-dir");
+        let error = run_git_config_command(&missing, &["remote", "get-url", "origin"])
+            .await
+            .expect_err("command should fail when current dir is missing");
+        assert!(
+            error.contains("Failed to spawn git")
+                || error.contains("git config command timed out"),
+            "expected spawn or timeout failure, got {error}"
+        );
+    }
+
+    #[test]
+    fn gh_auth_login_prompt_exposes_code_and_url_together() {
+        let prompt = parse_gh_auth_login_prompt(
+            "Open this URL to continue: one-time code: ABCD-EFGH\nweb browser: https://github.com/login/device",
+        )
+        .expect("prompt should parse");
+        assert_eq!(prompt.code, Some("ABCD-EFGH".to_string()));
+        assert_eq!(
+            prompt.url,
+            Some("https://github.com/login/device".to_string())
+        );
     }
 }
