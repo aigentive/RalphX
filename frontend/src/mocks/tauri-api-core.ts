@@ -668,7 +668,7 @@ const mockTicketingTickets = [
   },
   {
     ref: { provider: "clickup", id: "cu-1001", key: "CU-1001" },
-    title: "Wire ClickUp tasks into the unified dashboard",
+    title: "Demo ClickUp dashboard task",
     state: { id: "in_progress", name: "In Progress", category: "in_progress", color: null },
     assignee: { id: "cu-user-1", name: "A. Demian", email: null, avatarUrl: null },
     reporter: { id: "cu-user-2", name: "Platform", email: null, avatarUrl: null },

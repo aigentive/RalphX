@@ -170,6 +170,15 @@ where
         fetch_task_detail(self, &auth.api_token, task_id).await
     }
 
+    async fn fetch_task_by_custom_id(
+        &self,
+        auth: &ClickUpAuthContext,
+        team_id: &str,
+        task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        fetch_task_detail_by_custom_id(self, &auth.api_token, team_id, task_id).await
+    }
+
     async fn list_statuses(
         &self,
         auth: &ClickUpAuthContext,
@@ -363,19 +372,32 @@ pub(crate) async fn fetch_task_detail<C: ClickUpJsonRequester + ?Sized>(
     token: &str,
     task_id: &str,
 ) -> Result<ClickUpTaskContent, String> {
-    let task_url = format!(
-        "{CLICKUP_API_BASE}/task/{}",
-        percent_encode_path_segment(task_id)
-    );
+    fetch_task_detail_with_query(client, token, task_id, None).await
+}
+
+pub(crate) async fn fetch_task_detail_by_custom_id<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    team_id: &str,
+    task_id: &str,
+) -> Result<ClickUpTaskContent, String> {
+    let query = clickup_custom_task_id_query(team_id);
+    fetch_task_detail_with_query(client, token, task_id, Some(query.as_str())).await
+}
+
+async fn fetch_task_detail_with_query<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    task_id: &str,
+    custom_task_query: Option<&str>,
+) -> Result<ClickUpTaskContent, String> {
+    let task_url = clickup_task_url(task_id, custom_task_query);
     let value = client
         .request_json(Method::GET, task_url, token, None)
         .await?;
     let mut content = task_content_from_value(&value)
         .ok_or_else(|| "ClickUp task response was missing task details".to_string())?;
-    let comments_url = format!(
-        "{CLICKUP_API_BASE}/task/{}/comment",
-        percent_encode_path_segment(task_id)
-    );
+    let comments_url = clickup_task_comments_url(task_id, custom_task_query);
     let comments = client
         .request_json(Method::GET, comments_url, token, None)
         .await?;
@@ -387,6 +409,37 @@ pub(crate) async fn fetch_task_detail<C: ClickUpJsonRequester + ?Sized>(
         comment.replies = fetch_clickup_comment_replies(client, token, &comment.id).await?;
     }
     Ok(content)
+}
+
+fn clickup_task_url(task_id: &str, custom_task_query: Option<&str>) -> String {
+    append_query(
+        format!(
+            "{CLICKUP_API_BASE}/task/{}",
+            percent_encode_path_segment(task_id)
+        ),
+        custom_task_query,
+    )
+}
+
+fn clickup_task_comments_url(task_id: &str, custom_task_query: Option<&str>) -> String {
+    append_query(
+        format!(
+            "{CLICKUP_API_BASE}/task/{}/comment",
+            percent_encode_path_segment(task_id)
+        ),
+        custom_task_query,
+    )
+}
+
+fn clickup_custom_task_id_query(team_id: &str) -> String {
+    format!("custom_task_ids=true&team_id={}", percent_encode(team_id))
+}
+
+fn append_query(url: String, query: Option<&str>) -> String {
+    match query {
+        Some(query) => format!("{url}?{query}"),
+        None => url,
+    }
 }
 
 async fn fetch_clickup_comment_replies<C: ClickUpJsonRequester + ?Sized>(

@@ -60,10 +60,10 @@ function renderIntegrationHook({
 
 describe("agentComposerKeys", () => {
   it("normalizes null integration kind in the query key", () => {
-    expect(agentComposerKeys.integrations(null, "mbe")).toEqual([
+    expect(agentComposerKeys.integrations(null, "demo")).toEqual([
       "agent-composer",
       "integrations",
-      { kind: null, query: "mbe" },
+      { kind: null, query: "demo" },
     ]);
   });
 });
@@ -82,9 +82,9 @@ describe("useAgentComposerIntegrationResources", () => {
     vi.mocked(clickupApi.searchTasks).mockResolvedValue([
       {
         id: "task-1",
-        customId: "MBE-2857",
-        name: "Inbox classifier",
-        url: "https://app.clickup.com/t/MBE-2857",
+        customId: "TASK-123",
+        name: "Demo task",
+        url: "https://app.clickup.com/t/TASK-123",
         statusName: "To Do",
         statusType: "open",
         statusCategory: "todo",
@@ -99,7 +99,7 @@ describe("useAgentComposerIntegrationResources", () => {
 
     const { result } = renderIntegrationHook({
       kind: "clickup",
-      query: "inbox classifier",
+      query: "demo task",
     });
 
     expect(result.current.fetchStatus).toBe("idle");
@@ -107,14 +107,14 @@ describe("useAgentComposerIntegrationResources", () => {
 
     await waitFor(() =>
       expect(clickupApi.searchTasks).toHaveBeenCalledWith({
-        query: "inbox classifier",
+        query: "demo task",
         limit: 10,
       }),
       { timeout: 2_000 },
     );
     await waitFor(() =>
       expect(result.current.data).toEqual([
-        expect.objectContaining({ id: "task-1", customId: "MBE-2857" }),
+        expect.objectContaining({ id: "task-1", customId: "TASK-123" }),
       ]),
     );
   });
@@ -162,12 +162,12 @@ describe("useAgentComposerIntegrationResources", () => {
   it("does not call provider APIs while disabled or kindless", () => {
     const disabled = renderIntegrationHook({
       kind: "clickup",
-      query: "mbe",
+      query: "demo",
       enabled: false,
     });
     const kindless = renderIntegrationHook({
       kind: null,
-      query: "mbe",
+      query: "demo",
     });
 
     expect(disabled.result.current.fetchStatus).toBe("idle");
