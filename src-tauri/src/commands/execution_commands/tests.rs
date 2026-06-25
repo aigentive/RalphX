@@ -3,7 +3,9 @@ use crate::application::chat_service::{ChatService, MockChatService};
 use crate::commands::execution_commands::lifecycle::{
     determine_paused_restore_status, prepare_resumed_task_for_entry_actions,
 };
-use crate::domain::entities::{ChatConversation, GitMode, IdeationSession};
+use crate::domain::entities::{
+    AgentRun, ChatConversation, ChatConversationId, GitMode, IdeationSession,
+};
 use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
 use std::sync::Arc;
 use tauri::test::{mock_builder, mock_context, noop_assets};
@@ -579,6 +581,58 @@ fn test_update_global_execution_settings_input_deserialization() {
     assert_eq!(input.workspace_max_concurrent, 10);
     assert_eq!(input.global_ideation_max, 5);
     assert!(input.allow_ideation_borrow_idle_execution);
+}
+
+#[tokio::test]
+async fn test_update_global_execution_settings_syncs_runtime_state_and_persists() {
+    let active_project_state = Arc::new(ActiveProjectState::new());
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.set_global_max_concurrent(2);
+    execution_state.set_workspace_max_concurrent(1);
+    execution_state.set_global_ideation_max(1);
+    execution_state.set_allow_ideation_borrow_idle_execution(false);
+    let app_state = AppState::new_test();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&active_project_state))
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = update_global_execution_settings(
+        UpdateGlobalExecutionSettingsInput {
+            global_max_concurrent: 12,
+            workspace_max_concurrent: 6,
+            global_ideation_max: 5,
+            allow_ideation_borrow_idle_execution: true,
+        },
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("global settings should update");
+
+    assert_eq!(response.global_max_concurrent, 12);
+    assert_eq!(response.workspace_max_concurrent, 6);
+    assert_eq!(response.global_ideation_max, 5);
+    assert!(response.allow_ideation_borrow_idle_execution);
+    assert_eq!(execution_state.global_max_concurrent(), 12);
+    assert_eq!(execution_state.workspace_max_concurrent(), 6);
+    assert_eq!(execution_state.global_ideation_max(), 5);
+    assert!(execution_state.allow_ideation_borrow_idle_execution());
+
+    let stored = app
+        .state::<AppState>()
+        .global_execution_settings_repo
+        .get_settings()
+        .await
+        .expect("stored global settings");
+    assert_eq!(stored.global_max_concurrent, 12);
+    assert_eq!(stored.workspace_max_concurrent, 6);
+    assert_eq!(stored.global_ideation_max, 5);
+    assert!(stored.allow_ideation_borrow_idle_execution);
 }
 
 // ========================================
@@ -1920,6 +1974,311 @@ async fn test_project_scoped_workspace_resume_respects_global_workspace_capacity
             .len(),
         1,
         "project-scoped resume must still respect the global workspace lane cap"
+    );
+}
+
+#[tokio::test]
+async fn test_get_running_processes_reports_scoped_lanes_and_capacity() {
+    let active_project_state = Arc::new(ActiveProjectState::new());
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.set_global_max_concurrent(7);
+    execution_state.set_workspace_max_concurrent(1);
+    execution_state.set_allow_ideation_borrow_idle_execution(true);
+    let app_state = AppState::new_test();
+
+    let project = Project::new(
+        "Scoped Running Project".to_string(),
+        "/test/scoped-running-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let other_project = Project::new(
+        "Other Running Project".to_string(),
+        "/test/other-running-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(other_project.clone())
+        .await
+        .unwrap();
+
+    app_state
+        .execution_settings_repo
+        .update_settings(
+            Some(&project.id),
+            &ExecutionSettings {
+                max_concurrent_tasks: 4,
+                project_ideation_max: 1,
+                auto_commit: false,
+                pause_on_failure: false,
+                ..ExecutionSettings::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.title = Some("Feature workspace".to_string());
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let other_conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(other_project.id.clone()))
+        .await
+        .unwrap();
+
+    let running_task = app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Executing,
+            ..Task::new(project.id.clone(), "Running task".to_string())
+        })
+        .await
+        .unwrap();
+    app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Ready,
+            ..Task::new(project.id.clone(), "Queued ready task".to_string())
+        })
+        .await
+        .unwrap();
+    let other_task = app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Executing,
+            ..Task::new(other_project.id.clone(), "Other running task".to_string())
+        })
+        .await
+        .unwrap();
+    let task_run = app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .unwrap();
+    let other_task_run = app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .unwrap();
+
+    let mut ideation_session = IdeationSession::new(project.id.clone());
+    ideation_session.title = Some("Planning session".to_string());
+    let ideation_session = app_state
+        .ideation_session_repo
+        .create(ideation_session)
+        .await
+        .unwrap();
+    let other_ideation_session = app_state
+        .ideation_session_repo
+        .create(IdeationSession::new(other_project.id.clone()))
+        .await
+        .unwrap();
+    let ideation_run = app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .unwrap();
+    let other_ideation_run = app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .unwrap();
+
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        conversation.id.as_str(),
+        "queued workspace message".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::TaskExecution,
+        running_task.id.as_str(),
+        "queued task message".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Ideation,
+        ideation_session.id.as_str(),
+        "queued ideation message".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        other_conversation.id.as_str(),
+        "other queued workspace message".to_string(),
+    );
+
+    let mut live_process = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("spawn disposable process for live registry rows");
+    let pid = live_process.id();
+    let workspace_key = RunningAgentKey::new("project", conversation.id.as_str());
+    app_state
+        .running_agent_registry
+        .register(
+            workspace_key.clone(),
+            pid,
+            conversation.id.as_str().to_string(),
+            "workspace-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .update_agent_process(
+            &workspace_key,
+            pid,
+            &conversation.id.as_str(),
+            "workspace-run",
+            None,
+            None,
+            Some("gpt-5.5".to_string()),
+        )
+        .await
+        .unwrap();
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", other_conversation.id.as_str()),
+            pid,
+            other_conversation.id.as_str().to_string(),
+            "other-workspace-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("task_execution", running_task.id.as_str()),
+            pid,
+            "task-conversation".to_string(),
+            task_run.id.as_str(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("task_execution", other_task.id.as_str()),
+            pid,
+            "other-task-conversation".to_string(),
+            other_task_run.id.as_str(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("ideation", ideation_session.id.as_str()),
+            pid,
+            "ideation-conversation".to_string(),
+            ideation_run.id.as_str(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("ideation", other_ideation_session.id.as_str()),
+            pid,
+            "other-ideation-conversation".to_string(),
+            other_ideation_run.id.as_str(),
+            None,
+            None,
+        )
+        .await;
+
+    let app = mock_builder()
+        .manage(Arc::clone(&active_project_state))
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = get_running_processes(
+        Some(project.id.as_str().to_string()),
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("running processes should load");
+
+    let _ = live_process.kill();
+    let _ = live_process.wait();
+
+    assert_eq!(response.workspace_sessions.len(), 1);
+    assert_eq!(
+        response.workspace_sessions[0].conversation_id,
+        conversation.id.as_str()
+    );
+    assert_eq!(response.workspace_sessions[0].project_id, project.id.as_str());
+    assert_eq!(response.workspace_sessions[0].title, "Feature workspace");
+    assert_eq!(
+        response.workspace_sessions[0].model.as_deref(),
+        Some("gpt-5.5")
+    );
+    assert_eq!(response.processes.len(), 1);
+    assert_eq!(response.processes[0].task_id, running_task.id.as_str());
+    assert_eq!(response.ideation_sessions.len(), 1);
+    assert_eq!(
+        response.ideation_sessions[0].session_id,
+        ideation_session.id.as_str()
+    );
+    assert!(response.ideation_sessions[0].is_generating);
+
+    let workspace_lane = response
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == "workspaces")
+        .expect("workspace lane");
+    assert_eq!(workspace_lane.active, 1);
+    assert_eq!(workspace_lane.waiting, 1);
+    assert_eq!(workspace_lane.max, 1);
+    assert_eq!(workspace_lane.borrowed, 0);
+    assert_eq!(workspace_lane.priority_rank, 1);
+
+    let task_lane = response
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == "tasks")
+        .expect("tasks lane");
+    assert_eq!(task_lane.active, 1);
+    assert_eq!(task_lane.waiting, 2);
+    assert_eq!(task_lane.max, 4);
+    assert_eq!(task_lane.priority_rank, 2);
+
+    let ideation_lane = response
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == "ideation")
+        .expect("ideation lane");
+    assert_eq!(ideation_lane.active, 1);
+    assert_eq!(ideation_lane.idle, 0);
+    assert_eq!(ideation_lane.waiting, 1);
+    assert_eq!(ideation_lane.max, 1);
+    assert_eq!(ideation_lane.priority_rank, 3);
+
+    assert_eq!(response.capacity.total_active, 3);
+    assert_eq!(response.capacity.global_max_concurrent, 7);
+    assert!(response.capacity.borrowing_enabled);
+    assert_eq!(
+        response.capacity.priority,
+        vec![
+            "workspaces".to_string(),
+            "tasks".to_string(),
+            "ideation".to_string(),
+        ]
     );
 }
 

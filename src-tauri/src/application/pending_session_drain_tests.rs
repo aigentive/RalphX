@@ -100,3 +100,75 @@ async fn pending_drain_does_not_borrow_when_workspace_queue_waits() {
         Some("pending ideation")
     );
 }
+
+#[tokio::test]
+async fn pending_drain_launches_oldest_session_when_capacity_is_available() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.set_global_max_concurrent(5);
+    execution_state.set_global_ideation_max(5);
+
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Pending Capacity Available".to_string(),
+            "/test/pending-capacity-available".to_string(),
+        ))
+        .await
+        .unwrap();
+    app_state
+        .execution_settings_repo
+        .update_settings(
+            Some(&project.id),
+            &ExecutionSettings {
+                max_concurrent_tasks: 5,
+                project_ideation_max: 5,
+                auto_commit: true,
+                pause_on_failure: true,
+                ..ExecutionSettings::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let pending = app_state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+    app_state
+        .ideation_session_repo
+        .set_pending_initial_prompt(pending.id.as_str(), Some("start pending plan".to_string()))
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    let drain = PendingSessionDrainService::new(
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.execution_settings_repo),
+        Arc::clone(&execution_state),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&mock) as Arc<dyn ChatService>,
+    );
+
+    drain
+        .try_drain_pending_for_project(project.id.as_str())
+        .await;
+
+    assert_eq!(mock.call_count(), 1);
+    assert_eq!(
+        mock.get_sent_messages().await,
+        vec!["start pending plan".to_string()]
+    );
+    let fetched = app_state
+        .ideation_session_repo
+        .get_by_id(&pending.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(fetched.pending_initial_prompt.is_none());
+}
