@@ -52,6 +52,7 @@ function isActionableManagedStatus(status: ManagedProviderCliStatusResponse) {
 
 function isUserManagedOutdatedStatus(status: ManagedProviderCliStatusResponse) {
   return (
+    !status.customBinaryEnabled &&
     status.cliManagementMode === "user_managed" &&
     status.supported &&
     status.updateAvailable

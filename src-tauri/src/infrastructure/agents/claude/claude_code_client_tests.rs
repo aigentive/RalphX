@@ -49,6 +49,80 @@ fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
         .map(String::as_str)
 }
 
+fn write_fake_claude_cli(path: &std::path::Path) {
+    std::fs::write(
+        path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'claude-code 2.1.170\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Claude Code' 'Options:' '  --model <MODEL>' '  --effort <EFFORT>'
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+    )
+    .expect("write fake claude");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)
+            .expect("fake claude metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("chmod fake claude");
+    }
+}
+
+struct EnvGuard {
+    key: &'static str,
+    original: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    fn set_os(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+fn config_with_cli_path_override(path: impl Into<PathBuf>) -> AgentConfig {
+    let mut config = AgentConfig::worker("test");
+    config.cli_path_override = Some(path.into());
+    config
+}
+
+fn assert_cli_not_available_uses_override<T>(
+    result: AgentResult<T>,
+    override_path: &std::path::Path,
+    default_path: &std::path::Path,
+) {
+    let message = match result {
+        Err(AgentError::CliNotAvailable(message)) => message,
+        Err(error) => panic!("expected override CLI availability error, got {error:?}"),
+        Ok(_) => panic!("expected override CLI availability error, got success"),
+    };
+    assert!(
+        message.contains(&override_path.display().to_string()),
+        "availability error should mention override path {override_path:?}, got {message}"
+    );
+    assert!(
+        !message.contains(&default_path.display().to_string()),
+        "availability error should not mention default path {default_path:?}, got {message}"
+    );
+}
+
 #[test]
 fn test_claude_code_client_new() {
     let client = ClaudeCodeClient::new();
@@ -110,6 +184,25 @@ async fn test_spawn_agent_blocked_in_tests() {
     let result = client.spawn_agent(config).await;
     assert!(result.is_err());
     assert!(matches!(result, Err(AgentError::SpawnNotAllowed(_))));
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn test_spawn_agent_checks_cli_path_override_availability() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let _spawn_guard = EnvGuard::set_os("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let default_path = temp_dir.path().join("default-claude");
+    let override_path = temp_dir.path().join("custom-claude");
+    let client = ClaudeCodeClient::new().with_cli_path(&default_path);
+
+    let result = client
+        .spawn_agent(config_with_cli_path_override(&override_path))
+        .await;
+
+    assert_cli_not_available_uses_override(result, &override_path, &default_path);
 }
 
 #[tokio::test]
@@ -326,6 +419,22 @@ fn test_build_cli_args_with_model() {
 }
 
 #[test]
+fn test_build_cli_args_validates_model_against_cli_path_override() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let custom_claude_path = temp_dir.path().join("claude-wrapper");
+    write_fake_claude_cli(&custom_claude_path);
+    let client = ClaudeCodeClient::new().with_cli_path("/missing/default/claude");
+    let mut config = AgentConfig::worker("Test").with_model("fable");
+    config.cli_path_override = Some(custom_claude_path);
+
+    let args = client
+        .build_cli_args(&config, None, false)
+        .expect("override CLI should validate Fable support");
+
+    assert_eq!(arg_value(&args, "--model"), Some("fable"));
+}
+
+#[test]
 fn test_build_cli_args_uses_agent_model_when_not_overridden() {
     let client = ClaudeCodeClient::new();
     let config = AgentConfig::worker("Test")
@@ -362,6 +471,25 @@ async fn test_spawn_agent_streaming_blocked_in_tests() {
     let result = client.spawn_agent_streaming(config, None).await;
     assert!(result.is_err());
     assert!(matches!(result, Err(AgentError::SpawnNotAllowed(_))));
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn test_spawn_agent_streaming_checks_cli_path_override_availability() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let _spawn_guard = EnvGuard::set_os("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let default_path = temp_dir.path().join("default-claude");
+    let override_path = temp_dir.path().join("custom-claude");
+    let client = ClaudeCodeClient::new().with_cli_path(&default_path);
+
+    let result = client
+        .spawn_agent_streaming(config_with_cli_path_override(&override_path), None)
+        .await;
+
+    assert_cli_not_available_uses_override(result, &override_path, &default_path);
 }
 
 #[test]
@@ -1151,6 +1279,25 @@ async fn test_spawn_agent_interactive_blocked_in_tests() {
     let result = client.spawn_agent_interactive(config, None).await;
     assert!(result.is_err());
     assert!(matches!(result, Err(AgentError::SpawnNotAllowed(_))));
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn test_spawn_agent_interactive_checks_cli_path_override_availability() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let _spawn_guard = EnvGuard::set_os("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let default_path = temp_dir.path().join("default-claude");
+    let override_path = temp_dir.path().join("custom-claude");
+    let client = ClaudeCodeClient::new().with_cli_path(&default_path);
+
+    let result = client
+        .spawn_agent_interactive(config_with_cli_path_override(&override_path), None)
+        .await;
+
+    assert_cli_not_available_uses_override(result, &override_path, &default_path);
 }
 
 /// Fix A: --agent-type is always injected into MCP args for tool filtering.

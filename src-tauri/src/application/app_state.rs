@@ -648,7 +648,8 @@ impl AppState {
                 )
             });
         let preserve_resolution_error =
-            provider_settings.cli_management_mode == AgentProviderCliManagementMode::RxManaged;
+            provider_settings.cli_management_mode == AgentProviderCliManagementMode::RxManaged
+                || provider_settings.custom_binary_enabled;
         let (client, cli_path_override) = self
             .resolve_background_agent_client_and_cli_path_override(
                 resolved.effective_harness,

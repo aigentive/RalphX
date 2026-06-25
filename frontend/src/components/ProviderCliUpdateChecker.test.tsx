@@ -314,6 +314,40 @@ describe("ProviderCliUpdateChecker", () => {
     expect(useUiStore.getState().modalContext).toEqual({ section: "providers" });
   });
 
+  it("does not show update reminders for custom pinned binaries", async () => {
+    vi.mocked(providerCliManagementApi.status).mockResolvedValue({
+      providers: [
+        {
+          provider: "codex",
+          cliManagementMode: "user_managed",
+          autoUpdateEnabled: false,
+          customBinaryEnabled: true,
+          customBinaryPath: "/opt/custom/codex-wrapper",
+          supported: true,
+          installed: true,
+          binaryPath: "/opt/custom/codex-wrapper",
+          currentVersion: "0.136.0",
+          latestVersion: "0.137.0",
+          updateAvailable: true,
+          action: "none",
+          status:
+            "Custom codex CLI 0.136.0 is configured. RX will not install or update it.",
+          error: null,
+        },
+      ],
+    });
+
+    renderChecker();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+
+    expect(mocks.toast).not.toHaveBeenCalled();
+    expect(providerCliManagementApi.installOrUpdate).not.toHaveBeenCalled();
+    expect(providerCliManagementApi.autoUpdate).not.toHaveBeenCalled();
+  });
+
   it("does not show a CLI update toast after don't-ask-again was remembered", async () => {
     mockUserManagedClaudeUpdate();
     localStorage.setItem(
