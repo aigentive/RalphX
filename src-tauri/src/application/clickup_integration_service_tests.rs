@@ -101,6 +101,7 @@ struct TestClickUpClient {
     fetch_task_calls: Mutex<Vec<String>>,
     fetch_task_failures: Mutex<Vec<String>>,
     custom_task_calls: Mutex<Vec<(String, String)>>,
+    custom_task_failures: Mutex<Vec<String>>,
     status_updates: Mutex<Vec<(String, String)>>,
     assignments: Mutex<Vec<String>>,
     cleared_assignees: Mutex<Vec<String>>,
@@ -118,6 +119,14 @@ impl TestClickUpClient {
     fn with_fetch_task_failure(task_id: &str) -> Self {
         Self {
             fetch_task_failures: Mutex::new(vec![task_id.to_string()]),
+            ..Default::default()
+        }
+    }
+
+    fn with_fetch_and_custom_task_failure(task_id: &str) -> Self {
+        Self {
+            fetch_task_failures: Mutex::new(vec![task_id.to_string()]),
+            custom_task_failures: Mutex::new(vec![task_id.to_string()]),
             ..Default::default()
         }
     }
@@ -278,6 +287,15 @@ impl ClickUpApiClient for TestClickUpClient {
             .lock()
             .await
             .push((team_id.to_string(), task_id.to_string()));
+        if self
+            .custom_task_failures
+            .lock()
+            .await
+            .iter()
+            .any(|value| value == task_id)
+        {
+            return Err("ClickUp custom lookup returned HTTP 404".to_string());
+        }
         Ok(ClickUpTaskContent {
             id: "opaque-from-custom".to_string(),
             custom_id: Some(task_id.to_string()),
@@ -806,6 +824,73 @@ async fn fetch_task_retries_custom_id_lookup_with_selected_workspace() {
     assert_eq!(
         client.custom_task_calls().await,
         vec![("9000".to_string(), "TASK-123".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn fetch_task_skips_custom_id_lookup_without_selected_workspace() {
+    let client = Arc::new(TestClickUpClient::with_fetch_task_failure("TASK-123"));
+    let (service, _repo, _secret) = build_service(client.clone());
+
+    service
+        .save_settings(Some("pk_token".to_string()), None)
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+
+    let error = service.fetch_task("TASK-123").await.unwrap_err();
+
+    assert_eq!(error, "ClickUp returned HTTP 404");
+    assert_eq!(
+        client.fetch_task_calls().await,
+        vec!["TASK-123".to_string()]
+    );
+    assert!(client.custom_task_calls().await.is_empty());
+}
+
+#[tokio::test]
+async fn fetch_task_skips_custom_id_lookup_for_opaque_ids() {
+    let client = Arc::new(TestClickUpClient::with_fetch_task_failure("123456789"));
+    let (service, _repo, _secret) = build_service(client.clone());
+
+    service
+        .save_settings(Some("pk_token".to_string()), Some("9000".to_string()))
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+
+    let error = service.fetch_task("123456789").await.unwrap_err();
+
+    assert_eq!(error, "ClickUp returned HTTP 404");
+    assert_eq!(
+        client.fetch_task_calls().await,
+        vec!["123456789".to_string()]
+    );
+    assert!(client.custom_task_calls().await.is_empty());
+}
+
+#[tokio::test]
+async fn fetch_task_reports_custom_id_lookup_failure() {
+    let client = Arc::new(TestClickUpClient::with_fetch_and_custom_task_failure(
+        "TASK-404",
+    ));
+    let (service, _repo, _secret) = build_service(client.clone());
+
+    service
+        .save_settings(Some("pk_token".to_string()), Some("9000".to_string()))
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+
+    let error = service.fetch_task("TASK-404").await.unwrap_err();
+
+    assert_eq!(
+        error,
+        "ClickUp returned HTTP 404; ClickUp custom task id lookup also failed: ClickUp custom lookup returned HTTP 404"
+    );
+    assert_eq!(
+        client.custom_task_calls().await,
+        vec![("9000".to_string(), "TASK-404".to_string())]
     );
 }
 

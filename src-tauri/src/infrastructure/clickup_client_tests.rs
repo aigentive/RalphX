@@ -126,6 +126,8 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
         Ok(json!({ "tasks": [sample_task("task-1", "custom")], "last_page": true })),
         Ok(sample_task("task-1", "done")),
         Ok(json!({ "comments": [] })),
+        Ok(sample_task("opaque-from-custom", "custom")),
+        Ok(json!({ "comments": [] })),
         Ok(json!({ "statuses": [{ "status": "done", "type": "done" }] })),
         Ok(json!({ "user": { "id": 42, "username": "dev" } })),
         Ok(json!({ "user": { "id": 42, "username": "dev" } })),
@@ -166,6 +168,14 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
         "task-1"
     );
     assert_eq!(
+        client
+            .fetch_task_by_custom_id(&auth, "9000", "TASK-123")
+            .await
+            .unwrap()
+            .id,
+        "opaque-from-custom"
+    );
+    assert_eq!(
         client.list_statuses(&auth, "space-1").await.unwrap()[0].category,
         "done"
     );
@@ -193,7 +203,7 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
         .unwrap();
 
     let requests = fake.requests();
-    assert_eq!(requests.len(), 15);
+    assert_eq!(requests.len(), 17);
     assert!(requests.iter().all(|request| request.token == "tok"));
 }
 
