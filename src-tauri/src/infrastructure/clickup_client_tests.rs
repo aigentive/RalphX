@@ -10,8 +10,8 @@ use crate::application::{ClickUpApiClient, ClickUpAuthContext};
 
 use super::clickup_client::{
     apply_task_tags, assign_task_to_user, clear_task_assignees, clickup_authorization_header,
-    create_task_comment, fetch_current_user, fetch_filtered_tasks, fetch_space_statuses,
-    fetch_spaces, fetch_task_detail, fetch_task_detail_by_custom_id, fetch_workspaces,
+    create_task_comment, fetch_current_user, fetch_filtered_tasks, fetch_list_tasks,
+    fetch_space_statuses, fetch_spaces, fetch_task_detail, fetch_task_detail_by_custom_id, fetch_workspaces,
     map_status_type_to_category, put_task_status, validate_token, ClickUpJsonRequester,
     HyperClickUpApiClient,
 };
@@ -78,6 +78,7 @@ fn sample_task(id: &str, status_type: &str) -> Value {
         "assignees": [{ "id": 42, "username": "dev", "email": "dev@example.com" }],
         "followers": [{ "id": 99, "username": "watcher", "email": "watcher@example.com" }],
         "tags": [{ "name": "bug" }, { "name": "backend" }],
+        "locations": [{ "id": "sprint-1", "name": "Current Sprint" }],
         "space": { "id": "space-1" },
         "list": { "id": "list-1", "name": "Sprint" },
         "date_updated": "1700000000000"
@@ -314,7 +315,10 @@ async fn filtered_tasks_paginate_until_last_page() {
     let requests = fake.requests();
     assert_eq!(requests.len(), 2, "should fetch exactly two pages");
     assert!(requests[0].url.contains("page=0"));
+    assert!(requests[0].url.contains("order_by=updated"));
+    assert!(requests[0].url.contains("reverse=true"));
     assert!(requests[0].url.contains("include_closed=true"));
+    assert!(requests[0].url.contains("subtasks=true"));
     assert!(requests[0].url.contains("space-1"));
     assert!(requests[0].url.contains("/team/9000/task"));
     assert!(requests[1].url.contains("page=1"));
@@ -366,7 +370,7 @@ async fn filtered_tasks_searches_metadata_and_stops_at_limit() {
                     "id": "match-title",
                     "name": "Alpha demo task",
                     "status": { "status": "to do", "type": "open" },
-                    "assignees": [{ "username": "Adrian" }],
+                    "assignees": [{ "username": "Alex" }],
                     "tags": []
                 }
             ],
@@ -394,6 +398,7 @@ async fn filtered_tasks_searches_metadata_and_stops_at_limit() {
         ClickUpTaskListOptions {
             query: Some("alpha".to_string()),
             limit: Some(2),
+            assignee_ids: Vec::new(),
         },
     )
     .await
@@ -422,7 +427,7 @@ async fn filtered_tasks_matches_key_status_list_and_assignee_metadata() {
                 "custom_id": "TASK-123",
                 "name": "Different title",
                 "status": { "status": "Awaiting Staging", "type": "custom" },
-                "assignees": [{ "email": "adrian@example.com" }],
+                "assignees": [{ "email": "alex@example.com" }],
                 "tags": [],
                 "list": { "name": "Current Sprint" }
             },
@@ -430,7 +435,7 @@ async fn filtered_tasks_matches_key_status_list_and_assignee_metadata() {
                 "id": "opaque-2",
                 "name": "Another title",
                 "status": { "status": "to do", "type": "open" },
-                "assignees": [{ "username": "Adrian" }],
+                "assignees": [{ "username": "Alex" }],
                 "tags": [],
                 "list": { "name": "Backlog" }
             }
@@ -446,6 +451,7 @@ async fn filtered_tasks_matches_key_status_list_and_assignee_metadata() {
         ClickUpTaskListOptions {
             query: Some("task-123".to_string()),
             limit: Some(10),
+            assignee_ids: Vec::new(),
         },
     )
     .await
@@ -491,7 +497,7 @@ async fn filtered_tasks_matches_status_list_and_assignee_queries() {
                     "id": "assignee-match",
                     "name": "Unrelated title",
                     "status": { "status": "to do", "type": "open" },
-                    "assignees": [{ "email": "adrian@example.com" }],
+                    "assignees": [{ "email": "alex@example.com" }],
                     "tags": [],
                     "list": { "name": "Backlog" }
                 }
@@ -503,7 +509,7 @@ async fn filtered_tasks_matches_status_list_and_assignee_queries() {
     for (query, expected_id) in [
         ("awaiting staging", "status-match"),
         ("current sprint", "list-match"),
-        ("adrian@example.com", "assignee-match"),
+        ("alex@example.com", "assignee-match"),
     ] {
         let tasks = fetch_filtered_tasks(
             &fake,
@@ -513,6 +519,7 @@ async fn filtered_tasks_matches_status_list_and_assignee_queries() {
             ClickUpTaskListOptions {
                 query: Some(query.to_string()),
                 limit: Some(10),
+                assignee_ids: Vec::new(),
             },
         )
         .await
@@ -541,6 +548,7 @@ async fn filtered_tasks_stops_inside_page_when_limit_is_reached() {
         ClickUpTaskListOptions {
             query: Some("fix".to_string()),
             limit: Some(1),
+            assignee_ids: Vec::new(),
         },
     )
     .await
@@ -564,7 +572,10 @@ async fn filtered_tasks_encodes_workspace_and_space_ids() {
         "tok",
         "team/with space",
         &["space/one".to_string(), "space two".to_string()],
-        ClickUpTaskListOptions::default(),
+        ClickUpTaskListOptions {
+            assignee_ids: vec![42, 99],
+            ..ClickUpTaskListOptions::default()
+        },
     )
     .await
     .unwrap();
@@ -573,6 +584,33 @@ async fn filtered_tasks_encodes_workspace_and_space_ids() {
     assert!(url.contains("/team/team%2Fwith%20space/task"));
     assert!(url.contains("space_ids%5B%5D=space%2Fone"));
     assert!(url.contains("space_ids%5B%5D=space%20two"));
+    assert!(url.contains("assignees%5B%5D=42"));
+    assert!(url.contains("assignees%5B%5D=99"));
+}
+
+#[tokio::test]
+async fn list_tasks_uses_list_endpoint_and_assignee_filter() {
+    let fake = FakeClickUpRequester::new(vec![Ok(json!({ "tasks": [], "last_page": true }))]);
+
+    fetch_list_tasks(
+        &fake,
+        "tok",
+        "list/one",
+        ClickUpTaskListOptions {
+            assignee_ids: vec![42],
+            ..ClickUpTaskListOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let url = &fake.requests()[0].url;
+    assert!(url.contains("/list/list%2Fone/task"));
+    assert!(url.contains("order_by=updated"));
+    assert!(url.contains("reverse=true"));
+    assert!(url.contains("include_closed=true"));
+    assert!(url.contains("subtasks=true"));
+    assert!(url.contains("assignees%5B%5D=42"));
 }
 
 #[tokio::test]
@@ -607,6 +645,7 @@ async fn task_summary_maps_status_assignees_and_tags() {
         Some("watcher@example.com")
     );
     assert_eq!(task.tags, vec!["bug".to_string(), "backend".to_string()]);
+    assert_eq!(task.sprint_names, vec!["Current Sprint".to_string()]);
     assert_eq!(task.space_id.as_deref(), Some("space-1"));
     assert_eq!(task.list_name.as_deref(), Some("Sprint"));
     assert_eq!(

@@ -233,7 +233,13 @@ impl ClickUpApiClient for TestClickUpClient {
             assignee_ids: vec![42],
             watchers: Vec::new(),
             tags: vec!["bug".to_string()],
+            sprint_names: Vec::new(),
+            location_ids: Vec::new(),
+            location_folder_ids: Vec::new(),
+            location_space_ids: Vec::new(),
             space_id: Some("space-1".to_string()),
+            folder_id: None,
+            list_id: None,
             list_name: Some("Sprint".to_string()),
             updated_at: Some("1700000000000".to_string()),
         }])

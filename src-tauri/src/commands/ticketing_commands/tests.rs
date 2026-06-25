@@ -188,11 +188,10 @@ fn clickup_space_maps_to_project_container() {
     });
 
     assert_eq!(container.provider, "clickup");
-    assert_eq!(container.id, "space-1");
-    assert!(container.key.is_none());
+    assert_eq!(container.id, "space:space-1");
+    assert_eq!(container.key.as_deref(), Some("Space"));
     assert_eq!(container.name, "Platform");
-    // Spaces reuse the existing `project` kind (no shared enum widening).
-    assert_eq!(container.kind, "project");
+    assert_eq!(container.kind, "space");
     assert!(container.parent_id.is_none());
 }
 
@@ -230,7 +229,7 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
         status_type: Some("custom".to_string()),
         status_category: Some("in_progress".to_string()),
         status_color: Some("#112233".to_string()),
-        assignees: vec!["Reef Agent".to_string(), "Second Person".to_string()],
+        assignees: vec!["Test Agent".to_string(), "Second Person".to_string()],
         assignee_ids: vec![42, 7],
         watchers: vec![ClickUpUser {
             id: 99,
@@ -238,7 +237,13 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
             email: Some("watcher@example.com".to_string()),
         }],
         tags: vec!["backend".to_string(), "clickup".to_string()],
+        sprint_names: vec!["Current Sprint".to_string()],
+        location_ids: Vec::new(),
+        location_folder_ids: Vec::new(),
+        location_space_ids: Vec::new(),
         space_id: Some("space-1".to_string()),
+        folder_id: None,
+        list_id: None,
         list_name: Some("Sprint 1".to_string()),
         updated_at: Some("2026-06-20T12:00:00Z".to_string()),
     });
@@ -257,7 +262,7 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
     // The first assignee still fills the legacy single assignee slot.
     assert_eq!(
         ticket.assignee.as_ref().map(|person| person.name.as_str()),
-        Some("Reef Agent")
+        Some("Test Agent")
     );
     assert_eq!(
         ticket
@@ -265,7 +270,7 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
             .iter()
             .map(|person| person.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["Reef Agent", "Second Person"]
+        vec!["Test Agent", "Second Person"]
     );
     assert_eq!(
         ticket
@@ -285,6 +290,7 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
         vec!["backend".to_string(), "clickup".to_string()]
     );
     assert_eq!(ticket.project.as_deref(), Some("Sprint 1"));
+    assert_eq!(ticket.sprints, vec!["Current Sprint".to_string()]);
     assert_eq!(ticket.updated_at, "2026-06-20T12:00:00Z");
     assert_eq!(
         ticket.url.as_deref(),
@@ -310,7 +316,13 @@ fn clickup_summary_detects_current_user_assignment_by_username_or_email() {
         assignee_ids: Vec::new(),
         watchers: Vec::new(),
         tags: Vec::new(),
+        sprint_names: Vec::new(),
+        location_ids: Vec::new(),
+        location_folder_ids: Vec::new(),
+        location_space_ids: Vec::new(),
         space_id: None,
+        folder_id: None,
+        list_id: None,
         list_name: Some("Sprint 42".to_string()),
         updated_at: None,
     };
@@ -367,7 +379,13 @@ fn clickup_summary_detects_current_user_watching_by_id_username_or_email() {
             email: None,
         }],
         tags: Vec::new(),
+        sprint_names: Vec::new(),
+        location_ids: Vec::new(),
+        location_folder_ids: Vec::new(),
+        location_space_ids: Vec::new(),
         space_id: None,
+        folder_id: None,
+        list_id: None,
         list_name: None,
         updated_at: None,
     };
@@ -399,7 +417,13 @@ fn clickup_summary_derives_state_when_status_fields_missing() {
         assignee_ids: Vec::new(),
         watchers: Vec::new(),
         tags: Vec::new(),
+        sprint_names: Vec::new(),
+        location_ids: Vec::new(),
+        location_folder_ids: Vec::new(),
+        location_space_ids: Vec::new(),
         space_id: None,
+        folder_id: None,
+        list_id: None,
         list_name: None,
         updated_at: None,
     });
@@ -426,7 +450,7 @@ fn clickup_content_maps_description_comments_and_creator() {
         status_type: Some("done".to_string()),
         status_category: Some("done".to_string()),
         creator: Some("Reporter Person".to_string()),
-        assignees: vec!["Reef Agent".to_string()],
+        assignees: vec!["Test Agent".to_string()],
         watchers: vec![ClickUpUser {
             id: 99,
             username: Some("Watcher Person".to_string()),
@@ -487,7 +511,7 @@ fn clickup_content_maps_description_comments_and_creator() {
             .assignee
             .as_ref()
             .map(|person| person.name.as_str()),
-        Some("Reef Agent")
+        Some("Test Agent")
     );
     assert_eq!(detail.summary.labels, vec!["backend".to_string()]);
     assert_eq!(
@@ -657,7 +681,13 @@ fn clickup_ticket_state_id_aligns_with_column_id_for_kanban() {
         assignee_ids: Vec::new(),
         watchers: Vec::new(),
         tags: Vec::new(),
+        sprint_names: Vec::new(),
+        location_ids: Vec::new(),
+        location_folder_ids: Vec::new(),
+        location_space_ids: Vec::new(),
         space_id: Some("space-1".to_string()),
+        folder_id: None,
+        list_id: None,
         list_name: None,
         updated_at: None,
     });
@@ -979,10 +1009,10 @@ async fn list_ticketing_containers_uses_expanded_provider_limits() {
         valid_atlassian_service(Arc::clone(&atlassian_client)).await;
     let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
 
-    let jira = list_ticketing_containers("jira".to_string(), None, app.state())
+    let jira = list_ticketing_containers("jira".to_string(), None, None, app.state())
         .await
         .expect("jira containers should load");
-    let linear = list_ticketing_containers("linear".to_string(), None, app.state())
+    let linear = list_ticketing_containers("linear".to_string(), None, None, app.state())
         .await
         .expect("linear containers should load");
 
@@ -1030,6 +1060,7 @@ async fn list_tickets_builds_paged_response_from_provider_summaries() {
                 state_ids: None,
                 labels: Some(vec!["backend".to_string()]),
                 watcher_me: None,
+                sprint: None,
             }),
             sort: Some("updated".to_string()),
         },
@@ -1068,6 +1099,7 @@ async fn list_ticket_filter_options_builds_truncated_provider_response() {
                 state_ids: None,
                 labels: None,
                 watcher_me: None,
+                sprint: None,
             }),
         },
         app.state(),
@@ -1210,7 +1242,7 @@ fn ticket_summary_filters_match_text_status_assignee_and_labels() {
             "LIN-1",
             "Fix filter updates",
             "In Progress",
-            Some("Reef Agent"),
+            Some("Test Agent"),
             &["backend", "linear"],
         ),
         ticket_summary_fixture("LIN-2", "Polish ticket cards", "Done", None, &["frontend"]),
@@ -1220,10 +1252,11 @@ fn ticket_summary_filters_match_text_status_assignee_and_labels() {
         items,
         Some(&TicketFiltersInput {
             text: Some("filter".to_string()),
-            assignee: Some("reef".to_string()),
+            assignee: Some("test".to_string()),
             watcher_me: None,
             state_ids: Some(vec!["in_progress".to_string()]),
             labels: Some(vec!["linear".to_string()]),
+            sprint: None,
         }),
     );
 
@@ -1249,6 +1282,7 @@ fn ticket_summary_filters_remove_rows_without_requested_metadata() {
             watcher_me: None,
             state_ids: None,
             labels: Some(vec!["backend".to_string()]),
+            sprint: None,
         }),
     );
 
@@ -1376,7 +1410,7 @@ fn linear_summary_prefers_provider_state_fields_when_present() {
         state_name: Some("In Progress".to_string()),
         state_category: Some("started".to_string()),
         state_color: Some("#abcdef".to_string()),
-        assignee: Some("Reef Agent".to_string()),
+        assignee: Some("Test Agent".to_string()),
         updated_at: Some("2026-06-20T12:00:00Z".to_string()),
         labels: vec!["frontend".to_string(), "linear".to_string()],
         project: Some("Platform".to_string()),
@@ -1390,7 +1424,7 @@ fn linear_summary_prefers_provider_state_fields_when_present() {
     assert_eq!(summary.state.color.as_deref(), Some("#abcdef"));
     assert_eq!(
         summary.assignee.as_ref().map(|person| person.name.as_str()),
-        Some("Reef Agent")
+        Some("Test Agent")
     );
     assert_eq!(
         summary.labels,
@@ -1762,14 +1796,15 @@ fn container_selected_key_normalizes_presence_and_absence() {
 }
 
 #[test]
-fn filter_ticket_summaries_returns_all_when_no_filters() {
+fn filter_ticket_summaries_excludes_terminal_states_by_default() {
     let items = vec![
         ticket_summary_fixture("LIN-1", "First", "Todo", None, &[]),
         ticket_summary_fixture("LIN-2", "Second", "Done", None, &[]),
     ];
 
     let filtered = filter_ticket_summaries(items, None);
-    assert_eq!(filtered.len(), 2);
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].ref_.key.as_deref(), Some("LIN-1"));
 }
 
 #[test]
@@ -1785,6 +1820,7 @@ fn ticket_page_from_loaded_summaries_applies_filters_offset_and_next_cursor() {
         state_ids: None,
         labels: Some(vec!["backend".to_string()]),
         watcher_me: None,
+        sprint: None,
     };
 
     let (page_items, next_cursor, total_loaded) =
@@ -1800,7 +1836,7 @@ fn ticket_page_from_loaded_summaries_applies_filters_offset_and_next_cursor() {
 fn ticket_page_from_loaded_summaries_omits_next_cursor_at_end() {
     let items = vec![
         ticket_summary_fixture("LIN-1", "First", "Todo", None, &[]),
-        ticket_summary_fixture("LIN-2", "Second", "Done", None, &[]),
+        ticket_summary_fixture("LIN-2", "Second", "In Progress", None, &[]),
     ];
 
     let (page_items, next_cursor, total_loaded) =
@@ -1835,19 +1871,22 @@ fn ticket_filter_options_collects_assignees_and_clickup_current_user_sprints() {
         ticket_summary_fixture("CU-1", "Current sprint", "Todo", Some("Zed"), &["backend"]);
     current_sprint.ref_.provider = "clickup".to_string();
     current_sprint.assignees = vec![named_person("Ada"), named_person("Zed")];
-    current_sprint.project = Some("Sprint 42".to_string());
+    current_sprint.project = Some("Continuous Improvement".to_string());
+    current_sprint.sprints = vec!["Sprint 42".to_string()];
     current_sprint.current_user_assigned = true;
 
     let mut other_assignee =
         ticket_summary_fixture("CU-2", "Backlog", "Todo", Some("Grace"), &["backend"]);
     other_assignee.ref_.provider = "clickup".to_string();
     other_assignee.project = Some("Backlog".to_string());
+    other_assignee.sprints = vec!["Backlog Sprint".to_string()];
     other_assignee.current_user_assigned = false;
 
     let mut filtered_out =
         ticket_summary_fixture("CU-3", "Unrelated", "Todo", Some("Hidden"), &["frontend"]);
     filtered_out.ref_.provider = "clickup".to_string();
     filtered_out.project = Some("Sprint Hidden".to_string());
+    filtered_out.sprints = vec!["Sprint Hidden".to_string()];
     filtered_out.current_user_assigned = true;
 
     let filters = TicketFiltersInput {
@@ -1856,6 +1895,7 @@ fn ticket_filter_options_collects_assignees_and_clickup_current_user_sprints() {
         state_ids: None,
         labels: Some(vec!["backend".to_string()]),
         watcher_me: None,
+        sprint: None,
     };
 
     let options = ticket_filter_options_from_loaded_summaries(
@@ -1888,11 +1928,157 @@ fn ticket_filter_options_marks_truncation_from_provider_or_limit() {
     assert!(options.truncated);
 }
 
+#[test]
+fn clickup_assignee_or_sprint_filters_request_wide_provider_scan() {
+    let assignee_filter = TicketFiltersInput {
+        text: None,
+        assignee: Some("Alex Developer".to_string()),
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: None,
+    };
+    let sprint_filter = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: Some("Workflow 1 - Estimate Follow-up".to_string()),
+    };
+
+    assert_eq!(
+        ticket_provider_fetch_limit(PROVIDER_CLICKUP, None, Some(&assignee_filter), 41),
+        CLICKUP_FILTERED_TASK_SCAN_LIMIT
+    );
+    assert_eq!(
+        ticket_provider_fetch_limit(PROVIDER_CLICKUP, None, Some(&sprint_filter), 41),
+        CLICKUP_FILTERED_TASK_SCAN_LIMIT
+    );
+    assert_eq!(
+        ticket_provider_fetch_limit(PROVIDER_LINEAR, None, Some(&assignee_filter), 41),
+        41
+    );
+    assert_eq!(
+        ticket_provider_fetch_limit(PROVIDER_CLICKUP, Some("list:current-sprint"), None, 41),
+        CLICKUP_FILTERED_TASK_SCAN_LIMIT
+    );
+}
+
+#[test]
+fn clickup_sprint_filter_uses_workspace_scope_over_selected_space() {
+    let sprint_filter = TicketFiltersInput {
+        text: None,
+        assignee: Some("Alex Developer".to_string()),
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: Some("Current Sprint".to_string()),
+    };
+    let assignee_filter = TicketFiltersInput {
+        text: None,
+        assignee: Some("Alex Developer".to_string()),
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: None,
+    };
+
+    assert_eq!(
+        ticket_provider_container_scope(PROVIDER_CLICKUP, Some("selected-space"), Some(&sprint_filter)),
+        None
+    );
+    assert_eq!(
+        ticket_provider_container_scope(
+            PROVIDER_CLICKUP,
+            Some("list:current-sprint"),
+            Some(&sprint_filter),
+        ),
+        Some("list:current-sprint")
+    );
+    assert_eq!(
+        ticket_provider_container_scope(PROVIDER_CLICKUP, Some("selected-space"), Some(&assignee_filter)),
+        Some("selected-space")
+    );
+    assert_eq!(
+        ticket_provider_container_scope(PROVIDER_LINEAR, Some("selected-project"), Some(&sprint_filter)),
+        Some("selected-project")
+    );
+}
+
+#[test]
+fn clickup_current_user_assignee_filter_maps_to_provider_assignee_id() {
+    let filter = TicketFiltersInput {
+        text: None,
+        assignee: Some("Alex Developer".to_string()),
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: Some("Current Sprint".to_string()),
+    };
+    let user = ClickUpUser {
+        id: 424242,
+        username: Some("Alex".to_string()),
+        email: Some("alex@example.com".to_string()),
+    };
+
+    assert_eq!(
+        clickup_provider_assignee_ids(Some(&filter), Some(&user)),
+        vec![424242]
+    );
+
+    let other_filter = TicketFiltersInput {
+        assignee: Some("Someone Else".to_string()),
+        ..filter
+    };
+    assert!(clickup_provider_assignee_ids(Some(&other_filter), Some(&user)).is_empty());
+}
+
+#[test]
+fn clickup_list_container_matches_secondary_location_membership() {
+    let summary = ClickUpTaskSummary {
+        id: "86d3efp65".to_string(),
+        custom_id: Some("MBE-3136".to_string()),
+        name: "Workflow 1 - Estimate Follow-up".to_string(),
+        url: None,
+        status_name: Some("In Progress".to_string()),
+        status_type: Some("custom".to_string()),
+        status_category: Some("in_progress".to_string()),
+        status_color: None,
+        assignees: vec!["Alex".to_string()],
+        assignee_ids: vec![424242],
+        watchers: Vec::new(),
+        tags: Vec::new(),
+        sprint_names: vec!["Current Sprint".to_string()],
+        location_ids: vec!["901615202857".to_string()],
+        location_folder_ids: vec!["sprint-folder".to_string()],
+        location_space_ids: vec!["sprints-space".to_string()],
+        space_id: Some("fortidia-space".to_string()),
+        folder_id: Some("ps-sas-folder".to_string()),
+        list_id: Some("901613274069".to_string()),
+        list_name: Some("Continuous Improvement".to_string()),
+        updated_at: None,
+    };
+
+    assert!(clickup_summary_matches_container(
+        &summary,
+        &ClickUpContainerScope::List("901615202857".to_string())
+    ));
+    assert!(clickup_summary_matches_container(
+        &summary,
+        &ClickUpContainerScope::Space("sprints-space".to_string())
+    ));
+    assert!(!clickup_summary_matches_container(
+        &summary,
+        &ClickUpContainerScope::List("other-list".to_string())
+    ));
+}
+
 #[tokio::test]
 async fn load_ticket_summaries_routes_jira_project_scope_before_disabled_error() {
     let state = AppState::new_test();
 
-    let error = load_ticket_summaries(&state, PROVIDER_JIRA, Some("RX"), "ignored", 10)
+    let error = load_ticket_summaries(&state, PROVIDER_JIRA, Some("RX"), "ignored", 10, None)
         .await
         .expect_err("disabled Jira integration should fail");
 
@@ -1903,7 +2089,7 @@ async fn load_ticket_summaries_routes_jira_project_scope_before_disabled_error()
 async fn load_ticket_summaries_routes_jira_global_search_before_disabled_error() {
     let state = AppState::new_test();
 
-    let error = load_ticket_summaries(&state, PROVIDER_JIRA, None, "merge", 10)
+    let error = load_ticket_summaries(&state, PROVIDER_JIRA, None, "merge", 10, None)
         .await
         .expect_err("disabled Jira integration should fail");
 
@@ -1914,7 +2100,7 @@ async fn load_ticket_summaries_routes_jira_global_search_before_disabled_error()
 async fn load_ticket_summaries_routes_linear_before_disabled_error() {
     let state = AppState::new_test();
 
-    let error = load_ticket_summaries(&state, PROVIDER_LINEAR, None, "merge", 10)
+    let error = load_ticket_summaries(&state, PROVIDER_LINEAR, None, "merge", 10, None)
         .await
         .expect_err("disabled Linear integration should fail");
 
@@ -1925,7 +2111,14 @@ async fn load_ticket_summaries_routes_linear_before_disabled_error() {
 async fn load_ticket_summaries_routes_clickup_space_scope_before_disabled_error() {
     let state = AppState::new_test();
 
-    let error = load_ticket_summaries(&state, PROVIDER_CLICKUP, Some("space-1"), "merge", 10)
+    let error = load_ticket_summaries(
+        &state,
+        PROVIDER_CLICKUP,
+        Some("space-1"),
+        "merge",
+        10,
+        None,
+    )
         .await
         .expect_err("disabled ClickUp integration should fail");
 
@@ -1933,7 +2126,7 @@ async fn load_ticket_summaries_routes_clickup_space_scope_before_disabled_error(
 }
 
 #[test]
-fn ticket_matches_filters_with_empty_filter_input_keeps_all() {
+fn ticket_matches_filters_with_empty_filter_input_keeps_open_states() {
     let ticket = ticket_summary_fixture("LIN-1", "First", "Todo", None, &[]);
     let empty = TicketFiltersInput {
         text: None,
@@ -1941,8 +2134,27 @@ fn ticket_matches_filters_with_empty_filter_input_keeps_all() {
         watcher_me: None,
         state_ids: None,
         labels: None,
+        sprint: None,
     };
     assert!(ticket_matches_filters(&ticket, &empty));
+
+    let completed = ticket_summary_fixture("LIN-2", "Second", "Done", None, &[]);
+    assert!(!ticket_matches_filters(&completed, &empty));
+}
+
+#[test]
+fn ticket_matches_filters_explicit_completed_status_includes_completed() {
+    let completed = ticket_summary_fixture("LIN-2", "Second", "Done", None, &[]);
+    let filter = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        watcher_me: None,
+        state_ids: Some(vec!["done".to_string()]),
+        labels: None,
+        sprint: None,
+    };
+
+    assert!(ticket_matches_filters(&completed, &filter));
 }
 
 #[test]
@@ -1954,6 +2166,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
         watcher_me: None,
         state_ids: None,
         labels: None,
+        sprint: None,
     };
     assert!(ticket_matches_filters(&ticket, &by_id));
 
@@ -1963,6 +2176,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
         watcher_me: None,
         state_ids: None,
         labels: None,
+        sprint: None,
     };
     assert!(ticket_matches_filters(&ticket, &by_title));
 
@@ -1972,6 +2186,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
         watcher_me: None,
         state_ids: None,
         labels: None,
+        sprint: None,
     };
     assert!(!ticket_matches_filters(&ticket, &miss));
 }
@@ -1986,6 +2201,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
         watcher_me: None,
         state_ids: Some(vec!["in_progress".to_string()]),
         labels: None,
+        sprint: None,
     };
     assert!(ticket_matches_filters(&ticket, &by_category));
 
@@ -1995,6 +2211,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
         watcher_me: None,
         state_ids: Some(vec!["in_progress".to_string(), "other".to_string()]),
         labels: None,
+        sprint: None,
     };
     assert!(ticket_matches_filters(&ticket, &by_state_id));
 
@@ -2004,6 +2221,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
         watcher_me: None,
         state_ids: Some(vec!["done".to_string()]),
         labels: None,
+        sprint: None,
     };
     assert!(!ticket_matches_filters(&ticket, &miss));
 }
@@ -2019,6 +2237,7 @@ fn ticket_matches_filters_assignee_matches_any_assignee() {
         watcher_me: None,
         state_ids: None,
         labels: None,
+        sprint: None,
     };
     assert!(ticket_matches_filters(&ticket, &by_second_assignee));
 
@@ -2028,15 +2247,42 @@ fn ticket_matches_filters_assignee_matches_any_assignee() {
         watcher_me: None,
         state_ids: None,
         labels: None,
+        sprint: None,
     };
     assert!(!ticket_matches_filters(&ticket, &miss));
+}
+
+#[test]
+fn ticket_matches_filters_clickup_sprint_and_short_assignee_name() {
+    let mut ticket = ticket_summary_fixture(
+        "MBE-3136",
+        "Workflow 1 - Estimate Follow-up",
+        "Awaiting Approval",
+        None,
+        &[],
+    );
+    ticket.ref_.provider = PROVIDER_CLICKUP.to_string();
+    ticket.project = Some("Continuous Improvement".to_string());
+    ticket.sprints = vec!["Current Sprint".to_string()];
+    ticket.assignees = vec![named_person("Alex")];
+
+    let filter = TicketFiltersInput {
+        text: None,
+        assignee: Some("Alex Developer".to_string()),
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: Some("Current Sprint".to_string()),
+    };
+
+    assert!(ticket_matches_filters(&ticket, &filter));
 }
 
 #[test]
 fn ticket_matches_filters_watcher_me_requires_current_user_watching() {
     let mut watched = ticket_summary_fixture("CU-1", "Watched task", "Todo", None, &[]);
     watched.current_user_watching = true;
-    watched.watchers = vec![named_person("Reef Agent")];
+    watched.watchers = vec![named_person("Test Agent")];
     let unwatched = ticket_summary_fixture("CU-2", "Unwatched task", "Todo", None, &[]);
     let filter = TicketFiltersInput {
         text: None,
@@ -2044,6 +2290,7 @@ fn ticket_matches_filters_watcher_me_requires_current_user_watching() {
         watcher_me: Some(true),
         state_ids: None,
         labels: None,
+        sprint: None,
     };
 
     assert!(ticket_matches_filters(&watched, &filter));
@@ -2059,6 +2306,7 @@ fn ticket_matches_filters_requires_all_labels_present() {
         watcher_me: None,
         state_ids: None,
         labels: Some(vec!["Backend".to_string(), "LINEAR".to_string()]),
+        sprint: None,
     };
     // Label matching is case-insensitive.
     assert!(ticket_matches_filters(&ticket, &all_present));
@@ -2069,6 +2317,7 @@ fn ticket_matches_filters_requires_all_labels_present() {
         watcher_me: None,
         state_ids: None,
         labels: Some(vec!["backend".to_string(), "frontend".to_string()]),
+        sprint: None,
     };
     assert!(!ticket_matches_filters(&ticket, &missing_one));
 }
@@ -2095,6 +2344,7 @@ fn ticket_summary_fixture(
         watchers: Vec::new(),
         reporter: None,
         labels: labels.iter().map(|label| label.to_string()).collect(),
+        sprints: Vec::new(),
         project: None,
         priority: None,
         updated_at: now_string(),
@@ -2582,6 +2832,7 @@ fn hydrate_input_summary(ticket_ref: TicketRefInput) -> TicketSummaryResponse {
         watchers: Vec::new(),
         reporter: None,
         labels: Vec::new(),
+        sprints: Vec::new(),
         project: None,
         priority: None,
         updated_at: now_string(),

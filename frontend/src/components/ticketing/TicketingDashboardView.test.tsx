@@ -592,7 +592,7 @@ describe("TicketingDashboardView", () => {
     expect(screen.queryByText("Select a project")).not.toBeInTheDocument();
   });
 
-  it("forces a Space selection before loading ClickUp tickets when Spaces exist", async () => {
+  it("forces a Space selection before loading ClickUp tickets when ClickUp locations exist", async () => {
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
       data: [
         {
@@ -623,7 +623,7 @@ describe("TicketingDashboardView", () => {
       error: null,
     } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
     vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
-      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "project" }],
+      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "space" }],
       isLoading: false,
       isError: false,
       error: null,
@@ -636,13 +636,15 @@ describe("TicketingDashboardView", () => {
     expect(ticketingHooks.useTickets).toHaveBeenCalledWith(null, { enabled: false });
   });
 
-  it("filters ClickUp tickets by the selected sprint list", async () => {
+  it("forwards ClickUp sprint filters without changing the selected Space scope", async () => {
     useTicketingStore.getState().setProvider("clickup");
+    useTicketingStore.getState().setContainerId("space-sprints");
     const sprintTicket = {
       ...ticket,
       ref: { provider: "clickup" as const, id: "cu-current", key: "CU-42" },
       title: "Current sprint task",
-      project: "Sprint 42",
+      project: "Continuous Improvement",
+      sprints: ["Sprint 42"],
       currentUserAssigned: true,
     };
     const backlogTicket = {
@@ -650,6 +652,7 @@ describe("TicketingDashboardView", () => {
       ref: { provider: "clickup" as const, id: "cu-backlog", key: "CU-7" },
       title: "Backlog task",
       project: "Backlog",
+      sprints: ["Backlog Sprint"],
       currentUserAssigned: false,
     };
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
@@ -667,6 +670,14 @@ describe("TicketingDashboardView", () => {
       isError: false,
       error: null,
     } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    vi.mocked(ticketingHooks.useTicketingContainers).mockImplementation((input) => ({
+      data: input?.parentContainerId
+        ? [{ provider: "clickup", id: "list:sprint-42", key: "List", name: "Sprint 42", kind: "list", parentId: "space-sprints" }]
+        : [{ provider: "clickup", id: "space-sprints", key: "Space", name: "Sprints", kind: "space" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>));
     vi.mocked(ticketingHooks.useTickets).mockReturnValue({
       data: { pages: [{ items: [sprintTicket, backlogTicket], nextCursor: null, total: 2 }], pageParams: [null] },
       isLoading: false,
@@ -701,8 +712,15 @@ describe("TicketingDashboardView", () => {
 
     fireEvent.click(within(sprintListbox).getByRole("option", { name: "Sprint 42" }));
 
-    expect(screen.getByRole("button", { name: /Current sprint task/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Backlog task/ })).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          containerId: "space-sprints",
+          filters: expect.objectContaining({ sprint: "Sprint 42" }),
+        }),
+        { enabled: true },
+      );
+    });
   });
 
   it("surfaces stale provider freshness without hiding ticket content", () => {
@@ -785,15 +803,9 @@ describe("TicketingDashboardView", () => {
           {
             items: [
               { ...ticket, assignee: { id: "ada", name: "Ada" } },
-              {
-                ...ticket,
-                ref: { provider: "jira" as const, id: "10002", key: "RX-2" },
-                title: "Unassigned backlog item",
-                assignee: null,
-              },
             ],
             nextCursor: null,
-            total: 2,
+            total: 1,
           },
         ],
         pageParams: [null],
@@ -982,15 +994,20 @@ describe("TicketingDashboardView", () => {
     expect(list.queryByText("Unassigned")).not.toBeInTheDocument();
   });
 
-  it("filters the list client-side by the selected assignee", () => {
+  it("forwards the selected assignee to the ticket query", () => {
     mockConnectedDashboard();
     useTicketingStore.setState({
       filters: { text: "", assignee: "Someone Else", stateIds: [], labels: [], sprint: null, watcherMe: false },
     });
     renderDashboard();
 
-    // The only ticket (RX-1) is unassigned, so the named-assignee filter empties the list.
-    expect(screen.getByText("No tickets match these filters")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Assignee" })).toHaveTextContent("Someone Else");
+    expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filters: expect.objectContaining({ assignee: "Someone Else" }),
+      }),
+      { enabled: true },
+    );
   });
 
   it("shows a non-filter empty state when there are no tickets and no active filters", () => {
@@ -1058,7 +1075,7 @@ describe("TicketingDashboardView", () => {
       error: null,
     } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
     vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
-      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "project" }],
+      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "space" }],
       isLoading: false,
       isError: false,
       error: null,
@@ -1127,7 +1144,7 @@ describe("TicketingDashboardView", () => {
       error: null,
     } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
     vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
-      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "project" }],
+      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "space" }],
       isLoading: false,
       isError: false,
       error: null,
@@ -1855,7 +1872,7 @@ describe("TicketingDashboardView", () => {
     // ClickUp containers are Spaces; one is pre-selected so tasks load (ClickUp is
     // server-scoped like Jira, so the client container-name filter is skipped).
     vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
-      data: [{ provider: "clickup", id: "space-eng", key: null, name: "Engineering", kind: "project" }],
+      data: [{ provider: "clickup", id: "space-eng", key: null, name: "Engineering", kind: "space" }],
       isLoading: false,
       isError: false,
       error: null,

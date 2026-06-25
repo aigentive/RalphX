@@ -97,7 +97,7 @@ describe("TicketFilterBar", () => {
 
   it("clears selected filter values from the select trigger", () => {
     const props = renderBar({
-      containers: [{ provider: "jira", id: "project-1", name: "Reef", kind: "project" }],
+      containers: [{ provider: "jira", id: "project-1", name: "Demo", kind: "project" }],
       columns: [{ id: "todo", name: "To Do", category: "todo", order: 0 }],
       activeContainerId: "project-1",
       filters: { ...baseFilters, assignee: "Ada", stateIds: ["todo"], sprint: "Sprint 42" },
