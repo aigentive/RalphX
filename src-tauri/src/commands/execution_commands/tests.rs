@@ -2320,6 +2320,247 @@ async fn test_get_running_processes_reports_scoped_lanes_and_capacity() {
     assert_eq!(aggregate_response.capacity.total_active, 6);
 }
 
+#[test]
+fn test_workspace_capacity_available_respects_all_global_guards() {
+    assert!(crate::application::workspace_capacity::workspace_capacity_available(
+        1, 3, 1, 5, false, false
+    ));
+    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
+        1, 3, 1, 5, true, false
+    ));
+    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
+        1, 3, 1, 5, false, true
+    ));
+    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
+        3, 3, 0, 10, false, false
+    ));
+    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
+        2, 3, 3, 5, false, false
+    ));
+}
+
+#[tokio::test]
+async fn test_workspace_capacity_resolves_conversation_backed_queues_and_sessions() {
+    let app_state = AppState::new_test();
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Workspace Capacity Project".to_string(),
+            "/test/workspace-capacity-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let other_project = app_state
+        .project_repo
+        .create(Project::new(
+            "Other Workspace Capacity Project".to_string(),
+            "/test/other-workspace-capacity-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+    let other_conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(other_project.id.clone()))
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task::new(project.id.clone(), "Non-workspace chat".to_string()))
+        .await
+        .unwrap();
+    let task_conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_task(task.id.clone()))
+        .await
+        .unwrap();
+
+    let direct_key = QueueKey::new(ChatContextType::Project, project.id.as_str());
+    let resolved = crate::application::workspace_capacity::resolve_project_queue_context(
+        &direct_key,
+        &app_state.project_repo,
+        &app_state.chat_conversation_repo,
+    )
+    .await
+    .expect("direct project key resolves")
+    .expect("direct project context");
+    assert_eq!(resolved.0, project.id);
+    assert_eq!(resolved.1, None);
+
+    let conversation_key = QueueKey::new(ChatContextType::Project, conversation.id.as_str());
+    let resolved = crate::application::workspace_capacity::resolve_project_queue_context(
+        &conversation_key,
+        &app_state.project_repo,
+        &app_state.chat_conversation_repo,
+    )
+    .await
+    .expect("conversation key resolves")
+    .expect("conversation project context");
+    assert_eq!(resolved.0, project.id);
+    assert_eq!(resolved.1.as_ref(), Some(&conversation.id));
+
+    let wrong_context_key = QueueKey::new(ChatContextType::Project, task_conversation.id.as_str());
+    assert!(
+        crate::application::workspace_capacity::resolve_project_queue_context(
+            &wrong_context_key,
+            &app_state.project_repo,
+            &app_state.chat_conversation_repo,
+        )
+        .await
+        .expect("wrong context lookup succeeds")
+        .is_none()
+    );
+    let missing_key = QueueKey::new(ChatContextType::Project, ChatConversationId::new().as_str());
+    assert!(
+        crate::application::workspace_capacity::resolve_project_queue_context(
+            &missing_key,
+            &app_state.project_repo,
+            &app_state.chat_conversation_repo,
+        )
+        .await
+        .expect("missing context lookup succeeds")
+        .is_none()
+    );
+
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        project.id.as_str(),
+        "direct project queue".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        conversation.id.as_str(),
+        "conversation project queue".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        other_project.id.as_str(),
+        "other project queue".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Task,
+        task.id.as_str(),
+        "task queue is not workspace capacity".to_string(),
+    );
+
+    assert_eq!(
+        crate::application::workspace_capacity::count_queued_workspace_messages(
+            &app_state.message_queue,
+            &app_state.project_repo,
+            &app_state.chat_conversation_repo,
+            Some(&project.id),
+        )
+        .await
+        .expect("count scoped queued workspaces"),
+        2
+    );
+    assert_eq!(
+        crate::application::workspace_capacity::count_queued_workspace_messages(
+            &app_state.message_queue,
+            &app_state.project_repo,
+            &app_state.chat_conversation_repo,
+            None,
+        )
+        .await
+        .expect("count aggregate queued workspaces"),
+        3
+    );
+
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", "runtime-from-conversation"),
+            61001,
+            conversation.id.as_str().to_string(),
+            "run-from-conversation".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", project.id.as_str()),
+            61002,
+            "missing-conversation".to_string(),
+            "run-from-project-id".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", conversation.id.as_str()),
+            61003,
+            "missing-conversation-2".to_string(),
+            "run-from-runtime-conversation".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", "other-runtime"),
+            61004,
+            other_conversation.id.as_str().to_string(),
+            "run-other-project".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", "pid-zero-runtime"),
+            0,
+            conversation.id.as_str().to_string(),
+            "run-pid-zero".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("task", task.id.as_str()),
+            61005,
+            conversation.id.as_str().to_string(),
+            "run-non-workspace".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    assert_eq!(
+        crate::application::workspace_capacity::count_active_workspace_sessions(
+            &app_state.running_agent_registry,
+            &app_state.project_repo,
+            &app_state.chat_conversation_repo,
+            Some(&project.id),
+        )
+        .await
+        .expect("count scoped active workspace sessions"),
+        3
+    );
+    assert_eq!(
+        crate::application::workspace_capacity::count_active_workspace_sessions(
+            &app_state.running_agent_registry,
+            &app_state.project_repo,
+            &app_state.chat_conversation_repo,
+            None,
+        )
+        .await
+        .expect("count aggregate active workspace sessions"),
+        4
+    );
+}
+
 #[tokio::test]
 async fn test_resume_relaunches_durable_project_conversation_queue_with_override() {
     let app_state = AppState::new_test();
@@ -2378,6 +2619,44 @@ async fn test_resume_relaunches_durable_project_conversation_queue_with_override
         .await
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_workspace_queue_restores_message_when_send_fails() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Failed Workspace Resume".to_string(),
+            "/test/failed-workspace-resume".to_string(),
+        ))
+        .await
+        .unwrap();
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        project.id.as_str(),
+        "restore workspace queue".to_string(),
+    );
+
+    let mock = Arc::new(MockChatService::new());
+    mock.set_available(false).await;
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        None,
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume workspace queue handles send failure");
+
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 1);
+    let restored = app_state
+        .message_queue
+        .get_queued(ChatContextType::Project, project.id.as_str());
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].content, "restore workspace queue");
 }
 
 #[tokio::test]
