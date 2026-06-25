@@ -1,4 +1,4 @@
-import { Columns3, List, RefreshCw, Search, X } from "lucide-react";
+import { Columns3, Eye, List, RefreshCw, Search, X } from "lucide-react";
 
 import type { TicketingContainer, TicketingColumn } from "@/api/ticketing";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ interface TicketFilterBarProps {
   columns: TicketingColumn[];
   assigneeOptions: string[];
   sprintOptions?: string[];
+  showWatcherFilter?: boolean;
   containerLabel: string;
   allContainersLabel: string;
   activeContainerId: string | null;
@@ -71,6 +72,7 @@ export function TicketFilterBar({
   columns,
   assigneeOptions,
   sprintOptions = [],
+  showWatcherFilter = false,
   containerLabel,
   allContainersLabel,
   activeContainerId,
@@ -185,6 +187,28 @@ export function TicketFilterBar({
             ]}
           />
         </label>
+      )}
+
+      {showWatcherFilter && (
+        <button
+          type="button"
+          aria-pressed={filters.watcherMe}
+          className={cn(
+            "inline-flex h-8 min-w-[124px] items-center justify-center gap-1.5 rounded px-3 text-xs font-medium",
+            "focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]",
+          )}
+          style={{
+            backgroundColor: filters.watcherMe ? "var(--bg-elevated)" : "transparent",
+            borderColor: filters.watcherMe ? "var(--accent-primary)" : "var(--border-default)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+            color: filters.watcherMe ? "var(--text-primary)" : "var(--text-muted)",
+          }}
+          onClick={() => onFiltersChange({ watcherMe: !filters.watcherMe })}
+        >
+          <Eye className="h-3.5 w-3.5" aria-hidden="true" />
+          Watched by me
+        </button>
       )}
 
       <div className="relative min-w-[220px] flex-1">

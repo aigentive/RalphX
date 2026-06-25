@@ -18,9 +18,9 @@ import { getAgentConversationStoreKey } from "./agentConversations";
 const deferredHydrationTimeout = { timeout: 3_000 };
 
 const {
+  getAgentConversationRuntimeStatusesMock,
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
-  getAgentRunningStatesMock,
   getWorkspaceDiffMock,
   getWorkspaceChangeSummaryMock,
   getWorkspaceReviewMock,
@@ -304,8 +304,15 @@ describe("AgentsView publish", () => {
     const activeConversation = conversation({ agentMode: "edit" });
     mockAgentViewData(activeConversation);
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
-    getAgentRunningStatesMock.mockResolvedValue({
-      [activeConversation.id]: { isRunning: true, agentStatus: "generating" },
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      [activeConversation.id]: {
+        conversationId: activeConversation.id,
+        isRunning: true,
+        agentStatus: "generating",
+        primarySource: "workspace",
+        summaryLabel: "Agent running",
+        items: [],
+      },
     });
     listAgentTasksMock.mockResolvedValue([
       {

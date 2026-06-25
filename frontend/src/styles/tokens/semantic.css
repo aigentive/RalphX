@@ -46,6 +46,7 @@
   --text-subtle:    #6A6A72;
   --text-inverse:   #1A0E07; /* on accent/light surfaces */
   --text-on-accent: #1A0E07;
+  --text-on-scrim:  #FFFFFF;
 
   /* ============================================================================
    * Accent (brand) — warm orange used sparingly

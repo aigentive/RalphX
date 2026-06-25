@@ -58,6 +58,9 @@ pub struct AgentProviderSettings {
     pub claude_allow_dangerously_skip_permissions: bool,
     pub cli_management_mode: AgentProviderCliManagementMode,
     pub auto_update_enabled: bool,
+    pub custom_binary_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_binary_path: Option<String>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -82,6 +85,8 @@ impl AgentProviderSettings {
             },
             cli_management_mode: AgentProviderCliManagementMode::UserManaged,
             auto_update_enabled: false,
+            custom_binary_enabled: false,
+            custom_binary_path: None,
             updated_at: Utc::now(),
         }
     }

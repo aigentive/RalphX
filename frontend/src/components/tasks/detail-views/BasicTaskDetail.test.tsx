@@ -353,6 +353,30 @@ describe("BasicTaskDetail", () => {
       expect(screen.getByText("Task execution failed. Error details were not recorded during the state transition.")).toBeInTheDocument();
     });
 
+    it("uses last agent error when failure_error is empty", () => {
+      const failureMetadata = JSON.stringify({
+        failure_error: "",
+        is_timeout: false,
+        last_agent_error:
+          "Agent failed: sed: .artifacts/specs/p6-pr-list-affordances/tracker.md: No such file or directory",
+        last_agent_error_context: "execution",
+      });
+      const task = createTestTask({
+        internalStatus: "failed",
+        metadata: failureMetadata,
+      });
+
+      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
+
+      expect(screen.getByTestId("failure-reason-section")).toBeInTheDocument();
+      expect(screen.getByTestId("failure-error-message")).toHaveTextContent(
+        "Agent failed: sed: .artifacts/specs/p6-pr-list-affordances/tracker.md: No such file or directory"
+      );
+      expect(
+        screen.queryByText("Task execution failed. Error details were not recorded during the state transition.")
+      ).not.toBeInTheDocument();
+    });
+
     it("displays blockedReason when failed with null metadata but blockedReason exists", () => {
       const task = createTestTask({
         internalStatus: "failed",

@@ -5,9 +5,11 @@ import { atlassianApi } from "@/api/atlassian";
 import { linearApi } from "@/api/linear";
 import type { ComposerIntegrationReference } from "@/api/chat";
 import type {
+  ListTicketFilterOptionsInput,
   ListTicketsInput,
   TicketDeepLink,
   TicketFiltersInput,
+  TicketRef,
   TicketingColumn,
   TicketSummary,
   TicketTransitionOption,
@@ -25,6 +27,7 @@ import {
   useTicketingContainers,
   useTicketingProviders,
   ticketingKeys,
+  useTicketFilterOptions,
   useTicketLabelOptions,
   useTicketTransitions,
   useTickets,
@@ -81,6 +84,7 @@ function toTicketFilters(filters: ReturnType<typeof useTicketingStore.getState>[
     ...(filters.text.trim() && { text: filters.text.trim() }),
     ...(filters.stateIds.length > 0 && { stateIds: filters.stateIds }),
     ...(filters.labels.length > 0 && { labels: filters.labels }),
+    ...(filters.watcherMe && { watcherMe: true }),
   };
   return Object.keys(next).length > 0 ? next : undefined;
 }
@@ -239,15 +243,27 @@ function ticketComposerReference(ticket: TicketSummary): ComposerIntegrationRefe
       ...(ticket.url ? { url: ticket.url } : {}),
     };
   }
-  const id = ticket.ref.key ?? ticket.ref.id;
   return {
     provider: "clickup",
     kind: "clickup",
-    id,
-    key: id,
+    id: ticket.ref.id,
+    key: ticket.ref.key ?? ticket.ref.id,
     title: ticket.title,
     ...(ticket.url ? { url: ticket.url } : {}),
   };
+}
+
+function ticketRefsIdentifySameTicket(left: TicketRef, right: TicketRef): boolean {
+  if (left.provider !== right.provider) {
+    return false;
+  }
+  const leftIds = ticketRefAliases(left);
+  const rightIds = ticketRefAliases(right);
+  return leftIds.some((leftId) => rightIds.includes(leftId));
+}
+
+function ticketRefAliases(ref: TicketRef): string[] {
+  return ref.key ? [ref.id, ref.key] : [ref.id];
 }
 
 interface TicketingStatusNotice {
@@ -409,10 +425,35 @@ export function TicketingDashboardView({
 
   const ticketsQuery = useTickets(ticketQuery, { enabled: Boolean(ticketQuery) });
   const tickets = useMemo(() => flattenTicketPages(ticketsQuery.data), [ticketsQuery.data]);
-  const assigneeOptions = useMemo(() => distinctAssigneeNames(tickets), [tickets]);
-  const sprintOptions = useMemo(
+  const filterOptionsInput: ListTicketFilterOptionsInput | null = activeProvider && readableProvider && !containerSelectionNeeded
+    ? {
+        provider: activeProvider,
+        projectId,
+        limit: 500,
+        ...(activeContainerId !== null && { containerId: activeContainerId }),
+        ...(ticketFilters !== undefined && { filters: ticketFilters }),
+      }
+    : null;
+  const filterOptionsQuery = useTicketFilterOptions(filterOptionsInput, {
+    enabled: Boolean(filterOptionsInput),
+  });
+  const hasWatcherMetadata = useMemo(
+    () =>
+      tickets.some((ticket) =>
+        ticket.currentUserWatching || (ticket.watchers?.length ?? 0) > 0,
+      ),
+    [tickets],
+  );
+  const pageAssigneeOptions = useMemo(() => distinctAssigneeNames(tickets), [tickets]);
+  const pageSprintOptions = useMemo(
     () => (activeProvider === "clickup" ? distinctCurrentUserSprintNames(tickets) : []),
     [activeProvider, tickets],
+  );
+  const assigneeOptions = filterOptionsQuery.data?.assignees ?? pageAssigneeOptions;
+  const sprintOptions = useMemo(
+    () =>
+      activeProvider === "clickup" ? filterOptionsQuery.data?.sprints ?? pageSprintOptions : [],
+    [activeProvider, filterOptionsQuery.data?.sprints, pageSprintOptions],
   );
   useEffect(() => {
     if (!filters.sprint) {
@@ -422,6 +463,11 @@ export function TicketingDashboardView({
       setFilters({ sprint: null });
     }
   }, [activeProvider, filters.sprint, setFilters, sprintOptions]);
+  useEffect(() => {
+    if (activeProvider !== "clickup" && filters.watcherMe) {
+      setFilters({ watcherMe: false });
+    }
+  }, [activeProvider, filters.watcherMe, setFilters]);
   const activeContainerName = useMemo(
     () => containers.find((container) => container.id === activeContainerId)?.name ?? null,
     [containers, activeContainerId],
@@ -462,7 +508,7 @@ export function TicketingDashboardView({
       ? mergeProviderAndTicketColumns(columns, effectiveTicketColumns)
       : columns;
   const selectedSummary = selectedTicketRef
-    ? tickets.find((ticket) => ticket.ref.id === selectedTicketRef.id && ticket.ref.provider === selectedTicketRef.provider) ?? null
+    ? tickets.find((ticket) => ticketRefsIdentifySameTicket(ticket.ref, selectedTicketRef)) ?? null
     : null;
   const shouldHydrateKanban = useAfterPaint(viewMode === "kanban");
   const shouldHydrateDetail = useAfterPaint(selectedTicketRef !== null);
@@ -552,8 +598,7 @@ export function TicketingDashboardView({
   const detailMatchesSelection = Boolean(
     detailQuery.data
     && selectedTicketRef
-    && detailQuery.data.ref.id === selectedTicketRef.id
-    && detailQuery.data.ref.provider === selectedTicketRef.provider,
+    && ticketRefsIdentifySameTicket(detailQuery.data.ref, selectedTicketRef),
   );
   const selectedTicket = (detailMatchesSelection ? detailQuery.data : selectedSummary) ?? null;
   // Show the overlay preloader until the matching full detail is ready.
@@ -606,6 +651,22 @@ export function TicketingDashboardView({
           tone: "warning" as const,
           message: "Tickets failed to refresh.",
           detail: queryErrorDetail(ticketsQuery.error, "Existing ticket rows remain available."),
+        }]
+      : []),
+    ...(filterOptionsQuery.isError
+      ? [{
+          id: "filter-options-error",
+          tone: "warning" as const,
+          message: "Ticket filters failed to refresh.",
+          detail: queryErrorDetail(filterOptionsQuery.error, "Options from the current ticket page remain available."),
+        }]
+      : []),
+    ...(filterOptionsQuery.data?.truncated
+      ? [{
+          id: "filter-options-truncated",
+          tone: "warning" as const,
+          message: "Ticket filter options are truncated.",
+          detail: "Search or narrow the ticket scope if an option is missing.",
         }]
       : []),
     ...(refreshTickets.isError
@@ -953,6 +1014,9 @@ export function TicketingDashboardView({
         columns={filterColumns}
         assigneeOptions={assigneeOptions}
         sprintOptions={sprintOptions}
+        showWatcherFilter={
+          activeProvider === "clickup" && (hasWatcherMetadata || filters.watcherMe)
+        }
         containerLabel={containerLabels.containerLabel}
         allContainersLabel={containerLabels.allContainersLabel}
         activeContainerId={activeContainerId}

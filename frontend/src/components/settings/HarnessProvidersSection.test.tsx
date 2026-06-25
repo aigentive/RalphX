@@ -17,9 +17,16 @@ const toastMocks = vi.hoisted(() => ({
   loading: vi.fn(),
   success: vi.fn(),
 }));
+const dialogMocks = vi.hoisted(() => ({
+  open: vi.fn(),
+}));
 
 vi.mock("sonner", () => ({
   toast: toastMocks,
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: dialogMocks.open,
 }));
 
 vi.mock("@/hooks/useAgentModels", () => ({
@@ -69,6 +76,8 @@ const settings: AgentProvidersSettingsResponse = {
       claudeAllowDangerouslySkipPermissions: false,
       cliManagementMode: "rx_managed",
       autoUpdateEnabled: true,
+      customBinaryEnabled: false,
+      customBinaryPath: null,
       available: true,
       binaryFound: true,
       binaryPath: "/opt/homebrew/bin/codex",
@@ -90,6 +99,8 @@ const settings: AgentProvidersSettingsResponse = {
       claudeAllowDangerouslySkipPermissions: true,
       cliManagementMode: "user_managed",
       autoUpdateEnabled: false,
+      customBinaryEnabled: false,
+      customBinaryPath: null,
       available: false,
       binaryFound: false,
       binaryPath: null,
@@ -107,6 +118,8 @@ const managedCliStatuses = {
       provider: "codex" as const,
       cliManagementMode: "rx_managed" as const,
       autoUpdateEnabled: true,
+      customBinaryEnabled: false,
+      customBinaryPath: null,
       supported: true,
       installed: true,
       binaryPath: "/mock/ralphx/managed-cli/codex/bin/codex",
@@ -121,6 +134,8 @@ const managedCliStatuses = {
       provider: "claude" as const,
       cliManagementMode: "user_managed" as const,
       autoUpdateEnabled: false,
+      customBinaryEnabled: false,
+      customBinaryPath: null,
       supported: true,
       installed: true,
       binaryPath: "/Users/example/.local/bin/claude",
@@ -190,6 +205,7 @@ describe("HarnessProvidersSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     confirm.mockResolvedValue(true);
+    dialogMocks.open.mockResolvedValue(null);
     refetchProviders.mockResolvedValue({ data: settings });
     refetchStatus.mockResolvedValue({ data: managedCliStatuses });
     installOrUpdateProviderAsync.mockResolvedValue({
@@ -360,6 +376,7 @@ describe("HarnessProvidersSection", () => {
       provider: "codex",
       cliManagementMode: "user_managed",
       autoUpdateEnabled: false,
+      customBinaryEnabled: false,
     });
 
     const claudeCard = screen.getByTestId("provider-card-claude");
@@ -377,7 +394,154 @@ describe("HarnessProvidersSection", () => {
       provider: "claude",
       cliManagementMode: "rx_managed",
       autoUpdateEnabled: false,
+      customBinaryEnabled: false,
     });
+  });
+
+  it("reveals and saves a manually entered custom binary path", async () => {
+    const user = userEvent.setup();
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    await user.click(within(codexCard).getByLabelText("Use custom binary"));
+
+    const pathInput = within(codexCard).getByLabelText("Binary path");
+    await user.type(pathInput, "/opt/custom/codex-wrapper");
+    await user.click(within(codexCard).getByRole("button", { name: "Use path" }));
+
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      customBinaryEnabled: true,
+      customBinaryPath: "/opt/custom/codex-wrapper",
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
+    });
+  });
+
+  it("saves a browsed custom binary path", async () => {
+    const user = userEvent.setup();
+    dialogMocks.open.mockResolvedValueOnce("/opt/custom/codex-wrapper");
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    await user.click(within(codexCard).getByLabelText("Use custom binary"));
+    await user.click(within(codexCard).getByRole("button", { name: "Browse" }));
+
+    expect(dialogMocks.open).toHaveBeenCalledWith({
+      directory: false,
+      multiple: false,
+      title: "Select Codex binary",
+    });
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      customBinaryEnabled: true,
+      customBinaryPath: "/opt/custom/codex-wrapper",
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
+    });
+  });
+
+  it("saves the first browsed custom binary path when the dialog returns an array", async () => {
+    const user = userEvent.setup();
+    dialogMocks.open.mockResolvedValueOnce([
+      "/opt/custom/codex-wrapper",
+      "/opt/custom/ignored",
+    ]);
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    await user.click(within(codexCard).getByLabelText("Use custom binary"));
+    await user.click(within(codexCard).getByRole("button", { name: "Browse" }));
+
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      customBinaryEnabled: true,
+      customBinaryPath: "/opt/custom/codex-wrapper",
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
+    });
+  });
+
+  it("does not save a custom binary path when browsing is cancelled", async () => {
+    const user = userEvent.setup();
+    dialogMocks.open.mockResolvedValueOnce(null);
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    await user.click(within(codexCard).getByLabelText("Use custom binary"));
+    await user.click(within(codexCard).getByRole("button", { name: "Browse" }));
+
+    expect(dialogMocks.open).toHaveBeenCalledWith({
+      directory: false,
+      multiple: false,
+      title: "Select Codex binary",
+    });
+    expect(updateProviderAsync).not.toHaveBeenCalled();
+  });
+
+  it("disables managed controls and hides update actions for active custom binaries", () => {
+    const customSettings: AgentProvidersSettingsResponse = {
+      ...settings,
+      providers: settings.providers.map((provider) =>
+        provider.provider === "codex"
+          ? {
+              ...provider,
+              cliManagementMode: "user_managed",
+              autoUpdateEnabled: false,
+              customBinaryEnabled: true,
+              customBinaryPath: "/opt/custom/codex-wrapper",
+              binaryPath: "/opt/custom/codex-wrapper",
+              status: "Custom codex CLI 0.144.0 is configured.",
+            }
+          : provider,
+      ),
+    };
+    const customStatuses = {
+      providers: managedCliStatuses.providers.map((provider) =>
+        provider.provider === "codex"
+          ? {
+              ...provider,
+              cliManagementMode: "user_managed" as const,
+              autoUpdateEnabled: false,
+              customBinaryEnabled: true,
+              customBinaryPath: "/opt/custom/codex-wrapper",
+              binaryPath: "/opt/custom/codex-wrapper",
+              updateAvailable: false,
+              action: "none" as const,
+              status:
+                "Custom codex CLI 0.144.0 is configured. RX will not install or update it.",
+            }
+          : provider,
+      ),
+    };
+    mockProviders(customSettings);
+    mockProviderCliManagement({
+      statuses: customStatuses,
+      statusByProvider: new Map(
+        customStatuses.providers.map((provider) => [
+          provider.provider,
+          provider,
+        ]),
+      ),
+    });
+
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    expect(within(codexCard).getByLabelText("Use custom binary")).toBeChecked();
+    expect(
+      within(codexCard).getByLabelText("Let RX manage this CLI"),
+    ).toBeDisabled();
+    expect(
+      within(codexCard).getByLabelText("Update automatically"),
+    ).toBeDisabled();
+    expect(within(codexCard).getByLabelText("Binary path")).toHaveValue(
+      "/opt/custom/codex-wrapper",
+    );
+    expect(
+      within(codexCard).queryByRole("button", { name: "Update Codex" }),
+    ).toBeNull();
+    expect(within(codexCard).queryByText("RX-managed CLI")).toBeNull();
   });
 
   it("runs a managed CLI update from the provider card", async () => {

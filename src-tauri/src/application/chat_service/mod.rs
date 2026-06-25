@@ -5793,6 +5793,31 @@ mod managed_provider_launch_path_tests {
     }
 
     #[tokio::test]
+    async fn custom_codex_provider_overrides_chat_launch_cli_path() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let custom_codex_path = temp_dir.path().join("codex-wrapper");
+        write_codex_capability_script(&custom_codex_path);
+        let app_state = AppState::new_sqlite_test();
+        let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+        settings.enabled = true;
+        settings.custom_binary_enabled = true;
+        settings.custom_binary_path = Some(custom_codex_path.to_string_lossy().into_owned());
+        app_state
+            .agent_provider_settings_repo
+            .upsert(&settings)
+            .await
+            .expect("save provider settings");
+        let service = app_state.build_chat_service();
+
+        let path = service
+            .resolve_launch_cli_path_for_harness(AgentHarnessKind::Codex)
+            .await
+            .expect("launch path");
+
+        assert_eq!(path, custom_codex_path);
+    }
+
+    #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn rx_managed_codex_provider_rejects_missing_chat_launch_cli_path() {
         let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX

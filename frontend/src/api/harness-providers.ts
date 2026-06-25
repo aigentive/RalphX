@@ -21,6 +21,8 @@ export const AgentProviderSettingsResponseSchema = z.object({
   claudeAllowDangerouslySkipPermissions: z.boolean(),
   cliManagementMode: ProviderCliManagementModeSchema.optional(),
   autoUpdateEnabled: z.boolean().optional(),
+  customBinaryEnabled: z.boolean().optional(),
+  customBinaryPath: z.string().nullable().optional(),
   available: z.boolean(),
   binaryFound: z.boolean(),
   binaryPath: z.string().nullable().optional(),
@@ -60,6 +62,8 @@ export interface UpdateAgentProviderSettingsInput {
   claudeAllowDangerouslySkipPermissions?: boolean;
   cliManagementMode?: z.infer<typeof ProviderCliManagementModeSchema>;
   autoUpdateEnabled?: boolean;
+  customBinaryEnabled?: boolean;
+  customBinaryPath?: string | null;
   resetToDefaults?: boolean;
   applyToAllLanes?: boolean;
 }

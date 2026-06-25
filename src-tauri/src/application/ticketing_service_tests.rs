@@ -409,6 +409,7 @@ impl ClickUpApiClient for RecordingClickUpClient {
             status_category: Some("todo".to_string()),
             creator: None,
             assignees: Vec::new(),
+            watchers: Vec::new(),
             tags: Vec::new(),
             comments: Vec::new(),
             attachments: Vec::new(),

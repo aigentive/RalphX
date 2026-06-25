@@ -202,6 +202,26 @@ export function useAgentsViewController({
     },
     [],
   );
+  const handleFocusTaskRuntime = useCallback(
+    (
+      taskId: string,
+      contextType: Extract<AgentsChatFocus, { type: "task_runtime" }>["contextType"],
+    ) => {
+      const nextFocus: Extract<AgentsChatFocus, { type: "task_runtime" }> = {
+        type: "task_runtime",
+        taskId,
+        contextType,
+      };
+      setChatFocus((current) =>
+        current.type === "task_runtime" &&
+        current.taskId === taskId &&
+        current.contextType === contextType
+          ? current
+          : nextFocus,
+      );
+    },
+    [],
+  );
   const handleReturnToWorkspaceChat = useCallback(() => {
     setChatFocus({ type: "workspace" });
   }, []);
@@ -421,18 +441,22 @@ export function useAgentsViewController({
     lastVerificationFocus.parentSessionId === focusSwitcherIdeationSessionId
       ? lastVerificationFocus
       : null;
+  const taskRuntimeFocusTarget =
+    chatFocus.type === "task_runtime" ? chatFocus : null;
   const hasAttachedPlanArtifact = availableArtifactTabs.includes("plan");
   const chatFocusOptions = useMemo(() => {
     return getAgentChatFocusSwitchOptions({
       mode: activeConversationMode,
       focusSwitcherIdeationSessionId,
       verificationFocusTarget,
+      taskRuntimeFocusTarget,
       hasPlanArtifact: hasAttachedPlanArtifact,
     });
   }, [
     activeConversationMode,
     focusSwitcherIdeationSessionId,
     hasAttachedPlanArtifact,
+    taskRuntimeFocusTarget,
     verificationFocusTarget,
   ]);
   useEffect(() => {
@@ -459,8 +483,13 @@ export function useAgentsViewController({
         return;
       }
 
-      if (verificationFocusTarget) {
+      if (type === "verification" && verificationFocusTarget) {
         setChatFocus(verificationFocusTarget);
+        return;
+      }
+
+      if (type === "task_runtime" && taskRuntimeFocusTarget) {
+        setChatFocus(taskRuntimeFocusTarget);
       }
     },
     [
@@ -468,6 +497,7 @@ export function useAgentsViewController({
       focusSwitcherIdeationSessionId,
       handleFocusIdeationSession,
       handleReturnToWorkspaceChat,
+      taskRuntimeFocusTarget,
       verificationFocusTarget,
     ],
   );
@@ -840,6 +870,8 @@ export function useAgentsViewController({
       onConversationModeSwitched: handleConversationModeSwitched,
       onCreateProject,
       onFocusIdeationSession: handleFocusIdeationSession,
+      onFocusVerificationSession: handleFocusVerificationSession,
+      onFocusTaskRuntime: handleFocusTaskRuntime,
       onForkConversation: handleForkConversation,
       onOpenPublishPane: handleOpenPublishPane,
       onOpenPublishFile: handleOpenPublishFile,

@@ -38,7 +38,7 @@ async fn upsert_round_trips_all_clickup_settings_fields() {
     let settings = ClickUpIntegrationSettings {
         enabled: true,
         token_secret_ref: Some("integrations/clickup/default/api-token".to_string()),
-        workspace_id: Some("6925357".to_string()),
+        workspace_id: Some("workspace-1".to_string()),
         validation_status: IntegrationValidationStatus::Valid,
         task_search_available: true,
         last_validated_at: Some(validated_at),

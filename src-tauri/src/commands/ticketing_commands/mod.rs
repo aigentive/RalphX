@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -46,6 +46,10 @@ pub use types::*;
 const PROVIDER_JIRA: &str = "jira";
 const PROVIDER_LINEAR: &str = "linear";
 const PROVIDER_CLICKUP: &str = "clickup";
+const TICKETING_CONTAINER_LIMIT: usize = 1000;
+const TICKET_PAGE_MAX_LIMIT: usize = 40;
+const TICKET_SELECTOR_OPTION_LIMIT: usize = 500;
+const TICKET_OFFSET_CURSOR_PREFIX: &str = "offset:";
 
 #[derive(Debug, Clone)]
 enum ProjectTicketLink {
@@ -86,7 +90,7 @@ pub async fn list_ticketing_containers(
     match provider.as_str() {
         PROVIDER_JIRA => state
             .atlassian_integration_service
-            .list_jira_projects(100)
+            .list_jira_projects(TICKETING_CONTAINER_LIMIT)
             .await
             .map(|projects| {
                 projects
@@ -96,7 +100,7 @@ pub async fn list_ticketing_containers(
             }),
         PROVIDER_LINEAR => state
             .linear_integration_service
-            .list_projects(100)
+            .list_projects(TICKETING_CONTAINER_LIMIT)
             .await
             .map(|projects| {
                 projects
@@ -196,8 +200,9 @@ pub async fn list_tickets(
     state: State<'_, AppState>,
 ) -> Result<TicketPageResponse, String> {
     validate_provider(&query.provider)?;
-    let _ = (&query.project_id, &query.cursor, &query.sort);
-    let limit = query.limit.unwrap_or(25).clamp(1, 40);
+    let _ = (&query.project_id, &query.sort);
+    let offset = decode_ticket_offset_cursor(query.cursor.as_deref())?;
+    let limit = query.limit.unwrap_or(25).clamp(1, TICKET_PAGE_MAX_LIMIT);
     let text = query
         .filters
         .as_ref()
@@ -206,49 +211,177 @@ pub async fn list_tickets(
         .trim()
         .to_string();
     let fetched_at = now_string();
-    let items: Vec<TicketSummaryResponse> = match query.provider.as_str() {
+    let requested = offset.saturating_add(limit).saturating_add(1);
+    let items = load_ticket_summaries(
+        state.inner(),
+        &query.provider,
+        query.container_id.as_deref(),
+        &text,
+        requested,
+    )
+    .await?;
+    let (page_items, next_cursor, total_loaded) =
+        ticket_page_from_loaded_summaries(items, query.filters.as_ref(), offset, limit);
+    let items = hydrate_ticket_association_counts(
+        state.inner(),
+        &query.provider,
+        query.project_id.as_deref(),
+        page_items,
+    )
+    .await?;
+    Ok(TicketPageResponse {
+        total: Some(total_loaded),
+        items,
+        next_cursor,
+        fetched_at: Some(fetched_at),
+    })
+}
+
+#[tauri::command]
+pub async fn list_ticket_filter_options(
+    query: ListTicketFilterOptionsQuery,
+    state: State<'_, AppState>,
+) -> Result<TicketFilterOptionsResponse, String> {
+    validate_provider(&query.provider)?;
+    let _ = &query.project_id;
+    let limit = query
+        .limit
+        .unwrap_or(TICKET_SELECTOR_OPTION_LIMIT)
+        .clamp(1, TICKET_SELECTOR_OPTION_LIMIT);
+    let text = query
+        .filters
+        .as_ref()
+        .and_then(|filters| filters.text.as_deref())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let requested = limit.saturating_add(1);
+    let items = load_ticket_summaries(
+        state.inner(),
+        &query.provider,
+        query.container_id.as_deref(),
+        &text,
+        requested,
+    )
+    .await?;
+    let provider_truncated = items.len() > limit;
+    Ok(ticket_filter_options_from_loaded_summaries(
+        &query.provider,
+        items,
+        query.filters.as_ref(),
+        limit,
+        provider_truncated,
+    ))
+}
+
+fn ticket_page_from_loaded_summaries(
+    items: Vec<TicketSummaryResponse>,
+    filters: Option<&TicketFiltersInput>,
+    offset: usize,
+    limit: usize,
+) -> (Vec<TicketSummaryResponse>, Option<String>, usize) {
+    let items = filter_ticket_summaries(items, filters);
+    let total_loaded = items.len();
+    let page_items: Vec<TicketSummaryResponse> =
+        items.into_iter().skip(offset).take(limit).collect();
+    let next_cursor = if total_loaded > offset.saturating_add(page_items.len()) {
+        Some(encode_ticket_offset_cursor(offset.saturating_add(page_items.len())))
+    } else {
+        None
+    };
+    (page_items, next_cursor, total_loaded)
+}
+
+fn ticket_filter_options_from_loaded_summaries(
+    provider: &str,
+    items: Vec<TicketSummaryResponse>,
+    filters: Option<&TicketFiltersInput>,
+    limit: usize,
+    provider_truncated: bool,
+) -> TicketFilterOptionsResponse {
+    let items = filter_ticket_summaries(items, filters);
+    let truncated = provider_truncated || items.len() > limit;
+    let mut assignees = BTreeSet::new();
+    let mut sprints = BTreeSet::new();
+
+    for ticket in items.into_iter().take(limit) {
+        for person in ticket.assignees.iter().chain(ticket.assignee.iter()) {
+            let name = person.name.trim();
+            if !name.is_empty() {
+                assignees.insert(name.to_string());
+            }
+        }
+        if provider == PROVIDER_CLICKUP && ticket.current_user_assigned {
+            if let Some(project) = ticket
+                .project
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                sprints.insert(project.to_string());
+            }
+        }
+    }
+
+    TicketFilterOptionsResponse {
+        assignees: assignees.into_iter().collect(),
+        sprints: sprints.into_iter().collect(),
+        complete: !truncated,
+        truncated,
+    }
+}
+
+async fn load_ticket_summaries(
+    state: &AppState,
+    provider: &str,
+    container_id: Option<&str>,
+    text: &str,
+    limit: usize,
+) -> Result<Vec<TicketSummaryResponse>, String> {
+    let limit = limit.max(1);
+    match provider {
         // With a selected project, fetch its issues (richer status/assignee/labels
         // needed for kanban columns). Without one, fall back to global text search
         // (the frontend force-select gate means this path is rarely hit, but keep
         // it functional).
-        PROVIDER_JIRA => match container_selected_key(query.container_id.as_deref()) {
-            Some(key) => state
+        PROVIDER_JIRA => match container_selected_key(container_id) {
+            Some(key) => Ok(state
                 .atlassian_integration_service
                 .list_jira_project_issues(key, limit)
                 .await?
                 .into_iter()
                 .map(jira_issue_detail_to_ticket)
-                .collect(),
-            None => state
+                .collect()),
+            None => Ok(state
                 .atlassian_integration_service
-                .search_resources(AtlassianResourceKind::Jira, &text, limit)
+                .search_resources(AtlassianResourceKind::Jira, text, limit)
                 .await?
                 .into_iter()
                 .map(jira_summary_to_ticket)
-                .collect(),
+                .collect()),
         },
-        PROVIDER_LINEAR => state
+        PROVIDER_LINEAR => Ok(state
             .linear_integration_service
-            .search_issues(&text, limit)
+            .search_issues(text, limit)
             .await?
             .into_iter()
             .map(linear_summary_to_ticket)
-            .collect(),
+            .collect()),
         // ClickUp tasks load via the workspace-scoped filtered-tasks endpoint
         // (Jira-like server-side scoping). A selected Space narrows the query; with
         // no Space selected the workspace returns all of its tasks. Text filtering
         // is applied provider-neutrally by `filter_ticket_summaries` below.
         PROVIDER_CLICKUP => {
-            let space_ids = container_selected_key(query.container_id.as_deref())
+            let space_ids = container_selected_key(container_id)
                 .map(|space_id| vec![space_id.to_string()])
                 .unwrap_or_default();
             let current_user = state.clickup_integration_service.current_user().await.ok();
-            state
+            Ok(state
                 .clickup_integration_service
                 .list_tasks(
                     space_ids,
                     ClickUpTaskListOptions {
-                        query: Some(text.clone()),
+                        query: Some(text.to_string()),
                         limit: Some(limit),
                     },
                 )
@@ -258,28 +391,34 @@ pub async fn list_tickets(
                     let current_user_assigned = current_user
                         .as_ref()
                         .is_some_and(|user| clickup_summary_assigned_to_user(&summary, user));
+                    let current_user_watching = current_user
+                        .as_ref()
+                        .is_some_and(|user| clickup_summary_watched_by_user(&summary, user));
                     let mut ticket = clickup_summary_to_ticket(summary);
                     ticket.current_user_assigned = current_user_assigned;
+                    ticket.current_user_watching = current_user_watching;
                     ticket
                 })
-                .collect()
+                .collect())
         }
         _ => unreachable!("provider validated above"),
+    }
+}
+
+fn decode_ticket_offset_cursor(cursor: Option<&str>) -> Result<usize, String> {
+    let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(0);
     };
-    let items = filter_ticket_summaries(items, query.filters.as_ref());
-    let items = hydrate_ticket_association_counts(
-        state.inner(),
-        &query.provider,
-        query.project_id.as_deref(),
-        items,
-    )
-    .await?;
-    Ok(TicketPageResponse {
-        total: Some(items.len()),
-        items,
-        next_cursor: None,
-        fetched_at: Some(fetched_at),
-    })
+    let offset = cursor
+        .strip_prefix(TICKET_OFFSET_CURSOR_PREFIX)
+        .ok_or_else(|| "Unsupported ticket cursor".to_string())?;
+    offset
+        .parse::<usize>()
+        .map_err(|_| "Invalid ticket cursor".to_string())
+}
+
+fn encode_ticket_offset_cursor(offset: usize) -> String {
+    format!("{TICKET_OFFSET_CURSOR_PREFIX}{offset}")
 }
 
 #[tauri::command]
@@ -925,6 +1064,7 @@ fn jira_summary_to_ticket(summary: AtlassianResourceSummary) -> TicketSummaryRes
         state,
         assignee: None,
         assignees: Vec::new(),
+        watchers: Vec::new(),
         reporter: None,
         labels: Vec::new(),
         project: None,
@@ -937,6 +1077,7 @@ fn jira_summary_to_ticket(summary: AtlassianResourceSummary) -> TicketSummaryRes
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     }
 }
 
@@ -1019,6 +1160,7 @@ fn jira_issue_detail_to_ticket(issue: JiraIssueDetail) -> TicketSummaryResponse 
         state,
         assignee,
         assignees,
+        watchers: Vec::new(),
         reporter: None,
         labels: issue.labels,
         project: None,
@@ -1031,6 +1173,7 @@ fn jira_issue_detail_to_ticket(issue: JiraIssueDetail) -> TicketSummaryResponse 
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     }
 }
 
@@ -1058,6 +1201,7 @@ fn linear_summary_to_ticket(summary: LinearIssueSummary) -> TicketSummaryRespons
         state,
         assignee,
         assignees,
+        watchers: Vec::new(),
         reporter: None,
         labels: summary.labels,
         project: summary.project,
@@ -1070,6 +1214,7 @@ fn linear_summary_to_ticket(summary: LinearIssueSummary) -> TicketSummaryRespons
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     }
 }
 
@@ -1256,6 +1401,10 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
         }
     }
 
+    if filters.watcher_me.unwrap_or(false) && !ticket.current_user_watching {
+        return false;
+    }
+
     if let Some(labels) = filters.labels.as_ref().filter(|values| !values.is_empty()) {
         if !labels.iter().all(|required_label| {
             ticket
@@ -1283,6 +1432,7 @@ fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResp
         state: ticket_state(content.status.as_deref().unwrap_or("Provider result")),
         assignee,
         assignees,
+        watchers: Vec::new(),
         reporter: content.reporter.as_deref().map(named_person),
         labels: Vec::new(),
         project: None,
@@ -1295,6 +1445,7 @@ fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResp
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     };
     TicketDetailResponse {
         summary,
@@ -1347,6 +1498,7 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
         state: ticket_state(content.state_name.as_deref().unwrap_or("Provider result")),
         assignee,
         assignees,
+        watchers: Vec::new(),
         reporter: content.creator.as_deref().map(named_person),
         labels: content.labels.clone(),
         project: content.project.clone(),
@@ -1359,6 +1511,7 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     };
     TicketDetailResponse {
         summary,
@@ -1441,6 +1594,11 @@ fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryRespon
         .iter()
         .map(|name| named_person(name))
         .collect();
+    let watchers: Vec<TicketingPersonResponse> = summary
+        .watchers
+        .iter()
+        .map(clickup_user_to_person_response)
+        .collect();
     let assignee = assignees.first().cloned();
     TicketSummaryResponse {
         ref_: TicketRefInput {
@@ -1452,6 +1610,7 @@ fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryRespon
         state,
         assignee,
         assignees,
+        watchers,
         reporter: None,
         labels: summary.tags,
         project: summary.list_name,
@@ -1464,6 +1623,7 @@ fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryRespon
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     }
 }
 
@@ -1478,6 +1638,24 @@ fn clickup_summary_assigned_to_user(summary: &ClickUpTaskSummary, user: &ClickUp
                     .as_deref()
                     .is_some_and(|email| assignee.eq_ignore_ascii_case(email))
         })
+}
+
+fn clickup_summary_watched_by_user(summary: &ClickUpTaskSummary, user: &ClickUpUser) -> bool {
+    summary.watchers.iter().any(|watcher| clickup_users_match(watcher, user))
+}
+
+fn clickup_users_match(left: &ClickUpUser, right: &ClickUpUser) -> bool {
+    left.id == right.id
+        || left
+            .username
+            .as_deref()
+            .zip(right.username.as_deref())
+            .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
+        || left
+            .email
+            .as_deref()
+            .zip(right.email.as_deref())
+            .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
 }
 
 /// Map full ClickUp task content into a ticket detail. Mirrors
@@ -1504,6 +1682,11 @@ fn clickup_content_to_detail(content: ClickUpTaskContent) -> TicketDetailRespons
         .iter()
         .map(|name| named_person(name))
         .collect();
+    let watchers: Vec<TicketingPersonResponse> = content
+        .watchers
+        .iter()
+        .map(clickup_user_to_person_response)
+        .collect();
     let assignee = assignees.first().cloned();
     let summary = TicketSummaryResponse {
         ref_: TicketRefInput {
@@ -1515,6 +1698,7 @@ fn clickup_content_to_detail(content: ClickUpTaskContent) -> TicketDetailRespons
         state,
         assignee,
         assignees,
+        watchers,
         reporter: content.creator.as_deref().map(named_person),
         labels: content.tags.clone(),
         project: content.list_name.clone(),
@@ -1527,6 +1711,7 @@ fn clickup_content_to_detail(content: ClickUpTaskContent) -> TicketDetailRespons
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     };
     TicketDetailResponse {
         summary,
@@ -1587,6 +1772,19 @@ fn named_person(name: &str) -> TicketingPersonResponse {
         id: None,
         name: name.to_string(),
         email: None,
+        avatar_url: None,
+    }
+}
+
+fn clickup_user_to_person_response(user: &ClickUpUser) -> TicketingPersonResponse {
+    TicketingPersonResponse {
+        id: Some(user.id.to_string()),
+        name: user
+            .username
+            .clone()
+            .or_else(|| user.email.clone())
+            .unwrap_or_else(|| user.id.to_string()),
+        email: user.email.clone(),
         avatar_url: None,
     }
 }

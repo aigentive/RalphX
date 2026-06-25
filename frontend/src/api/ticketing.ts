@@ -109,6 +109,7 @@ export const TicketSummarySchema = z.object({
   state: TicketingStateSchema,
   assignee: TicketingPersonSchema.nullable().optional(),
   assignees: z.array(TicketingPersonSchema).default([]),
+  watchers: z.array(TicketingPersonSchema).default([]),
   reporter: TicketingPersonSchema.nullable().optional(),
   labels: z.array(z.string()).default([]),
   project: z.string().nullable().optional(),
@@ -121,11 +122,17 @@ export const TicketSummarySchema = z.object({
   openPrUrl: z.string().nullable().optional(),
   openPrStatus: z.string().nullable().optional(),
   currentUserAssigned: z.boolean().default(false),
+  currentUserWatching: z.boolean().default(false),
 });
 type ParsedTicketSummary = z.infer<typeof TicketSummarySchema>;
-export type TicketSummary = Omit<ParsedTicketSummary, "currentUserAssigned" | "assignees"> & {
+export type TicketSummary = Omit<
+  ParsedTicketSummary,
+  "currentUserAssigned" | "currentUserWatching" | "assignees" | "watchers"
+> & {
   currentUserAssigned?: boolean;
+  currentUserWatching?: boolean;
   assignees?: TicketingPerson[];
+  watchers?: TicketingPerson[];
 };
 
 export const TicketAttachmentSchema = z.object({
@@ -199,6 +206,14 @@ type ParsedTicketPage = z.infer<typeof TicketPageSchema>;
 export type TicketPage = Omit<ParsedTicketPage, "items"> & {
   items: TicketSummary[];
 };
+
+export const TicketFilterOptionsSchema = z.object({
+  assignees: z.array(z.string()).default([]),
+  sprints: z.array(z.string()).default([]),
+  complete: z.boolean().default(true),
+  truncated: z.boolean().default(false),
+});
+export type TicketFilterOptions = z.infer<typeof TicketFilterOptionsSchema>;
 
 export const TicketDeepLinkSchema = z.object({
   view: ViewTypeSchema,
@@ -292,6 +307,7 @@ export interface ListTicketingColumnsInput {
 export interface TicketFiltersInput {
   text?: string | undefined;
   assignee?: string | null | undefined;
+  watcherMe?: boolean | undefined;
   stateIds?: string[] | undefined;
   labels?: string[] | undefined;
 }
@@ -304,6 +320,14 @@ export interface ListTicketsInput {
   limit?: number | undefined;
   filters?: TicketFiltersInput | undefined;
   sort?: TicketSort | undefined;
+}
+
+export interface ListTicketFilterOptionsInput {
+  provider: TicketingProvider;
+  projectId?: string | undefined;
+  containerId?: string | undefined;
+  limit?: number | undefined;
+  filters?: TicketFiltersInput | undefined;
 }
 
 export interface TicketRefInput {
@@ -360,6 +384,16 @@ function listTicketsQuery(input: ListTicketsInput): Record<string, unknown> {
   };
 }
 
+function listTicketFilterOptionsQuery(input: ListTicketFilterOptionsInput): Record<string, unknown> {
+  return {
+    provider: input.provider,
+    ...(input.projectId !== undefined && { projectId: input.projectId }),
+    ...(input.containerId !== undefined && { containerId: input.containerId }),
+    ...(input.limit !== undefined && { limit: input.limit }),
+    ...(input.filters !== undefined && { filters: input.filters }),
+  };
+}
+
 export const ticketingApi = {
   listProviders(input: ListTicketingProvidersInput = {}): Promise<TicketingProviderSummary[]> {
     return typedInvoke(
@@ -398,6 +432,14 @@ export const ticketingApi = {
       "list_tickets",
       { query: listTicketsQuery(input) },
       TicketPageSchema,
+    );
+  },
+
+  listTicketFilterOptions(input: ListTicketFilterOptionsInput): Promise<TicketFilterOptions> {
+    return typedInvoke(
+      "list_ticket_filter_options",
+      { query: listTicketFilterOptionsQuery(input) },
+      TicketFilterOptionsSchema,
     );
   },
 

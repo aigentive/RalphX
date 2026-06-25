@@ -11,8 +11,9 @@ use crate::application::{ClickUpApiClient, ClickUpAuthContext};
 use super::clickup_client::{
     apply_task_tags, assign_task_to_user, clear_task_assignees, clickup_authorization_header,
     create_task_comment, fetch_current_user, fetch_filtered_tasks, fetch_space_statuses,
-    fetch_spaces, fetch_task_detail, fetch_workspaces, map_status_type_to_category,
-    put_task_status, validate_token, ClickUpJsonRequester, HyperClickUpApiClient,
+    fetch_spaces, fetch_task_detail, fetch_task_detail_by_custom_id, fetch_workspaces,
+    map_status_type_to_category, put_task_status, validate_token, ClickUpJsonRequester,
+    HyperClickUpApiClient,
 };
 
 #[derive(Clone, Debug)]
@@ -75,6 +76,7 @@ fn sample_task(id: &str, status_type: &str) -> Value {
         "url": format!("https://app.clickup.com/t/{id}"),
         "status": { "status": "in progress", "type": status_type, "color": "#abc" },
         "assignees": [{ "id": 42, "username": "dev", "email": "dev@example.com" }],
+        "followers": [{ "id": 99, "username": "watcher", "email": "watcher@example.com" }],
         "tags": [{ "name": "bug" }, { "name": "backend" }],
         "space": { "id": "space-1" },
         "list": { "id": "list-1", "name": "Sprint" },
@@ -124,6 +126,8 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
         Ok(json!({ "tasks": [sample_task("task-1", "custom")], "last_page": true })),
         Ok(sample_task("task-1", "done")),
         Ok(json!({ "comments": [] })),
+        Ok(sample_task("opaque-from-custom", "custom")),
+        Ok(json!({ "comments": [] })),
         Ok(json!({ "statuses": [{ "status": "done", "type": "done" }] })),
         Ok(json!({ "user": { "id": 42, "username": "dev" } })),
         Ok(json!({ "user": { "id": 42, "username": "dev" } })),
@@ -143,11 +147,7 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
     client.validate(&auth).await.unwrap();
     assert_eq!(client.list_workspaces(&auth).await.unwrap()[0].id, "9000");
     assert_eq!(
-        client
-            .list_spaces(&auth, "9000")
-            .await
-            .unwrap()[0]
-            .id,
+        client.list_spaces(&auth, "9000").await.unwrap()[0].id,
         "space-1"
     );
     assert_eq!(
@@ -163,13 +163,20 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
             .id,
         "task-1"
     );
-    assert_eq!(client.fetch_task(&auth, "task-1").await.unwrap().id, "task-1");
+    assert_eq!(
+        client.fetch_task(&auth, "task-1").await.unwrap().id,
+        "task-1"
+    );
     assert_eq!(
         client
-            .list_statuses(&auth, "space-1")
+            .fetch_task_by_custom_id(&auth, "9000", "TASK-123")
             .await
-            .unwrap()[0]
-            .category,
+            .unwrap()
+            .id,
+        "opaque-from-custom"
+    );
+    assert_eq!(
+        client.list_statuses(&auth, "space-1").await.unwrap()[0].category,
         "done"
     );
     assert_eq!(client.current_user(&auth).await.unwrap().id, 42);
@@ -196,7 +203,7 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
         .unwrap();
 
     let requests = fake.requests();
-    assert_eq!(requests.len(), 15);
+    assert_eq!(requests.len(), 17);
     assert!(requests.iter().all(|request| request.token == "tok"));
 }
 
@@ -307,6 +314,7 @@ async fn filtered_tasks_paginate_until_last_page() {
     let requests = fake.requests();
     assert_eq!(requests.len(), 2, "should fetch exactly two pages");
     assert!(requests[0].url.contains("page=0"));
+    assert!(requests[0].url.contains("include_closed=true"));
     assert!(requests[0].url.contains("space-1"));
     assert!(requests[0].url.contains("/team/9000/task"));
     assert!(requests[1].url.contains("page=1"));
@@ -356,7 +364,7 @@ async fn filtered_tasks_searches_metadata_and_stops_at_limit() {
                 sample_task("skip-1", "open"),
                 {
                     "id": "match-title",
-                    "name": "Inbox classifier",
+                    "name": "Alpha demo task",
                     "status": { "status": "to do", "type": "open" },
                     "assignees": [{ "username": "Adrian" }],
                     "tags": []
@@ -371,7 +379,7 @@ async fn filtered_tasks_searches_metadata_and_stops_at_limit() {
                     "name": "Other task",
                     "status": { "status": "to do", "type": "open" },
                     "assignees": [],
-                    "tags": [{ "name": "Inbox" }]
+                    "tags": [{ "name": "Alpha" }]
                 }
             ],
             "last_page": false
@@ -384,7 +392,7 @@ async fn filtered_tasks_searches_metadata_and_stops_at_limit() {
         "9000",
         &[],
         ClickUpTaskListOptions {
-            query: Some("inbox".to_string()),
+            query: Some("alpha".to_string()),
             limit: Some(2),
         },
     )
@@ -411,7 +419,7 @@ async fn filtered_tasks_matches_key_status_list_and_assignee_metadata() {
         "tasks": [
             {
                 "id": "opaque-1",
-                "custom_id": "MBE-2857",
+                "custom_id": "TASK-123",
                 "name": "Different title",
                 "status": { "status": "Awaiting Staging", "type": "custom" },
                 "assignees": [{ "email": "adrian@example.com" }],
@@ -436,7 +444,7 @@ async fn filtered_tasks_matches_key_status_list_and_assignee_metadata() {
         "9000",
         &[],
         ClickUpTaskListOptions {
-            query: Some("mbe-2857".to_string()),
+            query: Some("task-123".to_string()),
             limit: Some(10),
         },
     )
@@ -591,6 +599,13 @@ async fn task_summary_maps_status_assignees_and_tags() {
     assert_eq!(task.status_category.as_deref(), Some("in_progress"));
     assert_eq!(task.assignees, vec!["dev".to_string()]);
     assert_eq!(task.assignee_ids, vec![42]);
+    assert_eq!(task.watchers.len(), 1);
+    assert_eq!(task.watchers[0].id, 99);
+    assert_eq!(task.watchers[0].username.as_deref(), Some("watcher"));
+    assert_eq!(
+        task.watchers[0].email.as_deref(),
+        Some("watcher@example.com")
+    );
     assert_eq!(task.tags, vec!["bug".to_string(), "backend".to_string()]);
     assert_eq!(task.space_id.as_deref(), Some("space-1"));
     assert_eq!(task.list_name.as_deref(), Some("Sprint"));
@@ -660,6 +675,8 @@ async fn fetch_task_detail_maps_fields() {
     assert_eq!(content.status_category.as_deref(), Some("done"));
     assert_eq!(content.creator.as_deref(), Some("owner"));
     assert_eq!(content.assignees, vec!["dev".to_string()]);
+    assert_eq!(content.watchers.len(), 1);
+    assert_eq!(content.watchers[0].id, 99);
     assert_eq!(content.attachments.len(), 1);
     assert_eq!(content.attachments[0].filename, "mockup.png");
     assert_eq!(
@@ -701,6 +718,38 @@ async fn fetch_task_detail_maps_fields() {
     assert!(fake.requests()[0].url.ends_with("/task/abc123"));
     assert!(fake.requests()[1].url.ends_with("/task/abc123/comment"));
     assert!(fake.requests()[2].url.ends_with("/comment/12345/reply"));
+}
+
+#[tokio::test]
+async fn fetch_task_detail_by_custom_id_adds_team_query_to_task_and_comments() {
+    let mut task = sample_task("opaque-1", "custom");
+    task["custom_id"] = json!("TASK-123");
+    let fake = FakeClickUpRequester::new(vec![
+        Ok(task),
+        Ok(json!({
+            "comments": [
+                {
+                    "id": "comment-1",
+                    "comment_text": "Custom id comment",
+                    "user": { "username": "Reviewer" }
+                }
+            ]
+        })),
+    ]);
+
+    let content = fetch_task_detail_by_custom_id(&fake, "tok", "workspace-1", "TASK-123")
+        .await
+        .unwrap();
+
+    assert_eq!(content.id, "opaque-1");
+    assert_eq!(content.custom_id.as_deref(), Some("TASK-123"));
+    assert_eq!(content.comments[0].body, "Custom id comment");
+    assert!(fake.requests()[0]
+        .url
+        .ends_with("/task/TASK-123?custom_task_ids=true&team_id=workspace-1"));
+    assert!(fake.requests()[1]
+        .url
+        .ends_with("/task/TASK-123/comment?custom_task_ids=true&team_id=workspace-1"));
 }
 
 #[tokio::test]

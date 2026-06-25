@@ -212,6 +212,8 @@ const mockAgentProviderSettings = {
       claudeAllowDangerouslySkipPermissions: false,
       cliManagementMode: "user_managed",
       autoUpdateEnabled: false,
+      customBinaryEnabled: false,
+      customBinaryPath: null,
       available: true,
       binaryFound: true,
       binaryPath: "/opt/homebrew/bin/codex",
@@ -234,6 +236,8 @@ const mockAgentProviderSettings = {
       claudeAllowDangerouslySkipPermissions: true,
       cliManagementMode: "user_managed",
       autoUpdateEnabled: false,
+      customBinaryEnabled: false,
+      customBinaryPath: null,
       available: true,
       binaryFound: true,
       binaryPath: "/opt/homebrew/bin/claude",
@@ -254,6 +258,8 @@ const mockManagedProviderCliStatuses = {
       provider: "codex",
       cliManagementMode: "user_managed",
       autoUpdateEnabled: false,
+      customBinaryEnabled: false,
+      customBinaryPath: null,
       supported: true,
       installed: true,
       binaryPath: "/opt/homebrew/bin/codex",
@@ -269,6 +275,8 @@ const mockManagedProviderCliStatuses = {
       provider: "claude",
       cliManagementMode: "user_managed",
       autoUpdateEnabled: false,
+      customBinaryEnabled: false,
+      customBinaryPath: null,
       supported: true,
       installed: true,
       binaryPath: "/Users/example/.local/bin/claude",
@@ -668,7 +676,7 @@ const mockTicketingTickets = [
   },
   {
     ref: { provider: "clickup", id: "cu-1001", key: "CU-1001" },
-    title: "Wire ClickUp tasks into the unified dashboard",
+    title: "Demo ClickUp dashboard task",
     state: { id: "in_progress", name: "In Progress", category: "in_progress", color: null },
     assignee: { id: "cu-user-1", name: "A. Demian", email: null, avatarUrl: null },
     reporter: { id: "cu-user-2", name: "Platform", email: null, avatarUrl: null },
@@ -869,6 +877,7 @@ const commandHandlers: Record<
     Object.assign(status, {
       cliManagementMode: "rx_managed",
       installed: true,
+      customBinaryEnabled: false,
       currentVersion: status.latestVersion ?? "0.137.0",
       updateAvailable: false,
       action: "none",
@@ -1371,6 +1380,12 @@ const commandHandlers: Record<
     );
     if (provider) {
       Object.assign(provider, input, { updatedAt: new Date(0).toISOString() });
+      if (provider.customBinaryEnabled) {
+        provider.cliManagementMode = "user_managed";
+        provider.autoUpdateEnabled = false;
+      } else if (provider.cliManagementMode === "rx_managed") {
+        provider.customBinaryEnabled = false;
+      }
       if (input.isDefault) {
         for (const entry of mockAgentProviderSettings.providers) {
           entry.isDefault = entry.provider === provider.provider;

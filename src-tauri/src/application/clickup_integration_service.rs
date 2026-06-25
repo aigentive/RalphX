@@ -100,6 +100,7 @@ pub struct ClickUpTaskSummary {
     pub status_color: Option<String>,
     pub assignees: Vec<String>,
     pub assignee_ids: Vec<i64>,
+    pub watchers: Vec<ClickUpUser>,
     pub tags: Vec<String>,
     pub space_id: Option<String>,
     pub list_name: Option<String>,
@@ -119,6 +120,7 @@ pub struct ClickUpTaskContent {
     pub status_category: Option<String>,
     pub creator: Option<String>,
     pub assignees: Vec<String>,
+    pub watchers: Vec<ClickUpUser>,
     pub tags: Vec<String>,
     pub comments: Vec<ClickUpComment>,
     pub attachments: Vec<ClickUpAttachment>,
@@ -166,6 +168,15 @@ pub trait ClickUpApiClient: Send + Sync {
         _task_id: &str,
     ) -> Result<ClickUpTaskContent, String> {
         Err("ClickUp task lookup is not available for this client".to_string())
+    }
+
+    async fn fetch_task_by_custom_id(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _team_id: &str,
+        _task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        Err("ClickUp custom task id lookup is not available for this client".to_string())
     }
 
     async fn list_statuses(
@@ -290,6 +301,34 @@ impl ClickUpApiClient for EmptyClickUpApiClient {
             status_category: None,
             creator: None,
             assignees: Vec::new(),
+            watchers: Vec::new(),
+            tags: Vec::new(),
+            comments: Vec::new(),
+            attachments: Vec::new(),
+            updated_at: None,
+            space_id: None,
+            list_name: None,
+        })
+    }
+
+    async fn fetch_task_by_custom_id(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _team_id: &str,
+        task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        Ok(ClickUpTaskContent {
+            id: task_id.to_string(),
+            custom_id: Some(task_id.to_string()),
+            name: task_id.to_string(),
+            url: None,
+            description: String::new(),
+            status_name: None,
+            status_type: None,
+            status_category: None,
+            creator: None,
+            assignees: Vec::new(),
+            watchers: Vec::new(),
             tags: Vec::new(),
             comments: Vec::new(),
             attachments: Vec::new(),
@@ -405,6 +444,15 @@ impl ClickUpApiClient for UnavailableClickUpApiClient {
     async fn fetch_task(
         &self,
         _auth: &ClickUpAuthContext,
+        _task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn fetch_task_by_custom_id(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _team_id: &str,
         _task_id: &str,
     ) -> Result<ClickUpTaskContent, String> {
         Err(self.reason.clone())
@@ -648,8 +696,30 @@ impl ClickUpIntegrationService {
     }
 
     pub async fn fetch_task(&self, task_id: &str) -> Result<ClickUpTaskContent, String> {
-        let auth = self.enabled_auth_context().await?;
-        self.client.fetch_task(&auth, task_id).await
+        let settings = self.get_settings().await?;
+        if !settings.enabled || settings.validation_status != IntegrationValidationStatus::Valid {
+            return Err("ClickUp integration is not enabled".to_string());
+        }
+        let auth = self.auth_context(&settings).await?;
+        match self.client.fetch_task(&auth, task_id).await {
+            Ok(task) => Ok(task),
+            Err(error) => {
+                let Some(workspace_id) = settings.workspace_id.as_deref() else {
+                    return Err(error);
+                };
+                if !looks_like_clickup_custom_task_id(task_id) {
+                    return Err(error);
+                }
+                self.client
+                    .fetch_task_by_custom_id(&auth, workspace_id, task_id)
+                    .await
+                    .map_err(|custom_error| {
+                        format!(
+                            "{error}; ClickUp custom task id lookup also failed: {custom_error}"
+                        )
+                    })
+            }
+        }
     }
 
     pub async fn current_user(&self) -> Result<ClickUpUser, String> {
@@ -739,4 +809,11 @@ fn pending_status_for_settings(
     } else {
         IntegrationValidationStatus::NotConfigured
     }
+}
+
+fn looks_like_clickup_custom_task_id(task_id: &str) -> bool {
+    let value = task_id.trim();
+    value.contains('-')
+        && value.chars().any(|char| char.is_ascii_alphabetic())
+        && value.chars().any(|char| char.is_ascii_digit())
 }

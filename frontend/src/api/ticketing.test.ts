@@ -92,6 +92,7 @@ describe("ticketingApi", () => {
       limit: 30,
       filters: {
         text: "merge",
+        watcherMe: true,
         stateIds: ["started"],
         labels: ["backend"],
       },
@@ -107,6 +108,7 @@ describe("ticketingApi", () => {
         limit: 30,
         filters: {
           text: "merge",
+          watcherMe: true,
           stateIds: ["started"],
           labels: ["backend"],
         },
@@ -114,6 +116,43 @@ describe("ticketingApi", () => {
       },
     });
     expect(page.nextCursor).toBe("cursor-2");
+  });
+
+  it("loads provider-backed ticket filter options with camelCase invoke args", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      assignees: ["A. Dev", "B. Ops"],
+      sprints: ["Sprint 1"],
+      complete: true,
+      truncated: false,
+    });
+
+    const options = await ticketingApi.listTicketFilterOptions({
+      provider: "clickup",
+      projectId: "project-1",
+      containerId: "space-1",
+      limit: 500,
+      filters: {
+        text: "merge",
+        stateIds: ["started"],
+        labels: ["backend"],
+      },
+    });
+
+    expect(invoke).toHaveBeenCalledWith("list_ticket_filter_options", {
+      query: {
+        provider: "clickup",
+        projectId: "project-1",
+        containerId: "space-1",
+        limit: 500,
+        filters: {
+          text: "merge",
+          stateIds: ["started"],
+          labels: ["backend"],
+        },
+      },
+    });
+    expect(options.assignees).toEqual(["A. Dev", "B. Ops"]);
+    expect(options.sprints).toEqual(["Sprint 1"]);
   });
 
   it("sends status transitions with stable client operation ids", async () => {

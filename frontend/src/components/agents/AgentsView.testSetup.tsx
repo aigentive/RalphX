@@ -51,6 +51,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   archiveConversationMock: vi.fn(),
   restoreConversationMock: vi.fn(),
   getAgentRunningStatesMock: vi.fn(),
+  getAgentConversationRuntimeStatusesMock: vi.fn(),
   getPlanBranchesMock: vi.fn(),
   getTicketAssociationsMock: vi.fn(),
   loadBranchBaseOptionsMock: vi.fn(),
@@ -169,6 +170,7 @@ const {
   archiveConversationMock,
   restoreConversationMock,
   getAgentRunningStatesMock,
+  getAgentConversationRuntimeStatusesMock,
   getPlanBranchesMock,
   getTicketAssociationsMock,
   loadBranchBaseOptionsMock,
@@ -689,6 +691,8 @@ vi.mock("@/api/chat", () => ({
     archiveConversation: (...args: unknown[]) => archiveConversationMock(...args),
     restoreConversation: (...args: unknown[]) => restoreConversationMock(...args),
     getAgentRunningStates: (...args: unknown[]) => getAgentRunningStatesMock(...args),
+    getAgentConversationRuntimeStatuses: (...args: unknown[]) =>
+      getAgentConversationRuntimeStatusesMock(...args),
     listWorkspaceOpenTargets: (...args: unknown[]) =>
       listWorkspaceOpenTargetsMock(...args),
     openAgentConversationWorkspacePath: (...args: unknown[]) =>
@@ -1262,6 +1266,7 @@ export function setupAgentsViewTest() {
   archiveConversationMock.mockReset();
   restoreConversationMock.mockReset();
   getAgentRunningStatesMock.mockReset();
+  getAgentConversationRuntimeStatusesMock.mockReset();
   getPlanBranchesMock.mockReset();
   getTicketAssociationsMock.mockReset();
   loadBranchBaseOptionsMock.mockReset();
@@ -1642,6 +1647,7 @@ export function setupAgentsViewTest() {
   archiveConversationMock.mockResolvedValue(undefined);
   restoreConversationMock.mockResolvedValue(undefined);
   getAgentRunningStatesMock.mockResolvedValue({});
+  getAgentConversationRuntimeStatusesMock.mockResolvedValue({});
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockResolvedValue(undefined);
 

@@ -154,6 +154,8 @@ interface IntegratedChatPanelProps {
   conversationIdOverride?: string | undefined;
   /** Override task selection so host surfaces can ignore the global task detail state. */
   selectedTaskIdOverride?: string | null | undefined;
+  /** Force task chat runtime mode when selected task status alone is not deterministic. */
+  taskRuntimeContextTypeOverride?: "task_execution" | "review" | "merge" | undefined;
   /** Force a specific store key for externally-owned queue/running state. */
   storeContextKeyOverride?: string | undefined;
   /** Override the backend process/queue context id used for recovery, stop, and queued-message edits. */
@@ -230,6 +232,7 @@ export function IntegratedChatPanel({
   toolbarBackAction,
   conversationIdOverride,
   selectedTaskIdOverride,
+  taskRuntimeContextTypeOverride,
   storeContextKeyOverride,
   agentProcessContextIdOverride,
   sendOptions,
@@ -286,27 +289,39 @@ export function IntegratedChatPanel({
   const reviewAgentRunning = useChatStore(selectIsAgentRunning(reviewKey));
   const mergeKey = selectedTaskId ? buildStoreKey("merge", selectedTaskId) : "";
   const mergeAgentRunning = useChatStore(selectIsAgentRunning(mergeKey));
+  const forcedTaskRuntimeContext = selectedTaskId
+    ? taskRuntimeContextTypeOverride
+    : undefined;
 
   // Execution states: worker agent is running (only when NOT in ideation mode)
   // Agent-status override is gated on !taskHistoryState: in history mode, no agent
   // is running so the override is always false, but the explicit guard prevents
   // stale agentStatus entries from activating mode flags for historical contexts.
   const isExecutionMode = !ideationSessionId && !!selectedTaskId && (
-    (effectiveStatus ? (EXECUTION_STATUSES as readonly string[]).includes(effectiveStatus) : false)
-    || (!taskHistoryState && executionAgentRunning)
+    forcedTaskRuntimeContext === "task_execution" ||
+    (!forcedTaskRuntimeContext && (
+      (effectiveStatus ? (EXECUTION_STATUSES as readonly string[]).includes(effectiveStatus) : false)
+      || (!taskHistoryState && executionAgentRunning)
+    ))
   );
 
   // Review states: reviewer agent conversation (only when NOT in ideation mode)
   // Include 'approved' so historical view loads the reviewer's conversation
   const isReviewMode = !ideationSessionId && !!selectedTaskId && (
-    (effectiveStatus ? ((ALL_REVIEW_STATUSES as readonly string[]).includes(effectiveStatus) || effectiveStatus === "approved") : false)
-    || (!taskHistoryState && reviewAgentRunning)
+    forcedTaskRuntimeContext === "review" ||
+    (!forcedTaskRuntimeContext && (
+      (effectiveStatus ? ((ALL_REVIEW_STATUSES as readonly string[]).includes(effectiveStatus) || effectiveStatus === "approved") : false)
+      || (!taskHistoryState && reviewAgentRunning)
+    ))
   );
 
   // Merge states: merger agent conversation (only when NOT in ideation mode)
   const isMergeMode = !ideationSessionId && !!selectedTaskId && (
-    (effectiveStatus ? (MERGE_STATUSES as readonly string[]).includes(effectiveStatus) : false)
-    || (!taskHistoryState && mergeAgentRunning)
+    forcedTaskRuntimeContext === "merge" ||
+    (!forcedTaskRuntimeContext && (
+      (effectiveStatus ? (MERGE_STATUSES as readonly string[]).includes(effectiveStatus) : false)
+      || (!taskHistoryState && mergeAgentRunning)
+    ))
   );
 
   // Use extracted context management hook

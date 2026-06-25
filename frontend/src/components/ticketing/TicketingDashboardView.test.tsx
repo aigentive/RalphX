@@ -70,6 +70,7 @@ vi.mock("@/hooks/useTicketing", () => ({
   useTicketingColumns: vi.fn(),
   useTicketingContainers: vi.fn(),
   useTicketingProviders: vi.fn(),
+  useTicketFilterOptions: vi.fn(),
   useTicketLabelOptions: vi.fn(),
   useTicketTransitions: vi.fn(),
   useTickets: vi.fn(),
@@ -178,6 +179,17 @@ function mockConnectedDashboard() {
     fetchNextPage: vi.fn(),
     isFetchingNextPage: false,
   } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+  vi.mocked(ticketingHooks.useTicketFilterOptions).mockReturnValue({
+    data: {
+      assignees: ["A. Dev"],
+      sprints: [],
+      complete: true,
+      truncated: false,
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as ReturnType<typeof ticketingHooks.useTicketFilterOptions>);
   vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
     data: {
       ...ticket,
@@ -326,6 +338,17 @@ describe("TicketingDashboardView", () => {
       fetchNextPage: vi.fn(),
       isFetchingNextPage: false,
     } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+    vi.mocked(ticketingHooks.useTicketFilterOptions).mockReturnValue({
+      data: {
+        assignees: [],
+        sprints: [],
+        complete: true,
+        truncated: false,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketFilterOptions>);
     vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
       data: undefined,
       isLoading: false,
@@ -654,6 +677,17 @@ describe("TicketingDashboardView", () => {
       fetchNextPage: vi.fn(),
       isFetchingNextPage: false,
     } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+    vi.mocked(ticketingHooks.useTicketFilterOptions).mockReturnValue({
+      data: {
+        assignees: [],
+        sprints: ["Sprint 42"],
+        complete: true,
+        truncated: false,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketFilterOptions>);
 
     renderDashboard();
 
@@ -743,6 +777,7 @@ describe("TicketingDashboardView", () => {
       stateIds: [],
       labels: [],
       sprint: null,
+      watcherMe: false,
     });
     vi.mocked(ticketingHooks.useTickets).mockReturnValue({
       data: {
@@ -950,7 +985,7 @@ describe("TicketingDashboardView", () => {
   it("filters the list client-side by the selected assignee", () => {
     mockConnectedDashboard();
     useTicketingStore.setState({
-      filters: { text: "", assignee: "Someone Else", stateIds: [], labels: [], sprint: null },
+      filters: { text: "", assignee: "Someone Else", stateIds: [], labels: [], sprint: null, watcherMe: false },
     });
     renderDashboard();
 
@@ -971,7 +1006,7 @@ describe("TicketingDashboardView", () => {
       isFetchingNextPage: false,
     } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
     useTicketingStore.setState({
-      filters: { text: "", assignee: null, stateIds: [], labels: [], sprint: null },
+      filters: { text: "", assignee: null, stateIds: [], labels: [], sprint: null, watcherMe: false },
     });
     renderDashboard();
 
@@ -998,6 +1033,145 @@ describe("TicketingDashboardView", () => {
     expect(
       screen.queryByText("When two agents transition the same task."),
     ).not.toBeInTheDocument();
+  });
+
+  it("accepts ClickUp detail when a custom-id selection resolves to an opaque task id", async () => {
+    const clickupTicket = {
+      ...ticket,
+      ref: { provider: "clickup" as const, id: "opaque-task-1", key: "TASK-123" },
+      title: "Demo task",
+      url: "https://app.clickup.com/t/workspace-1/TASK-123",
+    };
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "clickup",
+          label: "ClickUp",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
+      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "project" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+    useTicketingStore.getState().setProvider("clickup");
+    useTicketingStore.getState().setContainerId("space-1");
+    useTicketingStore.getState().setSelectedTicketRef({
+      provider: "clickup",
+      id: "TASK-123",
+    });
+    vi.mocked(ticketingHooks.useTicketingColumns).mockReturnValue({
+      data: [{ id: "todo", name: "To Do", category: "todo", order: 0 }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingColumns>);
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: { pages: [{ items: [clickupTicket], nextCursor: null, total: 1 }], pageParams: [null] },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+    vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
+      data: {
+        ...clickupTicket,
+        descriptionMarkdown: "Custom id detail body.",
+        comments: [],
+        attachments: [],
+        transitions: [],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketDetail>);
+
+    renderDashboard();
+
+    expect(await screen.findByText("Custom id detail body.")).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: /loading ticket details/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps waiting when loaded detail belongs to another provider", async () => {
+    const clickupTicket = {
+      ...ticket,
+      ref: { provider: "clickup" as const, id: "opaque-task-1", key: "TASK-123" },
+      title: "Demo task",
+      url: "https://app.clickup.com/t/workspace-1/TASK-123",
+    };
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "clickup",
+          label: "ClickUp",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
+      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "project" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+    useTicketingStore.getState().setProvider("clickup");
+    useTicketingStore.getState().setContainerId("space-1");
+    useTicketingStore.getState().setSelectedTicketRef({
+      provider: "clickup",
+      id: "TASK-123",
+    });
+    vi.mocked(ticketingHooks.useTicketingColumns).mockReturnValue({
+      data: [{ id: "todo", name: "To Do", category: "todo", order: 0 }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingColumns>);
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: { pages: [{ items: [clickupTicket], nextCursor: null, total: 1 }], pageParams: [null] },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+    vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
+      data: {
+        ...ticket,
+        descriptionMarkdown: "Wrong provider detail body.",
+        comments: [],
+        attachments: [],
+        transitions: [],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketDetail>);
+
+    renderDashboard();
+
+    const skeletons = await screen.findAllByRole("status", { name: /loading ticket details/i });
+    expect(skeletons.length).toBeGreaterThan(0);
+    expect(screen.queryByText("Wrong provider detail body.")).not.toBeInTheDocument();
   });
 
   it("records a ticket as opened when its row is clicked", () => {
@@ -1644,7 +1818,7 @@ describe("TicketingDashboardView", () => {
     const clickupTicket = {
       ...ticket,
       ref: { provider: "clickup" as const, id: "cu-1001", key: "CU-1001" },
-      title: "Wire ClickUp tasks into the unified dashboard",
+      title: "Demo ClickUp dashboard task",
       url: "https://app.clickup.com/t/CU-1001",
     };
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
@@ -1727,9 +1901,9 @@ describe("TicketingDashboardView", () => {
         {
           provider: "clickup",
           kind: "clickup",
-          id: "CU-1001",
+          id: "cu-1001",
           key: "CU-1001",
-          title: "Wire ClickUp tasks into the unified dashboard",
+          title: "Demo ClickUp dashboard task",
           url: "https://app.clickup.com/t/CU-1001",
         },
       ],
