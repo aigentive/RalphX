@@ -2578,6 +2578,122 @@ async fn test_task_execution_error_finalizer_fails_current_attempt_with_metadata
 }
 
 #[tokio::test]
+async fn test_task_execution_agent_exit_preserves_worker_error_as_failure_error() {
+    let state = AppState::new_test();
+    let exec = Arc::new(ExecutionState::new());
+    let execution_state = Some(Arc::clone(&exec));
+
+    let project = Project::new(
+        "Failed Worker Command".into(),
+        "/tmp/failed-worker-command".into(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Executing task".into());
+    task.internal_status = InternalStatus::Executing;
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.unwrap();
+
+    let conversation_id = ChatConversationId::new();
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::TaskExecution,
+        task_id.as_str(),
+    );
+    let worker_stderr =
+        "sed: .artifacts/specs/p6-pr-list-affordances/tracker.md: No such file or directory";
+    let stream_error = StreamError::AgentExit {
+        exit_code: Some(1),
+        stderr: worker_stderr.to_string(),
+    };
+    let expected_error = format!("Agent failed: {}", worker_stderr);
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        &expected_error,
+        Some(&stream_error),
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        conversation_id,
+        "run-id-agent-exit-error",
+        "message-id-agent-exit-error",
+        &event_ctx,
+        None,
+        crate::domain::agents::AgentHarnessKind::Codex,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &execution_state,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        false,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(
+        !recovery_spawned,
+        "normal agent-exit path should not spawn stale-session recovery"
+    );
+
+    let updated = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should still exist");
+    assert_eq!(updated.internal_status, InternalStatus::Failed);
+
+    let metadata: serde_json::Value = updated
+        .metadata
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .expect("agent exit should persist metadata");
+    assert_eq!(
+        metadata
+            .get("last_agent_error")
+            .and_then(|value| value.as_str()),
+        Some(expected_error.as_str())
+    );
+    assert_eq!(
+        metadata
+            .get("failure_error")
+            .and_then(|value| value.as_str()),
+        Some(expected_error.as_str()),
+        "failed task details should show the worker error instead of the generic fallback"
+    );
+    assert_eq!(
+        metadata.get("is_timeout").and_then(|value| value.as_bool()),
+        Some(false),
+        "agent exit failures should be recorded as non-timeout failures"
+    );
+}
+
+#[tokio::test]
 async fn test_task_execution_provider_error_finalizer_pauses_with_metadata() {
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
