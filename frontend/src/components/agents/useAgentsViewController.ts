@@ -53,6 +53,7 @@ import {
 } from "./agentConversations";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   getAgentChatFocusSwitchOptions,
@@ -93,6 +94,10 @@ export function useAgentsViewController({
   const [chatFocus, setChatFocus] = useState<AgentsChatFocus>({ type: "workspace" });
   const [publishFocusRequest, setPublishFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
+  const [taskArtifactFocusRequest, setTaskArtifactFocusRequest] =
+    useState<AgentTaskArtifactFocusRequest | null>(null);
+  const [selectedTaskArtifactId, setSelectedTaskArtifactId] =
+    useState<string | null>(null);
   const [lastVerificationFocus, setLastVerificationFocus] = useState<Extract<
     AgentsChatFocus,
     { type: "verification" }
@@ -168,6 +173,8 @@ export function useAgentsViewController({
     setChatFocus({ type: "workspace" });
     setLastVerificationFocus(null);
     setPublishFocusRequest(null);
+    setTaskArtifactFocusRequest(null);
+    setSelectedTaskArtifactId(null);
   }, [selectedConversationId]);
   useEffect(() => {
     if (!selectedConversationId || activeConversation?.contextType !== "project") {
@@ -219,6 +226,19 @@ export function useAgentsViewController({
           ? current
           : nextFocus,
       );
+    },
+    [],
+  );
+  const handleTaskArtifactSelectionChange = useCallback(
+    (taskId: string | null) => {
+      setSelectedTaskArtifactId(taskId);
+      if (taskId) {
+        setChatFocus((current) =>
+          current.type === "task_runtime" && current.taskId === taskId
+            ? current
+            : { type: "task_runtime", taskId, contextType: "task_execution" },
+        );
+      }
     },
     [],
   );
@@ -511,6 +531,20 @@ export function useAgentsViewController({
     hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
     selectedConversationId,
   });
+  const handleOpenTaskArtifact = useCallback(
+    (taskId: string) => {
+      if (!selectedConversationId) {
+        return;
+      }
+      setSelectedTaskArtifactId(taskId);
+      setTaskArtifactFocusRequest((current) => ({
+        taskId,
+        requestId: (current?.requestId ?? 0) + 1,
+      }));
+      openArtifactTab(selectedConversationId, "tasks");
+    },
+    [openArtifactTab, selectedConversationId],
+  );
 
   const { clearAutoManagedTitle, handleAutoManagedTitle } = useAgentsAutoTitle({
     findConversationById,
@@ -893,6 +927,7 @@ export function useAgentsViewController({
       onFocusIdeationSession: handleFocusIdeationSession,
       onFocusVerificationSession: handleFocusVerificationSession,
       onFocusTaskRuntime: handleFocusTaskRuntime,
+      onOpenTaskArtifact: handleOpenTaskArtifact,
       onForkConversation: handleForkConversation,
       onOpenPublishPane: handleOpenPublishPane,
       onOpenPublishFile: handleOpenPublishFile,
@@ -908,6 +943,7 @@ export function useAgentsViewController({
       publishShortcutLabel,
       publishingConversationId,
       selectedConversationId,
+      selectedTaskArtifactId,
       setTerminalChatDockElement,
       switchingConversationModeId,
       terminalUnavailableReason,
@@ -940,8 +976,10 @@ export function useAgentsViewController({
       setArtifactPaneVisibility,
       setArtifactTaskMode,
       setTerminalPanelDockElement,
+      taskArtifactFocusRequest,
       terminalUnavailableReason,
       onFocusVerificationSession: handleFocusVerificationSession,
+      onTaskArtifactSelectionChange: handleTaskArtifactSelectionChange,
       onPublishWorkspace: handlePublishWorkspace,
       onResizeReset: handleArtifactResizeReset,
       onResizeStart: handleArtifactResizeStart,

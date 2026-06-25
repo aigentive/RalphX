@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   chatApi,
+  type AgentConversationRuntimeStatus,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceFreshness,
   type ForkAgentConversationResult,
@@ -543,6 +544,36 @@ function workspace(): AgentConversationWorkspace {
   };
 }
 
+function workspaceRuntimeStatus(
+  overrides: Partial<AgentConversationRuntimeStatus> = {},
+): AgentConversationRuntimeStatus {
+  return {
+    conversationId: "conversation-1",
+    isRunning: true,
+    agentStatus: "generating",
+    primarySource: "workspace",
+    summaryLabel: "Agent running",
+    items: [
+      {
+        source: "workspace",
+        contextType: "project",
+        contextId: "conversation-1",
+        label: "Agent running",
+        title: "Workspace chat",
+        agentStatus: "generating",
+        taskId: null,
+        internalStatus: null,
+        runningProcess: null,
+        ideationSession: null,
+        parentSessionId: null,
+        childSessionId: null,
+        conversationId: "conversation-1",
+      },
+    ],
+    ...overrides,
+  };
+}
+
 function workspaceFreshness(
   overrides: Partial<AgentConversationWorkspaceFreshness> = {},
 ): AgentConversationWorkspaceFreshness {
@@ -647,6 +678,7 @@ function renderPanel(
     onFocusIdeationSession: vi.fn(),
     onFocusVerificationSession: vi.fn(),
     onFocusTaskRuntime: vi.fn(),
+    onOpenTaskArtifact: vi.fn(),
     onForkConversation: vi.fn().mockResolvedValue(forkResult()),
     onOpenPublishPane: vi.fn(),
     onOpenPublishFile: vi.fn(),
@@ -659,6 +691,7 @@ function renderPanel(
     publishShortcutLabel: "P",
     publishingConversationId: null,
     selectedConversationId: "conversation-1",
+    selectedTaskArtifactId: null,
     setTerminalChatDockElement: vi.fn(),
     switchingConversationModeId: null,
     terminalUnavailableReason: null,
@@ -752,6 +785,152 @@ describe("AgentsActiveConversationPanel", () => {
       "high",
       "xhigh",
     ]);
+  });
+
+  it("hides the composer runtime status for a single edit workspace runtime", async () => {
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus(),
+    });
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "edit" },
+      activeConversationMode: "edit",
+      activeWorkspace: { ...workspace(), mode: "edit" },
+    });
+
+    await waitFor(() =>
+      expect(getAgentConversationRuntimeStatusesMock).toHaveBeenCalledWith([
+        "conversation-1",
+      ]),
+    );
+    expect(
+      screen.queryByTestId("agents-runtime-status-widget"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the composer runtime status for a single ideation workspace runtime without linked chats", async () => {
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus(),
+    });
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "ideation" },
+      activeConversationMode: "ideation",
+      activeWorkspace: { ...workspace(), mode: "ideation" },
+    });
+
+    await waitFor(() =>
+      expect(getAgentConversationRuntimeStatusesMock).toHaveBeenCalledWith([
+        "conversation-1",
+      ]),
+    );
+    expect(
+      screen.queryByTestId("agents-runtime-status-widget"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the composer runtime status for a single ideation workspace runtime when linked chats exist", async () => {
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus(),
+    });
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "ideation" },
+      activeConversationMode: "ideation",
+      activeWorkspace: { ...workspace(), mode: "ideation" },
+      chatFocusOptions: [
+        {
+          type: "workspace",
+          label: "Workspace",
+          description: "Show the workspace agent chat",
+        },
+        {
+          type: "ideation",
+          label: "Ideation",
+          description: "Show the attached ideation chat",
+          tone: "accent",
+        },
+      ],
+    });
+
+    expect(
+      await screen.findByTestId("agents-runtime-status-widget"),
+    ).toHaveTextContent("Workspace chat");
+  });
+
+  it("opens the task artifact and focuses task chat from the runtime status CTA", async () => {
+    const onFocusTaskRuntime = vi.fn();
+    const onOpenTaskArtifact = vi.fn();
+    const workspaceItem = workspaceRuntimeStatus().items[0]!;
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus({
+        primarySource: "review",
+        summaryLabel: "Runtime activity",
+        items: [
+          { ...workspaceItem, agentStatus: "waiting_for_input" },
+          {
+            source: "review",
+            contextType: "review",
+            contextId: "task-2",
+            label: "Reviewing",
+            title: "Review task",
+            agentStatus: "generating",
+            taskId: "task-2",
+            internalStatus: "reviewing",
+            runningProcess: null,
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: "review-conversation-1",
+          },
+        ],
+      }),
+    });
+
+    renderPanel({ onFocusTaskRuntime, onOpenTaskArtifact });
+
+    fireEvent.click(await screen.findByRole("button", { name: "View Task" }));
+
+    expect(onFocusTaskRuntime).toHaveBeenCalledWith("task-2", "review");
+    expect(onOpenTaskArtifact).toHaveBeenCalledWith("task-2");
+  });
+
+  it("refines selected task artifact focus to the matching runtime context", async () => {
+    const onFocusTaskRuntime = vi.fn();
+    const workspaceItem = workspaceRuntimeStatus().items[0]!;
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus({
+        primarySource: "merge",
+        summaryLabel: "Runtime activity",
+        items: [
+          { ...workspaceItem, agentStatus: "waiting_for_input" },
+          {
+            source: "merge",
+            contextType: "merge",
+            contextId: "task-3",
+            label: "Merging",
+            title: "Merge task",
+            agentStatus: "generating",
+            taskId: "task-3",
+            internalStatus: "merging",
+            runningProcess: null,
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: "merge-conversation-1",
+          },
+        ],
+      }),
+    });
+
+    renderPanel({
+      onFocusTaskRuntime,
+      selectedTaskArtifactId: "task-3",
+    });
+
+    await waitFor(() =>
+      expect(onFocusTaskRuntime).toHaveBeenCalledWith("task-3", "merge"),
+    );
   });
 
   it("moves the base selector to the header and shows branch PR metadata below the composer", async () => {
