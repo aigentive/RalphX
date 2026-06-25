@@ -754,6 +754,13 @@ function AppContent() {
     await handleSelectSession(sessionId);
   }, [setCurrentView, handleSelectSession]);
 
+  const handleNavigateToWorkspace = useCallback((projectId: string, conversationId: string) => {
+    setFocusedAgentProject(projectId);
+    useAgentSessionStore.getState().selectConversation(projectId, conversationId);
+    useChatStore.getState().setActiveConversation(`project:${projectId}`, conversationId);
+    setCurrentView("agents");
+  }, [setCurrentView, setFocusedAgentProject]);
+
   const handleEditProposal = useCallback((proposalId: string) => {
     setEditingProposalId(proposalId);
   }, []);
@@ -1013,6 +1020,7 @@ function AppContent() {
       onStopProcess={handleStopProcess}
       onOpenSettings={handleOpenSettings}
       onNavigateToSession={handleNavigateToSession}
+      onNavigateToWorkspace={handleNavigateToWorkspace}
     />
   ) : null;
 

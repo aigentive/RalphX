@@ -28,6 +28,7 @@ import { useUiStore } from "@/stores/uiStore";
 import { cn } from "@/lib/utils";
 import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import { formatElapsedTime } from "@/lib/formatters";
+import { shouldPreserveExecutionPopoverForTarget } from "./executionPopoverDismissal";
 
 type TabType = "running" | "workspaces" | "execution" | "ideation";
 
@@ -60,6 +61,8 @@ interface RunningProcessPopoverProps {
   onOpenSettings: () => void;
   /** Called when an ideation session is clicked to navigate to it */
   onNavigateToSession?: (sessionId: string) => void;
+  /** Called when a workspace session is clicked to navigate to its agent conversation */
+  onNavigateToWorkspace?: (projectId: string, conversationId: string) => void;
   /** Children (anchor element — NOT a trigger, controlled externally) */
   children: React.ReactNode;
   /** Optional horizontal alignment offset for popover content */
@@ -80,14 +83,24 @@ const LANE_LABELS: Record<ExecutionLaneName, string> = {
   ideation: "Ideation",
 };
 
-function WorkspaceSessionRow({ session }: { session: RunningWorkspaceSession }) {
-  const elapsedTime = useElapsedTimer(session.elapsedSeconds, session.conversationId);
+const LANE_TO_TAB: Record<ExecutionLaneName, TabType> = {
+  workspaces: "workspaces",
+  tasks: "execution",
+  ideation: "ideation",
+};
 
-  return (
-    <div
-      data-testid={`workspace-card-${session.conversationId}`}
-      className="px-2 py-1.5 rounded-md transition-colors hover:bg-[var(--overlay-faint)]"
-    >
+function WorkspaceSessionRow({
+  session,
+  onClick,
+}: {
+  session: RunningWorkspaceSession;
+  onClick?: () => void;
+}) {
+  const elapsedTime = useElapsedTimer(session.elapsedSeconds, session.conversationId);
+  const className =
+    "w-full px-2 py-1.5 rounded-md transition-colors hover:bg-[var(--overlay-faint)]";
+  const content = (
+    <>
       <div className="flex items-center gap-2">
         <Loader2
           className="w-3.5 h-3.5 animate-spin shrink-0"
@@ -125,6 +138,28 @@ function WorkspaceSessionRow({ session }: { session: RunningWorkspaceSession }) 
           </>
         )}
       </div>
+    </>
+  );
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        data-testid={`workspace-card-${session.conversationId}`}
+        className={cn(className, "text-left")}
+        onClick={onClick}
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <div
+      data-testid={`workspace-card-${session.conversationId}`}
+      className={className}
+    >
+      {content}
     </div>
   );
 }
@@ -144,6 +179,7 @@ export function RunningProcessPopover({
   onStopProcess,
   onOpenSettings,
   onNavigateToSession,
+  onNavigateToWorkspace,
   children,
   alignOffset = -24,
   initialTab = "execution",
@@ -176,6 +212,11 @@ export function RunningProcessPopover({
   const handleNavigateToSession = (sessionId: string) => {
     onOpenChange(false);
     onNavigateToSession?.(sessionId);
+  };
+
+  const handleNavigateToWorkspace = (session: RunningWorkspaceSession) => {
+    onOpenChange(false);
+    onNavigateToWorkspace?.(session.projectId, session.conversationId);
   };
 
   // Tab-aware header title
@@ -246,7 +287,13 @@ export function RunningProcessPopover({
     ) : (
       <>
         {workspaceSessions.map((session) => (
-          <WorkspaceSessionRow key={session.conversationId} session={session} />
+          <WorkspaceSessionRow
+            key={session.conversationId}
+            session={session}
+            {...(onNavigateToWorkspace
+              ? { onClick: () => handleNavigateToWorkspace(session) }
+              : {})}
+          />
         ))}
       </>
     );
@@ -260,11 +307,14 @@ export function RunningProcessPopover({
           .slice()
           .sort((left, right) => left.priorityRank - right.priorityRank)
           .map((lane) => (
-            <div
+            <button
+              type="button"
               key={lane.lane}
               data-testid={`capacity-lane-${lane.lane}`}
-              className="rounded-md px-2 py-1.5"
+              className="w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-[var(--overlay-weak)]"
               style={{ backgroundColor: "var(--overlay-faint)" }}
+              onClick={() => setActiveTab(LANE_TO_TAB[lane.lane])}
+              disabled={lane.lane === "ideation" && !showIdeation}
             >
               <div className="flex items-center justify-between gap-3">
                 <span className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>
@@ -289,7 +339,7 @@ export function RunningProcessPopover({
                   <span>No pressure</span>
                 )}
               </div>
-            </div>
+            </button>
           ))}
       </div>
     );
@@ -334,10 +384,17 @@ export function RunningProcessPopover({
             "0 4px 16px var(--overlay-scrim), 0 12px 32px var(--overlay-scrim)",
         }}
         onInteractOutside={(e) => {
+          // Preserve execution popovers while switching agent conversations from the sidebar.
+          // The sidebar click updates the footer scope; it should not clear the selected popover.
+          const target = e.target;
+          if (shouldPreserveExecutionPopoverForTarget(target)) {
+            e.preventDefault();
+            return;
+          }
+
           // Prevent Radix outside-click dismissal when clicking the ideation trigger button
           // This avoids close→reopen flicker when switching tabs via the external ideation button
-          const target = e.target as HTMLElement;
-          if (target.closest("[data-ideation-trigger]")) {
+          if (target instanceof HTMLElement && target.closest("[data-ideation-trigger]")) {
             e.preventDefault();
           }
         }}

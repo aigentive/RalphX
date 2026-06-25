@@ -6,11 +6,21 @@ export type AgentTerminalPlacement = "auto" | "chat" | "panel";
 export type AgentTerminalDock = "chat" | "panel";
 export type AgentTerminalCachedStatus = "closed" | "running" | "exited" | "error";
 
+export interface AgentTerminalConversationMetadata {
+  conversationId: string;
+  projectId: string;
+  title: string | null;
+  branchName: string | null;
+  worktreePath: string | null;
+  updatedAt: string | null;
+}
+
 interface AgentTerminalUiState {
   openByConversationId: Record<string, boolean>;
   heightByConversationId: Record<string, number>;
   activeTerminalByConversationId: Record<string, string>;
   statusByConversationId: Record<string, AgentTerminalCachedStatus>;
+  metadataByConversationId: Record<string, AgentTerminalConversationMetadata>;
   placement: AgentTerminalPlacement;
   draggingConversationId: string | null;
   dragOverDock: AgentTerminalDock | null;
@@ -22,6 +32,7 @@ interface AgentTerminalUiActions {
   setHeight: (conversationId: string, height: number) => void;
   setActiveTerminal: (conversationId: string, terminalId: string) => void;
   setStatus: (conversationId: string, status: AgentTerminalCachedStatus) => void;
+  registerConversation: (metadata: AgentTerminalConversationMetadata) => void;
   setPlacement: (placement: AgentTerminalPlacement) => void;
   setDraggingConversation: (conversationId: string | null) => void;
   setDragOverDock: (dock: AgentTerminalDock | null) => void;
@@ -42,6 +53,7 @@ export const useAgentTerminalStore = create<
       heightByConversationId: {},
       activeTerminalByConversationId: {},
       statusByConversationId: {},
+      metadataByConversationId: {},
       placement: "auto",
       draggingConversationId: null,
       dragOverDock: null,
@@ -75,6 +87,11 @@ export const useAgentTerminalStore = create<
           state.statusByConversationId[conversationId] = status;
         }),
 
+      registerConversation: (metadata) =>
+        set((state) => {
+          state.metadataByConversationId[metadata.conversationId] = metadata;
+        }),
+
       setPlacement: (placement) =>
         set((state) => {
           state.placement = placement;
@@ -105,6 +122,7 @@ export const useAgentTerminalStore = create<
         openByConversationId: state.openByConversationId,
         heightByConversationId: state.heightByConversationId,
         activeTerminalByConversationId: state.activeTerminalByConversationId,
+        metadataByConversationId: state.metadataByConversationId,
         placement: state.placement,
       }),
     }
