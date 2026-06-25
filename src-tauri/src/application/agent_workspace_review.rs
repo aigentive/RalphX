@@ -820,10 +820,12 @@ fn review_started_summary(target: &AgentWorkspaceReviewTarget) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::agents::AgenticClient;
     use crate::domain::entities::{
         AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ArtifactId,
-        ChatConversationId, IdeationAnalysisBaseRefKind,
+        ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
     };
+    use crate::infrastructure::{MockAgenticClient, MockCallType};
     use std::process::Command;
 
     fn git(repo: &Path, args: &[&str]) -> String {
@@ -895,6 +897,17 @@ mod tests {
             .expect("committed file should be written");
         git(repo, &["add", "committed.rs"]);
         git(repo, &["commit", "-m", "committed change"]);
+    }
+
+    async fn seed_conversation(state: &AppState, workspace: &AgentConversationWorkspace) {
+        let mut conversation = ChatConversation::new_project(workspace.project_id.clone());
+        conversation.id = workspace.conversation_id.clone();
+        conversation.agent_mode = Some(workspace.mode);
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
     }
 
     #[tokio::test]
@@ -1023,6 +1036,49 @@ mod tests {
         assert_eq!(
             context.monitor.selected_source_pull_request_number,
             Some(42)
+        );
+    }
+
+    #[tokio::test]
+    async fn load_context_resolves_published_pr_preserved_ref_and_terminal_merge_base() {
+        let (temp, repo, base_sha) = init_repo();
+        git(&repo, &["checkout", "-b", "feature/published-pr"]);
+        std::fs::write(repo.join("published.rs"), "pub fn published() {}\n")
+            .expect("published file should be written");
+        git(&repo, &["add", "published.rs"]);
+        git(&repo, &["commit", "-m", "published pr change"]);
+        let pr_head = git(&repo, &["rev-parse", "HEAD"]);
+        git(&repo, &["update-ref", "refs/ralphx/pr-heads/483", &pr_head]);
+        git(&repo, &["checkout", "main"]);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let mut workspace = workspace(
+            &project,
+            &temp.path().join("missing-worktree"),
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            None,
+        );
+        workspace.publication_pr_number = Some(483);
+        workspace.publication_pr_status = Some("merged".to_string());
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("published PR context should load");
+        let target = context.target.expect("published PR should be reviewable");
+
+        assert_eq!(
+            target.scope,
+            AgentWorkspaceReviewTargetScope::SelectedSource
+        );
+        assert_eq!(target.base_ref, base_sha);
+        assert_eq!(target.head_ref, "refs/ralphx/pr-heads/483");
+        assert_eq!(target.head_sha.as_deref(), Some(pr_head.as_str()));
+        assert_eq!(target.source_pull_request_number, Some(483));
+        assert_eq!(
+            context.monitor.selected_source_base_ref.as_deref(),
+            Some(target.base_ref.as_str())
         );
     }
 
@@ -1167,6 +1223,86 @@ mod tests {
             reviewing_start.skipped_reason.as_deref(),
             Some("already_reviewing")
         );
+    }
+
+    #[tokio::test]
+    async fn start_review_spawns_workspace_reviewer_sidecar_and_records_blocked_completion() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let client = Arc::new(MockAgenticClient::new());
+        let agent_client: Arc<dyn AgenticClient> = client.clone();
+        let state = Arc::new(AppState::new_test().with_agent_client(agent_client));
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        seed_conversation(&state, &workspace).await;
+
+        let start = start_agent_workspace_review(Arc::clone(&state), &workspace, true)
+            .await
+            .expect("review sidecar should start");
+
+        assert!(start.started);
+        assert_eq!(start.skipped_reason, None);
+        assert_eq!(
+            start.context.monitor.status,
+            AgentWorkspaceReviewMonitorStatus::Reviewing
+        );
+        assert!(start.context.monitor.last_run_id.is_some());
+        let spawn_calls = client.get_spawn_calls().await;
+        assert_eq!(spawn_calls.len(), 1);
+        let MockCallType::Spawn { role, prompt } = &spawn_calls[0].call_type else {
+            panic!("expected spawn call");
+        };
+        assert_eq!(
+            role,
+            &AgentRole::Custom("ralphx-workspace-reviewer".to_string())
+        );
+        assert!(prompt.contains("Create or refresh the Review artifact"));
+        assert!(prompt.contains("- Scope: workspace_delta"));
+        assert!(prompt.contains(&workspace.conversation_id.as_str()));
+
+        let mut blocked_monitor = None;
+        for _ in 0..50 {
+            if let Some(monitor) = state
+                .agent_conversation_workspace_repo
+                .get_workspace_review_monitor(&workspace.conversation_id)
+                .await
+                .expect("monitor read should succeed")
+            {
+                if monitor.status == AgentWorkspaceReviewMonitorStatus::Blocked {
+                    blocked_monitor = Some(monitor);
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let blocked_monitor = blocked_monitor.expect("waiter should mark missing artifact blocked");
+        assert_eq!(
+            blocked_monitor.last_run_id,
+            start.context.monitor.last_run_id
+        );
+        assert_eq!(
+            blocked_monitor.last_error.as_deref(),
+            Some("Workspace reviewer completed without writing a current Review artifact")
+        );
+        assert!(client
+            .get_calls_for_handle(
+                start
+                    .context
+                    .monitor
+                    .last_run_id
+                    .as_deref()
+                    .expect("run id should exist")
+            )
+            .await
+            .iter()
+            .any(|call| matches!(call.call_type, MockCallType::WaitForCompletion { .. })));
     }
 
     #[tokio::test]
