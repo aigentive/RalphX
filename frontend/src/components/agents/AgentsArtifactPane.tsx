@@ -56,6 +56,7 @@ import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { shouldShowAgentWorkspacePublishSurface } from "./agentWorkspacePublishState";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
@@ -202,7 +203,9 @@ interface AgentsArtifactPaneProps {
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace?: boolean;
   publishFocusRequest?: AgentPublishFocusRequest | null;
+  taskFocusRequest?: AgentTaskArtifactFocusRequest | null;
   onFocusVerificationSession: ((parentSessionId: string, childSessionId: string) => void) | undefined;
+  onTaskArtifactSelectionChange?: (taskId: string | null) => void;
   onClose: () => void;
 }
 
@@ -219,7 +222,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onPublishWorkspace,
   isPublishingWorkspace = false,
   publishFocusRequest = null,
+  taskFocusRequest = null,
   onFocusVerificationSession,
+  onTaskArtifactSelectionChange,
   onClose,
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
@@ -325,9 +330,18 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     (id: string | null) => {
       setTaskArtifactSelectedIdState(id);
       writeSelectedTaskForConversation(conversationId, id);
+      onTaskArtifactSelectionChange?.(id);
     },
-    [conversationId],
+    [conversationId, onTaskArtifactSelectionChange],
   );
+  const taskFocusRequestId = taskFocusRequest?.requestId ?? null;
+  const taskFocusRequestTaskId = taskFocusRequest?.taskId ?? null;
+  useEffect(() => {
+    if (!taskFocusRequestTaskId) {
+      return;
+    }
+    setTaskArtifactSelectedId(taskFocusRequestTaskId);
+  }, [setTaskArtifactSelectedId, taskFocusRequestId, taskFocusRequestTaskId]);
   const sessionQuery = useQuery({
     queryKey: ideationKeys.sessionWithData(attachedSessionId ?? ""),
     queryFn: () => ideationApi.sessions.getWithData(attachedSessionId!),

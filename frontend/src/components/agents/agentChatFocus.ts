@@ -1,5 +1,5 @@
 import type { AgentConversationWorkspaceMode } from "@/api/chat";
-import type { AgentTaskRuntimeContextType } from "./AgentRuntimeStatusWidget";
+import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 
 export type AgentsChatFocus =
   | { type: "workspace" }

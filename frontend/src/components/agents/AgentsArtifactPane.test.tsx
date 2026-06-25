@@ -805,6 +805,7 @@ describe("AgentsArtifactPane", () => {
   });
 
   it("opens task details inside the Agents tasks artifact surface", async () => {
+    const onTaskArtifactSelectionChange = vi.fn();
     getIdeationSessionMock.mockResolvedValue({
       session: {
         id: "session-1",
@@ -842,7 +843,7 @@ describe("AgentsArtifactPane", () => {
       vi.fn(),
       false,
       conversation(),
-      { taskMode: "kanban" },
+      { taskMode: "kanban", onTaskArtifactSelectionChange },
     );
 
     fireEvent.click(await screen.findByTestId("mock-agent-task-card"));
@@ -851,6 +852,60 @@ describe("AgentsArtifactPane", () => {
       "data-task-id",
       "task-1",
     );
+    expect(onTaskArtifactSelectionChange).toHaveBeenCalledWith("task-1");
+  });
+
+  it("selects task details from an external task focus request", async () => {
+    const onTaskArtifactSelectionChange = vi.fn();
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Agent Plan",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: "2026-04-23T10:00:00Z",
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        acceptanceStatus: "accepted",
+      },
+      proposals: [],
+      messages: [],
+    });
+
+    renderPane(
+      "tasks",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+      {
+        taskFocusRequest: { taskId: "task-42", requestId: 1 },
+        taskMode: "kanban",
+        onTaskArtifactSelectionChange,
+      },
+    );
+
+    expect(await screen.findByTestId("mock-agent-task-detail")).toHaveAttribute(
+      "data-task-id",
+      "task-42",
+    );
+    expect(onTaskArtifactSelectionChange).toHaveBeenCalledWith("task-42");
   });
 
   it("renders only the publish tab for edit workspaces", () => {

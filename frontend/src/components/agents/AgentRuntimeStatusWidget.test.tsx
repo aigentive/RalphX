@@ -1,8 +1,31 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentConversationRuntimeStatus } from "@/api/chat";
 import { AgentRuntimeStatusWidget } from "./AgentRuntimeStatusWidget";
+
+type RuntimeItem = AgentConversationRuntimeStatus["items"][number];
+
+const scrollIntoViewMock = vi.fn();
+
+function runtimeItem(overrides: Partial<RuntimeItem> = {}): RuntimeItem {
+  return {
+    source: "task_execution",
+    contextType: "task_execution",
+    contextId: "task-1",
+    label: "Executing",
+    title: "Runtime task",
+    agentStatus: "generating",
+    taskId: "task-1",
+    internalStatus: "executing",
+    runningProcess: null,
+    ideationSession: null,
+    parentSessionId: null,
+    childSessionId: null,
+    conversationId: null,
+    ...overrides,
+  };
+}
 
 function runtimeStatus(
   overrides: Partial<AgentConversationRuntimeStatus> = {},
@@ -35,6 +58,16 @@ function runtimeStatus(
 }
 
 describe("AgentRuntimeStatusWidget", () => {
+  beforeEach(() => {
+    scrollIntoViewMock.mockReset();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value(this: HTMLElement, options?: boolean | ScrollIntoViewOptions) {
+        scrollIntoViewMock(this, options);
+      },
+    });
+  });
+
   it("does not render when the conversation has no active runtime", () => {
     const { container } = render(
       <AgentRuntimeStatusWidget
@@ -47,6 +80,75 @@ describe("AgentRuntimeStatusWidget", () => {
     );
 
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("does not render a single workspace runtime by default", () => {
+    const { container } = render(
+      <AgentRuntimeStatusWidget
+        status={runtimeStatus({
+          primarySource: "workspace",
+          summaryLabel: "Agent running",
+          items: [
+            {
+              source: "workspace",
+              contextType: "project",
+              contextId: "conversation-1",
+              label: "Agent running",
+              title: "Workspace chat",
+              agentStatus: "generating",
+              taskId: null,
+              internalStatus: null,
+              runningProcess: null,
+              ideationSession: null,
+              parentSessionId: null,
+              childSessionId: null,
+              conversationId: "conversation-1",
+            },
+          ],
+        })}
+        onViewWorkspace={vi.fn()}
+        onViewIdeation={vi.fn()}
+        onViewVerification={vi.fn()}
+        onViewTaskRuntime={vi.fn()}
+      />,
+    );
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("renders a single workspace runtime when explicitly allowed", () => {
+    render(
+      <AgentRuntimeStatusWidget
+        status={runtimeStatus({
+          primarySource: "workspace",
+          summaryLabel: "Agent running",
+          items: [
+            {
+              source: "workspace",
+              contextType: "project",
+              contextId: "conversation-1",
+              label: "Agent running",
+              title: "Workspace chat",
+              agentStatus: "generating",
+              taskId: null,
+              internalStatus: null,
+              runningProcess: null,
+              ideationSession: null,
+              parentSessionId: null,
+              childSessionId: null,
+              conversationId: "conversation-1",
+            },
+          ],
+        })}
+        showSingleWorkspaceRuntime
+        onViewWorkspace={vi.fn()}
+        onViewIdeation={vi.fn()}
+        onViewVerification={vi.fn()}
+        onViewTaskRuntime={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByText("Workspace chat")).toHaveLength(2);
   });
 
   it("renders active runtime status and routes task CTA", () => {
@@ -68,6 +170,118 @@ describe("AgentRuntimeStatusWidget", () => {
     fireEvent.click(screen.getByRole("button", { name: "View Task" }));
 
     expect(onViewTaskRuntime).toHaveBeenCalledWith("task-1", "task_execution");
+  });
+
+  it("matches composer tray width and caps the runtime list to three scrollable rows", async () => {
+    render(
+      <AgentRuntimeStatusWidget
+        status={runtimeStatus({
+          primarySource: "verification",
+          summaryLabel: "Runtime activity",
+          items: [
+            runtimeItem({
+              source: "workspace",
+              contextType: "project",
+              contextId: "conversation-1",
+              label: "Workspace waiting",
+              title: "Workspace chat",
+              agentStatus: "waiting_for_input",
+              taskId: null,
+              internalStatus: null,
+              conversationId: "conversation-1",
+            }),
+            runtimeItem({
+              source: "review",
+              contextType: "review",
+              contextId: "task-2",
+              label: "Review waiting",
+              title: "Review task",
+              agentStatus: "waiting_for_input",
+              taskId: "task-2",
+              internalStatus: "reviewing",
+            }),
+            runtimeItem({
+              source: "verification",
+              contextType: "ideation",
+              contextId: "verification-child",
+              label: "Verifying",
+              title: "Verification run",
+              parentSessionId: "parent-session",
+              childSessionId: "verification-child",
+            }),
+            runtimeItem({
+              source: "task_execution",
+              contextType: "task_execution",
+              contextId: "task-4",
+              label: "Executing",
+              title: "Execution task",
+              taskId: "task-4",
+            }),
+          ],
+        })}
+        onViewWorkspace={vi.fn()}
+        onViewIdeation={vi.fn()}
+        onViewVerification={vi.fn()}
+        onViewTaskRuntime={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("agents-runtime-status-widget")).toHaveClass(
+      "mx-1",
+      "mb-1.5",
+    );
+    const list = screen.getByTestId("agents-runtime-status-list");
+    expect(list).toHaveClass("overflow-y-auto", "overscroll-contain");
+    expect(list).toHaveStyle({ maxHeight: "108px" });
+
+    await waitFor(() => expect(scrollIntoViewMock).toHaveBeenCalledTimes(1));
+    expect(scrollIntoViewMock).toHaveBeenCalledWith(
+      screen.getByTestId("agents-runtime-status-item-verification"),
+      { block: "nearest", inline: "nearest", behavior: "smooth" },
+    );
+  });
+
+  it("scrolls the selected task runtime row before the first running row", async () => {
+    render(
+      <AgentRuntimeStatusWidget
+        status={runtimeStatus({
+          primarySource: "verification",
+          summaryLabel: "Runtime activity",
+          items: [
+            runtimeItem({
+              source: "verification",
+              contextType: "ideation",
+              contextId: "verification-child",
+              label: "Verifying",
+              title: "Verification run",
+              parentSessionId: "parent-session",
+              childSessionId: "verification-child",
+            }),
+            runtimeItem({
+              source: "review",
+              contextType: "review",
+              contextId: "task-2",
+              label: "Reviewing",
+              title: "Review task",
+              taskId: "task-2",
+              internalStatus: "reviewing",
+              agentStatus: "waiting_for_input",
+            }),
+          ],
+        })}
+        selectedTaskId="task-2"
+        onViewWorkspace={vi.fn()}
+        onViewIdeation={vi.fn()}
+        onViewVerification={vi.fn()}
+        onViewTaskRuntime={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(scrollIntoViewMock).toHaveBeenCalledTimes(1));
+    expect(scrollIntoViewMock).toHaveBeenCalledWith(
+      screen.getByTestId("agents-runtime-status-item-review"),
+      { block: "nearest", inline: "nearest", behavior: "smooth" },
+    );
   });
 
   it("routes verification CTA with parent and child session ids", () => {
@@ -202,5 +416,53 @@ describe("AgentRuntimeStatusWidget", () => {
     expect(onViewTaskRuntime).toHaveBeenNthCalledWith(1, "task-2", "review");
     expect(onViewTaskRuntime).toHaveBeenNthCalledWith(2, "task-3", "merge");
     expect(onViewWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a viewing indicator instead of a CTA for the current focus row", () => {
+    render(
+      <AgentRuntimeStatusWidget
+        status={runtimeStatus({
+          primarySource: "ideation",
+          summaryLabel: "Runtime activity",
+          items: [
+            runtimeItem({
+              source: "workspace",
+              contextType: "project",
+              contextId: "conversation-1",
+              label: "Agent running",
+              title: "Workspace chat",
+              agentStatus: "waiting_for_input",
+              taskId: null,
+              internalStatus: null,
+              conversationId: "conversation-1",
+            }),
+            runtimeItem({
+              source: "ideation",
+              contextType: "ideation",
+              contextId: "session-1",
+              label: "Ideation running",
+              title: "Plan chat",
+              taskId: null,
+              internalStatus: null,
+            }),
+          ],
+        })}
+        currentFocus={{ type: "workspace" }}
+        onViewWorkspace={vi.fn()}
+        onViewIdeation={vi.fn()}
+        onViewVerification={vi.fn()}
+        onViewTaskRuntime={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("agents-runtime-status-current-workspace"),
+    ).toHaveAttribute("aria-label", "Currently viewing Workspace chat");
+    expect(
+      screen.queryByRole("button", { name: "View Workspace" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "View Ideation" }),
+    ).toBeInTheDocument();
   });
 });

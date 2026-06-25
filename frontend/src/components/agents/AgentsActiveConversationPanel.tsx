@@ -70,10 +70,7 @@ import {
 import { AgentConversationBaseLine } from "./AgentConversationBaseLine";
 import { AgentConversationWorkspaceLine } from "./AgentConversationWorkspaceLine";
 import { AgentWorkspacePrReviewCard } from "./AgentWorkspacePrReviewCard";
-import {
-  AgentRuntimeStatusWidget,
-  type AgentTaskRuntimeContextType,
-} from "./AgentRuntimeStatusWidget";
+import { AgentRuntimeStatusWidget } from "./AgentRuntimeStatusWidget";
 import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
 import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceChangesCard";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
@@ -106,6 +103,10 @@ import {
   type AgentsChatFocusSwitchOption,
   type AgentsChatFocusType,
 } from "./agentChatFocus";
+import {
+  isTaskRuntimeContextType,
+  type AgentTaskRuntimeContextType,
+} from "./agentTaskRuntimeContext";
 import {
   buildPlanActionHint,
   isPlanRecommendationCheckPending,
@@ -483,6 +484,7 @@ interface AgentsActiveConversationPanelProps {
     taskId: string,
     contextType: AgentTaskRuntimeContextType
   ) => void;
+  onOpenTaskArtifact: (taskId: string) => void;
   onForkConversation: (
     conversationId: string
   ) => Promise<ForkAgentConversationResult>;
@@ -497,6 +499,7 @@ interface AgentsActiveConversationPanelProps {
   publishShortcutLabel: string;
   publishingConversationId: string | null;
   selectedConversationId: string;
+  selectedTaskArtifactId: string | null;
   setTerminalChatDockElement: (element: HTMLDivElement | null) => void;
   switchingConversationModeId: string | null;
   terminalUnavailableReason: string | null;
@@ -526,6 +529,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onFocusIdeationSession,
   onFocusVerificationSession,
   onFocusTaskRuntime,
+  onOpenTaskArtifact,
   onForkConversation,
   onOpenPublishPane,
   onOpenPublishFile,
@@ -538,6 +542,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   publishShortcutLabel,
   publishingConversationId,
   selectedConversationId,
+  selectedTaskArtifactId,
   setTerminalChatDockElement,
   switchingConversationModeId,
   terminalUnavailableReason,
@@ -675,6 +680,38 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const runtimeStatusQuery = useAgentConversationRuntimeStatus(selectedConversationId, {
     enabled: activeConversation.contextType === "project",
   });
+  const hasLinkedChatFocusTargets = chatFocusOptions.some(
+    (option) => option.type !== "workspace",
+  );
+  useEffect(() => {
+    if (!selectedTaskArtifactId) {
+      return;
+    }
+    const matchingTaskRuntime = runtimeStatusQuery.data?.items.find(
+      (item) =>
+        item.taskId === selectedTaskArtifactId &&
+        isTaskRuntimeContextType(item.contextType),
+    );
+    if (
+      !matchingTaskRuntime?.taskId ||
+      !isTaskRuntimeContextType(matchingTaskRuntime.contextType)
+    ) {
+      return;
+    }
+    if (
+      chatFocus.type === "task_runtime" &&
+      chatFocus.taskId === matchingTaskRuntime.taskId &&
+      chatFocus.contextType === matchingTaskRuntime.contextType
+    ) {
+      return;
+    }
+    onFocusTaskRuntime(matchingTaskRuntime.taskId, matchingTaskRuntime.contextType);
+  }, [
+    chatFocus,
+    onFocusTaskRuntime,
+    runtimeStatusQuery.data?.items,
+    selectedTaskArtifactId,
+  ]);
   const activeConversationStoreKey = useMemo(
     () => getAgentConversationStoreKey(activeConversation),
     [activeConversation],
@@ -966,6 +1003,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const handleViewRuntimeWorkspace = useCallback(() => {
     onSelectChatFocus("workspace");
   }, [onSelectChatFocus]);
+  const handleViewRuntimeTask = useCallback(
+    (taskId: string, contextType: AgentTaskRuntimeContextType) => {
+      onFocusTaskRuntime(taskId, contextType);
+      onOpenTaskArtifact(taskId);
+    },
+    [onFocusTaskRuntime, onOpenTaskArtifact],
+  );
   const workspaceModelOptions = useMemo(
     () =>
       agentModelOptions(
@@ -1890,10 +1934,16 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   />
                   <AgentRuntimeStatusWidget
                     status={runtimeStatusQuery.data}
+                    showSingleWorkspaceRuntime={
+                      activeWorkspace?.mode === "ideation" &&
+                      hasLinkedChatFocusTargets
+                    }
+                    currentFocus={chatFocus}
+                    selectedTaskId={selectedTaskArtifactId}
                     onViewWorkspace={handleViewRuntimeWorkspace}
                     onViewIdeation={onFocusIdeationSession}
                     onViewVerification={onFocusVerificationSession}
-                    onViewTaskRuntime={onFocusTaskRuntime}
+                    onViewTaskRuntime={handleViewRuntimeTask}
                   />
                   {shouldShowPlanComposerCta && (
                     <PlanComposerCtaRow

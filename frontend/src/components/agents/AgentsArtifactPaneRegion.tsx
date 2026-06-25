@@ -21,6 +21,7 @@ import type { AgentConversation } from "./agentConversations";
 import { useAfterPaintMounted } from "./agentDeferredFrame";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 
 export const AGENTS_ARTIFACT_MIN_WIDTH = 600;
 export const AGENTS_CHAT_MIN_WIDTH = 600;
@@ -57,7 +58,9 @@ interface AgentsArtifactPaneRegionProps {
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   isPublishingWorkspace: boolean;
   publishFocusRequest: AgentPublishFocusRequest | null;
+  taskFocusRequest: AgentTaskArtifactFocusRequest | null;
   onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
+  onTaskArtifactSelectionChange: (taskId: string | null) => void;
   onClose: () => void;
   terminalUnavailableReason: string | null;
   setTerminalPanelDockElement: (element: HTMLDivElement | null) => void;
@@ -80,7 +83,9 @@ export function AgentsArtifactPaneRegion({
   onPublishWorkspace,
   isPublishingWorkspace,
   publishFocusRequest,
+  taskFocusRequest,
   onFocusVerificationSession,
+  onTaskArtifactSelectionChange,
   onClose,
   terminalUnavailableReason,
   setTerminalPanelDockElement,
@@ -140,7 +145,9 @@ export function AgentsArtifactPaneRegion({
                     onPublishWorkspace={onPublishWorkspace}
                     isPublishingWorkspace={isPublishingWorkspace}
                     publishFocusRequest={publishFocusRequest}
+                    taskFocusRequest={taskFocusRequest}
                     onFocusVerificationSession={onFocusVerificationSession}
+                    onTaskArtifactSelectionChange={onTaskArtifactSelectionChange}
                     onClose={onClose}
                   />
                 </Suspense>
