@@ -47,9 +47,30 @@ function messageWithToolCall(
   } as ChatMessageResponse;
 }
 
+function messageWithMetadata(
+  metadata: string | Record<string, unknown>,
+): ChatMessageResponse {
+  return {
+    id: "message-with-metadata",
+    conversationId: "conversation-1",
+    role: "user",
+    content: "Verify the referenced plan",
+    contentBlocks: [],
+    toolCalls: [],
+    attachments: [],
+    metadata:
+      typeof metadata === "string" ? metadata : JSON.stringify(metadata),
+    createdAt: "2026-04-22T10:00:30Z",
+  } as ChatMessageResponse;
+}
+
 describe("resolveAttachedIdeationSessionId", () => {
   it("returns the fallback when there is no active conversation", () => {
-    const result = resolveAttachedIdeationSessionId(null, [], "fallback-session");
+    const result = resolveAttachedIdeationSessionId(
+      null,
+      [],
+      "fallback-session",
+    );
 
     expect(result).toBe("fallback-session");
   });
@@ -83,63 +104,99 @@ describe("resolveAttachedIdeationSessionId", () => {
 
   it("extracts attached plan sessions from user composer artifact references", () => {
     const result = resolveAttachedIdeationSessionId(conversation, [
-      {
-        id: "message-with-reference",
-        conversationId: "conversation-1",
-        role: "user",
-        content: "Verify the referenced plan",
-        contentBlocks: [],
-        toolCalls: [],
-        attachments: [],
-        metadata: JSON.stringify({
-          composer_artifact_references: [
-            {
-              artifactId: "plan-artifact-1",
-              kind: "plan",
-              sessionId: "referenced-session-1",
-              status: "approved",
-              title: "Referenced plan",
-              version: 2,
-            },
-          ],
-        }),
-        createdAt: "2026-04-22T10:00:30Z",
-      } as ChatMessageResponse,
+      messageWithMetadata({
+        composer_artifact_references: [
+          {
+            artifactId: "plan-artifact-1",
+            kind: "plan",
+            sessionId: "referenced-session-1",
+            status: "approved",
+            title: "Referenced plan",
+            version: 2,
+          },
+        ],
+      }),
     ]);
 
     expect(result).toBe("referenced-session-1");
   });
 
+  it("uses the latest compatible composer artifact reference", () => {
+    const result = resolveAttachedIdeationSessionId(conversation, [
+      messageWithMetadata({
+        composer_artifact_references: [
+          { kind: "plan", sessionId: "older-session" },
+          { kind: "PLAN", session_id: "latest-session" },
+        ],
+      }),
+    ]);
+
+    expect(result).toBe("latest-session");
+  });
+
   it("uses the latest valid composer plan reference", () => {
     const result = resolveAttachedIdeationSessionId(conversation, [
-      {
-        id: "message-with-reference",
-        conversationId: "conversation-1",
-        role: "user",
-        content: "Verify the referenced plan",
-        contentBlocks: [],
-        toolCalls: [],
-        attachments: [],
-        metadata: JSON.stringify({
-          composer_artifact_references: [
-            {
-              kind: "plan",
-              session_id: "older-session",
-            },
-            {
-              kind: "issue",
-              session_id: "ignored-issue-session",
-            },
-            {
-              session_id: "latest-plan-session",
-            },
-          ],
-        }),
-        createdAt: "2026-04-22T10:00:30Z",
-      } as ChatMessageResponse,
+      messageWithMetadata({
+        composer_artifact_references: [
+          {
+            kind: "plan",
+            session_id: "older-session",
+          },
+          {
+            kind: "issue",
+            session_id: "ignored-issue-session",
+          },
+          {
+            session_id: "latest-plan-session",
+          },
+        ],
+      }),
     ]);
 
     expect(result).toBe("latest-plan-session");
+  });
+
+  it("ignores non-plan composer references before accepting legacy references", () => {
+    const result = resolveAttachedIdeationSessionId(conversation, [
+      messageWithMetadata({
+        composer_artifact_references: [
+          { session_id: "legacy-session" },
+          { kind: "note", sessionId: "ignored-note-session" },
+        ],
+      }),
+    ]);
+
+    expect(result).toBe("legacy-session");
+  });
+
+  it("keeps scanning messages when composer metadata is malformed", () => {
+    const result = resolveAttachedIdeationSessionId(conversation, [
+      messageWithToolCall({ session_id: "session-from-tool" }),
+      messageWithMetadata("{not-json"),
+    ]);
+
+    expect(result).toBe("session-from-tool");
+  });
+
+  it("falls back when composer metadata has no usable plan reference", () => {
+    const result = resolveAttachedIdeationSessionId(
+      conversation,
+      [
+        messageWithMetadata({
+          composer_artifact_references: [
+            { kind: "plan", sessionId: "" },
+            { kind: "note", sessionId: "ignored-note-session" },
+            null,
+            "ignored",
+          ],
+        }),
+        messageWithMetadata({ composer_artifact_references: "not-a-list" }),
+        messageWithMetadata("42"),
+      ],
+      "session-linked",
+    );
+
+    expect(result).toBe("session-linked");
   });
 
   it("ignores malformed composer metadata and unsupported tools", () => {
@@ -257,7 +314,11 @@ describe("resolveAttachedIdeationSessionId", () => {
   });
 
   it("falls back to the linked workspace session when no transcript tool result is available", () => {
-    const result = resolveAttachedIdeationSessionId(conversation, [], "session-linked");
+    const result = resolveAttachedIdeationSessionId(
+      conversation,
+      [],
+      "session-linked",
+    );
 
     expect(result).toBe("session-linked");
   });
