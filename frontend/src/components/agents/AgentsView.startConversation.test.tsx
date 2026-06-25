@@ -156,9 +156,9 @@ describe("AgentsView start conversation", () => {
         {
           provider: "clickup",
           kind: "clickup",
-          id: "MBE-2857",
-          key: "MBE-2857",
-          title: "Inbox classifier",
+          id: "TASK-123",
+          key: "TASK-123",
+          title: "Demo task",
         },
       ],
     });
@@ -172,8 +172,8 @@ describe("AgentsView start conversation", () => {
     );
     expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Agent");
     expect(
-      screen.getByTestId("agent-composer-reference-pill-integration:clickup:MBE-2857")
-    ).toHaveTextContent("Inbox classifier");
+      screen.getByTestId("agent-composer-reference-pill-integration:clickup:TASK-123")
+    ).toHaveTextContent("Demo task");
     expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
   });
 

@@ -790,28 +790,28 @@ describe("AgentComposerSurface", () => {
         {
           provider: "clickup",
           kind: "clickup",
-          id: "MBE-2857",
-          key: "MBE-2857",
-          title: "Inbox classifier",
-          url: "https://app.clickup.com/t/6925357/MBE-2857",
+          id: "TASK-123",
+          key: "TASK-123",
+          title: "Demo task",
+          url: "https://app.clickup.com/t/workspace-1/TASK-123",
         },
       ],
     });
 
     const pill = await screen.findByTestId(
-      "agent-composer-reference-pill-integration:clickup:MBE-2857",
+      "agent-composer-reference-pill-integration:clickup:TASK-123",
     );
     expect(pill).toHaveTextContent("ClickUp");
-    expect(pill).toHaveTextContent("Inbox classifier");
+    expect(pill).toHaveTextContent("Demo task");
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Remove ClickUp reference MBE-2857",
+        name: "Remove ClickUp reference TASK-123",
       }),
     );
     expect(
       screen.queryByTestId(
-        "agent-composer-reference-pill-integration:clickup:MBE-2857",
+        "agent-composer-reference-pill-integration:clickup:TASK-123",
       ),
     ).not.toBeInTheDocument();
 
@@ -822,15 +822,15 @@ describe("AgentComposerSurface", () => {
         {
           provider: "clickup",
           kind: "clickup",
-          id: "MBE-2857",
-          key: "MBE-2857",
-          title: "Inbox classifier",
-          url: "https://app.clickup.com/t/6925357/MBE-2857",
+          id: "TASK-123",
+          key: "TASK-123",
+          title: "Demo task",
+          url: "https://app.clickup.com/t/workspace-1/TASK-123",
         },
       ],
     });
     await screen.findByTestId(
-      "agent-composer-reference-pill-integration:clickup:MBE-2857",
+      "agent-composer-reference-pill-integration:clickup:TASK-123",
     );
 
     fireEvent.click(screen.getByTestId("agent-composer-submit"));
@@ -846,10 +846,10 @@ describe("AgentComposerSurface", () => {
         {
           provider: "clickup",
           kind: "clickup",
-          id: "MBE-2857",
-          key: "MBE-2857",
-          title: "Inbox classifier",
-          url: "https://app.clickup.com/t/6925357/MBE-2857",
+          id: "TASK-123",
+          key: "TASK-123",
+          title: "Demo task",
+          url: "https://app.clickup.com/t/workspace-1/TASK-123",
         },
       ],
     });

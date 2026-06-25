@@ -204,9 +204,9 @@ describe("agentSessionStore", () => {
         {
           provider: "clickup" as const,
           kind: "clickup" as const,
-          id: "MBE-2857",
-          key: "MBE-2857",
-          title: "Inbox classifier",
+          id: "TASK-123",
+          key: "TASK-123",
+          title: "Demo task",
         },
       ];
 

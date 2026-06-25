@@ -9,6 +9,7 @@ import type {
   ListTicketsInput,
   TicketDeepLink,
   TicketFiltersInput,
+  TicketRef,
   TicketingColumn,
   TicketSummary,
   TicketTransitionOption,
@@ -242,15 +243,27 @@ function ticketComposerReference(ticket: TicketSummary): ComposerIntegrationRefe
       ...(ticket.url ? { url: ticket.url } : {}),
     };
   }
-  const id = ticket.ref.key ?? ticket.ref.id;
   return {
     provider: "clickup",
     kind: "clickup",
-    id,
-    key: id,
+    id: ticket.ref.id,
+    key: ticket.ref.key ?? ticket.ref.id,
     title: ticket.title,
     ...(ticket.url ? { url: ticket.url } : {}),
   };
+}
+
+function ticketRefsIdentifySameTicket(left: TicketRef, right: TicketRef): boolean {
+  if (left.provider !== right.provider) {
+    return false;
+  }
+  const leftIds = ticketRefAliases(left);
+  const rightIds = ticketRefAliases(right);
+  return leftIds.some((leftId) => rightIds.includes(leftId));
+}
+
+function ticketRefAliases(ref: TicketRef): string[] {
+  return ref.key ? [ref.id, ref.key] : [ref.id];
 }
 
 interface TicketingStatusNotice {
@@ -495,7 +508,7 @@ export function TicketingDashboardView({
       ? mergeProviderAndTicketColumns(columns, effectiveTicketColumns)
       : columns;
   const selectedSummary = selectedTicketRef
-    ? tickets.find((ticket) => ticket.ref.id === selectedTicketRef.id && ticket.ref.provider === selectedTicketRef.provider) ?? null
+    ? tickets.find((ticket) => ticketRefsIdentifySameTicket(ticket.ref, selectedTicketRef)) ?? null
     : null;
   const shouldHydrateKanban = useAfterPaint(viewMode === "kanban");
   const shouldHydrateDetail = useAfterPaint(selectedTicketRef !== null);
@@ -585,8 +598,7 @@ export function TicketingDashboardView({
   const detailMatchesSelection = Boolean(
     detailQuery.data
     && selectedTicketRef
-    && detailQuery.data.ref.id === selectedTicketRef.id
-    && detailQuery.data.ref.provider === selectedTicketRef.provider,
+    && ticketRefsIdentifySameTicket(detailQuery.data.ref, selectedTicketRef),
   );
   const selectedTicket = (detailMatchesSelection ? detailQuery.data : selectedSummary) ?? null;
   // Show the overlay preloader until the matching full detail is ready.

@@ -85,12 +85,12 @@ describe("agentComposerCore", () => {
   });
 
   it("detects scoped ClickUp task triggers under @", () => {
-    const text = "Attach @clickup:MBE-2857";
+    const text = "Attach @clickup:TASK-123";
 
     expect(detectAgentComposerTrigger(text, text.length)).toEqual({
       kind: "integration",
       integrationKind: "clickup",
-      query: "MBE-2857",
+      query: "TASK-123",
       rangeStart: "Attach ".length,
       rangeEnd: text.length,
     });
@@ -185,12 +185,12 @@ describe("agentComposerCore", () => {
 
   it("extracts integration tokens separately from path tokens", () => {
     const text =
-      "Fix @jira:rx-42 with @linear:lin-123 and @clickup:mbe-2857 and docs @confluence:123456 and @src/main.ts using @plan:artifact-1";
+      "Fix @jira:rx-42 with @linear:lin-123 and @clickup:task-123 and docs @confluence:123456 and @src/main.ts using @plan:artifact-1";
 
     expect(extractComposerIntegrationTokens(text)).toEqual([
       { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
       { provider: "linear", kind: "linear", id: "LIN-123", key: "LIN-123" },
-      { provider: "clickup", kind: "clickup", id: "MBE-2857", key: "MBE-2857" },
+      { provider: "clickup", kind: "clickup", id: "TASK-123", key: "TASK-123" },
       { provider: "atlassian", kind: "confluence", id: "123456" },
     ]);
     expect(extractComposerPathTokens(text)).toEqual([{ path: "src/main.ts" }]);
