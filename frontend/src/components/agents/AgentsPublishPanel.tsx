@@ -71,6 +71,7 @@ import {
   type PublishWorkspaceDialogPhase,
 } from "./AgentsPublishWorkspaceDialog";
 import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
+import { AgentsPublishRepairState } from "./AgentsPublishRepairState";
 import { formatPullRequestUrlLabel } from "./agentPublishFormatting";
 import {
   isAgentWorkspaceAutoMergeDeferred,
@@ -223,6 +224,9 @@ export function AgentPublishPanel({
     conversationTitle,
   });
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
+  const isRepairPending =
+    workspace?.publicationPushStatus === "needs_agent" &&
+    !getAgentWorkspaceTerminalPublicationStatus(workspace);
   // Workspace-only flag computed early so reviewQuery can decide whether the
   // inline diff view will be visible.
   const inlineDiffsCandidate = workspace?.mode === "edit" && workspace.status !== "missing";
@@ -231,7 +235,10 @@ export function AgentPublishPanel({
     queryKey: agentWorkspaceKeys.review(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
     enabled:
-      canHydratePublishFacts && !!conversationId && (reviewOpen || inlineDiffsCandidate),
+      canHydratePublishFacts &&
+      !!conversationId &&
+      !isRepairPending &&
+      (reviewOpen || inlineDiffsCandidate),
     staleTime: 2_000,
   });
   const publicationEventsQuery = useQuery({
@@ -267,6 +274,7 @@ export function AgentPublishPanel({
     enabled:
       canHydratePublishFacts &&
       !!conversationId &&
+      !isRepairPending &&
       (workspace?.mode === "edit" || hasPublishedPr) &&
       !terminalPublicationStatus,
     staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
@@ -477,7 +485,6 @@ export function AgentPublishPanel({
   const isPublishCurrent = isAgentWorkspacePublishCurrent(workspace, freshness);
   const isPublishingThisWorkspace = isPublishingWorkspace || localPublishInFlight;
   const effectivePublishing = isPublishingThisWorkspace || isUpdatingFromBase;
-  const isRepairPending = workspace.publicationPushStatus === "needs_agent";
   const isDescriptionFailed = workspace.publicationPushStatus === "description_failed";
   const latestActivePublishEvent = latestPublicationEventForActivePublish(
     publicationEvents,
@@ -541,10 +548,11 @@ export function AgentPublishPanel({
   const shouldShowAutoMergeDeferred =
     isAgentWorkspaceAutoMergeDeferred(autoMergeArgs);
   const shouldShowPublishPipeline =
-    effectivePublishing ||
-    workspace.publicationPushStatus === "description_failed" ||
-    shouldShowAutoMergeProgress ||
-    shouldShowAutoMergeDeferred;
+    !isRepairPending &&
+    (effectivePublishing ||
+      workspace.publicationPushStatus === "description_failed" ||
+      shouldShowAutoMergeProgress ||
+      shouldShowAutoMergeDeferred);
   const publishDisabled =
     !onPublishWorkspace ||
     isManagedByTaskPipeline ||
@@ -564,12 +572,10 @@ export function AgentPublishPanel({
       : isPublishCurrent
         ? "PR is up to date"
         : "Commit & Publish");
-  const canClosePr =
-    hasPublishedPr &&
-    !terminalPublicationStatus;
+  const canClosePr = hasPublishedPr && !isRepairPending && !terminalPublicationStatus;
   const isClosingPr = closePrMutation.isPending;
   const shouldShowPrSupervisionControls =
-    workspace.mode === "edit" || isPipelinePrAutomationWorkspace;
+    !isRepairPending && (workspace.mode === "edit" || isPipelinePrAutomationWorkspace);
   const canConfigurePrSupervision =
     shouldShowPrSupervisionControls &&
     workspace.status !== "missing" &&
@@ -610,6 +616,8 @@ export function AgentPublishPanel({
       ? `${terminalPrLabel} has been merged. By continuing this conversation, a new workspace branch will be created automatically.`
       : terminalPublicationStatus === "closed"
         ? `${terminalPrLabel} is closed. By continuing this conversation, a new workspace branch will be created automatically.`
+        : isRepairPending
+          ? "RalphX routed this workspace to the agent for repair. Publishing will resume after the repair completes."
         : hasPrConflict
           ? autoPublishEnabled
             ? "Auto Publish is waiting for PR conflicts to be resolved. Resolve conflicts to update the branch from base."
@@ -819,7 +827,17 @@ export function AgentPublishPanel({
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {hasPrConflict ? (
+              {isRepairPending ? (
+                <Button
+                  type="button"
+                  className={primaryActionClassName}
+                  disabled
+                  data-testid="agents-publish-repair-pending"
+                >
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  Repair pending
+                </Button>
+              ) : hasPrConflict ? (
                 <Button
                   type="button"
                   className={primaryActionClassName}
@@ -1213,7 +1231,14 @@ export function AgentPublishPanel({
 
 
         {/* Inline diff view — below the action row, all files expanded by default */}
-        {inlineDiffsCandidate && !baseBlocked && (
+        {isRepairPending && inlineDiffsCandidate ? (
+          <AgentsPublishRepairState
+            workspace={workspace}
+            base={base}
+            canHydratePublishFacts={canHydratePublishFacts}
+            focusRequest={publishFocusRequest}
+          />
+        ) : inlineDiffsCandidate && !baseBlocked ? (
           <section
             className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border"
             data-testid="agents-publish-inline-diffs-section"
@@ -1235,7 +1260,7 @@ export function AgentPublishPanel({
               {...(isPublishCurrent && { workspaceChangeLabel: "Published changes" })}
             />
           </section>
-        )}
+        ) : null}
 
         <PublishEventLog
           events={publicationEvents}

@@ -206,5 +206,23 @@ export function transformAgentWorkspaceChangeSummary(
     supportsWorktreeModes: raw.supports_worktree_modes,
     staged: transformAgentWorkspaceChangeBucketSummary(raw.staged),
     unstaged: transformAgentWorkspaceChangeBucketSummary(raw.unstaged),
+    ...(raw.conflicted
+      ? {
+          conflicted: {
+            fileCount: raw.conflicted.file_count,
+            files: raw.conflicted.files,
+          },
+        }
+      : {}),
+    ...(raw.repair_state
+      ? {
+          repairState: {
+            expectedBranch: raw.repair_state.expected_branch,
+            checkedOutBranch: raw.repair_state.checked_out_branch,
+            rebaseInProgress: raw.repair_state.rebase_in_progress,
+            mergeInProgress: raw.repair_state.merge_in_progress,
+          },
+        }
+      : {}),
   };
 }

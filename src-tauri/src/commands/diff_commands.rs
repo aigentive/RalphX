@@ -4,7 +4,9 @@
 
 use crate::application::{
     agent_conversation_workspace::{
-        resolve_agent_conversation_workspace_path, resolve_valid_agent_conversation_workspace_path,
+        resolve_agent_conversation_workspace_path,
+        resolve_agent_conversation_workspace_path_for_send,
+        resolve_valid_agent_conversation_workspace_path,
     },
     AppState, ConflictDiff, DiffRefKind, DiffService, DiffSide, FileChange, FileDiff, FileDiffPage,
     GitService, RangeLine,
@@ -233,6 +235,8 @@ struct AgentWorkspaceContext {
     /// True only when the context points at the agent worktree and can inspect
     /// unstaged/staged changes. Branch-target contexts are read-only history.
     supports_worktree_modes: bool,
+    /// Present only for explicit repair-mode contexts.
+    repair_state: Option<AgentWorkspaceRepairStateResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -252,10 +256,28 @@ pub struct AgentWorkspaceChangeSummaryBucketResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct AgentWorkspaceConflictSummaryResponse {
+    pub file_count: usize,
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentWorkspaceRepairStateResponse {
+    pub expected_branch: String,
+    pub checked_out_branch: String,
+    pub rebase_in_progress: bool,
+    pub merge_in_progress: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AgentWorkspaceChangeSummaryResponse {
     pub supports_worktree_modes: bool,
     pub staged: AgentWorkspaceChangeSummaryBucketResponse,
     pub unstaged: AgentWorkspaceChangeSummaryBucketResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflicted: Option<AgentWorkspaceConflictSummaryResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repair_state: Option<AgentWorkspaceRepairStateResponse>,
 }
 
 #[derive(Clone)]
@@ -298,6 +320,21 @@ impl AgentWorkspaceDiffCacheStatus {
     }
 }
 
+#[derive(Clone, Copy)]
+enum AgentWorkspaceContextMode {
+    Strict,
+    Repair,
+}
+
+impl AgentWorkspaceContextMode {
+    fn cache_key_suffix(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Repair => "repair",
+        }
+    }
+}
+
 fn agent_workspace_review_cache_ttl() -> Duration {
     Duration::from_millis(git_runtime_config().workspace_review_cache_ttl_ms)
 }
@@ -311,6 +348,14 @@ fn agent_workspace_diff_cache_key(conversation_id: &ChatConversationId) -> Optio
         return None;
     }
     Some(conversation_id.as_str())
+}
+
+fn agent_workspace_context_cache_key(
+    conversation_id: &ChatConversationId,
+    mode: AgentWorkspaceContextMode,
+) -> Option<String> {
+    agent_workspace_diff_cache_key(conversation_id)
+        .map(|key| format!("{key}:{}", mode.cache_key_suffix()))
 }
 
 fn agent_workspace_pr_annotations_cache_key(
@@ -354,12 +399,13 @@ fn agent_workspace_pr_annotations_locks() -> &'static DashMap<String, Arc<tokio:
 
 fn cached_agent_workspace_context(
     conversation_id: &ChatConversationId,
+    mode: AgentWorkspaceContextMode,
 ) -> Option<AgentWorkspaceContext> {
     let ttl = agent_workspace_review_cache_ttl();
     if ttl.is_zero() {
         return None;
     }
-    let key = agent_workspace_diff_cache_key(conversation_id)?;
+    let key = agent_workspace_context_cache_key(conversation_id, mode)?;
     let entry = agent_workspace_context_cache().get(&key)?;
     if entry.inserted_at.elapsed() <= ttl {
         return Some(entry.context.clone());
@@ -371,12 +417,13 @@ fn cached_agent_workspace_context(
 
 fn store_agent_workspace_context(
     conversation_id: &ChatConversationId,
+    mode: AgentWorkspaceContextMode,
     context: &AgentWorkspaceContext,
 ) {
     if agent_workspace_review_cache_ttl().is_zero() {
         return;
     }
-    let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
+    let Some(key) = agent_workspace_context_cache_key(conversation_id, mode) else {
         return;
     };
     agent_workspace_context_cache().insert(
@@ -472,7 +519,14 @@ pub(crate) fn invalidate_agent_workspace_diff_caches(conversation_id: &ChatConve
     let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
         return;
     };
-    agent_workspace_context_cache().remove(&key);
+    agent_workspace_context_cache().remove(&format!(
+        "{key}:{}",
+        AgentWorkspaceContextMode::Strict.cache_key_suffix()
+    ));
+    agent_workspace_context_cache().remove(&format!(
+        "{key}:{}",
+        AgentWorkspaceContextMode::Repair.cache_key_suffix()
+    ));
     agent_workspace_review_cache().remove(&key);
     let annotation_prefix = format!("{key}:");
     let annotation_keys = agent_workspace_pr_annotations_cache()
@@ -528,6 +582,7 @@ async fn get_agent_workspace_context(
                 diff_target: Some(plan_branch.branch_name.clone()),
                 patch_diff: None,
                 supports_worktree_modes: false,
+                repair_state: None,
             });
         }
     }
@@ -545,6 +600,7 @@ async fn get_agent_workspace_context(
             diff_target: None,
             patch_diff: None,
             supports_worktree_modes: true,
+            repair_state: None,
         }),
         Err(worktree_error) => {
             if let Some(context) =
@@ -596,6 +652,7 @@ async fn resolve_agent_workspace_local_branch_context(
         diff_target: Some(workspace.branch_name.clone()),
         patch_diff: None,
         supports_worktree_modes: false,
+        repair_state: None,
     }))
 }
 
@@ -627,6 +684,7 @@ async fn resolve_agent_workspace_pr_head_context(
         diff_target: Some(pr_head_ref),
         patch_diff: None,
         supports_worktree_modes: false,
+        repair_state: None,
     }))
 }
 
@@ -667,6 +725,7 @@ async fn resolve_agent_workspace_github_patch_context(
         diff_target: Some(format!("github-pr-diff/{pr_number}")),
         patch_diff: Some(Arc::<str>::from(patch)),
         supports_worktree_modes: false,
+        repair_state: None,
     }))
 }
 
@@ -703,18 +762,109 @@ async fn get_terminal_agent_workspace_pr_context(
         diff_target: Some(head_ref),
         patch_diff: None,
         supports_worktree_modes: false,
+        repair_state: None,
     }))
+}
+
+async fn get_agent_workspace_repair_context(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<AgentWorkspaceContext> {
+    let workspace = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "Agent conversation workspace not found for conversation {}",
+                conversation_id
+            ))
+        })?;
+    if workspace.publication_push_status.as_deref() != Some("needs_agent") {
+        return Err(AppError::Validation(format!(
+            "Repair diff context requires agent conversation workspace {} to be in needs_agent publication state",
+            conversation_id
+        )));
+    }
+
+    let project = app_state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await?
+        .ok_or_else(|| AppError::ProjectNotFound(workspace.project_id.as_str().to_string()))?;
+    let base_commit = workspace.base_commit.clone().ok_or_else(|| {
+        AppError::Validation(format!(
+            "Agent conversation workspace {} is missing its captured base commit",
+            conversation_id
+        ))
+    })?;
+    let worktree_path = resolve_agent_conversation_workspace_path_for_send(&project, &workspace)?;
+    let checked_out_branch = GitService::get_current_branch(&worktree_path).await?;
+    let rebase_in_progress = GitService::is_rebase_in_progress(&worktree_path);
+    let merge_in_progress = GitService::is_merge_in_progress(&worktree_path);
+    if checked_out_branch != workspace.branch_name && !rebase_in_progress && !merge_in_progress {
+        return Err(AppError::Validation(format!(
+            "Agent conversation workspace {} is checked out at '{}' instead of '{}' and is not in a recognized repair state",
+            workspace.conversation_id, checked_out_branch, workspace.branch_name
+        )));
+    }
+
+    Ok(AgentWorkspaceContext {
+        working_path: worktree_path,
+        base_ref: base_commit,
+        diff_target: None,
+        patch_diff: None,
+        supports_worktree_modes: true,
+        repair_state: Some(AgentWorkspaceRepairStateResponse {
+            expected_branch: workspace.branch_name,
+            checked_out_branch,
+            rebase_in_progress,
+            merge_in_progress,
+        }),
+    })
 }
 
 async fn get_agent_workspace_context_cached(
     app_state: &AppState,
     conversation_id: &ChatConversationId,
 ) -> AppResult<(AgentWorkspaceContext, AgentWorkspaceDiffCacheStatus)> {
-    if let Some(context) = cached_agent_workspace_context(conversation_id) {
+    get_agent_workspace_context_cached_for_mode(
+        app_state,
+        conversation_id,
+        AgentWorkspaceContextMode::Strict,
+    )
+    .await
+}
+
+async fn get_agent_workspace_repair_context_cached(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<(AgentWorkspaceContext, AgentWorkspaceDiffCacheStatus)> {
+    get_agent_workspace_context_cached_for_mode(
+        app_state,
+        conversation_id,
+        AgentWorkspaceContextMode::Repair,
+    )
+    .await
+}
+
+async fn get_agent_workspace_context_cached_for_mode(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+    mode: AgentWorkspaceContextMode,
+) -> AppResult<(AgentWorkspaceContext, AgentWorkspaceDiffCacheStatus)> {
+    if let Some(context) = cached_agent_workspace_context(conversation_id, mode) {
         return Ok((context, AgentWorkspaceDiffCacheStatus::Hit));
     }
-    let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
-        let context = get_agent_workspace_context(app_state, conversation_id).await?;
+    let Some(key) = agent_workspace_context_cache_key(conversation_id, mode) else {
+        let context = match mode {
+            AgentWorkspaceContextMode::Strict => {
+                get_agent_workspace_context(app_state, conversation_id).await?
+            }
+            AgentWorkspaceContextMode::Repair => {
+                get_agent_workspace_repair_context(app_state, conversation_id).await?
+            }
+        };
         return Ok((context, AgentWorkspaceDiffCacheStatus::Miss));
     };
     let lock = agent_workspace_context_locks()
@@ -722,11 +872,18 @@ async fn get_agent_workspace_context_cached(
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone();
     let _guard = lock.lock().await;
-    if let Some(context) = cached_agent_workspace_context(conversation_id) {
+    if let Some(context) = cached_agent_workspace_context(conversation_id, mode) {
         return Ok((context, AgentWorkspaceDiffCacheStatus::Coalesced));
     }
-    let context = get_agent_workspace_context(app_state, conversation_id).await?;
-    store_agent_workspace_context(conversation_id, &context);
+    let context = match mode {
+        AgentWorkspaceContextMode::Strict => {
+            get_agent_workspace_context(app_state, conversation_id).await?
+        }
+        AgentWorkspaceContextMode::Repair => {
+            get_agent_workspace_repair_context(app_state, conversation_id).await?
+        }
+    };
+    store_agent_workspace_context(conversation_id, mode, &context);
     Ok((context, AgentWorkspaceDiffCacheStatus::Miss))
 }
 
@@ -824,6 +981,8 @@ pub async fn get_agent_conversation_workspace_change_summary_for_state(
                 additions: 0,
                 deletions: 0,
             },
+            conflicted: None,
+            repair_state: None,
         });
     }
 
@@ -836,6 +995,8 @@ pub async fn get_agent_conversation_workspace_change_summary_for_state(
             supports_worktree_modes: true,
             staged: summarize_agent_workspace_file_changes(&staged),
             unstaged: summarize_agent_workspace_file_changes(&unstaged),
+            conflicted: None,
+            repair_state: None,
         })
     })
     .await
@@ -880,6 +1041,81 @@ pub async fn get_agent_conversation_workspace_change_summary(
             elapsed_ms = started.elapsed().as_millis(),
             error = %error,
             "Failed to load agent workspace change summary"
+        ),
+    }
+    result
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_repair_change_summary_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<AgentWorkspaceChangeSummaryResponse> {
+    let (ctx, _) = get_agent_workspace_repair_context_cached(app_state, conversation_id).await?;
+    let repair_state = ctx.repair_state.clone();
+    let mut conflicted_files = GitService::get_conflict_files(&ctx.working_path)
+        .await?
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    conflicted_files.sort();
+
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    let (staged, unstaged) = tokio::task::spawn_blocking(move || {
+        let diff_service = DiffService::new();
+        let staged = diff_service.get_staged_file_changes(&working_path)?;
+        let unstaged = diff_service.get_unstaged_file_changes(&working_path)?;
+        Ok::<_, AppError>((staged, unstaged))
+    })
+    .await
+    .map_err(|error| {
+        AppError::Infrastructure(format!(
+            "agent workspace repair change summary task failed: {error}"
+        ))
+    })??;
+
+    Ok(AgentWorkspaceChangeSummaryResponse {
+        supports_worktree_modes: true,
+        staged: summarize_agent_workspace_file_changes(&staged),
+        unstaged: summarize_agent_workspace_file_changes(&unstaged),
+        conflicted: Some(AgentWorkspaceConflictSummaryResponse {
+            file_count: conflicted_files.len(),
+            files: conflicted_files,
+        }),
+        repair_state,
+    })
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_repair_change_summary(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+) -> AppResult<AgentWorkspaceChangeSummaryResponse> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_repair_change_summary_for_state(
+        app_state.inner(),
+        &conversation_id,
+    )
+    .await;
+    match &result {
+        Ok(summary) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_change_summary",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            staged_files = summary.staged.file_count,
+            unstaged_files = summary.unstaged.file_count,
+            conflicted_files = summary.conflicted.as_ref().map(|bucket| bucket.file_count).unwrap_or(0),
+            "Loaded repair-aware agent workspace change summary"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_change_summary",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load repair-aware agent workspace change summary"
         ),
     }
     result
@@ -1520,6 +1756,88 @@ pub async fn get_agent_conversation_workspace_unstaged_file_diff_for_state(
 }
 
 #[doc(hidden)]
+pub async fn get_agent_conversation_workspace_repair_staged_file_changes_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<Vec<FileChange>> {
+    let (ctx, _) = get_agent_workspace_repair_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        let diff_service = DiffService::new();
+        let mut changes = diff_service.get_staged_file_changes(&working_path)?;
+        let flags = {
+            let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+            diff_service.compute_generated_flags(Path::new(&working_path), &path_strs)?
+        };
+        for change in &mut changes {
+            if let Some(&is_gen) = flags.get(&change.path) {
+                change.is_generated = is_gen;
+            }
+        }
+        Ok(changes)
+    })
+    .await
+    .map_err(|e| AppError::Infrastructure(format!("repair staged file changes task failed: {e}")))?
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_repair_unstaged_file_changes_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<Vec<FileChange>> {
+    let (ctx, _) = get_agent_workspace_repair_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        let diff_service = DiffService::new();
+        let mut changes = diff_service.get_unstaged_file_changes(&working_path)?;
+        let flags = {
+            let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+            diff_service.compute_generated_flags(Path::new(&working_path), &path_strs)?
+        };
+        for change in &mut changes {
+            if let Some(&is_gen) = flags.get(&change.path) {
+                change.is_generated = is_gen;
+            }
+        }
+        Ok(changes)
+    })
+    .await
+    .map_err(|e| {
+        AppError::Infrastructure(format!("repair unstaged file changes task failed: {e}"))
+    })?
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_repair_staged_file_diff_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+    file_path: String,
+) -> AppResult<FileDiff> {
+    let (ctx, _) = get_agent_workspace_repair_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        DiffService::new().get_staged_file_diff(&file_path, &working_path)
+    })
+    .await
+    .map_err(|e| AppError::Infrastructure(format!("repair staged file diff task failed: {e}")))?
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_repair_unstaged_file_diff_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+    file_path: String,
+) -> AppResult<FileDiff> {
+    let (ctx, _) = get_agent_workspace_repair_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        DiffService::new().get_unstaged_file_diff(&file_path, &working_path)
+    })
+    .await
+    .map_err(|e| AppError::Infrastructure(format!("repair unstaged file diff task failed: {e}")))?
+}
+
+#[doc(hidden)]
 pub async fn get_agent_conversation_workspace_cumulative_file_changes_for_state(
     app_state: &AppState,
     conversation_id: &ChatConversationId,
@@ -1826,6 +2144,146 @@ pub async fn get_agent_conversation_workspace_unstaged_file_diff(
             elapsed_ms = started.elapsed().as_millis(),
             error = %error,
             "Failed to load agent workspace unstaged file diff"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_repair_staged_file_changes(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+) -> AppResult<Vec<FileChange>> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_repair_staged_file_changes_for_state(
+        app_state.inner(),
+        &conversation_id,
+    )
+    .await;
+    match &result {
+        Ok(changes) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_staged_file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            files = changes.len(),
+            "Loaded repair-aware agent workspace staged file changes"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_staged_file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load repair-aware agent workspace staged file changes"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_repair_unstaged_file_changes(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+) -> AppResult<Vec<FileChange>> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_repair_unstaged_file_changes_for_state(
+        app_state.inner(),
+        &conversation_id,
+    )
+    .await;
+    match &result {
+        Ok(changes) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_unstaged_file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            files = changes.len(),
+            "Loaded repair-aware agent workspace unstaged file changes"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_unstaged_file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load repair-aware agent workspace unstaged file changes"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_repair_staged_file_diff(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+    file_path: String,
+) -> AppResult<FileDiff> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_repair_staged_file_diff_for_state(
+        app_state.inner(),
+        &conversation_id,
+        file_path,
+    )
+    .await;
+    match &result {
+        Ok(diff) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_staged_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            hunk_count = diff.hunks.len(),
+            old_lines = diff.old_total_lines,
+            new_lines = diff.new_total_lines,
+            "Loaded repair-aware agent workspace staged file diff"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_staged_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load repair-aware agent workspace staged file diff"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_repair_unstaged_file_diff(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+    file_path: String,
+) -> AppResult<FileDiff> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_repair_unstaged_file_diff_for_state(
+        app_state.inner(),
+        &conversation_id,
+        file_path,
+    )
+    .await;
+    match &result {
+        Ok(diff) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_unstaged_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            hunk_count = diff.hunks.len(),
+            old_lines = diff.old_total_lines,
+            new_lines = diff.new_total_lines,
+            "Loaded repair-aware agent workspace unstaged file diff"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_unstaged_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load repair-aware agent workspace unstaged file diff"
         ),
     }
     result
@@ -2357,17 +2815,23 @@ mod tests {
             diff_target: Some("feature/review-cache".to_string()),
             patch_diff: None,
             supports_worktree_modes: false,
+            repair_state: None,
         };
         let snapshot = sample_review_snapshot("abcdef0123456789abcdef0123456789abcdef01");
         let mut annotations = PrDiffAnnotations::empty(68);
         annotations.head_sha = Some("head-sha".to_string());
 
-        store_agent_workspace_context(&conversation_id, &context);
+        store_agent_workspace_context(
+            &conversation_id,
+            AgentWorkspaceContextMode::Strict,
+            &context,
+        );
         store_agent_workspace_review(&conversation_id, &snapshot);
         store_agent_workspace_pr_annotations(&conversation_id, 68, &annotations);
 
         let cached_context =
-            cached_agent_workspace_context(&conversation_id).expect("context should hit");
+            cached_agent_workspace_context(&conversation_id, AgentWorkspaceContextMode::Strict)
+                .expect("context should hit");
         assert_eq!(cached_context.working_path, context.working_path);
         assert_eq!(cached_context.base_ref, "base-sha");
         assert_eq!(
@@ -2391,7 +2855,11 @@ mod tests {
         );
 
         invalidate_agent_workspace_diff_caches(&conversation_id);
-        assert!(cached_agent_workspace_context(&conversation_id).is_none());
+        assert!(cached_agent_workspace_context(
+            &conversation_id,
+            AgentWorkspaceContextMode::Strict
+        )
+        .is_none());
         assert!(cached_agent_workspace_review(&conversation_id).is_none());
         assert!(cached_agent_workspace_pr_annotations(&conversation_id, 68).is_none());
     }
@@ -2405,15 +2873,24 @@ mod tests {
             diff_target: None,
             patch_diff: None,
             supports_worktree_modes: true,
+            repair_state: None,
         };
         let snapshot = sample_review_snapshot("abcdef0123456789abcdef0123456789abcdef01");
         let annotations = PrDiffAnnotations::empty(68);
 
-        store_agent_workspace_context(&conversation_id, &context);
+        store_agent_workspace_context(
+            &conversation_id,
+            AgentWorkspaceContextMode::Strict,
+            &context,
+        );
         store_agent_workspace_review(&conversation_id, &snapshot);
         store_agent_workspace_pr_annotations(&conversation_id, 68, &annotations);
 
-        assert!(cached_agent_workspace_context(&conversation_id).is_none());
+        assert!(cached_agent_workspace_context(
+            &conversation_id,
+            AgentWorkspaceContextMode::Strict
+        )
+        .is_none());
         assert!(cached_agent_workspace_review(&conversation_id).is_none());
         assert!(cached_agent_workspace_pr_annotations(&conversation_id, 68).is_none());
         invalidate_agent_workspace_diff_caches(&conversation_id);
@@ -2459,9 +2936,14 @@ mod tests {
             diff_target: None,
             patch_diff: None,
             supports_worktree_modes: true,
+            repair_state: None,
         };
         invalidate_agent_workspace_diff_caches(&conversation_id);
-        store_agent_workspace_context(&conversation_id, &context);
+        store_agent_workspace_context(
+            &conversation_id,
+            AgentWorkspaceContextMode::Strict,
+            &context,
+        );
 
         let (cached, status) = get_agent_workspace_context_cached(&state, &conversation_id)
             .await
@@ -2732,11 +3214,7 @@ mod tests {
             "staged diff page should include staged content"
         );
 
-        std::fs::write(
-            worktree_path.join("base.txt"),
-            "base\nstaged\nunstaged\n",
-        )
-        .unwrap();
+        std::fs::write(worktree_path.join("base.txt"), "base\nstaged\nunstaged\n").unwrap();
 
         let unstaged_page = get_agent_conversation_workspace_file_diff_page(
             app.state(),
@@ -2823,12 +3301,14 @@ mod tests {
             create_staged_unstaged_workspace_state().await;
         store_agent_workspace_context(
             &conversation_id,
+            AgentWorkspaceContextMode::Strict,
             &AgentWorkspaceContext {
                 working_path: worktree_path,
                 base_ref: "HEAD".to_string(),
                 diff_target: Some("agent-branch".to_string()),
                 patch_diff: None,
                 supports_worktree_modes: false,
+                repair_state: None,
             },
         );
         let app = mock_builder()
@@ -3079,6 +3559,7 @@ new file mode 100644
             diff_target: None,
             patch_diff: None,
             supports_worktree_modes: true,
+            repair_state: None,
         })
         .await
         .expect("review payload should load");
@@ -3116,6 +3597,7 @@ new file mode 100644
             diff_target: Some("feature/target-review".to_string()),
             patch_diff: None,
             supports_worktree_modes: false,
+            repair_state: None,
         })
         .await
         .expect("targeted review payload should load");
@@ -3193,6 +3675,200 @@ new file mode 100644
             .expect("seed workspace");
 
         (temp_dir, state, conversation_id, worktree_path)
+    }
+
+    fn git_dir_for_test(worktree_path: &Path) -> PathBuf {
+        let git_path = worktree_path.join(".git");
+        if git_path.is_file() {
+            let content = std::fs::read_to_string(&git_path).expect(".git file should be readable");
+            if let Some(path) = content.strip_prefix("gitdir: ") {
+                let path = PathBuf::from(path.trim());
+                return if path.is_absolute() {
+                    path
+                } else {
+                    worktree_path.join(path)
+                };
+            }
+        }
+        git_path
+    }
+
+    fn create_rebase_marker_for_test(worktree_path: &Path) {
+        let rebase_dir = git_dir_for_test(worktree_path).join("rebase-merge");
+        std::fs::create_dir_all(rebase_dir).expect("rebase marker should be created");
+    }
+
+    async fn mark_workspace_needs_agent(
+        state: &AppState,
+        conversation_id: &ChatConversationId,
+    ) -> AgentConversationWorkspace {
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should be updated");
+        workspace
+    }
+
+    #[tokio::test]
+    async fn repair_change_summary_allows_needs_agent_detached_rebase_state() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        mark_workspace_needs_agent(&state, &conversation_id).await;
+        run_git(&worktree_path, &["checkout", "--detach"]);
+        create_rebase_marker_for_test(&worktree_path);
+
+        std::fs::write(worktree_path.join("staged.txt"), "one\ntwo\n").unwrap();
+        run_git(&worktree_path, &["add", "staged.txt"]);
+        std::fs::write(worktree_path.join("base.txt"), "base\nunstaged\n").unwrap();
+
+        let normal_summary =
+            get_agent_conversation_workspace_change_summary_for_state(&state, &conversation_id)
+                .await;
+        assert!(
+            normal_summary
+                .expect_err("normal summary should remain strict while detached")
+                .to_string()
+                .contains("checked out at 'HEAD'"),
+            "normal summary should preserve strict branch validation"
+        );
+
+        let repair_summary = get_agent_conversation_workspace_repair_change_summary_for_state(
+            &state,
+            &conversation_id,
+        )
+        .await
+        .expect("repair summary should load for needs_agent rebase state");
+
+        assert!(repair_summary.supports_worktree_modes);
+        assert_eq!(repair_summary.staged.file_count, 1);
+        assert_eq!(repair_summary.staged.additions, 2);
+        assert_eq!(repair_summary.unstaged.file_count, 1);
+        assert_eq!(repair_summary.unstaged.additions, 1);
+        let repair_state = repair_summary
+            .repair_state
+            .expect("repair summary should include repair state");
+        assert_eq!(repair_state.checked_out_branch, "HEAD");
+        assert!(repair_state.rebase_in_progress);
+        assert!(!repair_state.merge_in_progress);
+
+        let staged = get_agent_conversation_workspace_repair_staged_file_changes_for_state(
+            &state,
+            &conversation_id,
+        )
+        .await
+        .expect("repair staged files should load");
+        assert!(staged.iter().any(|file| file.path == "staged.txt"));
+
+        let unstaged_diff = get_agent_conversation_workspace_repair_unstaged_file_diff_for_state(
+            &state,
+            &conversation_id,
+            "base.txt".to_string(),
+        )
+        .await
+        .expect("repair unstaged diff should load");
+        assert!(
+            unstaged_diff
+                .hunks
+                .iter()
+                .flat_map(|hunk| hunk.lines.iter())
+                .any(|line| line.content.contains("unstaged")),
+            "repair unstaged diff should include disk-only content"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn repair_change_summary_rejects_detached_rebase_without_needs_agent() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        run_git(&worktree_path, &["checkout", "--detach"]);
+        create_rebase_marker_for_test(&worktree_path);
+
+        let result = get_agent_conversation_workspace_repair_change_summary_for_state(
+            &state,
+            &conversation_id,
+        )
+        .await;
+
+        assert!(
+            result
+                .expect_err("repair summary should require needs_agent")
+                .to_string()
+                .contains("requires agent conversation workspace"),
+            "repair summary should explain the needs_agent gate"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn repair_change_summary_rejects_detached_without_transient_repair_state() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        mark_workspace_needs_agent(&state, &conversation_id).await;
+        run_git(&worktree_path, &["checkout", "--detach"]);
+
+        let result = get_agent_conversation_workspace_repair_change_summary_for_state(
+            &state,
+            &conversation_id,
+        )
+        .await;
+
+        assert!(
+            result
+                .expect_err("detached worktree without repair state should reject")
+                .to_string()
+                .contains("recognized repair state"),
+            "repair summary should reject unrecognized detached state"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn repair_change_summary_rejects_mismatched_workspace_path() {
+        let (tmp, state, conversation_id, _worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        let mut workspace = mark_workspace_needs_agent(&state, &conversation_id).await;
+        workspace.worktree_path = tmp
+            .path()
+            .join("wrong-worktree")
+            .to_string_lossy()
+            .to_string();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be updated with mismatched path");
+
+        let result = get_agent_conversation_workspace_repair_change_summary_for_state(
+            &state,
+            &conversation_id,
+        )
+        .await;
+
+        assert!(
+            result
+                .expect_err("mismatched path should reject")
+                .to_string()
+                .contains("path mismatch"),
+            "repair summary should validate the canonical workspace path"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
     }
 
     #[tokio::test]
@@ -3289,12 +3965,14 @@ new file mode 100644
             create_staged_unstaged_workspace_state().await;
         store_agent_workspace_context(
             &conversation_id,
+            AgentWorkspaceContextMode::Strict,
             &AgentWorkspaceContext {
                 working_path: worktree_path,
                 base_ref: "HEAD".to_string(),
                 diff_target: Some("agent-branch".to_string()),
                 patch_diff: None,
                 supports_worktree_modes: false,
+                repair_state: None,
             },
         );
         let app = mock_builder()
