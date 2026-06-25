@@ -413,6 +413,47 @@ describe("api.projects", () => {
       expect(result.name).toBe("Archived Project");
     });
   });
+
+  describe("readPrTemplate", () => {
+    it("should call read_pr_template with projectId", async () => {
+      mockInvoke.mockResolvedValue("# Template\n");
+
+      await api.projects.readPrTemplate("project-1");
+
+      expect(mockInvoke).toHaveBeenCalledWith("read_pr_template", {
+        projectId: "project-1",
+      });
+    });
+
+    it("should return nullable template content", async () => {
+      mockInvoke.mockResolvedValue(null);
+
+      const result = await api.projects.readPrTemplate("project-1");
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe("writePrTemplate", () => {
+    it("should call write_pr_template with camelCase payload", async () => {
+      mockInvoke.mockResolvedValue(null);
+
+      await api.projects.writePrTemplate("project-1", "## Summary\n");
+
+      expect(mockInvoke).toHaveBeenCalledWith("write_pr_template", {
+        projectId: "project-1",
+        content: "## Summary\n",
+      });
+    });
+
+    it("should parse Tauri unit null responses as success", async () => {
+      mockInvoke.mockResolvedValue(null);
+
+      await expect(
+        api.projects.writePrTemplate("project-1", ""),
+      ).resolves.toBeNull();
+    });
+  });
 });
 
 // Helper to create mock workflow

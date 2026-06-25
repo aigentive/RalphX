@@ -11,6 +11,45 @@ use super::{
     INSTALL_RETRY_DELAY_MS, STATUS_FAILED,
 };
 
+fn node_modules_available_for_install_skip(nm_path: &Path) -> bool {
+    if nm_path.is_symlink() {
+        let Ok(target) = std::fs::read_link(nm_path) else {
+            tracing::warn!(
+                path = %nm_path.display(),
+                "node_modules symlink could not be read; running install"
+            );
+            return false;
+        };
+        let resolved_target = if target.is_absolute() {
+            target
+        } else {
+            nm_path
+                .parent()
+                .map(|parent| parent.join(&target))
+                .unwrap_or(target)
+        };
+        if resolved_target.exists() {
+            return true;
+        }
+
+        tracing::warn!(
+            path = %nm_path.display(),
+            target = %resolved_target.display(),
+            "Removing broken node_modules symlink before install"
+        );
+        if let Err(error) = std::fs::remove_file(nm_path) {
+            tracing::warn!(
+                path = %nm_path.display(),
+                error = %error,
+                "Failed to remove broken node_modules symlink before install"
+            );
+        }
+        return false;
+    }
+
+    nm_path.exists()
+}
+
 /// Run install commands for pre-execution setup.
 /// Returns (log_entries, had_failures).
 pub(crate) async fn run_install_phase(
@@ -40,7 +79,7 @@ pub(crate) async fn run_install_phase(
 
         // Skip install if node_modules already exists (symlink from setup phase or prior install)
         let nm_path = cmd_cwd.join("node_modules");
-        if nm_path.exists() || nm_path.is_symlink() {
+        if node_modules_available_for_install_skip(&nm_path) {
             tracing::info!(
                 command = %resolved_cmd,
                 cwd = %cmd_cwd.display(),

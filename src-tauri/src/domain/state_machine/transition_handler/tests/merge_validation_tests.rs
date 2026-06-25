@@ -1169,3 +1169,29 @@ async fn pre_exec_setup_uses_detected_when_custom_is_null() {
     );
     assert_eq!(setup_entries[0].command, "echo setup_from_detected");
 }
+
+#[tokio::test]
+async fn run_pre_execution_setup_returns_none_for_invalid_analysis_json() {
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let project_dir = tempfile::tempdir().unwrap();
+    let mut project = make_project(Some("main"));
+    project.working_directory = project_dir.path().to_str().unwrap().to_string();
+    project.custom_analysis = Some("{broken json".to_string());
+    let task = make_task(None, None);
+
+    let result = run_pre_execution_setup(
+        &project,
+        &task,
+        worktree_dir.path(),
+        "test-task",
+        None,
+        "test",
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
+
+    assert!(
+        result.is_none(),
+        "invalid custom_analysis json should skip pre-execution setup"
+    );
+}
