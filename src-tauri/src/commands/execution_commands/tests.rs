@@ -571,6 +571,26 @@ fn test_global_execution_settings_response_from_domain() {
 }
 
 #[test]
+fn test_global_execution_settings_deserializes_legacy_without_workspace_limit() {
+    let json = r#"{
+        "global_max_concurrent": 12,
+        "global_ideation_max": 5,
+        "allow_ideation_borrow_idle_execution": true
+    }"#;
+
+    let settings: crate::domain::execution::GlobalExecutionSettings =
+        serde_json::from_str(json).unwrap();
+
+    assert_eq!(settings.global_max_concurrent, 12);
+    assert_eq!(
+        settings.workspace_max_concurrent,
+        crate::domain::execution::DEFAULT_WORKSPACE_MAX_CONCURRENT
+    );
+    assert_eq!(settings.global_ideation_max, 5);
+    assert!(settings.allow_ideation_borrow_idle_execution);
+}
+
+#[test]
 fn test_update_global_execution_settings_input_deserialization() {
     let json = r#"{"global_max_concurrent":22,"workspace_max_concurrent":10,"global_ideation_max":5,"allow_ideation_borrow_idle_execution":true}"#;
 
@@ -2379,6 +2399,18 @@ async fn test_workspace_capacity_resolves_conversation_backed_queues_and_session
         .await
         .unwrap();
 
+    let task_key = QueueKey::new(ChatContextType::Task, task.id.as_str());
+    let resolved = crate::application::workspace_capacity::resolve_project_queue_context(
+        &task_key,
+        &app_state.project_repo,
+        &app_state.chat_conversation_repo,
+    )
+    .await
+    .expect("non-project key resolves as direct context")
+    .expect("non-project context");
+    assert_eq!(resolved.0.as_str(), task.id.as_str());
+    assert_eq!(resolved.1, None);
+
     let direct_key = QueueKey::new(ChatContextType::Project, project.id.as_str());
     let resolved = crate::application::workspace_capacity::resolve_project_queue_context(
         &direct_key,
@@ -2517,6 +2549,28 @@ async fn test_workspace_capacity_resolves_conversation_backed_queues_and_session
     app_state
         .running_agent_registry
         .register(
+            RunningAgentKey::new("project", "missing-runtime"),
+            61005,
+            "missing-conversation-3".to_string(),
+            "run-missing-project-and-conversation".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", task_conversation.id.as_str()),
+            61006,
+            "missing-conversation-4".to_string(),
+            "run-non-project-runtime-conversation".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
             RunningAgentKey::new("project", "pid-zero-runtime"),
             0,
             conversation.id.as_str().to_string(),
@@ -2529,7 +2583,7 @@ async fn test_workspace_capacity_resolves_conversation_backed_queues_and_session
         .running_agent_registry
         .register(
             RunningAgentKey::new("task", task.id.as_str()),
-            61005,
+            61007,
             conversation.id.as_str().to_string(),
             "run-non-workspace".to_string(),
             None,
