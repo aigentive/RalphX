@@ -24,6 +24,11 @@ const {
   getWorkspaceCommitsMock,
   getWorkspaceCommitChangesMock,
   getWorkspaceCommitDiffMock,
+  getWorkspaceRepairSummaryMock,
+  getWorkspaceRepairStagedChangesMock,
+  getWorkspaceRepairUnstagedChangesMock,
+  getWorkspaceRepairStagedDiffMock,
+  getWorkspaceRepairUnstagedDiffMock,
   getWorkspacePrAnnotationsMock,
   getConversationWorkspaceMock,
   getPrReviewContextMock,
@@ -67,6 +72,11 @@ const {
   getWorkspaceCommitsMock: vi.fn(),
   getWorkspaceCommitChangesMock: vi.fn(),
   getWorkspaceCommitDiffMock: vi.fn(),
+  getWorkspaceRepairSummaryMock: vi.fn(),
+  getWorkspaceRepairStagedChangesMock: vi.fn(),
+  getWorkspaceRepairUnstagedChangesMock: vi.fn(),
+  getWorkspaceRepairStagedDiffMock: vi.fn(),
+  getWorkspaceRepairUnstagedDiffMock: vi.fn(),
   getWorkspacePrAnnotationsMock: vi.fn(),
   getConversationWorkspaceMock: vi.fn(),
   getPrReviewContextMock: vi.fn(),
@@ -151,6 +161,16 @@ vi.mock("@/api/diff", () => ({
       getWorkspaceCommitChangesMock(...args),
     getAgentConversationWorkspaceCommitFileDiff: (...args: unknown[]) =>
       getWorkspaceCommitDiffMock(...args),
+    getAgentConversationWorkspaceRepairChangeSummary: (...args: unknown[]) =>
+      getWorkspaceRepairSummaryMock(...args),
+    getAgentConversationWorkspaceRepairStagedFileChanges: (...args: unknown[]) =>
+      getWorkspaceRepairStagedChangesMock(...args),
+    getAgentConversationWorkspaceRepairUnstagedFileChanges: (...args: unknown[]) =>
+      getWorkspaceRepairUnstagedChangesMock(...args),
+    getAgentConversationWorkspaceRepairStagedFileDiff: (...args: unknown[]) =>
+      getWorkspaceRepairStagedDiffMock(...args),
+    getAgentConversationWorkspaceRepairUnstagedFileDiff: (...args: unknown[]) =>
+      getWorkspaceRepairUnstagedDiffMock(...args),
     getAgentConversationWorkspacePrAnnotations: (...args: unknown[]) =>
       getWorkspacePrAnnotationsMock(...args),
   },
@@ -498,6 +518,52 @@ describe("AgentsArtifactPane", () => {
           ],
         },
       ],
+      oldTotalLines: 1,
+      newTotalLines: 1,
+      isBinary: false,
+    });
+    getWorkspaceRepairSummaryMock.mockResolvedValue({
+      supportsWorktreeModes: true,
+      staged: { fileCount: 1, additions: 4, deletions: 1 },
+      unstaged: { fileCount: 1, additions: 2, deletions: 0 },
+      conflicted: { fileCount: 1, files: ["frontend/src/App.tsx"] },
+      repairState: {
+        expectedBranch: "ralphx/demo/agent-conversation-1",
+        checkedOutBranch: "HEAD",
+        rebaseInProgress: true,
+        mergeInProgress: false,
+      },
+    });
+    getWorkspaceRepairStagedChangesMock.mockResolvedValue([
+      {
+        path: "frontend/src/Staged.tsx",
+        status: "modified",
+        additions: 4,
+        deletions: 1,
+        isGenerated: false,
+      },
+    ]);
+    getWorkspaceRepairUnstagedChangesMock.mockResolvedValue([
+      {
+        path: "frontend/src/App.tsx",
+        status: "modified",
+        additions: 2,
+        deletions: 0,
+        isGenerated: false,
+      },
+    ]);
+    getWorkspaceRepairStagedDiffMock.mockResolvedValue({
+      filePath: "frontend/src/Staged.tsx",
+      language: "typescript",
+      hunks: [],
+      oldTotalLines: 1,
+      newTotalLines: 1,
+      isBinary: false,
+    });
+    getWorkspaceRepairUnstagedDiffMock.mockResolvedValue({
+      filePath: "frontend/src/App.tsx",
+      language: "typescript",
+      hunks: [],
       oldTotalLines: 1,
       newTotalLines: 1,
       isBinary: false,
@@ -4288,7 +4354,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByText("PR supervision blocked")).not.toBeInTheDocument();
   });
 
-  it("locks the base update action while agent repair is pending", async () => {
+  it("replaces base update controls while agent repair is pending", async () => {
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
       baseRef: "feature/agent-screen",
@@ -4312,13 +4378,149 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
-    const updateButton = await screen.findByTestId("agents-update-from-base");
-    expect(updateButton).toBeDisabled();
+    const repairButton = await screen.findByTestId("agents-publish-repair-pending");
+    expect(repairButton).toBeDisabled();
+    expect(repairButton).toHaveTextContent("Repair pending");
+    expect(screen.queryByTestId("agents-update-from-base")).not.toBeInTheDocument();
 
     updateWorkspaceFromBaseMock.mockClear();
-    fireEvent.click(updateButton);
+    fireEvent.click(repairButton);
 
     expect(updateWorkspaceFromBaseMock).not.toHaveBeenCalled();
+    expect(getWorkspaceFreshnessMock).not.toHaveBeenCalled();
+  });
+
+  it("shows repair diff buckets without loading normal workspace review", async () => {
+    getWorkspaceReviewMock.mockRejectedValue(
+      new Error("Agent conversation workspace is checked out at 'HEAD' instead of branch"),
+    );
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        publicationPushStatus: "needs_agent",
+      }),
+    );
+
+    const repairState = await screen.findByTestId("agents-publish-repair-state");
+    expect(repairState).toBeInTheDocument();
+    expect(within(repairState).getByText("Repairing workspace")).toBeInTheDocument();
+    expect(
+      within(repairState).getByText(/RalphX routed this workspace to the agent/),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-repair-bucket-conflicted")).toHaveTextContent(
+        "Conflicted: 1",
+      ),
+    );
+    expect(screen.getByTestId("agents-publish-repair-bucket-unstaged")).toHaveTextContent(
+      "Unstaged: 1 file",
+    );
+    expect(screen.getByTestId("agents-publish-repair-bucket-staged")).toHaveTextContent(
+      "Staged: 1 file",
+    );
+    expect(screen.getByTestId("agents-publish-repair-conflicted-files")).toHaveTextContent(
+      "frontend/src/App.tsx",
+    );
+    expect(screen.queryByText("Could not load workspace changes")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-pr-supervision-controls")).not.toBeInTheDocument();
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(getWorkspaceRepairSummaryMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    await waitFor(() =>
+      expect(getWorkspaceRepairUnstagedChangesMock).toHaveBeenCalledWith("conversation-1"),
+    );
+  });
+
+  it("labels merge-paused repair state", async () => {
+    getWorkspaceRepairSummaryMock.mockResolvedValue({
+      supportsWorktreeModes: true,
+      staged: { fileCount: 0, additions: 0, deletions: 0 },
+      unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+      conflicted: { fileCount: 0, files: [] },
+      repairState: {
+        expectedBranch: "ralphx/demo/agent-conversation-1",
+        checkedOutBranch: "HEAD",
+        rebaseInProgress: false,
+        mergeInProgress: true,
+      },
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "needs_agent",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-repair-state-label")).toHaveTextContent(
+        "Merge paused for repair",
+      ),
+    );
+  });
+
+  it("labels branch-ready repair state", async () => {
+    getWorkspaceRepairSummaryMock.mockResolvedValue({
+      supportsWorktreeModes: true,
+      staged: { fileCount: 0, additions: 0, deletions: 0 },
+      unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+      conflicted: { fileCount: 0, files: [] },
+      repairState: {
+        expectedBranch: "ralphx/demo/agent-conversation-1",
+        checkedOutBranch: "ralphx/demo/agent-conversation-1",
+        rebaseInProgress: false,
+        mergeInProgress: false,
+      },
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "needs_agent",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-repair-state-label")).toHaveTextContent(
+        "Branch ready for repair",
+      ),
+    );
+  });
+
+  it("labels detected repair state when branch details do not match known states", async () => {
+    getWorkspaceRepairSummaryMock.mockResolvedValue({
+      supportsWorktreeModes: true,
+      staged: { fileCount: 0, additions: 0, deletions: 0 },
+      unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+      conflicted: { fileCount: 0, files: [] },
+      repairState: {
+        expectedBranch: "ralphx/demo/agent-conversation-1",
+        checkedOutBranch: "detached-review",
+        rebaseInProgress: false,
+        mergeInProgress: false,
+      },
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "needs_agent",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-repair-state-label")).toHaveTextContent(
+        "Repair state detected",
+      ),
+    );
   });
 
   it("loads workspace changes for review before publishing", async () => {

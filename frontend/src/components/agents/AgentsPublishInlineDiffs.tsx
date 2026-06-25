@@ -28,7 +28,13 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { diffApi } from "@/api/diff";
-import type { AgentWorkspaceReview, FileChange, DiffRefKind, PrDiffAnnotation } from "@/api/diff";
+import type {
+  AgentWorkspaceChangeSummary,
+  AgentWorkspaceReview,
+  FileChange,
+  DiffRefKind,
+  PrDiffAnnotation,
+} from "@/api/diff";
 import type { Commit as DiffViewerCommit } from "@/components/diff";
 import { cn } from "@/lib/utils";
 import { AgentsPublishDiffFilter } from "./AgentsPublishDiffFilter";
@@ -59,6 +65,8 @@ export interface AgentsPublishInlineDiffsProps {
   focusRequest?: AgentPublishFocusRequest | null | undefined;
   defaultMode?: DiffFilterMode | undefined;
   workspaceChangeLabel?: string | undefined;
+  liveSummary?: AgentWorkspaceChangeSummary | null | undefined;
+  repairMode?: boolean | undefined;
 }
 
 function getEmptyDiffStateCopy(
@@ -201,6 +209,8 @@ export function AgentsPublishInlineDiffs({
   focusRequest,
   defaultMode,
   workspaceChangeLabel,
+  liveSummary = null,
+  repairMode = false,
 }: AgentsPublishInlineDiffsProps) {
   // Set of collapsed file paths; empty = all expanded (default).
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
@@ -241,7 +251,13 @@ export function AgentsPublishInlineDiffs({
     totalDeletions,
     workspaceChangeCount,
     unstagedCount,
-  } = useAgentWorkspaceChangeSummary({ conversationId, review, defaultMode });
+  } = useAgentWorkspaceChangeSummary({
+    conversationId,
+    review,
+    defaultMode,
+    liveSummary,
+    repairMode,
+  });
   const rangeRefKind =
     review?.headRef.startsWith(PATCH_BACKED_HEAD_REF_PREFIX) === true
       ? undefined
@@ -430,9 +446,21 @@ export function AgentsPublishInlineDiffs({
   // ── Staged diffs ──────────────────────────────────────────────────────
   const stagedDiffQueries = useQueries({
     queries: (supportsWorktreeModes && isStagedMode ? fetchableFiles : []).map((file) => ({
-      queryKey: [...agentWorkspaceKeys.diff(conversationId), "staged", file.path],
+      queryKey: [
+        ...agentWorkspaceKeys.diff(conversationId),
+        repairMode ? "repair-staged" : "staged",
+        file.path,
+      ],
       queryFn: () =>
-        diffApi.getAgentConversationWorkspaceStagedFileDiff(conversationId, file.path),
+        repairMode
+          ? diffApi.getAgentConversationWorkspaceRepairStagedFileDiff(
+              conversationId,
+              file.path,
+            )
+          : diffApi.getAgentConversationWorkspaceStagedFileDiff(
+              conversationId,
+              file.path,
+            ),
       staleTime: AGENT_WORKSPACE_STALE_MS,
     })),
   });
@@ -440,9 +468,21 @@ export function AgentsPublishInlineDiffs({
   // ── Unstaged diffs ────────────────────────────────────────────────────
   const unstagedDiffQueries = useQueries({
     queries: (supportsWorktreeModes && isUnstagedMode ? fetchableFiles : []).map((file) => ({
-      queryKey: [...agentWorkspaceKeys.diff(conversationId), "unstaged", file.path],
+      queryKey: [
+        ...agentWorkspaceKeys.diff(conversationId),
+        repairMode ? "repair-unstaged" : "unstaged",
+        file.path,
+      ],
       queryFn: () =>
-        diffApi.getAgentConversationWorkspaceUnstagedFileDiff(conversationId, file.path),
+        repairMode
+          ? diffApi.getAgentConversationWorkspaceRepairUnstagedFileDiff(
+              conversationId,
+              file.path,
+            )
+          : diffApi.getAgentConversationWorkspaceUnstagedFileDiff(
+              conversationId,
+              file.path,
+            ),
       staleTime: AGENT_WORKSPACE_STALE_MS,
     })),
   });
@@ -652,8 +692,8 @@ export function AgentsPublishInlineDiffs({
           onCopyPath={handleCopyPath}
           onOpenFullscreenPath={handleOpenFullscreen}
           conversationId={conversationId}
-          refKind={rangeRefKind}
-          diffPageRefKind={refKind}
+          refKind={repairMode ? undefined : rangeRefKind}
+          diffPageRefKind={repairMode ? undefined : refKind}
           shouldHydrate={hydratedPaths.has(fileChange.path)}
           annotations={annotationsByPath.get(fileChange.path) ?? EMPTY_PR_DIFF_ANNOTATIONS}
           isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
@@ -676,6 +716,7 @@ export function AgentsPublishInlineDiffs({
       focusTargetPath,
       refKind,
       rangeRefKind,
+      repairMode,
       userShowAnywayPaths,
     ],
   );
