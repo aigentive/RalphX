@@ -44,6 +44,7 @@ interface ExecutionStatusEvent {
   haltMode?: "running" | "paused" | "stopped";
   runningCount: number;
   maxConcurrent: number;
+  projectId?: string;
   reason: string;
   timestamp: string;
 }
@@ -51,6 +52,7 @@ interface ExecutionStatusEvent {
 interface ExecutionQueueEvent {
   queuedCount: number;
   queuedMessageCount?: number;
+  projectId?: string;
   timestamp: string;
 }
 
@@ -246,6 +248,44 @@ describe("useExecutionEvents", () => {
       expect(state.haltMode).toBe("stopped");
       expect(state.isPaused).toBe(true);
     });
+
+    it("ignores status events outside the scoped project override", async () => {
+      renderHook(() => useExecutionEvents("project-2"), { wrapper });
+
+      await act(async () => {
+        testEventBus.emit<ExecutionStatusEvent>("execution:status_changed", {
+          isPaused: false,
+          haltMode: "running",
+          runningCount: 7,
+          maxConcurrent: 10,
+          projectId: "project-1",
+          reason: "task_started",
+          timestamp: new Date().toISOString(),
+        });
+      });
+
+      const state = useUiStore.getState().executionStatus;
+      expect(state.runningCount).toBe(0);
+    });
+
+    it("accepts status events matching the scoped project override", async () => {
+      renderHook(() => useExecutionEvents("project-2"), { wrapper });
+
+      await act(async () => {
+        testEventBus.emit<ExecutionStatusEvent>("execution:status_changed", {
+          isPaused: false,
+          haltMode: "running",
+          runningCount: 4,
+          maxConcurrent: 10,
+          projectId: "project-2",
+          reason: "task_started",
+          timestamp: new Date().toISOString(),
+        });
+      });
+
+      const state = useUiStore.getState().executionStatus;
+      expect(state.runningCount).toBe(4);
+    });
   });
 
   describe("queue_changed event", () => {
@@ -352,6 +392,21 @@ describe("useExecutionEvents", () => {
       const state = useUiStore.getState().executionStatus;
       expect(state.queuedCount).toBe(1);
       expect(state.queuedMessageCount).toBe(3);
+    });
+
+    it("ignores queue events outside the scoped project override", async () => {
+      renderHook(() => useExecutionEvents("project-2"), { wrapper });
+
+      await act(async () => {
+        testEventBus.emit<ExecutionQueueEvent>("execution:queue_changed", {
+          queuedCount: 6,
+          projectId: "project-1",
+          timestamp: new Date().toISOString(),
+        });
+      });
+
+      const state = useUiStore.getState().executionStatus;
+      expect(state.queuedCount).toBe(0);
     });
   });
 

@@ -12,21 +12,37 @@ import {
   PopoverContent,
   PopoverAnchor,
 } from "@/components/ui/popover";
-import { Settings } from "lucide-react";
+import { Loader2, MessageSquare, Settings } from "lucide-react";
 import { ProcessCard } from "./ProcessCard";
 import { TeamProcessGroup } from "./TeamProcessGroup";
 import { IdeationSessionCard } from "./IdeationSessionCard";
-import type { RunningProcess, RunningIdeationSession } from "@/api/running-processes";
+import type {
+  ExecutionCapacitySummary,
+  ExecutionLaneUsage,
+  ExecutionLaneName,
+  RunningProcess,
+  RunningIdeationSession,
+  RunningWorkspaceSession,
+} from "@/api/running-processes";
 import { useUiStore } from "@/stores/uiStore";
 import { cn } from "@/lib/utils";
+import { useElapsedTimer } from "@/hooks/useElapsedTimer";
+import { formatElapsedTime } from "@/lib/formatters";
+import { shouldPreserveExecutionPopoverForTarget } from "./executionPopoverDismissal";
 
-type TabType = "execution" | "ideation";
+type TabType = "running" | "workspaces" | "execution" | "ideation";
 
 interface RunningProcessPopoverProps {
   /** List of currently running processes */
   processes: RunningProcess[];
   /** List of running ideation sessions */
   ideationSessions?: RunningIdeationSession[];
+  /** List of running workspace conversations */
+  workspaceSessions?: RunningWorkspaceSession[];
+  /** Lane-level usage from the backend */
+  lanes?: ExecutionLaneUsage[];
+  /** Capacity summary from the backend */
+  capacity?: ExecutionCapacitySummary | null;
   /** Global running count from execution status (source of truth for capacity) */
   runningCount?: number;
   /** Current max concurrent tasks */
@@ -45,6 +61,8 @@ interface RunningProcessPopoverProps {
   onOpenSettings: () => void;
   /** Called when an ideation session is clicked to navigate to it */
   onNavigateToSession?: (sessionId: string) => void;
+  /** Called when a workspace session is clicked to navigate to its agent conversation */
+  onNavigateToWorkspace?: (projectId: string, conversationId: string) => void;
   /** Children (anchor element — NOT a trigger, controlled externally) */
   children: React.ReactNode;
   /** Optional horizontal alignment offset for popover content */
@@ -59,9 +77,99 @@ interface RunningProcessPopoverProps {
   showIdeationTeamUi?: boolean;
 }
 
+const LANE_LABELS: Record<ExecutionLaneName, string> = {
+  workspaces: "Workspaces",
+  tasks: "Tasks",
+  ideation: "Ideation",
+};
+
+const LANE_TO_TAB: Record<ExecutionLaneName, TabType> = {
+  workspaces: "workspaces",
+  tasks: "execution",
+  ideation: "ideation",
+};
+
+function WorkspaceSessionRow({
+  session,
+  onClick,
+}: {
+  session: RunningWorkspaceSession;
+  onClick?: () => void;
+}) {
+  const elapsedTime = useElapsedTimer(session.elapsedSeconds, session.conversationId);
+  const className =
+    "w-full px-2 py-1.5 rounded-md transition-colors hover:bg-[var(--overlay-faint)]";
+  const content = (
+    <>
+      <div className="flex items-center gap-2">
+        <Loader2
+          className="w-3.5 h-3.5 animate-spin shrink-0"
+          style={{ color: "var(--accent-primary)" }}
+        />
+        <span
+          className="min-w-0 flex-1 truncate text-left text-xs font-medium"
+          style={{ color: "var(--text-primary)" }}
+          title={session.title}
+        >
+          {session.title}
+        </span>
+        <span
+          className="shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] font-medium"
+          style={{
+            color: "var(--accent-primary)",
+            backgroundColor: "var(--accent-muted)",
+          }}
+        >
+          Workspace
+        </span>
+      </div>
+      <div
+        className="mt-0.5 flex min-w-0 items-center gap-1.5 pl-[22px] text-[0.6875rem]"
+        style={{ color: "var(--text-muted)" }}
+      >
+        <MessageSquare className="h-3 w-3 shrink-0" style={{ color: "var(--text-muted)" }} />
+        <span className="shrink-0 tabular-nums">{formatElapsedTime(elapsedTime)}</span>
+        {session.model && (
+          <>
+            <span className="shrink-0" style={{ color: "var(--text-muted)" }}>
+              ·
+            </span>
+            <span className="min-w-0 truncate">{session.model}</span>
+          </>
+        )}
+      </div>
+    </>
+  );
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        data-testid={`workspace-card-${session.conversationId}`}
+        className={cn(className, "text-left")}
+        onClick={onClick}
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <div
+      data-testid={`workspace-card-${session.conversationId}`}
+      className={className}
+    >
+      {content}
+    </div>
+  );
+}
+
 export function RunningProcessPopover({
   processes,
   ideationSessions = [],
+  workspaceSessions = [],
+  lanes = [],
+  capacity = null,
   runningCount,
   maxConcurrent,
   ideationMax = 0,
@@ -71,6 +179,7 @@ export function RunningProcessPopover({
   onStopProcess,
   onOpenSettings,
   onNavigateToSession,
+  onNavigateToWorkspace,
   children,
   alignOffset = -24,
   initialTab = "execution",
@@ -87,7 +196,13 @@ export function RunningProcessPopover({
   }, [initialTab]);
 
   const activeIdeationCount = ideationSessions.filter((s) => s.isGenerating).length;
-  const effectiveRunningCount = runningCount ?? processes.length;
+  const laneByName = new Map(lanes.map((lane) => [lane.lane, lane]));
+  const workspaceLane = laneByName.get("workspaces");
+  const taskLane = laneByName.get("tasks");
+  const ideationLane = laneByName.get("ideation");
+  const hasLaneUsage = lanes.length > 0;
+  const effectiveRunningCount = capacity?.totalActive ?? runningCount ?? processes.length;
+  const effectiveMaxConcurrent = capacity?.globalMaxConcurrent ?? maxConcurrent;
 
   const handleNavigate = (taskId: string) => {
     onOpenChange(false);
@@ -99,11 +214,34 @@ export function RunningProcessPopover({
     onNavigateToSession?.(sessionId);
   };
 
+  const handleNavigateToWorkspace = (session: RunningWorkspaceSession) => {
+    onOpenChange(false);
+    onNavigateToWorkspace?.(session.projectId, session.conversationId);
+  };
+
   // Tab-aware header title
   const headerTitle =
-    activeTab === "execution" || !showIdeation
-      ? `Execution (${effectiveRunningCount}/${maxConcurrent})`
-      : `Ideation (${activeIdeationCount}/${ideationMax})`;
+    activeTab === "running" && hasLaneUsage
+      ? `Running (${effectiveRunningCount}/${effectiveMaxConcurrent})`
+      : activeTab === "workspaces" && hasLaneUsage
+        ? `Workspaces (${workspaceLane?.active ?? workspaceSessions.length}/${workspaceLane?.max ?? 10})`
+        : activeTab === "ideation" && showIdeation
+          ? `Ideation (${ideationLane?.active ?? activeIdeationCount}/${ideationLane?.max ?? ideationMax})`
+          : `${hasLaneUsage ? "Tasks" : "Execution"} (${taskLane?.active ?? processes.length}/${taskLane?.max ?? maxConcurrent})`;
+
+  const activeLaneMax =
+    activeTab === "running" && hasLaneUsage
+      ? effectiveMaxConcurrent
+      : activeTab === "workspaces" && hasLaneUsage
+        ? workspaceLane?.max ?? 10
+        : activeTab === "ideation" && showIdeation
+          ? ideationLane?.max ?? ideationMax
+          : taskLane?.max ?? maxConcurrent;
+
+  const tabButtonStyle = (selected: boolean) =>
+    selected
+      ? { backgroundColor: "var(--accent-primary)", color: "white" }
+      : { color: "var(--text-muted)" };
 
   // Content for the execution tab
   const executionContent =
@@ -136,6 +274,74 @@ export function RunningProcessPopover({
           )
         )}
       </>
+    );
+
+  const workspaceContent =
+    workspaceSessions.length === 0 ? (
+      <div
+        className="py-6 text-center text-xs"
+        style={{ color: "var(--text-muted)" }}
+      >
+        No active workspace agents
+      </div>
+    ) : (
+      <>
+        {workspaceSessions.map((session) => (
+          <WorkspaceSessionRow
+            key={session.conversationId}
+            session={session}
+            {...(onNavigateToWorkspace
+              ? { onClick: () => handleNavigateToWorkspace(session) }
+              : {})}
+          />
+        ))}
+      </>
+    );
+
+  const runningContent =
+    lanes.length === 0 ? (
+      executionContent
+    ) : (
+      <div className="space-y-1">
+        {lanes
+          .slice()
+          .sort((left, right) => left.priorityRank - right.priorityRank)
+          .map((lane) => (
+            <button
+              type="button"
+              key={lane.lane}
+              data-testid={`capacity-lane-${lane.lane}`}
+              className="w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-[var(--overlay-weak)]"
+              style={{ backgroundColor: "var(--overlay-faint)" }}
+              onClick={() => setActiveTab(LANE_TO_TAB[lane.lane])}
+              disabled={lane.lane === "ideation" && !showIdeation}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>
+                  {LANE_LABELS[lane.lane]}
+                </span>
+                <span
+                  className="text-xs tabular-nums"
+                  style={{
+                    color: lane.active > 0 ? "var(--accent-primary)" : "var(--text-secondary)",
+                    fontFamily:
+                      "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+                  }}
+                >
+                  {lane.active}/{lane.max}
+                </span>
+              </div>
+              <div className="mt-1 flex items-center gap-2 text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
+                {lane.idle > 0 && <span>{lane.idle} idle</span>}
+                {lane.waiting > 0 && <span>{lane.waiting} waiting</span>}
+                {lane.borrowed > 0 && <span>{lane.borrowed} borrowed</span>}
+                {lane.idle === 0 && lane.waiting === 0 && lane.borrowed === 0 && (
+                  <span>No pressure</span>
+                )}
+              </div>
+            </button>
+          ))}
+      </div>
     );
 
   // Content for the ideation tab
@@ -178,10 +384,17 @@ export function RunningProcessPopover({
             "0 4px 16px var(--overlay-scrim), 0 12px 32px var(--overlay-scrim)",
         }}
         onInteractOutside={(e) => {
+          // Preserve execution popovers while switching agent conversations from the sidebar.
+          // The sidebar click updates the footer scope; it should not clear the selected popover.
+          const target = e.target;
+          if (shouldPreserveExecutionPopoverForTarget(target)) {
+            e.preventDefault();
+            return;
+          }
+
           // Prevent Radix outside-click dismissal when clicking the ideation trigger button
           // This avoids close→reopen flicker when switching tabs via the external ideation button
-          const target = e.target as HTMLElement;
-          if (target.closest("[data-ideation-trigger]")) {
+          if (target instanceof HTMLElement && target.closest("[data-ideation-trigger]")) {
             e.preventDefault();
           }
         }}
@@ -212,13 +425,39 @@ export function RunningProcessPopover({
               style={{ color: "var(--text-muted)" }}
             >
               <Settings className="w-3 h-3" />
-              Max: {activeTab === "ideation" && showIdeation ? ideationMax : maxConcurrent}
+              Max: {activeLaneMax}
             </button>
           </div>
 
-          {/* Tab bar — only rendered when ideation is enabled */}
-          {showIdeation && (
+          {/* Tab bar — rendered when multiple execution lanes are available */}
+          {(hasLaneUsage || showIdeation) && (
             <div role="tablist" className="flex items-center gap-1">
+              {hasLaneUsage && (
+                <>
+                  <button
+                    role="tab"
+                    aria-selected={activeTab === "running"}
+                    onClick={() => setActiveTab("running")}
+                    className={cn(
+                      "px-2.5 py-0.5 rounded-full text-[0.6875rem] font-medium transition-colors"
+                    )}
+                    style={tabButtonStyle(activeTab === "running")}
+                  >
+                    Running ({effectiveRunningCount})
+                  </button>
+                  <button
+                    role="tab"
+                    aria-selected={activeTab === "workspaces"}
+                    onClick={() => setActiveTab("workspaces")}
+                    className={cn(
+                      "px-2.5 py-0.5 rounded-full text-[0.6875rem] font-medium transition-colors"
+                    )}
+                    style={tabButtonStyle(activeTab === "workspaces")}
+                  >
+                    Workspaces ({workspaceLane?.active ?? workspaceSessions.length})
+                  </button>
+                </>
+              )}
               <button
                 role="tab"
                 aria-selected={activeTab === "execution"}
@@ -226,29 +465,23 @@ export function RunningProcessPopover({
                 className={cn(
                   "px-2.5 py-0.5 rounded-full text-[0.6875rem] font-medium transition-colors"
                 )}
-                style={
-                  activeTab === "execution"
-                    ? { backgroundColor: "var(--accent-primary)", color: "white" }
-                    : { color: "var(--text-muted)" }
-                }
+                style={tabButtonStyle(activeTab === "execution")}
               >
-                Execution ({processes.length})
+                {hasLaneUsage ? "Tasks" : "Execution"} ({taskLane?.active ?? processes.length})
               </button>
-              <button
-                role="tab"
-                aria-selected={activeTab === "ideation"}
-                onClick={() => setActiveTab("ideation")}
-                className={cn(
-                  "px-2.5 py-0.5 rounded-full text-[0.6875rem] font-medium transition-colors"
-                )}
-                style={
-                  activeTab === "ideation"
-                    ? { backgroundColor: "var(--accent-primary)", color: "white" }
-                    : { color: "var(--text-muted)" }
-                }
-              >
-                Ideation ({ideationSessions.length})
-              </button>
+              {showIdeation && (
+                <button
+                  role="tab"
+                  aria-selected={activeTab === "ideation"}
+                  onClick={() => setActiveTab("ideation")}
+                  className={cn(
+                    "px-2.5 py-0.5 rounded-full text-[0.6875rem] font-medium transition-colors"
+                  )}
+                  style={tabButtonStyle(activeTab === "ideation")}
+                >
+                  Ideation ({ideationLane?.active ?? ideationSessions.length})
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -262,8 +495,14 @@ export function RunningProcessPopover({
             scrollbarColor: "var(--overlay-moderate) transparent",
           }}
         >
-          {showIdeation ? (
-            activeTab === "execution" ? executionContent : ideationContent
+          {hasLaneUsage || showIdeation ? (
+            activeTab === "running" && hasLaneUsage
+              ? runningContent
+              : activeTab === "workspaces" && hasLaneUsage
+                ? workspaceContent
+                : activeTab === "ideation" && showIdeation
+                  ? ideationContent
+                  : executionContent
           ) : (
             executionContent
           )}
@@ -278,9 +517,13 @@ export function RunningProcessPopover({
           }}
         >
           <span>
-            {activeTab === "ideation" && showIdeation
-              ? `Ideation capacity: up to ${ideationMax} sessions.`
-              : `Concurrency runs up to ${maxConcurrent} tasks in parallel.`}
+            {activeTab === "running" && hasLaneUsage
+              ? `Priority: ${capacity?.priority.map((lane) => LANE_LABELS[lane]).join(" > ") ?? "Workspaces > Tasks > Ideation"}. Borrowing ${capacity?.borrowingEnabled ? "enabled" : "disabled"}.`
+              : activeTab === "workspaces" && hasLaneUsage
+                ? `Workspace capacity: up to ${activeLaneMax} main agents.`
+                : activeTab === "ideation" && showIdeation
+                  ? `Ideation capacity: up to ${activeLaneMax} sessions.`
+                  : `Concurrency runs up to ${activeLaneMax} tasks in parallel.`}
           </span>
           <button
             onClick={onOpenSettings}

@@ -10,13 +10,13 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
         conn,
         "execution_settings",
         "project_ideation_max",
-        "INTEGER NOT NULL DEFAULT 2",
+        "INTEGER NOT NULL DEFAULT 5",
     )?;
     helpers::add_column_if_not_exists(
         conn,
         "global_execution_settings",
         "global_ideation_max",
-        "INTEGER NOT NULL DEFAULT 4",
+        "INTEGER NOT NULL DEFAULT 10",
     )?;
     helpers::add_column_if_not_exists(
         conn,

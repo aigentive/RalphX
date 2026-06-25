@@ -6,6 +6,9 @@ import {
   RunningProcessSchema,
   RunningProcessesResponseSchema,
   RunningIdeationSessionSchema,
+  RunningWorkspaceSessionSchema,
+  ExecutionLaneUsageSchema,
+  ExecutionCapacitySummarySchema,
   TeammateSummarySchema,
 } from "./running-processes.schemas";
 import type {
@@ -13,6 +16,9 @@ import type {
   RunningProcess,
   RunningProcessesResponse,
   RunningIdeationSession,
+  RunningWorkspaceSession,
+  ExecutionLaneUsage,
+  ExecutionCapacitySummary,
   TeammateSummary,
 } from "./running-processes.types";
 import { transformTaskStep } from "@/types/task-step";
@@ -96,6 +102,52 @@ export function transformRunningIdeationSession(
 }
 
 /**
+ * Transform RunningWorkspaceSessionSchema (snake_case) → RunningWorkspaceSession (camelCase)
+ */
+export function transformRunningWorkspaceSession(
+  raw: z.infer<typeof RunningWorkspaceSessionSchema>
+): RunningWorkspaceSession {
+  return {
+    conversationId: raw.conversation_id,
+    projectId: raw.project_id,
+    title: raw.title,
+    elapsedSeconds: raw.elapsed_seconds,
+    model: raw.model,
+  };
+}
+
+/**
+ * Transform ExecutionLaneUsageSchema (snake_case) → ExecutionLaneUsage (camelCase)
+ */
+export function transformExecutionLaneUsage(
+  raw: z.infer<typeof ExecutionLaneUsageSchema>
+): ExecutionLaneUsage {
+  return {
+    lane: raw.lane,
+    active: raw.active,
+    idle: raw.idle,
+    waiting: raw.waiting,
+    max: raw.max,
+    borrowed: raw.borrowed,
+    priorityRank: raw.priority_rank,
+  };
+}
+
+/**
+ * Transform ExecutionCapacitySummarySchema (snake_case) → ExecutionCapacitySummary (camelCase)
+ */
+export function transformExecutionCapacitySummary(
+  raw: z.infer<typeof ExecutionCapacitySummarySchema>
+): ExecutionCapacitySummary {
+  return {
+    totalActive: raw.total_active,
+    globalMaxConcurrent: raw.global_max_concurrent,
+    borrowingEnabled: raw.borrowing_enabled,
+    priority: raw.priority,
+  };
+}
+
+/**
  * Transform RunningProcessesResponseSchema (snake_case) → RunningProcessesResponse (camelCase)
  */
 export function transformRunningProcessesResponse(
@@ -104,5 +156,8 @@ export function transformRunningProcessesResponse(
   return {
     processes: raw.processes.map(transformRunningProcess),
     ideationSessions: raw.ideation_sessions.map(transformRunningIdeationSession),
+    workspaceSessions: raw.workspace_sessions.map(transformRunningWorkspaceSession),
+    lanes: raw.lanes.map(transformExecutionLaneUsage),
+    capacity: transformExecutionCapacitySummary(raw.capacity),
   };
 }

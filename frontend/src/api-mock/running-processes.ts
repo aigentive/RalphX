@@ -12,6 +12,42 @@ import type { RunningProcessesResponse } from "@/api/running-processes";
 
 const mockRunningProcesses: RunningProcessesResponse = {
   ideationSessions: [],
+  workspaceSessions: [],
+  lanes: [
+    {
+      lane: "workspaces",
+      active: 0,
+      idle: 0,
+      waiting: 0,
+      max: 10,
+      borrowed: 0,
+      priorityRank: 1,
+    },
+    {
+      lane: "tasks",
+      active: 2,
+      idle: 0,
+      waiting: 0,
+      max: 10,
+      borrowed: 0,
+      priorityRank: 2,
+    },
+    {
+      lane: "ideation",
+      active: 0,
+      idle: 0,
+      waiting: 0,
+      max: 5,
+      borrowed: 0,
+      priorityRank: 3,
+    },
+  ],
+  capacity: {
+    totalActive: 2,
+    globalMaxConcurrent: 20,
+    borrowingEnabled: false,
+    priority: ["workspaces", "tasks", "ideation"],
+  },
   processes: [
     {
       taskId: "task-1",

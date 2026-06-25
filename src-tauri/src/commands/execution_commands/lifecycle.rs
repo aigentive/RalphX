@@ -331,6 +331,26 @@ pub async fn resume_execution(
             Arc::clone(&app_state.team_session_repo),
             Arc::clone(&app_state.team_message_repo),
         ));
+        if let Err(error) = resume_paused_workspace_queues_with_chat_service(
+            effective_project_id.as_ref(),
+            &app_state,
+            &execution_state_arc,
+            || {
+                Arc::new(
+                    app_state
+                        .build_chat_service_with_execution_state(Arc::clone(&execution_state_arc))
+                        .with_team_service(Arc::clone(&team_service)),
+                ) as Arc<dyn ChatService>
+            },
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %error,
+                "Failed to relaunch paused workspace queues on resume"
+            );
+        }
+
         if let Err(error) = resume_paused_slot_consuming_queues_with_chat_service(
             effective_project_id.as_ref(),
             &app_state,

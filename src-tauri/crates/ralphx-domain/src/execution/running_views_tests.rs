@@ -1,19 +1,21 @@
 use chrono::{TimeZone, Utc};
 
 use crate::entities::{
-    IdeationSessionBuilder, InternalStatus, ProjectId, StepProgressSummary, Task,
+    ChatConversation, IdeationSessionBuilder, InternalStatus, ProjectId, StepProgressSummary, Task,
 };
 use crate::repositories::StatusTransition;
 
 use super::{
-    build_running_ideation_session, build_running_process, elapsed_seconds_for_status,
-    ideation_session_title,
+    build_running_ideation_session, build_running_process, build_running_workspace_session,
+    elapsed_seconds_for_status, ideation_session_title, workspace_session_title,
 };
 
 #[test]
 fn ideation_session_title_falls_back_when_missing() {
     assert_eq!(ideation_session_title(None), "Untitled Session");
     assert_eq!(ideation_session_title(Some("Named")), "Named");
+    assert_eq!(workspace_session_title(None), "Untitled Workspace");
+    assert_eq!(workspace_session_title(Some("Workspace")), "Workspace");
 }
 
 #[test]
@@ -84,4 +86,19 @@ fn build_running_views_shape_expected_fields() {
     assert_eq!(process.elapsed_seconds, Some(45));
     assert_eq!(process.trigger_origin.as_deref(), Some("scheduler"));
     assert_eq!(process.task_branch.as_deref(), Some("ralphx/proj/task-1"));
+
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string("proj-1".to_string()));
+    conversation.title = Some("Workspace run".to_string());
+    let workspace = build_running_workspace_session(
+        &conversation,
+        Utc.with_ymd_and_hms(2026, 3, 29, 11, 58, 0).unwrap(),
+        Some("gpt-5.5".to_string()),
+        now,
+    );
+    assert_eq!(workspace.conversation_id, conversation.id.as_str());
+    assert_eq!(workspace.project_id, "proj-1");
+    assert_eq!(workspace.title, "Workspace run");
+    assert_eq!(workspace.elapsed_seconds, Some(120));
+    assert_eq!(workspace.model.as_deref(), Some("gpt-5.5"));
 }

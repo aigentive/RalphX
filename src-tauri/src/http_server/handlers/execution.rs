@@ -7,6 +7,7 @@ use super::*;
 #[derive(Debug, Serialize)]
 pub struct GlobalSettingsHttpResponse {
     pub global_max_concurrent: u32,
+    pub workspace_max_concurrent: u32,
     pub global_ideation_max: u32,
     pub allow_ideation_borrow_idle_execution: bool,
 }
@@ -15,8 +16,14 @@ pub struct GlobalSettingsHttpResponse {
 #[derive(Debug, Deserialize)]
 pub struct UpdateGlobalSettingsRequest {
     pub global_max_concurrent: u32,
+    #[serde(default = "default_workspace_max_concurrent")]
+    pub workspace_max_concurrent: u32,
     pub global_ideation_max: u32,
     pub allow_ideation_borrow_idle_execution: bool,
+}
+
+fn default_workspace_max_concurrent() -> u32 {
+    crate::domain::execution::DEFAULT_WORKSPACE_MAX_CONCURRENT
 }
 
 /// GET /api/execution/global-settings
@@ -33,6 +40,7 @@ pub async fn get_global_settings(
 
     Ok(Json(GlobalSettingsHttpResponse {
         global_max_concurrent: settings.global_max_concurrent,
+        workspace_max_concurrent: settings.workspace_max_concurrent,
         global_ideation_max: settings.global_ideation_max,
         allow_ideation_borrow_idle_execution: settings.allow_ideation_borrow_idle_execution,
     }))
@@ -48,6 +56,7 @@ pub async fn update_global_settings(
 
     let settings = GlobalExecutionSettings {
         global_max_concurrent: req.global_max_concurrent,
+        workspace_max_concurrent: req.workspace_max_concurrent,
         global_ideation_max: req.global_ideation_max,
         allow_ideation_borrow_idle_execution: req.allow_ideation_borrow_idle_execution,
     };
@@ -65,6 +74,9 @@ pub async fn update_global_settings(
         .set_global_max_concurrent(updated.global_max_concurrent);
     state
         .execution_state
+        .set_workspace_max_concurrent(updated.workspace_max_concurrent);
+    state
+        .execution_state
         .set_global_ideation_max(updated.global_ideation_max);
     state
         .execution_state
@@ -72,6 +84,7 @@ pub async fn update_global_settings(
 
     Ok(Json(GlobalSettingsHttpResponse {
         global_max_concurrent: updated.global_max_concurrent,
+        workspace_max_concurrent: updated.workspace_max_concurrent,
         global_ideation_max: updated.global_ideation_max,
         allow_ideation_borrow_idle_execution: updated.allow_ideation_borrow_idle_execution,
     }))

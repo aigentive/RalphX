@@ -2375,10 +2375,13 @@ impl<R: Runtime> StartupJobRunner<R> {
         let drain_service =
             crate::application::pending_session_drain::PendingSessionDrainService::new(
                 Arc::clone(&self.ideation_session_repo),
+                Arc::clone(&self.project_repo),
                 Arc::clone(&self.task_repo),
+                Arc::clone(&self.chat_conversation_repo),
                 Arc::clone(&self.execution_settings_repo),
                 Arc::clone(&self.execution_state),
                 Arc::clone(&self.running_agent_registry),
+                Arc::clone(&self.reconciler.message_queue),
                 chat_service,
             );
 
