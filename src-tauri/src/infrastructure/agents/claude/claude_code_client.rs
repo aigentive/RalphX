@@ -370,6 +370,17 @@ impl ClaudeCodeClient {
     pub fn cli_path(&self) -> &PathBuf {
         &self.cli_path
     }
+
+    fn cli_path_for_config<'a>(&'a self, config: &'a AgentConfig) -> &'a Path {
+        config
+            .cli_path_override
+            .as_deref()
+            .unwrap_or_else(|| self.cli_path.as_path())
+    }
+
+    fn cli_path_is_available(cli_path: &Path) -> bool {
+        cli_path.exists() || which::which(cli_path).is_ok()
+    }
 }
 
 impl Default for ClaudeCodeClient {
@@ -390,10 +401,11 @@ impl ClaudeCodeClient {
             .as_deref()
             .unwrap_or_else(|| Path::new("./plugins/app"));
         let effort_override = config.logical_effort.map(|effort| effort.to_string());
+        let cli_path = self.cli_path_for_config(config);
 
         let mut spawnable = if enforce_spawn_guard {
             build_spawnable_command_with_mcp_runtime_context_and_profile(
-                &self.cli_path,
+                cli_path,
                 plugin_dir,
                 &config.prompt,
                 config.agent.as_deref(),
@@ -409,7 +421,7 @@ impl ClaudeCodeClient {
             #[cfg(test)]
             {
                 build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
-                    &self.cli_path,
+                    cli_path,
                     plugin_dir,
                     &config.prompt,
                     config.agent.as_deref(),
@@ -426,7 +438,7 @@ impl ClaudeCodeClient {
             {
                 let _ = enforce_spawn_guard;
                 build_spawnable_command_with_mcp_runtime_context_and_profile(
-                    &self.cli_path,
+                    cli_path,
                     plugin_dir,
                     &config.prompt,
                     config.agent.as_deref(),
@@ -477,10 +489,11 @@ impl AgenticClient for ClaudeCodeClient {
         }
 
         // Check if CLI is available first
-        if !self.cli_path.exists() && which::which(&self.cli_path).is_err() {
+        let cli_path = self.cli_path_for_config(&config);
+        if !Self::cli_path_is_available(cli_path) {
             return Err(AgentError::CliNotAvailable(format!(
                 "claude CLI not found at {:?}",
-                self.cli_path
+                cli_path
             )));
         }
 
@@ -614,6 +627,7 @@ impl ClaudeCodeClient {
         interactive: bool,
     ) -> Result<Vec<String>, String> {
         sanitize_claude_user_state();
+        let cli_path = self.cli_path_for_config(config);
         let mut args = Vec::new();
 
         // Prompt — omitted for interactive mode (caller sends prompt via stdin)
@@ -682,7 +696,7 @@ impl ClaudeCodeClient {
 
         // Model override: explicit config first, then per-agent default from config/ralphx.yaml
         if let Some(model) = resolved_config_model(config) {
-            append_validated_model_args(&mut args, &self.cli_path, &model)?;
+            append_validated_model_args(&mut args, cli_path, &model)?;
         }
 
         // Max tokens
@@ -741,10 +755,11 @@ impl ClaudeCodeClient {
         }
 
         // Check if CLI is available first
-        if !self.cli_path.exists() && which::which(&self.cli_path).is_err() {
+        let cli_path = self.cli_path_for_config(&config);
+        if !Self::cli_path_is_available(cli_path) {
             return Err(AgentError::CliNotAvailable(format!(
                 "claude CLI not found at {:?}",
-                self.cli_path
+                cli_path
             )));
         }
 
@@ -753,7 +768,7 @@ impl ClaudeCodeClient {
             .map_err(|e| AgentError::SpawnFailed(e))?;
 
         // Build command
-        let mut cmd = tokio::process::Command::new(&self.cli_path);
+        let mut cmd = tokio::process::Command::new(cli_path);
         cmd.args(&args)
             .current_dir(&config.working_directory)
             .stdout(Stdio::piped())
@@ -819,10 +834,11 @@ impl ClaudeCodeClient {
         }
 
         // Check if CLI is available first
-        if !self.cli_path.exists() && which::which(&self.cli_path).is_err() {
+        let cli_path = self.cli_path_for_config(&config);
+        if !Self::cli_path_is_available(cli_path) {
             return Err(AgentError::CliNotAvailable(format!(
                 "claude CLI not found at {:?}",
-                self.cli_path
+                cli_path
             )));
         }
 
@@ -832,7 +848,7 @@ impl ClaudeCodeClient {
             .map_err(|e| AgentError::SpawnFailed(e))?;
 
         // Build command with stdin piped for message delivery
-        let mut cmd = tokio::process::Command::new(&self.cli_path);
+        let mut cmd = tokio::process::Command::new(cli_path);
         cmd.args(&args)
             .current_dir(&config.working_directory)
             .stdout(Stdio::piped())

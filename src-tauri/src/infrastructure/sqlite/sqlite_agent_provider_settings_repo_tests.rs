@@ -27,6 +27,8 @@ async fn upsert_and_get_provider_settings() {
     settings.is_default = true;
     settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
     settings.auto_update_enabled = true;
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some("/opt/tools/codex-wrapper".to_string());
 
     repo.upsert(&settings).await.unwrap();
     let row = repo
@@ -44,6 +46,11 @@ async fn upsert_and_get_provider_settings() {
         AgentProviderCliManagementMode::RxManaged
     );
     assert!(row.auto_update_enabled);
+    assert!(row.custom_binary_enabled);
+    assert_eq!(
+        row.custom_binary_path.as_deref(),
+        Some("/opt/tools/codex-wrapper")
+    );
 }
 
 #[tokio::test]
@@ -186,6 +193,8 @@ fn low_level_fetch_helpers_map_rows_and_missing_rows() {
         AgentProviderCliManagementMode::RxManaged
     );
     assert!(selected.auto_update_enabled);
+    assert!(!selected.custom_binary_enabled);
+    assert_eq!(selected.custom_binary_path, None);
     assert!(missing.is_none());
     assert_eq!(rows.len(), 1);
 }

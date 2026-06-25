@@ -16,6 +16,8 @@ fn disabled_codex_defaults_are_mcp_ready_but_not_enabled() {
         AgentProviderCliManagementMode::UserManaged
     );
     assert!(!settings.auto_update_enabled);
+    assert!(!settings.custom_binary_enabled);
+    assert_eq!(settings.custom_binary_path, None);
 }
 
 #[test]
@@ -38,6 +40,8 @@ fn disabled_claude_defaults_are_most_permissive_but_not_enabled() {
         AgentProviderCliManagementMode::UserManaged
     );
     assert!(!settings.auto_update_enabled);
+    assert!(!settings.custom_binary_enabled);
+    assert_eq!(settings.custom_binary_path, None);
 }
 
 #[test]

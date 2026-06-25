@@ -49,6 +49,32 @@ fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
         .map(String::as_str)
 }
 
+fn write_fake_claude_cli(path: &std::path::Path) {
+    std::fs::write(
+        path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'claude-code 2.1.170\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Claude Code' 'Options:' '  --model <MODEL>' '  --effort <EFFORT>'
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+    )
+    .expect("write fake claude");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)
+            .expect("fake claude metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("chmod fake claude");
+    }
+}
+
 #[test]
 fn test_claude_code_client_new() {
     let client = ClaudeCodeClient::new();
@@ -323,6 +349,22 @@ fn test_build_cli_args_with_model() {
 
     assert!(args.contains(&"--model".to_string()));
     assert!(args.contains(&"opus".to_string()));
+}
+
+#[test]
+fn test_build_cli_args_validates_model_against_cli_path_override() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let custom_claude_path = temp_dir.path().join("claude-wrapper");
+    write_fake_claude_cli(&custom_claude_path);
+    let client = ClaudeCodeClient::new().with_cli_path("/missing/default/claude");
+    let mut config = AgentConfig::worker("Test").with_model("fable");
+    config.cli_path_override = Some(custom_claude_path);
+
+    let args = client
+        .build_cli_args(&config, None, false)
+        .expect("override CLI should validate Fable support");
+
+    assert_eq!(arg_value(&args, "--model"), Some("fable"));
 }
 
 #[test]
